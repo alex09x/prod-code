@@ -157,6 +157,25 @@ pub struct DiscoveredNode {
     pub workspaces: Vec<LoadedWorkspace>,
 }
 
+/// Canonical payload string for HMAC-SHA-256 signing/verification of node announcements.
+/// Covers ALL wire fields affecting node identity, eligibility, warm-workspace preference, and scoring:
+/// `<addr> <engines_csv> <rss_mb> <load_per_cpu:.4> <cpus> <mem_total_mb> <mem_avail_mb> <sessions> <ws_csv>`
+pub fn canonical_announce_payload(
+    advertise: &str,
+    engines_csv: &str,
+    rss_mb: u64,
+    load_per_cpu: f64,
+    cpus: u32,
+    mem_total_mb: u64,
+    mem_avail_mb: u64,
+    sessions: u32,
+    ws_csv: &str,
+) -> String {
+    format!(
+        "{advertise} {engines_csv} {rss_mb} {load_per_cpu:.4} {cpus} {mem_total_mb} {mem_avail_mb} {sessions} {ws_csv}"
+    )
+}
+
 /// Parse one `PROD_CODE_NODE` line, validating anti-spoofing and auth token MAC.
 pub fn parse_node_line_with_auth(
     line: &str,
@@ -197,36 +216,46 @@ pub fn parse_node_line_with_auth(
     let mem_total_mb: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mem_avail_mb: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let sessions: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ws_csv = parts.next().unwrap_or("-");
 
     // Auth verification: if an auth token is configured, reject announcements with invalid MAC tag.
+    // The MAC covers all routing and metadata fields on the wire.
     if let Some(token) = expected_token {
-        let auth_payload = format!("{addr}:{engines_csv}:{cpus}:{mem_total_mb}");
-        if !verify_auth_tag(token, &auth_payload, tag) {
-            tracing::warn!(addr = %addr, "rejecting unauthenticated/forged discovery advertisement");
+        let canonical_payload = canonical_announce_payload(
+            addr_str,
+            engines_csv,
+            rss_mb,
+            load_per_cpu,
+            cpus,
+            mem_total_mb,
+            mem_avail_mb,
+            sessions,
+            ws_csv,
+        );
+        if !verify_auth_tag(token, &canonical_payload, tag) {
+            tracing::warn!(addr = %addr, "rejecting unauthenticated/tampered discovery advertisement");
             return None;
         }
     }
 
-    let workspaces = parts
-        .next()
-        .filter(|s| *s != "-")
-        .map(|ws_csv| {
-            ws_csv
-                .split(',')
-                .filter_map(|entry| {
-                    let mut p = entry.splitn(3, ':');
-                    let raw_name = p.next()?;
-                    let engine = p.next().unwrap_or("?");
-                    let sess: u32 = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-                    Some(LoadedWorkspace {
-                        name: decode_workspace_name(raw_name),
-                        engine: engine.to_string(),
-                        sessions: sess,
-                    })
+    let workspaces = if ws_csv == "-" {
+        Vec::new()
+    } else {
+        ws_csv
+            .split(',')
+            .filter_map(|entry| {
+                let mut p = entry.splitn(3, ':');
+                let raw_name = p.next()?;
+                let engine = p.next().unwrap_or("?");
+                let sess: u32 = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                Some(LoadedWorkspace {
+                    name: decode_workspace_name(raw_name),
+                    engine: engine.to_string(),
+                    sessions: sess,
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+            })
+            .collect()
+    };
 
     Some(DiscoveredNode {
         addr,
@@ -272,13 +301,23 @@ pub fn format_node_line(
             .join(",")
     };
 
+    let canonical = canonical_announce_payload(
+        advertise,
+        engines_csv,
+        rss_mb,
+        load_per_cpu,
+        cpus,
+        mem_total_mb,
+        mem_avail_mb,
+        sessions,
+        &ws,
+    );
+
     let tag = token
-        .map(|t| compute_auth_tag(t, &format!("{advertise}:{engines_csv}:{cpus}:{mem_total_mb}")))
+        .map(|t| compute_auth_tag(t, &canonical))
         .unwrap_or_else(|| "-".to_string());
 
-    format!(
-        "{NODE_PREFIX}{tag} {advertise} {engines_csv} {rss_mb} {load_per_cpu:.4} {cpus} {mem_total_mb} {mem_avail_mb} {sessions} {ws}"
-    )
+    format!("{NODE_PREFIX}{tag} {canonical}")
 }
 
 // ── Gateway side ──────────────────────────────────────────────────────────────
@@ -562,5 +601,73 @@ mod tests {
         // Truncated / malformed tag fails
         assert!(!verify_auth_tag(token, data, &tag[..32]));
         assert!(!verify_auth_tag(token, data, "invalid-hex-characters-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    }
+
+    #[test]
+    fn tampering_any_announcement_field_fails_verification() {
+        let token = "secret-cluster-token-987654";
+        let ws = vec![("my-app".into(), "rust".into(), 1)];
+        let valid_line = format_node_line(
+            "192.168.2.168:9400", "rust,go", 1000, 0.05,
+            16, 64000, 32000, 2, &ws, Some(token),
+        );
+        let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+
+        // 1. Valid line must pass
+        assert!(parse_node_line_with_auth(&valid_line, Some(token), Some(sender_ip)).is_some());
+
+        let tokens: Vec<&str> = valid_line.split_whitespace().collect();
+        // Wire tokens:
+        // [0]: "PROD_CODE_NODE"
+        // [1]: <64-char HMAC tag>
+        // [2]: "192.168.2.168:9400" (addr)
+        // [3]: "rust,go" (engines)
+        // [4]: "1000" (rss_mb)
+        // [5]: "0.0500" (load_per_cpu)
+        // [6]: "16" (cpus)
+        // [7]: "64000" (mem_total_mb)
+        // [8]: "32000" (mem_avail_mb)
+        // [9]: "2" (sessions)
+        // [10]: "my-app:rust:1" (workspaces)
+
+        // 2. Tampering with engines
+        let mut tampered = tokens.clone();
+        tampered[3] = "rust,go,python";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+
+        // 3. Tampering with rss_mb
+        let mut tampered = tokens.clone();
+        tampered[4] = "2000";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+
+        // 4. Tampering with load_per_cpu
+        let mut tampered = tokens.clone();
+        tampered[5] = "0.0100";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+
+        // 5. Tampering with cpus
+        let mut tampered = tokens.clone();
+        tampered[6] = "32";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+
+        // 6. Tampering with mem_total_mb
+        let mut tampered = tokens.clone();
+        tampered[7] = "128000";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+
+        // 7. Tampering with mem_avail_mb (routing priority!)
+        let mut tampered = tokens.clone();
+        tampered[8] = "60000";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+
+        // 8. Tampering with sessions
+        let mut tampered = tokens.clone();
+        tampered[9] = "10";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+
+        // 9. Tampering with workspaces (warm-cache routing priority!)
+        let mut tampered = tokens.clone();
+        tampered[10] = "other-app:rust:1";
+        assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
     }
 }
