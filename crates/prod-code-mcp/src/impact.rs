@@ -837,9 +837,7 @@ pub fn is_scratch_path(path: &str) -> bool {
     Path::new(path).components().any(|c| match c {
         std::path::Component::Normal(s) => {
             let name = s.to_string_lossy();
-            SCRATCH_DIRS
-                .iter()
-                .any(|d| name == *d || name.starts_with(".scratch") || name.starts_with(".tmp"))
+            SCRATCH_DIRS.iter().any(|d| name == *d)
         }
         _ => false,
     })
@@ -3103,8 +3101,10 @@ mod tests {
         assert!(is_scratch_path("internal/.scratch/draft.go"));
         assert!(is_scratch_path(".tmp/copy.go"));
         assert!(is_scratch_path(".cache/gen.go"));
-        // Legitimate non-standard source paths (e.g. Rust #[path = ".support/helper.rs"]) must NOT be excluded (#760)
+        // Legitimate non-standard source paths must NOT be excluded (#760)
         assert!(!is_scratch_path(".support/helper.rs"));
+        assert!(!is_scratch_path(".scratch-support/helper.rs"));
+        assert!(!is_scratch_path(".tmpfiles/helper.rs"));
         assert!(!is_scratch_path("internal/push/a.go"));
         assert!(!is_scratch_path("main.go"));
     }
