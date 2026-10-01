@@ -5460,10 +5460,17 @@ pub async fn compile_check(
     root: &Path,
     edits: &[(std::path::PathBuf, String)],
 ) -> Result<(usize, String)> {
-    let language = crate::sync::expected_engine(root)
-        .context("`compile` needs a project manifest at the checkout root")?;
+    let hint = edits.first().map(|(p, _)| p.as_path()).unwrap_or(root);
+    let (subdir, engine) = crate::sync::engine_project(root, hint);
+    let language = engine
+        .or_else(|| crate::sync::expected_engine(root))
+        .context("`compile` needs a project manifest")?;
+    let project_dir = match &subdir {
+        Some(sub) => root.join(sub),
+        None => root.to_path_buf(),
+    };
     let command = crate::verify::plan_command_with(
-        &crate::verify::detect_tools(root),
+        &crate::verify::detect_tools(&project_dir),
         language,
         crate::verify::VerifyKind::Check,
         None,
@@ -5487,7 +5494,7 @@ pub async fn compile_check(
     let outcome = crate::shadow::run_shadow(
         remote,
         root,
-        None,
+        subdir.as_deref(),
         &[spec],
         command.clone(),
         Vec::new(),

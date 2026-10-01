@@ -1044,7 +1044,7 @@ fn plan_command_basic(
         ("go", VerifyKind::Bench) => vec!["go", "test", "-run", "^$", "-bench"],
         ("go", VerifyKind::Check) => vec!["go", "build", "./..."],
         ("go", VerifyKind::Test) => vec!["go", "test", "-json", "./..."],
-        ("swift", VerifyKind::Check) => vec!["swift", "build"],
+        ("swift", VerifyKind::Check) => vec!["swift", "build", "--build-tests"],
         ("swift", VerifyKind::Test) => vec!["swift", "test"],
         ("csharp", VerifyKind::Check) => vec!["dotnet", "build"],
         ("csharp", VerifyKind::Test) => vec!["dotnet", "test"],

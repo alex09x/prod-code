@@ -227,6 +227,7 @@ class ProdCodeGuardBuildCommandTests(unittest.TestCase):
         allowed = [
             "PROD_CODE_LOCAL=1 cargo test",
             "prod-code exec -- cargo test",
+            "prod-code shadow-run -- swift test",
             "ssh booster cargo test",
             "cargo build -p prod-code-client",
             "git status",

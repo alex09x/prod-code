@@ -1002,6 +1002,12 @@ pub async fn validate_text(
     }
     set_aside_derive_expansions(&mut report, new_text);
     refuse_unchecked(&mut report);
+    if file.extension().and_then(|e| e.to_str()) == Some("swift") && report.errors > 0 {
+        let mut reports = vec![report];
+        let edits = [(file.to_path_buf(), new_text.to_string())];
+        let _ = reconcile_swift_cross_target_diagnostics(remote, root, &edits, &mut reports).await;
+        report = reports.pop().unwrap();
+    }
     Ok(report)
 }
 
@@ -1327,9 +1333,9 @@ async fn validate_texts_single_engine(
         let shown = display(root, file);
         let mut report = parse_items(&shown, &result);
         if let Some((before, before_text)) = baselines.get(&shown) {
-            set_aside_preexisting(&mut report, &text, before, before_text);
+            set_aside_preexisting(&mut report, text, before, before_text);
         }
-        set_aside_derive_expansions(&mut report, &text);
+        set_aside_derive_expansions(&mut report, text);
         refuse_unchecked(&mut report);
         sources.insert(shown.clone(), text.clone());
         reports.push(report);
@@ -1339,7 +1345,99 @@ async fn validate_texts_single_engine(
     let resolved = resolved_rust_tokens(&mut session, root, &reports, &sources, &missing).await;
     session.close().await;
     annotate_missing_symbols(&mut reports, &sources, &missing, &resolved);
+    let _ = reconcile_swift_cross_target_diagnostics(remote, root, edits, &mut reports).await;
     Ok(reports)
+}
+
+/// Whether an error message matches a Swift compiler symbol or type resolution error across targets.
+pub fn is_swift_cross_target_candidate(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("has no member")
+        || lower.contains("cannot find type")
+        || lower.contains("cannot find '")
+        || lower.contains("no member named")
+        || lower.contains("is not a member type of")
+        || lower.contains("extra argument")
+        || lower.contains("incorrect argument label")
+        || lower.contains("missing argument for parameter")
+        || lower.contains("do not match any available overload")
+}
+
+/// The target name of a Swift file based on SwiftPM standard layout (Sources/<Target> or Tests/<Target>).
+pub fn swift_target_name(path: &Path) -> Option<String> {
+    let parts: Vec<&str> = path
+        .components()
+        .map(|c| c.as_os_str().to_str().unwrap_or(""))
+        .collect();
+    for (i, &p) in parts.iter().enumerate() {
+        if (p == "Sources" || p == "Tests") && i + 1 < parts.len() {
+            return Some(parts[i + 1].to_string());
+        }
+    }
+    None
+}
+
+/// Swift sourcekit-lsp cannot compile dependent targets in-memory across module boundaries;
+/// when target B imports target A with @testable or import, sourcekit-lsp evaluates target B
+/// against the on-disk .swiftmodule in .build, which may be stale or lack proposed in-memory
+/// members. When errors in a Swift validation batch match cross-target resolution failures or
+/// span multiple targets, verify them with a shadow compiler check (`swift build --build-tests`).
+/// If the compiler accepts the overlay with zero errors, suppress the false positive diagnostics (#759, #762).
+async fn reconcile_swift_cross_target_diagnostics(
+    remote: SocketAddr,
+    root: &Path,
+    edits: &[(std::path::PathBuf, String)],
+    reports: &mut [DiagnosticsReport],
+) -> Result<()> {
+    let has_swift = edits
+        .iter()
+        .any(|(p, _)| p.extension().and_then(|e| e.to_str()) == Some("swift"));
+    if !has_swift {
+        return Ok(());
+    }
+
+    let has_errors = reports.iter().any(|r| r.errors > 0);
+    if !has_errors {
+        return Ok(());
+    }
+
+    let targets: HashSet<String> = edits
+        .iter()
+        .filter_map(|(p, _)| swift_target_name(p))
+        .collect();
+    let is_cross_target = targets.len() > 1;
+    let has_candidate_error = reports.iter().any(|r| {
+        r.items
+            .iter()
+            .any(|i| i.severity == "error" && is_swift_cross_target_candidate(&i.message))
+    });
+
+    if !is_cross_target && !has_candidate_error {
+        return Ok(());
+    }
+
+    if let Ok((0, _output)) = crate::tools::compile_check(remote, root, edits).await {
+        tracing::info!(
+            "Swift cross-target overlay verified cleanly by shadow compiler; suppressing stale sourcekit-lsp diagnostics"
+        );
+        for report in reports.iter_mut() {
+            report.items.retain(|item| {
+                item.severity != "error" || !is_swift_cross_target_candidate(&item.message)
+            });
+            report.errors = report
+                .items
+                .iter()
+                .filter(|item| item.severity == "error")
+                .count();
+            report.warnings = report
+                .items
+                .iter()
+                .filter(|item| item.severity == "warning")
+                .count();
+        }
+    }
+
+    Ok(())
 }
 
 /// A re-export reference in a checked caller proves that a public `pub use` is used, even

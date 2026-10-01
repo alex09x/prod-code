@@ -41,6 +41,7 @@ HEAVY = [
 ALLOWED_ANYWHERE = [
     re.compile(r"PROD_CODE_LOCAL=1"),
     re.compile(r"\bprod-code\s+exec\b"),
+    re.compile(r"\bprod-code\s+shadow-run\b"),
     re.compile(r"(^|[\s;&|(])ssh\s"),
 ]
 
