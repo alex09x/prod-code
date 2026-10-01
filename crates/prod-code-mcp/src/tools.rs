@@ -7511,12 +7511,22 @@ pub async fn resolve_symbol(
 /// `Consumer::recv` must not resolve to `AsyncConsumer::recv`.
 fn qualifier_matches(root: &Path, hit: &SymbolHit, qualifiers: &[&str]) -> bool {
     let decorated = decorated_owner(&hit.name);
-    let owner = hit
+    let mut owner = hit
         .container
         .as_deref()
         .map(owner_segments)
         .filter(|owner| !owner.is_empty())
-        .unwrap_or(decorated);
+        .unwrap_or_default();
+    if !decorated.is_empty() {
+        let already_ends_with = owner.len() >= decorated.len()
+            && owner[owner.len() - decorated.len()..]
+                .iter()
+                .zip(&decorated)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if !already_ends_with {
+            owner.extend(decorated);
+        }
+    }
     // rust-analyzer also labels methods as Function. A known owner constrains every kind;
     // the containing file cannot turn an explicitly owned member into a free function.
     if !owner.is_empty() {
@@ -7615,9 +7625,11 @@ fn owner_segments(label: &str) -> Vec<String> {
 /// caller did provide must agree. When the server only names the terminal type, its file must
 /// establish the remaining module prefix.
 fn owner_path_matches(root: &Path, path: &Path, requested: &[&str], declared: &[String]) -> bool {
+    let clean = |s: &str| {
+        s.trim_matches(['(', ')', '*', '&']).replace('-', "_")
+    };
     let equals = |a: &str, b: &str| {
-        a.replace('-', "_")
-            .eq_ignore_ascii_case(&b.replace('-', "_"))
+        clean(a).eq_ignore_ascii_case(&clean(b))
     };
     let ends_with = |longer: &[String], shorter: &[&str]| {
         longer.len() >= shorter.len()
@@ -8840,5 +8852,44 @@ mod tests {
             .find(|t| t.name == "code_outline")
             .unwrap();
         assert!(outline.input_schema["properties"]["include_locals"].is_object());
+    }
+
+    #[test]
+    fn qualifier_matches_resolves_go_receiver_and_package_methods() {
+        let root = Path::new("/workspace");
+        let hit = SymbolHit {
+            path: root.join("internal/web/delegation.go"),
+            name: "(*Server).verifyRenewablePrimaryTokenRecord".to_string(),
+            kind: "Method",
+            container: Some("prod/internal/web".to_string()),
+            line: 42,
+            col: 1,
+        };
+
+        // Exact receiver name returned by symbol discovery (#752)
+        assert!(super::qualifier_matches(root, &hit, &["Server"]));
+        // Pointer-receiver syntax
+        assert!(super::qualifier_matches(root, &hit, &["(*Server)"]));
+        // Package-qualified receiver
+        assert!(super::qualifier_matches(root, &hit, &["web", "Server"]));
+        // Fully-qualified module path
+        assert!(super::qualifier_matches(root, &hit, &["prod", "internal", "web", "Server"]));
+
+        // Unrelated receiver must not match
+        assert!(!super::qualifier_matches(root, &hit, &["Client"]));
+        assert!(!super::qualifier_matches(root, &hit, &["otherpkg", "Server"]));
+
+        // Value receiver
+        let val_hit = SymbolHit {
+            path: root.join("internal/runner/runner.go"),
+            name: "(Runner).Run".to_string(),
+            kind: "Method",
+            container: Some("runner".to_string()),
+            line: 10,
+            col: 1,
+        };
+        assert!(super::qualifier_matches(root, &val_hit, &["Runner"]));
+        assert!(super::qualifier_matches(root, &val_hit, &["runner", "Runner"]));
+        assert!(!super::qualifier_matches(root, &val_hit, &["Server"]));
     }
 }
