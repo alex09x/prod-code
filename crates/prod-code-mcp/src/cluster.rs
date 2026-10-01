@@ -6,8 +6,8 @@
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ClusterResponse, MetricsRequest, MetricsResponse, PlaceRequest, PlaceResponse, ProdCodeCodec,
-    StatusResponse, WireMessage, content_hash,
+    ClusterResponse, MetricsRequest, MetricsResponse, PlaceRequest, PlaceResponse,
+    ProdCodeCodec, StatusResponse, WireMessage, content_hash,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -467,6 +467,18 @@ pub async fn pick_node_with(
             },
         });
     };
+    let loopback: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+    if ((*only == loopback && !is_alive(*only).await)
+        || (engine.is_some() && !node_fits(*only, engine, os).await))
+        && let Some(path) = placement_file
+    {
+        let placement = load_placement(path);
+        if let Some(remembered) = placement.workspaces.get(workspace_name).copied()
+            && node_fits(remembered, engine, os).await
+        {
+            return Ok(remembered);
+        }
+    }
     // One node is used without asking, unless the checkout needs an OS it has to be shown to
     // run: a build there would fail on headers that do not exist (#248).
     if let Some(os) = os
@@ -476,6 +488,11 @@ pub async fn pick_node_with(
             "no reachable gateway runs {} (reachable without it: {only})",
             os_name(os)
         ));
+    }
+    if let Some(path) = placement_file {
+        let mut placement = load_placement(path);
+        placement.workspaces.insert(workspace_name.to_string(), *only);
+        save_placement(path, &placement);
     }
     Ok(*only)
 }
@@ -561,9 +578,49 @@ struct ClusterCache {
 /// answers is asked for its gossip view and every live member is added; the result is
 /// cached so a cluster whose seeds are down is still known. One seed address is enough.
 pub async fn discover_nodes(seeds: &[SocketAddr]) -> Vec<SocketAddr> {
+    discover_nodes_with_paths(
+        seeds,
+        placement_path().as_deref(),
+        cluster_cache_path().as_deref(),
+    )
+    .await
+}
+
+pub async fn discover_nodes_with_paths(
+    seeds: &[SocketAddr],
+    placement_file: Option<&Path>,
+    cache_file: Option<&Path>,
+) -> Vec<SocketAddr> {
     let mut nodes: Vec<SocketAddr> = seeds.to_vec();
+    let mut probe_seeds: Vec<SocketAddr> = seeds.to_vec();
+    let mut remembered_nodes: Vec<SocketAddr> = Vec::new();
+
+    if let Some(path) = placement_file {
+        let placement = load_placement(path);
+        for addr in placement.workspaces.values() {
+            if !remembered_nodes.contains(addr) {
+                remembered_nodes.push(*addr);
+            }
+            if !probe_seeds.contains(addr) {
+                probe_seeds.push(*addr);
+            }
+        }
+    }
+    if let Some(path) = cache_file
+        && let Ok(bytes) = std::fs::read(path)
+        && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
+    {
+        for n in cache.nodes {
+            if let Ok(addr) = n.parse::<SocketAddr>()
+                && !probe_seeds.contains(&addr)
+            {
+                probe_seeds.push(addr);
+            }
+        }
+    }
+
     let mut learned = false;
-    for seed in seeds {
+    for seed in &probe_seeds {
         if let Ok(view) = cluster_view(*seed).await {
             for n in view.nodes.iter().filter(|n| n.alive) {
                 if let Ok(addr) = n.addr.parse::<SocketAddr>()
@@ -573,10 +630,19 @@ pub async fn discover_nodes(seeds: &[SocketAddr]) -> Vec<SocketAddr> {
                 }
             }
             learned = true;
-            break;
+            if remembered_nodes.iter().all(|r| nodes.contains(r)) {
+                break;
+            }
         }
     }
-    if let Some(path) = cluster_cache_path() {
+
+    for remembered in &remembered_nodes {
+        if !nodes.contains(remembered) && is_alive(*remembered).await {
+            nodes.push(*remembered);
+        }
+    }
+
+    if let Some(path) = cache_file {
         if learned {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -585,16 +651,23 @@ pub async fn discover_nodes(seeds: &[SocketAddr]) -> Vec<SocketAddr> {
                 nodes: nodes.iter().map(|n| n.to_string()).collect(),
             };
             if let Ok(bytes) = serde_json::to_vec_pretty(&cache) {
-                let _ = std::fs::write(&path, bytes);
+                let _ = std::fs::write(path, bytes);
             }
-        } else if let Ok(bytes) = std::fs::read(&path)
-            && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
-        {
-            for n in cache.nodes {
-                if let Ok(addr) = n.parse::<SocketAddr>()
-                    && !nodes.contains(&addr)
-                {
-                    nodes.push(addr);
+        } else {
+            if let Ok(bytes) = std::fs::read(path)
+                && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
+            {
+                for n in cache.nodes {
+                    if let Ok(addr) = n.parse::<SocketAddr>()
+                        && !nodes.contains(&addr)
+                    {
+                        nodes.push(addr);
+                    }
+                }
+            }
+            for addr in &remembered_nodes {
+                if !nodes.contains(addr) {
+                    nodes.push(*addr);
                 }
             }
         }
@@ -639,7 +712,7 @@ pub async fn node_status(addr: SocketAddr) -> Result<StatusResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prod_code_protocol::HostResources;
+    use prod_code_protocol::{HostResources, PeerInfo};
 
     #[test]
     fn parses_lists_and_dedups() {
@@ -1093,4 +1166,133 @@ mod tests {
             "the operating system's reason is named: {err}"
         );
     }
+
+    #[tokio::test]
+    async fn retains_remembered_placement_when_single_seed_unsupported_or_down() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+        let mac = node_on(&["swift (sourcekit-lsp)"], Some("macos aarch64")).await;
+        let mut remembered = Placement::default();
+        remembered.workspaces.insert("ws#swift".to_string(), mac);
+        save_placement(&placement, &remembered);
+
+        let dead_loopback: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let picked = pick_node_with(
+            &[dead_loopback],
+            "ws#swift",
+            Some("swift"),
+            None,
+            Some(&placement),
+        )
+        .await
+        .unwrap();
+        assert_eq!(picked, mac, "retains remembered mac node for swift workspace");
+    }
+
+    async fn seed_node_with_peers(peers: Vec<SocketAddr>) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let peers = peers.clone();
+                tokio::spawn(async move {
+                    let mut framed = Framed::new(socket, ProdCodeCodec::new());
+                    while let Some(Ok(message)) = framed.next().await {
+                        match message {
+                            WireMessage::ClusterRequest => {
+                                let resp = ClusterResponse {
+                                    this_node: addr.to_string(),
+                                    nodes: peers
+                                        .iter()
+                                        .map(|p| PeerInfo {
+                                            addr: p.to_string(),
+                                            status: StatusResponse {
+                                                server_pid: 1,
+                                                uptime_seconds: 1,
+                                                active_sessions: 0,
+                                                loaded_workspaces: 0,
+                                                detected_engines: vec!["rust".to_string()],
+                                                memory_rss_bytes: None,
+                                                total_queries: 0,
+                                                active_queries: 0,
+                                                load_average_millis: Some(100),
+                                                cpu_count: Some(4),
+                                                platform: Some("linux x86_64".to_string()),
+                                                running_commands: Vec::new(),
+                                                host: HostResources::default(),
+                                            },
+                                            last_seen_secs: 0,
+                                            workspaces: vec![],
+                                            alive: true,
+                                        })
+                                        .collect(),
+                                };
+                                let _ = framed.send(WireMessage::ClusterResponse(resp)).await;
+                            }
+                            WireMessage::StatusRequest => {
+                                let status = StatusResponse {
+                                    server_pid: 1,
+                                    uptime_seconds: 1,
+                                    active_sessions: 0,
+                                    loaded_workspaces: 0,
+                                    detected_engines: vec!["rust".to_string()],
+                                    memory_rss_bytes: None,
+                                    total_queries: 0,
+                                    active_queries: 0,
+                                    load_average_millis: Some(100),
+                                    cpu_count: Some(4),
+                                    platform: Some("linux x86_64".to_string()),
+                                    running_commands: Vec::new(),
+                                    host: HostResources::default(),
+                                };
+                                let _ = framed.send(WireMessage::StatusResponse(status)).await;
+                            }
+                            _ => return,
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn discover_nodes_preserves_remembered_placement_when_seed_view_omits_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+        let cache = temp.path().join("cluster.json");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let seed_addr = listener.local_addr().unwrap();
+        drop(listener);
+        let seed = seed_node_with_peers(vec![seed_addr]).await;
+
+        let mac = node_on(&["swift (sourcekit-lsp)"], Some("macos aarch64")).await;
+        let mut rem = Placement::default();
+        rem.workspaces.insert("ws#swift".to_string(), mac);
+        save_placement(&placement, &rem);
+
+        let discovered = discover_nodes_with_paths(&[seed], Some(&placement), Some(&cache)).await;
+
+        assert!(
+            discovered.contains(&mac),
+            "discovered nodes must include remembered placement {mac}: {discovered:?}"
+        );
+        assert!(
+            discovered.contains(&seed),
+            "discovered nodes must include seed {seed}: {discovered:?}"
+        );
+
+        let picked = pick_node_with(
+            &discovered,
+            "ws#swift",
+            Some("swift"),
+            None,
+            Some(&placement),
+        )
+        .await
+        .unwrap();
+        assert_eq!(picked, mac, "pick_node_with must choose remembered mac node");
+    }
 }
+

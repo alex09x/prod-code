@@ -1296,6 +1296,223 @@ async fn cli_exec_accepts_env_flag_and_passes_to_remote() {
 }
 
 #[tokio::test]
+async fn cli_nested_swift_exec_retains_discovered_macos_gateway_with_external_tokens() {
+    let ws = make_workspace();
+    let nested_swift = ws.root().join("nested_swift");
+    std::fs::create_dir_all(&nested_swift).unwrap();
+    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+    std::fs::write(nested_swift.join("main.swift"), "print(\"hello swift\")\n").unwrap();
+
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let home = tempfile::tempdir().expect("home");
+    let placement_dir = home.path().join(".local/share/prod_code");
+    std::fs::create_dir_all(&placement_dir).unwrap();
+    let ws_identity = prod_code_mcp::sync::workspace_identity(&ws.root());
+    let ws_name = ws_identity.base.unwrap_or(ws_identity.name);
+    let placement_content = serde_json::json!({
+        "workspaces": {
+            format!("{ws_name}#swift"): gw.addr.to_string(),
+        }
+    });
+    std::fs::write(
+        placement_dir.join("placement.json"),
+        serde_json::to_vec_pretty(&placement_content).unwrap(),
+    )
+    .unwrap();
+
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args([
+            "exec",
+            "--env",
+            "PYTHONUNBUFFERED=1",
+            "--env",
+            "DEVELOPER_DIR=/Contents/Developer",
+            "--",
+            "echo",
+            "hello_swift",
+            "/Library/Developer",
+        ])
+        .env_remove("PROD_CODE_REMOTE")
+        .env("HOME", home.path())
+        .current_dir(&nested_swift)
+        .output()
+        .await
+        .expect("run prod-code exec");
+
+    assert!(
+        out.status.success(),
+        "exec must succeed using retained placement rather than falling back to localhost:\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+}
+
+#[tokio::test]
+async fn cli_exec_env_value_naming_nested_manifest_does_not_change_engine() {
+    let ws = make_workspace();
+    let nested_swift = ws.root().join("nested_swift");
+    std::fs::create_dir_all(&nested_swift).unwrap();
+    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let home = tempfile::tempdir().expect("home");
+
+    // From the Rust checkout root, pass --env CONFIG=nested_swift/Package.swift.
+    // This must NOT treat the env value as a project hint, staying with the Rust engine.
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args([
+            "--remote",
+            &gw.addr.to_string(),
+            "exec",
+            "--env",
+            "CONFIG=nested_swift/Package.swift",
+            "--",
+            "cargo",
+            "test",
+        ])
+        .env("HOME", home.path())
+        .current_dir(ws.root())
+        .output()
+        .await
+        .expect("run prod-code exec");
+
+    assert!(
+        out.status.success(),
+        "exec failed: stdout: {}, stderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+}
+
+#[tokio::test]
+async fn cli_nested_swift_file_position_command_selects_nested_engine() {
+    let ws = make_workspace();
+    let nested_swift = ws.root().join("nested_swift");
+    std::fs::create_dir_all(&nested_swift).unwrap();
+    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+    let main_swift = nested_swift.join("main.swift");
+    std::fs::write(&main_swift, "func foo() {}\n").unwrap();
+
+    let gw = MockGateway::start(|method, _| {
+        if method == "callers" {
+            serde_json::json!({
+                "symbol": "foo",
+                "callers": []
+            })
+        } else {
+            serde_json::Value::Null
+        }
+    })
+    .await;
+    let home = tempfile::tempdir().expect("home");
+    let placement_dir = home.path().join(".local/share/prod_code");
+    std::fs::create_dir_all(&placement_dir).unwrap();
+    let ws_identity = prod_code_mcp::sync::workspace_identity(&ws.root());
+    let ws_name = ws_identity.base.unwrap_or(ws_identity.name);
+    let placement_content = serde_json::json!({
+        "workspaces": {
+            format!("{ws_name}#swift"): gw.addr.to_string(),
+        }
+    });
+    std::fs::write(
+        placement_dir.join("placement.json"),
+        serde_json::to_vec_pretty(&placement_content).unwrap(),
+    )
+    .unwrap();
+
+    // From the Rust checkout root, run `callers nested_swift/main.swift 1 6`.
+    // The positional file argument must be recognized as a project hint, routing to gw.addr (swift).
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args([
+            "callers",
+            "nested_swift/main.swift",
+            "1",
+            "6",
+        ])
+        .env_remove("PROD_CODE_REMOTE")
+        .env("HOME", home.path())
+        .current_dir(ws.root())
+        .output()
+        .await
+        .expect("run prod-code callers");
+
+    assert!(
+        out.status.success(),
+        "callers on nested swift file must route via swift placement:\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+}
+
+#[tokio::test]
+async fn cli_nested_swift_migrate_type_with_path_selects_nested_engine() {
+    let ws = make_workspace();
+    let nested_swift = ws.root().join("nested_swift");
+    std::fs::create_dir_all(&nested_swift).unwrap();
+    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+    let main_swift = nested_swift.join("main.swift");
+    std::fs::write(&main_swift, "struct Foo {\n    var x: Int\n}\n").unwrap();
+
+    let gw = MockGateway::start(|method, _| {
+        if method == "migrate_type" {
+            serde_json::json!({
+                "outcome": {
+                    "rewritten_files": 0,
+                    "applied": false
+                },
+                "declaration_rewritten": false,
+                "diagnostics": []
+            })
+        } else {
+            serde_json::Value::Null
+        }
+    })
+    .await;
+    let home = tempfile::tempdir().expect("home");
+    let placement_dir = home.path().join(".local/share/prod_code");
+    std::fs::create_dir_all(&placement_dir).unwrap();
+    let ws_identity = prod_code_mcp::sync::workspace_identity(&ws.root());
+    let ws_name = ws_identity.base.unwrap_or(ws_identity.name);
+    let placement_content = serde_json::json!({
+        "workspaces": {
+            format!("{ws_name}#swift"): gw.addr.to_string(),
+        }
+    });
+    std::fs::write(
+        placement_dir.join("placement.json"),
+        serde_json::to_vec_pretty(&placement_content).unwrap(),
+    )
+    .unwrap();
+
+    // From the Rust checkout root, run `migrate-type Foo::x --to String --path nested_swift/main.swift --apply --force`.
+    // The --path argument must be recognized as a project hint, routing to gw.addr (swift).
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args([
+            "migrate-type",
+            "Foo::x",
+            "--to",
+            "String",
+            "--path",
+            "nested_swift/main.swift",
+            "--apply",
+            "--force",
+        ])
+        .env_remove("PROD_CODE_REMOTE")
+        .env("HOME", home.path())
+        .current_dir(ws.root())
+        .output()
+        .await
+        .expect("run prod-code migrate-type");
+
+    assert!(
+        out.status.success(),
+        "migrate-type with --path on nested swift file must route via swift placement:\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+}
+
+#[tokio::test]
 async fn cli_diagnoses_test_suite_failures() {
     let ws = make_workspace();
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
