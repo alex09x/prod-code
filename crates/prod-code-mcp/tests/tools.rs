@@ -1699,6 +1699,73 @@ async fn the_nested_project_that_names_the_symbol_is_asked_before_the_others() {
     assert!(text.contains("apkg/Sources/Pkg/Thing.swift"), "{text}");
 }
 
+/// When candidate projects naming the symbol exist, symbol lookup does not query unrelated
+/// projects and prioritizes declaring files in documentSymbol outlines (#767).
+#[tokio::test]
+async fn candidate_nested_project_fast_path_avoids_unrelated_projects_and_outlines() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        ("main.go", "package main\n\nfunc main() {}\n"),
+        ("swift/Package.swift", "// swift-tools-version:5.9\n"),
+        (
+            "swift/Sources/Caller.swift",
+            "func call() { DeclaredThing() }\n",
+        ),
+        (
+            "swift/Sources/Thing.swift",
+            "public struct DeclaredThing {}\n",
+        ),
+        ("unrelated/Package.swift", "// swift-tools-version:5.9\n"),
+        (
+            "unrelated/Sources/Other.swift",
+            "public struct OtherThing {}\n",
+        ),
+    ]);
+    let outlines = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let outlines_clone = Arc::clone(&outlines);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([]),
+        "textDocument/documentSymbol" => {
+            let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+            assert!(
+                !uri.contains("unrelated"),
+                "unrelated nested project must never be queried: {uri}"
+            );
+            assert!(
+                uri.ends_with("Thing.swift"),
+                "declaration file must be outlined first: {uri}"
+            );
+            outlines_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            serde_json::json!([{
+                "name": "DeclaredThing",
+                "kind": 23,
+                "range": lines(0, 0),
+                "selectionRange": { "start": { "line": 0, "character": 14 }, "end": { "line": 0, "character": 27 } },
+                "children": []
+            }])
+        }
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "DeclaredThing" }),
+        )
+        .await
+        .expect("the Swift struct resolves"),
+    );
+    assert!(text.contains("swift/Sources/Thing.swift"), "{text}");
+    assert_eq!(
+        outlines.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "only the declaring file was outlined"
+    );
+}
+
 /// Five functions per Go file, `<Stem>1` to `<Stem>5`, as a server outlines them.
 fn five_functions(params: &serde_json::Value) -> serde_json::Value {
     let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
