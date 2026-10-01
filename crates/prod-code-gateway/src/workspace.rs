@@ -148,7 +148,14 @@ impl SharedWorkspace {
         }
         if let Some(base) = &self.base_workspace {
             let base_val = base.base_validation_view(admission).await?;
+            let is_main = Arc::ptr_eq(&base_val, base)
+                || base_val
+                    .rust_engine
+                    .as_ref()
+                    .and_then(|val| self.rust_engine.as_ref().map(|main| Arc::ptr_eq(main, val)))
+                    .unwrap_or(false);
             if let Some(val_engine) = &base_val.rust_engine
+                && !is_main
                 && !self.validation_attached.swap(true, Ordering::SeqCst)
             {
                 let mut eng = val_engine.lock().await;
@@ -178,7 +185,7 @@ impl SharedWorkspace {
                 attached_worktrees: AtomicUsize::new(0),
                 detached: AtomicBool::new(false),
                 unloaded: AtomicBool::new(false),
-                validation_attached: AtomicBool::new(true),
+                validation_attached: AtomicBool::new(!is_main),
             }));
         }
         self.base_validation_view(admission).await
@@ -4153,5 +4160,99 @@ while True:
             val_eng_arc.lock().await.worktree_attachment_count(&wt_dir),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn test_validation_fallback_does_not_leak_main_engine_attachment() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = temp_dir.path();
+        let base_dir = storage.join("sample-repo");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 42 }\n",
+        )
+        .unwrap();
+
+        let wt_dir = storage.join(format!("sample-repo{}", worktree_suffix("client-wt-path")));
+        std::fs::create_dir_all(wt_dir.join("src")).unwrap();
+        std::fs::write(
+            wt_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 100 }\n",
+        )
+        .unwrap();
+
+        let manager = Arc::new(WorkspaceManager::new());
+        let _base_lease = manager.get_or_load(&base_dir, "rust").await.unwrap();
+        let wt_lease = manager.get_or_load(&wt_dir, "rust").await.unwrap();
+        let wt_ws = wt_lease.workspace();
+        let main_eng_arc = Arc::clone(wt_ws.rust_engine.as_ref().unwrap());
+
+        // Base worktree attachment count is 1 initially
+        {
+            let eng = main_eng_arc.lock().await;
+            assert!(eng.has_worktree(&wt_dir));
+            assert_eq!(eng.worktree_attachment_count(&wt_dir), 1);
+        }
+
+        // Host has 95 of 100 GiB used, so admission refuses a second validation engine
+        let refused_admission = Arc::new(crate::admission::Admission::with_probe(
+            crate::admission::scripted_probe(vec![host(95, 100)]),
+            2048,
+            Duration::ZERO,
+        ));
+
+        // Call validation_view when admission has no capacity: falls back to main engine
+        let val_ws = wt_ws.validation_view(&refused_admission).await.unwrap();
+        assert!(Arc::ptr_eq(
+            val_ws.rust_engine.as_ref().unwrap(),
+            &main_eng_arc
+        ));
+
+        // CRITICAL: The main engine attachment count must still be 1 (NOT 2)
+        {
+            let eng = main_eng_arc.lock().await;
+            assert_eq!(
+                eng.worktree_attachment_count(&wt_dir),
+                1,
+                "validation fallback must not acquire a second attachment on the main engine"
+            );
+        }
+
+        drop(val_ws);
+        drop(wt_lease);
+
+        // Unload the worktree
+        let unloaded = manager.unload_under(&wt_dir).await;
+        assert_eq!(unloaded, 1);
+
+        // Detach background task
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !main_eng_arc.lock().await.has_worktree(&wt_dir) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("main engine overlay detachment after unload");
+
+        // The overlay must be completely gone and refcount 0
+        {
+            let eng = main_eng_arc.lock().await;
+            assert!(!eng.has_worktree(&wt_dir));
+            assert_eq!(eng.worktree_attachment_count(&wt_dir), 0);
+        }
     }
 }
