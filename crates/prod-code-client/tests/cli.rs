@@ -1243,6 +1243,59 @@ async fn cli_executes_remote_commands_and_streams_output() {
 }
 
 #[tokio::test]
+async fn cli_check_lint_test_benchmarks_accept_p_short_flag() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out_check = run_cli(&ws, gw.addr, &["check", "-p", "src"]).await;
+    assert!(out_check.status.success(), "{}", stderr_of(&out_check));
+
+    let out_lint = run_cli(&ws, gw.addr, &["lint", "-p", "src"]).await;
+    assert!(out_lint.status.success(), "{}", stderr_of(&out_lint));
+
+    let out_test = run_cli(&ws, gw.addr, &["test", "-p", "src"]).await;
+    assert!(out_test.status.success(), "{}", stderr_of(&out_test));
+
+    let out_bench = run_cli(&ws, gw.addr, &["benchmarks", "-p", "src"]).await;
+    assert!(out_bench.status.success(), "{}", stderr_of(&out_bench));
+}
+
+#[tokio::test]
+async fn cli_exec_accepts_env_flag_and_passes_to_remote() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "exec",
+            "--env",
+            "ECHO_CUSTOM=hello_world",
+            "--",
+            "cargo",
+            "test",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert!(stdout_of(&out).contains("test ECHO_CUSTOM=hello_world ... ok"));
+
+    let bad = run_cli(
+        &ws,
+        gw.addr,
+        &["exec", "--env", "NOEQUALS", "--", "cargo", "test"],
+    )
+    .await;
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(
+        stderr_of(&bad).contains("--env takes KEY=VALUE"),
+        "{}",
+        stderr_of(&bad)
+    );
+}
+
+#[tokio::test]
 async fn cli_diagnoses_test_suite_failures() {
     let ws = make_workspace();
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;

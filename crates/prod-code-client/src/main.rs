@@ -385,7 +385,7 @@ enum Commands {
     Check {
         /// The crate, package or directory to run in (a nested project, or one member of a
         /// workspace), as `path` for the MCP tools; the current directory by default (#323).
-        #[arg(long)]
+        #[arg(short = 'p', long)]
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
@@ -408,7 +408,7 @@ enum Commands {
     Lint {
         /// The crate, package or directory to run in (a nested project, or one member of a
         /// workspace), as `path` for the MCP tools; the current directory by default (#323).
-        #[arg(long)]
+        #[arg(short = 'p', long)]
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
@@ -432,7 +432,7 @@ enum Commands {
         filter: Option<String>,
         /// The crate, package or directory to run in (a nested project, or one member of a
         /// workspace), as `path` for the MCP tools; the current directory by default (#323).
-        #[arg(long)]
+        #[arg(short = 'p', long)]
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
@@ -452,7 +452,7 @@ enum Commands {
         filter: Option<String>,
         /// The crate, package or directory to run in (a nested project, or one member of a
         /// workspace), as `path` for the MCP tools; the current directory by default (#323).
-        #[arg(long)]
+        #[arg(short = 'p', long)]
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
@@ -476,6 +476,9 @@ enum Commands {
         /// lockfiles are pulled back by default).
         #[arg(long, default_value_t = false)]
         no_pull: bool,
+        /// An environment variable for the command (repeatable): `--env RUST_BACKTRACE=1`.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
         /// Command and arguments (put `--` before them).
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -2135,8 +2138,9 @@ async fn main() -> Result<()> {
         Commands::Exec {
             timeout_secs,
             no_pull,
+            env,
             command,
-        } => run_exec(remote, command, timeout_secs, !no_pull).await,
+        } => run_exec(remote, command, env, timeout_secs, !no_pull).await,
         Commands::Fixture {
             symbol,
             depth,
@@ -5726,6 +5730,7 @@ async fn run_shadow_cli(
 async fn run_exec(
     remote: SocketAddr,
     command: Vec<String>,
+    env_args: Vec<String>,
     timeout_secs: u64,
     pull_changes: bool,
 ) -> Result<()> {
@@ -5738,6 +5743,12 @@ async fn run_exec(
     let mut env_pairs = Vec::new();
     if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         env_pairs.push(("CARGO_TERM_COLOR".to_string(), "always".to_string()));
+    }
+    for pair in &env_args {
+        let (key, value) = pair
+            .split_once('=')
+            .with_context(|| format!("--env takes KEY=VALUE, got `{pair}`"))?;
+        env_pairs.push((key.to_string(), value.to_string()));
     }
     let started = std::time::Instant::now();
     let outcome = prod_code_mcp::exec::run_remote(
