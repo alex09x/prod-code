@@ -45,16 +45,53 @@ const NODE_PREFIX: &str = "PROD_CODE_NODE ";
 
 // ── Auth MAC & Escaping Helpers ───────────────────────────────────────────────
 
-/// Computes a 16-hex-character MAC tag using the cluster auth token.
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Computes a standard 256-bit HMAC-SHA-256 authentication tag, hex-encoded (64 characters).
 pub fn compute_auth_tag(token: &str, data: &str) -> String {
-    let combined = format!("{token}#{data}");
-    format!("{:016x}", crate::content_hash(combined.as_bytes()))
+    let mut mac = match HmacSha256::new_from_slice(token.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return String::new(),
+    };
+    mac.update(data.as_bytes());
+    let result = mac.finalize();
+    let bytes = result.into_bytes();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
 }
 
-/// Verifies an auth tag against the expected token.
+/// Verifies an HMAC-SHA-256 auth tag against the expected token in constant time.
 pub fn verify_auth_tag(token: &str, data: &str, tag: &str) -> bool {
-    let expected = compute_auth_tag(token, data);
-    expected == tag
+    let mut mac = match HmacSha256::new_from_slice(token.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(data.as_bytes());
+
+    // Parse tag into bytes.
+    if tag.len() != 64 {
+        return false;
+    }
+    let mut tag_bytes = [0u8; 32];
+    for (i, chunk) in tag.as_bytes().chunks_exact(2).enumerate() {
+        let Ok(s) = std::str::from_utf8(chunk) else {
+            return false;
+        };
+        let Ok(b) = u8::from_str_radix(s, 16) else {
+            return false;
+        };
+        tag_bytes[i] = b;
+    }
+
+    // verify_slice provides constant-time comparison against timing attacks.
+    mac.verify_slice(&tag_bytes).is_ok()
 }
 
 /// Percent-encode arbitrary workspace names so spaces, commas, and colons
@@ -496,5 +533,34 @@ mod tests {
     fn parse_garbage_returns_none() {
         assert!(parse_node_line("hello world").is_none());
         assert!(parse_node_line("PROD_CODE_NODE badaddr rust 0 0").is_none());
+    }
+
+    #[test]
+    fn hmac_sha256_mac_computation_and_verification() {
+        let token = "test-cluster-secret-key-32bytes!";
+        let data = "192.168.2.168:9400:rust,go:32:128000";
+
+        let tag = compute_auth_tag(token, data);
+        assert_eq!(tag.len(), 64, "HMAC-SHA-256 hex string must be 64 characters (256 bits)");
+
+        // Valid verification
+        assert!(verify_auth_tag(token, data, &tag));
+
+        // Wrong token fails
+        assert!(!verify_auth_tag("different-token", data, &tag));
+
+        // Tampered payload fails
+        assert!(!verify_auth_tag(token, "192.168.2.168:9400:rust,go:32:128001", &tag));
+
+        // Tampered tag (single bit flip) fails
+        let mut tampered_tag = tag.clone();
+        let last_char = if tampered_tag.ends_with('0') { '1' } else { '0' };
+        tampered_tag.pop();
+        tampered_tag.push(last_char);
+        assert!(!verify_auth_tag(token, data, &tampered_tag));
+
+        // Truncated / malformed tag fails
+        assert!(!verify_auth_tag(token, data, &tag[..32]));
+        assert!(!verify_auth_tag(token, data, "invalid-hex-characters-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
     }
 }

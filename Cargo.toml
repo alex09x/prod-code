@@ -40,6 +40,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { version = "0.3", features = ["sink"] }
 url = "2.5"
 socket2 = { version = "0.6", features = ["all"] }
+hmac = "0.12"
+sha2 = "0.10"
 
 # Line tables only, in the objects: backtraces keep file and line, and nothing is left behind.
 # `split-debuginfo = "unpacked"` with incremental builds wrote a `.dwo` per codegen unit that

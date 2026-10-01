@@ -43,7 +43,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Status (audited 2026-09-26):
     - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). The length ends the frame, so there are no NUL markers.
     - Since #537, clients offer their implemented versions and the gateway selects the highest common version before creating a session. An absent offer means the legacy `protocol_version`; empty or incompatible offers refuse. Every client validates the selection before LSP initialization. Version 1 remains the only implemented version. Negotiated capability sets (`ClientCapabilities` / `ServerCapabilities`) implemented in #659.
-    - Authentication tokens followed on 2026-09-26 (#402): an optional cluster token (`PROD_CODE_AUTH_TOKEN` or `PROD_CODE_AUTH_TOKEN_FILE`) is every connection's first frame. A gateway with one closes a connection without it before serving anything, and the commands it runs never see it. Off by default.
+    - Authentication tokens followed on 2026-09-26 (#402): an optional cluster token (`PROD_CODE_AUTH_TOKEN` or `PROD_CODE_AUTH_TOKEN_FILE`) is every connection's first frame. A gateway with one closes a connection without it before serving anything, and the commands it runs never see it. Off by default. This authenticates possession of a shared bearer token; it does not encrypt TCP or authenticate a gateway before the token is sent. TLS, peer identity, and credential rotation remain open in 5.6.
     - TCP_NODELAY and keepalive (30 s idle, 10 s probes, 3 retries, #256) are set on both ends. Socket buffers are left to the kernel's autotuning.
     - Unix domain socket transport (`AnyStream::Unix`, `--socket-path` / `PROD_CODE_SOCKET`) implemented in #659; Windows named-pipe transport (`AnyStream::NamedPipe`, `connect_named_pipe`) implemented.
 - [x] **1.2. Bi-directional Path Translation**
@@ -253,7 +253,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Distributed router dispatching incoming agent connections to the least-loaded server node.
   - Consistent hashing based on repository identity (`sha256(repo_common_dir)`) so sessions for the same codebase share warm Salsa, gopls, and clangd in-memory caches.
   - Transparent TCP redirection: if a client connects to Node A but the workspace is warm on Node B, Node A issues a `WireMessage::Redirect { target_addr }` allowing sub-millisecond client hop without repeating initialization.
-- [~] **5.2. Smart DNS & Service Discovery (`*.code.internal`)** — seed-address discovery shipped 2026-09-20: one seed address is enough (`PROD_CODE_REMOTE=192.0.2.10:9400`); the client asks it for the gossip view (`ClusterRequest`), adds every live member and caches the list in `~/.local/share/prod_code/cluster.json` for when the seed is down. Gateways learn peers transitively from gossip, so a node needs only one live `--peers` entry. mDNS/SRV publication judged unnecessary on a static LAN.
+- [~] **5.2. Smart DNS & Service Discovery (`*.code.internal`)** — seed-address discovery shipped 2026-09-20: one seed address is enough (`PROD_CODE_REMOTE=192.0.2.10:9400`); the client asks it for the gossip view (`ClusterRequest`), adds every live member and caches the list in `~/.local/share/prod_code/cluster.json` for when the seed is down. UDP multicast announcements and unicast/multicast probes on port 9401 were added 2026-10-01 alongside the seed/TCP path. Current UDP announcements are unauthenticated and include advertised addresses, engines, host telemetry, and loaded workspace names; see 5.6. Gateways learn peers transitively from gossip, so a node needs only one live `--peers` entry. mDNS/SRV publication judged unnecessary on a static LAN.
   - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `shop.code.internal` -> `192.0.2.10:9400`, `billing.code.internal` -> `192.0.2.11:9400`).
   - Allows zero-config CLI and MCP usage (`prod-code -r auto ...` or `PROD_CODE_CLUSTER=10G`), eliminating hardcoded IP addresses.
   - Dynamic SRV record publication for active daemon instances across the LAN.
@@ -269,6 +269,12 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     - 20+ concurrent workers across 500+ file codebases.
     - Continuous semantic queries mixed with uncommitted `didChange` edits.
     - Simulated worker SIGKILL churn waves to verify clean session retirement and zero daemon hangs.
+
+- [~] **5.6. Cluster Transport Security and Trusted Discovery** — The current cluster token is optional, shared, and sent as a first TCP frame; the TCP transport is not encrypted. UDP discovery on port 9401 accepts unauthenticated announcements and exposes advertised addresses, engines, host telemetry, and loaded workspace names. Do not treat the LAN as an identity or confidentiality boundary.
+  - Protect client-to-gateway and gateway-to-gateway TCP traffic with standard TLS. Authenticate the gateway identity before sending client credentials or workspace data; use separate client and peer identities (for example, token-based client authentication inside TLS and mutually authenticated gateway certificates).
+  - Authenticate UDP announcements and probe replies before using an advertised address for placement or connecting with cluster credentials. Add replay resistance to unicast discovery. Keep unauthenticated multicast payloads minimal; reveal loaded workspace names only after trust is established.
+  - Define credential lifecycle and rollout: cryptographically random credentials, restrictive file permissions, rotation and revocation, explicit trust configuration, and a fail-closed transition that never silently downgrades to plaintext or accepts an unverified gateway certificate.
+  - Acceptance: packet-level tests show that credentials and workspace traffic are not readable on TCP; invalid certificates, forged announcements, and replayed probes cannot select a gateway or receive credentials; rolling credential rotation succeeds across a mixed-version cluster; secrets remain absent from logs and child-process environments.
 
 ---
 
@@ -614,5 +620,3 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Cluster fleet parity inspection (`prod-code package sync`) and atomic self-update (`prod-code update`).
   - Official code signing under `Apple Development: Alexander Panasenko (alex@prod.codes)`.
   - Native Zed editor integration (`~/.config/zed/settings.json`) routing `rust-analyzer`, `gopls`, `clangd`, `basedpyright`, and `vtsls` over 10G LAN to remote cluster nodes with sub-millisecond latency, zero local CPU check overhead, and < 20 MB local RAM footprint.
-
-
