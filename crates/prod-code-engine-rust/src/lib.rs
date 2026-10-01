@@ -1611,6 +1611,7 @@ pub struct RustEngine {
     host: AnalysisHost,
     vfs: Arc<std::sync::RwLock<Vfs>>,
     pub worktrees: Worktrees,
+    worktree_attachments: HashMap<PathBuf, usize>,
     overlays: SessionOverlays,
     /// `main` or `validation`, for the logs.
     label: &'static str,
@@ -1913,6 +1914,7 @@ impl RustEngine {
             host,
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
             worktrees,
+            worktree_attachments: HashMap::new(),
             overlays: SessionOverlays::default(),
             label: "main",
             changes: 0,
@@ -1969,8 +1971,18 @@ impl RustEngine {
         }
     }
 
-    /// Attaches a worktree copy of this workspace.
+    /// Attaches a worktree copy of this workspace. Reference-counted so multiple workspaces
+    /// or validation sessions sharing the same worktree root keep it attached until all release it.
     pub fn attach_worktree(&mut self, copy_root: &Path) -> Result<()> {
+        let count = self
+            .worktree_attachments
+            .entry(copy_root.to_path_buf())
+            .or_insert(0);
+        *count += 1;
+        if *count > 1 {
+            return Ok(());
+        }
+
         let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
         let base_abs = AbsPathBuf::assert_utf8(self.workspace_root.clone());
         let overlay = Overlay {
@@ -1999,8 +2011,15 @@ impl RustEngine {
         Ok(())
     }
 
-    /// Detaches a worktree copy of this workspace.
+    /// Detaches a worktree copy of this workspace when its attachment reference count reaches zero.
     pub fn detach_worktree(&mut self, copy_root: &Path) -> bool {
+        if let Some(count) = self.worktree_attachments.get_mut(copy_root) {
+            *count = count.saturating_sub(1);
+            if *count > 0 {
+                return false;
+            }
+            self.worktree_attachments.remove(copy_root);
+        }
         let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
         let db = self.host.raw_database_mut();
         let Ok(mut vfs) = self.vfs.write() else { return false };
@@ -2013,8 +2032,15 @@ impl RustEngine {
     }
 
     pub fn has_worktree(&self, copy_root: &Path) -> bool {
-        let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
-        self.worktrees.overlays().any(|o| o.worktree_root == copy_abs)
+        self.worktree_attachments
+            .get(copy_root)
+            .copied()
+            .unwrap_or(0)
+            > 0
+            || {
+                let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
+                self.worktrees.overlays().any(|o| o.worktree_root == copy_abs)
+            }
     }
 
     pub fn reload_file(&mut self, path: &Path) -> Result<()> {
@@ -3581,4 +3607,57 @@ fn main() {
             );
         }
     }
+
+    #[test]
+    fn test_worktree_attachment_refcounting() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("base");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base_dir.join("src/lib.rs"),
+            "pub fn hello() {}\n",
+        )
+        .unwrap();
+
+        let mut engine = RustEngine::load(&base_dir).unwrap();
+
+        let wt_dir = temp.path().join("base--wt-test");
+        std::fs::create_dir_all(wt_dir.join("src")).unwrap();
+        std::fs::write(
+            wt_dir.join("Cargo.toml"),
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt_dir.join("src/lib.rs"),
+            "pub fn hello() {}\n",
+        )
+        .unwrap();
+
+        assert!(!engine.has_worktree(&wt_dir));
+
+        // First attach: refcount 1 -> attached
+        engine.attach_worktree(&wt_dir).expect("first attach");
+        assert!(engine.has_worktree(&wt_dir));
+
+        // Second attach: refcount 2 -> still attached
+        engine.attach_worktree(&wt_dir).expect("second attach");
+        assert!(engine.has_worktree(&wt_dir));
+
+        // First detach: refcount 2 -> 1, returns false, still attached
+        let detached_first = engine.detach_worktree(&wt_dir);
+        assert!(!detached_first, "must not detach while second reference exists");
+        assert!(engine.has_worktree(&wt_dir));
+
+        // Second detach: refcount 1 -> 0, returns true, now detached
+        let detached_second = engine.detach_worktree(&wt_dir);
+        assert!(detached_second, "must detach when last reference drops");
+        assert!(!engine.has_worktree(&wt_dir));
+    }
 }
+

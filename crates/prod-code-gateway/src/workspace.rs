@@ -56,6 +56,10 @@ pub struct SharedWorkspace {
     pub base_workspace: Option<Arc<SharedWorkspace>>,
     /// Number of loaded worktrees attached to this base workspace.
     pub attached_worktrees: AtomicUsize,
+    /// Whether this worktree overlay has already been detached from the base engine.
+    pub detached: AtomicBool,
+    /// Whether this workspace has been unloaded from the manager's active map.
+    pub unloaded: AtomicBool,
 }
 
 impl SharedWorkspace {
@@ -102,6 +106,8 @@ impl SharedWorkspace {
             generic_validation_session: Arc::default(),
             base_workspace,
             attached_worktrees: AtomicUsize::new(0),
+            detached: AtomicBool::new(false),
+            unloaded: AtomicBool::new(false),
         }
     }
 
@@ -141,9 +147,7 @@ impl SharedWorkspace {
             let base_val = base.base_validation_view(admission).await?;
             if let Some(val_engine) = &base_val.rust_engine {
                 let mut eng = val_engine.lock().await;
-                if !eng.has_worktree(&self.root)
-                    && let Err(e) = eng.attach_worktree(&self.root)
-                {
+                if let Err(e) = eng.attach_worktree(&self.root) {
                     tracing::warn!(error = %e, workspace = ?self.root, "failed to attach worktree to validation engine");
                 }
             }
@@ -166,6 +170,8 @@ impl SharedWorkspace {
                 generic_validation_session: Arc::clone(&self.generic_validation_session),
                 base_workspace: Some(Arc::clone(base)),
                 attached_worktrees: AtomicUsize::new(0),
+                detached: AtomicBool::new(false),
+                unloaded: AtomicBool::new(false),
             }));
         }
         self.base_validation_view(admission).await
@@ -198,6 +204,8 @@ impl SharedWorkspace {
             generic_validation_session: Arc::clone(&self.generic_validation_session),
             base_workspace: None,
             attached_worktrees: AtomicUsize::new(0),
+            detached: AtomicBool::new(false),
+            unloaded: AtomicBool::new(false),
         }))
     }
 }
@@ -351,6 +359,8 @@ impl SharedWorkspace {
             generic_validation_session: Arc::clone(&self.generic_validation_session),
             base_workspace: None,
             attached_worktrees: AtomicUsize::new(0),
+            detached: AtomicBool::new(false),
+            unloaded: AtomicBool::new(false),
         }))
     }
 
@@ -411,6 +421,24 @@ impl SharedWorkspace {
         for server in self.generic_engine.iter().chain(validation.iter()) {
             if let Err(err) = server.send_notification(METHOD, params.clone()).await {
                 tracing::warn!(error = %err, workspace = ?self.root, "language server was not told about synced files");
+            }
+        }
+    }
+
+    /// Detaches this worktree overlay from its base engine and decrements the base workspace's
+    /// attached worktree count. Executes at most once across the lifetime of this workspace.
+    pub async fn detach_overlay(&self) {
+        if self.base_workspace.is_none() {
+            return;
+        }
+        if self.detached.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Some(ref base) = self.base_workspace {
+            base.attached_worktrees.fetch_sub(1, Ordering::Relaxed);
+            for eng_arc in self.mirrored_rust_engines() {
+                let mut eng = eng_arc.lock().await;
+                eng.detach_worktree(&self.root);
             }
         }
     }
@@ -490,10 +518,35 @@ impl Deref for WorkspaceLease {
 
 impl Drop for WorkspaceLease {
     fn drop(&mut self) {
+        let base_lease = self._base_lease.take();
         if let Some(workspace) = self.workspace.take() {
             workspace.touch();
-            workspace.active_sessions.fetch_sub(1, Ordering::Relaxed);
+            let remaining = workspace.active_sessions.fetch_sub(1, Ordering::SeqCst) - 1;
+            if remaining == 0 && workspace.unloaded.load(Ordering::SeqCst) {
+                let ws = Arc::clone(&workspace);
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        ws.detach_overlay().await;
+                        drop(base_lease);
+                    });
+                    return;
+                } else {
+                    let _ = std::thread::spawn(move || {
+                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            rt.block_on(async move {
+                                ws.detach_overlay().await;
+                                drop(base_lease);
+                            });
+                        }
+                    });
+                    return;
+                }
+            }
         }
+        drop(base_lease);
     }
 }
 
@@ -518,13 +571,22 @@ impl Drop for WorktreeOwner {
 
 impl SessionView {
     fn start_retirement(&mut self) -> Option<tokio::task::JoinHandle<()>> {
-        let lease = self.lease.take()?;
+        let mut lease = self.lease.take()?;
         let owner = self.owner.take();
         let workspace = Arc::clone(&self.workspace);
         let session_id = self.session_id;
         Some(tokio::spawn(async move {
             clear_session_overlays(&workspace, session_id).await;
             drop(owner);
+            let base_lease = lease._base_lease.take();
+            if let Some(ws) = lease.workspace.take() {
+                ws.touch();
+                let remaining = ws.active_sessions.fetch_sub(1, Ordering::SeqCst) - 1;
+                if remaining == 0 && ws.unloaded.load(Ordering::SeqCst) {
+                    ws.detach_overlay().await;
+                }
+            }
+            drop(base_lease);
             drop(lease);
         }))
     }
@@ -1030,9 +1092,7 @@ impl WorkspaceManager {
                 let mut attach_err = None;
                 for eng_arc in &mirrored {
                     let mut eng = eng_arc.lock().await;
-                    if !eng.has_worktree(&copy_root)
-                        && let Err(e) = eng.attach_worktree(&copy_root)
-                    {
+                    if let Err(e) = eng.attach_worktree(&copy_root) {
                         attach_err = Some(e);
                         break;
                     }
@@ -2229,12 +2289,9 @@ async fn release(workspaces: Vec<Arc<SharedWorkspace>>) {
         return;
     }
     for ws in &workspaces {
-        if let Some(ref base) = ws.base_workspace {
-            base.attached_worktrees.fetch_sub(1, Ordering::Relaxed);
-            for eng_arc in ws.mirrored_rust_engines() {
-                let mut eng = eng_arc.lock().await;
-                eng.detach_worktree(&ws.root);
-            }
+        ws.unloaded.store(true, Ordering::SeqCst);
+        if ws.active_sessions.load(Ordering::SeqCst) == 0 {
+            ws.detach_overlay().await;
         }
     }
     let _ = tokio::task::spawn_blocking(move || drop(workspaces)).await;
@@ -2262,28 +2319,27 @@ pub fn split_worktree_base(workspace_root: &Path) -> Option<PathBuf> {
 
         // 2. Standard Git worktree: ancestor contains a `.git` file with `gitdir:`
         let git_file = ancestor.join(".git");
-        if git_file.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&git_file) {
-                for line in content.lines() {
-                    if let Some(gitdir_raw) = line.trim().strip_prefix("gitdir: ") {
-                        let mut gitdir_path = PathBuf::from(gitdir_raw.trim());
-                        if gitdir_path.is_relative() {
-                            gitdir_path = ancestor.join(&gitdir_path);
-                        }
-                        if let Ok(canon) = gitdir_path.canonicalize() {
-                            gitdir_path = canon;
-                        }
-                        for anc in gitdir_path.ancestors() {
-                            if anc.file_name().and_then(|n| n.to_str()) == Some(".git") {
-                                if let Some(base_repo) = anc.parent() {
-                                    if base_repo.exists() && base_repo != ancestor {
-                                        if let Ok(relative) = workspace_root.strip_prefix(ancestor) {
-                                            let candidate = base_repo.join(relative);
-                                            return Some(candidate);
-                                        }
-                                    }
-                                }
-                            }
+        if git_file.is_file()
+            && let Ok(content) = std::fs::read_to_string(&git_file)
+        {
+            for line in content.lines() {
+                if let Some(gitdir_raw) = line.trim().strip_prefix("gitdir: ") {
+                    let mut gitdir_path = PathBuf::from(gitdir_raw.trim());
+                    if gitdir_path.is_relative() {
+                        gitdir_path = ancestor.join(&gitdir_path);
+                    }
+                    if let Ok(canon) = gitdir_path.canonicalize() {
+                        gitdir_path = canon;
+                    }
+                    for anc in gitdir_path.ancestors() {
+                        if anc.file_name().and_then(|n| n.to_str()) == Some(".git")
+                            && let Some(base_repo) = anc.parent()
+                            && base_repo.exists()
+                            && base_repo != ancestor
+                            && let Ok(relative) = workspace_root.strip_prefix(ancestor)
+                        {
+                            let candidate = base_repo.join(relative);
+                            return Some(candidate);
                         }
                     }
                 }
@@ -3906,5 +3962,83 @@ while True:
         // Now base has 0 attached worktrees and can be evicted
         let evicted_base = manager.evict_idle(Duration::from_secs(0)).await;
         assert!(evicted_base.contains(&base_dir));
+    }
+
+    #[tokio::test]
+    async fn test_worktree_overlay_preserved_during_unload_while_active_lease_exists() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = temp_dir.path();
+        let base_dir = storage.join("sample-repo");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 42 }\n",
+        )
+        .unwrap();
+
+        let wt_dir = storage.join(format!("sample-repo{}", worktree_suffix("client-wt-path")));
+        std::fs::create_dir_all(wt_dir.join("src")).unwrap();
+        std::fs::write(
+            wt_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 100 }\n",
+        )
+        .unwrap();
+
+        let manager = Arc::new(WorkspaceManager::new());
+        let _base_lease = manager.get_or_load(&base_dir, "rust").await.unwrap();
+        let wt_lease = manager.get_or_load(&wt_dir, "rust").await.unwrap();
+        let base_ws = Arc::clone(wt_lease.base_workspace.as_ref().unwrap());
+        let base_eng = Arc::clone(base_ws.rust_engine.as_ref().unwrap());
+
+        // Overlay is attached and base worktree count is 1
+        assert!(base_eng.lock().await.has_worktree(&wt_dir));
+        assert_eq!(base_ws.attached_worktrees.load(Ordering::Relaxed), 1);
+        assert_eq!(wt_lease.workspace().active_sessions.load(Ordering::Relaxed), 1);
+
+        // Unload the worktree workspace while lease is still held (e.g. manifest change during session)
+        let unloaded = manager.unload_under(&wt_dir).await;
+        assert_eq!(unloaded, 1);
+        assert!(!manager.is_loaded(&wt_dir).await);
+
+        // CRITICAL: Overlay MUST remain attached and base pin preserved for extant lease
+        assert!(
+            base_eng.lock().await.has_worktree(&wt_dir),
+            "overlay must remain attached while lease is active even after unload_under"
+        );
+        assert_eq!(
+            base_ws.attached_worktrees.load(Ordering::Relaxed),
+            1,
+            "base attached_worktrees must not decrement while lease is active"
+        );
+
+        // Dropping the active lease triggers final detachment
+        drop(wt_lease);
+
+        // Wait briefly for the detachment background task if spawned
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !base_eng.lock().await.has_worktree(&wt_dir)
+                    && base_ws.attached_worktrees.load(Ordering::Relaxed) == 0
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("overlay detachment after final lease drop");
+
+        assert!(!base_eng.lock().await.has_worktree(&wt_dir));
+        assert_eq!(base_ws.attached_worktrees.load(Ordering::Relaxed), 0);
     }
 }
