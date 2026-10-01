@@ -108,6 +108,26 @@ fn missing_path_is_confined_to(root: &Path, path: &Path) -> bool {
     false
 }
 
+/// Whether a path is inside a dependency or build artifact directory.
+pub fn is_in_dependency_dir(path: &Path) -> bool {
+    path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        matches!(
+            s.as_ref(),
+            "target"
+                | "node_modules"
+                | "vendor"
+                | "build"
+                | "dist"
+                | ".build"
+                | ".venv"
+                | "venv"
+                | "Pods"
+                | "DerivedData"
+        )
+    })
+}
+
 /// Engine the gateway is expected to pick for `root` from its manifest, or `None` when the
 /// checkout carries no manifest the gateway keys on. Mirrors the gateway's detection order.
 /// The project a path belongs to inside a checkout: the nearest ancestor of `hint` (up to
@@ -143,8 +163,9 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     }
     let file_dir = dir.clone();
     let own_language = file.as_deref().and_then(engine_for_file);
+
     while dir.starts_with(&canonical_root) && dir != canonical_root {
-        if let Some(engine) = expected_engine(&dir) {
+        if !is_in_dependency_dir(&dir) && let Some(engine) = expected_engine(&dir) {
             // Same language is not the same project. A Cargo workspace answers for its
             // members; a crate it excludes belongs to no project the root analyzer loaded, so
             // it needs one of its own or every query in it comes back null.
@@ -181,7 +202,8 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     // Python script in a Rust repository), is served by its own language's engine rooted at
     // its directory, not by the root's analyzer, which has no answer for it (#247). A file at
     // the root itself stays with the root: its engine cannot be keyed apart from the root's.
-    if let Some(own) = file.as_deref().and_then(engine_for_file)
+    if !is_in_dependency_dir(&file_dir)
+        && let Some(own) = file.as_deref().and_then(engine_for_file)
         && Some(own) != root_engine
         && let Some(rel) = file_dir
             .strip_prefix(&canonical_root)
@@ -206,11 +228,14 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
 pub fn other_checkout(root: &Path, file: &Path) -> Option<PathBuf> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let file = std::fs::canonicalize(file).ok()?;
-    if file.starts_with(&canonical_root) {
+    if file.starts_with(&canonical_root) || is_in_dependency_dir(&file) {
         return None;
     }
     let mut manifest = None;
     for dir in file.ancestors().skip(1) {
+        if is_in_dependency_dir(dir) {
+            continue;
+        }
         if dir.join(".git").exists() {
             return Some(dir.to_path_buf());
         }
@@ -2406,6 +2431,40 @@ mod tests {
         assert_eq!(engine_for_file(Path::new("a.hpp")), Some("cpp"));
         assert_eq!(engine_for_file(Path::new("bridge.mm")), Some("cpp"));
         assert_eq!(engine_for_file(Path::new("Makefile")), None);
+    }
+
+    /// A dependency manifest in `.build/checkouts/...` is ignored so the dependency's files
+    /// stay with the enclosing project rather than spawning an independent broken workspace (#764).
+    #[test]
+    fn dependency_directories_are_not_treated_as_nested_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("go.mod"),
+            "module example.com/app\n\ngo 1.22\n",
+        )
+        .unwrap();
+        let macos_app = root.join("clients/macos/ProdUI");
+        std::fs::create_dir_all(&macos_app).unwrap();
+        std::fs::write(
+            macos_app.join("Package.swift"),
+            "// swift-tools-version:5.9\n",
+        )
+        .unwrap();
+        let dep_file = macos_app.join(".build/checkouts/tako/swift/Sources/TakoCoreUI/TakoTerminalNSView.swift");
+        std::fs::create_dir_all(dep_file.parent().unwrap()).unwrap();
+        std::fs::write(
+            macos_app.join(".build/checkouts/tako/swift/Package.swift"),
+            "// swift-tools-version:5.9\n",
+        )
+        .unwrap();
+        std::fs::write(&dep_file, "public class TakoTerminalNSView {}\n").unwrap();
+
+        assert_eq!(
+            engine_project(root, &dep_file),
+            (Some("clients/macos/ProdUI".to_string()), Some("swift"))
+        );
+        assert!(other_checkout(root, &dep_file).is_none());
     }
 
     /// A file of another language inside a nested project is a loose file of its own language,

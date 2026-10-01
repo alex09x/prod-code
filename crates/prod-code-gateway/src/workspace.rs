@@ -2449,6 +2449,21 @@ async fn wait_for_swift_build_settings(
     engine: &prod_code_engine_generic::GenericLspEngine,
     root: &Path,
 ) {
+    if root.components().any(|c| {
+        matches!(
+            c.as_os_str().to_string_lossy().as_ref(),
+            "target"
+                | "node_modules"
+                | "vendor"
+                | "build"
+                | "dist"
+                | ".build"
+                | "Pods"
+                | "DerivedData"
+        )
+    }) {
+        return;
+    }
     let Some((path, text)) = swift_probe_file(root) else {
         return;
     };
