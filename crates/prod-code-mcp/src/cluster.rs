@@ -462,7 +462,17 @@ pub async fn pick_node_with(
                 listed(&unsupported)
             ),
             _ => match first_failure {
-                Some(why) => anyhow!("no gateway reachable among {} ({why})", listed(nodes)),
+                Some(why) => {
+                    let hint = if why.contains("No route to host")
+                        || why.contains("os error 65")
+                        || why.contains("Connection refused")
+                    {
+                        "; hint: if node is reachable via SSH, forward gateway port via 'ssh -NL 9400:localhost:9400 <node>' and specify '--remote 127.0.0.1:9400'"
+                    } else {
+                        ""
+                    };
+                    anyhow!("no gateway reachable among {} ({why}{hint})", listed(nodes))
+                }
                 None => anyhow!("no gateway reachable among {}", listed(nodes)),
             },
         });
@@ -1165,6 +1175,7 @@ mod tests {
             err.contains("127.0.0.1:") && err.to_lowercase().contains("refused"),
             "the operating system's reason is named: {err}"
         );
+        assert!(err.contains("ssh -NL 9400:localhost:9400"), "{err}");
     }
 
     #[tokio::test]
