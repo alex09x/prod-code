@@ -76,15 +76,28 @@ pub async fn connect(addr: SocketAddr) -> std::io::Result<TcpStream> {
 /// Connects to `addr`, [`tune`]s the connection, and sends `token` as its first frame when one
 /// is given.
 pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Result<TcpStream> {
-    let mut stream = TcpStream::connect(addr).await?;
-    tune(&stream);
-    if let Some(token) = token {
-        let mut frame = bytes::BytesMut::new();
-        crate::codec::ProdCodeCodec::new()
-            .encode(WireMessage::Auth(AuthToken(token.to_string())), &mut frame)?;
-        stream.write_all(&frame).await?;
+    let mut last_err = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(50 * (1 << (attempt - 1)))).await;
+        }
+        match TcpStream::connect(addr).await {
+            Ok(mut stream) => {
+                tune(&stream);
+                if let Some(token) = token {
+                    let mut frame = bytes::BytesMut::new();
+                    crate::codec::ProdCodeCodec::new()
+                        .encode(WireMessage::Auth(AuthToken(token.to_string())), &mut frame)?;
+                    stream.write_all(&frame).await?;
+                }
+                return Ok(stream);
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
     }
-    Ok(stream)
+    Err(last_err.unwrap())
 }
 
 /// Connects to the Unix domain socket at `path` and opens it with the cluster's
