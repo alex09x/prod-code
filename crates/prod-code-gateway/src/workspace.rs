@@ -51,6 +51,9 @@ pub struct SharedWorkspace {
     /// A generic server has one process-wide document state. Validation sessions use it one
     /// at a time so parallel proposals cannot replace each other's overlays.
     pub generic_validation_session: Arc<tokio::sync::Mutex<()>>,
+    /// If this workspace is an attached worktree overlay of a base workspace, keeps the base
+    /// alive so its engine is not evicted while this worktree is active.
+    pub base_workspace: Option<Arc<SharedWorkspace>>,
 }
 
 impl SharedWorkspace {
@@ -62,7 +65,22 @@ impl SharedWorkspace {
         generic_engine: Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
         backend: Option<Arc<crate::backend::BackendWorker>>,
     ) -> Self {
-        let rust_engines = Arc::new(std::sync::Mutex::new(rust_engine.iter().cloned().collect()));
+        Self::with_base(root, engine, rust_engine, go_engine, generic_engine, backend, None)
+    }
+
+    pub fn with_base(
+        root: PathBuf,
+        engine: String,
+        rust_engine: Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>,
+        go_engine: Option<Arc<prod_code_engine_go::GoEngine>>,
+        generic_engine: Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
+        backend: Option<Arc<crate::backend::BackendWorker>>,
+        base_workspace: Option<Arc<SharedWorkspace>>,
+    ) -> Self {
+        let rust_engines = base_workspace
+            .as_ref()
+            .map(|b| Arc::clone(&b.rust_engines))
+            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(rust_engine.iter().cloned().collect())));
         Self {
             key: WorkspaceKey(root.clone()),
             root,
@@ -80,6 +98,7 @@ impl SharedWorkspace {
             generic_validation: Mutex::new(None),
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::default(),
+            base_workspace,
         }
     }
 
@@ -115,6 +134,43 @@ impl SharedWorkspace {
         if self.rust_engine.is_none() {
             return Ok(Arc::clone(self));
         }
+        if let Some(base) = &self.base_workspace {
+            let base_val = base.base_validation_view(admission).await?;
+            if let Some(val_engine) = &base_val.rust_engine {
+                let mut eng = val_engine.lock().await;
+                if !eng.has_worktree(&self.root)
+                    && let Err(e) = eng.attach_worktree(&self.root)
+                {
+                    tracing::warn!(error = %e, workspace = ?self.root, "failed to attach worktree to validation engine");
+                }
+            }
+            return Ok(Arc::new(SharedWorkspace {
+                loaded_at: self.loaded_at,
+                key: self.key.clone(),
+                root: self.root.clone(),
+                engine: self.engine.clone(),
+                active_sessions: AtomicUsize::new(0),
+                last_used: AtomicU64::new(unix_now()),
+                direct_edit_eligible: AtomicBool::new(false),
+                rust_engine: base_val.rust_engine.clone(),
+                go_engine: None,
+                generic_engine: None,
+                backend: None,
+                rust_engines: Arc::clone(&base_val.rust_engines),
+                validation: tokio::sync::OnceCell::new(),
+                generic_validation: Mutex::new(None),
+                generic_validation_loaded: AtomicBool::new(false),
+                generic_validation_session: Arc::clone(&self.generic_validation_session),
+                base_workspace: Some(Arc::clone(base)),
+            }));
+        }
+        self.base_validation_view(admission).await
+    }
+
+    async fn base_validation_view(
+        self: &Arc<Self>,
+        admission: &Arc<crate::admission::Admission>,
+    ) -> Result<Arc<SharedWorkspace>> {
         let load: RustLoader = Arc::new(prod_code_engine_rust::RustEngine::load);
         let Some(engine) = self.validation_engine(admission, load).await else {
             return Ok(Arc::clone(self));
@@ -136,6 +192,7 @@ impl SharedWorkspace {
             generic_validation: Mutex::new(None),
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::clone(&self.generic_validation_session),
+            base_workspace: None,
         }))
     }
 }
@@ -287,6 +344,7 @@ impl SharedWorkspace {
             generic_validation: Mutex::new(None),
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::clone(&self.generic_validation_session),
+            base_workspace: None,
         }))
     }
 
@@ -297,6 +355,9 @@ impl SharedWorkspace {
     /// What unloading this workspace is counted to free: its engine, and its validation engine
     /// once one runs.
     fn reclaimable(&self, admission: &crate::admission::Admission) -> u64 {
+        if self.base_workspace.is_some() {
+            return 0;
+        }
         let engines = if self.validation.get().is_some_and(Option::is_some)
             || self.generic_validation_loaded.load(Ordering::Relaxed)
         {
@@ -780,6 +841,21 @@ impl WorkspaceManager {
         workspace_root: &Path,
         engine: &str,
     ) -> Result<WorkspaceLease> {
+        if engine == "rust"
+            && let Some(base_root) = split_worktree_base(workspace_root)
+            && base_root != workspace_root
+        {
+            return self.get_or_load_worktree(workspace_root, &base_root).await;
+        }
+
+        self.get_or_load_direct(workspace_root, engine).await
+    }
+
+    async fn get_or_load_direct(
+        self: &Arc<Self>,
+        workspace_root: &Path,
+        engine: &str,
+    ) -> Result<WorkspaceLease> {
         let key = WorkspaceKey(workspace_root.to_path_buf());
 
         loop {
@@ -846,6 +922,133 @@ impl WorkspaceManager {
                 Ok(result) => result,
                 Err(_) => anyhow::bail!("the workspace load ended without a result"),
             };
+        }
+    }
+
+    /// Retrieve or load a worktree workspace by attaching to the warm in-memory base engine.
+    async fn get_or_load_worktree(
+        self: &Arc<Self>,
+        workspace_root: &Path,
+        base_root: &Path,
+    ) -> Result<WorkspaceLease> {
+        let key = WorkspaceKey(workspace_root.to_path_buf());
+
+        loop {
+            let waiting = {
+                let guard = self.workspaces.read().await;
+                match guard.get(&key) {
+                    Some(LoadState::Ready(ws)) if ws.reusable_for("rust") => {
+                        return Ok(WorkspaceLease::acquire(Arc::clone(ws)));
+                    }
+                    Some(LoadState::Ready(_)) => None,
+                    Some(LoadState::Loading(tx)) => Some(tx.subscribe()),
+                    None => None,
+                }
+            };
+            if let Some(mut waiting) = waiting {
+                match waiting.recv().await {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(err)) => anyhow::bail!("Workspace load failed: {err}"),
+                    Err(err) => anyhow::bail!("Leader dropped load broadcast: {err}"),
+                }
+            }
+
+            let (tx, _rx) = broadcast::channel(1);
+            let mut replaced = Vec::new();
+            let waiting = {
+                let mut guard = self.workspaces.write().await;
+                let stale = matches!(guard.get(&key), Some(LoadState::Ready(ws)) if !ws.reusable_for("rust"));
+                if stale && let Some(LoadState::Ready(ws)) = guard.remove(&key) {
+                    replaced.push(ws);
+                }
+                match guard.get(&key) {
+                    Some(LoadState::Ready(ws)) => {
+                        return Ok(WorkspaceLease::acquire(Arc::clone(ws)));
+                    }
+                    Some(LoadState::Loading(existing)) => Some(existing.subscribe()),
+                    None => {
+                        guard.insert(key.clone(), LoadState::Loading(tx.clone()));
+                        None
+                    }
+                }
+            };
+            if let Some(mut waiting) = waiting {
+                match waiting.recv().await {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(err)) => anyhow::bail!("Workspace load failed: {err}"),
+                    Err(err) => anyhow::bail!("Leader dropped load broadcast: {err}"),
+                }
+            }
+
+            release(replaced).await;
+
+            let base_lease = match self.get_or_load_direct(base_root, "rust").await {
+                Ok(lease) => lease,
+                Err(err) => {
+                    let mut guard = self.workspaces.write().await;
+                    guard.remove(&key);
+                    let _ = tx.send(Err(format!("Base workspace load failed: {err:#}")));
+                    return Err(err);
+                }
+            };
+
+            let base_ws = Arc::clone(base_lease.workspace());
+            let Some(base_engine_arc) = &base_ws.rust_engine else {
+                let (leader_tx, leader_rx) = tokio::sync::oneshot::channel();
+                tokio::spawn(Arc::clone(self).lead(
+                    key.clone(),
+                    "rust".to_string(),
+                    tx,
+                    Vec::new(),
+                    leader_tx,
+                ));
+                return match leader_rx.await {
+                    Ok(result) => result,
+                    Err(_) => anyhow::bail!("the workspace load ended without a result"),
+                };
+            };
+
+            let copy_root = workspace_root.to_path_buf();
+            let mirrored = base_ws.mirrored_rust_engines();
+            let attach_res = {
+                let mut attach_err = None;
+                for eng_arc in &mirrored {
+                    let mut eng = eng_arc.lock().await;
+                    if !eng.has_worktree(&copy_root)
+                        && let Err(e) = eng.attach_worktree(&copy_root)
+                    {
+                        attach_err = Some(e);
+                        break;
+                    }
+                }
+                attach_err
+            };
+
+            if let Some(err) = attach_res {
+                let mut guard = self.workspaces.write().await;
+                guard.remove(&key);
+                let msg = format!("Failed to attach worktree: {err:#}");
+                let _ = tx.send(Err(msg.clone()));
+                anyhow::bail!("{msg}");
+            }
+
+            let ws = Arc::new(SharedWorkspace::with_base(
+                workspace_root.to_path_buf(),
+                "rust".to_string(),
+                Some(Arc::clone(base_engine_arc)),
+                None,
+                None,
+                None,
+                Some(Arc::clone(&base_ws)),
+            ));
+
+            let lease = WorkspaceLease::acquire(Arc::clone(&ws));
+            {
+                let mut guard = self.workspaces.write().await;
+                guard.insert(key, LoadState::Ready(Arc::clone(&ws)));
+            }
+            let _ = tx.send(Ok(ws));
+            return Ok(lease);
         }
     }
 
@@ -2007,7 +2210,64 @@ async fn release(workspaces: Vec<Arc<SharedWorkspace>>) {
     if workspaces.is_empty() {
         return;
     }
+    for ws in &workspaces {
+        if ws.base_workspace.is_some() {
+            for eng_arc in ws.mirrored_rust_engines() {
+                let mut eng = eng_arc.lock().await;
+                eng.detach_worktree(&ws.root);
+            }
+        }
+    }
     let _ = tokio::task::spawn_blocking(move || drop(workspaces)).await;
+}
+
+/// If `workspace_root` is a worktree copy (e.g. `<repo>--wt-<hash>` or git worktree with `.git` pointer), finds the base checkout root.
+pub fn split_worktree_base(workspace_root: &Path) -> Option<PathBuf> {
+    for ancestor in workspace_root.ancestors() {
+        let Some(name) = ancestor.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if let Some((base_name, _)) = name.split_once("--wt-")
+            && !base_name.is_empty()
+        {
+            let base_parent = ancestor.parent()?;
+            let base_dir = base_parent.join(base_name);
+            let relative = workspace_root.strip_prefix(ancestor).ok()?;
+            let candidate = base_dir.join(relative);
+            if base_dir.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // Git worktree fallback: read .git file if present
+    let git_file = workspace_root.join(".git");
+    if git_file.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&git_file) {
+            for line in content.lines() {
+                if let Some(gitdir_raw) = line.trim().strip_prefix("gitdir: ") {
+                    let mut gitdir_path = PathBuf::from(gitdir_raw.trim());
+                    if gitdir_path.is_relative() {
+                        gitdir_path = workspace_root.join(&gitdir_path);
+                    }
+                    if let Ok(canon) = gitdir_path.canonicalize() {
+                        gitdir_path = canon;
+                    }
+                    for anc in gitdir_path.ancestors() {
+                        if anc.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                            if let Some(base) = anc.parent() {
+                                if base.exists() && base != workspace_root {
+                                    return Some(base.to_path_buf());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Extract a clean, generic workspace identifier from any client workspace or worktree path.
@@ -3490,5 +3750,110 @@ while True:
         let res4 = resolve_server_workspace(storage, std_repo, None);
         assert_eq!(res4, storage.join("payment-gateway"));
         assert!(res4.is_dir());
+    }
+
+    #[test]
+    fn test_split_worktree_base() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = temp_dir.path();
+        let base_dir = storage.join("my-service");
+        std::fs::create_dir_all(&base_dir).unwrap();
+
+        let wt_dir = storage.join("my-service--wt-a1b2c3d4");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+        assert_eq!(split_worktree_base(&wt_dir), Some(base_dir.clone()));
+
+        let nested_wt = wt_dir.join("crates").join("sub-crate");
+        assert_eq!(
+            split_worktree_base(&nested_wt),
+            Some(base_dir.join("crates").join("sub-crate"))
+        );
+
+        assert_eq!(split_worktree_base(&base_dir), None);
+
+        let non_existent_base = storage.join("other--wt-12345678");
+        assert_eq!(split_worktree_base(&non_existent_base), None);
+
+        // Test standard git worktree with `.git` file pointing to base repo
+        let git_base = storage.join("git-repo");
+        let git_dir = git_base.join(".git");
+        let wt_meta = git_dir.join("worktrees").join("branch-wt");
+        std::fs::create_dir_all(&wt_meta).unwrap();
+
+        let git_wt = storage.join("git-repo-wt");
+        std::fs::create_dir_all(&git_wt).unwrap();
+        std::fs::write(
+            git_wt.join(".git"),
+            format!("gitdir: {}\n", wt_meta.display()),
+        )
+        .unwrap();
+
+        assert_eq!(split_worktree_base(&git_wt), Some(git_base));
+    }
+
+    #[tokio::test]
+    async fn test_worktree_shares_base_rust_engine() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = temp_dir.path();
+        let base_dir = storage.join("sample-repo");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 42 }\n",
+        )
+        .unwrap();
+
+        let wt_dir = storage.join(format!("sample-repo{}", worktree_suffix("client-wt-path")));
+        std::fs::create_dir_all(wt_dir.join("src")).unwrap();
+        std::fs::write(
+            wt_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 100 }\n",
+        )
+        .unwrap();
+
+        let manager = Arc::new(WorkspaceManager::new());
+
+        let base_lease = manager.get_or_load(&base_dir, "rust").await.unwrap();
+        assert!(base_lease.rust_engine.is_some());
+        assert!(base_lease.base_workspace.is_none());
+
+        let wt_lease = manager.get_or_load(&wt_dir, "rust").await.unwrap();
+        assert!(wt_lease.rust_engine.is_some());
+        assert!(wt_lease.base_workspace.is_some());
+
+        // Same underlying Arc<Mutex<RustEngine>>
+        let base_eng = base_lease.rust_engine.as_ref().unwrap();
+        let wt_eng = wt_lease.rust_engine.as_ref().unwrap();
+        assert!(Arc::ptr_eq(base_eng, wt_eng));
+
+        // Engine has worktree attached
+        assert!(base_eng.lock().await.has_worktree(&wt_dir));
+
+        // Worktree does not duplicate memory reclaimable
+        assert_eq!(wt_lease.reclaimable(manager.admission()), 0);
+
+        // Validation view forwards to base validation and keeps worktree attached
+        let wt_val = wt_lease.workspace().validation_view(manager.admission()).await.unwrap();
+        assert!(wt_val.base_workspace.is_some());
+        assert!(Arc::ptr_eq(
+            wt_val.base_workspace.as_ref().unwrap(),
+            base_lease.workspace()
+        ));
+
+        // Dropping and releasing workspaces detaches worktree
+        drop(wt_lease);
+        drop(base_lease);
+        let evicted = manager.evict_idle(Duration::from_secs(0)).await;
+        assert!(evicted.contains(&wt_dir));
     }
 }

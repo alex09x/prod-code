@@ -5039,6 +5039,7 @@ fn lsp_workspace_symbol(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let ws_root = view.workspace.root.clone();
 
     tokio::task::spawn(async move {
         let syms = {
@@ -5048,7 +5049,7 @@ fn lsp_workspace_symbol(
                 if let Err(e) = engine.activate_session(session_id) {
                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
                 }
-                engine.workspace_symbols(&q, limit).unwrap_or_else(|e| {
+                engine.workspace_symbols_for(&ws_root, &q, limit).unwrap_or_else(|e| {
                     tracing::warn!(error = %e, session = session_id, "query failed");
                     Vec::new()
                 })
