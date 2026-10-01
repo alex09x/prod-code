@@ -801,7 +801,9 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
             continue;
         }
         let (path, unreadable_path) = path_text(path);
-        if is_hidden_or_scratch_path(&path) {
+        // Untracked files in known scratch or cache directories (e.g. `.prod/`, `.scratch/`)
+        // are tool scratchspaces or temporary copies, not repository changes (#760).
+        if is_scratch_path(&path) {
             continue;
         }
         changes
@@ -818,10 +820,27 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
     Ok(changes)
 }
 
-/// Whether an untracked path lies in a hidden or scratch directory (e.g. `.prod/`, `.git/`, `.cache/`) (#760).
-pub fn is_hidden_or_scratch_path(path: &str) -> bool {
+/// Known agent and editor scratch or cache directories whose untracked contents are not project source (#760).
+const SCRATCH_DIRS: &[&str] = &[
+    ".prod",
+    ".scratch",
+    ".tmp",
+    ".cache",
+    ".vscode",
+    ".idea",
+    ".claude",
+    ".cursor",
+];
+
+/// Whether an untracked path lies in a known scratch or cache directory (e.g. `.prod/`, `.scratch/`, `.tmp/`) (#760).
+pub fn is_scratch_path(path: &str) -> bool {
     Path::new(path).components().any(|c| match c {
-        std::path::Component::Normal(s) => s.to_string_lossy().starts_with('.'),
+        std::path::Component::Normal(s) => {
+            let name = s.to_string_lossy();
+            SCRATCH_DIRS
+                .iter()
+                .any(|d| name == *d || name.starts_with(".scratch") || name.starts_with(".tmp"))
+        }
         _ => false,
     })
 }
@@ -3078,11 +3097,15 @@ mod tests {
     }
 
     #[test]
-    fn untracked_hidden_scratch_files_are_excluded_from_diff_hunks() {
-        assert!(is_hidden_or_scratch_path(".prod/tmp/resident-repair/a.go"));
-        assert!(is_hidden_or_scratch_path(".scratch/draft.go"));
-        assert!(is_hidden_or_scratch_path("internal/.draft/draft.go"));
-        assert!(!is_hidden_or_scratch_path("internal/push/a.go"));
-        assert!(!is_hidden_or_scratch_path("main.go"));
+    fn untracked_scratch_files_are_excluded_from_diff_hunks() {
+        assert!(is_scratch_path(".prod/tmp/resident-repair/a.go"));
+        assert!(is_scratch_path(".scratch/draft.go"));
+        assert!(is_scratch_path("internal/.scratch/draft.go"));
+        assert!(is_scratch_path(".tmp/copy.go"));
+        assert!(is_scratch_path(".cache/gen.go"));
+        // Legitimate non-standard source paths (e.g. Rust #[path = ".support/helper.rs"]) must NOT be excluded (#760)
+        assert!(!is_scratch_path(".support/helper.rs"));
+        assert!(!is_scratch_path("internal/push/a.go"));
+        assert!(!is_scratch_path("main.go"));
     }
 }
