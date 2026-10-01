@@ -941,6 +941,54 @@ fn parse_sccache_config(path: &Path, bytes: &[u8]) -> std::result::Result<(bool,
     Ok((scheduler, client_side))
 }
 
+/// `sccache` on PATH or in `~/.cargo/bin`.
+pub fn find_sccache() -> Option<PathBuf> {
+    let on_path = std::process::Command::new("sh")
+        .args(["-c", "command -v sccache"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+    on_path.filter(|p| p.is_file()).or_else(|| {
+        let home = std::env::var_os("HOME")?;
+        let p = PathBuf::from(home).join(".cargo/bin/sccache");
+        p.is_file().then_some(p)
+    })
+}
+
+/// Ensures that if `sccache` is installed, its server is running cleanly on the host
+/// before entering a private mount namespace.
+///
+/// If sccache is invoked inside an unshare mount namespace without a host server running,
+/// it will spawn a background daemon inside the private namespace with references to
+/// ephemeral overlay paths. When the namespace exits and shadow directories are deleted,
+/// that daemon becomes a zombie and fails subsequent host builds with ENOENT (exit 254).
+pub fn ensure_sccache_server() {
+    if let Some(sccache) = find_sccache() {
+        let stats = std::process::Command::new(&sccache)
+            .arg("--show-stats")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let healthy = stats.map(|s| s.success()).unwrap_or(false);
+        if !healthy {
+            let _ = std::process::Command::new(&sccache)
+                .arg("--stop-server")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let _ = std::process::Command::new(&sccache)
+                .arg("--start-server")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
 /// Runs one hypothesis as an overlay shadow: its files go to a fresh upper directory, the
 /// command runs in a user + mount namespace where the workspace path is the overlay.
 pub async fn run_overlay(
@@ -982,6 +1030,7 @@ pub async fn run_overlay(
         remove_shadow_dir(&dir);
         return failed(&job.name, format!("cannot stage hypothesis: {e:#}"));
     }
+    tokio::task::spawn_blocking(ensure_sccache_server).await.ok();
     let mut cmd = tokio::process::Command::new("unshare");
     cmd.args(["-Urm", "--propagation", "private", "sh"])
         .arg(&script)
@@ -1484,6 +1533,7 @@ pub async fn run_shadow(
     if overlay {
         std::fs::create_dir_all(&state.shadow_root)
             .with_context(|| format!("cannot create {}", state.shadow_root.display()))?;
+        tokio::task::spawn_blocking(ensure_sccache_server).await.ok();
     }
     let names: Vec<String> = req.hypotheses.iter().map(|h| h.name.clone()).collect();
     let count = names.len();
@@ -1552,6 +1602,9 @@ pub async fn run_shadow(
             }
         }
     };
+    if overlay {
+        tokio::task::spawn_blocking(ensure_sccache_server).await.ok();
+    }
     let results: Vec<ShadowHypothesisResult> = joined
         .into_iter()
         .zip(names.iter())
@@ -1921,19 +1974,9 @@ mod tests {
         );
     }
 
-    /// `sccache` on PATH or in `~/.cargo/bin`.
-    fn find_sccache() -> Option<PathBuf> {
-        let on_path = std::process::Command::new("sh")
-            .args(["-c", "command -v sccache"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
-        on_path.filter(|p| p.is_file()).or_else(|| {
-            let home = std::env::var_os("HOME")?;
-            let p = PathBuf::from(home).join(".cargo/bin/sccache");
-            p.is_file().then_some(p)
-        })
+    #[tokio::test]
+    async fn ensure_sccache_server_runs_without_panic() {
+        ensure_sccache_server();
     }
 
     /// The regression of #426 on a real node: a proposed source file and a proposed build
