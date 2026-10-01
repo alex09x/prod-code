@@ -3108,4 +3108,69 @@ mod tests {
         assert!(!is_scratch_path("internal/push/a.go"));
         assert!(!is_scratch_path("main.go"));
     }
+
+    #[test]
+    fn diff_hunks_filters_untracked_scratch_paths_in_git_repo() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        std::process::Command::new("git")
+            .args(&["init", "-b", "main"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(&["config", "user.name", "Test User"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(&["config", "user.email", "test@example.com"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        std::fs::write(path.join("tracked.txt"), "hello\n").unwrap();
+        std::process::Command::new("git")
+            .args(&["add", "tracked.txt"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(&["commit", "-m", "initial"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+
+        std::fs::create_dir_all(path.join(".prod/tmp/resident-repair")).unwrap();
+        std::fs::write(path.join(".prod/tmp/resident-repair/scratch.go"), "package scratch\n").unwrap();
+
+        std::fs::create_dir_all(path.join(".scratch")).unwrap();
+        std::fs::write(path.join(".scratch/draft.go"), "package draft\n").unwrap();
+
+        std::fs::create_dir_all(path.join(".support")).unwrap();
+        std::fs::write(path.join(".support/helper.rs"), "pub fn helper() {}\n").unwrap();
+
+        std::fs::write(path.join("untracked.rs"), "pub fn untracked() {}\n").unwrap();
+
+        let hunks = diff_hunks(path, None).expect("diff_hunks succeeds");
+
+        assert!(
+            !hunks.contains_key(".prod/tmp/resident-repair/scratch.go"),
+            "expected .prod scratch file to be excluded, but got {:?}",
+            hunks.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !hunks.contains_key(".scratch/draft.go"),
+            "expected .scratch file to be excluded, but got {:?}",
+            hunks.keys().collect::<Vec<_>>()
+        );
+
+        assert!(
+            hunks.contains_key(".support/helper.rs"),
+            "expected .support/helper.rs to be included in diff_hunks"
+        );
+        assert!(
+            hunks.contains_key("untracked.rs"),
+            "expected untracked.rs to be included in diff_hunks"
+        );
+    }
 }
