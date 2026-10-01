@@ -1053,20 +1053,32 @@ pub async fn validate_texts(
             ensure_source_file(file)?;
         }
     }
+    // An extra file is checked against its text on disk; one that cannot be read would come back
+    // as a clean report nobody made, and the change would pass unchecked there (#446).
+    // Read and verify all also_check files up-front to fail closed in all branches.
+    let mut also_texts = Vec::with_capacity(also_check.len());
+    for file in also_check {
+        let abs = if file.is_absolute() {
+            file.clone()
+        } else {
+            root.join(file)
+        };
+        also_texts.push(std::fs::read_to_string(&abs).map_err(|e| {
+            anyhow::anyhow!(
+                "cannot read {}, which the change must be checked against; nothing was \
+                 validated: {e}",
+                abs.display()
+            )
+        })?);
+    }
     // Fast path: if all files are JSON, validate locally without an LSP session (#733).
     if edits.iter().all(|(f, _)| is_json_file(f)) && also_check.iter().all(|f| is_json_file(f)) {
         let mut reports = Vec::with_capacity(edits.len() + also_check.len());
         for (file, text) in edits {
             reports.push(validate_json(&display(root, file), text));
         }
-        for file in also_check {
-            let abs = if file.is_absolute() {
-                file.clone()
-            } else {
-                root.join(file)
-            };
-            let text = std::fs::read_to_string(&abs).unwrap_or_default();
-            reports.push(validate_json(&display(root, file), &text));
+        for (file, text) in also_check.iter().zip(&also_texts) {
+            reports.push(validate_json(&display(root, file), text));
         }
         return Ok(reports);
     }
@@ -1092,14 +1104,8 @@ pub async fn validate_texts(
                 }
                 for (orig_j, file) in also_check.iter().enumerate() {
                     if is_json_file(file) {
-                        let abs = if file.is_absolute() {
-                            file.clone()
-                        } else {
-                            root.join(file)
-                        };
-                        let text = std::fs::read_to_string(&abs).unwrap_or_default();
                         final_reports[edits.len() + orig_j] =
-                            Some(validate_json(&display(root, file), &text));
+                            Some(validate_json(&display(root, file), &also_texts[orig_j]));
                     }
                 }
                 continue;
@@ -1115,10 +1121,12 @@ pub async fn validate_texts(
             }
 
             let mut group_also = Vec::new();
+            let mut group_also_texts = Vec::new();
             let mut also_indices = Vec::new();
             for (orig_j, file) in also_check.iter().enumerate() {
                 if crate::lang::engine_group_for_path(file) == engine {
                     group_also.push(file.clone());
+                    group_also_texts.push(also_texts[orig_j].clone());
                     also_indices.push(orig_j);
                 }
             }
@@ -1132,6 +1140,7 @@ pub async fn validate_texts(
                 root,
                 &group_edits,
                 &group_also,
+                &group_also_texts,
             ))
             .await?;
 
@@ -1168,7 +1177,7 @@ pub async fn validate_texts(
             .collect());
     }
 
-    validate_texts_single_engine(remote, root, edits, also_check).await
+    validate_texts_single_engine(remote, root, edits, also_check, &also_texts).await
 }
 
 async fn validate_texts_single_engine(
@@ -1176,22 +1185,8 @@ async fn validate_texts_single_engine(
     root: &Path,
     edits: &[(std::path::PathBuf, String)],
     also_check: &[std::path::PathBuf],
+    also_texts: &[String],
 ) -> Result<Vec<DiagnosticsReport>> {
-    let mut also_texts = Vec::with_capacity(also_check.len());
-    for file in also_check {
-        let abs = if file.is_absolute() {
-            file.clone()
-        } else {
-            root.join(file)
-        };
-        also_texts.push(std::fs::read_to_string(&abs).map_err(|e| {
-            anyhow::anyhow!(
-                "cannot read {}, which the change must be checked against; nothing was \
-                 validated: {e}",
-                abs.display()
-            )
-        })?);
-    }
     let hint = edits
         .first()
         .map(|(file, _)| file.as_path())
@@ -1336,7 +1331,7 @@ async fn validate_texts_single_engine(
         }
         set_aside_derive_expansions(&mut report, &text);
         refuse_unchecked(&mut report);
-        sources.insert(shown.clone(), text);
+        sources.insert(shown.clone(), text.clone());
         reports.push(report);
     }
     suppress_used_public_reexport_warnings(&mut session, root, edits.len(), &mut reports, &sources)
@@ -2271,7 +2266,7 @@ mod identifier_boundary_regressions {
 
 #[cfg(test)]
 mod definition_evidence_tests {
-    use super::has_definition;
+    use super::*;
     use serde_json::json;
     #[test]
     fn only_complete_definition_locations_prove_resolution() {
@@ -2295,5 +2290,17 @@ mod definition_evidence_tests {
         ] {
             assert!(!has_definition(&value), "{value}");
         }
+    }
+
+    #[tokio::test]
+    async fn validate_texts_fails_closed_on_unreadable_also_check() {
+        let root = Path::new("/nonexistent");
+        let remote = "127.0.0.1:9400".parse().unwrap();
+        let edits = vec![(std::path::PathBuf::from("valid.json"), "{}".to_string())];
+        let also_check = vec![std::path::PathBuf::from("missing.json")];
+        let result = validate_texts(remote, root, &edits, &also_check).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot read"), "unexpected error: {err}");
     }
 }
