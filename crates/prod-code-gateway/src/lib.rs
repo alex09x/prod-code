@@ -2452,6 +2452,10 @@ pub async fn run_exec(
         }
         None => (None, None),
     };
+    if exit_code == Some(254) {
+        tracing::warn!("exec command exited with 254; ensuring sccache server is running cleanly on host");
+        tokio::task::spawn_blocking(crate::shadow::ensure_sccache_server).await.ok();
+    }
     let duration_ms = start.elapsed().as_millis() as u64;
     tracing::info!(
         workspace = %workspace_str,
