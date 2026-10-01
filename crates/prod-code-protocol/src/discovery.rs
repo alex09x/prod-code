@@ -80,7 +80,8 @@ pub fn verify_auth_tag(token: &str, data: &str, tag: &str) -> bool {
         return false;
     }
     let mut tag_bytes = [0u8; 32];
-    for (i, chunk) in tag.as_bytes().chunks_exact(2).enumerate() {
+    let (chunks, _) = tag.as_bytes().as_chunks::<2>();
+    for (i, chunk) in chunks.iter().enumerate() {
         let Ok(s) = std::str::from_utf8(chunk) else {
             return false;
         };
@@ -160,6 +161,7 @@ pub struct DiscoveredNode {
 /// Canonical payload string for HMAC-SHA-256 signing/verification of node announcements.
 /// Covers ALL wire fields affecting node identity, eligibility, warm-workspace preference, and scoring:
 /// `<addr> <engines_csv> <rss_mb> <load_per_cpu:.4> <cpus> <mem_total_mb> <mem_avail_mb> <sessions> <ws_csv>`
+#[allow(clippy::too_many_arguments)]
 pub fn canonical_announce_payload(
     advertise: &str,
     engines_csv: &str,
@@ -187,7 +189,7 @@ pub fn parse_node_line_with_auth(
 
     let first = parts.next()?;
     // Support backward-compatible lines where field 0 is addr, or new lines where field 0 is tag.
-    let (tag, addr_str) = if let Ok(_) = first.parse::<SocketAddr>() {
+    let (tag, addr_str) = if first.parse::<SocketAddr>().is_ok() {
         ("-", first)
     } else {
         (first, parts.next()?)
@@ -197,11 +199,13 @@ pub fn parse_node_line_with_auth(
 
     // Anti-spoofing check: advertised IP must match actual UDP packet sender IP
     // (unless one is loopback, as in local tests).
-    if let Some(from_ip) = sender_ip {
-        if !from_ip.is_loopback() && !addr.ip().is_loopback() && from_ip != addr.ip() {
-            tracing::warn!(from = %from_ip, advertised = %addr, "rejecting spoofed discovery advertisement");
-            return None;
-        }
+    if let Some(from_ip) = sender_ip
+        && !from_ip.is_loopback()
+        && !addr.ip().is_loopback()
+        && from_ip != addr.ip()
+    {
+        tracing::warn!(from = %from_ip, advertised = %addr, "rejecting spoofed discovery advertisement");
+        return None;
     }
 
     let engines_csv = parts.next().unwrap_or("");
@@ -276,6 +280,7 @@ pub fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
 }
 
 /// Format one announce line (without trailing newline).
+#[allow(clippy::too_many_arguments)]
 pub fn format_node_line(
     advertise: &str,
     engines_csv: &str,

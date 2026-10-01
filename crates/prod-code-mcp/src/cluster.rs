@@ -671,15 +671,15 @@ pub async fn discover_nodes_with_paths(
         }
     }
 
-    if learned {
-        if let Some(path) = placement_file {
-            let mut placement = load_placement(path);
-            let live_addrs: std::collections::HashSet<SocketAddr> = nodes.iter().copied().collect();
-            let before = placement.workspaces.len();
-            placement.workspaces.retain(|_, addr| live_addrs.contains(addr));
-            if placement.workspaces.len() < before {
-                save_placement(path, &placement);
-            }
+    if learned
+        && let Some(path) = placement_file
+    {
+        let mut placement = load_placement(path);
+        let live_addrs: std::collections::HashSet<SocketAddr> = nodes.iter().copied().collect();
+        let before = placement.workspaces.len();
+        placement.workspaces.retain(|_, addr| live_addrs.contains(addr));
+        if placement.workspaces.len() < before {
+            save_placement(path, &placement);
         }
     }
 
