@@ -5551,6 +5551,69 @@ async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_re
     assert!(text.contains("Definition:"), "{text}");
     assert!(text.contains("src/api2/hl/stream.rs:5:8"), "{text}");
     assert!(text.contains("fn order_please"), "{text}");
+
+    // Negative test: a position on `fn` (column 5) rather than the method name must return No definition found.
+    let fn_token = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "path": "src/api2/hl/stream.rs",
+            "line": 5,
+            "character": 5,
+            "body": true
+        }),
+    )
+    .await
+    .expect("positional definition runs");
+    assert_eq!(text_of(&fn_token), "No definition found.");
+}
+
+#[tokio::test]
+async fn code_references_skips_recursive_declaration_line_without_consuming_candidate_budget() {
+    let ws = workspace();
+    let source = "pub fn recurse() { recurse(); }\npub fn caller() { recurse(); }\n";
+    let file = write(&ws, "src/lib.rs", source);
+    commit(&ws);
+
+    let uri = format!("file://{}", file.display());
+    let def_path = file.clone();
+    let caller_ret = file.clone();
+
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let u = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "textDocument/references" if u == uri && params["position"]["line"] == 0 => {
+                serde_json::json!([])
+            }
+            "textDocument/definition" if u == uri && params["position"]["line"] == 1 => {
+                answers::locations(&def_path, &[(1, 8)])
+            }
+            "textDocument/references" if u == uri && params["position"]["line"] == 1 => {
+                answers::locations(&caller_ret, &[(2, 19)])
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "line": 1,
+            "character": 8
+        }),
+    )
+    .await
+    .expect("references succeed via later use in same file");
+
+    let text = text_of(&res);
+    assert!(text.contains("asked from a use of `recurse` in the checkout"), "{text}");
+    assert!(text.contains("src/lib.rs:2:19"), "{text}");
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
 }
 
 #[tokio::test]

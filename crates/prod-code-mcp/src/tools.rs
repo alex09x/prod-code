@@ -2820,21 +2820,23 @@ async fn checkout_use_of(
             continue;
         }
         let uri = Url::from_file_path(&path).ok()?.to_string();
-        let uses = text.lines().enumerate().flat_map(|(index, text_line)| {
-            let chars: Vec<char> = text_line.chars().collect();
-            (0..chars.len())
-                .filter(|&col| {
-                    chars[col..].starts_with(&wanted)
-                        && !(col > 0 && is_name(chars.get(col - 1)))
-                        && !is_name(chars.get(col + wanted.len()))
-                })
-                .map(move |col| (index, col))
-                .collect::<Vec<_>>()
-        });
-        for (index, col) in uses.take(MAX_USES_ASKED_PER_FILE) {
-            if path == declaration && index as u32 + 1 == line {
-                continue;
-            }
+        let is_declaration_file = path == declaration;
+        let file_uses = text
+            .lines()
+            .enumerate()
+            .filter(|(index, _)| !is_declaration_file || *index as u32 + 1 != line)
+            .flat_map(|(index, text_line)| {
+                let chars: Vec<char> = text_line.chars().collect();
+                (0..chars.len())
+                    .filter(|&col| {
+                        chars[col..].starts_with(&wanted)
+                            && !(col > 0 && is_name(chars.get(col - 1)))
+                            && !is_name(chars.get(col + wanted.len()))
+                    })
+                    .map(move |col| (index, col))
+                    .collect::<Vec<_>>()
+            });
+        for (index, col) in file_uses.take(MAX_USES_ASKED_PER_FILE) {
             asked += 1;
             if asked > MAX_USES_ASKED {
                 return None;
@@ -6005,22 +6007,16 @@ async fn is_outline_definition(
 
 fn outline_contains_definition(symbols: &serde_json::Value, line: usize, col: usize) -> bool {
     for sym in symbols.as_array().into_iter().flatten() {
+        // Prefer selectionRange (the symbol's exact identifier range) so that positions
+        // on `fn`, parameters or other tokens on the declaration line do not falsely match.
         let sel = sym
             .get("selectionRange")
-            .or_else(|| sym.get("range"))
-            .or_else(|| sym.pointer("/location/range"));
-        if let Some(start) = sel.and_then(|r| r.get("start"))
-            && let Some(start_line) = start.get("line").and_then(|l| l.as_u64()).map(|l| l as usize)
+            .or_else(|| sym.pointer("/location/range"))
+            .or_else(|| sym.get("range"));
+        if let Some(range) = sel
+            && range_contains(range, line, col)
         {
-            let end_line = sel
-                .and_then(|r| r.get("end"))
-                .and_then(|r| r.get("line"))
-                .and_then(|l| l.as_u64())
-                .map(|l| l as usize)
-                .unwrap_or(start_line);
-            if start_line <= line && line <= end_line {
-                return true;
-            }
+            return true;
         }
         if let Some(children) = sym.get("children")
             && outline_contains_definition(children, line, col)
@@ -6029,6 +6025,35 @@ fn outline_contains_definition(symbols: &serde_json::Value, line: usize, col: us
         }
     }
     false
+}
+
+fn range_contains(range: &serde_json::Value, line: usize, col: usize) -> bool {
+    let Some(start) = range.get("start") else {
+        return false;
+    };
+    let Some(start_line) = start.get("line").and_then(|l| l.as_u64()).map(|l| l as usize) else {
+        return false;
+    };
+    let start_col = start.get("character").and_then(|c| c.as_u64()).map(|c| c as usize).unwrap_or(0);
+    let (end_line, end_col) = match range.get("end") {
+        Some(end) => {
+            let el = end.get("line").and_then(|l| l.as_u64()).map(|l| l as usize).unwrap_or(start_line);
+            let ec = end.get("character").and_then(|c| c.as_u64()).map(|c| c as usize).unwrap_or(usize::MAX);
+            (el, ec)
+        }
+        None => (start_line, usize::MAX),
+    };
+
+    if line < start_line || line > end_line {
+        return false;
+    }
+    if line == start_line && col < start_col {
+        return false;
+    }
+    if line == end_line && col > end_col {
+        return false;
+    }
+    true
 }
 
 /// The most lines of a definition `body: true` shows.
