@@ -1999,6 +1999,12 @@ async fn handle_outline(
     } else {
         outline_file(remote, workspace_root, &file_path, path_str, &options).await?
     };
+    let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['));
+    if !has_symbols {
+        return Ok(McpToolCallResult::error(format!(
+            "no outline symbols found for {path_str}"
+        )));
+    }
     Ok(McpToolCallResult::text(text))
 }
 
@@ -5260,7 +5266,13 @@ async fn handle_slice(
         options,
     )
     .await?;
-    Ok(McpToolCallResult::text(report.render()))
+    let rendered = report.render();
+    if report.items.is_empty() {
+        return Ok(McpToolCallResult::error(format!(
+            "no slice items found: {rendered}"
+        )));
+    }
+    Ok(McpToolCallResult::text(rendered))
 }
 
 async fn handle_shadow_run(

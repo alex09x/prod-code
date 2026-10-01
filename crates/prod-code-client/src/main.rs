@@ -1960,7 +1960,7 @@ async fn main() -> Result<()> {
                     })
                     .collect();
             }
-            run_tool(remote, "code_references", args).await
+            run_refs(remote, args).await
         }
         Commands::Callers {
             file,
@@ -4152,6 +4152,25 @@ async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -> Re
     Ok(())
 }
 
+/// Runs `code_references` tool from the current checkout and prints references; exit 1 on error or no references.
+async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args).await?;
+    let mut has_refs = false;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        if text.contains("Found ") && text.contains(" reference(s)") {
+            has_refs = true;
+        }
+        println!("{text}");
+    }
+    if result.is_error || !has_refs {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 /// `callers` / `callees`: the call hierarchy to `depth` levels, at a position or of `--symbol`,
 /// answered by the same code as the MCP tools.
 async fn run_call_tree(
@@ -4431,6 +4450,11 @@ async fn run_symbols(
         let text =
             prod_code_mcp::tools::outline_directory(remote, &ws_root, &abs_path, file, options)
                 .await?;
+        let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['));
+        if !has_symbols {
+            eprintln!("no outline symbols found for {}", file.display());
+            std::process::exit(1);
+        }
         println!("{text}");
         return Ok(());
     }
@@ -4447,6 +4471,11 @@ async fn run_symbols(
         options,
     )
     .await?;
+    let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['));
+    if !has_symbols {
+        eprintln!("no outline symbols found for {}", file.display());
+        std::process::exit(1);
+    }
     println!("{text}");
     Ok(())
 }
@@ -5812,7 +5841,12 @@ async fn run_slice(
     };
     let report =
         prod_code_mcp::slice::slice_with_options(remote, &root, &file, line, col, options).await?;
-    println!("{}", report.render());
+    let rendered = report.render();
+    if report.items.is_empty() {
+        eprintln!("no slice items found for {target}");
+        std::process::exit(1);
+    }
+    println!("{rendered}");
     Ok(())
 }
 
