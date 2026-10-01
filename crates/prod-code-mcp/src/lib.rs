@@ -270,17 +270,58 @@ where
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(req_json) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                match handle_mcp_request(remote, &workspace_root, req_json).await {
-                    Ok(Some(resp_val)) => {
-                        let mut out = serde_json::to_string(&resp_val)?;
+            let req_json = match serde_json::from_str::<serde_json::Value>(trimmed) {
+                Ok(v) => v,
+                Err(e) => {
+                    let err_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "error": { "code": -32700, "message": format!("Parse error: {e}") }
+                    });
+                    if let Ok(mut out) = serde_json::to_string(&err_resp) {
                         out.push('\n');
-                        writer.write_all(out.as_bytes()).await?;
-                        writer.flush().await?;
+                        let _ = writer.write_all(out.as_bytes()).await;
+                        let _ = writer.flush().await;
                     }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, "MCP request handler internal error");
+                    continue;
+                }
+            };
+            match handle_mcp_request(remote, &workspace_root, req_json).await {
+                Ok(Some(resp_val)) => {
+                    let out = match serde_json::to_string(&resp_val) {
+                        Ok(mut s) => {
+                            s.push('\n');
+                            s
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to serialize MCP response");
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "error": { "code": -32603, "message": format!("Serialization error: {e}") }
+                            })
+                            .to_string()
+                            + "\n"
+                        }
+                    };
+                    if let Err(e) = writer.write_all(out.as_bytes()).await {
+                        tracing::error!(error = %e, "Failed writing to stdout");
+                        break;
+                    }
+                    if let Err(e) = writer.flush().await {
+                        tracing::error!(error = %e, "Failed flushing stdout");
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, "MCP request handler internal error");
+                    let err_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "error": { "code": -32603, "message": format!("Internal error: {e}") }
+                    });
+                    if let Ok(mut out) = serde_json::to_string(&err_resp) {
+                        out.push('\n');
+                        let _ = writer.write_all(out.as_bytes()).await;
+                        let _ = writer.flush().await;
                     }
                 }
             }

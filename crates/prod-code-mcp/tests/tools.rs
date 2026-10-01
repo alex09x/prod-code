@@ -4262,6 +4262,23 @@ async fn code_source_reads_a_file_from_the_gateway_host() {
 }
 
 #[tokio::test]
+async fn code_source_reads_local_workspace_file_directly() {
+    let ws = workspace();
+    write(&ws, "src/hello.rs", "fn hello() { println!(\"local\"); }\n");
+    commit(&ws);
+    let result = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_source",
+        serde_json::json!({ "path": "src/hello.rs", "line": 1, "context": 1 }),
+    )
+    .await
+    .expect("reads local source directly");
+    let text = text_of(&result);
+    assert!(text.contains("fn hello()"), "{text}");
+}
+
+#[tokio::test]
 async fn code_status_reports_health() {
     let ws = workspace();
     let remote = mock_gateway(Script::default()).await;
