@@ -818,22 +818,10 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
     Ok(changes)
 }
 
-/// Whether an untracked path lies in a hidden or scratch directory (e.g. `.prod/`, `.git/`, `.cache/`).
+/// Whether an untracked path lies in a hidden or scratch directory (e.g. `.prod/`, `.git/`, `.cache/`) (#760).
 pub fn is_hidden_or_scratch_path(path: &str) -> bool {
     Path::new(path).components().any(|c| match c {
         std::path::Component::Normal(s) => s.to_string_lossy().starts_with('.'),
-        _ => false,
-    })
-}
-
-/// Whether a path is inside a hidden directory, an ignored directory (`_`), or `testdata`
-/// which cannot form a Go package (#760).
-pub fn is_non_project_go_path(path: &str) -> bool {
-    Path::new(path).components().any(|c| match c {
-        std::path::Component::Normal(s) => {
-            let name = s.to_string_lossy();
-            name.starts_with('.') || name.starts_with('_') || name == "testdata"
-        }
         _ => false,
     })
 }
@@ -1453,16 +1441,8 @@ pub fn test_command(
         "go" => {
             // The packages that hold the tests, not `./...`: that builds every package's test
             // binary to run a filter most of them never match, 25 s against 0.7 s for one
-            // package of a large module (#371). Non-project scratch directories (dot-prefixed,
-            // underscore-prefixed, or testdata) are excluded (#760).
-            let valid_tests: Vec<&Symbol> = tests
-                .iter()
-                .filter(|t| !is_non_project_go_path(&t.file))
-                .collect();
-            if valid_tests.is_empty() {
-                return None;
-            }
-            let mut packages: Vec<String> = valid_tests
+            // package of a large module (#371).
+            let mut packages: Vec<String> = tests
                 .iter()
                 .map(|t| {
                     let dir = std::path::Path::new(&t.file)
@@ -1483,9 +1463,9 @@ pub fn test_command(
             c.push("-run".to_string());
             c.push(format!(
                 "^({})$",
-                valid_tests
+                names
                     .iter()
-                    .map(|t| go_name(&t.name))
+                    .map(|n| go_name(n))
                     .collect::<Vec<_>>()
                     .join("|")
             ));
@@ -1610,7 +1590,7 @@ pub async fn analyze(
     let mut adjusted_signatures: Vec<(Symbol, String, String, u32, u32)> = Vec::new();
 
     for (file, change) in &changes {
-        if !is_source_file(file) || (language == "go" && is_non_project_go_path(file)) {
+        if !is_source_file(file) {
             unattributed.push(file.clone());
             continue;
         }
@@ -2668,21 +2648,12 @@ mod tests {
                     in_file("pkg.TestB", "internal/push/b_test.go"),
                     in_file("TestC", "cmd/tool/c_test.go"),
                     in_file("TestD", "main_test.go"),
-                    in_file("TestDraft", ".prod/tmp/resident-repair/copy_test.go"),
-                    in_file("TestScratch", ".scratch/draft_test.go"),
-                    in_file("TestIgnored", "_drafts/draft_test.go"),
-                    in_file("TestFixture", "internal/push/testdata/fixture_test.go"),
                 ]
             )
             .unwrap()
             .join(" "),
             "go test . ./cmd/tool ./internal/push -run ^(TestA|TestB|TestC|TestD)$"
         );
-        assert!(test_command(
-            "go",
-            &tools,
-            &[in_file("TestDraft", ".prod/tmp/resident-repair/copy_test.go")]
-        ).is_none());
         assert_eq!(
             test_command("rust", &tools, &[t("a"), t("b")])
                 .unwrap()
@@ -3107,17 +3078,11 @@ mod tests {
     }
 
     #[test]
-    fn non_project_go_paths_and_scratch_paths_are_recognized() {
+    fn untracked_hidden_scratch_files_are_excluded_from_diff_hunks() {
         assert!(is_hidden_or_scratch_path(".prod/tmp/resident-repair/a.go"));
         assert!(is_hidden_or_scratch_path(".scratch/draft.go"));
         assert!(is_hidden_or_scratch_path("internal/.draft/draft.go"));
         assert!(!is_hidden_or_scratch_path("internal/push/a.go"));
         assert!(!is_hidden_or_scratch_path("main.go"));
-
-        assert!(is_non_project_go_path(".prod/tmp/resident-repair/a.go"));
-        assert!(is_non_project_go_path("_drafts/draft.go"));
-        assert!(is_non_project_go_path("internal/push/testdata/fixture.go"));
-        assert!(!is_non_project_go_path("internal/push/a.go"));
-        assert!(!is_non_project_go_path("cmd/tool/main.go"));
     }
 }
