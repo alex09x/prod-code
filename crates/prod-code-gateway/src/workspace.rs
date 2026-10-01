@@ -54,6 +54,8 @@ pub struct SharedWorkspace {
     /// If this workspace is an attached worktree overlay of a base workspace, keeps the base
     /// alive so its engine is not evicted while this worktree is active.
     pub base_workspace: Option<Arc<SharedWorkspace>>,
+    /// Number of loaded worktrees attached to this base workspace.
+    pub attached_worktrees: AtomicUsize,
 }
 
 impl SharedWorkspace {
@@ -99,6 +101,7 @@ impl SharedWorkspace {
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::default(),
             base_workspace,
+            attached_worktrees: AtomicUsize::new(0),
         }
     }
 
@@ -162,6 +165,7 @@ impl SharedWorkspace {
                 generic_validation_loaded: AtomicBool::new(false),
                 generic_validation_session: Arc::clone(&self.generic_validation_session),
                 base_workspace: Some(Arc::clone(base)),
+                attached_worktrees: AtomicUsize::new(0),
             }));
         }
         self.base_validation_view(admission).await
@@ -193,6 +197,7 @@ impl SharedWorkspace {
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::clone(&self.generic_validation_session),
             base_workspace: None,
+            attached_worktrees: AtomicUsize::new(0),
         }))
     }
 }
@@ -345,6 +350,7 @@ impl SharedWorkspace {
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::clone(&self.generic_validation_session),
             base_workspace: None,
+            attached_worktrees: AtomicUsize::new(0),
         }))
     }
 
@@ -355,7 +361,7 @@ impl SharedWorkspace {
     /// What unloading this workspace is counted to free: its engine, and its validation engine
     /// once one runs.
     fn reclaimable(&self, admission: &crate::admission::Admission) -> u64 {
-        if self.base_workspace.is_some() {
+        if self.base_workspace.is_some() || self.attached_worktrees.load(Ordering::Relaxed) > 0 {
             return 0;
         }
         let engines = if self.validation.get().is_some_and(Option::is_some)
@@ -454,13 +460,19 @@ pub struct SessionView {
 /// [`SessionView`], dropping the handshake future returns the count automatically.
 pub struct WorkspaceLease {
     workspace: Option<Arc<SharedWorkspace>>,
+    _base_lease: Option<Box<WorkspaceLease>>,
 }
 
 impl WorkspaceLease {
     fn acquire(workspace: Arc<SharedWorkspace>) -> Self {
         workspace.active_sessions.fetch_add(1, Ordering::Relaxed);
+        let base_lease = workspace
+            .base_workspace
+            .as_ref()
+            .map(|base| Box::new(WorkspaceLease::acquire(Arc::clone(base))));
         Self {
             workspace: Some(workspace),
+            _base_lease: base_lease,
         }
     }
 
@@ -668,8 +680,12 @@ impl WorkspaceManager {
             .values()
             .filter_map(|state| match state {
                 // Sessions are counted under this lock's read side, so none can attach while
-                // the count is read here.
-                LoadState::Ready(ws) if ws.active_sessions.load(Ordering::Relaxed) == 0 => {
+                // the count is read here. A base workspace with attached worktrees cannot be
+                // evicted until all attached worktrees have been evicted.
+                LoadState::Ready(ws)
+                    if ws.active_sessions.load(Ordering::Relaxed) == 0
+                        && ws.attached_worktrees.load(Ordering::Relaxed) == 0 =>
+                {
                     Some(Arc::clone(ws))
                 }
                 _ => None,
@@ -1041,6 +1057,8 @@ impl WorkspaceManager {
                 None,
                 Some(Arc::clone(&base_ws)),
             ));
+
+            base_ws.attached_worktrees.fetch_add(1, Ordering::Relaxed);
 
             let lease = WorkspaceLease::acquire(Arc::clone(&ws));
             {
@@ -2211,7 +2229,8 @@ async fn release(workspaces: Vec<Arc<SharedWorkspace>>) {
         return;
     }
     for ws in &workspaces {
-        if ws.base_workspace.is_some() {
+        if let Some(ref base) = ws.base_workspace {
+            base.attached_worktrees.fetch_sub(1, Ordering::Relaxed);
             for eng_arc in ws.mirrored_rust_engines() {
                 let mut eng = eng_arc.lock().await;
                 eng.detach_worktree(&ws.root);
@@ -2227,6 +2246,8 @@ pub fn split_worktree_base(workspace_root: &Path) -> Option<PathBuf> {
         let Some(name) = ancestor.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+
+        // 1. Server worktree naming: `<base>--wt-<hash>`
         if let Some((base_name, _)) = name.split_once("--wt-")
             && !base_name.is_empty()
         {
@@ -2238,26 +2259,29 @@ pub fn split_worktree_base(workspace_root: &Path) -> Option<PathBuf> {
                 return Some(candidate);
             }
         }
-    }
 
-    // Git worktree fallback: read .git file if present
-    let git_file = workspace_root.join(".git");
-    if git_file.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&git_file) {
-            for line in content.lines() {
-                if let Some(gitdir_raw) = line.trim().strip_prefix("gitdir: ") {
-                    let mut gitdir_path = PathBuf::from(gitdir_raw.trim());
-                    if gitdir_path.is_relative() {
-                        gitdir_path = workspace_root.join(&gitdir_path);
-                    }
-                    if let Ok(canon) = gitdir_path.canonicalize() {
-                        gitdir_path = canon;
-                    }
-                    for anc in gitdir_path.ancestors() {
-                        if anc.file_name().and_then(|n| n.to_str()) == Some(".git") {
-                            if let Some(base) = anc.parent() {
-                                if base.exists() && base != workspace_root {
-                                    return Some(base.to_path_buf());
+        // 2. Standard Git worktree: ancestor contains a `.git` file with `gitdir:`
+        let git_file = ancestor.join(".git");
+        if git_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&git_file) {
+                for line in content.lines() {
+                    if let Some(gitdir_raw) = line.trim().strip_prefix("gitdir: ") {
+                        let mut gitdir_path = PathBuf::from(gitdir_raw.trim());
+                        if gitdir_path.is_relative() {
+                            gitdir_path = ancestor.join(&gitdir_path);
+                        }
+                        if let Ok(canon) = gitdir_path.canonicalize() {
+                            gitdir_path = canon;
+                        }
+                        for anc in gitdir_path.ancestors() {
+                            if anc.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                                if let Some(base_repo) = anc.parent() {
+                                    if base_repo.exists() && base_repo != ancestor {
+                                        if let Ok(relative) = workspace_root.strip_prefix(ancestor) {
+                                            let candidate = base_repo.join(relative);
+                                            return Some(candidate);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3788,7 +3812,14 @@ while True:
         )
         .unwrap();
 
-        assert_eq!(split_worktree_base(&git_wt), Some(git_base));
+        assert_eq!(split_worktree_base(&git_wt), Some(git_base.clone()));
+
+        // Test nested package inside standard git worktree (no local .git file, found in ancestor)
+        let nested_git_wt = git_wt.join("crates").join("sub-crate");
+        let nested_git_base = git_base.join("crates").join("sub-crate");
+        std::fs::create_dir_all(&nested_git_wt).unwrap();
+        std::fs::create_dir_all(&nested_git_base).unwrap();
+        assert_eq!(split_worktree_base(&nested_git_wt), Some(nested_git_base));
     }
 
     #[tokio::test]
@@ -3824,6 +3855,7 @@ while True:
         let manager = Arc::new(WorkspaceManager::new());
 
         let base_lease = manager.get_or_load(&base_dir, "rust").await.unwrap();
+        let base_ws = Arc::clone(base_lease.workspace());
         assert!(base_lease.rust_engine.is_some());
         assert!(base_lease.base_workspace.is_none());
 
@@ -3842,6 +3874,11 @@ while True:
         // Worktree does not duplicate memory reclaimable
         assert_eq!(wt_lease.reclaimable(manager.admission()), 0);
 
+        // Attached worktree increments base's attached_worktrees count
+        assert_eq!(base_ws.attached_worktrees.load(Ordering::Relaxed), 1);
+        // Base is not reclaimable while attached worktree exists
+        assert_eq!(base_ws.reclaimable(manager.admission()), 0);
+
         // Validation view forwards to base validation and keeps worktree attached
         let wt_val = wt_lease.workspace().validation_view(manager.admission()).await.unwrap();
         assert!(wt_val.base_workspace.is_some());
@@ -3850,10 +3887,24 @@ while True:
             base_lease.workspace()
         ));
 
-        // Dropping and releasing workspaces detaches worktree
-        drop(wt_lease);
+        // Active worktree lease pins base against eviction even if base_lease drops
         drop(base_lease);
+        assert_eq!(base_ws.active_sessions.load(Ordering::Relaxed), 1);
+        let early_evict = manager.evict_idle(Duration::from_secs(0)).await;
+        assert!(early_evict.is_empty(), "base must not be evicted while worktree is active");
+
+        // Dropping worktree lease frees sessions, but attached_worktrees protects base until worktree is evicted
+        drop(wt_lease);
+        assert_eq!(base_ws.active_sessions.load(Ordering::Relaxed), 0);
+        assert_eq!(base_ws.attached_worktrees.load(Ordering::Relaxed), 1);
+
+        // Evicting idle worktrees detaches overlay and frees base
         let evicted = manager.evict_idle(Duration::from_secs(0)).await;
         assert!(evicted.contains(&wt_dir));
+        assert_eq!(base_ws.attached_worktrees.load(Ordering::Relaxed), 0);
+
+        // Now base has 0 attached worktrees and can be evicted
+        let evicted_base = manager.evict_idle(Duration::from_secs(0)).await;
+        assert!(evicted_base.contains(&base_dir));
     }
 }

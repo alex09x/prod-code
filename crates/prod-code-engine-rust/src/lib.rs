@@ -380,6 +380,7 @@ pub struct RustEngineSnapshot {
     analysis: ra_ap_ide::Analysis,
     vfs: Arc<std::sync::RwLock<Vfs>>,
     pub views: Views,
+    pub overlay: Option<Overlay>,
     /// Which engine of the workspace this is a snapshot of, and how many changes that engine
     /// had applied when it was taken: a diagnostics pass is logged with both, so a cold pass
     /// can be traced to the write that made it cold (#235).
@@ -407,8 +408,15 @@ impl RustEngineSnapshot {
 
     /// Lookup filesystem path for a Vfs FileId, mapped to this snapshot's workspace view.
     pub fn path_for_file_id(&self, file_id: FileId) -> Option<PathBuf> {
-        let overlay = self.overlay_for_path(&self.workspace_root);
+        let overlay = self.current_overlay();
         self.path_for_file_id_in_view(file_id, overlay.as_ref())
+    }
+
+    /// The active overlay of this snapshot, from explicit configuration or workspace root.
+    pub fn current_overlay(&self) -> Option<Overlay> {
+        self.overlay
+            .clone()
+            .or_else(|| self.overlay_for_path(&self.workspace_root))
     }
 
     /// Lookup filesystem path for a Vfs FileId, translated to the worktree overlay view if present.
@@ -432,6 +440,13 @@ impl RustEngineSnapshot {
 
     /// Resolve the active overlay for a file or directory path.
     pub fn overlay_for_path(&self, path: &Path) -> Option<Overlay> {
+        if let Some(ref o) = self.overlay {
+            let norm = normalize_vfs_path(path, &self.workspace_root);
+            let abs = AbsPathBuf::assert_utf8(norm);
+            if abs.starts_with(&o.worktree_root) {
+                return Some(o.clone());
+            }
+        }
         let norm = normalize_vfs_path(path, &self.workspace_root);
         let abs = AbsPathBuf::assert_utf8(norm);
         self.views.overlay_of(&abs).cloned()
@@ -853,9 +868,12 @@ impl RustEngineSnapshot {
         new_text.push_str(&text[..start]);
         new_text.push_str(&text[end..]);
         let new_text = new_text.replace("\n\n\n", "\n\n");
+        let path_in_view = self
+            .path_for_file_id(file_id)
+            .unwrap_or_else(|| normalize_vfs_path(path, &self.workspace_root));
         Ok(Ok(RefactorOutcome {
             files: vec![RewrittenFile {
-                path: normalize_vfs_path(path, &self.workspace_root),
+                path: path_in_view,
                 new_text,
                 edits: 1,
                 old_line_count: text.lines().count() as u32,
@@ -1908,6 +1926,7 @@ impl RustEngine {
             analysis: self.host.analysis(),
             vfs: Arc::clone(&self.vfs),
             views: self.worktrees.views(),
+            overlay: None,
             label: self.label,
             changes: self.changes,
         }
@@ -1915,13 +1934,38 @@ impl RustEngine {
 
     /// Obtain a lightweight, thread-safe analysis snapshot configured for a specific workspace or worktree view.
     pub fn snapshot_for(&self, root: &Path) -> RustEngineSnapshot {
+        let abs = AbsPathBuf::assert_utf8(root.to_path_buf());
+        let views = self.worktrees.views();
+        let overlay = views.overlay_of(&abs).cloned();
         RustEngineSnapshot {
             workspace_root: root.to_path_buf(),
             analysis: self.host.analysis(),
             vfs: Arc::clone(&self.vfs),
-            views: self.worktrees.views(),
+            views,
+            overlay,
             label: self.label,
             changes: self.changes,
+        }
+    }
+
+    /// Obtain an analysis snapshot routed through the worktree overlay containing `path`, if any.
+    pub fn snapshot_for_path(&self, path: &Path) -> RustEngineSnapshot {
+        let norm = normalize_vfs_path(path, &self.workspace_root);
+        let abs = AbsPathBuf::assert_utf8(norm);
+        let views = self.worktrees.views();
+        let overlay = views.overlay_of(&abs).cloned();
+        if let Some(ref o) = overlay {
+            RustEngineSnapshot {
+                workspace_root: PathBuf::from(o.worktree_root.as_str()),
+                analysis: self.host.analysis(),
+                vfs: Arc::clone(&self.vfs),
+                views,
+                overlay,
+                label: self.label,
+                changes: self.changes,
+            }
+        } else {
+            self.snapshot()
         }
     }
 
@@ -1994,7 +2038,7 @@ impl RustEngine {
 
     /// Lookup Vfs FileId for a filesystem path.
     pub fn file_id_for_path(&self, path: &Path) -> Option<FileId> {
-        self.snapshot().file_id_for_path(path)
+        self.snapshot_for_path(path).file_id_for_path(path)
     }
 
     /// Lookup filesystem path for a Vfs FileId.
@@ -2004,7 +2048,7 @@ impl RustEngine {
 
     /// Retrieve symbol type, docs, and signature at (line, col).
     pub fn hover(&self, path: &Path, line: u32, col: u32) -> Result<Option<String>> {
-        self.snapshot().hover(path, line, col)
+        self.snapshot_for_path(path).hover(path, line, col)
     }
 
     /// Jump to symbol definition from (line, col).
@@ -2014,12 +2058,12 @@ impl RustEngine {
         line: u32,
         col: u32,
     ) -> Result<Vec<DefinitionTarget>> {
-        self.snapshot().goto_definition(path, line, col)
+        self.snapshot_for_path(path).goto_definition(path, line, col)
     }
 
     /// Find all references to symbol at (line, col) across entire workspace.
     pub fn find_all_refs(&self, path: &Path, line: u32, col: u32) -> Result<Vec<ReferenceTarget>> {
-        self.snapshot().find_all_refs(path, line, col)
+        self.snapshot_for_path(path).find_all_refs(path, line, col)
     }
 
     pub fn prepare_call_hierarchy(
@@ -2028,14 +2072,14 @@ impl RustEngine {
         line: u32,
         col: u32,
     ) -> Result<Vec<HierarchyItem>> {
-        self.snapshot().prepare_call_hierarchy(path, line, col)
+        self.snapshot_for_path(path).prepare_call_hierarchy(path, line, col)
     }
 
     pub fn diagnostics(&self, path: &Path) -> Result<Vec<FileDiagnostic>> {
         let started = std::time::Instant::now();
         self.infer_functions_in_parallel(path);
         let primed = started.elapsed();
-        let result = self.snapshot().diagnostics(path);
+        let result = self.snapshot_for_path(path).diagnostics(path);
         tracing::debug!(
             file = %path.display(),
             primed_ms = primed.as_millis() as u64,
@@ -2130,11 +2174,11 @@ impl RustEngine {
     }
 
     pub fn incoming_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
-        self.snapshot().incoming_calls(path, line, col)
+        self.snapshot_for_path(path).incoming_calls(path, line, col)
     }
 
     pub fn outgoing_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
-        self.snapshot().outgoing_calls(path, line, col)
+        self.snapshot_for_path(path).outgoing_calls(path, line, col)
     }
 
     pub fn goto_implementation(
@@ -2143,7 +2187,7 @@ impl RustEngine {
         line: u32,
         col: u32,
     ) -> Result<Vec<DefinitionTarget>> {
-        self.snapshot().goto_implementation(path, line, col)
+        self.snapshot_for_path(path).goto_implementation(path, line, col)
     }
 
     /// Code actions at a position; see [`RustEngineSnapshot::list_assists`].
@@ -2154,7 +2198,7 @@ impl RustEngine {
         col: u32,
         end: Option<(u32, u32)>,
     ) -> Result<Vec<AssistInfo>> {
-        self.snapshot().list_assists(path, line, col, end)
+        self.snapshot_for_path(path).list_assists(path, line, col, end)
     }
 
     /// Apply one code action; see [`RustEngineSnapshot::apply_assist`].
@@ -2167,7 +2211,7 @@ impl RustEngine {
         id: &str,
         subtype: Option<usize>,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
-        self.snapshot()
+        self.snapshot_for_path(path)
             .apply_assist(path, line, col, end, id, subtype)
     }
 
@@ -2178,7 +2222,7 @@ impl RustEngine {
         line: u32,
         col: u32,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
-        self.snapshot().safe_delete(path, line, col)
+        self.snapshot_for_path(path).safe_delete(path, line, col)
     }
 
     /// Rename the symbol at (line, col); see [`RustEngineSnapshot::rename`].
@@ -2189,7 +2233,7 @@ impl RustEngine {
         col: u32,
         new_name: &str,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
-        self.snapshot().rename(path, line, col, new_name)
+        self.snapshot_for_path(path).rename(path, line, col, new_name)
     }
 
     pub fn structural_replace(
@@ -2200,13 +2244,13 @@ impl RustEngine {
         col: u32,
         scope: Option<&Path>,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
-        self.snapshot()
+        self.snapshot_for_path(context)
             .structural_replace(rule, context, line, col, scope)
     }
 
     /// Generate outline / document symbols for a file.
     pub fn document_symbols(&self, path: &Path) -> Result<Vec<SymbolTarget>> {
-        self.snapshot().document_symbols(path)
+        self.snapshot_for_path(path).document_symbols(path)
     }
 
     /// Workspace-wide symbol search by name; see the snapshot method.
@@ -3460,5 +3504,81 @@ fn main() {
     fn test_safe_file_id_bounds() {
         assert_eq!(MAX_SAFE_FILE_ID, 0x007F_FFFF);
         const { assert!(MAX_SAFE_FILE_ID < (1 << 24)) };
+    }
+
+    #[test]
+    fn test_worktree_refactor_paths_resolve_to_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("base_repo");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let base_lib = base_dir.join("src/lib.rs");
+        std::fs::write(
+            &base_lib,
+            "pub fn rename_me() -> u32 {\n    42\n}\n\npub fn caller() -> u32 {\n    rename_me()\n}\n",
+        )
+        .unwrap();
+
+        let mut engine = RustEngine::load(&base_dir).expect("Must load base fixture");
+
+        let wt_dir = temp.path().join("wt_repo");
+        std::fs::create_dir_all(wt_dir.join("src")).unwrap();
+        std::fs::write(
+            wt_dir.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let wt_lib = wt_dir.join("src/lib.rs");
+        std::fs::write(
+            &wt_lib,
+            "pub fn rename_me() -> u32 {\n    42\n}\n\npub fn caller() -> u32 {\n    rename_me()\n}\n",
+        )
+        .unwrap();
+
+        engine.attach_worktree(&wt_dir).expect("attach worktree");
+
+        // 1. Rename symbol from the worktree: all edited files must be inside worktree, NOT base
+        let rename_res = engine
+            .rename(&wt_lib, 1, 8, "renamed_fn")
+            .expect("rename query")
+            .expect("rename outcome");
+
+        assert!(!rename_res.files.is_empty(), "rename produced files");
+        for file in &rename_res.files {
+            assert!(
+                file.path.starts_with(&wt_dir),
+                "Renamed file path {:?} must be in worktree {:?}, not base {:?}",
+                file.path,
+                wt_dir,
+                base_dir
+            );
+        }
+
+        // 2. Safe delete from the worktree: rewritten path must be inside worktree, NOT base
+        let wt_unused = wt_dir.join("src/unused.rs");
+        let base_unused = base_dir.join("src/unused.rs");
+        std::fs::write(&base_unused, "pub fn dead_code() -> u8 { 0 }\n").unwrap();
+        std::fs::write(&wt_unused, "pub fn dead_code() -> u8 { 0 }\n").unwrap();
+        engine.reload_file(&wt_unused).unwrap();
+
+        let delete_res = engine
+            .safe_delete(&wt_unused, 1, 8)
+            .expect("delete query")
+            .expect("delete outcome");
+
+        assert!(!delete_res.files.is_empty(), "delete produced files");
+        for file in &delete_res.files {
+            assert!(
+                file.path.starts_with(&wt_dir),
+                "Deleted file path {:?} must be in worktree {:?}, not base {:?}",
+                file.path,
+                wt_dir,
+                base_dir
+            );
+        }
     }
 }
