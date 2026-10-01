@@ -258,6 +258,9 @@ impl SharedWorkspace {
                 Arc::new(started.with_context(|| {
                     format!("private {engine} validation server failed to start")
                 })?);
+            if engine == "swift" {
+                wait_for_swift_build_settings(&started, &root).await;
+            }
             tracing::info!(workspace = ?root, "generic validation server started");
             *slot = Some(Arc::clone(&started));
             this.generic_validation_loaded
