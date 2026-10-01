@@ -5794,3 +5794,41 @@ async fn code_references_falls_back_to_internal_checkout_use_when_declaration_re
     assert!(text.contains("crates/hyperliquid-bot/src/main.rs:3:26"), "{text}");
     assert!(text.contains("Found 1 reference(s)"), "{text}");
 }
+
+#[tokio::test]
+async fn code_outline_returns_error_when_no_symbols_found() {
+    let ws = workspace();
+    write(&ws, "src/empty.rs", "// only comments\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "src/empty.rs" }),
+    )
+    .await
+    .expect("tool call executed");
+    assert!(res.is_error, "expected error when no outline symbols found");
+    assert!(text_of(&res).contains("no outline symbols found for src/empty.rs"));
+}
+
+#[tokio::test]
+async fn code_slice_returns_error_when_no_items_found() {
+    let ws = workspace();
+    write(&ws, "src/empty.rs", "// comment\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_slice",
+        serde_json::json!({ "path": "src/empty.rs", "line": 1, "character": 1 }),
+    )
+    .await;
+    assert!(res.is_err() || res.unwrap().is_error);
+}
