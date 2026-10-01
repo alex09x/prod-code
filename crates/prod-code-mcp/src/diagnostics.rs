@@ -4,7 +4,7 @@
 use crate::session::LspSession;
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -1053,8 +1053,130 @@ pub async fn validate_texts(
             ensure_source_file(file)?;
         }
     }
-    // An extra file is checked against its text on disk; one that cannot be read would come back
-    // as a clean report nobody made, and the change would pass unchecked there (#446).
+    // Fast path: if all files are JSON, validate locally without an LSP session (#733).
+    if edits.iter().all(|(f, _)| is_json_file(f)) && also_check.iter().all(|f| is_json_file(f)) {
+        let mut reports = Vec::with_capacity(edits.len() + also_check.len());
+        for (file, text) in edits {
+            reports.push(validate_json(&display(root, file), text));
+        }
+        for file in also_check {
+            let abs = if file.is_absolute() {
+                file.clone()
+            } else {
+                root.join(file)
+            };
+            let text = std::fs::read_to_string(&abs).unwrap_or_default();
+            reports.push(validate_json(&display(root, file), &text));
+        }
+        return Ok(reports);
+    }
+
+    let engines: HashSet<&'static str> = edits
+        .iter()
+        .map(|(p, _)| crate::lang::engine_group_for_path(p))
+        .chain(also_check.iter().map(|p| crate::lang::engine_group_for_path(p)))
+        .collect();
+
+    // When a batch spans multiple languages, route each subset to its matching LSP engine
+    // rather than asking one engine (e.g. gopls) for diagnostics on incompatible files (#751, #761).
+    if engines.len() > 1 {
+        let mut final_reports: Vec<Option<DiagnosticsReport>> =
+            vec![None; edits.len() + also_check.len()];
+
+        for &engine in &engines {
+            if engine == "json" {
+                for (orig_i, (file, text)) in edits.iter().enumerate() {
+                    if is_json_file(file) {
+                        final_reports[orig_i] = Some(validate_json(&display(root, file), text));
+                    }
+                }
+                for (orig_j, file) in also_check.iter().enumerate() {
+                    if is_json_file(file) {
+                        let abs = if file.is_absolute() {
+                            file.clone()
+                        } else {
+                            root.join(file)
+                        };
+                        let text = std::fs::read_to_string(&abs).unwrap_or_default();
+                        final_reports[edits.len() + orig_j] =
+                            Some(validate_json(&display(root, file), &text));
+                    }
+                }
+                continue;
+            }
+
+            let mut group_edits = Vec::new();
+            let mut edit_indices = Vec::new();
+            for (orig_i, edit) in edits.iter().enumerate() {
+                if crate::lang::engine_group_for_path(&edit.0) == engine {
+                    group_edits.push(edit.clone());
+                    edit_indices.push(orig_i);
+                }
+            }
+
+            let mut group_also = Vec::new();
+            let mut also_indices = Vec::new();
+            for (orig_j, file) in also_check.iter().enumerate() {
+                if crate::lang::engine_group_for_path(file) == engine {
+                    group_also.push(file.clone());
+                    also_indices.push(orig_j);
+                }
+            }
+
+            if group_edits.is_empty() && group_also.is_empty() {
+                continue;
+            }
+
+            let sub_reports = Box::pin(validate_texts_single_engine(
+                remote,
+                root,
+                &group_edits,
+                &group_also,
+            ))
+            .await?;
+
+            for (sub_i, &orig_i) in edit_indices.iter().enumerate() {
+                final_reports[orig_i] = Some(sub_reports[sub_i].clone());
+            }
+            for (sub_j, &orig_j) in also_indices.iter().enumerate() {
+                final_reports[edits.len() + orig_j] =
+                    Some(sub_reports[group_edits.len() + sub_j].clone());
+            }
+        }
+
+        return Ok(final_reports
+            .into_iter()
+            .enumerate()
+            .map(|(idx, r)| {
+                r.unwrap_or_else(|| {
+                    let file = if idx < edits.len() {
+                        &edits[idx].0
+                    } else {
+                        &also_check[idx - edits.len()]
+                    };
+                    DiagnosticsReport {
+                        file: display(root, file),
+                        errors: 0,
+                        warnings: 0,
+                        items: Vec::new(),
+                        preexisting: Vec::new(),
+                        in_derive: Vec::new(),
+                        auto_trait: Vec::new(),
+                    }
+                })
+            })
+            .collect());
+    }
+
+    validate_texts_single_engine(remote, root, edits, also_check).await
+}
+
+async fn validate_texts_single_engine(
+    remote: SocketAddr,
+    root: &Path,
+    edits: &[(std::path::PathBuf, String)],
+    also_check: &[std::path::PathBuf],
+) -> Result<Vec<DiagnosticsReport>> {
     let mut also_texts = Vec::with_capacity(also_check.len());
     for file in also_check {
         let abs = if file.is_absolute() {
@@ -1069,17 +1191,6 @@ pub async fn validate_texts(
                 abs.display()
             )
         })?);
-    }
-    // Fast path: if all files are JSON, validate locally without an LSP session (#733).
-    if edits.iter().all(|(f, _)| is_json_file(f)) && also_check.iter().all(|f| is_json_file(f)) {
-        let mut reports = Vec::with_capacity(edits.len() + also_check.len());
-        for (file, text) in edits {
-            reports.push(validate_json(&display(root, file), text));
-        }
-        for (file, text) in also_check.iter().zip(&also_texts) {
-            reports.push(validate_json(&display(root, file), text));
-        }
-        return Ok(reports);
     }
     let hint = edits
         .first()

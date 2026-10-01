@@ -91,6 +91,31 @@ pub fn is_header(path: &Path) -> bool {
     )
 }
 
+/// Groups file languages by LSP engine compatibility so that mixed-language multi-file batches
+/// can be routed to the appropriate engine rather than failing against an incompatible one (#751, #761).
+pub fn engine_group_for_path(path: &Path) -> &'static str {
+    match language_id_for_path(path) {
+        "c" | "cpp" | "objective-c" | "objective-cpp" => "cpp",
+        "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => "typescript",
+        "rust" => "rust",
+        "go" => "go",
+        "python" => "python",
+        "swift" => "swift",
+        "csharp" => "csharp",
+        "java" => "java",
+        "kotlin" => "kotlin",
+        "scala" => "scala",
+        "php" => "php",
+        "ruby" => "ruby",
+        "zig" => "zig",
+        "dart" => "dart",
+        "lua" => "lua",
+        "elixir" => "elixir",
+        "json" => "json",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +175,18 @@ mod tests {
         assert_eq!(language_id_for_path(Path::new("service.jsonnet")), "jsonnet");
         assert_eq!(language_id_for_path(Path::new("config.cue")), "cue");
         assert_eq!(language_id_for_path(Path::new("README")), "plaintext");
+    }
+
+    #[test]
+    fn engine_groups_partition_mixed_languages() {
+        assert_eq!(engine_group_for_path(Path::new("cmd/check/main.go")), "go");
+        assert_eq!(engine_group_for_path(Path::new("scripts/check.py")), "python");
+        assert_eq!(engine_group_for_path(Path::new("Tests/Test.swift")), "swift");
+        assert_eq!(engine_group_for_path(Path::new("src/main.rs")), "rust");
+        assert_eq!(engine_group_for_path(Path::new("include/util.h")), "cpp");
+        assert_eq!(engine_group_for_path(Path::new("src/util.cpp")), "cpp");
+        assert_eq!(engine_group_for_path(Path::new("src/app.ts")), "typescript");
+        assert_eq!(engine_group_for_path(Path::new("src/app.jsx")), "typescript");
+        assert_eq!(engine_group_for_path(Path::new("manifest.json")), "json");
     }
 }
