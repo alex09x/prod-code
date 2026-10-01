@@ -159,7 +159,7 @@ pub async fn handle_mcp_request(
                         "gateway unreachable, running UDP discovery"
                     );
                     let old = *remote;
-                    if let Some(new_addr) = rediscover_node(old).await {
+                    if let Some(new_addr) = rediscover_node(old, workspace_root).await {
                         *remote = new_addr;
                         tracing::info!(
                             old = %old,
@@ -251,8 +251,13 @@ fn is_connection_error(e: &anyhow::Error) -> bool {
 }
 
 /// Run a 250ms UDP discovery probe (multicast + unicast to the old address) and return
-/// the best live node that is not the old one.
-async fn rediscover_node(old: SocketAddr) -> Option<SocketAddr> {
+/// the best live node.
+///
+/// Routing priority:
+/// 1. Nodes that already have the current workspace loaded (warm engine, no cold start)
+/// 2. Among those (or all if none has it), pick the one with the most available memory
+///    and the lowest load.
+async fn rediscover_node(old: SocketAddr, workspace_root: &std::path::Path) -> Option<SocketAddr> {
     let seeds = vec![old];
     let nodes = tokio::task::spawn_blocking(move || {
         prod_code_protocol::discovery::discover(&seeds)
@@ -260,16 +265,53 @@ async fn rediscover_node(old: SocketAddr) -> Option<SocketAddr> {
     .await
     .ok()?;
 
-    // Pick the node with the lowest load, excluding the dead one.
-    nodes
+    if nodes.is_empty() {
+        return None;
+    }
+
+    // Log what we found.
+    for n in &nodes {
+        tracing::debug!(
+            addr = %n.addr,
+            engines = ?n.engines,
+            cpus = n.cpus,
+            mem_avail_mb = n.mem_avail_mb,
+            mem_total_mb = n.mem_total_mb,
+            rss_mb = n.rss_mb,
+            load = n.load_per_cpu,
+            sessions = n.sessions,
+            workspaces = n.workspaces.len(),
+            "discovered node"
+        );
+    }
+
+    // The workspace identity (directory basename) — matches what the gateway uses.
+    let ws_name = workspace_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    // Exclude the dead node (unless it's the only one that answered).
+    let candidates: Vec<_> = nodes.iter().filter(|n| n.addr != old).collect();
+    let candidates = if candidates.is_empty() { nodes.iter().collect() } else { candidates };
+
+    // Prefer a node that already has this workspace loaded (warm engine).
+    let warm: Vec<_> = candidates
         .iter()
-        .filter(|n| n.addr != old)
-        .min_by(|a, b| a.load_per_cpu.partial_cmp(&b.load_per_cpu).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|n| n.addr)
-        .or_else(|| {
-            // If only the "old" node replied, it's actually alive — use it.
-            nodes.iter().find(|n| n.addr == old).map(|n| n.addr)
+        .filter(|n| n.workspaces.iter().any(|w| w.name == ws_name))
+        .copied()
+        .collect();
+
+    let pool = if warm.is_empty() { &candidates } else { &warm };
+
+    // Score: more available memory is better, lower load is better.
+    pool.iter()
+        .max_by(|a, b| {
+            let score_a = a.mem_avail_mb as f64 - a.load_per_cpu * 10000.0;
+            let score_b = b.mem_avail_mb as f64 - b.load_per_cpu * 10000.0;
+            score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
         })
+        .map(|n| n.addr)
 }
 
 /// The request/response loop, generic over its transport so it can be driven by a test without

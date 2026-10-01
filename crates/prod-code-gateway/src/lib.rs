@@ -259,6 +259,8 @@ pub struct PeerEntry {
 
 /// How long a silent peer still counts as alive.
 const PEER_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a silent peer stays in the cluster before eviction.
+const PEER_EVICT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Heartbeat period.
 const GOSSIP_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -322,7 +324,21 @@ impl ServerState {
                 sessions,
             })
             .collect();
-        let peers = self.peers.read().await.iter().cloned().collect();
+        let peers = {
+            let cluster = self.cluster.read().await;
+            self.peers
+                .read()
+                .await
+                .iter()
+                .filter(|p| {
+                    cluster
+                        .get(*p)
+                        .map(|e| e.last_seen.elapsed() < PEER_ALIVE)
+                        .unwrap_or(true)
+                })
+                .cloned()
+                .collect()
+        };
         NodeGossip {
             addr: self.advertise.read().await.clone(),
             status,
@@ -5775,6 +5791,28 @@ fn cluster_supports_engine(status: &StatusResponse, engine: &str) -> bool {
 async fn gossip_loop(state: Arc<ServerState>) {
     loop {
         tokio::time::sleep(GOSSIP_PERIOD).await;
+
+        // Evict silent peers that haven't sent heartbeats in PEER_EVICT
+        {
+            let mut cluster = state.cluster.write().await;
+            let mut evicted = Vec::new();
+            cluster.retain(|addr, entry| {
+                if entry.last_seen.elapsed() >= PEER_EVICT {
+                    evicted.push(addr.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            if !evicted.is_empty() {
+                let mut peers = state.peers.write().await;
+                for dead in &evicted {
+                    peers.remove(dead);
+                }
+                tracing::info!(evicted = ?evicted, "evicted silent peers from cluster");
+            }
+        }
+
         let peers: Vec<String> = state.peers.read().await.iter().cloned().collect();
         if peers.is_empty() {
             continue;
@@ -5842,45 +5880,17 @@ async fn discovery_loop(state: Arc<ServerState>) {
                 match result {
                     Ok((n, from)) => {
                         if buf[..n].starts_with(b"PROD_CODE_DISCOVER") {
-                            // Build reply with own + known peers.
-                            let advertise = state.advertise.read().await.clone();
-                            let engines_csv = state
-                                .advertised_engines()
-                                .iter()
-                                .map(|e| e.split(' ').next().unwrap_or(e).to_string())
-                                .collect::<Vec<_>>()
-                                .join(",");
-                            let status = state.status().await;
-                            let own_line = discovery::format_node_line(
-                                &advertise,
-                                &engines_csv,
-                                status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
-                                status.load_per_cpu().unwrap_or(0.0),
-                            );
+                            let own_line = build_own_announce(&state).await;
                             let cluster = state.cluster.read().await;
                             let peer_lines: Vec<String> = cluster
                                 .values()
                                 .filter(|e| e.last_seen.elapsed() < std::time::Duration::from_secs(30))
-                                .map(|e| {
-                                    let eng = e.gossip.status.detected_engines
-                                        .iter()
-                                        .map(|en| en.split(' ').next().unwrap_or(en).to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(",");
-                                    discovery::format_node_line(
-                                        &e.gossip.addr,
-                                        &eng,
-                                        e.gossip.status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
-                                        e.gossip.status.load_per_cpu().unwrap_or(0.0),
-                                    )
-                                })
+                                .map(|e| build_peer_announce(e))
                                 .collect();
                             drop(cluster);
                             let payload = discovery::build_reply(&own_line, &peer_lines);
                             let _ = tok_sock.send_to(&payload, from).await;
                         }
-                        // Announce from another gateway — we could auto-add as peer here,
-                        // but for now TCP gossip handles peer expansion.
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => {
@@ -5890,20 +5900,7 @@ async fn discovery_loop(state: Arc<ServerState>) {
             }
             // Periodic multicast announce.
             _ = announce_tick.tick() => {
-                let advertise = state.advertise.read().await.clone();
-                let engines_csv = state
-                    .advertised_engines()
-                    .iter()
-                    .map(|e| e.split(' ').next().unwrap_or(e).to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let status = state.status().await;
-                let line = discovery::format_node_line(
-                    &advertise,
-                    &engines_csv,
-                    status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
-                    status.load_per_cpu().unwrap_or(0.0),
-                );
+                let line = build_own_announce(&state).await;
                 let payload = discovery::build_reply(&line, &[]);
                 let _ = tok_sock.send_to(
                     &payload,
@@ -5912,6 +5909,65 @@ async fn discovery_loop(state: Arc<ServerState>) {
             }
         }
     }
+}
+
+/// Build this node's discovery announce line with full routing metadata.
+async fn build_own_announce(state: &ServerState) -> String {
+    use prod_code_protocol::discovery;
+    let advertise = state.advertise.read().await.clone();
+    let engines_csv = state
+        .advertised_engines()
+        .iter()
+        .map(|e| e.split(' ').next().unwrap_or(e).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let status = state.status().await;
+    let ws_summary = state.workspace_manager.loaded_summary().await;
+    let workspaces: Vec<(String, String, u32)> = ws_summary
+        .into_iter()
+        .map(|(name, engine, sessions)| (name, engine, sessions as u32))
+        .collect();
+    discovery::format_node_line(
+        &advertise,
+        &engines_csv,
+        status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
+        status.load_per_cpu().unwrap_or(0.0),
+        status.cpu_count.unwrap_or(0) as u32,
+        status.host.memory_total_bytes.unwrap_or(0) / (1024 * 1024),
+        status.host.memory_available_bytes.unwrap_or(0) / (1024 * 1024),
+        state.active_sessions.load(std::sync::atomic::Ordering::Relaxed) as u32,
+        &workspaces,
+    )
+}
+
+/// Build a peer's discovery announce line from its gossip data.
+fn build_peer_announce(entry: &PeerEntry) -> String {
+    use prod_code_protocol::discovery;
+    let eng = entry
+        .gossip
+        .status
+        .detected_engines
+        .iter()
+        .map(|en| en.split(' ').next().unwrap_or(en).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let workspaces: Vec<(String, String, u32)> = entry
+        .gossip
+        .workspaces
+        .iter()
+        .map(|w| (w.name.clone(), w.engine.clone(), w.sessions as u32))
+        .collect();
+    discovery::format_node_line(
+        &entry.gossip.addr,
+        &eng,
+        entry.gossip.status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
+        entry.gossip.status.load_per_cpu().unwrap_or(0.0),
+        entry.gossip.status.cpu_count.unwrap_or(0) as u32,
+        entry.gossip.status.host.memory_total_bytes.unwrap_or(0) / (1024 * 1024),
+        entry.gossip.status.host.memory_available_bytes.unwrap_or(0) / (1024 * 1024),
+        entry.gossip.workspaces.iter().map(|w| w.sessions as u32).sum::<u32>(),
+        &workspaces,
+    )
 }
 
 /// How long an engine may sit idle on a host short of memory before it is unloaded, however

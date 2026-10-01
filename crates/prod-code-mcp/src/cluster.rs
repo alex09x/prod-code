@@ -355,20 +355,25 @@ pub async fn pick_node_with(
             return Err(anyhow!("no gateway addresses given"));
         }
         let mut placement = placement_file.map(load_placement).unwrap_or_default();
-        if let Some(remembered) = placement.workspaces.get(workspace_name).copied()
-            && nodes.contains(&remembered)
-        {
-            let mut still_fits = node_fits(remembered, engine, os).await;
-            // A node that does not answer at all may be restarting: ask again before moving.
-            // One that answers but cannot serve the engine is left at once.
-            let mut tries = 0;
-            while !still_fits && tries < RESTART_RETRIES && !is_alive(remembered).await {
-                tokio::time::sleep(RESTART_WAIT).await;
-                tries += 1;
-                still_fits = node_fits(remembered, engine, os).await;
+        if let Some(remembered) = placement.workspaces.get(workspace_name).copied() {
+            if nodes.contains(&remembered) {
+                let mut still_fits = node_fits(remembered, engine, os).await;
+                // A node that does not answer at all may be restarting: ask again before moving.
+                // One that answers but cannot serve the engine is left at once.
+                let mut tries = 0;
+                while !still_fits && tries < RESTART_RETRIES && !is_alive(remembered).await {
+                    tokio::time::sleep(RESTART_WAIT).await;
+                    tries += 1;
+                    still_fits = node_fits(remembered, engine, os).await;
+                }
+                if still_fits {
+                    return Ok(remembered);
+                }
             }
-            if still_fits {
-                return Ok(remembered);
+            // Node is absent or unviable: evict stale placement entry.
+            if let Some(path) = placement_file {
+                placement.workspaces.remove(workspace_name);
+                save_placement(path, &placement);
             }
         }
         // Ask the cluster first: any live node knows (by gossip) who already holds the
@@ -663,6 +668,18 @@ pub async fn discover_nodes_with_paths(
     for remembered in &remembered_nodes {
         if !nodes.contains(remembered) && is_alive(*remembered).await {
             nodes.push(*remembered);
+        }
+    }
+
+    if learned {
+        if let Some(path) = placement_file {
+            let mut placement = load_placement(path);
+            let live_addrs: std::collections::HashSet<SocketAddr> = nodes.iter().copied().collect();
+            let before = placement.workspaces.len();
+            placement.workspaces.retain(|_, addr| live_addrs.contains(addr));
+            if placement.workspaces.len() < before {
+                save_placement(path, &placement);
+            }
         }
     }
 
