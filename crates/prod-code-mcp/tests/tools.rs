@@ -5468,3 +5468,135 @@ async fn primary_review_qualified_outline_must_name_the_current_source() {
         .unwrap();
     assert_eq!((current.name.as_str(), current.col), ("recv", col));
 }
+
+#[tokio::test]
+async fn code_definition_resolves_trait_impl_in_hint_file_and_reads_body() {
+    let ws = workspace();
+    let api_source = "pub struct StrategyApi;\n";
+    let api_file = write(&ws, "src/strategy/api.rs", api_source);
+    let stream_source = "pub trait OrderManager {\n    fn order_please(&self);\n}\nimpl OrderManager for StrategyApi {\n    fn order_please(&self) {\n        println!(\"ordered\");\n    }\n}\n";
+    let stream_file = write(&ws, "src/api2/hl/stream.rs", stream_source);
+    commit(&ws);
+
+    let stream_uri = format!("file://{}", stream_file.display());
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "StrategyApi" => {
+            serde_json::json!([answers::symbol("StrategyApi", 23, &api_file, 1, 12)])
+        }
+        "workspace/symbol" => serde_json::json!([]),
+        "textDocument/documentSymbol" if params["textDocument"]["uri"] == stream_uri => {
+            let impl_sym = answers::document_symbol("impl OrderManager for StrategyApi", 23, 4, 8, 6);
+            let method_sym = answers::document_symbol("order_please", 6, 5, 7, 8);
+            serde_json::json!([answers::nested(impl_sym, vec![method_sym])])
+        }
+        "textDocument/documentSymbol" => serde_json::json!([]),
+        "textDocument/definition" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "path": "src/api2/hl/stream.rs",
+            "symbol": "StrategyApi::order_please",
+            "body": true
+        }),
+    )
+    .await
+    .expect("definition succeeds");
+
+    let text = text_of(&res);
+    assert!(text.contains("Definition:"), "{text}");
+    assert!(text.contains("src/api2/hl/stream.rs:5:8"), "{text}");
+    assert!(text.contains("fn order_please"), "{text}");
+}
+
+#[tokio::test]
+async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_returns_empty() {
+    let ws = workspace();
+    let stream_source = "pub trait OrderManager {\n    fn order_please(&self);\n}\nimpl OrderManager for StrategyApi {\n    fn order_please(&self) {\n        println!(\"ordered\");\n    }\n}\n";
+    let stream_file = write(&ws, "src/api2/hl/stream.rs", stream_source);
+    commit(&ws);
+
+    let stream_uri = format!("file://{}", stream_file.display());
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" if params["textDocument"]["uri"] == stream_uri => {
+            let impl_sym = answers::document_symbol("impl OrderManager for StrategyApi", 23, 4, 8, 6);
+            let method_sym = answers::document_symbol("order_please", 6, 5, 7, 8);
+            serde_json::json!([answers::nested(impl_sym, vec![method_sym])])
+        }
+        "textDocument/definition" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "path": "src/api2/hl/stream.rs",
+            "line": 5,
+            "character": 8,
+            "body": true
+        }),
+    )
+    .await
+    .expect("positional definition succeeds");
+
+    let text = text_of(&res);
+    assert!(text.contains("Definition:"), "{text}");
+    assert!(text.contains("src/api2/hl/stream.rs:5:8"), "{text}");
+    assert!(text.contains("fn order_please"), "{text}");
+}
+
+#[tokio::test]
+async fn code_references_falls_back_to_internal_checkout_use_when_declaration_returns_empty() {
+    let ws = workspace();
+    let shared_source = "pub struct OkxMoonshotMoveEnum;\nimpl OkxMoonshotMoveEnum {\n    pub fn new_from_name() {}\n}\n";
+    let shared_file = write(&ws, "src/strategy2/okx_moonshotmove_enum.rs", shared_source);
+    let caller_source = "use crate::strategy2::okx_moonshotmove_enum::OkxMoonshotMoveEnum;\nfn run() {\n    OkxMoonshotMoveEnum::new_from_name();\n}\n";
+    let caller_file = write(&ws, "crates/hyperliquid-bot/src/main.rs", caller_source);
+    commit(&ws);
+
+    let shared_uri = format!("file://{}", shared_file.display());
+    let caller_uri = format!("file://{}", caller_file.display());
+    let shared_def = shared_file.clone();
+    let caller_ret = caller_file.clone();
+
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "textDocument/references" if uri == shared_uri => serde_json::json!([]),
+            "textDocument/definition" if uri == caller_uri => {
+                answers::locations(&shared_def, &[(3, 12)])
+            }
+            "textDocument/references" if uri == caller_uri => {
+                answers::locations(&caller_ret, &[(3, 26)])
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({
+            "path": "src/strategy2/okx_moonshotmove_enum.rs",
+            "line": 3,
+            "character": 12
+        }),
+    )
+    .await
+    .expect("references succeed via checkout use");
+
+    let text = text_of(&res);
+    assert!(text.contains("asked from a use of `new_from_name` in the checkout"), "{text}");
+    assert!(text.contains("crates/hyperliquid-bot/src/main.rs:3:26"), "{text}");
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
+}

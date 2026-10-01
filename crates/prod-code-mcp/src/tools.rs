@@ -2579,10 +2579,8 @@ async fn handle_references(
     )
     .await?;
     let mut out = String::new();
-    // A dependency's item asked about at its own declaration (where `symbol` lands) can come
-    // back with nothing while its uses in the checkout have references: ask from a use (#373).
+    let is_external = crate::remote_fs::is_external(workspace_root, &file_path.to_string_lossy());
     if res.as_array().is_none_or(|a| a.is_empty())
-        && crate::remote_fs::is_external(workspace_root, &file_path.to_string_lossy())
         && let Some(name) = line_text.as_deref().and_then(|t| name_at(t, character))
         && let Some((use_path, use_line, use_col)) =
             checkout_use_of(remote, workspace_root, &file_path, line, &name).await
@@ -2602,9 +2600,13 @@ async fn handle_references(
             }),
         )
         .await?;
+        let origin = if is_external {
+            "at the dependency's own declaration the server found none"
+        } else {
+            "at the declaration the server found none"
+        };
         out.push_str(&format!(
-            "(asked from a use of `{name}` in the checkout, {}:{use_line}:{use_col}: at the \
-             dependency's own declaration the server found none)\n",
+            "(asked from a use of `{name}` in the checkout, {}:{use_line}:{use_col}: {origin})\n",
             use_path
                 .strip_prefix(workspace_root)
                 .unwrap_or(&use_path)
@@ -2830,6 +2832,9 @@ async fn checkout_use_of(
                 .collect::<Vec<_>>()
         });
         for (index, col) in uses.take(MAX_USES_ASKED_PER_FILE) {
+            if path == declaration && index as u32 + 1 == line {
+                continue;
+            }
             asked += 1;
             if asked > MAX_USES_ASKED {
                 return None;
@@ -5838,10 +5843,13 @@ async fn handle_definition(
     )
     .await?;
     let mut out = String::new();
-    if let Some(arr) = res.as_array() {
-        if arr.is_empty() {
-            out.push_str("No definition found.");
-        } else {
+    let has_locations = match &res {
+        serde_json::Value::Array(arr) => !arr.is_empty(),
+        serde_json::Value::Object(_) => true,
+        _ => false,
+    };
+    if has_locations {
+        if let Some(arr) = res.as_array() {
             for (i, loc) in arr.iter().enumerate() {
                 let uri = loc
                     .get("uri")
@@ -5901,31 +5909,126 @@ async fn handle_definition(
                     }
                 }
             }
+        } else if let Some(obj) = res.as_object() {
+            let uri = obj
+                .get("uri")
+                .or_else(|| obj.get("targetUri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let range = obj.get("range").or_else(|| obj.get("targetSelectionRange"));
+            let start_line = range
+                .and_then(|r| r.get("start"))
+                .and_then(|s| s.get("line"))
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0)
+                + 1;
+            let start_col = range
+                .and_then(|r| r.get("start"))
+                .and_then(|s| s.get("character"))
+                .and_then(|c| c.as_u64())
+                .unwrap_or(0)
+                + 1;
+            out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
+            if body {
+                match definition_body(
+                    remote,
+                    workspace_root,
+                    uri,
+                    start_line as u32,
+                    start_col as u32,
+                )
+                .await
+                {
+                    Ok(text) => {
+                        out.push('\n');
+                        out.push_str(&text);
+                    }
+                    Err(e) => out.push_str(&format!(
+                        "\n   (the definition's code could not be read: {e:#})"
+                    )),
+                }
+            }
         }
-    } else if let Some(obj) = res.as_object() {
-        let uri = obj
-            .get("uri")
-            .or_else(|| obj.get("targetUri"))
-            .and_then(|u| u.as_str())
-            .unwrap_or("");
-        let range = obj.get("range").or_else(|| obj.get("targetSelectionRange"));
-        let start_line = range
-            .and_then(|r| r.get("start"))
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0)
-            + 1;
-        let start_col = range
-            .and_then(|r| r.get("start"))
-            .and_then(|s| s.get("character"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0)
-            + 1;
-        out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
     } else {
-        out.push_str("No definition found.");
+        let is_def = if args.get("symbol").is_some() {
+            true
+        } else {
+            is_outline_definition(remote, workspace_root, &file_path, line, character).await
+        };
+        if is_def {
+            out.push_str(&format!("📍 Definition: {file_uri}:{line}:{character}"));
+            if body {
+                match definition_body(
+                    remote,
+                    workspace_root,
+                    &file_uri,
+                    line,
+                    character,
+                )
+                .await
+                {
+                    Ok(text) => {
+                        out.push('\n');
+                        out.push_str(&text);
+                    }
+                    Err(e) => out.push_str(&format!(
+                        "\n   (the definition's code could not be read: {e:#})"
+                    )),
+                }
+            }
+        } else {
+            out.push_str("No definition found.");
+        }
     }
     Ok(McpToolCallResult::text(out))
+}
+
+async fn is_outline_definition(
+    remote: SocketAddr,
+    root: &Path,
+    path: &Path,
+    line: u32,
+    character: u32,
+) -> bool {
+    let Ok(uri) = Url::from_file_path(path) else {
+        return false;
+    };
+    let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
+    let query = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params);
+    let Ok(Ok(outline)) = tokio::time::timeout(std::time::Duration::from_millis(1500), query).await else {
+        return false;
+    };
+    let zero_line = (line as usize).saturating_sub(1);
+    let zero_col = (character as usize).saturating_sub(1);
+    outline_contains_definition(&outline, zero_line, zero_col)
+}
+
+fn outline_contains_definition(symbols: &serde_json::Value, line: usize, col: usize) -> bool {
+    for sym in symbols.as_array().into_iter().flatten() {
+        let sel = sym
+            .get("selectionRange")
+            .or_else(|| sym.get("range"))
+            .or_else(|| sym.pointer("/location/range"));
+        if let Some(start) = sel.and_then(|r| r.get("start"))
+            && let Some(start_line) = start.get("line").and_then(|l| l.as_u64()).map(|l| l as usize)
+        {
+            let end_line = sel
+                .and_then(|r| r.get("end"))
+                .and_then(|r| r.get("line"))
+                .and_then(|l| l.as_u64())
+                .map(|l| l as usize)
+                .unwrap_or(start_line);
+            if start_line <= line && line <= end_line {
+                return true;
+            }
+        }
+        if let Some(children) = sym.get("children")
+            && outline_contains_definition(children, line, col)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// The most lines of a definition `body: true` shows.
@@ -7988,8 +8091,26 @@ async fn type_members(
     let Some(type_name) = owner.last().copied() else {
         return Ok(Vec::new());
     };
-    let types = workspace_symbol_search(remote, root, type_name, hint, 200).await?;
+    let types = workspace_symbol_search(remote, root, type_name, hint, 200)
+        .await
+        .unwrap_or_default();
     let mut files: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(h) = hint {
+        let p = if h.is_absolute() {
+            h.to_path_buf()
+        } else {
+            root.join(h)
+        };
+        if p.is_file() {
+            files.push(p);
+        } else if p.is_dir() {
+            for entry in source_files(&p).take(8) {
+                if std::fs::read_to_string(&entry).is_ok_and(|text| names_word(&text, member)) {
+                    files.push(entry);
+                }
+            }
+        }
+    }
     for hit in &types {
         if bare_symbol_name(&hit.name).eq_ignore_ascii_case(type_name)
             && !is_use_declaration(&hit.path, &RemoteSources::new(), hit.line)
@@ -8030,8 +8151,58 @@ async fn type_members(
             }
         }
     }
-    if let Some(h) = hint.map(|h| h.to_string_lossy().into_owned()) {
-        let under_hint = |m: &SymbolHit| m.path.to_string_lossy().starts_with(h.as_str());
+    if members.is_empty() {
+        let mut candidates = Vec::new();
+        for path in source_files(root).take(1000) {
+            if !files.contains(&path)
+                && std::fs::read_to_string(&path)
+                    .is_ok_and(|text| names_word(&text, member) && names_word(&text, type_name))
+            {
+                candidates.push(path);
+                if candidates.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        for file in &candidates {
+            let Ok(uri) = Url::from_file_path(file) else {
+                continue;
+            };
+            let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
+            let Ok(outline) =
+                execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params).await
+            else {
+                continue;
+            };
+            let mut found = Vec::new();
+            collect_members(&outline, root, file, owner, member, &[], &mut found)?;
+            for (name, kind, line, col) in found {
+                let hit = SymbolHit {
+                    path: file.clone(),
+                    name,
+                    kind: symbol_kind_name(kind),
+                    container: Some(owner.join("::")),
+                    line,
+                    col,
+                };
+                if !members
+                    .iter()
+                    .any(|m| m.path == hit.path && m.line == hit.line && m.col == hit.col)
+                {
+                    members.push(hit);
+                }
+            }
+        }
+    }
+    if let Some(h) = hint {
+        let h_abs = if h.is_absolute() {
+            h.to_path_buf()
+        } else {
+            root.join(h)
+        };
+        let under_hint = |m: &SymbolHit| {
+            m.path == h_abs || m.path.starts_with(&h_abs) || m.path.ends_with(h)
+        };
         if members.iter().any(under_hint) {
             members.retain(under_hint);
         }
