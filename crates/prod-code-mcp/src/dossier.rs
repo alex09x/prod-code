@@ -325,6 +325,17 @@ pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(Strin
     out
 }
 
+fn truncate_utf8(s: &mut String, max_bytes: usize) {
+    if s.len() > max_bytes {
+        let mut cut = max_bytes;
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+        s.push_str("\n…");
+    }
+}
+
 fn git_diff_of(root: &Path, file: &str) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -338,10 +349,7 @@ fn git_diff_of(root: &Path, file: &str) -> Option<String> {
         None
     } else {
         let mut s = hunks.join("\n");
-        if s.len() > 4000 {
-            s.truncate(4000);
-            s.push_str("\n…");
-        }
+        truncate_utf8(&mut s, 4000);
         Some(s)
     }
 }
@@ -1454,5 +1462,13 @@ mod tests {
             compact,
             "assertion [assert_eq (left == right)]: actual: 4, expected: 5\n"
         );
+    }
+
+    #[test]
+    fn truncate_utf8_respects_char_boundaries() {
+        let mut s = "привет мир ".repeat(400);
+        truncate_utf8(&mut s, 4001);
+        assert!(s.ends_with("\n…"));
+        assert!(s.len() <= 4001 + "\n…".len());
     }
 }
