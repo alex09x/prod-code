@@ -3140,6 +3140,15 @@ mod tests {
             .output()
             .unwrap();
 
+        // Isolate from global Git excludes so .prod or .scratch are not hidden by global gitignore (#760)
+        let empty_excludes = path.join(".empty_excludes");
+        std::fs::write(&empty_excludes, "").unwrap();
+        std::process::Command::new("git")
+            .args(&["config", "core.excludesFile", empty_excludes.to_str().unwrap()])
+            .current_dir(path)
+            .output()
+            .unwrap();
+
         std::fs::create_dir_all(path.join(".prod/tmp/resident-repair")).unwrap();
         std::fs::write(path.join(".prod/tmp/resident-repair/scratch.go"), "package scratch\n").unwrap();
 
@@ -3150,6 +3159,18 @@ mod tests {
         std::fs::write(path.join(".support/helper.rs"), "pub fn helper() {}\n").unwrap();
 
         std::fs::write(path.join("untracked.rs"), "pub fn untracked() {}\n").unwrap();
+
+        // Ensure git status reports the scratch paths as untracked before diff_hunks filters them
+        let status = std::process::Command::new("git")
+            .args(&["status", "--porcelain=v1", "-uall"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        let status_str = String::from_utf8_lossy(&status.stdout);
+        assert!(status_str.contains("?? .prod/tmp/resident-repair/scratch.go"), "{status_str}");
+        assert!(status_str.contains("?? .scratch/draft.go"), "{status_str}");
+        assert!(status_str.contains("?? .support/helper.rs"), "{status_str}");
+        assert!(status_str.contains("?? untracked.rs"), "{status_str}");
 
         let hunks = diff_hunks(path, None).expect("diff_hunks succeeds");
 
