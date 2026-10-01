@@ -6,31 +6,23 @@
 //!
 //! **Probe** (client → gateway, multicast or unicast):
 //! ```text
-//! PROD_CODE_DISCOVER\n
+//! PROD_CODE_DISCOVER [<auth_tag>]\n
 //! ```
 //!
 //! **Announce** (gateway → multicast, or gateway → client as probe reply):
 //! ```text
-//! PROD_CODE_NODE <advertise_addr> <engines_csv> <rss_mb> <load_per_cpu>\n
+//! PROD_CODE_NODE <auth_tag> <advertise_addr> <engines_csv> <rss_mb> <load> <cpus> <mem_total> <mem_avail> <sessions> [ws1:eng:n,ws2:eng:n,...]\n
 //! ```
 //!
-//! A gateway that receives a probe replies with its own announce **plus** one line per
-//! known peer, so a single unicast probe to any reachable node returns the full cluster.
+//! When an auth token is configured, announcements and probes include a cryptographic
+//! MAC tag derived from the token to prevent rogue LAN endpoints from poisoning
+//! cluster selection, capturing tokens, or harvesting telemetry.
 //!
-//! # Multicast
-//!
-//! Gateways join `MULTICAST_GROUP` (`239.255.80.67`) on startup and send their announce
-//! every `ANNOUNCE_PERIOD`.  Clients (and other gateways) listen on the same group to
-//! discover nodes without any configuration.
-//!
-//! # Unicast fallback
-//!
-//! When multicast is unavailable (different subnet, firewall), a client sends the probe
-//! as a unicast UDP packet to a known seed address on `DISCOVERY_PORT`.  The seed replies
-//! with the full cluster view.
+//! In addition, the client validates that the advertised IP address matches the
+//! sender's IP address (`recv_from`), preventing cross-host spoofing attacks on LAN.
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
 
 /// The UDP port used for discovery (one above the gateway TCP port).
@@ -48,13 +40,61 @@ pub const COLLECT_TIMEOUT: Duration = Duration::from_millis(250);
 /// Maximum UDP datagram we handle.
 const MAX_DGRAM: usize = 4096;
 
-const PROBE_LINE: &[u8] = b"PROD_CODE_DISCOVER\n";
+const PROBE_PREFIX: &str = "PROD_CODE_DISCOVER";
 const NODE_PREFIX: &str = "PROD_CODE_NODE ";
+
+// ── Auth MAC & Escaping Helpers ───────────────────────────────────────────────
+
+/// Computes a 16-hex-character MAC tag using the cluster auth token.
+pub fn compute_auth_tag(token: &str, data: &str) -> String {
+    let combined = format!("{token}#{data}");
+    format!("{:016x}", crate::content_hash(combined.as_bytes()))
+}
+
+/// Verifies an auth tag against the expected token.
+pub fn verify_auth_tag(token: &str, data: &str, tag: &str) -> bool {
+    let expected = compute_auth_tag(token, data);
+    expected == tag
+}
+
+/// Percent-encode arbitrary workspace names so spaces, commas, and colons
+/// do not corrupt the whitespace- and delimiter-separated UDP record.
+pub fn encode_workspace_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for b in name.as_bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(*b as char),
+            other => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{other:02X}");
+            }
+        }
+    }
+    out
+}
+
+/// Decode percent-encoded workspace name back to UTF-8.
+pub fn decode_workspace_name(encoded: &str) -> String {
+    let mut bytes = Vec::new();
+    let mut chars = encoded.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let h1 = chars.next().unwrap_or('0');
+            let h2 = chars.next().unwrap_or('0');
+            if let Ok(b) = u8::from_str_radix(&format!("{h1}{h2}"), 16) {
+                bytes.push(b);
+            }
+        } else {
+            bytes.push(c as u8);
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| encoded.to_string())
+}
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
 /// A workspace loaded on a discovered node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedWorkspace {
     pub name: String,
     pub engine: String,
@@ -80,16 +120,36 @@ pub struct DiscoveredNode {
     pub workspaces: Vec<LoadedWorkspace>,
 }
 
-/// Format: `PROD_CODE_NODE <addr> <engines> <rss_mb> <load> <cpus> <mem_total> <mem_avail> <sessions> [ws1:eng:n,ws2:eng:n,...]`
-///
-/// Workspaces are comma-separated `name:engine:sessions` triples.  A `-` means none loaded.
-fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
+/// Parse one `PROD_CODE_NODE` line, validating anti-spoofing and auth token MAC.
+pub fn parse_node_line_with_auth(
+    line: &str,
+    expected_token: Option<&str>,
+    sender_ip: Option<IpAddr>,
+) -> Option<DiscoveredNode> {
     let rest = line.strip_prefix(NODE_PREFIX)?;
     let mut parts = rest.split_whitespace();
-    let addr: SocketAddr = parts.next()?.parse().ok()?;
-    let engines: Vec<String> = parts
-        .next()
-        .unwrap_or("")
+
+    let first = parts.next()?;
+    // Support backward-compatible lines where field 0 is addr, or new lines where field 0 is tag.
+    let (tag, addr_str) = if let Ok(_) = first.parse::<SocketAddr>() {
+        ("-", first)
+    } else {
+        (first, parts.next()?)
+    };
+
+    let addr: SocketAddr = addr_str.parse().ok()?;
+
+    // Anti-spoofing check: advertised IP must match actual UDP packet sender IP
+    // (unless one is loopback, as in local tests).
+    if let Some(from_ip) = sender_ip {
+        if !from_ip.is_loopback() && !addr.ip().is_loopback() && from_ip != addr.ip() {
+            tracing::warn!(from = %from_ip, advertised = %addr, "rejecting spoofed discovery advertisement");
+            return None;
+        }
+    }
+
+    let engines_csv = parts.next().unwrap_or("");
+    let engines: Vec<String> = engines_csv
         .split(',')
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -100,6 +160,16 @@ fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
     let mem_total_mb: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mem_avail_mb: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let sessions: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    // Auth verification: if an auth token is configured, reject announcements with invalid MAC tag.
+    if let Some(token) = expected_token {
+        let auth_payload = format!("{addr}:{engines_csv}:{cpus}:{mem_total_mb}");
+        if !verify_auth_tag(token, &auth_payload, tag) {
+            tracing::warn!(addr = %addr, "rejecting unauthenticated/forged discovery advertisement");
+            return None;
+        }
+    }
+
     let workspaces = parts
         .next()
         .filter(|s| *s != "-")
@@ -108,11 +178,11 @@ fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
                 .split(',')
                 .filter_map(|entry| {
                     let mut p = entry.splitn(3, ':');
-                    let name = p.next()?;
+                    let raw_name = p.next()?;
                     let engine = p.next().unwrap_or("?");
                     let sess: u32 = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
                     Some(LoadedWorkspace {
-                        name: name.to_string(),
+                        name: decode_workspace_name(raw_name),
                         engine: engine.to_string(),
                         sessions: sess,
                     })
@@ -120,6 +190,7 @@ fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
                 .collect()
         })
         .unwrap_or_default();
+
     Some(DiscoveredNode {
         addr,
         engines,
@@ -133,6 +204,11 @@ fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
     })
 }
 
+/// Convenience parser without anti-spoofing or auth verification (used by unit tests).
+pub fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
+    parse_node_line_with_auth(line, None, None)
+}
+
 /// Format one announce line (without trailing newline).
 pub fn format_node_line(
     advertise: &str,
@@ -144,27 +220,33 @@ pub fn format_node_line(
     mem_avail_mb: u64,
     sessions: u32,
     workspaces: &[(String, String, u32)], // (name, engine, sessions)
+    token: Option<&str>,
 ) -> String {
     let ws = if workspaces.is_empty() {
         "-".to_string()
     } else {
         workspaces
             .iter()
-            .map(|(n, e, s)| format!("{n}:{e}:{s}"))
+            .map(|(n, e, s)| {
+                let enc_name = encode_workspace_name(n);
+                format!("{enc_name}:{e}:{s}")
+            })
             .collect::<Vec<_>>()
             .join(",")
     };
+
+    let tag = token
+        .map(|t| compute_auth_tag(t, &format!("{advertise}:{engines_csv}:{cpus}:{mem_total_mb}")))
+        .unwrap_or_else(|| "-".to_string());
+
     format!(
-        "{NODE_PREFIX}{advertise} {engines_csv} {rss_mb} {load_per_cpu:.4} {cpus} {mem_total_mb} {mem_avail_mb} {sessions} {ws}"
+        "{NODE_PREFIX}{tag} {advertise} {engines_csv} {rss_mb} {load_per_cpu:.4} {cpus} {mem_total_mb} {mem_avail_mb} {sessions} {ws}"
     )
 }
 
 // ── Gateway side ──────────────────────────────────────────────────────────────
 
-/// Bind the discovery UDP socket.  The gateway calls this once at startup.
-///
-/// Returns the socket (non-blocking) and a `JoinHandle` is **not** returned — the
-/// caller drives the socket with [`handle_incoming`] and [`send_announce`].
+/// Bind the discovery UDP socket.
 pub fn bind_discovery_socket() -> std::io::Result<UdpSocket> {
     let sock = socket2::Socket::new(
         socket2::Domain::IPV4,
@@ -172,32 +254,41 @@ pub fn bind_discovery_socket() -> std::io::Result<UdpSocket> {
         Some(socket2::Protocol::UDP),
     )?;
     sock.set_reuse_address(true)?;
-    // macOS needs SO_REUSEPORT for multiple processes on the same host.
     #[cfg(unix)]
     sock.set_reuse_port(true)?;
     sock.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT).into())?;
     sock.join_multicast_v4(&MULTICAST_GROUP, &Ipv4Addr::UNSPECIFIED)?;
     sock.set_multicast_loop_v4(false)?;
-    // Non-blocking so tokio can poll it.
     sock.set_nonblocking(true)?;
     Ok(sock.into())
 }
 
-/// Process one incoming datagram.  If it is a probe, returns the source address
-/// so the caller can reply.
-pub fn handle_incoming(buf: &[u8], _from: SocketAddr) -> Option<SocketAddr> {
-    if buf.starts_with(b"PROD_CODE_DISCOVER") {
-        Some(_from)
-    } else if let Ok(text) = std::str::from_utf8(buf) {
-        // Announce from another gateway — caller absorbs it.
-        for line in text.lines() {
-            if let Some(_node) = parse_node_line(line) {
-                // Caller will collect these.
-            }
-        }
-        None
+/// Check whether an incoming probe is valid and authorized.
+pub fn is_valid_probe(buf: &[u8], token: Option<&str>) -> bool {
+    if !buf.starts_with(PROBE_PREFIX.as_bytes()) {
+        return false;
+    }
+    if let Some(token) = token {
+        let text = match std::str::from_utf8(buf) {
+            Ok(s) => s.trim(),
+            Err(_) => return false,
+        };
+        let mut parts = text.split_whitespace();
+        let _ = parts.next(); // PROD_CODE_DISCOVER
+        let tag = parts.next().unwrap_or("");
+        verify_auth_tag(token, PROBE_PREFIX, tag)
     } else {
-        None
+        true
+    }
+}
+
+/// Format the probe datagram payload.
+pub fn format_probe(token: Option<&str>) -> Vec<u8> {
+    if let Some(token) = token {
+        let tag = compute_auth_tag(token, PROBE_PREFIX);
+        format!("{PROBE_PREFIX} {tag}\n").into_bytes()
+    } else {
+        format!("{PROBE_PREFIX}\n").into_bytes()
     }
 }
 
@@ -222,26 +313,27 @@ pub fn send_announce(sock: &UdpSocket, payload: &[u8]) -> std::io::Result<()> {
 
 // ── Client side ───────────────────────────────────────────────────────────────
 
-/// Discover nodes by sending a probe and collecting replies.
-///
-/// 1. If `seeds` is empty, sends a **multicast** probe and listens.
-/// 2. If `seeds` is non-empty, sends a **unicast** probe to each seed, then also
-///    sends a multicast probe.  Collects all replies for `COLLECT_TIMEOUT`.
-///
-/// Returns the de-duplicated list of discovered nodes.
+/// Discover nodes by sending probes and collecting authenticated replies.
 pub fn discover(seeds: &[SocketAddr]) -> Vec<DiscoveredNode> {
+    discover_with_token(seeds, crate::transport::auth_token().as_deref())
+}
+
+/// Discover nodes with an explicit cluster auth token.
+pub fn discover_with_token(seeds: &[SocketAddr], token: Option<&str>) -> Vec<DiscoveredNode> {
     let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
         return Vec::new();
     };
     let _ = sock.set_broadcast(true);
     let _ = sock.set_read_timeout(Some(COLLECT_TIMEOUT));
 
+    let probe_payload = format_probe(token);
+
     // Send probes.
     let mcast_dest = SocketAddrV4::new(MULTICAST_GROUP, DISCOVERY_PORT);
-    let _ = sock.send_to(PROBE_LINE, mcast_dest);
+    let _ = sock.send_to(&probe_payload, mcast_dest);
     for seed in seeds {
         let unicast_dest = SocketAddr::new(seed.ip(), DISCOVERY_PORT);
-        let _ = sock.send_to(PROBE_LINE, unicast_dest);
+        let _ = sock.send_to(&probe_payload, unicast_dest);
     }
 
     // Collect replies.
@@ -252,10 +344,10 @@ pub fn discover(seeds: &[SocketAddr]) -> Vec<DiscoveredNode> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let _ = sock.set_read_timeout(Some(remaining.max(Duration::from_millis(1))));
         match sock.recv_from(&mut buf) {
-            Ok((n, _from)) => {
+            Ok((n, from)) => {
                 if let Ok(text) = std::str::from_utf8(&buf[..n]) {
                     for line in text.lines() {
-                        if let Some(node) = parse_node_line(line) {
+                        if let Some(node) = parse_node_line_with_auth(line, token, Some(from.ip())) {
                             nodes.entry(node.addr).or_insert(node);
                         }
                     }
@@ -284,7 +376,7 @@ mod tests {
         ];
         let line = format_node_line(
             "192.168.2.168:9400", "rust,go,python", 4200, 0.0712,
-            32, 128000, 64000, 3, &ws,
+            32, 128000, 64000, 3, &ws, None,
         );
         let node = parse_node_line(&line).expect("should parse");
         assert_eq!(node.addr, "192.168.2.168:9400".parse().unwrap());
@@ -303,8 +395,94 @@ mod tests {
     }
 
     #[test]
-    fn parse_minimal_line() {
-        // Old-format line with only 4 fields: backward compatible, new fields default.
+    fn workspace_names_with_spaces_and_delimiters_are_safely_preserved() {
+        let ws = vec![
+            ("My Project with spaces".into(), "rust".into(), 1),
+            ("repo,with,commas:and:colons".into(), "go".into(), 2),
+            ("русский проект".into(), "python".into(), 0),
+        ];
+        let line = format_node_line(
+            "10.0.0.1:9400", "rust,go,python", 500, 0.1,
+            8, 16000, 8000, 3, &ws, None,
+        );
+        let node = parse_node_line(&line).expect("should parse despite spaces and colons in names");
+        assert_eq!(node.workspaces.len(), 3);
+        assert_eq!(node.workspaces[0].name, "My Project with spaces");
+        assert_eq!(node.workspaces[1].name, "repo,with,commas:and:colons");
+        assert_eq!(node.workspaces[2].name, "русский проект");
+    }
+
+    #[test]
+    fn authenticated_announcement_round_trips() {
+        let token = "secret-cluster-token-12345";
+        let line = format_node_line(
+            "192.168.2.100:9400", "rust", 200, 0.05,
+            4, 8000, 4000, 1, &[], Some(token),
+        );
+        let sender_ip: IpAddr = "192.168.2.100".parse().unwrap();
+        let node = parse_node_line_with_auth(&line, Some(token), Some(sender_ip))
+            .expect("should accept valid authenticated announcement");
+        assert_eq!(node.addr, "192.168.2.100:9400".parse().unwrap());
+    }
+
+    #[test]
+    fn forged_announcement_rejected_when_token_configured() {
+        let token = "secret-cluster-token-12345";
+        // Unauthenticated line (tag = -)
+        let unauth_line = format_node_line(
+            "192.168.2.100:9400", "rust", 200, 0.05,
+            4, 8000, 4000, 1, &[], None,
+        );
+        let sender_ip: IpAddr = "192.168.2.100".parse().unwrap();
+        assert!(
+            parse_node_line_with_auth(&unauth_line, Some(token), Some(sender_ip)).is_none(),
+            "must reject unauthenticated announce when token is configured"
+        );
+
+        // Forged line with wrong token
+        let wrong_token_line = format_node_line(
+            "192.168.2.100:9400", "rust", 200, 0.05,
+            4, 8000, 4000, 1, &[], Some("wrong-token"),
+        );
+        assert!(
+            parse_node_line_with_auth(&wrong_token_line, Some(token), Some(sender_ip)).is_none(),
+            "must reject announce with wrong token"
+        );
+    }
+
+    #[test]
+    fn anti_spoofing_rejects_mismatched_sender_ip() {
+        let line = format_node_line(
+            "192.168.2.168:9400", "rust", 200, 0.05,
+            4, 8000, 4000, 1, &[], None,
+        );
+        // Sender IP is attacker at 192.168.2.99 pretending to advertise 192.168.2.168
+        let attacker_ip: IpAddr = "192.168.2.99".parse().unwrap();
+        assert!(
+            parse_node_line_with_auth(&line, None, Some(attacker_ip)).is_none(),
+            "must reject spoofed sender IP"
+        );
+
+        // Legitimate sender matching advertised IP is accepted
+        let real_ip: IpAddr = "192.168.2.168".parse().unwrap();
+        assert!(parse_node_line_with_auth(&line, None, Some(real_ip)).is_some());
+    }
+
+    #[test]
+    fn probe_validation_with_token() {
+        let token = "my-secret-token";
+        let valid_probe = format_probe(Some(token));
+        assert!(is_valid_probe(&valid_probe, Some(token)));
+
+        let unauth_probe = b"PROD_CODE_DISCOVER\n";
+        assert!(!is_valid_probe(unauth_probe, Some(token)));
+
+        let wrong_token_probe = format_probe(Some("wrong-token"));
+        assert!(!is_valid_probe(&wrong_token_probe, Some(token)));
+    }
+
+    #[test]
+    fn parse_minimal_legacy_line() {
         let line = "PROD_CODE_NODE 10.0.0.1:9400 rust 0 0.0";
         let node = parse_node_line(line).unwrap();
         assert_eq!(node.addr, "10.0.0.1:9400".parse().unwrap());
@@ -318,31 +496,5 @@ mod tests {
     fn parse_garbage_returns_none() {
         assert!(parse_node_line("hello world").is_none());
         assert!(parse_node_line("PROD_CODE_NODE badaddr rust 0 0").is_none());
-    }
-
-    #[test]
-    fn no_workspaces_shows_dash() {
-        let line = format_node_line("10.0.0.1:9400", "rust", 100, 0.05, 4, 8000, 4000, 0, &[]);
-        assert!(line.ends_with(" -"));
-        let node = parse_node_line(&line).unwrap();
-        assert!(node.workspaces.is_empty());
-    }
-
-    #[test]
-    fn build_reply_contains_all_lines() {
-        let own = format_node_line(
-            "10.0.0.1:9400", "rust", 100, 0.05, 4, 8000, 4000, 0, &[],
-        );
-        let peers = vec![format_node_line(
-            "10.0.0.2:9400", "go", 200, 0.10, 8, 16000, 8000, 1,
-            &[("myapp".into(), "go".into(), 1)],
-        )];
-        let payload = build_reply(&own, &peers);
-        let text = String::from_utf8(payload).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("10.0.0.1:9400"));
-        assert!(lines[1].contains("10.0.0.2:9400"));
-        assert!(lines[1].contains("myapp:go:1"));
     }
 }

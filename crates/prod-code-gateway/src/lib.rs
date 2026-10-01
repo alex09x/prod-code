@@ -334,7 +334,7 @@ impl ServerState {
                     cluster
                         .get(*p)
                         .map(|e| e.last_seen.elapsed() < PEER_ALIVE)
-                        .unwrap_or(true)
+                        .unwrap_or(false)
                 })
                 .cloned()
                 .collect()
@@ -5789,10 +5789,13 @@ fn cluster_supports_engine(status: &StatusResponse, engine: &str) -> bool {
 /// Sends this node's heartbeat to every known peer every [`GOSSIP_PERIOD`] and absorbs the
 /// heartbeats they answer with, so every node ends up with the same picture of the cluster.
 async fn gossip_loop(state: Arc<ServerState>) {
+    let mut unconfirmed_since: std::collections::HashMap<String, Instant> =
+        std::collections::HashMap::new();
+
     loop {
         tokio::time::sleep(GOSSIP_PERIOD).await;
 
-        // Evict silent peers that haven't sent heartbeats in PEER_EVICT
+        // 1. Evict silent peers from cluster that haven't sent heartbeats in PEER_EVICT
         {
             let mut cluster = state.cluster.write().await;
             let mut evicted = Vec::new();
@@ -5808,8 +5811,34 @@ async fn gossip_loop(state: Arc<ServerState>) {
                 let mut peers = state.peers.write().await;
                 for dead in &evicted {
                     peers.remove(dead);
+                    unconfirmed_since.remove(dead);
                 }
                 tracing::info!(evicted = ?evicted, "evicted silent peers from cluster");
+            }
+        }
+
+        // 2. Evict unconfirmed transitive peers from state.peers that never connected within PEER_EVICT
+        {
+            let cluster = state.cluster.read().await;
+            let mut peers = state.peers.write().await;
+            let now = Instant::now();
+            let mut dead_unconfirmed = Vec::new();
+            for p in peers.iter() {
+                if !cluster.contains_key(p) {
+                    let first_seen = unconfirmed_since.entry(p.clone()).or_insert(now);
+                    if now.duration_since(*first_seen) >= PEER_EVICT {
+                        dead_unconfirmed.push(p.clone());
+                    }
+                } else {
+                    unconfirmed_since.remove(p);
+                }
+            }
+            for d in &dead_unconfirmed {
+                peers.remove(d);
+                unconfirmed_since.remove(d);
+            }
+            if !dead_unconfirmed.is_empty() {
+                tracing::info!(evicted = ?dead_unconfirmed, "evicted unreachable transitive peers");
             }
         }
 
@@ -5879,13 +5908,14 @@ async fn discovery_loop(state: Arc<ServerState>) {
             result = tok_sock.recv_from(&mut buf) => {
                 match result {
                     Ok((n, from)) => {
-                        if buf[..n].starts_with(b"PROD_CODE_DISCOVER") {
+                        let token = state.auth_token.as_deref();
+                        if discovery::is_valid_probe(&buf[..n], token) {
                             let own_line = build_own_announce(&state).await;
                             let cluster = state.cluster.read().await;
                             let peer_lines: Vec<String> = cluster
                                 .values()
                                 .filter(|e| e.last_seen.elapsed() < std::time::Duration::from_secs(30))
-                                .map(|e| build_peer_announce(e))
+                                .map(|e| build_peer_announce(e, token))
                                 .collect();
                             drop(cluster);
                             let payload = discovery::build_reply(&own_line, &peer_lines);
@@ -5937,11 +5967,12 @@ async fn build_own_announce(state: &ServerState) -> String {
         status.host.memory_available_bytes.unwrap_or(0) / (1024 * 1024),
         state.active_sessions.load(std::sync::atomic::Ordering::Relaxed) as u32,
         &workspaces,
+        state.auth_token.as_deref(),
     )
 }
 
 /// Build a peer's discovery announce line from its gossip data.
-fn build_peer_announce(entry: &PeerEntry) -> String {
+fn build_peer_announce(entry: &PeerEntry, token: Option<&str>) -> String {
     use prod_code_protocol::discovery;
     let eng = entry
         .gossip
@@ -5967,6 +5998,7 @@ fn build_peer_announce(entry: &PeerEntry) -> String {
         entry.gossip.status.host.memory_available_bytes.unwrap_or(0) / (1024 * 1024),
         entry.gossip.workspaces.iter().map(|w| w.sessions as u32).sum::<u32>(),
         &workspaces,
+        token,
     )
 }
 
@@ -6264,6 +6296,35 @@ mod tests {
         );
         assert!(flatten_writer_result(result).is_err());
         owned.clear_finished();
+    }
+
+    #[tokio::test]
+    async fn own_gossip_does_not_propagate_unconfirmed_transitive_peers() {
+        let storage = tempfile::tempdir().unwrap();
+        let state = ServerState::new(storage.path().to_path_buf());
+        *state.advertise.write().await = "127.0.0.1:9400".into();
+
+        // Absorb gossip from peer A that mentions a transitive dead peer B.
+        let peer_a_gossip = NodeGossip {
+            addr: "127.0.0.1:9401".into(),
+            status: state.status().await,
+            workspaces: Vec::new(),
+            peers: vec!["127.0.0.1:9402".into()], // peer B (unconfirmed)
+            sent_at_ms: 1000,
+        };
+        state.absorb_gossip(peer_a_gossip).await;
+
+        // own_gossip should contain peer A (which is confirmed alive by absorb_gossip),
+        // but must NOT propagate peer B (which has never been directly observed alive).
+        let own = state.own_gossip().await;
+        assert!(
+            own.peers.contains(&"127.0.0.1:9401".to_string()),
+            "confirmed peer A must be gossiped"
+        );
+        assert!(
+            !own.peers.contains(&"127.0.0.1:9402".to_string()),
+            "unconfirmed peer B must NOT be propagated transitively"
+        );
     }
 
     #[test]

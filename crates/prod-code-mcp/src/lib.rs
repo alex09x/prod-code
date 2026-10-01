@@ -151,11 +151,12 @@ pub async fn handle_mcp_request(
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
                     Ok(Some(serde_json::to_value(resp)?))
                 }
-                Err(e) if is_connection_error(&e) => {
-                    // Gateway unreachable — try UDP discovery to find a live node.
+                Err(e) if is_retryable_connection_error(tool_name, &e) => {
+                    // Gateway unreachable before dispatch — try UDP discovery to find a live node.
                     tracing::warn!(
                         old_gateway = %remote,
                         error = %e,
+                        tool = tool_name,
                         "gateway unreachable, running UDP discovery"
                     );
                     let old = *remote;
@@ -239,23 +240,37 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
     .await
 }
 
-/// Whether an error looks like a gateway connection failure (refused, reset, timed out).
-fn is_connection_error(e: &anyhow::Error) -> bool {
+/// Whether an error is an initial transport connection failure that can be safely retried.
+///
+/// Mutating tools (`code_exec`) must NEVER be automatically retried: if the gateway received
+/// the command and dropped connection during execution, replaying it on another node can
+/// cause duplicate external side-effects (e.g. database migrations, external API calls).
+/// Similarly, any error where the command result is unknown is non-retryable.
+fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool {
+    if tool_name == "code_exec" {
+        return false;
+    }
     let msg = format!("{e:#}").to_lowercase();
-    msg.contains("connect")
+    if msg.contains("result is unknown")
+        || msg.contains("during exec")
+        || msg.contains("command's result is unknown")
+    {
+        return false;
+    }
+    msg.contains("failed to connect to remote gateway")
         || msg.contains("connection refused")
-        || msg.contains("connection reset")
+        || msg.contains("no route to host")
+        || msg.contains("network is unreachable")
         || msg.contains("timed out")
-        || msg.contains("broken pipe")
-        || msg.contains("no route")
 }
 
 /// Run a 250ms UDP discovery probe (multicast + unicast to the old address) and return
-/// the best live node.
+/// the best live node that can serve this workspace's engine and OS requirements.
 ///
 /// Routing priority:
-/// 1. Nodes that already have the current workspace loaded (warm engine, no cold start)
-/// 2. Among those (or all if none has it), pick the one with the most available memory
+/// 1. Only consider nodes that support the required engine and OS (e.g., Swift requires macOS)
+/// 2. Nodes that already have the current workspace loaded (warm engine, no cold start)
+/// 3. Among those (or all candidates if none has it), pick the one with the most available memory
 ///    and the lowest load.
 async fn rediscover_node(old: SocketAddr, workspace_root: &std::path::Path) -> Option<SocketAddr> {
     let seeds = vec![old];
@@ -268,6 +283,20 @@ async fn rediscover_node(old: SocketAddr, workspace_root: &std::path::Path) -> O
     if nodes.is_empty() {
         return None;
     }
+
+    // Detect required engine and OS for this workspace.
+    let (subproject, detected_engine) = crate::sync::engine_project(workspace_root, workspace_root);
+    let macos_cgo = match detected_engine {
+        Some("go") => {
+            let target_dir = subproject
+                .as_ref()
+                .map(|sub| workspace_root.join(sub))
+                .unwrap_or_else(|| workspace_root.to_path_buf());
+            crate::sync::macos_only_cgo(&target_dir)
+        }
+        _ => None,
+    };
+    let needs_macos = detected_engine == Some("swift") || macos_cgo.is_some();
 
     // Log what we found.
     for n in &nodes {
@@ -285,15 +314,47 @@ async fn rediscover_node(old: SocketAddr, workspace_root: &std::path::Path) -> O
         );
     }
 
+    // Exclude the dead node (unless it's the only one that answered).
+    let viable: Vec<_> = nodes.iter().filter(|n| n.addr != old).collect();
+    let viable = if viable.is_empty() { nodes.iter().collect() } else { viable };
+
+    // Filter by required engine and OS!
+    let candidates: Vec<_> = viable
+        .into_iter()
+        .filter(|n| {
+            if let Some(engine) = detected_engine {
+                let has_engine = n.engines.iter().any(|e| {
+                    e.as_str() == engine
+                        || e.strip_prefix(engine).is_some_and(|rest| rest.starts_with(' '))
+                });
+                if !has_engine {
+                    return false;
+                }
+            }
+            if needs_macos {
+                let has_macos = n.engines.iter().any(|e| e == "swift" || e.starts_with("swift "));
+                if !has_macos {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        tracing::warn!(
+            engine = ?detected_engine,
+            needs_macos,
+            "no discovered nodes support the required engine/OS for this workspace"
+        );
+        return None;
+    }
+
     // The workspace identity (directory basename) — matches what the gateway uses.
     let ws_name = workspace_root
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-
-    // Exclude the dead node (unless it's the only one that answered).
-    let candidates: Vec<_> = nodes.iter().filter(|n| n.addr != old).collect();
-    let candidates = if candidates.is_empty() { nodes.iter().collect() } else { candidates };
 
     // Prefer a node that already has this workspace loaded (warm engine).
     let warm: Vec<_> = candidates
@@ -721,5 +782,26 @@ mod tests {
 
         drop(client);
         assert!(handle.await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn test_is_retryable_connection_error_rules() {
+        let connect_err = anyhow::anyhow!("Failed to connect to remote gateway: Connection refused (os error 111)");
+        let exec_unknown_err = anyhow::anyhow!("lost the connection to the gateway during exec (connection reset); the command's result is unknown");
+        let generic_err = anyhow::anyhow!("syntax error in file.rs");
+
+        // 1. code_exec must NEVER be retried even on connection refused
+        assert!(!is_retryable_connection_error("code_exec", &connect_err));
+
+        // 2. Unknown outcome during/after exec must NEVER be retried
+        assert!(!is_retryable_connection_error("code_check", &exec_unknown_err));
+        assert!(!is_retryable_connection_error("code_definition", &exec_unknown_err));
+
+        // 3. Pre-dispatch connection errors for read-only tools ARE retryable
+        assert!(is_retryable_connection_error("code_definition", &connect_err));
+        assert!(is_retryable_connection_error("code_references", &connect_err));
+
+        // 4. Non-connection errors are not retryable
+        assert!(!is_retryable_connection_error("code_definition", &generic_err));
     }
 }
