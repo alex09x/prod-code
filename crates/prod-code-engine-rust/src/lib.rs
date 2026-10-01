@@ -1974,12 +1974,8 @@ impl RustEngine {
     /// Attaches a worktree copy of this workspace. Reference-counted so multiple workspaces
     /// or validation sessions sharing the same worktree root keep it attached until all release it.
     pub fn attach_worktree(&mut self, copy_root: &Path) -> Result<()> {
-        let count = self
-            .worktree_attachments
-            .entry(copy_root.to_path_buf())
-            .or_insert(0);
-        *count += 1;
-        if *count > 1 {
+        if let Some(count) = self.worktree_attachments.get_mut(copy_root) {
+            *count += 1;
             return Ok(());
         }
 
@@ -2007,6 +2003,7 @@ impl RustEngine {
         }
         self.worktrees.add(db, &mut vfs, workspace, overlay);
         self.changes += 1;
+        self.worktree_attachments.insert(copy_root.to_path_buf(), 1);
         tracing::info!(copy = %copy_root.display(), "Attached worktree overlay to shared RustEngine");
         Ok(())
     }
@@ -2041,6 +2038,13 @@ impl RustEngine {
                 let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
                 self.worktrees.overlays().any(|o| o.worktree_root == copy_abs)
             }
+    }
+
+    pub fn worktree_attachment_count(&self, copy_root: &Path) -> usize {
+        self.worktree_attachments
+            .get(copy_root)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn reload_file(&mut self, path: &Path) -> Result<()> {
@@ -3658,6 +3662,56 @@ fn main() {
         let detached_second = engine.detach_worktree(&wt_dir);
         assert!(detached_second, "must detach when last reference drops");
         assert!(!engine.has_worktree(&wt_dir));
+    }
+
+    #[test]
+    fn test_failed_worktree_attach_does_not_poison_refcount() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("base");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base_dir.join("src/lib.rs"),
+            "pub fn hello() {}\n",
+        )
+        .unwrap();
+
+        let mut engine = RustEngine::load(&base_dir).unwrap();
+
+        let invalid_wt = temp.path().join("invalid-wt");
+        std::fs::create_dir_all(&invalid_wt).unwrap();
+        // No Cargo.toml: discovery must fail
+        let fail_res = engine.attach_worktree(&invalid_wt);
+        assert!(fail_res.is_err(), "must fail when manifest is missing");
+        assert!(!engine.has_worktree(&invalid_wt));
+        assert_eq!(engine.worktree_attachment_count(&invalid_wt), 0);
+
+        // Now repair the worktree with a valid manifest
+        std::fs::create_dir_all(invalid_wt.join("src")).unwrap();
+        std::fs::write(
+            invalid_wt.join("Cargo.toml"),
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            invalid_wt.join("src/lib.rs"),
+            "pub fn hello() {}\n",
+        )
+        .unwrap();
+
+        // Retry must successfully mount the overlay, NOT falsely return Ok without mounting
+        engine.attach_worktree(&invalid_wt).expect("retry must succeed after repair");
+        assert!(engine.has_worktree(&invalid_wt));
+        assert_eq!(engine.worktree_attachment_count(&invalid_wt), 1);
+
+        // Detaching once must cleanly remove the overlay
+        assert!(engine.detach_worktree(&invalid_wt));
+        assert!(!engine.has_worktree(&invalid_wt));
+        assert_eq!(engine.worktree_attachment_count(&invalid_wt), 0);
     }
 }
 

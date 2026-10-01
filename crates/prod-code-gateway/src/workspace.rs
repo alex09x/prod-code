@@ -60,6 +60,8 @@ pub struct SharedWorkspace {
     pub detached: AtomicBool,
     /// Whether this workspace has been unloaded from the manager's active map.
     pub unloaded: AtomicBool,
+    /// Whether this worktree overlay has been attached to the base validation engine.
+    pub validation_attached: AtomicBool,
 }
 
 impl SharedWorkspace {
@@ -108,6 +110,7 @@ impl SharedWorkspace {
             attached_worktrees: AtomicUsize::new(0),
             detached: AtomicBool::new(false),
             unloaded: AtomicBool::new(false),
+            validation_attached: AtomicBool::new(false),
         }
     }
 
@@ -145,9 +148,12 @@ impl SharedWorkspace {
         }
         if let Some(base) = &self.base_workspace {
             let base_val = base.base_validation_view(admission).await?;
-            if let Some(val_engine) = &base_val.rust_engine {
+            if let Some(val_engine) = &base_val.rust_engine
+                && !self.validation_attached.swap(true, Ordering::SeqCst)
+            {
                 let mut eng = val_engine.lock().await;
                 if let Err(e) = eng.attach_worktree(&self.root) {
+                    self.validation_attached.store(false, Ordering::SeqCst);
                     tracing::warn!(error = %e, workspace = ?self.root, "failed to attach worktree to validation engine");
                 }
             }
@@ -172,6 +178,7 @@ impl SharedWorkspace {
                 attached_worktrees: AtomicUsize::new(0),
                 detached: AtomicBool::new(false),
                 unloaded: AtomicBool::new(false),
+                validation_attached: AtomicBool::new(true),
             }));
         }
         self.base_validation_view(admission).await
@@ -206,6 +213,7 @@ impl SharedWorkspace {
             attached_worktrees: AtomicUsize::new(0),
             detached: AtomicBool::new(false),
             unloaded: AtomicBool::new(false),
+            validation_attached: AtomicBool::new(false),
         }))
     }
 }
@@ -361,6 +369,7 @@ impl SharedWorkspace {
             attached_worktrees: AtomicUsize::new(0),
             detached: AtomicBool::new(false),
             unloaded: AtomicBool::new(false),
+            validation_attached: AtomicBool::new(false),
         }))
     }
 
@@ -434,10 +443,17 @@ impl SharedWorkspace {
         if self.detached.swap(true, Ordering::SeqCst) {
             return;
         }
+        let val_attached = self.validation_attached.load(Ordering::SeqCst);
         if let Some(ref base) = self.base_workspace {
             base.attached_worktrees.fetch_sub(1, Ordering::Relaxed);
             for eng_arc in self.mirrored_rust_engines() {
                 let mut eng = eng_arc.lock().await;
+                eng.detach_worktree(&self.root);
+            }
+            if val_attached
+                && let Some(Some(val_eng)) = base.validation.get()
+            {
+                let mut eng = val_eng.lock().await;
                 eng.detach_worktree(&self.root);
             }
         }
@@ -1088,19 +1104,22 @@ impl WorkspaceManager {
 
             let copy_root = workspace_root.to_path_buf();
             let mirrored = base_ws.mirrored_rust_engines();
-            let attach_res = {
-                let mut attach_err = None;
-                for eng_arc in &mirrored {
-                    let mut eng = eng_arc.lock().await;
-                    if let Err(e) = eng.attach_worktree(&copy_root) {
-                        attach_err = Some(e);
-                        break;
-                    }
+            let mut attached_engines = Vec::new();
+            let mut attach_err = None;
+            for eng_arc in &mirrored {
+                let mut eng = eng_arc.lock().await;
+                if let Err(e) = eng.attach_worktree(&copy_root) {
+                    attach_err = Some(e);
+                    break;
                 }
-                attach_err
-            };
+                attached_engines.push(Arc::clone(eng_arc));
+            }
 
-            if let Some(err) = attach_res {
+            if let Some(err) = attach_err {
+                for eng_arc in attached_engines {
+                    let mut eng = eng_arc.lock().await;
+                    eng.detach_worktree(&copy_root);
+                }
                 let mut guard = self.workspaces.write().await;
                 guard.remove(&key);
                 let msg = format!("Failed to attach worktree: {err:#}");
@@ -4040,5 +4059,99 @@ while True:
 
         assert!(!base_eng.lock().await.has_worktree(&wt_dir));
         assert_eq!(base_ws.attached_worktrees.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_repeated_validation_views_do_not_leak_validation_engine_attachment_refcount() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = temp_dir.path();
+        let base_dir = storage.join("sample-repo");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 42 }\n",
+        )
+        .unwrap();
+
+        let wt_dir = storage.join(format!("sample-repo{}", worktree_suffix("client-wt-path")));
+        std::fs::create_dir_all(wt_dir.join("src")).unwrap();
+        std::fs::write(
+            wt_dir.join("Cargo.toml"),
+            "[package]\nname = \"sample-repo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt_dir.join("src/lib.rs"),
+            "pub fn base_func() -> u32 { 100 }\n",
+        )
+        .unwrap();
+
+        let manager = Arc::new(WorkspaceManager::new());
+        let _base_lease = manager.get_or_load(&base_dir, "rust").await.unwrap();
+        let wt_lease = manager.get_or_load(&wt_dir, "rust").await.unwrap();
+        let wt_ws = wt_lease.workspace();
+        let base_ws = Arc::clone(wt_ws.base_workspace.as_ref().unwrap());
+
+        let admission = Arc::new(crate::admission::Admission::unbounded());
+
+        // Repeatedly request validation views on the worktree
+        let mut val_views = Vec::new();
+        for _ in 0..5 {
+            let val_ws = wt_ws.validation_view(&admission).await.unwrap();
+            val_views.push(val_ws);
+        }
+
+        // Get the validation engine from the base workspace
+        let val_eng_arc = base_ws
+            .validation
+            .get()
+            .and_then(|opt| opt.as_ref())
+            .expect("validation engine must be initialized");
+
+        {
+            let val_eng = val_eng_arc.lock().await;
+            assert!(val_eng.has_worktree(&wt_dir));
+            assert_eq!(
+                val_eng.worktree_attachment_count(&wt_dir),
+                1,
+                "validation engine attachment count must be 1 regardless of repeated validation views"
+            );
+        }
+
+        // Drop transient validation views
+        drop(val_views);
+
+        // Overlay remains attached while worktree workspace is alive
+        assert!(val_eng_arc.lock().await.has_worktree(&wt_dir));
+
+        // Unload and drop lease to trigger detachment
+        drop(wt_lease);
+        let unloaded = manager.unload_under(&wt_dir).await;
+        assert_eq!(unloaded, 1);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !val_eng_arc.lock().await.has_worktree(&wt_dir) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("validation engine overlay detachment after worktree unload");
+
+        assert!(
+            !val_eng_arc.lock().await.has_worktree(&wt_dir),
+            "validation engine overlay must be detached after worktree is unloaded and retired"
+        );
+        assert_eq!(
+            val_eng_arc.lock().await.worktree_attachment_count(&wt_dir),
+            0
+        );
     }
 }
