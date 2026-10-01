@@ -8430,15 +8430,17 @@ async fn symbol_search_across_projects(
     }
     // The projects whose sources name the symbol first, then the others a walk meets (#358).
     let mut anchors = projects_naming(root, name);
-    for anchor in nested_project_anchors(root) {
-        if anchors.len() >= MAX_NESTED_PROJECTS {
-            break;
-        }
-        if !anchors
-            .iter()
-            .any(|(_, subpath, engine)| *subpath == anchor.1 && *engine == anchor.2)
-        {
-            anchors.push(anchor);
+    if anchors.is_empty() {
+        for anchor in nested_project_anchors(root) {
+            if anchors.len() >= MAX_NESTED_PROJECTS {
+                break;
+            }
+            if !anchors
+                .iter()
+                .any(|(_, subpath, engine)| *subpath == anchor.1 && *engine == anchor.2)
+            {
+                anchors.push(anchor);
+            }
         }
     }
     for (anchor, subpath, engine) in anchors {
@@ -8461,15 +8463,18 @@ async fn symbol_search_across_projects(
                 Vec::new()
             }
         };
-        let named = found
+        let named_here = found
             .iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         hits.extend(found);
-        if !named {
+        if !named_here {
             // sourcekit-lsp has no index for Swift files a package does not build, and answers
             // `workspace/symbol` with nothing: their outlines still name what they declare.
             let files = files_naming(&root.join(&subpath), engine, name);
             hits.extend(declarations_in(node, root, &files, name).await?);
+        }
+        if named(&hits) {
+            break;
         }
     }
     Ok(hits)
@@ -8478,13 +8483,25 @@ async fn symbol_search_across_projects(
 /// The most files of a project read for the declarations of a name its server has no index of.
 const MAX_OUTLINED_FILES: usize = 8;
 
-/// Files of `engine`'s language under `dir` whose text has `name` as a word.
+/// Files of `engine`'s language under `dir` whose text has `name` as a word, prioritizing files
+/// that declare `name`.
 fn files_naming(dir: &Path, engine: &str, name: &str) -> Vec<std::path::PathBuf> {
-    source_files(dir)
-        .filter(|path| crate::sync::engine_for_file(path) == Some(engine))
-        .filter(|path| std::fs::read_to_string(path).is_ok_and(|text| names_word(&text, name)))
-        .take(MAX_OUTLINED_FILES)
-        .collect()
+    let mut files: Vec<(bool, std::path::PathBuf)> = Vec::new();
+    for path in source_files(dir).filter(|path| crate::sync::engine_for_file(path) == Some(engine)) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !names_word(&text, name) {
+            continue;
+        }
+        let has_decl = text.lines().any(|line| declared_at(line, name).is_some());
+        files.push((has_decl, path));
+        if files.len() >= MAX_OUTLINED_FILES * 2 {
+            break;
+        }
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    files.into_iter().map(|(_, p)| p).take(MAX_OUTLINED_FILES).collect()
 }
 
 /// Whether `text` has `name` as a whole word.
@@ -8566,6 +8583,12 @@ async fn declarations_in(
             continue;
         };
         collect_named(&outline, name, None, file, &mut hits)?;
+        if hits
+            .iter()
+            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
+        {
+            break;
+        }
     }
     Ok(hits)
 }
