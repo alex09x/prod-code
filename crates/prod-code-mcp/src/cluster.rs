@@ -601,7 +601,21 @@ pub async fn discover_nodes_with_paths(
     placement_file: Option<&Path>,
     cache_file: Option<&Path>,
 ) -> Vec<SocketAddr> {
+    // Fast path: UDP discovery (multicast + unicast probes, 250ms).
+    let udp_nodes = tokio::task::spawn_blocking({
+        let seeds = seeds.to_vec();
+        move || prod_code_protocol::discovery::discover_addrs(&seeds)
+    })
+    .await
+    .unwrap_or_default();
+
     let mut nodes: Vec<SocketAddr> = seeds.to_vec();
+    for addr in &udp_nodes {
+        if !nodes.contains(addr) {
+            nodes.push(*addr);
+        }
+    }
+
     let mut probe_seeds: Vec<SocketAddr> = seeds.to_vec();
     let mut remembered_nodes: Vec<SocketAddr> = Vec::new();
 

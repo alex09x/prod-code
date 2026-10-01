@@ -263,7 +263,7 @@ async fn unused_public_reexport_warning_is_kept_without_a_checked_reference() {
 #[tokio::test]
 #[ignore = "requires PROD_CODE_LIVE_GATEWAY pointing to a running Rust Analyzer gateway"]
 async fn public_mcp_validation_accepts_a_nested_module_reexport() {
-    let remote = std::env::var("PROD_CODE_LIVE_GATEWAY")
+    let mut remote = std::env::var("PROD_CODE_LIVE_GATEWAY")
         .expect("set PROD_CODE_LIVE_GATEWAY to run this integration test")
         .parse::<SocketAddr>()
         .expect("PROD_CODE_LIVE_GATEWAY must be a socket address");
@@ -302,7 +302,7 @@ async fn public_mcp_validation_accepts_a_nested_module_reexport() {
     assert!(loaded, "rust-analyzer did not load the fixture:\n{seen}");
 
     let response = prod_code_mcp::handle_mcp_request(
-        remote,
+        &mut remote,
         &root,
         json!({
             "jsonrpc": "2.0",

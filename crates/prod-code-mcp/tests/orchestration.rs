@@ -142,8 +142,9 @@ async fn malformed_implementation_evidence_is_an_mcp_error_not_an_empty_answer()
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub trait Shape {}\n");
     commit(&ws);
+    let mut gw = missing_implementation_result_gateway().await;
     let response = prod_code_mcp::handle_mcp_request(
-        missing_implementation_result_gateway().await,
+        &mut gw,
         &ws.root(),
         serde_json::json!({
             "jsonrpc": "2.0",

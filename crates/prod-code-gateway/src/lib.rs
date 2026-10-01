@@ -5811,6 +5811,109 @@ async fn gossip_loop(state: Arc<ServerState>) {
     }
 }
 
+/// UDP discovery: listens for probe packets (multicast and unicast), replies with the full
+/// cluster view, and periodically announces this node on multicast.
+async fn discovery_loop(state: Arc<ServerState>) {
+    use prod_code_protocol::discovery;
+
+    let sock = match discovery::bind_discovery_socket() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(%e, "UDP discovery socket bind failed; discovery disabled");
+            return;
+        }
+    };
+    let tok_sock = match tokio::net::UdpSocket::from_std(sock) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(%e, "failed to register discovery socket with tokio");
+            return;
+        }
+    };
+    tracing::info!(port = discovery::DISCOVERY_PORT, "UDP discovery listener started");
+
+    let mut announce_tick = tokio::time::interval(discovery::ANNOUNCE_PERIOD);
+    let mut buf = vec![0u8; 4096];
+
+    loop {
+        tokio::select! {
+            // Incoming datagram: probe or peer announce.
+            result = tok_sock.recv_from(&mut buf) => {
+                match result {
+                    Ok((n, from)) => {
+                        if buf[..n].starts_with(b"PROD_CODE_DISCOVER") {
+                            // Build reply with own + known peers.
+                            let advertise = state.advertise.read().await.clone();
+                            let engines_csv = state
+                                .advertised_engines()
+                                .iter()
+                                .map(|e| e.split(' ').next().unwrap_or(e).to_string())
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            let status = state.status().await;
+                            let own_line = discovery::format_node_line(
+                                &advertise,
+                                &engines_csv,
+                                status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
+                                status.load_per_cpu().unwrap_or(0.0),
+                            );
+                            let cluster = state.cluster.read().await;
+                            let peer_lines: Vec<String> = cluster
+                                .values()
+                                .filter(|e| e.last_seen.elapsed() < std::time::Duration::from_secs(30))
+                                .map(|e| {
+                                    let eng = e.gossip.status.detected_engines
+                                        .iter()
+                                        .map(|en| en.split(' ').next().unwrap_or(en).to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(",");
+                                    discovery::format_node_line(
+                                        &e.gossip.addr,
+                                        &eng,
+                                        e.gossip.status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
+                                        e.gossip.status.load_per_cpu().unwrap_or(0.0),
+                                    )
+                                })
+                                .collect();
+                            drop(cluster);
+                            let payload = discovery::build_reply(&own_line, &peer_lines);
+                            let _ = tok_sock.send_to(&payload, from).await;
+                        }
+                        // Announce from another gateway — we could auto-add as peer here,
+                        // but for now TCP gossip handles peer expansion.
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => {
+                        tracing::debug!(%e, "discovery recv error");
+                    }
+                }
+            }
+            // Periodic multicast announce.
+            _ = announce_tick.tick() => {
+                let advertise = state.advertise.read().await.clone();
+                let engines_csv = state
+                    .advertised_engines()
+                    .iter()
+                    .map(|e| e.split(' ').next().unwrap_or(e).to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let status = state.status().await;
+                let line = discovery::format_node_line(
+                    &advertise,
+                    &engines_csv,
+                    status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
+                    status.load_per_cpu().unwrap_or(0.0),
+                );
+                let payload = discovery::build_reply(&line, &[]);
+                let _ = tok_sock.send_to(
+                    &payload,
+                    std::net::SocketAddrV4::new(discovery::MULTICAST_GROUP, discovery::DISCOVERY_PORT),
+                ).await;
+            }
+        }
+    }
+}
+
 /// How long an engine may sit idle on a host short of memory before it is unloaded, however
 /// long `--idle-evict-secs` lets it stay otherwise (#396).
 const PRESSURE_EVICT_IDLE: Duration = Duration::from_secs(300);
@@ -5967,6 +6070,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     }
     tracing::info!(advertise, peers = ?peers, "cluster identity");
     tokio::spawn(gossip_loop(Arc::clone(&state)));
+    tokio::spawn(discovery_loop(Arc::clone(&state)));
     if let Some(rx) = state.metrics.take_receiver() {
         tokio::spawn(metrics::run_writer(state.metrics.dir().to_path_buf(), rx));
     }

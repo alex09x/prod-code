@@ -624,8 +624,9 @@ async fn native_rust_analyzer_selects_and_executes_real_tests_through_helpers() 
         report.tests
     );
 
+    let mut gw_addr = gateway.addr;
     let mcp_response = prod_code_mcp::handle_mcp_request(
-        gateway.addr,
+        &mut gw_addr,
         &root,
         serde_json::json!({
             "jsonrpc": "2.0",

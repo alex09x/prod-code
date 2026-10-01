@@ -1,6 +1,7 @@
 //! Wire framing, codecs, and transport types for prod-code Remote Code Intelligence.
 
 pub mod codec;
+pub mod discovery;
 pub mod messages;
 pub mod negotiation;
 pub mod path;

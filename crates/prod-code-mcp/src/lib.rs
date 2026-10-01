@@ -84,7 +84,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// Process a single incoming MCP JSON-RPC message.
 /// Returns Ok(Some(response)) for requests that require a response, or Ok(None) for notifications.
 pub async fn handle_mcp_request(
-    remote: SocketAddr,
+    remote: &mut SocketAddr,
     workspace_root: &Path,
     req_val: serde_json::Value,
 ) -> Result<Option<serde_json::Value>> {
@@ -146,10 +146,51 @@ pub async fn handle_mcp_request(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
-            match execute_tool(remote, workspace_root, tool_name, arguments).await {
+            match execute_tool(*remote, workspace_root, tool_name, arguments.clone()).await {
                 Ok(call_result) => {
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
                     Ok(Some(serde_json::to_value(resp)?))
+                }
+                Err(e) if is_connection_error(&e) => {
+                    // Gateway unreachable — try UDP discovery to find a live node.
+                    tracing::warn!(
+                        old_gateway = %remote,
+                        error = %e,
+                        "gateway unreachable, running UDP discovery"
+                    );
+                    let old = *remote;
+                    if let Some(new_addr) = rediscover_node(old).await {
+                        *remote = new_addr;
+                        tracing::info!(
+                            old = %old,
+                            new = %new_addr,
+                            "re-placed to a live gateway via UDP discovery"
+                        );
+                        // Retry the tool call on the new node.
+                        match execute_tool(*remote, workspace_root, tool_name, arguments).await {
+                            Ok(call_result) => {
+                                let resp = JsonRpcResponse::success(
+                                    id,
+                                    serde_json::to_value(call_result)?,
+                                );
+                                Ok(Some(serde_json::to_value(resp)?))
+                            }
+                            Err(e2) => {
+                                let call_result =
+                                    protocol::McpToolCallResult::error(e2.to_string());
+                                let resp = JsonRpcResponse::success(
+                                    id,
+                                    serde_json::to_value(call_result)?,
+                                );
+                                Ok(Some(serde_json::to_value(resp)?))
+                            }
+                        }
+                    } else {
+                        let call_result = protocol::McpToolCallResult::error(e.to_string());
+                        let resp =
+                            JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
+                        Ok(Some(serde_json::to_value(resp)?))
+                    }
                 }
                 Err(e) => {
                     let call_result = protocol::McpToolCallResult::error(e.to_string());
@@ -198,12 +239,45 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
     .await
 }
 
+/// Whether an error looks like a gateway connection failure (refused, reset, timed out).
+fn is_connection_error(e: &anyhow::Error) -> bool {
+    let msg = format!("{e:#}").to_lowercase();
+    msg.contains("connect")
+        || msg.contains("connection refused")
+        || msg.contains("connection reset")
+        || msg.contains("timed out")
+        || msg.contains("broken pipe")
+        || msg.contains("no route")
+}
+
+/// Run a 250ms UDP discovery probe (multicast + unicast to the old address) and return
+/// the best live node that is not the old one.
+async fn rediscover_node(old: SocketAddr) -> Option<SocketAddr> {
+    let seeds = vec![old];
+    let nodes = tokio::task::spawn_blocking(move || {
+        prod_code_protocol::discovery::discover(&seeds)
+    })
+    .await
+    .ok()?;
+
+    // Pick the node with the lowest load, excluding the dead one.
+    nodes
+        .iter()
+        .filter(|n| n.addr != old)
+        .min_by(|a, b| a.load_per_cpu.partial_cmp(&b.load_per_cpu).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|n| n.addr)
+        .or_else(|| {
+            // If only the "old" node replied, it's actually alive — use it.
+            nodes.iter().find(|n| n.addr == old).map(|n| n.addr)
+        })
+}
+
 /// The request/response loop, generic over its transport so it can be driven by a test without
 /// touching the process's real stdio. `run_stdio_mcp_server` is a thin wrapper around this with
 /// the real standard streams; `exe` is `None` there only when the running binary's own path
 /// could not be resolved, in which case hot reload is simply not offered.
 async fn serve_mcp_requests<R, W>(
-    remote: SocketAddr,
+    mut remote: SocketAddr,
     workspace_root: PathBuf,
     exe: Option<PathBuf>,
     resumed: bool,
@@ -285,7 +359,7 @@ where
                     continue;
                 }
             };
-            match handle_mcp_request(remote, &workspace_root, req_json).await {
+            match handle_mcp_request(&mut remote, &workspace_root, req_json).await {
                 Ok(Some(resp_val)) => {
                     let out = match serde_json::to_string(&resp_val) {
                         Ok(mut s) => {
@@ -338,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mcp_initialize() {
-        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let mut dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         let req = serde_json::json!({
@@ -351,7 +425,7 @@ mod tests {
             }
         });
 
-        let resp_opt = handle_mcp_request(dummy_addr, &root, req).await.unwrap();
+        let resp_opt = handle_mcp_request(&mut dummy_addr, &root, req).await.unwrap();
         assert!(resp_opt.is_some());
         let resp = resp_opt.unwrap();
         assert_eq!(resp["id"], 1);
@@ -379,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mcp_tools_list() {
-        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let mut dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         let req = serde_json::json!({
@@ -389,7 +463,7 @@ mod tests {
             "params": {}
         });
 
-        let resp_opt = handle_mcp_request(dummy_addr, &root, req).await.unwrap();
+        let resp_opt = handle_mcp_request(&mut dummy_addr, &root, req).await.unwrap();
         assert!(resp_opt.is_some());
         let resp = resp_opt.unwrap();
         assert_eq!(resp["id"], 2);
@@ -406,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mcp_ping() {
-        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let mut dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         let req = serde_json::json!({
@@ -415,7 +489,7 @@ mod tests {
             "method": "ping"
         });
 
-        let resp = handle_mcp_request(dummy_addr, &root, req)
+        let resp = handle_mcp_request(&mut dummy_addr, &root, req)
             .await
             .unwrap()
             .unwrap();
@@ -425,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mcp_unknown_method() {
-        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let mut dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         let req = serde_json::json!({
@@ -434,7 +508,7 @@ mod tests {
             "method": "foo/bar"
         });
 
-        let resp = handle_mcp_request(dummy_addr, &root, req)
+        let resp = handle_mcp_request(&mut dummy_addr, &root, req)
             .await
             .unwrap()
             .unwrap();
@@ -444,34 +518,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_mcp_unknown_notification_gets_no_response() {
-        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let mut dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         let req = serde_json::json!({ "jsonrpc": "2.0", "method": "foo/bar" });
 
-        let resp = handle_mcp_request(dummy_addr, &root, req).await.unwrap();
+        let resp = handle_mcp_request(&mut dummy_addr, &root, req).await.unwrap();
         assert!(resp.is_none(), "a notification gets no reply: {resp:?}");
     }
 
     #[tokio::test]
     async fn test_mcp_initialized_notification_gets_no_response() {
-        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let mut dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         for method in ["notifications/initialized", "initialized"] {
             let req = serde_json::json!({ "jsonrpc": "2.0", "method": method });
-            let resp = handle_mcp_request(dummy_addr, &root, req).await.unwrap();
+            let resp = handle_mcp_request(&mut dummy_addr, &root, req).await.unwrap();
             assert!(resp.is_none(), "{method}: {resp:?}");
         }
     }
 
     #[tokio::test]
     async fn test_mcp_malformed_request_is_a_parse_error() {
-        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let mut dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         // Missing the required `method` field: the request itself does not deserialize.
-        let resp = handle_mcp_request(dummy_addr, &root, serde_json::json!({}))
+        let resp = handle_mcp_request(&mut dummy_addr, &root, serde_json::json!({}))
             .await
             .unwrap()
             .unwrap();
@@ -492,7 +566,7 @@ mod tests {
         // not a port bound and dropped: with the whole suite running in parallel, a freed
         // ephemeral port is taken by another test's listener often enough that the connection
         // succeeds and is reset instead of refused.
-        let dummy_addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let mut dummy_addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         let req = serde_json::json!({
@@ -502,7 +576,7 @@ mod tests {
             "params": { "name": "code_status", "arguments": {} }
         });
 
-        let resp = handle_mcp_request(dummy_addr, &root, req)
+        let resp = handle_mcp_request(&mut dummy_addr, &root, req)
             .await
             .unwrap()
             .unwrap();
@@ -564,13 +638,31 @@ mod tests {
             .await
             .unwrap();
 
+        // Read all output: blank lines are skipped, invalid JSON produces a parse error
+        // response (-32700 with no id), and the valid ping produces a normal response.
+        let mut all = Vec::new();
         let mut buf = [0u8; 4096];
-        let n = client.read(&mut buf).await.unwrap();
-        let line = String::from_utf8_lossy(&buf[..n]);
-        // Exactly one response line: the blank lines and the invalid JSON produced nothing.
-        assert_eq!(line.matches('\n').count(), 1, "{line:?}");
-        let resp: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-        assert_eq!(resp["id"], 2);
+        loop {
+            let n = client.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            all.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&all);
+            // Stop once we've seen the ping response (id:2).
+            if text.contains("\"id\":2") || text.contains("\"id\": 2") {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&all);
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        // Two response lines: parse error + ping.
+        assert!(lines.len() >= 2, "expected ≥2 responses: {text:?}");
+        let parse_err: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parse_err["error"]["code"], -32700);
+        let ping: serde_json::Value = serde_json::from_str(lines[lines.len() - 1]).unwrap();
+        assert_eq!(ping["id"], 2);
+        assert_eq!(ping["result"], serde_json::json!({}));
 
         drop(client);
         assert!(handle.await.unwrap().is_ok());
