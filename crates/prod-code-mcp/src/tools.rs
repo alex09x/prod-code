@@ -2583,7 +2583,7 @@ async fn handle_references(
     if res.as_array().is_none_or(|a| a.is_empty())
         && let Some(name) = line_text.as_deref().and_then(|t| name_at(t, character))
         && let Some((use_path, use_line, use_col)) =
-            checkout_use_of(remote, workspace_root, &file_path, line, &name).await
+            checkout_use_of(remote, workspace_root, &file_path, line, character, &name).await
     {
         let use_uri = Url::from_file_path(&use_path)
             .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", use_path))?
@@ -2802,6 +2802,7 @@ async fn checkout_use_of(
     root: &Path,
     declaration: &Path,
     line: u32,
+    col: u32,
     name: &str,
 ) -> Option<(std::path::PathBuf, u32, u32)> {
     let language = crate::sync::engine_for_file(declaration)?;
@@ -2821,21 +2822,31 @@ async fn checkout_use_of(
         }
         let uri = Url::from_file_path(&path).ok()?.to_string();
         let is_declaration_file = path == declaration;
-        let file_uses = text
-            .lines()
-            .enumerate()
-            .filter(|(index, _)| !is_declaration_file || *index as u32 + 1 != line)
-            .flat_map(|(index, text_line)| {
-                let chars: Vec<char> = text_line.chars().collect();
-                (0..chars.len())
-                    .filter(|&col| {
-                        chars[col..].starts_with(&wanted)
-                            && !(col > 0 && is_name(chars.get(col - 1)))
-                            && !is_name(chars.get(col + wanted.len()))
-                    })
-                    .map(move |col| (index, col))
-                    .collect::<Vec<_>>()
-            });
+        let wanted_len = wanted.len();
+        let file_uses = text.lines().enumerate().flat_map(|(index, text_line)| {
+            let is_declaration_line = is_declaration_file && index as u32 + 1 == line;
+            let chars: Vec<char> = text_line.chars().collect();
+            (0..chars.len())
+                .filter(|&c| {
+                    if !chars[c..].starts_with(&wanted)
+                        || (c > 0 && is_name(chars.get(c - 1)))
+                        || is_name(chars.get(c + wanted_len))
+                    {
+                        return false;
+                    }
+                    if is_declaration_line {
+                        // Skip only the declaration occurrence covering `col`
+                        let match_start = c as u32 + 1;
+                        let match_end = match_start + wanted_len as u32;
+                        if match_start <= col && col <= match_end {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .map(move |c| (index, c))
+                .collect::<Vec<_>>()
+        });
         for (index, col) in file_uses.take(MAX_USES_ASKED_PER_FILE) {
             asked += 1;
             if asked > MAX_USES_ASKED {
@@ -6050,7 +6061,7 @@ fn range_contains(range: &serde_json::Value, line: usize, col: usize) -> bool {
     if line == start_line && col < start_col {
         return false;
     }
-    if line == end_line && col > end_col {
+    if line == end_line && col >= end_col {
         return false;
     }
     true

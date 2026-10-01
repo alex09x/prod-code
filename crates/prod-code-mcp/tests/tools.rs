@@ -5567,6 +5567,70 @@ async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_re
     .await
     .expect("positional definition runs");
     assert_eq!(text_of(&fn_token), "No definition found.");
+
+    // Negative test: a position immediately after the identifier range (column 20, exclusive end) must return No definition found.
+    let after_token = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "path": "src/api2/hl/stream.rs",
+            "line": 5,
+            "character": 20,
+            "body": true
+        }),
+    )
+    .await
+    .expect("positional definition runs");
+    assert_eq!(text_of(&after_token), "No definition found.");
+}
+
+#[tokio::test]
+async fn code_references_finds_same_line_recursive_call_as_only_use() {
+    let ws = workspace();
+    let source = "pub fn recurse() { recurse(); }\n";
+    let file = write(&ws, "src/lib.rs", source);
+    commit(&ws);
+
+    let uri = format!("file://{}", file.display());
+    let def_path = file.clone();
+    let caller_ret = file.clone();
+
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let u = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        let pos = &params["position"];
+        match method {
+            "textDocument/references" if u == uri && pos["line"] == 0 && pos["character"] == 7 => {
+                serde_json::json!([])
+            }
+            "textDocument/definition" if u == uri && pos["line"] == 0 && pos["character"] == 19 => {
+                answers::locations(&def_path, &[(1, 8)])
+            }
+            "textDocument/references" if u == uri && pos["line"] == 0 && pos["character"] == 19 => {
+                answers::locations(&caller_ret, &[(1, 20)])
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "line": 1,
+            "character": 8
+        }),
+    )
+    .await
+    .expect("references succeed via same-line recursive call");
+
+    let text = text_of(&res);
+    assert!(text.contains("asked from a use of `recurse` in the checkout"), "{text}");
+    assert!(text.contains("src/lib.rs:1:20"), "{text}");
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
 }
 
 #[tokio::test]
