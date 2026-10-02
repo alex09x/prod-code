@@ -178,10 +178,15 @@ impl LspSession {
             push_workspace_sync(&mut framed, &root, &identity, None)
                 .await
                 .context("pre-flight workspace sync failed")?;
-            let (engine_subpath, engine) = engine_project(&root, hint.unwrap_or(&root));
-            // A nested project's engine is named, so a directory with no manifest of its own (a
-            // loose script's) is served by its language, not by detection there (#247).
-            let preferred_engine = engine_subpath.as_ref().and(engine).map(str::to_string);
+            let (engine_subpath, mut engine) = engine_project(&root, hint.unwrap_or(&root));
+            if let Some(h) = hint
+                && let Some(own) = crate::sync::engine_for_file(h)
+                && engine == crate::sync::expected_engine(&root)
+                && Some(own) != engine
+            {
+                engine = Some(own);
+            }
+            let preferred_engine = engine.map(str::to_string);
             let supported_versions = supported_protocol_versions();
             framed
                 .send(WireMessage::HandshakeRequest(HandshakeRequest {
@@ -577,11 +582,18 @@ fn pool_key(remote: SocketAddr, root: &Path, file: &Path) -> (PathBuf, String) {
     // that checkout's own session: this one's analyzer never loaded it, and a server of another
     // language only fails on it (#353).
     let root = crate::sync::other_checkout(&root, file).unwrap_or(root);
-    let (subpath, _) = engine_project(&root, file);
+    let (subpath, mut engine) = engine_project(&root, file);
+    if let Some(own) = crate::sync::engine_for_file(file)
+        && engine == crate::sync::expected_engine(&root)
+        && Some(own) != engine
+    {
+        engine = Some(own);
+    }
     let key = format!(
-        "{remote}|{}|{}",
+        "{remote}|{}|{}|{}",
         root.display(),
-        subpath.unwrap_or_default()
+        subpath.unwrap_or_default(),
+        engine.unwrap_or_default()
     );
     (root, key)
 }

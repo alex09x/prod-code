@@ -729,7 +729,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 5,
             "method": "tools/call",
-            "params": { "name": "code_status", "arguments": {} }
+            "params": { "name": "code_exec", "arguments": { "argv": ["true"] } }
         });
 
         let resp = handle_mcp_request(&mut dummy_addr, &root, req)
@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(resp["id"], 5);
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("Failed to connect"), "{text}");
+        assert!(text.to_lowercase().contains("failed to connect"), "{text}");
     }
 
     /// Wires `serve_mcp_requests` to an in-memory duplex stream: the returned handle is the
