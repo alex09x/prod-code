@@ -87,10 +87,10 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Direct dependency on upstream `ra_ap_ide::AnalysisHost`, `ra_ap_project_model`, and `ra_ap_vfs`.
   - Zero build-time AST patching hacks: clean usage of public APIs and structured input mutation.
   - Persistent base database: Cargo metadata and crate graphs loaded and cached in server RAM once per workspace.
-- [~] **2.2. Single-Owner Direct-Edit Fast Path**
+- [x] **2.2. Single-Owner Direct-Edit Fast Path**
   - [x] Detect dedicated worktree sessions and benchmark divergent worktree query isolation.
-  - [ ] Apply unsaved document edits (`didOpen` / `didChange`) directly into base Salsa file inputs; today these remain session overlays.
-  - [ ] Bypass overlay crate cones and global database invalidation locks for unshared workspaces.
+  - [x] Apply unsaved document edits (`didOpen` / `didChange`) directly into base Salsa file inputs for single-owner sessions, tracking unclosed files for safe disk reload on retirement.
+  - [x] Bypass overlay crate cones and global database invalidation locks for unshared workspaces and overlay-free sessions.
   - Target: Maintain sub-15s p95 query latency under 15 concurrent agent worktrees.
   - Measured 2026-09-26 with `divergent-bench --worktrees 16` (#406): 16 diverged worktrees of a 1,284-file Rust repository, 64 persistent workers, 1,280 hovers, on one 128-core node.
     - First run, twelve of the copies new: p50 8.4 ms, p95 614 ms, p99 27.7 s, and 32 first hovers past the bench's 30 s limit. The copies loaded all at once, the new ones in about 2 min 25 s (#408).

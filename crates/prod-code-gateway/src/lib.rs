@@ -1920,6 +1920,7 @@ async fn execute_bounded_query<T, F>(
     engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
     session_id: u64,
     file_path: &Path,
+    is_single_owner: bool,
     query_fn: F,
 ) -> anyhow::Result<T>
 where
@@ -1973,8 +1974,10 @@ where
 
         let snapshot = match tokio::time::timeout(remaining, engine_lock.lock()).await {
             Ok(mut engine) => {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                if !is_single_owner && engine.has_session_overlays() {
+                    if let Err(e) = engine.activate_session(session_id) {
+                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                    }
                 }
                 if file_path.is_dir() {
                     engine.snapshot_for(file_path)
@@ -4878,12 +4881,21 @@ async fn on_client_message(
                                     let text_len = text.len();
                                     {
                                         let mut engine = engine_lock.lock().await;
-                                        if let Err(e) = engine.set_session_overlay(
-                                            view.session_id,
-                                            &file_path,
-                                            Some(text.to_string()),
-                                        ) {
-                                            tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                        if view.is_single_owner {
+                                            if let Err(e) = engine.apply_file_change(&file_path, text.to_string()) {
+                                                tracing::warn!(error = %e, file = %file_path.display(), "direct-edit didOpen file change failed");
+                                            }
+                                            if let Ok(mut files) = view.direct_edit_open_files.lock() {
+                                                files.insert(file_path.clone());
+                                            }
+                                        } else {
+                                            if let Err(e) = engine.set_session_overlay(
+                                                view.session_id,
+                                                &file_path,
+                                                Some(text.to_string()),
+                                            ) {
+                                                tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                            }
                                         }
                                     }
                                     let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
@@ -4892,7 +4904,8 @@ async fn on_client_message(
                                         file = %file_path.display(),
                                         bytes = text_len,
                                         duration_ms = format!("{:.2}ms", ms),
-                                        "📝 [OVERLAY] didOpen recorded as session buffer in Salsa DB"
+                                        single_owner = view.is_single_owner,
+                                        "📝 [EDIT] didOpen recorded in Salsa DB"
                                     );
                                     publish_rust_diagnostics(
                                         out_tx,
@@ -4924,12 +4937,21 @@ async fn on_client_message(
                                     let text_len = text.len();
                                     {
                                         let mut engine = engine_lock.lock().await;
-                                        if let Err(e) = engine.set_session_overlay(
-                                            view.session_id,
-                                            &file_path,
-                                            Some(text.to_string()),
-                                        ) {
-                                            tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                        if view.is_single_owner {
+                                            if let Err(e) = engine.apply_file_change(&file_path, text.to_string()) {
+                                                tracing::warn!(error = %e, file = %file_path.display(), "direct-edit didChange file change failed");
+                                            }
+                                            if let Ok(mut files) = view.direct_edit_open_files.lock() {
+                                                files.insert(file_path.clone());
+                                            }
+                                        } else {
+                                            if let Err(e) = engine.set_session_overlay(
+                                                view.session_id,
+                                                &file_path,
+                                                Some(text.to_string()),
+                                            ) {
+                                                tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                            }
                                         }
                                     }
                                     let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
@@ -4938,7 +4960,8 @@ async fn on_client_message(
                                         file = %file_path.display(),
                                         bytes = text_len,
                                         duration_ms = format!("{:.2}ms", ms),
-                                        "📝 [OVERLAY] didChange recorded as session buffer in Salsa DB"
+                                        single_owner = view.is_single_owner,
+                                        "📝 [EDIT] didChange recorded in Salsa DB"
                                     );
                                     publish_rust_diagnostics(
                                         out_tx,
@@ -4960,10 +4983,19 @@ async fn on_client_message(
                                     .unwrap_or("");
                                 let file_path = uri_or_path(uri);
                                 let mut engine = engine_lock.lock().await;
-                                if let Err(e) =
-                                    engine.clear_session_overlay(view.session_id, &file_path)
-                                {
-                                    tracing::warn!(error = %e, file = %file_path.display(), "session overlay close failed");
+                                if view.is_single_owner {
+                                    if let Err(e) = engine.reload_file(&file_path) {
+                                        tracing::warn!(error = %e, file = %file_path.display(), "direct-edit didClose reload failed");
+                                    }
+                                    if let Ok(mut files) = view.direct_edit_open_files.lock() {
+                                        files.remove(&file_path);
+                                    }
+                                } else {
+                                    if let Err(e) =
+                                        engine.clear_session_overlay(view.session_id, &file_path)
+                                    {
+                                        tracing::warn!(error = %e, file = %file_path.display(), "session overlay close failed");
+                                    }
                                 }
                             }
                             return Flow::Next;
@@ -5603,13 +5635,18 @@ fn lsp_call_hierarchy(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
         let m = method_name.clone();
         let fp = fp_clone.clone();
-        let outcome = execute_bounded_query(&engine_arc, session_id, &fp_clone, move |snapshot| {
-            hierarchy_query(snapshot, &m, &fp, line, col)
-        })
+        let outcome = execute_bounded_query(
+            &engine_arc,
+            session_id,
+            &fp_clone,
+            is_single_owner,
+            move |snapshot| hierarchy_query(snapshot, &m, &fp, line, col),
+        )
         .await;
         let outcome = match outcome {
             Err(ref e)
@@ -5694,12 +5731,15 @@ fn lsp_safe_delete(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
     tokio::task::spawn(async move {
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                if !is_single_owner && engine.has_session_overlays() {
+                    if let Err(e) = engine.activate_session(session_id) {
+                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                    }
                 }
                 engine.safe_delete(&fp_clone, line, col)
             })
@@ -5790,13 +5830,16 @@ fn lsp_structural_replace(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                if !is_single_owner && engine.has_session_overlays() {
+                    if let Err(e) = engine.activate_session(session_id) {
+                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                    }
                 }
                 engine.structural_replace(&rule, &fp_clone, line, col, scope.as_deref())
             })
@@ -5876,13 +5919,16 @@ fn lsp_rename(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                if !is_single_owner && engine.has_session_overlays() {
+                    if let Err(e) = engine.activate_session(session_id) {
+                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                    }
                 }
                 engine.rename(&fp_clone, line, col, &new_name)
             })
@@ -5967,13 +6013,16 @@ fn lsp_assists(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
         let result = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                if !is_single_owner && engine.has_session_overlays() {
+                    if let Err(e) = engine.activate_session(session_id) {
+                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                    }
                 }
                 if apply {
                     engine
@@ -6042,12 +6091,17 @@ fn lsp_workspace_symbol(
     let translator_task = translator.clone();
     let session_id = view.session_id;
     let ws_root = view.workspace.root.clone();
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
         let q = query.clone();
-        let syms = execute_bounded_query(&engine_arc, session_id, &ws_root, move |snapshot| {
-            snapshot.workspace_symbols(&q, limit)
-        })
+        let syms = execute_bounded_query(
+            &engine_arc,
+            session_id,
+            &ws_root,
+            is_single_owner,
+            move |snapshot| snapshot.workspace_symbols(&q, limit),
+        )
         .await
         .unwrap_or_default();
         let ms = query_start.elapsed().as_secs_f64() * 1000.0;
@@ -6119,18 +6173,25 @@ fn lsp_document_symbol(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
         let fp = fp_clone.clone();
-        let syms = execute_bounded_query(&engine_arc, session_id, &fp_clone, move |snapshot| {
-            // An error is the answer, not an empty file: a README in a Rust workspace is
-            // refused with the reason, and an agent must be able to tell that from a file
-            // that declares nothing (#270).
-            snapshot.document_symbols(&fp).map_err(|e| {
-                tracing::warn!(error = %e, session = session_id, "query failed");
-                e
-            })
-        })
+        let syms = execute_bounded_query(
+            &engine_arc,
+            session_id,
+            &fp_clone,
+            is_single_owner,
+            move |snapshot| {
+                // An error is the answer, not an empty file: a README in a Rust workspace is
+                // refused with the reason, and an agent must be able to tell that from a file
+                // that declares nothing (#270).
+                snapshot.document_symbols(&fp).map_err(|e| {
+                    tracing::warn!(error = %e, session = session_id, "query failed");
+                    e
+                })
+            },
+        )
         .await
         .map_err(|e| e.to_string());
 
@@ -6239,9 +6300,10 @@ fn lsp_references(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
-        let refs = execute_bounded_query(&engine_arc, session_id, &fp_clone, {
+        let refs = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
             let fp = fp_clone.clone();
             move |snapshot| snapshot.find_all_refs(&fp, line, col)
         })
@@ -6337,9 +6399,10 @@ fn lsp_definition(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
-        let defs = execute_bounded_query(&engine_arc, session_id, &fp_clone, {
+        let defs = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
             let fp = fp_clone.clone();
             move |snapshot| snapshot.goto_definition(&fp, line, col)
         })
@@ -6436,9 +6499,10 @@ fn lsp_hover(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
 
     tokio::task::spawn(async move {
-        let hover_res = execute_bounded_query(&engine_arc, session_id, &fp_clone, {
+        let hover_res = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
             let fp = fp_clone.clone();
             move |snapshot| snapshot.hover(&fp, line, col)
         })
@@ -6515,6 +6579,7 @@ fn lsp_editor_request(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
     let method = method.to_string();
     let started = Instant::now();
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -6523,8 +6588,10 @@ fn lsp_editor_request(
             let mut engine = engine_arc.lock_owned().await;
             let m = method.clone();
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                if !is_single_owner && engine.has_session_overlays() {
+                    if let Err(e) = engine.activate_session(session_id) {
+                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                    }
                 }
                 engine
                     .editor_request(&m, &params)
@@ -6578,6 +6645,7 @@ fn publish_rust_diagnostics(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
+    let is_single_owner = view.is_single_owner;
     tokio::task::spawn(async move {
         tokio::time::sleep(EDITOR_DIAGNOSTICS_DELAY).await;
         let latest = |edits: &std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>| {
@@ -6594,8 +6662,10 @@ fn publish_rust_diagnostics(
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                if !is_single_owner && engine.has_session_overlays() {
+                    if let Err(e) = engine.activate_session(session_id) {
+                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                    }
                 }
                 engine.editor_diagnostics(&file)
             })

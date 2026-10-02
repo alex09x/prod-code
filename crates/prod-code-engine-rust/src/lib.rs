@@ -1786,11 +1786,30 @@ impl RustEngine {
         Ok(())
     }
 
+    /// Whether any session overlays exist in this engine.
+    pub fn has_session_overlays(&self) -> bool {
+        !self.overlays.sessions.is_empty() || !self.overlays.owner.is_empty()
+    }
+
+    /// Whether a specific session currently has overlays registered.
+    pub fn session_has_overlays(&self, session: u64) -> bool {
+        self.overlays
+            .sessions
+            .get(&session)
+            .is_some_and(|files| !files.is_empty())
+    }
+
     /// Makes the database reflect `session`'s view: its own buffers are applied and every other
     /// session's buffer on a path this session has not opened is replaced by the base text.
     /// Returns the number of files rewritten. Must run before every query of that session, under
     /// the same lock as the query, so no other session can switch the view in between.
     pub fn activate_session(&mut self, session: u64) -> Result<usize> {
+        if self.overlays.sessions.is_empty() && self.overlays.owner.is_empty() {
+            return Ok(0);
+        }
+        if self.overlays.owner.is_empty() && !self.overlays.sessions.contains_key(&session) {
+            return Ok(0);
+        }
         let mut switched = 0;
         let mine: HashMap<PathBuf, Option<String>> = self
             .overlays
@@ -3043,6 +3062,31 @@ fn main() {
         assert!(!after_close.contains(&"ONLY_IN_SESSION_A".to_string()));
         assert_eq!(engine.session_overlay_count(1), 0);
         assert_eq!(engine.session_overlay_count(2), 1);
+    }
+
+    #[test]
+    fn test_session_overlay_queries_and_empty_activation() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        assert!(!engine.has_session_overlays());
+        assert!(!engine.session_has_overlays(1));
+        assert_eq!(engine.activate_session(1).unwrap(), 0);
+
+        let base = std::fs::read_to_string(&lib_path).unwrap();
+        let direct_text = format!("{base}\npub fn direct_edit_func() -> u32 {{ 42 }}\n");
+        // Direct edit via apply_file_change
+        engine.apply_file_change(&lib_path, direct_text).unwrap();
+        assert!(!engine.has_session_overlays());
+        assert_eq!(engine.activate_session(1).unwrap(), 0);
+
+        let symbols = engine.document_symbols(&lib_path).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "direct_edit_func"));
+
+        // Direct reload restores from disk
+        engine.reload_file(&lib_path).unwrap();
+        assert!(!engine.has_session_overlays());
+        let symbols_after_reload = engine.document_symbols(&lib_path).unwrap();
+        assert!(!symbols_after_reload.iter().any(|s| s.name == "direct_edit_func"));
     }
 
     #[test]

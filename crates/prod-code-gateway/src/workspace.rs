@@ -503,6 +503,7 @@ pub struct SessionView {
     /// The loaded workspace the session is counted against, for idle eviction.
     pub accounted: Arc<SharedWorkspace>,
     pub is_single_owner: bool,
+    pub direct_edit_open_files: Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
     lease: Option<WorkspaceLease>,
     owner: Option<WorktreeOwner>,
 }
@@ -598,8 +599,13 @@ impl SessionView {
         let owner = self.owner.take();
         let workspace = Arc::clone(&self.workspace);
         let session_id = self.session_id;
+        let direct_edits: Vec<PathBuf> = self
+            .direct_edit_open_files
+            .lock()
+            .map(|mut files| files.drain().collect())
+            .unwrap_or_default();
         Some(tokio::spawn(async move {
-            clear_session_overlays(&workspace, session_id).await;
+            clear_session_overlays(&workspace, session_id, &direct_edits).await;
             drop(owner);
             let base_lease = lease._base_lease.take();
             if let Some(ws) = lease.workspace.take() {
@@ -629,9 +635,18 @@ impl Drop for SessionView {
     }
 }
 
-async fn clear_session_overlays(workspace: &SharedWorkspace, session_id: u64) {
+async fn clear_session_overlays(
+    workspace: &SharedWorkspace,
+    session_id: u64,
+    direct_edits: &[PathBuf],
+) {
     if let Some(engine_lock) = &workspace.rust_engine {
         let mut engine = engine_lock.lock().await;
+        for path in direct_edits {
+            if let Err(err) = engine.reload_file(path) {
+                tracing::warn!(error = %err, file = %path.display(), session_id, "failed to reload direct-edit file on session retirement");
+            }
+        }
         if let Err(err) = engine.clear_session(session_id) {
             tracing::warn!(error = %err, session_id, "failed to drop session overlays");
         }
@@ -2287,6 +2302,7 @@ impl WorkspaceManager {
             accounted: Arc::clone(&workspace),
             workspace,
             is_single_owner,
+            direct_edit_open_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             lease: Some(lease),
             owner: Some(WorktreeOwner {
                 root: worktree_root,
@@ -3800,6 +3816,88 @@ while True:
         manager.unregister_session_view(view1).await;
         manager.unregister_session_view(view2).await;
         manager.unregister_session_view(view3).await;
+    }
+
+    #[tokio::test]
+    async fn test_single_owner_direct_edit_fast_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let cargo_toml = root.join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "fast_path_fixture"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+        )
+        .unwrap();
+        let lib_path = src_dir.join("lib.rs");
+        std::fs::write(&lib_path, "pub const BASE_VAL: u32 = 100;\n").unwrap();
+
+        let engine = prod_code_engine_rust::RustEngine::load(&root).expect("load engine");
+        let engine_arc = Arc::new(Mutex::new(engine));
+        let ws = Arc::new(SharedWorkspace::new(
+            root.clone(),
+            "rust".to_string(),
+            Some(Arc::clone(&engine_arc)),
+            None,
+            None,
+            None,
+        ));
+
+        let manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            crate::admission::Admission::unbounded(),
+        )));
+        manager.insert_ready_for_test(Arc::clone(&ws)).await;
+
+        let lease = manager.get_or_load(&root, "rust").await.unwrap();
+        let view = manager.register_session_view(101, root.clone(), lease).await;
+        assert!(view.is_single_owner, "Dedicated worktree is single owner");
+
+        // Fast path: direct edit modifies base Salsa input without session overlays
+        {
+            let mut eng = engine_arc.lock().await;
+            assert!(!eng.has_session_overlays());
+            eng.apply_file_change(
+                &lib_path,
+                "pub const BASE_VAL: u32 = 100;\npub fn direct_added() {}\n".to_string(),
+            )
+            .unwrap();
+            assert!(
+                !eng.has_session_overlays(),
+                "Direct edits must not create session overlays"
+            );
+            assert_eq!(eng.session_overlay_count(view.session_id), 0);
+
+            let syms = eng.document_symbols(&lib_path).unwrap();
+            assert!(syms.iter().any(|s| s.name == "direct_added"));
+        }
+
+        // Track open file in view
+        view.direct_edit_open_files
+            .lock()
+            .unwrap()
+            .insert(lib_path.clone());
+
+        // Unregistering the session reloads unclosed direct-edit files from disk
+        manager.unregister_session_view(view).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        {
+            let eng = engine_arc.lock().await;
+            assert!(!eng.has_session_overlays());
+            let syms = eng.document_symbols(&lib_path).unwrap();
+            assert!(
+                !syms.iter().any(|s| s.name == "direct_added"),
+                "Disk state must be restored on session retirement"
+            );
+        }
     }
 
     #[tokio::test]

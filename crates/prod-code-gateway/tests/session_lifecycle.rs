@@ -991,3 +991,185 @@ async fn validation_under_memory_pressure_falls_back_when_redirect_count_reached
     drop(client);
     let _ = server.join().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_single_owner_direct_edit_wire_lifecycle() {
+    let storage = tempfile::tempdir().unwrap();
+    let client = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        None,
+    );
+    let src_dir = server_root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let cargo_toml = server_root.join("Cargo.toml");
+    std::fs::write(
+        &cargo_toml,
+        r#"[package]
+name = "single_owner_wire"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+    )
+    .unwrap();
+    let lib_path = src_dir.join("lib.rs");
+    std::fs::write(&lib_path, "pub const INITIAL_VAL: u32 = 1;\n").unwrap();
+
+    let rust_eng = prod_code_engine_rust::RustEngine::load(&server_root).expect("load engine");
+    let rust_eng_arc = Arc::new(tokio::sync::Mutex::new(rust_eng));
+    let workspace = Arc::new(SharedWorkspace::new(
+        server_root.clone(),
+        "rust".to_string(),
+        Some(Arc::clone(&rust_eng_arc)),
+        None,
+        None,
+        None,
+    ));
+
+    let manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+        prod_code_gateway::admission::Admission::unbounded(),
+    )));
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    let server_state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = OwnedTask::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+
+    let mut client_sock = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client_sock
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
+            client_name: "single-owner-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("rust".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        }))
+        .await
+        .unwrap();
+
+    let resp = tokio::time::timeout(Duration::from_secs(5), client_sock.next())
+        .await
+        .expect("handshake response")
+        .expect("response frame")
+        .expect("wire message");
+
+    assert!(matches!(resp, WireMessage::HandshakeResponse(_)));
+
+    let client_file = client_root.join("src/lib.rs");
+    let uri = prod_code_protocol::path::file_uri(&client_file);
+
+    // 1. Send didOpen with direct edit
+    let did_open = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "rust",
+                "version": 1,
+                "text": "pub const INITIAL_VAL: u32 = 1;\npub fn direct_wire_func() -> u8 { 99 }\n"
+            }
+        }
+    });
+    client_sock
+        .send(WireMessage::LspPayload(did_open.to_string()))
+        .await
+        .unwrap();
+
+    // Give gateway time to process didOpen
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Direct edit MUST modify base Salsa without creating overlays
+    {
+        let eng = rust_eng_arc.lock().await;
+        assert!(
+            !eng.has_session_overlays(),
+            "Single-owner direct edit must not create session overlays"
+        );
+        let syms = eng.document_symbols(&lib_path).unwrap();
+        assert!(syms.iter().any(|s| s.name == "direct_wire_func"));
+    }
+
+    // 2. Query documentSymbol over wire
+    let doc_sym_req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "textDocument/documentSymbol",
+        "params": {
+            "textDocument": { "uri": uri }
+        }
+    });
+    client_sock
+        .send(WireMessage::LspPayload(doc_sym_req.to_string()))
+        .await
+        .unwrap();
+
+    let query_resp = tokio::time::timeout(Duration::from_secs(5), client_sock.next())
+        .await
+        .expect("symbol response")
+        .expect("response frame")
+        .expect("wire message");
+
+    if let WireMessage::LspPayload(payload) = query_resp {
+        let val: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let syms = val.get("result").and_then(|r| r.as_array()).unwrap();
+        assert!(
+            syms.iter().any(|s| s.get("name").and_then(|n| n.as_str()) == Some("direct_wire_func")),
+            "Query must see direct edit in base Salsa DB"
+        );
+    } else {
+        panic!("Expected LspPayload, got {query_resp:?}");
+    }
+
+    // 3. Send didClose -> restores disk state
+    let did_close = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didClose",
+        "params": {
+            "textDocument": { "uri": uri }
+        }
+    });
+    client_sock
+        .send(WireMessage::LspPayload(did_close.to_string()))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    {
+        let eng = rust_eng_arc.lock().await;
+        assert!(!eng.has_session_overlays());
+        let syms = eng.document_symbols(&lib_path).unwrap();
+        assert!(
+            !syms.iter().any(|s| s.name == "direct_wire_func"),
+            "didClose must reload disk text and clear direct edits"
+        );
+    }
+
+    drop(client_sock);
+    let _ = server.join().await;
+}
