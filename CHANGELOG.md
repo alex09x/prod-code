@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.3.21 — 2026-10-01
+
+### Added
+- **Cluster UDP Multicast Discovery & HMAC-SHA-256 Authentication** (`crates/prod-code-gateway`, `crates/prod-code-client`, `crates/prod-code-mcp`): Nodes announce loaded workspaces, host capacity, and supported engines over UDP multicast (`PROD_CODE_DISCOVERY_ADDR` / `239.255.42.99:9401`). Announcements are mutually authenticated using constant-time HMAC-SHA-256 derived from `cluster_auth_token`, filtering forged/spoofed packets and detecting node eviction.
+- **MCP Hot-Failover & Dead Peer Eviction** (`crates/prod-code-mcp`, `crates/prod-code-client`): MCP client automatically tracks live gateway nodes via gossip and discovery, detects node failures and connection drops, evicts unreachable peers, safely retries idempotent calls, and routes requests to cluster nodes matching required language engines (#779).
+- **Shared In-Memory RustEngine for Git Worktrees** (`crates/prod-code-gateway`, `crates/prod-code-engine-rust`): Eliminates duplicate multi-gigabyte engine memory footprint (saving ~94 GB on cluster nodes). Secondary git worktrees attach isolated VFS overlays onto the shared base `RustEngine`, avoiding duplicate analysis databases and memory exhaustion (#777).
+
+### Fixed
+- **Worktree Refactoring Context Resolution**: Refactoring results, assists, and renames initiated in a worktree resolve file paths to the requesting worktree root instead of the shared base checkout.
+- **Worktree Detection for Git Worktrees**: Added support for standard Git worktrees containing `.git` gitdir pointers alongside server worktree naming (`--wt-<hash>`).
+- **Base Eviction Protection**: Active worktrees increment the base workspace's attached worktree count, preventing the shared engine from being evicted as idle while worktrees are in use.
+- **Deferred Overlay Detachment**: Overlay detachment and base unpinning are deferred until all active leases and sessions on the worktree retire.
+- **Validation Engine Attachment Refcounting**: Balanced reference counts across validation engines, transactional commit on successful overlay mount with automatic rollback on partial failures, and prevention of duplicate attachments on memory-pressure validation fallback.
+
+
 ## v0.3.19 — 2026-09-29
 
 ### Added
