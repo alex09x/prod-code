@@ -5849,3 +5849,57 @@ async fn code_slice_returns_error_when_no_items_found() {
     .await;
     assert!(res.is_err() || res.unwrap().is_error);
 }
+
+#[tokio::test]
+async fn code_references_finds_struct_field_by_bare_symbol_name() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"s\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub struct Stats {\n    pub normalized_orders: u64,\n}\n\npub fn inspect(s: &Stats) -> u64 {\n    s.normalized_orders\n}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let remote = scripted_gateway(Arc::new(move |method, _params| {
+        match method {
+            // workspace/symbol returns empty for normalized_orders (simulating rust-analyzer omitting struct fields)
+            "workspace/symbol" => serde_json::json!([]),
+            "textDocument/documentSymbol" => serde_json::json!([
+                {
+                    "name": "Stats",
+                    "kind": 23,
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 2, "character": 1 } },
+                    "selectionRange": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 16 } },
+                    "children": [
+                        {
+                            "name": "normalized_orders",
+                            "kind": 8,
+                            "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 31 } },
+                            "selectionRange": { "start": { "line": 1, "character": 8 }, "end": { "line": 1, "character": 25 } }
+                        }
+                    ]
+                }
+            ]),
+            "textDocument/references" => {
+                answers::locations(&lib, &[(6, 7)])
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "symbol": "normalized_orders" }),
+    )
+    .await
+    .expect("resolves unindexed struct field and queries its references");
+
+    assert!(text_of(&result).contains("Found 1 reference(s)"));
+}
+
