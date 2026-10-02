@@ -563,14 +563,14 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
         .iter()
         .any(|n| n.alive && capable(n) && pressure(n).is_none());
     let takes_new = |n: &PeerInfo| !(roomy_exists && pressure(n).is_some());
-    let load = |n: &PeerInfo| n.status.load_per_cpu().unwrap_or(f64::MAX);
+    let score = |n: &PeerInfo| n.status.congestion_score();
     let quietest = view
         .nodes
         .iter()
         .filter(|n| n.alive && capable(n) && takes_new(n))
         .min_by(|a, b| {
-            load(a)
-                .partial_cmp(&load(b))
+            score(a)
+                .partial_cmp(&score(b))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     let holder = view.nodes.iter().find(|n| {
@@ -593,22 +593,23 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
                 return PlaceResponse {
                     node: Some(q.addr.clone()),
                     reason: format!(
-                        "moved from {} ({why}, idle) to {} ({:.2}/cpu)",
+                        "moved from {} ({why}, idle) to {} (score {:.2}, load {:.2}/cpu)",
                         h.addr,
                         q.addr,
-                        load(q)
+                        score(q),
+                        q.status.load_per_cpu().unwrap_or(0.0)
                     ),
                 };
             }
-            if load(h) > 1.0 && load(q) < load(h) * 0.5 {
+            if score(h) >= 0.80 && score(q) < score(h) * 0.50 && (score(h) - score(q)) >= 0.40 {
                 return PlaceResponse {
                     node: Some(q.addr.clone()),
                     reason: format!(
-                        "moved from {} (load {:.2}/cpu, idle) to the quieter {} ({:.2}/cpu)",
+                        "rebalanced from {} (score {:.2}, idle) to the quieter {} (score {:.2})",
                         h.addr,
-                        load(h),
+                        score(h),
                         q.addr,
-                        load(q)
+                        score(q)
                     ),
                 };
             }
@@ -621,9 +622,10 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
     match quietest {
         Some(q) => {
             let mut reason = format!(
-                "quietest node serving {} ({:.2}/cpu)",
+                "quietest node serving {} (score {:.2}, load {:.2}/cpu)",
                 engine.unwrap_or("any engine"),
-                load(q)
+                score(q),
+                q.status.load_per_cpu().unwrap_or(0.0)
             );
             let passed_over: Vec<String> = view
                 .nodes
@@ -3368,6 +3370,46 @@ pub async fn handle_client(
                             })
                             .await;
                         return Ok(());
+                    }
+
+                    // Also: If this gateway is under resource pressure or congested, and another live node is roomy,
+                    // redirect this fresh workspace connection to the quietest roomiest node!
+                    let current_status = state.status().await;
+                    if current_status.host.pressure().is_some() || current_status.congestion_score() >= 1.2 {
+                        let own_score = current_status.congestion_score();
+                        if let Some(roomy) = view
+                            .nodes
+                            .iter()
+                            .filter(|n| {
+                                n.alive
+                                    && n.addr != own_addr
+                                    && cluster_supports_engine(&n.status, engine)
+                                    && n.status.host.pressure().is_none()
+                                    && n.status.congestion_score() < own_score * 0.6
+                            })
+                            .min_by(|a, b| {
+                                a.status
+                                    .congestion_score()
+                                    .partial_cmp(&b.status.congestion_score())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                        {
+                            tracing::info!(
+                                workspace = ws_name,
+                                target = %roomy.addr,
+                                "transparently redirecting client from congested gateway to roomier node"
+                            );
+                            let _ = framed
+                                .send(WireMessage::Redirect {
+                                    target_addr: roomy.addr.clone(),
+                                    reason: Some(format!(
+                                        "node {own_addr} is congested; redirected to roomier node {}",
+                                        roomy.addr
+                                    )),
+                                })
+                                .await;
+                            return Ok(());
+                        }
                     }
                 }
 

@@ -3617,6 +3617,7 @@ async fn execute_lsp_query(
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                     if let Ok(addr) = target_addr.parse::<SocketAddr>() {
                         remote = addr;
+                        prod_code_mcp::cluster::remember_placement(&identity.name, remote);
                         continue;
                     } else {
                         anyhow::bail!("invalid redirect target address: {target_addr}");
@@ -4615,6 +4616,7 @@ fn status_snapshot(
         );
         object.insert("healthy".into(), serde_json::json!(pressure.is_none()));
         object.insert("pressure".into(), serde_json::json!(pressure));
+        object.insert("congestion_score".into(), serde_json::json!(status.congestion_score()));
     }
     snapshot
 }
@@ -5317,10 +5319,11 @@ async fn run_cluster(
                     .map(|w| format!("{}[{}:{}]", w.name, w.engine, w.sessions))
                     .collect();
                 println!(
-                    "  {:<22} {:<5} load {:>5.2}/cpu  seen {:>3}s ago  {}",
+                    "  {:<22} {:<5} load {:>5.2}/cpu  score {:>5.2}  seen {:>3}s ago  {}",
                     peer.addr,
                     if peer.alive { "UP" } else { "STALE" },
                     peer.status.load_per_cpu().unwrap_or(0.0),
+                    peer.status.congestion_score(),
                     peer.last_seen_secs,
                     if ws.is_empty() {
                         "-".to_string()
@@ -5345,8 +5348,9 @@ async fn run_cluster(
         match prod_code_mcp::cluster::node_status(*node).await {
             Ok(status) => {
                 println!(
-                    "{node:<22} UP    {:>6.2} ms  load {:>5.2}/cpu ({} cpus)  uptime {}h{:02}m  workspaces {}  sessions {}  commands {}  rss {:.0} MB",
+                    "{node:<22} UP    {:>6.2} ms  score {:>5.2}  load {:>5.2}/cpu ({} cpus)  uptime {}h{:02}m  workspaces {}  sessions {}  commands {}  rss {:.0} MB",
                     started.elapsed().as_secs_f64() * 1000.0,
+                    status.congestion_score(),
                     status.load_per_cpu().unwrap_or(0.0),
                     status.cpu_count.unwrap_or(0),
                     status.uptime_seconds / 3600,

@@ -379,6 +379,20 @@ pub async fn pick_node_with(
                     if let Ok(status) = node_status(remembered).await {
                         if status.host.pressure().is_some() {
                             still_fits = false;
+                        } else if status.congestion_score() >= 0.80 && nodes.len() > 1 {
+                            // If remembered node has become congested, evaluate whether a significantly
+                            // better node exists instead of blindly staying placed there.
+                            if let Some((better, _)) =
+                                evaluate_cluster_rebalance_with(nodes, remembered, workspace_name, engine, os).await
+                            {
+                                if let Some(path) = placement_file {
+                                    placement
+                                        .workspaces
+                                        .insert(workspace_name.to_string(), better);
+                                    save_placement(path, &placement);
+                                }
+                                return Ok(better);
+                            }
                         }
                     }
                 }
@@ -417,7 +431,7 @@ pub async fn pick_node_with(
             }
             break;
         }
-        // Fallback without a cluster view: prefer the quietest node (load per CPU) among
+        // Fallback without a cluster view: prefer the quietest, roomiest node (by congestion score) among
         // the ones that answer and can serve the engine, rendezvous order as tie-break.
         let mut candidates = Vec::new();
         let mut unsupported = Vec::new();
@@ -435,14 +449,14 @@ pub async fn pick_node_with(
                     if status.host.pressure().is_some() {
                         short.push(candidate);
                     }
-                    candidates.push((candidate, status.load_per_cpu()));
+                    candidates.push((candidate, status.congestion_score()));
                 }
                 Ok(_) => unsupported.push(candidate),
                 Err(err) => {
                     // A node that accepts TCP but answers no status is only usable when
                     // nothing specific is required of it.
                     if engine.is_none() && os.is_none() && is_alive(candidate).await {
-                        candidates.push((candidate, None));
+                        candidates.push((candidate, 500.0));
                     } else if first_failure.is_none() {
                         first_failure = Some(format!("{candidate}: {}", err.root_cause()));
                     }
@@ -458,7 +472,7 @@ pub async fn pick_node_with(
         if candidates.iter().any(|(c, _)| !short.contains(c)) {
             candidates.retain(|(c, _)| !short.contains(c));
         }
-        if let Some(chosen) = choose_quietest(&candidates) {
+        if let Some(chosen) = choose_best_node(&candidates) {
             if let Some(path) = placement_file {
                 placement
                     .workspaces
@@ -540,6 +554,186 @@ pub fn choose_quietest(candidates: &[(SocketAddr, Option<f64>)]) -> Option<Socke
             key(la).cmp(&key(lb)).then(ia.cmp(ib))
         })
         .map(|(_, (addr, _))| *addr)
+}
+
+/// Among candidates with their multi-dimensional congestion scores, chooses the best (lowest score) node;
+/// ties keep rendezvous order.
+pub fn choose_best_node(candidates: &[(SocketAddr, f64)]) -> Option<SocketAddr> {
+    candidates
+        .iter()
+        .enumerate()
+        .min_by(|(ia, (_, sa)), (ib, (_, sb))| {
+            let key = |s: f64| (s * 1000.0) as i64;
+            key(*sa).cmp(&key(*sb)).then(ia.cmp(ib))
+        })
+        .map(|(_, (addr, _))| *addr)
+}
+
+/// Evaluates whether the current remote node has degraded or become congested, and whether
+/// a significantly more efficient, roomier node is available in the cluster.
+/// Returns Some((new_addr, reason)) if rebalancing is recommended; None to remain on current node.
+pub async fn evaluate_cluster_rebalance(
+    current_node: SocketAddr,
+    workspace_name: &str,
+    engine: Option<&str>,
+    os: Option<&str>,
+) -> Option<(SocketAddr, String)> {
+    if std::env::var_os("PROD_CODE_NO_REBALANCE").is_some() {
+        return None;
+    }
+
+    // Single node / pinned check: if ROUTING is set and only lists current_node, do not rebalance.
+    let cluster_nodes = if let Some(routing) = ROUTING.get() {
+        if routing.nodes.len() <= 1 {
+            return None;
+        }
+        routing.nodes.clone()
+    } else {
+        match resolve_auto_remotes() {
+            Ok(nodes) if nodes.len() > 1 => nodes,
+            _ => vec![current_node],
+        }
+    };
+
+    evaluate_cluster_rebalance_with(&cluster_nodes, current_node, workspace_name, engine, os).await
+}
+
+/// [`evaluate_cluster_rebalance`] over an explicit list of cluster nodes.
+pub async fn evaluate_cluster_rebalance_with(
+    cluster_nodes: &[SocketAddr],
+    current_node: SocketAddr,
+    _workspace_name: &str,
+    engine: Option<&str>,
+    os: Option<&str>,
+) -> Option<(SocketAddr, String)> {
+    if std::env::var_os("PROD_CODE_NO_REBALANCE").is_some() || cluster_nodes.len() <= 1 {
+        return None;
+    }
+
+    // Check status of current node
+    let current_status = match node_status(current_node).await {
+        Ok(s) => s,
+        Err(_) => {
+            // Current node is down: pick the best available node immediately
+            let mut candidates = Vec::new();
+            for node in cluster_nodes {
+                if *node == current_node {
+                    continue;
+                }
+                if let Ok(st) = node_status(*node).await {
+                    if status_fits(&st, engine, os) && st.host.pressure().is_none() {
+                        candidates.push((*node, st.congestion_score()));
+                    }
+                }
+            }
+            if let Some(best) = choose_best_node(&candidates) {
+                return Some((
+                    best,
+                    format!("current node {current_node} is unreachable, migrating to live peer {best}"),
+                ));
+            }
+            return None;
+        }
+    };
+
+    let current_score = current_status.congestion_score();
+    let has_pressure = current_status.host.pressure().is_some();
+
+    // If current node is healthy and not congested (< 0.80 score and no pressure), keep warm caches
+    if !has_pressure && current_score < 0.80 {
+        return None;
+    }
+
+    // Try to get whole cluster state via cluster_view from current node or live peers
+    let mut candidate_scores: Vec<(SocketAddr, f64, String)> = Vec::new();
+
+    if let Ok(view) = cluster_view(current_node).await {
+        for peer in view.nodes {
+            if !peer.alive {
+                continue;
+            }
+            let Ok(addr) = peer.addr.parse::<SocketAddr>() else {
+                continue;
+            };
+            if addr == current_node {
+                continue;
+            }
+            if !status_fits(&peer.status, engine, os) {
+                continue;
+            }
+            if os.is_none() && runs_os(&peer.status, "macos") {
+                // Don't migrate non-macOS work to macOS unless required
+                continue;
+            }
+            let score = peer.status.congestion_score();
+            candidate_scores.push((addr, score, peer.status.host.describe()));
+        }
+    } else {
+        // Fallback: probe known nodes directly
+        for node in cluster_nodes {
+            if *node == current_node {
+                continue;
+            }
+            if let Ok(st) = node_status(*node).await {
+                if status_fits(&st, engine, os) {
+                    if os.is_none() && runs_os(&st, "macos") {
+                        continue;
+                    }
+                    candidate_scores.push((*node, st.congestion_score(), st.host.describe()));
+                }
+            }
+        }
+    }
+
+    if candidate_scores.is_empty() {
+        return None;
+    }
+
+    // Filter out candidates under hard pressure (>= 1000.0) if any non-pressured candidate exists
+    let non_pressured: Vec<_> = candidate_scores
+        .iter()
+        .filter(|(_, s, _)| *s < 1000.0)
+        .cloned()
+        .collect();
+    let pool = if !non_pressured.is_empty() {
+        &non_pressured
+    } else {
+        &candidate_scores
+    };
+
+    // Find best candidate
+    let best = pool
+        .iter()
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+
+    let (best_addr, best_score, host_desc) = (best.0, best.1, &best.2);
+
+    // Migration criteria with hysteresis:
+    // 1. Current node is under hard pressure (score >= 1000.0) and best node is not
+    if has_pressure && best_score < 1000.0 {
+        return Some((
+            best_addr,
+            format!(
+                "node {current_node} is under resource pressure ({}), migrating to roomier {best_addr} (score {:.2}, {host_desc})",
+                current_status.host.pressure().unwrap_or_default(),
+                best_score
+            ),
+        ));
+    }
+
+    // 2. Current node is noticeably congested (score >= 0.80), best node is at least 2x better and diff >= 0.40
+    if current_score >= 0.80 && best_score < current_score * 0.50 && (current_score - best_score) >= 0.40 {
+        return Some((
+            best_addr,
+            format!(
+                "rebalancing from congested node {current_node} (score {:.2}) to quieter {best_addr} (score {:.2}, {host_desc})",
+                current_score,
+                best_score
+            ),
+        ));
+    }
+
+    None
 }
 
 /// The remembered placement of `workspace_name`, if any.
@@ -1401,6 +1595,59 @@ mod tests {
             .unwrap();
             assert_eq!(picked, remembered);
         }
+    }
+
+    #[test]
+    fn choose_best_node_picks_lowest_congestion_score() {
+        let node1: SocketAddr = "10.0.0.1:9400".parse().unwrap();
+        let node2: SocketAddr = "10.0.0.2:9400".parse().unwrap();
+        let node3: SocketAddr = "10.0.0.3:9400".parse().unwrap();
+
+        let candidates = vec![
+            (node1, 1.45),
+            (node2, 0.05),
+            (node3, 0.82),
+        ];
+
+        assert_eq!(choose_best_node(&candidates), Some(node2));
+    }
+
+    #[tokio::test]
+    async fn pick_node_with_rebalances_when_remembered_node_is_congested() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+
+        let roomy_disk = HostResources {
+            storage_free_millis: Some(600),
+            ..HostResources::default()
+        };
+
+        // Congested node: 4.8 load / 4 cpus = 1.2 load/cpu, score ~1.2
+        let congested = node_with(&["rust"], Some("linux x86_64"), 4800, roomy_disk.clone()).await;
+        // Roomy node: 0.08 load / 4 cpus = 0.02 load/cpu, score ~0.02
+        let roomy = node_with(&["rust"], Some("linux x86_64"), 80, roomy_disk).await;
+
+        let mut rem = Placement::default();
+        rem.workspaces.insert("subject".to_string(), congested);
+        save_placement(&placement, &rem);
+
+        // Before picking, placement points to `congested`
+        assert_eq!(load_placement(&placement).workspaces.get("subject"), Some(&congested));
+
+        // When picking, it detects that `congested` has score >= 0.80 and `roomy` is >2x better,
+        // so it rebalances to `roomy` and updates placement.json!
+        let chosen = pick_node_with(
+            &[congested, roomy],
+            "subject",
+            Some("rust"),
+            None,
+            Some(&placement),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(chosen, roomy);
+        assert_eq!(load_placement(&placement).workspaces.get("subject"), Some(&roomy));
     }
 }
 

@@ -223,6 +223,7 @@ impl LspSession {
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                     if let Ok(addr) = target_addr.parse::<SocketAddr>() {
                         remote = addr;
+                        crate::cluster::remember_placement(&identity.name, remote);
                         continue;
                     } else {
                         anyhow::bail!("invalid redirect target address: {target_addr}");

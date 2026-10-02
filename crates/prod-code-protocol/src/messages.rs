@@ -574,6 +574,53 @@ impl StatusResponse {
         self.memory_rss_bytes
             .map(|b| (b as f64) / (1024.0 * 1024.0))
     }
+
+    /// Multi-dimensional cluster congestion score. Lower is quieter and roomier; higher is more congested.
+    ///
+    /// Combines:
+    /// - Hard resource pressure: disqualified (>= 1000.0) if memory > 85% or disk < 10%.
+    /// - Base CPU load: load per CPU.
+    /// - Memory pressure curve: steep penalty if memory > 70%.
+    /// - Storage pressure curve: penalty if disk < 25%.
+    /// - Workspace & session density: penalty per loaded workspace, active session, and active query.
+    /// - Running command penalty: high load penalty for currently executing commands (builds/tests).
+    pub fn congestion_score(&self) -> f64 {
+        if self.host.pressure().is_some() {
+            return 1000.0 + self.load_per_cpu().unwrap_or(0.0);
+        }
+
+        let mut score = self.load_per_cpu().unwrap_or(0.0);
+
+        // Memory usage penalty (above 70% used)
+        if let Some(mem_used) = self.host.memory_used_share() {
+            if mem_used > 0.70 {
+                score += (mem_used - 0.70) * 8.0;
+            }
+            if mem_used > MEMORY_PRESSURE_USED {
+                score += 50.0;
+            }
+        }
+
+        // Disk space penalty (below 25% free)
+        if let Some(disk_free) = self.host.storage_free_share() {
+            if disk_free < 0.25 {
+                score += (0.25 - disk_free) * 5.0;
+            }
+            if disk_free < STORAGE_PRESSURE_FREE {
+                score += 50.0;
+            }
+        }
+
+        // Density penalties: loaded workspaces, sessions, active queries
+        score += self.loaded_workspaces as f64 * 0.08;
+        score += self.active_sessions as f64 * 0.05;
+        score += self.active_queries as f64 * 0.10;
+
+        // Running commands (builds, tests, checks) add significant instantaneous load
+        score += self.running_commands.len() as f64 * 0.35;
+
+        score
+    }
 }
 
 /// Individual file delta for fast worktree synchronization over 10G LAN.
@@ -1429,6 +1476,88 @@ mod wire_tests {
         assert_eq!(old_decoded.hits[0].score, None);
         assert_eq!(old_decoded.hits[0].rank_reasons, None);
         assert_eq!(old_decoded.graph_fused, None);
+    }
+
+    #[test]
+    fn congestion_score_reflects_load_memory_disk_and_density() {
+        let gib = 1 << 30;
+
+        // 1. Idle node: plenty of resources, 0 load, 0 workspaces
+        let idle = StatusResponse {
+            server_pid: 1,
+            uptime_seconds: 100,
+            active_sessions: 0,
+            loaded_workspaces: 0,
+            detected_engines: vec!["rust".into()],
+            memory_rss_bytes: None,
+            total_queries: 0,
+            active_queries: 0,
+            load_average_millis: Some(20), // 0.02
+            cpu_count: Some(1),
+            platform: Some("linux x86_64".into()),
+            running_commands: Vec::new(),
+            host: HostResources {
+                memory_available_bytes: Some(16 * gib),
+                memory_total_bytes: Some(32 * gib), // 50% used
+                storage_free_millis: Some(650),      // 65% free
+            },
+        };
+        assert!((idle.congestion_score() - 0.02).abs() < 1e-6);
+
+        // 2. Memory penalty above 70%
+        let mem_heavy = StatusResponse {
+            host: HostResources {
+                memory_available_bytes: Some(6 * gib),
+                memory_total_bytes: Some(30 * gib), // 80% used (0.10 above 0.70 => +0.80)
+                storage_free_millis: Some(500),
+            },
+            ..idle.clone()
+        };
+        // 0.02 + 0.10 * 8.0 = 0.82
+        assert!((mem_heavy.congestion_score() - 0.82).abs() < 1e-4);
+
+        // 3. Disk penalty below 25%
+        let disk_heavy = StatusResponse {
+            host: HostResources {
+                memory_available_bytes: Some(16 * gib),
+                memory_total_bytes: Some(32 * gib),
+                storage_free_millis: Some(150), // 15% free (0.10 below 0.25 => +0.50)
+            },
+            ..idle.clone()
+        };
+        // 0.02 + 0.10 * 5.0 = 0.52
+        assert!((disk_heavy.congestion_score() - 0.52).abs() < 1e-4);
+
+        // 4. Density penalties (workspaces, sessions, running commands)
+        let loaded = StatusResponse {
+            loaded_workspaces: 5, // 5 * 0.08 = 0.40
+            active_sessions: 4,   // 4 * 0.05 = 0.20
+            running_commands: vec![
+                RunningCommand {
+                    workspace: "w1".into(),
+                    command: "cargo check".into(),
+                    running_seconds: 10,
+                },
+                RunningCommand {
+                    workspace: "w2".into(),
+                    command: "cargo test".into(),
+                    running_seconds: 20,
+                },
+            ], // 2 * 0.35 = 0.70
+            ..idle.clone()
+        };
+        // 0.02 + 0.40 + 0.20 + 0.70 = 1.32
+        assert!((loaded.congestion_score() - 1.32).abs() < 1e-4);
+
+        // 5. Hard pressure (e.g. storage < 10%)
+        let pressured = StatusResponse {
+            host: HostResources {
+                storage_free_millis: Some(50), // 5% free => hard pressure
+                ..idle.host.clone()
+            },
+            ..idle.clone()
+        };
+        assert!(pressured.congestion_score() >= 1000.0);
     }
 }
 

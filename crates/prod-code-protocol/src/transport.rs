@@ -614,7 +614,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (client, accepted) =
-            tokio::join!(connect_with(addr, Some("s3cret")), listener.accept());
+            tokio::join!(connect_raw_tcp_with(addr, Some("s3cret")), listener.accept());
         let _client = client.unwrap();
         let mut server = accepted.unwrap().0;
         assert_eq!(
@@ -622,7 +622,7 @@ mod tests {
             WireMessage::Auth(AuthToken("s3cret".to_string()))
         );
 
-        let (client, accepted) = tokio::join!(connect_with(addr, None), listener.accept());
+        let (client, accepted) = tokio::join!(connect_raw_tcp_with(addr, None), listener.accept());
         let mut client = client.unwrap();
         let mut ping = bytes::BytesMut::new();
         crate::ProdCodeCodec::new()

@@ -279,6 +279,8 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
         || msg.contains("this node has no memory for a new")
         || msg.contains("refused for capacity")
         || msg.contains("capacity admission")
+        || msg.contains("no space left on device")
+        || msg.contains("short of disk")
 }
 
 /// Run a 250ms UDP discovery probe (multicast + unicast to the old address) and return
@@ -444,6 +446,9 @@ where
     }
 
     let mut pending: Vec<u8> = Vec::new();
+    let mut rebalance_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    rebalance_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         if reload_flag.load(std::sync::atomic::Ordering::Acquire)
             && pending.is_empty()
@@ -470,6 +475,46 @@ where
                 buf.len()
             }
             _ = reload_notify.notified() => 0,
+            _ = rebalance_interval.tick() => {
+                let identity = crate::sync::workspace_identity(&workspace_root);
+                let ws_name = identity.base.as_ref().unwrap_or(&identity.name).clone();
+                let (_, engine) = crate::sync::engine_project(&workspace_root, &workspace_root);
+                let os = crate::sync::macos_only_cgo(&workspace_root).map(|_| "macos");
+                if let Some((new_addr, reason)) = crate::cluster::evaluate_cluster_rebalance(
+                    remote,
+                    &ws_name,
+                    engine,
+                    os,
+                ).await {
+                    tracing::info!(
+                        old = %remote,
+                        new = %new_addr,
+                        %reason,
+                        "cluster rebalance: migrating active workspace to more efficient node"
+                    );
+                    remote = new_addr;
+                    crate::cluster::remember_placement(&ws_name, new_addr);
+                    // Pre-warm the workspace on the new node in the background
+                    let root_clone = workspace_root.clone();
+                    let identity_clone = identity.clone();
+                    tokio::spawn(async move {
+                        if let Ok(stream) = prod_code_protocol::transport::connect(new_addr).await {
+                            let mut framed = tokio_util::codec::Framed::new(
+                                stream,
+                                prod_code_protocol::ProdCodeCodec::new(),
+                            );
+                            let _ = crate::sync::push_workspace_sync(
+                                &mut framed,
+                                &root_clone,
+                                &identity_clone,
+                                None,
+                            )
+                            .await;
+                        }
+                    });
+                }
+                0
+            }
         };
         reader.consume(consumed);
 
