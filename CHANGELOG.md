@@ -6,7 +6,7 @@
 - **Single-Owner Direct-Edit Fast Path & Overlay Bypass (Phase 2.2)** (`crates/prod-code-gateway`, `crates/prod-code-engine-rust`):
   Dedicated worktrees with single-owner sessions bypass overlay crate cones and apply unsaved `didOpen` / `didChange` edits directly into base Salsa file inputs in memory. When a second session joins the same worktree, the direct-edit lease is dynamically revoked via `Arc<AtomicBool>`, and in-memory edits are atomically migrated under the engine mutex into session overlays while the clean on-disk text is restored into base Salsa DB (#808, #817).
 - **Polyglot Remote Build & Test Execution Wire Protocol (Phase 6.1)** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-mcp`):
-  Introduced typed wire execution messages (`RemoteExecCommand`, `BuildCheckStreamMessage`, `TestExecutionEvent`) supporting remote build checks, unit tests, and benchmarks across Rust, Go, Python, TypeScript, C/C++, and Swift with streaming JSON and verbose raw event parsing.
+  Introduced typed wire execution messages (`RemoteExecRequest`, `RemoteExecCommand`, `RemoteExecStream`, `RemoteExecTestEvent`, `RemoteExecResult`) supporting remote build checks, unit tests, and benchmarks across Rust, Go, Python, TypeScript, C/C++, and Swift with streaming JSON and verbose raw event parsing.
 - **Discovery Privacy, Replay-Resistant Challenge, and Cluster PKI (Phase 5.6)** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-client`):
   Added mutual TLS cluster authentication, peer certificate verification, replay-resistant challenge discovery nonces, and `prod-code cert` CLI tooling for CA root and leaf certificate provisioning.
 - **Dynamic Cluster Load Balancing & Transparent Migration**:
