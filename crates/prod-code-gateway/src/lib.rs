@@ -6339,13 +6339,13 @@ async fn discovery_loop(state: Arc<ServerState>) {
                 match result {
                     Ok((n, from)) => {
                         let token = state.auth_token.as_deref();
-                        if discovery::is_valid_probe(&buf[..n], token) {
-                            let own_line = build_own_announce(&state).await;
+                        if let Some(probe_nonce) = discovery::inspect_probe(&buf[..n], token) {
+                            let own_line = build_own_announce(&state, probe_nonce.as_deref()).await;
                             let cluster = state.cluster.read().await;
                             let peer_lines: Vec<String> = cluster
                                 .values()
                                 .filter(|e| e.last_seen.elapsed() < std::time::Duration::from_secs(30))
-                                .map(|e| build_peer_announce(e, token))
+                                .map(|e| build_peer_announce(e, token, probe_nonce.as_deref()))
                                 .collect();
                             drop(cluster);
                             let payload = discovery::build_reply(&own_line, &peer_lines);
@@ -6358,9 +6358,9 @@ async fn discovery_loop(state: Arc<ServerState>) {
                     }
                 }
             }
-            // Periodic multicast announce.
+            // Periodic multicast announce: minimal announcement for LAN discovery privacy (Phase 5.6).
             _ = announce_tick.tick() => {
-                let line = build_own_announce(&state).await;
+                let line = build_own_minimal_announce(&state).await;
                 let payload = discovery::build_reply(&line, &[]);
                 let _ = tok_sock.send_to(
                     &payload,
@@ -6371,8 +6371,25 @@ async fn discovery_loop(state: Arc<ServerState>) {
     }
 }
 
-/// Build this node's discovery announce line with full routing metadata.
-async fn build_own_announce(state: &ServerState) -> String {
+/// Build this node's minimal discovery announce line for privacy (endpoint + engines only).
+async fn build_own_minimal_announce(state: &ServerState) -> String {
+    use prod_code_protocol::discovery;
+    let advertise = state.advertise.read().await.clone();
+    let engines_csv = state
+        .advertised_engines()
+        .iter()
+        .map(|e| e.split(' ').next().unwrap_or(e).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    discovery::format_minimal_node_line(
+        &advertise,
+        &engines_csv,
+        state.auth_token.as_deref(),
+    )
+}
+
+/// Build this node's discovery announce line with full routing metadata and optional challenge nonce echo.
+async fn build_own_announce(state: &ServerState, nonce: Option<&str>) -> String {
     use prod_code_protocol::discovery;
     let advertise = state.advertise.read().await.clone();
     let engines_csv = state
@@ -6387,7 +6404,7 @@ async fn build_own_announce(state: &ServerState) -> String {
         .into_iter()
         .map(|(name, engine, sessions)| (name, engine, sessions as u32))
         .collect();
-    discovery::format_node_line(
+    discovery::format_node_line_with_nonce(
         &advertise,
         &engines_csv,
         status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
@@ -6398,11 +6415,12 @@ async fn build_own_announce(state: &ServerState) -> String {
         state.active_sessions.load(std::sync::atomic::Ordering::Relaxed) as u32,
         &workspaces,
         state.auth_token.as_deref(),
+        nonce,
     )
 }
 
-/// Build a peer's discovery announce line from its gossip data.
-fn build_peer_announce(entry: &PeerEntry, token: Option<&str>) -> String {
+/// Build a peer's discovery announce line from its gossip data with optional challenge nonce echo.
+fn build_peer_announce(entry: &PeerEntry, token: Option<&str>, nonce: Option<&str>) -> String {
     use prod_code_protocol::discovery;
     let eng = entry
         .gossip
@@ -6418,7 +6436,7 @@ fn build_peer_announce(entry: &PeerEntry, token: Option<&str>) -> String {
         .iter()
         .map(|w| (w.name.clone(), w.engine.clone(), w.sessions as u32))
         .collect();
-    discovery::format_node_line(
+    discovery::format_node_line_with_nonce(
         &entry.gossip.addr,
         &eng,
         entry.gossip.status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
@@ -6429,6 +6447,7 @@ fn build_peer_announce(entry: &PeerEntry, token: Option<&str>) -> String {
         entry.gossip.workspaces.iter().map(|w| w.sessions as u32).sum::<u32>(),
         &workspaces,
         token,
+        nonce,
     )
 }
 

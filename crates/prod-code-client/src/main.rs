@@ -19,6 +19,7 @@ use url::Url;
 
 mod update;
 mod package;
+mod cert;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -1553,6 +1554,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: package::PackageSubcommands,
     },
+    /// Manage cluster TLS certificates, Root CA, node certificates, pinning, and PKI trust roots
+    Cert {
+        #[command(subcommand)]
+        cmd: cert::CertCommands,
+    },
 }
 
 fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
@@ -1878,6 +1884,11 @@ async fn main() -> Result<()> {
                 return package::run_package_sync(r).await;
             }
         }
+    }
+    // PKI certificate management runs locally without a cluster connection.
+    if let Some(Commands::Cert { cmd }) = cli.command {
+        startup.report();
+        return cert::run_cert(cmd).await;
     }
     if let Some(Commands::Status { json }) = cli.command {
         startup.report();
@@ -3429,7 +3440,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Update { check, force, tag } => update::run_update(check, force, tag).await,
-        Commands::Package { .. } => unreachable!(),
+        Commands::Package { .. } | Commands::Cert { .. } => unreachable!(),
     }
 }
 

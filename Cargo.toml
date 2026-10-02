@@ -46,7 +46,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "early-data"] }
 rustls-pki-types = "1.10"
 rustls-pemfile = "2.1"
-rcgen = "0.13"
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 
 # Line tables only, in the objects: backtraces keep file and line, and nothing is left behind.
 # `split-debuginfo = "unpacked"` with incremental builds wrote a `.dwo` per codegen unit that

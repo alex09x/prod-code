@@ -674,6 +674,188 @@ pub async fn upgrade_server_stream(
         .map_err(|e| Error::new(ErrorKind::ConnectionAborted, format!("TLS server handshake failed: {e}")))
 }
 
+/// Cluster PKI, certificate generation, authority management, and pinning (Phase 5.6).
+pub mod pki {
+    use super::*;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    pub struct PkiInitReport {
+        pub ca_cert_path: PathBuf,
+        pub ca_key_path: PathBuf,
+        pub node_cert_path: PathBuf,
+        pub node_key_path: PathBuf,
+        pub cert_pin: String,
+        pub server_name: String,
+        pub env_example: String,
+    }
+
+    /// Generate a self-signed Root Certificate Authority (CA) in PEM format.
+    pub fn generate_ca(common_name: &str) -> Result<(String, String)> {
+        let mut ca_params = rcgen::CertificateParams::default();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, common_name);
+        ca_params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+            rcgen::KeyUsagePurpose::DigitalSignature,
+        ];
+        let ca_key = rcgen::KeyPair::generate()
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed generating CA keypair: {e}")))?;
+        let ca_cert = ca_params
+            .self_signed(&ca_key)
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed signing CA cert: {e}")))?;
+        let cert_pem = ca_cert.pem();
+        let key_pem = ca_key.serialize_pem();
+        Ok((cert_pem, key_pem))
+    }
+
+    /// Issue a node certificate and private key in PEM format signed by a CA.
+    pub fn generate_node_cert(
+        ca_cert_pem: &str,
+        ca_key_pem: &str,
+        san_names: &[String],
+        san_ips: &[std::net::IpAddr],
+    ) -> Result<(String, String)> {
+        let ca_key = rcgen::KeyPair::from_pem(ca_key_pem)
+            .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("invalid CA key PEM: {e}")))?;
+        let ca_params = rcgen::CertificateParams::from_ca_cert_pem(ca_cert_pem)
+            .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("invalid CA cert PEM: {e}")))?;
+        let ca_cert = ca_params
+            .self_signed(&ca_key)
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed parsing CA cert: {e}")))?;
+
+        let mut san_entries: Vec<rcgen::SanType> = Vec::new();
+        for name in san_names {
+            let ia5 = rcgen::Ia5String::try_from(name.to_string())
+                .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("invalid DNS SAN '{name}': {e}")))?;
+            san_entries.push(rcgen::SanType::DnsName(ia5));
+        }
+        for ip in san_ips {
+            san_entries.push(rcgen::SanType::IpAddress(*ip));
+        }
+
+        let mut server_params = rcgen::CertificateParams::default();
+        server_params.subject_alt_names = san_entries;
+        if let Some(first_name) = san_names.first() {
+            server_params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, first_name);
+        }
+        server_params.extended_key_usages = vec![
+            rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+            rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+        ];
+        server_params.key_usages = vec![
+            rcgen::KeyUsagePurpose::DigitalSignature,
+            rcgen::KeyUsagePurpose::KeyEncipherment,
+        ];
+
+        let server_key = rcgen::KeyPair::generate()
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed generating node key: {e}")))?;
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_cert, &ca_key)
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed signing node cert: {e}")))?;
+
+        let cert_pem = server_cert.pem();
+        let key_pem = server_key.serialize_pem();
+        Ok((cert_pem, key_pem))
+    }
+
+    /// Write certificate and private key files with restrictive permissions (0600 on keys).
+    pub fn write_cert_and_key(
+        out_dir: &Path,
+        prefix: &str,
+        cert_pem: &str,
+        key_pem: &str,
+    ) -> Result<(PathBuf, PathBuf)> {
+        std::fs::create_dir_all(out_dir)?;
+
+        let cert_path = out_dir.join(format!("{prefix}.crt"));
+        std::fs::write(&cert_path, cert_pem)?;
+
+        let key_path = out_dir.join(format!("{prefix}.key"));
+
+        #[cfg(unix)]
+        {
+            let mut opts = OpenOptions::new();
+            opts.write(true).create(true).truncate(true).mode(0o600);
+            let mut f = opts.open(&key_path)?;
+            f.write_all(key_pem.as_bytes())?;
+            f.flush()?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&key_path, key_pem)?;
+        }
+
+        // Verify key permissions pass our safety check
+        check_key_permissions(&key_path)?;
+
+        Ok((cert_path, key_path))
+    }
+
+    /// Calculate the SHA-256 certificate pin (lowercase hex) from PEM certificate bytes.
+    pub fn compute_cert_pin(cert_pem_bytes: &[u8]) -> Result<String> {
+        let certs = rustls_pemfile::certs(&mut BufReader::new(cert_pem_bytes))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let cert = certs
+            .first()
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "no certificate found in PEM data"))?;
+        Ok(cert_sha256_fingerprint(cert))
+    }
+
+    /// Initialize a full cluster PKI hierarchy (CA + node cert/key + pin calculation).
+    pub fn init_cluster_pki(
+        out_dir: &Path,
+        server_name: Option<&str>,
+        extra_ips: &[std::net::IpAddr],
+    ) -> Result<PkiInitReport> {
+        let s_name = server_name.unwrap_or(DEFAULT_TLS_SERVER_NAME).to_string();
+        let (ca_cert_pem, ca_key_pem) = generate_ca("prod-code Cluster Root CA")?;
+        let (ca_cert_path, ca_key_path) = write_cert_and_key(out_dir, "ca", &ca_cert_pem, &ca_key_pem)?;
+
+        let san_names = vec![s_name.clone(), "localhost".to_string()];
+        let mut san_ips = vec!["127.0.0.1".parse::<std::net::IpAddr>().unwrap()];
+        for ip in extra_ips {
+            if !san_ips.contains(ip) {
+                san_ips.push(*ip);
+            }
+        }
+
+        let (node_cert_pem, node_key_pem) = generate_node_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            &san_names,
+            &san_ips,
+        )?;
+        let (node_cert_path, node_key_path) = write_cert_and_key(out_dir, "node", &node_cert_pem, &node_key_pem)?;
+        let cert_pin = compute_cert_pin(node_cert_pem.as_bytes())?;
+
+        let env_example = format!(
+            "export {TLS_MODE_ENV}=strict\nexport {TLS_CA_ENV}={}\nexport {TLS_CERT_ENV}={}\nexport {TLS_KEY_ENV}={}\nexport {TLS_PIN_ENV}={cert_pin}\nexport {TLS_SERVER_NAME_ENV}={s_name}",
+            ca_cert_path.display(),
+            node_cert_path.display(),
+            node_key_path.display()
+        );
+
+        Ok(PkiInitReport {
+            ca_cert_path,
+            ca_key_path,
+            node_cert_path,
+            node_key_path,
+            cert_pin,
+            server_name: s_name,
+            env_example,
+        })
+    }
+}
+
 #[cfg(test)]
 pub mod test_helpers {
     use super::*;
@@ -1087,5 +1269,31 @@ pub(crate) mod tests {
         assert_eq!(client_conn.protocol_version(), Some(rustls::ProtocolVersion::TLSv1_3));
 
         server_task.await.unwrap();
+    }
+
+    #[test]
+    fn pki_init_creates_valid_pki_and_sets_safe_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let report = pki::init_cluster_pki(
+            temp.path(),
+            Some("prod-code.test.internal"),
+            &["192.168.2.50".parse().unwrap()],
+        )
+        .unwrap();
+
+        assert!(report.ca_cert_path.exists());
+        assert!(report.ca_key_path.exists());
+        assert!(report.node_cert_path.exists());
+        assert!(report.node_key_path.exists());
+        assert_eq!(report.cert_pin.len(), 64);
+
+        // Check key permissions
+        check_key_permissions(&report.ca_key_path).unwrap();
+        check_key_permissions(&report.node_key_path).unwrap();
+
+        // Pin calculation matches cert
+        let node_pem = std::fs::read(&report.node_cert_path).unwrap();
+        let pin = pki::compute_cert_pin(&node_pem).unwrap();
+        assert_eq!(pin, report.cert_pin);
     }
 }

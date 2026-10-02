@@ -156,11 +156,38 @@ pub struct DiscoveredNode {
     pub sessions: u32,
     /// Workspaces currently loaded in memory (name:engine:sessions).
     pub workspaces: Vec<LoadedWorkspace>,
+    /// Optional challenge nonce echoed in reply to a unicast probe.
+    pub nonce: Option<String>,
 }
 
-/// Canonical payload string for HMAC-SHA-256 signing/verification of node announcements.
-/// Covers ALL wire fields affecting node identity, eligibility, warm-workspace preference, and scoring:
-/// `<addr> <engines_csv> <rss_mb> <load_per_cpu:.4> <cpus> <mem_total_mb> <mem_avail_mb> <sessions> <ws_csv>`
+/// Canonical payload string for HMAC-SHA-256 signing/verification of node announcements with optional challenge nonce.
+/// Covers ALL wire fields affecting node identity, eligibility, warm-workspace preference, scoring, and freshness:
+/// `<addr> <engines_csv> <rss_mb> <load_per_cpu:.4> <cpus> <mem_total_mb> <mem_avail_mb> <sessions> <ws_csv> [<nonce>]`
+#[allow(clippy::too_many_arguments)]
+pub fn canonical_announce_payload_with_nonce(
+    advertise: &str,
+    engines_csv: &str,
+    rss_mb: u64,
+    load_per_cpu: f64,
+    cpus: u32,
+    mem_total_mb: u64,
+    mem_avail_mb: u64,
+    sessions: u32,
+    ws_csv: &str,
+    nonce: Option<&str>,
+) -> String {
+    if let Some(n) = nonce {
+        format!(
+            "{advertise} {engines_csv} {rss_mb} {load_per_cpu:.4} {cpus} {mem_total_mb} {mem_avail_mb} {sessions} {ws_csv} {n}"
+        )
+    } else {
+        format!(
+            "{advertise} {engines_csv} {rss_mb} {load_per_cpu:.4} {cpus} {mem_total_mb} {mem_avail_mb} {sessions} {ws_csv}"
+        )
+    }
+}
+
+/// Canonical payload string without nonce (backward-compatible).
 #[allow(clippy::too_many_arguments)]
 pub fn canonical_announce_payload(
     advertise: &str,
@@ -173,16 +200,26 @@ pub fn canonical_announce_payload(
     sessions: u32,
     ws_csv: &str,
 ) -> String {
-    format!(
-        "{advertise} {engines_csv} {rss_mb} {load_per_cpu:.4} {cpus} {mem_total_mb} {mem_avail_mb} {sessions} {ws_csv}"
+    canonical_announce_payload_with_nonce(
+        advertise,
+        engines_csv,
+        rss_mb,
+        load_per_cpu,
+        cpus,
+        mem_total_mb,
+        mem_avail_mb,
+        sessions,
+        ws_csv,
+        None,
     )
 }
 
-/// Parse one `PROD_CODE_NODE` line, validating anti-spoofing and auth token MAC.
-pub fn parse_node_line_with_auth(
+/// Parse one `PROD_CODE_NODE` line, validating anti-spoofing, auth token MAC, and optional expected challenge nonce.
+pub fn parse_node_line_with_auth_and_nonce(
     line: &str,
     expected_token: Option<&str>,
     sender_ip: Option<IpAddr>,
+    expected_nonce: Option<&str>,
 ) -> Option<DiscoveredNode> {
     let rest = line.strip_prefix(NODE_PREFIX)?;
     let mut parts = rest.split_whitespace();
@@ -221,11 +258,20 @@ pub fn parse_node_line_with_auth(
     let mem_avail_mb: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let sessions: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let ws_csv = parts.next().unwrap_or("-");
+    let nonce = parts.next().map(|s| s.to_string());
+
+    // If a specific challenge nonce is required, reject replies without or with mismatched nonce.
+    if let Some(exp_n) = expected_nonce {
+        if nonce.as_deref() != Some(exp_n) {
+            tracing::warn!(addr = %addr, expected = %exp_n, got = ?nonce, "rejecting replayed or mismatched discovery reply");
+            return None;
+        }
+    }
 
     // Auth verification: if an auth token is configured, reject announcements with invalid MAC tag.
-    // The MAC covers all routing and metadata fields on the wire.
+    // The MAC covers all routing and metadata fields on the wire plus the nonce if present.
     if let Some(token) = expected_token {
-        let canonical_payload = canonical_announce_payload(
+        let canonical_payload = canonical_announce_payload_with_nonce(
             addr_str,
             engines_csv,
             rss_mb,
@@ -235,6 +281,7 @@ pub fn parse_node_line_with_auth(
             mem_avail_mb,
             sessions,
             ws_csv,
+            nonce.as_deref(),
         );
         if !verify_auth_tag(token, &canonical_payload, tag) {
             tracing::warn!(addr = %addr, "rejecting unauthenticated/tampered discovery advertisement");
@@ -271,12 +318,70 @@ pub fn parse_node_line_with_auth(
         mem_avail_mb,
         sessions,
         workspaces,
+        nonce,
     })
+}
+
+/// Parse one `PROD_CODE_NODE` line, validating anti-spoofing and auth token MAC.
+pub fn parse_node_line_with_auth(
+    line: &str,
+    expected_token: Option<&str>,
+    sender_ip: Option<IpAddr>,
+) -> Option<DiscoveredNode> {
+    parse_node_line_with_auth_and_nonce(line, expected_token, sender_ip, None)
 }
 
 /// Convenience parser without anti-spoofing or auth verification (used by unit tests).
 pub fn parse_node_line(line: &str) -> Option<DiscoveredNode> {
     parse_node_line_with_auth(line, None, None)
+}
+
+/// Format one announce line with optional challenge nonce.
+#[allow(clippy::too_many_arguments)]
+pub fn format_node_line_with_nonce(
+    advertise: &str,
+    engines_csv: &str,
+    rss_mb: u64,
+    load_per_cpu: f64,
+    cpus: u32,
+    mem_total_mb: u64,
+    mem_avail_mb: u64,
+    sessions: u32,
+    workspaces: &[(String, String, u32)], // (name, engine, sessions)
+    token: Option<&str>,
+    nonce: Option<&str>,
+) -> String {
+    let ws = if workspaces.is_empty() {
+        "-".to_string()
+    } else {
+        workspaces
+            .iter()
+            .map(|(n, e, s)| {
+                let enc_name = encode_workspace_name(n);
+                format!("{enc_name}:{e}:{s}")
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    let canonical = canonical_announce_payload_with_nonce(
+        advertise,
+        engines_csv,
+        rss_mb,
+        load_per_cpu,
+        cpus,
+        mem_total_mb,
+        mem_avail_mb,
+        sessions,
+        &ws,
+        nonce,
+    );
+
+    let tag = token
+        .map(|t| compute_auth_tag(t, &canonical))
+        .unwrap_or_else(|| "-".to_string());
+
+    format!("{NODE_PREFIX}{tag} {canonical}")
 }
 
 /// Format one announce line (without trailing newline).
@@ -293,20 +398,7 @@ pub fn format_node_line(
     workspaces: &[(String, String, u32)], // (name, engine, sessions)
     token: Option<&str>,
 ) -> String {
-    let ws = if workspaces.is_empty() {
-        "-".to_string()
-    } else {
-        workspaces
-            .iter()
-            .map(|(n, e, s)| {
-                let enc_name = encode_workspace_name(n);
-                format!("{enc_name}:{e}:{s}")
-            })
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-
-    let canonical = canonical_announce_payload(
+    format_node_line_with_nonce(
         advertise,
         engines_csv,
         rss_mb,
@@ -315,14 +407,32 @@ pub fn format_node_line(
         mem_total_mb,
         mem_avail_mb,
         sessions,
-        &ws,
-    );
+        workspaces,
+        token,
+        None,
+    )
+}
 
-    let tag = token
-        .map(|t| compute_auth_tag(t, &canonical))
-        .unwrap_or_else(|| "-".to_string());
-
-    format!("{NODE_PREFIX}{tag} {canonical}")
+/// Format a minimal node announcement line for discovery privacy (Phase 5.6).
+/// Strips internal host telemetry (RSS, load, CPUs, RAM, sessions) and loaded workspace names.
+pub fn format_minimal_node_line(
+    advertise: &str,
+    engines_csv: &str,
+    token: Option<&str>,
+) -> String {
+    format_node_line_with_nonce(
+        advertise,
+        engines_csv,
+        0,
+        0.0,
+        0,
+        0,
+        0,
+        0,
+        &[],
+        token,
+        None,
+    )
 }
 
 // ── Gateway side ──────────────────────────────────────────────────────────────
@@ -344,33 +454,89 @@ pub fn bind_discovery_socket() -> std::io::Result<UdpSocket> {
     Ok(sock.into())
 }
 
-/// Check whether an incoming probe is valid and authorized.
-pub fn is_valid_probe(buf: &[u8], token: Option<&str>) -> bool {
-    if !buf.starts_with(PROBE_PREFIX.as_bytes()) {
-        return false;
+/// Generate a cryptographically secure 128-bit hex nonce for discovery challenges.
+pub fn generate_nonce() -> String {
+    let mut buf = [0u8; 16];
+    if rustls::crypto::ring::default_provider()
+        .secure_random
+        .fill(&mut buf)
+        .is_err()
+    {
+        use std::time::SystemTime;
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let fallback_str = format!("{nanos}:{pid}");
+        let hash = <sha2::Sha256 as sha2::Digest>::digest(fallback_str.as_bytes());
+        buf.copy_from_slice(&hash[..16]);
     }
-    if let Some(token) = token {
-        let text = match std::str::from_utf8(buf) {
-            Ok(s) => s.trim(),
-            Err(_) => return false,
-        };
-        let mut parts = text.split_whitespace();
-        let _ = parts.next(); // PROD_CODE_DISCOVER
-        let tag = parts.next().unwrap_or("");
-        verify_auth_tag(token, PROBE_PREFIX, tag)
-    } else {
-        true
+    let mut s = String::with_capacity(32);
+    for b in buf {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Format the probe datagram payload with optional replay-protection challenge nonce.
+pub fn format_probe_with_nonce(token: Option<&str>, nonce: Option<&str>) -> Vec<u8> {
+    match (token, nonce) {
+        (Some(token), Some(nonce)) => {
+            let data = format!("{PROBE_PREFIX} {nonce}");
+            let tag = compute_auth_tag(token, &data);
+            format!("{PROBE_PREFIX} {tag} {nonce}\n").into_bytes()
+        }
+        (Some(token), None) => {
+            let tag = compute_auth_tag(token, PROBE_PREFIX);
+            format!("{PROBE_PREFIX} {tag}\n").into_bytes()
+        }
+        (None, Some(nonce)) => {
+            format!("{PROBE_PREFIX} - {nonce}\n").into_bytes()
+        }
+        (None, None) => {
+            format!("{PROBE_PREFIX}\n").into_bytes()
+        }
     }
 }
 
-/// Format the probe datagram payload.
+/// Format the probe datagram payload without challenge nonce.
 pub fn format_probe(token: Option<&str>) -> Vec<u8> {
-    if let Some(token) = token {
-        let tag = compute_auth_tag(token, PROBE_PREFIX);
-        format!("{PROBE_PREFIX} {tag}\n").into_bytes()
-    } else {
-        format!("{PROBE_PREFIX}\n").into_bytes()
+    format_probe_with_nonce(token, None)
+}
+
+/// Inspect incoming probe datagram, verifying authentication and extracting any challenge nonce.
+pub fn inspect_probe(buf: &[u8], token: Option<&str>) -> Option<Option<String>> {
+    if !buf.starts_with(PROBE_PREFIX.as_bytes()) {
+        return None;
     }
+    let text = match std::str::from_utf8(buf) {
+        Ok(s) => s.trim(),
+        Err(_) => return None,
+    };
+    let mut parts = text.split_whitespace();
+    let _ = parts.next(); // PROD_CODE_DISCOVER
+    let tag = parts.next();
+    let nonce = parts.next().map(|s| s.to_string());
+
+    if let Some(token) = token {
+        let tag = tag?;
+        let expected_data = if let Some(n) = &nonce {
+            format!("{PROBE_PREFIX} {n}")
+        } else {
+            PROBE_PREFIX.to_string()
+        };
+        if !verify_auth_tag(token, &expected_data, tag) {
+            return None;
+        }
+    }
+    Some(nonce)
+}
+
+/// Check whether an incoming probe is valid and authorized.
+pub fn is_valid_probe(buf: &[u8], token: Option<&str>) -> bool {
+    inspect_probe(buf, token).is_some()
 }
 
 /// Build the reply payload: own node + known peers, one line each.
@@ -399,7 +565,7 @@ pub fn discover(seeds: &[SocketAddr]) -> Vec<DiscoveredNode> {
     discover_with_token(seeds, crate::transport::auth_token().as_deref())
 }
 
-/// Discover nodes with an explicit cluster auth token.
+/// Discover nodes with an explicit cluster auth token and replay-resistant challenge nonce verification.
 pub fn discover_with_token(seeds: &[SocketAddr], token: Option<&str>) -> Vec<DiscoveredNode> {
     let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
         return Vec::new();
@@ -407,7 +573,8 @@ pub fn discover_with_token(seeds: &[SocketAddr], token: Option<&str>) -> Vec<Dis
     let _ = sock.set_broadcast(true);
     let _ = sock.set_read_timeout(Some(COLLECT_TIMEOUT));
 
-    let probe_payload = format_probe(token);
+    let challenge_nonce = generate_nonce();
+    let probe_payload = format_probe_with_nonce(token, Some(&challenge_nonce));
 
     // Send probes.
     let mcast_dest = SocketAddrV4::new(MULTICAST_GROUP, DISCOVERY_PORT);
@@ -428,7 +595,23 @@ pub fn discover_with_token(seeds: &[SocketAddr], token: Option<&str>) -> Vec<Dis
             Ok((n, from)) => {
                 if let Ok(text) = std::str::from_utf8(&buf[..n]) {
                     for line in text.lines() {
-                        if let Some(node) = parse_node_line_with_auth(line, token, Some(from.ip())) {
+                        if let Some(node) = parse_node_line_with_auth_and_nonce(
+                            line,
+                            token,
+                            Some(from.ip()),
+                            None,
+                        ) {
+                            // Replay protection: if the reply echoes a nonce, it must match our challenge nonce.
+                            // If token is configured, replies carrying detailed telemetry must echo the challenge nonce.
+                            if let Some(ref node_nonce) = node.nonce {
+                                if node_nonce != &challenge_nonce {
+                                    tracing::warn!(addr = %node.addr, "rejecting reply with mismatched challenge nonce");
+                                    continue;
+                                }
+                            } else if token.is_some() && !node.workspaces.is_empty() {
+                                tracing::warn!(addr = %node.addr, "rejecting replayed reply lacking challenge nonce");
+                                continue;
+                            }
                             nodes.entry(node.addr).or_insert(node);
                         }
                     }
@@ -674,5 +857,75 @@ mod tests {
         let mut tampered = tokens.clone();
         tampered[10] = "other-app:rust:1";
         assert!(parse_node_line_with_auth(&tampered.join(" "), Some(token), Some(sender_ip)).is_none());
+    }
+
+    #[test]
+    fn minimal_node_announcement_satisfies_privacy_and_parses() {
+        let token = "privacy-token-secret";
+        let line = format_minimal_node_line("192.168.2.168:9400", "rust,go", Some(token));
+        let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+        let node = parse_node_line_with_auth(&line, Some(token), Some(sender_ip))
+            .expect("minimal announcement should parse and authenticate");
+
+        assert_eq!(node.addr, "192.168.2.168:9400".parse().unwrap());
+        assert_eq!(node.engines, vec!["rust", "go"]);
+        assert_eq!(node.rss_mb, 0);
+        assert_eq!(node.load_per_cpu, 0.0);
+        assert_eq!(node.cpus, 0);
+        assert_eq!(node.mem_total_mb, 0);
+        assert_eq!(node.mem_avail_mb, 0);
+        assert_eq!(node.sessions, 0);
+        assert!(node.workspaces.is_empty(), "workspaces must be stripped for privacy");
+        assert!(node.nonce.is_none());
+    }
+
+    #[test]
+    fn challenge_nonce_probe_and_reply_verification() {
+        let token = "test-token-nonce";
+        let nonce = generate_nonce();
+        assert_eq!(nonce.len(), 32);
+
+        // Probe formatting and inspection
+        let probe = format_probe_with_nonce(Some(token), Some(&nonce));
+        let inspected = inspect_probe(&probe, Some(token)).expect("probe must be valid");
+        assert_eq!(inspected.as_deref(), Some(nonce.as_str()));
+
+        // Reply formatting with nonce
+        let ws = vec![("secure-project".into(), "rust".into(), 1)];
+        let reply_line = format_node_line_with_nonce(
+            "192.168.2.168:9400", "rust", 500, 0.1,
+            8, 16000, 8000, 1, &ws, Some(token), Some(&nonce),
+        );
+        let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+
+        // Valid reply with matching nonce is accepted
+        let node = parse_node_line_with_auth_and_nonce(&reply_line, Some(token), Some(sender_ip), Some(&nonce))
+            .expect("should accept valid reply with matching nonce");
+        assert_eq!(node.nonce.as_deref(), Some(nonce.as_str()));
+        assert_eq!(node.workspaces.len(), 1);
+        assert_eq!(node.workspaces[0].name, "secure-project");
+
+        // Reply with wrong expected nonce is rejected
+        let different_nonce = generate_nonce();
+        assert!(
+            parse_node_line_with_auth_and_nonce(&reply_line, Some(token), Some(sender_ip), Some(&different_nonce)).is_none(),
+            "must reject when expected nonce differs from wire nonce"
+        );
+    }
+
+    #[test]
+    fn replayed_announcement_without_nonce_fails_when_nonce_expected() {
+        let token = "test-token-replay";
+        let old_line = format_node_line(
+            "192.168.2.168:9400", "rust", 500, 0.1,
+            8, 16000, 8000, 1, &[], Some(token),
+        );
+        let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+        let fresh_nonce = generate_nonce();
+
+        assert!(
+            parse_node_line_with_auth_and_nonce(&old_line, Some(token), Some(sender_ip), Some(&fresh_nonce)).is_none(),
+            "must reject replayed line that lacks fresh challenge nonce"
+        );
     }
 }
