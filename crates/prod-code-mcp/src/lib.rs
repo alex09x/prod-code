@@ -33,6 +33,7 @@ pub mod invert_value;
 pub mod lang;
 pub mod loop_to_iterator;
 pub mod make_static;
+pub mod markdown;
 pub mod move_item;
 pub mod move_method;
 pub mod move_module;
@@ -70,6 +71,7 @@ pub mod type_migration;
 pub mod verify;
 pub mod watch;
 pub mod wrap_return;
+pub mod xml_svg;
 
 pub use protocol::{MCP_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION};
 pub use sync::scan_workspace_files;

@@ -283,7 +283,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Check a proposed replacement for a file without writing it: prod-code validate <file> --from NEW (or stdin)
+    /// Check a proposed replacement for a file without writing it: prod-code validate <file> --from NEW (or stdin).
+    /// Supports source files (via remote LSP), JSON manifests, Markdown documentation, and SVG/XML graphics (via syntax parsers).
     Validate {
         /// The file the proposed content is for (not needed with `--diff`)
         file: Option<PathBuf>,

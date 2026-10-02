@@ -133,12 +133,13 @@ Analyzer diagnostics do not include every compiler or borrow-checker check. Tool
 A Rust file reported as `unlinked-file` is unchecked and cannot pass edit validation. New
 modules must be checked with their module declarations; new Cargo targets need a workspace
 reload or an explicit compiler check that includes them. Missing or malformed diagnostic
-reports also fail validation. Manifest, lockfile and documentation proposals need
-`shadow-run` with the appropriate parser or build command instead of source diagnostics.
+reports also fail validation. Manifest and lockfile proposals need
+`shadow-run` with the appropriate parser or build command; JSON manifests, Markdown documentation,
+and SVG vector graphics are validated directly through built-in syntax parsers.
 
 | tool | what it does |
 |---|---|
-| `code_validate_edit` · `code_validate_edits` | analyzer diagnostics for proposed file contents, nothing written; several files judged together, with a warning when an edit removes a symbol another file still uses |
+| `code_validate_edit` · `code_validate_edits` | analyzer diagnostics and built-in parser validation for proposed file contents (supporting source files via remote LSP, plus JSON, Markdown, and SVG/XML), nothing written; several files judged together, with a warning when an edit removes a symbol another file still uses |
 | `code_diagnostics` | diagnostics for a file, in memory, without a build |
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete only when nothing references it, or a parameter with its arguments |
 | `code_change_signature` | Rust signature changes; Go reorder/removal through gopls and typed literal additions to ordinary functions. Additions preserve old argument order and require remote compiler verification |

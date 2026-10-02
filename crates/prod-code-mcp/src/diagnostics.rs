@@ -841,6 +841,9 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
 /// These diagnostics come from the supported source-language engines, not a manifest or
 /// document validator. Refuse the entire batch before querying any part of it (#465).
 fn ensure_source_file(file: &Path) -> Result<()> {
+    if is_parser_validated_file(file) {
+        return Ok(());
+    }
     let supported = matches!(
         crate::lang::language_id_for_path(file),
         "rust"
@@ -871,7 +874,7 @@ fn ensure_source_file(file: &Path) -> Result<()> {
     anyhow::ensure!(
         supported,
         "semantic diagnostics are not supported for {}; no validation was performed. \
-         For manifests, lockfiles and documentation, use prod-code shadow-run with the \
+         For manifests and lockfiles, use prod-code shadow-run with the \
          appropriate parser or build command on the complete proposal (for Rust, cargo check \
          --workspace --all-targets)",
         file.display()
@@ -880,8 +883,37 @@ fn ensure_source_file(file: &Path) -> Result<()> {
 }
 
 /// Whether `file` is a JSON manifest or document whose syntax is validated directly (#733).
-fn is_json_file(file: &Path) -> bool {
+pub fn is_json_file(file: &Path) -> bool {
     crate::lang::language_id_for_path(file) == "json"
+}
+
+/// Whether `file` is validated directly by an internal parser without an LSP session (#733, #778).
+pub fn is_parser_validated_file(file: &Path) -> bool {
+    matches!(
+        crate::lang::language_id_for_path(file),
+        "json" | "markdown" | "xml"
+    )
+}
+
+pub use crate::markdown::validate_markdown;
+pub use crate::xml_svg::validate_xml;
+
+/// SVG syntax validator (#778).
+pub fn validate_svg(shown: &str, text: &str) -> DiagnosticsReport {
+    validate_xml(shown, text, true)
+}
+
+/// Validates file content using built-in syntax parsers (#733, #778).
+pub fn validate_file_content(shown: &str, file: &Path, text: &str) -> DiagnosticsReport {
+    match crate::lang::language_id_for_path(file) {
+        "json" => validate_json(shown, text),
+        "markdown" => validate_markdown(shown, text),
+        "xml" => {
+            let is_svg = file.extension().and_then(|e| e.to_str()) == Some("svg");
+            validate_xml(shown, text, is_svg)
+        }
+        _ => unreachable!("validate_file_content called on non-parser-validated file"),
+    }
 }
 
 /// JSON syntax validator for manifests and JSON configuration files (#733).
@@ -927,7 +959,7 @@ pub async fn diagnostics(
     root: &Path,
     file: &Path,
 ) -> Result<DiagnosticsReport> {
-    if is_json_file(file) {
+    if is_parser_validated_file(file) {
         let abs = if file.is_absolute() {
             file.to_path_buf()
         } else {
@@ -935,7 +967,7 @@ pub async fn diagnostics(
         };
         let text = std::fs::read_to_string(&abs)
             .with_context(|| format!("cannot read {}", file.display()))?;
-        return Ok(validate_json(&display(root, file), &text));
+        return Ok(validate_file_content(&display(root, file), file, &text));
     }
     ensure_source_file(file)?;
     let mut session = LspSession::open(remote, root, Some(file)).await?;
@@ -968,8 +1000,8 @@ pub async fn validate_text(
     file: &Path,
     new_text: &str,
 ) -> Result<DiagnosticsReport> {
-    if is_json_file(file) {
-        return Ok(validate_json(&display(root, file), new_text));
+    if is_parser_validated_file(file) {
+        return Ok(validate_file_content(&display(root, file), file, new_text));
     }
     ensure_source_file(file)?;
     let shown = display(root, file);
@@ -1055,7 +1087,7 @@ pub async fn validate_texts(
     also_check: &[std::path::PathBuf],
 ) -> Result<Vec<DiagnosticsReport>> {
     for file in edits.iter().map(|(file, _)| file).chain(also_check) {
-        if !is_json_file(file) {
+        if !is_parser_validated_file(file) {
             ensure_source_file(file)?;
         }
     }
@@ -1077,14 +1109,16 @@ pub async fn validate_texts(
             )
         })?);
     }
-    // Fast path: if all files are JSON, validate locally without an LSP session (#733).
-    if edits.iter().all(|(f, _)| is_json_file(f)) && also_check.iter().all(|f| is_json_file(f)) {
+    // Fast path: if all files are parser-validated, validate locally without an LSP session (#733, #778).
+    if edits.iter().all(|(f, _)| is_parser_validated_file(f))
+        && also_check.iter().all(|f| is_parser_validated_file(f))
+    {
         let mut reports = Vec::with_capacity(edits.len() + also_check.len());
         for (file, text) in edits {
-            reports.push(validate_json(&display(root, file), text));
+            reports.push(validate_file_content(&display(root, file), file, text));
         }
         for (file, text) in also_check.iter().zip(&also_texts) {
-            reports.push(validate_json(&display(root, file), text));
+            reports.push(validate_file_content(&display(root, file), file, text));
         }
         return Ok(reports);
     }
@@ -1102,16 +1136,20 @@ pub async fn validate_texts(
             vec![None; edits.len() + also_check.len()];
 
         for &engine in &engines {
-            if engine == "json" {
+            if engine == "json" || engine == "markdown" || engine == "xml" {
                 for (orig_i, (file, text)) in edits.iter().enumerate() {
-                    if is_json_file(file) {
-                        final_reports[orig_i] = Some(validate_json(&display(root, file), text));
+                    if crate::lang::engine_group_for_path(file) == engine {
+                        final_reports[orig_i] =
+                            Some(validate_file_content(&display(root, file), file, text));
                     }
                 }
                 for (orig_j, file) in also_check.iter().enumerate() {
-                    if is_json_file(file) {
-                        final_reports[edits.len() + orig_j] =
-                            Some(validate_json(&display(root, file), &also_texts[orig_j]));
+                    if crate::lang::engine_group_for_path(file) == engine {
+                        final_reports[edits.len() + orig_j] = Some(validate_file_content(
+                            &display(root, file),
+                            file,
+                            &also_texts[orig_j],
+                        ));
                     }
                 }
                 continue;
