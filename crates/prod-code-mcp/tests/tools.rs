@@ -5813,6 +5813,78 @@ async fn code_references_falls_back_to_internal_checkout_use_when_declaration_re
 }
 
 #[tokio::test]
+async fn code_references_discovers_references_across_multiple_targets_in_shared_source_tree() {
+    let ws = workspace();
+    let shared_source = "pub struct OrderStrategy;\nimpl OrderStrategy {\n    pub fn add_avg_deal(&self) {}\n}\n";
+    let shared_file = write(&ws, "src/strategy2/order.rs", shared_source);
+    let tester_source = "use crate::strategy2::order::OrderStrategy;\nfn test_orders() {\n    let s = OrderStrategy;\n    s.add_avg_deal();\n}\n";
+    let tester_file = write(&ws, "crates/tester/src/lib.rs", tester_source);
+    let binance_source = "use crate::strategy2::order::OrderStrategy;\nfn trade_binance() {\n    let s = OrderStrategy;\n    s.add_avg_deal();\n}\n";
+    let binance_file = write(&ws, "crates/binance-bot/src/main.rs", binance_source);
+    let kucoin_source = "use crate::strategy2::order::OrderStrategy;\nfn trade_kucoin() {\n    let s = OrderStrategy;\n    s.add_avg_deal();\n}\n";
+    let kucoin_file = write(&ws, "crates/kucoin-bot/src/main.rs", kucoin_source);
+    let unindexed_source = "fn unindexed() {\n    add_avg_deal();\n}\n";
+    let unindexed_file = write(&ws, "crates/unindexed/src/main.rs", unindexed_source);
+    commit(&ws);
+
+    let shared_uri = format!("file://{}", shared_file.display());
+    let binance_uri = format!("file://{}", binance_file.display());
+    let kucoin_uri = format!("file://{}", kucoin_file.display());
+    let unindexed_uri = format!("file://{}", unindexed_file.display());
+    let shared_def = shared_file.clone();
+    let tester_ret = tester_file.clone();
+    let binance_ret = binance_file.clone();
+    let kucoin_ret = kucoin_file.clone();
+
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "textDocument/references" if uri == shared_uri => {
+                answers::locations(&tester_ret, &[(4, 7)])
+            }
+            "textDocument/definition" if uri == binance_uri => {
+                answers::locations(&shared_def, &[(3, 12)])
+            }
+            "textDocument/references" if uri == binance_uri => {
+                answers::locations(&binance_ret, &[(4, 7)])
+            }
+            "textDocument/definition" if uri == kucoin_uri => {
+                answers::locations(&shared_def, &[(3, 12)])
+            }
+            "textDocument/references" if uri == kucoin_uri => {
+                answers::locations(&kucoin_ret, &[(4, 7)])
+            }
+            "textDocument/definition" if uri == unindexed_uri => serde_json::json!([]),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({
+            "path": "src/strategy2/order.rs",
+            "line": 3,
+            "character": 12
+        }),
+    )
+    .await
+    .expect("multi-target references succeed");
+
+    let text = text_of(&res);
+    assert!(text.contains("Found 3 reference(s)"), "{text}");
+    assert!(text.contains("crates/tester/src/lib.rs:4:7"), "{text}");
+    assert!(text.contains("crates/binance-bot/src/main.rs:4:7"), "{text}");
+    assert!(text.contains("crates/kucoin-bot/src/main.rs:4:7"), "{text}");
+    assert!(
+        text.contains("(warning: references may have incomplete coverage across configured targets: unindexed call site(s) found in crates/unindexed/src/main.rs)"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
 async fn code_outline_returns_error_when_no_symbols_found() {
     let ws = workspace();
     write(&ws, "src/empty.rs", "// only comments\n");
