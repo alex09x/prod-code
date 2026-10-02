@@ -1094,6 +1094,8 @@ impl RemoteExecRequest {
                 let mut v = vec!["go".into(), "test".into()];
                 if self.format == RemoteExecFormat::Json {
                     v.push("-json".into());
+                } else {
+                    v.push("-v".into());
                 }
                 v.push("./...".into());
                 v
@@ -2320,6 +2322,15 @@ mod wire_tests {
             ..req.clone()
         };
         assert_eq!(go_test.to_argv(), vec!["go", "test", "-json", "./...", "-run", "TestOrder"]);
+
+        let go_test_raw = RemoteExecRequest {
+            language: RemoteExecLanguage::Go,
+            command: RemoteExecCommand::Test,
+            format: RemoteExecFormat::Raw,
+            args: vec![],
+            ..req.clone()
+        };
+        assert_eq!(go_test_raw.to_argv(), vec!["go", "test", "-v", "./..."]);
 
         let ts_lint = RemoteExecRequest {
             language: RemoteExecLanguage::TypeScript,

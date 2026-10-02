@@ -178,6 +178,8 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     .await;
                             } else if req.command == RemoteExecCommand::Test && req.language == RemoteExecLanguage::Go {
                                 if req.format == RemoteExecFormat::Raw {
+                                    let argv = req.to_argv();
+                                    assert!(argv.contains(&"-v".to_string()), "expected -v in raw Go test command: {argv:?}");
                                     let raw_lines = [
                                         "=== RUN   TestLogin",
                                         "--- PASS: TestLogin (0.012s)",
@@ -575,6 +577,8 @@ async fn test_polyglot_remote_exec_go_raw_test_flow() {
         client_agent: None,
         client_host: None,
     };
+
+    assert_eq!(req.to_argv(), vec!["go", "test", "-v", "./..."]);
 
     framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
 
