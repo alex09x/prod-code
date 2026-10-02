@@ -6030,8 +6030,7 @@ async fn is_outline_definition(
         return false;
     };
     let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
-    let query = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params);
-    let Ok(Ok(outline)) = tokio::time::timeout(std::time::Duration::from_millis(1500), query).await else {
+    let Ok(outline) = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params).await else {
         return false;
     };
     let zero_line = (line as usize).saturating_sub(1);
@@ -6149,10 +6148,8 @@ async fn outlined_range(
 ) -> Option<(usize, usize)> {
     let uri = Url::from_file_path(path).ok()?;
     let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
-    let query = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params);
-    let outline = tokio::time::timeout(std::time::Duration::from_millis(1500), query)
+    let outline = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params)
         .await
-        .ok()?
         .ok()?;
     let mut best: Option<Span> = None;
     innermost_holding(&outline, (line, col), &mut best);
@@ -7639,7 +7636,10 @@ pub async fn resolve_symbol(
             .then_with(|| a.1.path.cmp(&b.1.path))
             .then_with(|| a.1.line.cmp(&b.1.line))
     });
-    let best = scored[0].0;
+    let Some(first) = scored.first() else {
+        anyhow::bail!("no symbol named `{symbol}` matches criteria");
+    };
+    let best = first.0;
     let ties: Vec<&SymbolHit> = scored
         .iter()
         .filter(|(s, _)| *s == best)
@@ -7933,6 +7933,9 @@ fn match_rank(name: &str, query: &str) -> u8 {
 
 /// The one location `ties` point at, or an error listing them when they point at several.
 fn single_candidate(root: &Path, symbol: &str, ties: &[&SymbolHit]) -> Result<SymbolHit> {
+    if ties.is_empty() {
+        anyhow::bail!("no candidate found for `{symbol}`");
+    }
     if ties.len() > 1
         && ties
             .iter()

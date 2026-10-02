@@ -5903,3 +5903,191 @@ async fn code_references_finds_struct_field_by_bare_symbol_name() {
     assert!(text_of(&result).contains("Found 1 reference(s)"));
 }
 
+#[tokio::test]
+async fn code_definition_body_returns_symbol_body_without_dropping_connection() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"s\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub struct Overlay {\n    pub active: bool,\n}\n\npub fn move_paths_in_text() {\n    let _ = 42;\n}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let lib_uri = format!("file://{}", lib.display());
+    let lib_uri_clone = lib_uri.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| {
+        match method {
+            "workspace/symbol" => serde_json::json!([
+                {
+                    "name": "Overlay",
+                    "kind": 23,
+                    "location": {
+                        "uri": lib_uri,
+                        "range": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 18 } }
+                    }
+                }
+            ]),
+            "textDocument/definition" => serde_json::json!([
+                {
+                    "uri": lib_uri_clone,
+                    "range": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 18 } }
+                }
+            ]),
+            "textDocument/documentSymbol" => serde_json::json!([
+                {
+                    "name": "Overlay",
+                    "kind": 23,
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 2, "character": 1 } },
+                    "selectionRange": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 18 } },
+                    "children": [
+                        {
+                            "name": "active",
+                            "kind": 8,
+                            "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 21 } },
+                            "selectionRange": { "start": { "line": 1, "character": 8 }, "end": { "line": 1, "character": 14 } }
+                        }
+                    ]
+                }
+            ]),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "Overlay", "path": "src/lib.rs", "body": true }),
+    )
+    .await
+    .expect("definition succeeds with body");
+
+    let text = text_of(&result);
+    assert!(text.contains("Definition:"), "{text}");
+    assert!(text.contains("pub struct Overlay {"), "{text}");
+    assert!(text.contains("pub active: bool,"), "{text}");
+}
+
+#[tokio::test]
+async fn code_definition_empty_symbol_handled_gracefully() {
+    let ws = workspace();
+    write(&ws, "src/lib.rs", "pub fn existing() {}\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "workspace/symbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "NonExistentSymbol" }),
+    )
+    .await;
+    // Should return an error result or Err, never panic
+    assert!(res.is_err() || res.unwrap().is_error);
+}
+
+#[tokio::test]
+async fn code_definition_concurrent_body_calls_succeed_without_transport_closed() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"s\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn one() -> i32 { 1 }\npub fn two() -> i32 { 2 }\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let lib_uri = format!("file://{}", lib.display());
+    let u1 = lib_uri.clone();
+    let u2 = lib_uri.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| {
+        match method {
+            "workspace/symbol" => serde_json::json!([
+                {
+                    "name": "one",
+                    "kind": 12,
+                    "location": {
+                        "uri": u1,
+                        "range": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 10 } }
+                    }
+                },
+                {
+                    "name": "two",
+                    "kind": 12,
+                    "location": {
+                        "uri": u2,
+                        "range": { "start": { "line": 1, "character": 7 }, "end": { "line": 1, "character": 10 } }
+                    }
+                }
+            ]),
+            "textDocument/definition" => {
+                let line = _params.pointer("/position/line").and_then(|v| v.as_u64()).unwrap_or(0);
+                if line == 0 {
+                    serde_json::json!([
+                        {
+                            "uri": lib_uri,
+                            "range": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 10 } }
+                        }
+                    ])
+                } else {
+                    serde_json::json!([
+                        {
+                            "uri": lib_uri,
+                            "range": { "start": { "line": 1, "character": 7 }, "end": { "line": 1, "character": 10 } }
+                        }
+                    ])
+                }
+            }
+            "textDocument/documentSymbol" => serde_json::json!([
+                {
+                    "name": "one",
+                    "kind": 12,
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 25 } },
+                    "selectionRange": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 10 } }
+                },
+                {
+                    "name": "two",
+                    "kind": 12,
+                    "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 25 } },
+                    "selectionRange": { "start": { "line": 1, "character": 7 }, "end": { "line": 1, "character": 10 } }
+                }
+            ]),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let root = ws.root();
+    let fut1 = execute_tool(
+        remote,
+        &root,
+        "code_definition",
+        serde_json::json!({ "symbol": "one", "path": "src/lib.rs", "body": true }),
+    );
+    let fut2 = execute_tool(
+        remote,
+        &root,
+        "code_definition",
+        serde_json::json!({ "symbol": "two", "path": "src/lib.rs", "body": true }),
+    );
+
+    let (res1, res2) = tokio::join!(fut1, fut2);
+    let r1 = res1.expect("first concurrent call succeeds");
+    let r2 = res2.expect("second concurrent call succeeds");
+
+    let t1 = text_of(&r1);
+    let t2 = text_of(&r2);
+    assert!(t1.contains("pub fn one"), "{t1}");
+    assert!(t2.contains("pub fn two"), "{t2}");
+}
+
+
