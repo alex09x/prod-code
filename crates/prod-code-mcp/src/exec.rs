@@ -229,12 +229,30 @@ pub async fn run_remote(
             Some(Ok(other)) => anyhow::bail!("unexpected message during exec: {other:?}"),
             // A reset from a keepalive probe lands here too: the node went away without a
             // close, and whether the command finished there cannot be known (#256).
-            Some(Err(e)) => anyhow::bail!(
-                "lost the connection to the gateway during exec ({e}); the command's result is unknown"
-            ),
-            None => anyhow::bail!(
-                "gateway closed the connection during exec; the command's result is unknown"
-            ),
+            Some(Err(e)) => {
+                if !pulled_files.is_empty() {
+                    anyhow::bail!(
+                        "lost the connection to the gateway after receiving and applying {} changed file(s) ({e}); the command's exit code is unknown",
+                        pulled_files.len()
+                    );
+                } else {
+                    anyhow::bail!(
+                        "lost the connection to the gateway during exec ({e}); the command's result is unknown"
+                    );
+                }
+            }
+            None => {
+                if !pulled_files.is_empty() {
+                    anyhow::bail!(
+                        "gateway closed the connection after sending {} changed file(s); the command's exit code is unknown",
+                        pulled_files.len()
+                    );
+                } else {
+                    anyhow::bail!(
+                        "gateway closed the connection during exec; the command's result is unknown"
+                    );
+                }
+            }
         }
     }
 }

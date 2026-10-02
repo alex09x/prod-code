@@ -568,6 +568,25 @@ async fn cli_syncs_workspace_delta_to_gateway() {
 }
 
 #[tokio::test]
+async fn cli_pulls_files_from_gateway() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out = run_cli(&ws, gw.addr, &["pull", "src/lib.rs"]).await;
+    assert!(out.status.success());
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("Successfully pulled 1 file(s) from gateway"));
+
+    let content = std::fs::read_to_string(ws.path("src/lib.rs")).unwrap();
+    assert_eq!(content, "pub fn mocked_remote_source() {}\n");
+
+    let out_sync_pull = run_cli(&ws, gw.addr, &["sync", "--pull", "src/lib.rs"]).await;
+    assert!(out_sync_pull.status.success());
+    assert!(stdout_of(&out_sync_pull).contains("Successfully pulled 1 file(s) from gateway"));
+}
+
+
+#[tokio::test]
 async fn cli_resolves_definition_location_and_reports_when_none_found() {
     let ws = make_workspace();
     let path = ws.path("src/lib.rs");

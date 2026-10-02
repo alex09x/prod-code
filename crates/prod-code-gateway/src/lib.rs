@@ -1192,7 +1192,9 @@ pub async fn apply_sync_probe(
         for engine_lock in ws.mirrored_rust_engines() {
             let mut engine = engine_lock.lock().await;
             for rel in &deleted {
-                let _ = engine.update_base(&target.join(rel), None);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.update_base(&target.join(rel), None)
+                }));
             }
         }
     }
@@ -2158,8 +2160,24 @@ async fn refresh_engines(
         let target = server_workspace.join(&delta.relative_path);
         for engine_lock in &loaded_rust {
             let mut engine = engine_lock.lock().await;
-            if let Err(e) = engine.update_base(&target, text.clone()) {
-                tracing::warn!(error = %e, file = %target.display(), "engine update after a command failed");
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                engine.update_base(&target, text.clone())
+            }));
+            match res {
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, file = %target.display(), "engine update after a command failed");
+                }
+                Err(panic) => {
+                    let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    tracing::warn!(panic = %msg, file = %target.display(), "engine update after a command panicked; continuing");
+                }
+                Ok(Ok(())) => {}
             }
         }
     }
@@ -2512,9 +2530,10 @@ pub async fn run_exec(
                 files = files.len(),
                 "🛠️ [EXEC] sending back files the command changed"
             );
-            refresh_engines(workspace_manager, &workspace, &files).await;
             if let Err(e) = framed
-                .send(WireMessage::ExecChanges(ExecChanges { files }))
+                .send(WireMessage::ExecChanges(ExecChanges {
+                    files: files.clone(),
+                }))
                 .await
             {
                 // The client never receives these changes, so the copy must not keep them.
@@ -2531,6 +2550,7 @@ pub async fn run_exec(
                 );
                 return Err(e.into());
             }
+            refresh_engines(workspace_manager, &workspace, &files).await;
         }
     }
     framed
@@ -2682,8 +2702,17 @@ pub async fn apply_sync_with_metrics(
                 if let Ok(text) = std::str::from_utf8(&content_bytes) {
                     for engine_lock in &loaded_rust {
                         let mut engine = engine_lock.lock().await;
-                        if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
-                            tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            engine.update_base(&target_path, Some(text.to_string()))
+                        }));
+                        match res {
+                            Ok(Err(e)) => {
+                                tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                            }
+                            Err(_) => {
+                                tracing::warn!(file = %target_path.display(), "base update panicked; continuing");
+                            }
+                            Ok(Ok(())) => {}
                         }
                     }
                 }
@@ -2696,8 +2725,17 @@ pub async fn apply_sync_with_metrics(
                 }
                 for engine_lock in &loaded_rust {
                     let mut engine = engine_lock.lock().await;
-                    if let Err(e) = engine.update_base(&target_path, None) {
-                        tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        engine.update_base(&target_path, None)
+                    }));
+                    match res {
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
+                        }
+                        Err(_) => {
+                            tracing::warn!(file = %target_path.display(), "base removal panicked; continuing");
+                        }
+                        Ok(Ok(())) => {}
                     }
                 }
             }
@@ -4447,10 +4485,17 @@ async fn on_client_message(
                         if let Ok(text) = std::str::from_utf8(content_bytes) {
                             for engine_lock in view.workspace.mirrored_rust_engines() {
                                 let mut engine = engine_lock.lock().await;
-                                if let Err(e) =
+                                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     engine.update_base(&target_path, Some(text.to_string()))
-                                {
-                                    tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                                }));
+                                match res {
+                                    Ok(Err(e)) => {
+                                        tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!(file = %target_path.display(), "base update panicked; continuing");
+                                    }
+                                    Ok(Ok(())) => {}
                                 }
                             }
                         }
@@ -4465,8 +4510,17 @@ async fn on_client_message(
                         }
                         for engine_lock in view.workspace.mirrored_rust_engines() {
                             let mut engine = engine_lock.lock().await;
-                            if let Err(e) = engine.update_base(&target_path, None) {
-                                tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
+                            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                engine.update_base(&target_path, None)
+                            }));
+                            match res {
+                                Ok(Err(e)) => {
+                                    tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
+                                }
+                                Err(_) => {
+                                    tracing::warn!(file = %target_path.display(), "base removal panicked; continuing");
+                                }
+                                Ok(Ok(())) => {}
                             }
                         }
                     }
@@ -8103,3 +8157,23 @@ mod analyzer_panic_tests {
         assert!(text.contains("verify"), "{text}");
     }
 }
+
+#[cfg(test)]
+mod exec_resilience_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refresh_engines_safely_handles_unloaded_or_failing_updates() {
+        let storage = tempfile::tempdir().unwrap();
+        let manager = WorkspaceManager::new();
+        let ws_dir = storage.path().join("ws");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        let files = vec![FileDelta {
+            relative_path: "src/lib.rs".to_string(),
+            content: Some(b"pub fn dummy() {}\n".to_vec()),
+            is_executable: false,
+        }];
+        refresh_engines(&manager, &ws_dir, &files).await;
+    }
+}
+

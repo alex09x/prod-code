@@ -315,6 +315,111 @@ async fn run_remote_reports_the_gateway_closing_mid_command() {
 }
 
 #[tokio::test]
+async fn run_remote_reports_the_gateway_closing_after_exec_changes() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+    let root = ws.root();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut framed = accept_one(listener).await;
+        let _ = expect_after_sync(&mut framed).await; // the ExecRequest
+        framed
+            .send(WireMessage::ExecChanges(ExecChanges {
+                files: vec![FileDelta {
+                    relative_path: "src/lib.rs".to_string(),
+                    content: Some(b"pub fn a_formatted() {}\n".to_vec()),
+                    is_executable: false,
+                }],
+            }))
+            .await
+            .unwrap();
+    });
+
+    let err = prod_code_mcp::exec::run_remote(
+        addr,
+        &root,
+        None,
+        vec!["true".to_string()],
+        Vec::new(),
+        0,
+        true,
+        |_, _| {},
+    )
+    .await
+    .expect_err("a gateway that hangs up after sending changes is reported");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("gateway closed the connection after sending 1 changed file(s)"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "pub fn a_formatted() {}\n"
+    );
+}
+
+#[tokio::test]
+async fn pull_remote_files_reads_and_applies_remote_files() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+    let root = ws.root();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut framed = accept_one(listener).await;
+        let _hs_req = match framed.next().await.unwrap().unwrap() {
+            WireMessage::HandshakeRequest(req) => req,
+            other => panic!("expected HandshakeRequest: {other:?}"),
+        };
+        framed
+            .send(WireMessage::HandshakeResponse(prod_code_protocol::HandshakeResponse {
+                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                server_pid: 1234,
+                session_id: 1,
+                server_workspace_root: "/server/ws/fixture".to_string(),
+                detected_engine: "rust".to_string(),
+                stale_paths: Vec::new(),
+                engine_age_ms: Some(100),
+                index_gated: false,
+                capabilities: None,
+            }))
+            .await
+            .unwrap();
+
+        let read_req = match framed.next().await.unwrap().unwrap() {
+            WireMessage::ReadFileRequest(req) => req,
+            other => panic!("expected ReadFileRequest: {other:?}"),
+        };
+        assert_eq!(read_req.path, "/server/ws/fixture/src/lib.rs");
+        framed
+            .send(WireMessage::ReadFileResponse(prod_code_protocol::ReadFileResponse {
+                path: read_req.path,
+                content: Some(b"pub fn pulled() {}\n".to_vec()),
+                truncated: false,
+                error: None,
+            }))
+            .await
+            .unwrap();
+
+        let _ = framed.next().await; // Disconnect
+    });
+
+    let pulled = prod_code_mcp::sync::pull_remote_files(
+        addr,
+        &root,
+        &[std::path::PathBuf::from("src/lib.rs")],
+    )
+    .await
+    .expect("files are pulled");
+
+    assert_eq!(pulled, vec!["src/lib.rs".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "pub fn pulled() {}\n"
+    );
+}
+
+
+#[tokio::test]
 async fn run_remote_fails_to_connect_to_an_unreachable_gateway() {
     let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
     let root = ws.root();
