@@ -904,6 +904,38 @@ pub mod pki {
         Ok(())
     }
 
+    /// Verify that the private key matches the public key in the leaf certificate.
+    ///
+    /// Cryptographically validates that the supplied private key's SubjectPublicKeyInfo
+    /// matches the public key in the certificate using rustls `CertifiedKey` key consistency verification.
+    pub fn verify_cert_matches_key(
+        cert: &CertificateDer<'_>,
+        key: &PrivateKeyDer<'_>,
+    ) -> Result<()> {
+        ensure_crypto_provider();
+        let provider = rustls::crypto::ring::default_provider();
+        let certified_key = rustls::sign::CertifiedKey::from_der(
+            vec![cert.clone().into_owned()],
+            key.clone_key(),
+            &provider,
+        )
+        .map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("Private key does not match certificate public key: {e}"),
+            )
+        })?;
+
+        certified_key.keys_match().map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("Private key does not match certificate public key: {e}"),
+            )
+        })?;
+
+        Ok(())
+    }
+
     /// Calculate the SHA-256 certificate pin (lowercase hex) from PEM certificate bytes.
     pub fn compute_cert_pin(cert_pem_bytes: &[u8]) -> Result<String> {
         let certs = rustls_pemfile::certs(&mut BufReader::new(cert_pem_bytes))
@@ -1469,9 +1501,53 @@ pub(crate) mod tests {
         assert!(name_err.to_string().contains("validation failed") || name_err.to_string().contains("NotValidForName"));
     }
 
+    #[test]
+    fn verify_cert_matches_key_rejects_mismatched_key_and_accepts_matching() {
+        let (ca_cert_pem, ca_key_pem) = pki::generate_ca("Match Test CA").unwrap();
+        let (node1_cert_pem, node1_key_pem) = pki::generate_node_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            &["node1.internal".into()],
+            &[],
+        ).unwrap();
+        let (_node2_cert_pem, node2_key_pem) = pki::generate_node_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            &["node2.internal".into()],
+            &[],
+        ).unwrap();
+
+        let cert1 = &load_certs_from_pem(&node1_cert_pem).unwrap()[0];
+        let key1 = load_private_key_from_pem(&node1_key_pem).unwrap();
+        let key2 = load_private_key_from_pem(&node2_key_pem).unwrap();
+
+        // 1. Matching cert and key succeed
+        pki::verify_cert_matches_key(cert1, &key1).expect("matching key must verify successfully");
+
+        // 2. Mismatched cert and key fail
+        let err = pki::verify_cert_matches_key(cert1, &key2).expect_err("mismatched key must fail verification");
+        assert!(err.to_string().contains("does not match") || err.to_string().contains("BadSignature"));
+    }
+
     fn load_certs_from_pem(pem: &str) -> std::io::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
         let mut reader = std::io::BufReader::new(pem.as_bytes());
         rustls_pemfile::certs(&mut reader).collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    fn load_private_key_from_pem(pem: &str) -> std::io::Result<rustls::pki_types::PrivateKeyDer<'static>> {
+        let mut reader = std::io::BufReader::new(pem.as_bytes());
+        loop {
+            match rustls_pemfile::read_one(&mut reader)
+                .map_err(|e| Error::new(ErrorKind::InvalidData, e))?
+            {
+                Some(rustls_pemfile::Item::Pkcs8Key(key)) => return Ok(rustls::pki_types::PrivateKeyDer::Pkcs8(key)),
+                Some(rustls_pemfile::Item::Pkcs1Key(key)) => return Ok(rustls::pki_types::PrivateKeyDer::Pkcs1(key)),
+                Some(rustls_pemfile::Item::Sec1Key(key)) => return Ok(rustls::pki_types::PrivateKeyDer::Sec1(key)),
+                Some(_) => continue,
+                None => break,
+            }
+        }
+        Err(Error::new(ErrorKind::InvalidData, "no private key found in PEM"))
     }
 }

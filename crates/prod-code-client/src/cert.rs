@@ -237,9 +237,17 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
                 prod_code_protocol::tls::check_key_permissions(&key_path).with_context(|| {
                     format!("insecure private key permissions on {}", key_path.display())
                 })?;
-                let _ = prod_code_protocol::tls::load_private_key(&key_path)
+                let key = prod_code_protocol::tls::load_private_key(&key_path)
                     .with_context(|| format!("failed loading private key at {}", key_path.display()))?;
                 println!("  Private Key: {}", key_path.display());
+                prod_code_protocol::tls::pki::verify_cert_matches_key(first_cert, &key).with_context(|| {
+                    format!(
+                        "private key at {} does not match certificate at {}",
+                        key_path.display(),
+                        cert_file.display()
+                    )
+                })?;
+                println!("  [OK] Private key matches certificate public key.");
                 println!("  [OK] Private key permissions (0600) and format verified.");
             }
 
@@ -353,13 +361,39 @@ mod tests {
             run_cert(CertCommands::Verify {
                 cert_file: node_crt.clone(),
                 key_file: None,
-                ca_cert: Some(fake_ca_crt),
+                ca_cert: Some(fake_ca_crt.clone()),
                 server_name: None,
                 pin: None,
             })
             .await
             .is_err(),
             "verification against untrusted CA must fail"
+        );
+
+        // 7. Verify with mismatched private key fails
+        let fake_node_dir = temp.path().join("fake_node");
+        run_cert(CertCommands::Node {
+            ca_cert: fake_ca_crt,
+            ca_key: fake_ca_dir.join("ca.key"),
+            out_dir: fake_node_dir.clone(),
+            prefix: "fake_node".to_string(),
+            dns: vec!["fake.internal".to_string()],
+            ips: vec![],
+        })
+        .await
+        .unwrap();
+        let fake_key = fake_node_dir.join("fake_node.key");
+        assert!(
+            run_cert(CertCommands::Verify {
+                cert_file: node_crt.clone(),
+                key_file: Some(fake_key),
+                ca_cert: Some(ca_crt.clone()),
+                server_name: None,
+                pin: None,
+            })
+            .await
+            .is_err(),
+            "verification with mismatched private key must fail"
         );
     }
 }
