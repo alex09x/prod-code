@@ -579,35 +579,49 @@ impl StatusResponse {
     ///
     /// Combines:
     /// - Hard resource pressure: disqualified (>= 1000.0) if memory > 85% or disk < 10%.
-    /// - Base CPU load: load per CPU.
-    /// - Memory pressure curve: steep penalty if memory > 70%.
-    /// - Storage pressure curve: penalty if disk < 25%.
+    /// - Base CPU load: load per CPU (conservative 0.50 uncertainty penalty if unmeasured).
+    /// - Memory pressure curve: steep penalty if memory > 70% (0.40 uncertainty penalty if unmeasured).
+    /// - Storage pressure curve: penalty if disk < 25% (0.40 uncertainty penalty if unmeasured).
     /// - Workspace & session density: penalty per loaded workspace, active session, and active query.
     /// - Running command penalty: high load penalty for currently executing commands (builds/tests).
     pub fn congestion_score(&self) -> f64 {
         if self.host.pressure().is_some() {
-            return 1000.0 + self.load_per_cpu().unwrap_or(0.0);
+            return 1000.0 + self.load_per_cpu().unwrap_or(1.0);
         }
 
-        let mut score = self.load_per_cpu().unwrap_or(0.0);
+        // Unknown load is penalized conservatively (0.50) so an unmonitored node is not mistaken for completely idle.
+        let mut score = match self.load_per_cpu() {
+            Some(l) => l,
+            None => 0.50,
+        };
 
-        // Memory usage penalty (above 70% used)
-        if let Some(mem_used) = self.host.memory_used_share() {
-            if mem_used > 0.70 {
-                score += (mem_used - 0.70) * 8.0;
+        // Memory usage penalty (above 70% used) or uncertainty penalty when telemetry is absent
+        match self.host.memory_used_share() {
+            Some(mem_used) => {
+                if mem_used > 0.70 {
+                    score += (mem_used - 0.70) * 8.0;
+                }
+                if mem_used > MEMORY_PRESSURE_USED {
+                    score += 50.0;
+                }
             }
-            if mem_used > MEMORY_PRESSURE_USED {
-                score += 50.0;
+            None => {
+                score += 0.40;
             }
         }
 
-        // Disk space penalty (below 25% free)
-        if let Some(disk_free) = self.host.storage_free_share() {
-            if disk_free < 0.25 {
-                score += (0.25 - disk_free) * 5.0;
+        // Disk space penalty (below 25% free) or uncertainty penalty when telemetry is absent
+        match self.host.storage_free_share() {
+            Some(disk_free) => {
+                if disk_free < 0.25 {
+                    score += (0.25 - disk_free) * 5.0;
+                }
+                if disk_free < STORAGE_PRESSURE_FREE {
+                    score += 50.0;
+                }
             }
-            if disk_free < STORAGE_PRESSURE_FREE {
-                score += 50.0;
+            None => {
+                score += 0.40;
             }
         }
 
@@ -1558,6 +1572,17 @@ mod wire_tests {
             ..idle.clone()
         };
         assert!(pressured.congestion_score() >= 1000.0);
+
+        // 6. Unknown telemetry penalized conservatively (never scored as 0.0 idle)
+        let unmeasured = StatusResponse {
+            load_average_millis: None,
+            cpu_count: None,
+            host: HostResources::default(),
+            ..idle.clone()
+        };
+        // 0.50 (load) + 0.40 (mem) + 0.40 (disk) = 1.30
+        assert!((unmeasured.congestion_score() - 1.30).abs() < 1e-4);
+        assert!(unmeasured.congestion_score() > idle.congestion_score());
     }
 }
 
