@@ -471,20 +471,127 @@ pub fn render_report(
             .filter(|l| !l.trim_start().starts_with("Blocking waiting for file lock"))
             .collect::<Vec<_>>()
             .join("\n");
-        let tail: String = {
-            let chars: Vec<char> = output.chars().collect();
-            let start = chars.len().saturating_sub(failure_tail_chars);
-            chars[start..].iter().collect()
-        };
+        let (tail, shown_len) = format_failure_output(&output, failure_tail_chars);
         text.push_str(&format!(
             "--- {} output (last {} of {} bytes) ---\n{}\n",
             r.name,
-            tail.len(),
+            shown_len,
             r.output_len,
             tail.trim_end()
         ));
     }
     text.trim_end().to_string()
+}
+
+fn is_diagnostic_error_header(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("error") {
+        let is_code = rest.starts_with('[') && rest.contains("]:");
+        let is_colon = rest.starts_with(':');
+        if is_code || is_colon {
+            let msg = rest.split_once(':').map_or("", |(_, m)| m.trim());
+            if !msg.starts_with("could not compile")
+                && !msg.starts_with("aborting due to")
+                && !msg.starts_with("build failed")
+            {
+                return true;
+            }
+        }
+    }
+    if trimmed.contains(": error:") || trimmed.contains(" - error TS") {
+        return true;
+    }
+    (trimmed.starts_with("---- ") && trimmed.ends_with(" stdout ----"))
+        || (trimmed.starts_with("thread '") && trimmed.contains("' panicked at "))
+        || trimmed.starts_with("--- FAIL: ")
+        || trimmed.starts_with("FAILED ")
+}
+
+fn is_diagnostic_boundary(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("warning:")
+        || (trimmed.starts_with("warning[") && trimmed.contains("]:"))
+        || trimmed.contains(": warning:")
+        || trimmed.contains(" - warning TS")
+        || is_diagnostic_error_header(line)
+        || trimmed.starts_with("Compiling ")
+        || trimmed.starts_with("Checking ")
+        || trimmed.starts_with("Finished ")
+        || trimmed.starts_with("error: could not compile")
+        || trimmed.starts_with("error: aborting due to")
+}
+
+fn extract_error_blocks(output: &str) -> Vec<String> {
+    let lines: Vec<&str> = output.lines().collect();
+    let mut blocks = Vec::new();
+    let mut idx = 0;
+    while idx < lines.len() {
+        if is_diagnostic_error_header(lines[idx]) {
+            let mut block = Vec::new();
+            block.push(lines[idx]);
+            idx += 1;
+            while idx < lines.len() && !is_diagnostic_boundary(lines[idx]) {
+                block.push(lines[idx]);
+                idx += 1;
+            }
+            let text = block.join("\n").trim().to_string();
+            if !text.is_empty() {
+                blocks.push(text);
+            }
+        } else {
+            idx += 1;
+        }
+    }
+    blocks
+}
+
+/// Formats the failure output within `limit_chars`, ensuring compiler errors and failure
+/// diagnostics are preserved even when warning output exceeds the tail cap (#794).
+fn format_failure_output(output: &str, limit_chars: usize) -> (String, usize) {
+    let chars: Vec<char> = output.chars().collect();
+    if chars.len() <= limit_chars {
+        return (output.to_string(), output.len());
+    }
+
+    let error_blocks = extract_error_blocks(output);
+    if error_blocks.is_empty() {
+        let start = chars.len().saturating_sub(limit_chars);
+        let tail: String = chars[start..].iter().collect();
+        let len = tail.len();
+        return (tail, len);
+    }
+
+    // Check if the standard tail already contains all error blocks.
+    let tail_start = chars.len().saturating_sub(limit_chars);
+    let tail_str: String = chars[tail_start..].iter().collect();
+    if error_blocks.iter().all(|b| tail_str.contains(b.as_str())) {
+        let len = tail_str.len();
+        return (tail_str, len);
+    }
+
+    // Errors occurred earlier in the stream and would be dropped by raw tail truncation.
+    // Retain error blocks, then fill remaining budget with the tail.
+    let errors_combined = error_blocks.join("\n\n");
+    let err_chars: Vec<char> = errors_combined.chars().collect();
+    if err_chars.len() >= limit_chars {
+        let truncated: String = err_chars[..limit_chars].iter().collect();
+        let len = truncated.len();
+        return (truncated, len);
+    }
+
+    let separator = "\n\n[... output omitted ...]\n\n";
+    let sep_len = separator.chars().count();
+    let remaining = limit_chars.saturating_sub(err_chars.len() + sep_len);
+    if remaining > 100 {
+        let tail_part_start = chars.len().saturating_sub(remaining);
+        let tail_part: String = chars[tail_part_start..].iter().collect();
+        let combined = format!("{errors_combined}{separator}{tail_part}");
+        let len = combined.len();
+        (combined, len)
+    } else {
+        let len = errors_combined.len();
+        (errors_combined, len)
+    }
 }
 
 #[cfg(test)]
@@ -717,5 +824,58 @@ mod tests {
         assert!(text.contains("winner: ok\n--- a/x"), "{text}");
         assert!(text.contains("--- bad output"), "{text}");
         assert!(text.contains("panicked"), "{text}");
+    }
+
+    #[test]
+    fn render_report_retains_compiler_errors_when_warnings_exceed_tail_cap() {
+        let mut results = vec![
+            outcome("ok", Some(0), Some((1, 0)), 1),
+            outcome("compile_fail", Some(101), None, 1),
+        ];
+        results[0].diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n".to_string();
+
+        let mut output = String::new();
+        output.push_str("   Compiling server v0.1.0 (/ws/server)\n");
+        output.push_str("error[E0061]: this function takes 2 arguments but 1 argument was supplied\n");
+        output.push_str("  --> server/src/lib.rs:42:15\n");
+        output.push_str("   |\n");
+        output.push_str("42 |     calculate(foo);\n");
+        output.push_str("   |     ^^^^^^^^^ --- supplied 1 argument\n");
+        output.push_str("   |     |\n");
+        output.push_str("   |     expected 2 arguments\n");
+        output.push_str("   |\n");
+        output.push_str("help: provide the argument: `, bar`\n\n");
+        // Append 5 KB of warnings, exceeding the 1000 char tail cap
+        for i in 0..60 {
+            output.push_str(&format!(
+                "warning: call to unsafe function `{i}` is unsafe and requires unsafe block (error E0133)\n  --> server/src/lib.rs:{i}:5\n"
+            ));
+        }
+        output.push_str("error: could not compile `server` (lib test) due to 1 previous error; 60 warnings emitted\n");
+
+        results[1].output = output.clone();
+        results[1].output_len = output.len() as u64;
+
+        let ranking = rank(&results);
+        let shadow = ShadowOutcome {
+            mode: "overlay".to_string(),
+            server_workspace_root: "/srv/ws".to_string(),
+            results,
+            ranking,
+            winner: Some(0),
+        };
+
+        let text = render_report(
+            &shadow,
+            &["cargo".to_string(), "test".to_string(), "-p".to_string(), "server".to_string()],
+            None,
+            1000,
+        );
+
+        assert!(text.contains("error[E0061]"), "{text}");
+        assert!(text.contains("server/src/lib.rs:42:15"), "{text}");
+        assert!(text.contains("calculate(foo)"), "{text}");
+        assert!(text.contains("help: provide the argument: `, bar`"), "{text}");
+        assert!(text.contains("could not compile"), "{text}");
     }
 }

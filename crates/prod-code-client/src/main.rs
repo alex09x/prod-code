@@ -5901,7 +5901,7 @@ async fn run_shadow_cli(
         vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
         timeout_secs,
         parallel,
-        16 * 1024,
+        64 * 1024,
     )
     .await?;
     let applied = match (apply, outcome.winner) {
