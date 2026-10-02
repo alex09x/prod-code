@@ -17,17 +17,17 @@ serde.workspace = true
 serde_json.workspace = true
 toml = "0.9"
 
-ra_ap_ide = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "ide" }
-ra_ap_load-cargo = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "load-cargo" }
-ra_ap_project_model = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "project-model" }
-ra_ap_vfs = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "vfs" }
-ra_ap_syntax = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "syntax" }
-ra_ap_ide_db = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "ide-db" }
-ra_ap_hir = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "hir" }
-ra_ap_paths = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "paths" }
-ra_ap_base_db = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "base-db" }
-ra_ap_cfg = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "cfg" }
-ra_ap_intern = { git = "https://github.com/alex09x/rust-analyzer", branch = "feat/worktree-overlay", package = "intern" }
+ra_ap_ide = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "ide" }
+ra_ap_load-cargo = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "load-cargo" }
+ra_ap_project_model = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "project-model" }
+ra_ap_vfs = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "vfs" }
+ra_ap_syntax = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "syntax" }
+ra_ap_ide_db = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "ide-db" }
+ra_ap_hir = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "hir" }
+ra_ap_paths = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "paths" }
+ra_ap_base_db = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "base-db" }
+ra_ap_cfg = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "cfg" }
+ra_ap_intern = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "intern" }
 
 [dev-dependencies]
 tempfile.workspace = true
