@@ -79,7 +79,13 @@ pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Res
     let mut last_err = None;
     for attempt in 0..3 {
         if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(50 * (1 << (attempt - 1)))).await;
+            let backoff = match last_err.as_ref().and_then(|e: &std::io::Error| e.raw_os_error()) {
+                // On macOS, EHOSTUNREACH (65) occurs when ARP entry is resolving.
+                // Give ARP resolution time to complete.
+                Some(65) => Duration::from_millis(100 * attempt as u64),
+                _ => Duration::from_millis(50 * (1 << (attempt - 1))),
+            };
+            tokio::time::sleep(backoff).await;
         }
         match TcpStream::connect(addr).await {
             Ok(mut stream) => {
