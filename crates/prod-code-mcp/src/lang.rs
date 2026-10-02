@@ -112,6 +112,8 @@ pub fn engine_group_for_path(path: &Path) -> &'static str {
         "lua" => "lua",
         "elixir" => "elixir",
         "json" => "json",
+        "markdown" => "markdown",
+        "xml" => "xml",
         other => other,
     }
 }
