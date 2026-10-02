@@ -1521,28 +1521,99 @@ pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
     None
 }
 
-/// Parse a line from `go test -json` into a test event if applicable.
+/// Parse a line from `go test` (either `-json` or standard human-readable format) into a test event if applicable.
 pub fn parse_go_test_json_event(line: &str) -> Option<RemoteExecStream> {
-    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-    let action = value.get("Action").and_then(|a| a.as_str())?;
-    let test = value.get("Test").and_then(|t| t.as_str())?;
-    let pkg = value.get("Package").and_then(|p| p.as_str()).unwrap_or("");
-    let name = format!("{pkg}.{test}");
-    let duration_ms = value.get("Elapsed").and_then(|e| e.as_f64()).map(|s| (s * 1000.0) as u64);
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
 
-    match action {
-        "run" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name })),
-        "pass" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms })),
-        "fail" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
+    if trimmed.starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let action = value.get("Action").and_then(|a| a.as_str())?;
+            let test = value.get("Test").and_then(|t| t.as_str())?;
+            let pkg = value.get("Package").and_then(|p| p.as_str()).unwrap_or("");
+            let name = if pkg.is_empty() {
+                test.to_string()
+            } else {
+                format!("{pkg}.{test}")
+            };
+            let duration_ms = value.get("Elapsed").and_then(|e| e.as_f64()).map(|s| (s * 1000.0) as u64);
+
+            return match action {
+                "run" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name })),
+                "pass" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms })),
+                "fail" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
+                    name,
+                    duration_ms,
+                    message: None,
+                    assertion_diff: None,
+                    backtrace: None,
+                    output: None,
+                })),
+                "skip" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, reason: None })),
+                _ => None,
+            };
+        }
+    }
+
+    // Standard human-readable `go test` text lines:
+    // "=== RUN   TestFoo"
+    // "--- PASS: TestFoo (0.01s)"
+    // "--- FAIL: TestBar (0.05s)"
+    // "--- SKIP: TestBaz (0.00s)"
+    // "--- BENCH: BenchmarkFoo (0.00s)"
+    // Summary lines such as "PASS", "FAIL", "ok  \tpkg\t0.012s", "FAIL\tpkg\t0.015s" are ignored.
+    if let Some(rest) = trimmed.strip_prefix("=== RUN") {
+        let name = rest.trim().to_string();
+        if !name.is_empty() {
+            return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name }));
+        }
+    } else if let Some(rest) = trimmed.strip_prefix("--- PASS:") {
+        let (name, duration_ms) = parse_go_raw_test_suffix(rest);
+        return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed {
+            name,
+            duration_ms,
+        }));
+    } else if let Some(rest) = trimmed.strip_prefix("--- FAIL:") {
+        let (name, duration_ms) = parse_go_raw_test_suffix(rest);
+        return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
             name,
             duration_ms,
             message: None,
             assertion_diff: None,
             backtrace: None,
             output: None,
-        })),
-        "skip" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, reason: None })),
-        _ => None,
+        }));
+    } else if let Some(rest) = trimmed.strip_prefix("--- SKIP:") {
+        let (name, _) = parse_go_raw_test_suffix(rest);
+        return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped {
+            name,
+            reason: None,
+        }));
+    } else if let Some(rest) = trimmed.strip_prefix("--- BENCH:") {
+        let (name, _) = parse_go_raw_test_suffix(rest);
+        return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Bench {
+            name,
+            estimate: "bench".to_string(),
+            range: None,
+        }));
+    }
+
+    None
+}
+
+fn parse_go_raw_test_suffix(rest: &str) -> (String, Option<u64>) {
+    let rest = rest.trim();
+    if let Some((name, dur_part)) = rest.rsplit_once(" (") {
+        let dur_ms = dur_part
+            .strip_suffix("s)")
+            .or_else(|| dur_part.strip_suffix(')'))
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .map(|s| (s * 1000.0) as u64);
+        (name.trim().to_string(), dur_ms)
+    } else {
+        (rest.to_string(), None)
     }
 }
 
@@ -2428,6 +2499,60 @@ mod wire_tests {
         // Summary line should be ignored
         let summary_line = "test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s";
         assert!(parse_cargo_json_event(summary_line).is_none());
+
+        // Standard Go human-readable text output parsing
+        let go_run_line = "=== RUN   TestLoginHandler";
+        let go_run_ev = parse_go_test_json_event(go_run_line).unwrap();
+        match go_run_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name }) => {
+                assert_eq!(name, "TestLoginHandler");
+            }
+            other => panic!("expected TestEvent::Started, got {other:?}"),
+        }
+
+        let go_pass_line = "--- PASS: TestLoginHandler (0.015s)";
+        let go_pass_ev = parse_go_test_json_event(go_pass_line).unwrap();
+        match go_pass_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms }) => {
+                assert_eq!(name, "TestLoginHandler");
+                assert_eq!(duration_ms, Some(15));
+            }
+            other => panic!("expected TestEvent::Passed, got {other:?}"),
+        }
+
+        let go_subtest_pass = "    --- PASS: TestLoginHandler/Valid_Credentials (0.002s)";
+        let go_sub_ev = parse_go_test_json_event(go_subtest_pass).unwrap();
+        match go_sub_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms }) => {
+                assert_eq!(name, "TestLoginHandler/Valid_Credentials");
+                assert_eq!(duration_ms, Some(2));
+            }
+            other => panic!("expected TestEvent::Passed, got {other:?}"),
+        }
+
+        let go_fail_line = "--- FAIL: TestRefreshToken (0.034s)";
+        let go_fail_ev = parse_go_test_json_event(go_fail_line).unwrap();
+        match go_fail_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { name, duration_ms, .. }) => {
+                assert_eq!(name, "TestRefreshToken");
+                assert_eq!(duration_ms, Some(34));
+            }
+            other => panic!("expected TestEvent::Failed, got {other:?}"),
+        }
+
+        let go_skip_line = "--- SKIP: TestIntegrationDisabled (0.00s)";
+        let go_skip_ev = parse_go_test_json_event(go_skip_line).unwrap();
+        match go_skip_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, .. }) => {
+                assert_eq!(name, "TestIntegrationDisabled");
+            }
+            other => panic!("expected TestEvent::Skipped, got {other:?}"),
+        }
+
+        // Go summaries should be ignored
+        assert!(parse_go_test_json_event("PASS").is_none());
+        assert!(parse_go_test_json_event("FAIL").is_none());
+        assert!(parse_go_test_json_event("ok  \tpkg/auth\t0.021s").is_none());
     }
 
     #[test]

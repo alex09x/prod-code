@@ -177,48 +177,106 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     }))
                                     .await;
                             } else if req.command == RemoteExecCommand::Test && req.language == RemoteExecLanguage::Go {
-                                // Simulate Go test JSON stream
-                                let go_pass = r#"{"Time":"2026-10-02T12:00:00Z","Action":"pass","Package":"pkg/auth","Test":"TestLogin","Elapsed":0.012}"#;
-                                let go_fail = r#"{"Time":"2026-10-02T12:00:01Z","Action":"fail","Package":"pkg/auth","Test":"TestRefresh","Elapsed":0.034}"#;
-
-                                for line in [go_pass, go_fail] {
-                                    let _ = framed
-                                        .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
-                                            ExecChunk {
-                                                stderr: false,
-                                                data: Some(format!("{line}\n").into_bytes()),
-                                            },
-                                        )))
-                                        .await;
-                                    if let Some(stream_ev) = prod_code_protocol::parse_go_test_json_event(line) {
-                                        let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                if req.format == RemoteExecFormat::Raw {
+                                    let raw_lines = [
+                                        "=== RUN   TestLogin",
+                                        "--- PASS: TestLogin (0.012s)",
+                                        "=== RUN   TestRefresh",
+                                        "--- FAIL: TestRefresh (0.034s)",
+                                        "=== RUN   TestSkipMe",
+                                        "--- SKIP: TestSkipMe (0.001s)",
+                                        "FAIL",
+                                        "FAIL\tpkg/auth\t0.047s",
+                                    ];
+                                    let mut passed = 0;
+                                    let mut failed = 0;
+                                    let mut skipped = 0;
+                                    let mut failures = Vec::new();
+                                    for line in raw_lines {
+                                        let _ = framed
+                                            .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
+                                                ExecChunk {
+                                                    stderr: false,
+                                                    data: Some(format!("{line}\n").into_bytes()),
+                                                },
+                                            )))
+                                            .await;
+                                        if let Some(stream_ev) = prod_code_protocol::parse_go_test_json_event(line) {
+                                            match &stream_ev {
+                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { .. }) => passed += 1,
+                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { .. }) => {
+                                                    failed += 1;
+                                                    if let RemoteExecStream::TestEvent(te) = &stream_ev {
+                                                        failures.push(te.clone());
+                                                    }
+                                                }
+                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { .. }) => skipped += 1,
+                                                _ => {}
+                                            }
+                                            let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                        }
                                     }
-                                }
+                                    let _ = framed
+                                        .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                            exit_code: Some(1),
+                                            duration_ms: 120,
+                                            server_workspace_root: workspace.to_string_lossy().to_string(),
+                                            timed_out: false,
+                                            error: None,
+                                            usage: None,
+                                            platform: Some("linux x86_64".into()),
+                                            diagnostics: Vec::new(),
+                                            tests_passed: passed,
+                                            tests_failed: failed,
+                                            tests_skipped: skipped,
+                                            test_failures: failures,
+                                            benches: Vec::new(),
+                                        }))
+                                        .await;
+                                } else {
+                                    // Simulate Go test JSON stream
+                                    let go_pass = r#"{"Time":"2026-10-02T12:00:00Z","Action":"pass","Package":"pkg/auth","Test":"TestLogin","Elapsed":0.012}"#;
+                                    let go_fail = r#"{"Time":"2026-10-02T12:00:01Z","Action":"fail","Package":"pkg/auth","Test":"TestRefresh","Elapsed":0.034}"#;
 
-                                let _ = framed
-                                    .send(WireMessage::RemoteExecResult(RemoteExecResult {
-                                        exit_code: Some(1),
-                                        duration_ms: 120,
-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
-                                        timed_out: false,
-                                        error: None,
-                                        usage: None,
-                                        platform: Some("linux x86_64".into()),
-                                        diagnostics: Vec::new(),
-                                        tests_passed: 1,
-                                        tests_failed: 1,
-                                        tests_skipped: 0,
-                                        test_failures: vec![RemoteExecTestEvent::Failed {
-                                            name: "pkg/auth.TestRefresh".into(),
-                                            duration_ms: Some(34),
-                                            message: None,
-                                            assertion_diff: None,
-                                            backtrace: None,
-                                            output: None,
-                                        }],
-                                        benches: Vec::new(),
-                                    }))
-                                    .await;
+                                    for line in [go_pass, go_fail] {
+                                        let _ = framed
+                                            .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
+                                                ExecChunk {
+                                                    stderr: false,
+                                                    data: Some(format!("{line}\n").into_bytes()),
+                                                },
+                                            )))
+                                            .await;
+                                        if let Some(stream_ev) = prod_code_protocol::parse_go_test_json_event(line) {
+                                            let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                        }
+                                    }
+
+                                    let _ = framed
+                                        .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                            exit_code: Some(1),
+                                            duration_ms: 120,
+                                            server_workspace_root: workspace.to_string_lossy().to_string(),
+                                            timed_out: false,
+                                            error: None,
+                                            usage: None,
+                                            platform: Some("linux x86_64".into()),
+                                            diagnostics: Vec::new(),
+                                            tests_passed: 1,
+                                            tests_failed: 1,
+                                            tests_skipped: 0,
+                                            test_failures: vec![RemoteExecTestEvent::Failed {
+                                                name: "pkg/auth.TestRefresh".into(),
+                                                duration_ms: Some(34),
+                                                message: None,
+                                                assertion_diff: None,
+                                                backtrace: None,
+                                                output: None,
+                                            }],
+                                            benches: Vec::new(),
+                                        }))
+                                        .await;
+                                }
                             } else {
                                 let _ = framed
                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
@@ -495,4 +553,79 @@ async fn test_polyglot_remote_exec_timeout_overflow_rejected() {
         }
         other => panic!("expected RemoteExecResult, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn test_polyglot_remote_exec_go_raw_test_flow() {
+    let (addr, _server_handle, _temp) = start_test_gateway().await;
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+    let req = RemoteExecRequest {
+        client_workspace_root: "/Users/test/my-test-workspace".into(),
+        base_workspace_name: Some("my-test-workspace".into()),
+        language: RemoteExecLanguage::Go,
+        command: RemoteExecCommand::Test,
+        args: vec![],
+        env: vec![],
+        format: RemoteExecFormat::Raw, // Default raw human-readable Go test format
+        timeout_secs: 30,
+        pull_changes: false,
+        subdir: None,
+        client_agent: None,
+        client_host: None,
+    };
+
+    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+
+    let mut stream_events = Vec::new();
+    let mut final_result = None;
+
+    while let Some(msg) = framed.next().await {
+        match msg.unwrap() {
+            WireMessage::RemoteExecStream(ev) => {
+                stream_events.push(ev);
+            }
+            WireMessage::RemoteExecResult(res) => {
+                final_result = Some(res);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let res = final_result.expect("expected RemoteExecResult");
+    assert_eq!(res.exit_code, Some(1));
+    assert_eq!(res.tests_passed, 1);
+    assert_eq!(res.tests_failed, 1);
+    assert_eq!(res.tests_skipped, 1);
+    assert_eq!(res.test_failures.len(), 1);
+    match &res.test_failures[0] {
+        RemoteExecTestEvent::Failed { name, .. } => {
+            assert_eq!(name, "TestRefresh");
+        }
+        other => panic!("expected Failed event, got {other:?}"),
+    }
+
+    let has_pass = stream_events.iter().any(|ev| {
+        matches!(
+            ev,
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, .. }) if name == "TestLogin"
+        )
+    });
+    let has_fail = stream_events.iter().any(|ev| {
+        matches!(
+            ev,
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { name, .. }) if name == "TestRefresh"
+        )
+    });
+    let has_skip = stream_events.iter().any(|ev| {
+        matches!(
+            ev,
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, .. }) if name == "TestSkipMe"
+        )
+    });
+    assert!(has_pass);
+    assert!(has_fail);
+    assert!(has_skip);
 }
