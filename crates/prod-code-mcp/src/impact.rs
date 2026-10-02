@@ -2008,9 +2008,9 @@ fn extract_signature_span(
 
         let mut in_str = false;
         let mut str_char = ' ';
-        let mut chars = line_text.chars().peekable();
+        let mut chars = line_text.char_indices().peekable();
 
-        while let Some(c) = chars.next() {
+        while let Some((byte_idx, c)) = chars.next() {
             if in_str {
                 if c == '\\' {
                     let _ = chars.next();
@@ -2023,6 +2023,13 @@ fn extract_signature_span(
                 in_str = true;
                 str_char = c;
                 continue;
+            }
+
+            if c == '/' && chars.peek().map(|&(_, next_c)| next_c) == Some('/') {
+                break;
+            }
+            if language == "python" && c == '#' {
+                break;
             }
 
             match c {
@@ -2051,7 +2058,9 @@ fn extract_signature_span(
                 }
                 ':' if language == "python" && param_started && paren_depth == 0 => {
                     end_idx = idx;
-                    let sig_text = normalize_signature(&lines[start_idx..=end_idx], language);
+                    let mut sig_lines: Vec<&str> = lines[start_idx..idx].to_vec();
+                    sig_lines.push(&line_text[..=byte_idx]);
+                    let sig_text = normalize_signature(&sig_lines, language);
                     return Some(((start_idx + 1) as u32, (end_idx + 1) as u32, sig_text));
                 }
                 '{' | ';'
@@ -2062,7 +2071,9 @@ fn extract_signature_span(
                         && bracket_depth == 0 =>
                 {
                     end_idx = idx;
-                    let sig_text = normalize_signature(&lines[start_idx..=end_idx], language);
+                    let mut sig_lines: Vec<&str> = lines[start_idx..idx].to_vec();
+                    sig_lines.push(&line_text[..=byte_idx]);
+                    let sig_text = normalize_signature(&sig_lines, language);
                     return Some(((start_idx + 1) as u32, (end_idx + 1) as u32, sig_text));
                 }
                 _ => {}
@@ -3030,6 +3041,29 @@ mod tests {
         assert_eq!(start, 1);
         assert_eq!(end, 4);
         assert_eq!(sig, "export async function fetchUser(userId: string, timeoutMs: number = 5000): Promise<User>");
+
+        // One-line function bodies must not leak into signature (Issue #785)
+        let one_line_rust = "fn action_payload(message: &[u8]) -> Vec<u8> { codec_payload(0, message) }\n";
+        let lines: Vec<&str> = one_line_rust.lines().collect();
+        let (start, end, sig) = extract_signature_span(&lines, 1, "action_payload", "rust").unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 1);
+        assert_eq!(sig, "fn action_payload(message: &[u8]) -> Vec<u8>");
+
+        let multiline_rust = "fn action_payload(\n    message: &[u8]\n) -> Vec<u8> {\n    codec_payload(0, message)\n}\n";
+        let lines: Vec<&str> = multiline_rust.lines().collect();
+        let (m_start, m_end, m_sig) = extract_signature_span(&lines, 1, "action_payload", "rust").unwrap();
+        assert_eq!(m_start, 1);
+        assert_eq!(m_end, 3);
+        assert_eq!(m_sig, "fn action_payload(message: &[u8]) -> Vec<u8>");
+        assert_eq!(sig, m_sig);
+
+        let one_line_py = "def square(x: int) -> int: return x * x\n";
+        let lines: Vec<&str> = one_line_py.lines().collect();
+        let (start, end, sig) = extract_signature_span(&lines, 1, "square", "python").unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 1);
+        assert_eq!(sig, "def square(x: int) -> int");
     }
 
     #[test]
