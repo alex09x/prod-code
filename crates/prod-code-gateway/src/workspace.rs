@@ -502,10 +502,16 @@ pub struct SessionView {
     pub workspace: Arc<SharedWorkspace>,
     /// The loaded workspace the session is counted against, for idle eviction.
     pub accounted: Arc<SharedWorkspace>,
-    pub is_single_owner: bool,
-    pub direct_edit_open_files: Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    pub is_single_owner: Arc<AtomicBool>,
+    pub direct_edit_open_files: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, String>>>,
     lease: Option<WorkspaceLease>,
     owner: Option<WorktreeOwner>,
+}
+
+impl SessionView {
+    pub fn is_single_owner(&self) -> bool {
+        self.is_single_owner.load(Ordering::SeqCst)
+    }
 }
 
 /// One counted attachment to a loaded workspace. Until it is transferred into a
@@ -574,19 +580,39 @@ impl Drop for WorkspaceLease {
     }
 }
 
-type WorktreeOwners = Arc<std::sync::Mutex<HashMap<PathBuf, usize>>>;
+#[derive(Clone)]
+pub struct DirectEditLeaseHandle {
+    pub session_id: u64,
+    pub is_active: Arc<AtomicBool>,
+    pub open_files: Arc<std::sync::Mutex<HashMap<PathBuf, String>>>,
+    pub workspace: Arc<SharedWorkspace>,
+}
+
+#[derive(Default)]
+pub struct WorktreeEntry {
+    pub count: usize,
+    pub direct_edit_lease: Option<DirectEditLeaseHandle>,
+}
+
+type WorktreeOwners = Arc<std::sync::Mutex<HashMap<PathBuf, WorktreeEntry>>>;
 
 struct WorktreeOwner {
     root: PathBuf,
+    session_id: u64,
     owners: WorktreeOwners,
 }
 
 impl Drop for WorktreeOwner {
     fn drop(&mut self) {
         let mut owners = self.owners.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(count) = owners.get_mut(&self.root) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
+        if let Some(entry) = owners.get_mut(&self.root) {
+            entry.count = entry.count.saturating_sub(1);
+            if let Some(lease) = &entry.direct_edit_lease {
+                if lease.session_id == self.session_id {
+                    entry.direct_edit_lease = None;
+                }
+            }
+            if entry.count == 0 {
                 owners.remove(&self.root);
             }
         }
@@ -602,7 +628,7 @@ impl SessionView {
         let direct_edits: Vec<PathBuf> = self
             .direct_edit_open_files
             .lock()
-            .map(|mut files| files.drain().collect())
+            .map(|mut files| files.drain().map(|(p, _)| p).collect())
             .unwrap_or_default();
         Some(tokio::spawn(async move {
             clear_session_overlays(&workspace, session_id, &direct_edits).await;
@@ -2278,7 +2304,9 @@ impl WorkspaceManager {
     /// Register a session's view over a worktree.
     ///
     /// Determines whether the session is the sole owner of this worktree path
-    /// to activate the single-owner direct-edit fast path.
+    /// to activate the single-owner direct-edit fast path. If a second session
+    /// connects to the same worktree, direct-edit exclusivity is revoked and any
+    /// in-memory direct edits are migrated to session overlays before admitting the new session.
     pub async fn register_session_view(
         &self,
         session_id: u64,
@@ -2287,14 +2315,35 @@ impl WorkspaceManager {
     ) -> SessionView {
         let workspace = Arc::clone(lease.workspace());
         workspace.touch();
-        let mut owners = self
-            .worktree_owners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let count = owners.entry(worktree_root.clone()).or_insert(0);
-        *count += 1;
-        let is_single_owner = *count == 1;
-        drop(owners);
+
+        let mut previous_lease = None;
+        let is_single_owner = Arc::new(AtomicBool::new(false));
+        let direct_edit_open_files = Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+        {
+            let mut owners = self
+                .worktree_owners
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let entry = owners.entry(worktree_root.clone()).or_default();
+            entry.count += 1;
+            if entry.count == 1 {
+                is_single_owner.store(true, Ordering::SeqCst);
+                entry.direct_edit_lease = Some(DirectEditLeaseHandle {
+                    session_id,
+                    is_active: Arc::clone(&is_single_owner),
+                    open_files: Arc::clone(&direct_edit_open_files),
+                    workspace: Arc::clone(&workspace),
+                });
+            } else if let Some(existing) = entry.direct_edit_lease.take() {
+                existing.is_active.store(false, Ordering::SeqCst);
+                previous_lease = Some(existing);
+            }
+        }
+
+        if let Some(prev) = previous_lease {
+            Self::migrate_direct_edits_to_overlays(prev).await;
+        }
 
         SessionView {
             session_id,
@@ -2302,12 +2351,36 @@ impl WorkspaceManager {
             accounted: Arc::clone(&workspace),
             workspace,
             is_single_owner,
-            direct_edit_open_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            direct_edit_open_files,
             lease: Some(lease),
             owner: Some(WorktreeOwner {
                 root: worktree_root,
+                session_id,
                 owners: Arc::clone(&self.worktree_owners),
             }),
+        }
+    }
+
+    /// Migrates unsaved direct edits from a revoked single-owner session into its session overlay in the engine,
+    /// and restores the clean on-disk text into the base Salsa database.
+    pub async fn migrate_direct_edits_to_overlays(lease: DirectEditLeaseHandle) {
+        let files: Vec<(PathBuf, String)> = {
+            let mut open = lease.open_files.lock().unwrap_or_else(|e| e.into_inner());
+            open.drain().collect()
+        };
+        if files.is_empty() {
+            return;
+        }
+        if let Some(engine_lock) = &lease.workspace.rust_engine {
+            let mut engine = engine_lock.lock().await;
+            for (path, buffer_text) in files {
+                if let Err(e) = engine.reload_file(&path) {
+                    tracing::warn!(error = %e, file = %path.display(), "failed to reload disk text before migrating direct edit");
+                }
+                if let Err(e) = engine.set_session_overlay(lease.session_id, &path, Some(buffer_text)) {
+                    tracing::warn!(error = %e, session = lease.session_id, file = %path.display(), "failed to migrate direct edit to session overlay");
+                }
+            }
         }
     }
 
@@ -2322,7 +2395,7 @@ impl WorkspaceManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(root)
-            .copied()
+            .map(|entry| entry.count)
             .unwrap_or(0)
     }
 }
@@ -3788,7 +3861,7 @@ while True:
                 manager.get_or_load(&root, "rust").await.unwrap(),
             )
             .await;
-        assert!(view1.is_single_owner, "First agent on wt1 is sole owner");
+        assert!(view1.is_single_owner(), "First agent on wt1 is sole owner");
 
         let view2 = manager
             .register_session_view(
@@ -3797,7 +3870,7 @@ while True:
                 manager.get_or_load(&root, "rust").await.unwrap(),
             )
             .await;
-        assert!(view2.is_single_owner, "First agent on wt2 is sole owner");
+        assert!(view2.is_single_owner(), "First agent on wt2 is sole owner");
 
         // Second session attaches to wt1
         let view3 = manager
@@ -3808,8 +3881,12 @@ while True:
             )
             .await;
         assert!(
-            !view3.is_single_owner,
+            !view3.is_single_owner(),
             "Second agent on wt1 is NOT sole owner"
+        );
+        assert!(
+            !view1.is_single_owner(),
+            "First agent on wt1 direct-edit exclusivity was revoked when second session joined"
         );
 
         // Cleanup
@@ -3856,37 +3933,67 @@ path = "src/lib.rs"
         )));
         manager.insert_ready_for_test(Arc::clone(&ws)).await;
 
-        let lease = manager.get_or_load(&root, "rust").await.unwrap();
-        let view = manager.register_session_view(101, root.clone(), lease).await;
-        assert!(view.is_single_owner, "Dedicated worktree is single owner");
+        let lease1 = manager.get_or_load(&root, "rust").await.unwrap();
+        let view1 = manager.register_session_view(101, root.clone(), lease1).await;
+        assert!(view1.is_single_owner(), "Dedicated worktree is single owner");
 
+        let direct_text = "pub const BASE_VAL: u32 = 100;\npub fn direct_added() {}\n".to_string();
         // Fast path: direct edit modifies base Salsa input without session overlays
         {
             let mut eng = engine_arc.lock().await;
             assert!(!eng.has_session_overlays());
-            eng.apply_file_change(
-                &lib_path,
-                "pub const BASE_VAL: u32 = 100;\npub fn direct_added() {}\n".to_string(),
-            )
-            .unwrap();
+            eng.apply_file_change(&lib_path, direct_text.clone()).unwrap();
             assert!(
                 !eng.has_session_overlays(),
                 "Direct edits must not create session overlays"
             );
-            assert_eq!(eng.session_overlay_count(view.session_id), 0);
+            assert_eq!(eng.session_overlay_count(view1.session_id), 0);
 
             let syms = eng.document_symbols(&lib_path).unwrap();
             assert!(syms.iter().any(|s| s.name == "direct_added"));
         }
 
-        // Track open file in view
-        view.direct_edit_open_files
+        // Track open file in view1
+        view1
+            .direct_edit_open_files
             .lock()
             .unwrap()
-            .insert(lib_path.clone());
+            .insert(lib_path.clone(), direct_text);
 
-        // Unregistering the session reloads unclosed direct-edit files from disk
-        manager.unregister_session_view(view).await;
+        // When a second session joins the same worktree, direct-edit exclusivity must be revoked
+        // and view1's direct edits migrated into view1's session overlay in the engine!
+        let lease2 = manager.get_or_load(&root, "rust").await.unwrap();
+        let view2 = manager.register_session_view(102, root.clone(), lease2).await;
+        assert!(!view1.is_single_owner(), "view1 exclusivity must be revoked when view2 joins");
+        assert!(!view2.is_single_owner(), "view2 must not have single-owner exclusivity");
+
+        {
+            let mut eng = engine_arc.lock().await;
+            // The engine now has session overlays for view1
+            assert!(eng.has_session_overlays());
+            assert_eq!(eng.session_overlay_count(view1.session_id), 1);
+            assert_eq!(eng.session_overlay_count(view2.session_id), 0);
+
+            // Base Salsa DB was restored from disk!
+            eng.activate_session(view2.session_id).unwrap();
+            let view2_syms = eng.document_symbols(&lib_path).unwrap();
+            assert!(
+                !view2_syms.iter().any(|s| s.name == "direct_added"),
+                "view2 must NOT observe view1's unsaved direct edits in base Salsa DB!"
+            );
+
+            // view1's unsaved edits are preserved in its session overlay!
+            eng.activate_session(view1.session_id).unwrap();
+            let view1_syms = eng.document_symbols(&lib_path).unwrap();
+            assert!(
+                view1_syms.iter().any(|s| s.name == "direct_added"),
+                "view1 must observe its unsaved edits in its session overlay"
+            );
+        }
+
+        // Unregister both sessions
+        manager.unregister_session_view(view1).await;
+        manager.unregister_session_view(view2).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         {
@@ -3895,7 +4002,7 @@ path = "src/lib.rs"
             let syms = eng.document_symbols(&lib_path).unwrap();
             assert!(
                 !syms.iter().any(|s| s.name == "direct_added"),
-                "Disk state must be restored on session retirement"
+                "Disk state must be restored after both sessions retire"
             );
         }
     }

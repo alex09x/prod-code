@@ -4128,9 +4128,9 @@ pub async fn handle_client(
                     server_root = %server_workspace_str,
                     engine_root = %engine_root.display(),
                     engine,
-                    is_single_owner = session_view.is_single_owner,
+                    is_single_owner = session_view.is_single_owner(),
                     "Client session established (Direct-Edit fast path active: {})",
-                    session_view.is_single_owner
+                    session_view.is_single_owner()
                 );
 
                 framed
@@ -4638,7 +4638,7 @@ async fn on_client_message(
             let server_lsp = translator.translate_lsp_to_server(&raw_client_lsp);
             tracing::debug!(
                 payload_len = server_lsp.len(),
-                single_owner = view.is_single_owner,
+                single_owner = view.is_single_owner(),
                 "Processing incoming LSP message"
             );
 
@@ -4881,12 +4881,12 @@ async fn on_client_message(
                                     let text_len = text.len();
                                     {
                                         let mut engine = engine_lock.lock().await;
-                                        if view.is_single_owner {
+                                        if view.is_single_owner() {
                                             if let Err(e) = engine.apply_file_change(&file_path, text.to_string()) {
                                                 tracing::warn!(error = %e, file = %file_path.display(), "direct-edit didOpen file change failed");
                                             }
                                             if let Ok(mut files) = view.direct_edit_open_files.lock() {
-                                                files.insert(file_path.clone());
+                                                files.insert(file_path.clone(), text.to_string());
                                             }
                                         } else {
                                             if let Err(e) = engine.set_session_overlay(
@@ -4904,7 +4904,7 @@ async fn on_client_message(
                                         file = %file_path.display(),
                                         bytes = text_len,
                                         duration_ms = format!("{:.2}ms", ms),
-                                        single_owner = view.is_single_owner,
+                                        single_owner = view.is_single_owner(),
                                         "📝 [EDIT] didOpen recorded in Salsa DB"
                                     );
                                     publish_rust_diagnostics(
@@ -4937,12 +4937,12 @@ async fn on_client_message(
                                     let text_len = text.len();
                                     {
                                         let mut engine = engine_lock.lock().await;
-                                        if view.is_single_owner {
+                                        if view.is_single_owner() {
                                             if let Err(e) = engine.apply_file_change(&file_path, text.to_string()) {
                                                 tracing::warn!(error = %e, file = %file_path.display(), "direct-edit didChange file change failed");
                                             }
                                             if let Ok(mut files) = view.direct_edit_open_files.lock() {
-                                                files.insert(file_path.clone());
+                                                files.insert(file_path.clone(), text.to_string());
                                             }
                                         } else {
                                             if let Err(e) = engine.set_session_overlay(
@@ -4960,7 +4960,7 @@ async fn on_client_message(
                                         file = %file_path.display(),
                                         bytes = text_len,
                                         duration_ms = format!("{:.2}ms", ms),
-                                        single_owner = view.is_single_owner,
+                                        single_owner = view.is_single_owner(),
                                         "📝 [EDIT] didChange recorded in Salsa DB"
                                     );
                                     publish_rust_diagnostics(
@@ -4983,7 +4983,7 @@ async fn on_client_message(
                                     .unwrap_or("");
                                 let file_path = uri_or_path(uri);
                                 let mut engine = engine_lock.lock().await;
-                                if view.is_single_owner {
+                                if view.is_single_owner() {
                                     if let Err(e) = engine.reload_file(&file_path) {
                                         tracing::warn!(error = %e, file = %file_path.display(), "direct-edit didClose reload failed");
                                     }
@@ -5635,7 +5635,7 @@ fn lsp_call_hierarchy(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let m = method_name.clone();
@@ -5731,7 +5731,7 @@ fn lsp_safe_delete(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
     tokio::task::spawn(async move {
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
@@ -5830,7 +5830,7 @@ fn lsp_structural_replace(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let outcome = {
@@ -5919,7 +5919,7 @@ fn lsp_rename(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let outcome = {
@@ -6013,7 +6013,7 @@ fn lsp_assists(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let result = {
@@ -6091,7 +6091,7 @@ fn lsp_workspace_symbol(
     let translator_task = translator.clone();
     let session_id = view.session_id;
     let ws_root = view.workspace.root.clone();
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let q = query.clone();
@@ -6173,7 +6173,7 @@ fn lsp_document_symbol(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let fp = fp_clone.clone();
@@ -6300,7 +6300,7 @@ fn lsp_references(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let refs = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
@@ -6399,7 +6399,7 @@ fn lsp_definition(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let defs = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
@@ -6499,7 +6499,7 @@ fn lsp_hover(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
         let hover_res = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
@@ -6579,7 +6579,7 @@ fn lsp_editor_request(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
     let method = method.to_string();
     let started = Instant::now();
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -6645,7 +6645,7 @@ fn publish_rust_diagnostics(
     let out_tx_task = out_tx.clone();
     let translator_task = translator.clone();
     let session_id = view.session_id;
-    let is_single_owner = view.is_single_owner;
+    let is_single_owner = view.is_single_owner();
     tokio::task::spawn(async move {
         tokio::time::sleep(EDITOR_DIAGNOSTICS_DELAY).await;
         let latest = |edits: &std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>| {
