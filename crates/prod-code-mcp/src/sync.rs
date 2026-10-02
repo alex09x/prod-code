@@ -1293,6 +1293,105 @@ pub fn apply_pulled_files_for(root: &Path, node: &str, files: &[FileDelta]) -> R
     Ok(touched)
 }
 
+/// Pulls specified files from the remote gateway's workspace copy into `root`.
+pub async fn pull_remote_files(
+    remote: std::net::SocketAddr,
+    root: &Path,
+    files: &[PathBuf],
+) -> Result<Vec<String>> {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let identity = workspace_identity(&canonical_root);
+
+    let stream = prod_code_protocol::transport::connect(remote)
+        .await
+        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+    framed
+        .send(WireMessage::HandshakeRequest(prod_code_protocol::HandshakeRequest {
+            protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+            supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
+            capabilities: Some(prod_code_protocol::ClientCapabilities::default()),
+            client_name: "prod-code-pull".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: canonical_root.to_string_lossy().to_string(),
+            preferred_engine: None,
+            base_workspace_name: Some(identity.name.clone()),
+            engine_subpath: None,
+            client_agent: Some(prod_code_protocol::detect_client_agent()),
+            client_host: Some(prod_code_protocol::client_host()),
+            purpose: None,
+            redirect_count: 0,
+        }))
+        .await?;
+
+    let handshake_resp = loop {
+        match framed.next().await {
+            Some(Ok(WireMessage::HandshakeResponse(resp))) => break resp,
+            Some(Ok(WireMessage::Auth(_))) => continue,
+            Some(Ok(other)) => anyhow::bail!("unexpected message during handshake: {other:?}"),
+            Some(Err(e)) => anyhow::bail!("connection error during handshake: {e}"),
+            None => anyhow::bail!("gateway closed connection during handshake"),
+        }
+    };
+
+    let server_workspace_root = PathBuf::from(handshake_resp.server_workspace_root);
+    let mut pulled_deltas = Vec::new();
+    for file in files {
+        let abs = if file.is_absolute() {
+            file.clone()
+        } else {
+            canonical_root.join(file)
+        };
+        let rel = match abs.strip_prefix(&canonical_root) {
+            Ok(rel) => rel,
+            Err(_) => continue,
+        };
+        let rel_str = rel.to_string_lossy().to_string();
+        let remote_path = server_workspace_root.join(rel);
+        framed
+            .send(WireMessage::ReadFileRequest(prod_code_protocol::ReadFileRequest {
+                path: remote_path.to_string_lossy().to_string(),
+                max_bytes: 0,
+            }))
+            .await?;
+
+        let read_resp = loop {
+            match framed.next().await {
+                Some(Ok(WireMessage::ReadFileResponse(resp))) => break resp,
+                Some(Ok(WireMessage::Pong)) => continue,
+                Some(Ok(other)) => anyhow::bail!("unexpected message reading file: {other:?}"),
+                Some(Err(e)) => anyhow::bail!("connection error reading file: {e}"),
+                None => anyhow::bail!("gateway closed connection while reading file"),
+            }
+        };
+
+        if let Some(err) = read_resp.error {
+            tracing::warn!(file = %rel_str, error = %err, "failed to read remote file");
+            continue;
+        }
+
+        pulled_deltas.push(FileDelta {
+            relative_path: rel_str,
+            content: read_resp.content,
+            is_executable: false,
+        });
+    }
+
+    let _ = framed
+        .send(WireMessage::Disconnect {
+            reason: "pull finished".to_string(),
+        })
+        .await;
+
+    if pulled_deltas.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    apply_pulled_files_for(&canonical_root, &remote.to_string(), &pulled_deltas)
+}
+
 /// Persist the watermarks for a sync plan after its files have been accepted by the gateway.
 pub fn commit_workspace_sync(root: &Path, plan: &SyncPlan) {
     let mut state = plan.state.clone();

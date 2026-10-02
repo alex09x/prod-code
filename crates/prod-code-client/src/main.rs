@@ -69,10 +69,19 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Push current worktree delta to remote storage over 10G LAN.
+    /// Push current worktree delta to remote storage over 10G LAN (or pull files with --pull).
     Sync {
-        /// Optional subpath to sync (defaults to entire workspace).
+        /// Optional subpath or file to sync.
         path: Option<PathBuf>,
+        /// Pull files from the remote gateway workspace into the local checkout instead of pushing.
+        #[arg(long, default_value_t = false)]
+        pull: bool,
+    },
+    /// Pull files from the remote gateway workspace into the local checkout: prod-code pull <file...>
+    Pull {
+        /// Files or relative paths to pull from the remote gateway workspace.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
     },
     /// Jump to symbol definition: prod-code def <file> <line> <col>, or --symbol NAME
     Def {
@@ -1620,7 +1629,7 @@ fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
         Commands::Source { path, .. } => {
             paths.push(PathBuf::from(path));
         }
-        Commands::Sync { path: Some(p) }
+        Commands::Sync { path: Some(p), .. }
         | Commands::Check { path: Some(p), .. }
         | Commands::Lint { path: Some(p), .. }
         | Commands::Test { path: Some(p), .. }
@@ -1629,6 +1638,9 @@ fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
         | Commands::Duplicates { path: Some(p), .. }
         | Commands::StructuralSearch { path: Some(p), .. } => {
             paths.push(p.clone());
+        }
+        Commands::Pull { files } => {
+            paths.extend(files.clone());
         }
         Commands::Validate {
             file,
@@ -1885,7 +1897,20 @@ async fn main() -> Result<()> {
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::ReportIssue { .. } => unreachable!("handled before placement"),
         Commands::Mcp => run_mcp_server(remote).await,
-        Commands::Sync { path } => run_sync(remote, path).await,
+        Commands::Sync { path, pull } => {
+            if pull {
+                let files = match path {
+                    Some(p) => vec![p],
+                    None => anyhow::bail!(
+                        "--pull requires at least one file or path to pull (e.g. `prod-code sync --pull path/to/file.rs` or `prod-code pull <files...>`); to push current changes omit --pull"
+                    ),
+                };
+                run_pull(remote, files).await
+            } else {
+                run_sync(remote, path).await
+            }
+        }
+        Commands::Pull { files } => run_pull(remote, files).await,
         Commands::Def {
             file,
             line,
@@ -4998,6 +5023,22 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     println!("Status:            SYNCHRONIZED");
     Ok(())
 }
+
+async fn run_pull(remote: SocketAddr, files: Vec<PathBuf>) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let touched = prod_code_mcp::sync::pull_remote_files(remote, &cwd, &files).await?;
+    if !touched.is_empty() {
+        println!(
+            "📥 Successfully pulled {} file(s) from gateway:\n  {}",
+            touched.len(),
+            touched.join("\n  ")
+        );
+    } else {
+        println!("No files were pulled.");
+    }
+    Ok(())
+}
+
 
 fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
     let mut builder = ignore::WalkBuilder::new(dir);

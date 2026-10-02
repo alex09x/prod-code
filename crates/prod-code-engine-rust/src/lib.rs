@@ -1666,7 +1666,19 @@ impl RustEngine {
                     .vfs
                     .write()
                     .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
-                self.worktrees.set_file_text(db, &mut vfs, &abs, None);
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.worktrees.set_file_text(db, &mut vfs, &abs, None);
+                }));
+                if let Err(panic) = res {
+                    let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    anyhow::bail!("Salsa/VFS panic clearing file text for {}: {msg}", norm.display());
+                }
                 self.changes += 1;
                 Ok(())
             }
@@ -2304,7 +2316,19 @@ impl RustEngine {
             .vfs
             .write()
             .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
-        self.worktrees.set_file_text(db, &mut vfs, &abs, Some(new_text));
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.worktrees.set_file_text(db, &mut vfs, &abs, Some(new_text));
+        }));
+        if let Err(panic) = res {
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            anyhow::bail!("Salsa/VFS panic setting file text for {}: {msg}", path.display());
+        }
         self.changes += 1;
         Ok(())
     }
