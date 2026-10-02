@@ -61,6 +61,12 @@ pub enum WireMessage {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// High-level typed remote execution request across supported languages (Roadmap 6.1).
+    RemoteExecRequest(RemoteExecRequest),
+    /// Real-time streaming chunks or structured diagnostic/test events (Roadmap 6.1).
+    RemoteExecStream(RemoteExecStream),
+    /// Final execution verdict, diagnostics, and test summary (Roadmap 6.1).
+    RemoteExecResult(RemoteExecResult),
 }
 
 /// The token a cluster's connections open with (#402). Its `Debug` never shows it, so a
@@ -928,6 +934,566 @@ impl ExecUsage {
     }
 }
 
+/// Target language for polyglot remote build and test execution (Roadmap 6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteExecLanguage {
+    Rust,
+    Go,
+    Cpp,
+    TypeScript,
+    Python,
+    Swift,
+    Generic,
+}
+
+impl RemoteExecLanguage {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RemoteExecLanguage::Rust => "rust",
+            RemoteExecLanguage::Go => "go",
+            RemoteExecLanguage::Cpp => "cpp",
+            RemoteExecLanguage::TypeScript => "typescript",
+            RemoteExecLanguage::Python => "python",
+            RemoteExecLanguage::Swift => "swift",
+            RemoteExecLanguage::Generic => "generic",
+        }
+    }
+}
+
+impl std::fmt::Display for RemoteExecLanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Target verification action or custom command (Roadmap 6.1).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteExecCommand {
+    Check,
+    Test,
+    Lint,
+    Bench,
+    #[serde(untagged)]
+    Custom(String),
+}
+
+impl RemoteExecCommand {
+    pub fn as_str(&self) -> &str {
+        match self {
+            RemoteExecCommand::Check => "check",
+            RemoteExecCommand::Test => "test",
+            RemoteExecCommand::Lint => "lint",
+            RemoteExecCommand::Bench => "bench",
+            RemoteExecCommand::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for RemoteExecCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Output format for remote execution streams: raw streaming or structured json (Roadmap 6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteExecFormat {
+    #[default]
+    Raw,
+    Json,
+}
+
+impl RemoteExecFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RemoteExecFormat::Raw => "raw",
+            RemoteExecFormat::Json => "json",
+        }
+    }
+}
+
+/// High-level typed remote execution request across supported languages (Roadmap 6.1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteExecRequest {
+    pub client_workspace_root: String,
+    #[serde(default)]
+    pub base_workspace_name: Option<String>,
+    pub language: RemoteExecLanguage,
+    pub command: RemoteExecCommand,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    #[serde(default)]
+    pub format: RemoteExecFormat,
+    #[serde(default)]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub pull_changes: bool,
+    #[serde(default)]
+    pub subdir: Option<String>,
+    #[serde(default)]
+    pub client_agent: Option<String>,
+    #[serde(default)]
+    pub client_host: Option<String>,
+}
+
+impl RemoteExecRequest {
+    /// Constructs the toolchain command line (argv) for this execution request.
+    pub fn to_argv(&self) -> Vec<String> {
+        let mut cmd = match (self.language, &self.command) {
+            (RemoteExecLanguage::Rust, RemoteExecCommand::Check) => {
+                let mut v = vec![
+                    "cargo".into(),
+                    "check".into(),
+                    "--workspace".into(),
+                    "--all-targets".into(),
+                ];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--message-format=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Rust, RemoteExecCommand::Test) => {
+                let mut v = vec!["cargo".into(), "test".into(), "--workspace".into()];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--message-format=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Rust, RemoteExecCommand::Lint) => {
+                let mut v = vec![
+                    "cargo".into(),
+                    "clippy".into(),
+                    "--workspace".into(),
+                    "--all-targets".into(),
+                ];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--message-format=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Rust, RemoteExecCommand::Bench) => {
+                let mut v = vec!["cargo".into(), "bench".into(), "--workspace".into()];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--message-format=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Rust, RemoteExecCommand::Custom(c)) => {
+                c.split_whitespace().map(String::from).collect()
+            }
+
+            (RemoteExecLanguage::Go, RemoteExecCommand::Check) => {
+                vec!["go".into(), "vet".into(), "./...".into()]
+            }
+            (RemoteExecLanguage::Go, RemoteExecCommand::Test) => {
+                let mut v = vec!["go".into(), "test".into()];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("-json".into());
+                }
+                v.push("./...".into());
+                v
+            }
+            (RemoteExecLanguage::Go, RemoteExecCommand::Lint) => {
+                let mut v = vec!["golangci-lint".into(), "run".into()];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--out-format=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Go, RemoteExecCommand::Bench) => {
+                vec![
+                    "go".into(),
+                    "test".into(),
+                    "-run=^$".into(),
+                    "-bench=.".into(),
+                    "./...".into(),
+                ]
+            }
+            (RemoteExecLanguage::Go, RemoteExecCommand::Custom(c)) => {
+                c.split_whitespace().map(String::from).collect()
+            }
+
+            (RemoteExecLanguage::TypeScript, RemoteExecCommand::Check) => {
+                vec![
+                    "npx".into(),
+                    "--no-install".into(),
+                    "tsc".into(),
+                    "--noEmit".into(),
+                ]
+            }
+            (RemoteExecLanguage::TypeScript, RemoteExecCommand::Test) => {
+                let mut v = vec![
+                    "npx".into(),
+                    "--no-install".into(),
+                    "vitest".into(),
+                    "run".into(),
+                ];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--reporter=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::TypeScript, RemoteExecCommand::Lint) => {
+                let mut v = vec![
+                    "npx".into(),
+                    "--no-install".into(),
+                    "eslint".into(),
+                    ".".into(),
+                ];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--format=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::TypeScript, RemoteExecCommand::Bench) => {
+                vec![
+                    "npx".into(),
+                    "--no-install".into(),
+                    "vitest".into(),
+                    "bench".into(),
+                    "run".into(),
+                ]
+            }
+            (RemoteExecLanguage::TypeScript, RemoteExecCommand::Custom(c)) => {
+                c.split_whitespace().map(String::from).collect()
+            }
+
+            (RemoteExecLanguage::Python, RemoteExecCommand::Check) => {
+                vec!["python3".into(), "-m".into(), "py_compile".into()]
+            }
+            (RemoteExecLanguage::Python, RemoteExecCommand::Test) => {
+                let mut v = vec!["pytest".into()];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--json-report".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Python, RemoteExecCommand::Lint) => {
+                let mut v = vec!["ruff".into(), "check".into(), ".".into()];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--output-format=json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Python, RemoteExecCommand::Bench) => {
+                vec!["pytest".into(), "--benchmark-only".into()]
+            }
+            (RemoteExecLanguage::Python, RemoteExecCommand::Custom(c)) => {
+                c.split_whitespace().map(String::from).collect()
+            }
+
+            (RemoteExecLanguage::Cpp, RemoteExecCommand::Check) => {
+                vec!["ninja".into(), "-k".into(), "0".into()]
+            }
+            (RemoteExecLanguage::Cpp, RemoteExecCommand::Test) => {
+                vec!["ctest".into(), "--output-on-failure".into()]
+            }
+            (RemoteExecLanguage::Cpp, RemoteExecCommand::Lint) => {
+                vec!["clang-tidy".into(), "-p".into(), "build".into()]
+            }
+            (RemoteExecLanguage::Cpp, RemoteExecCommand::Bench) => {
+                vec!["ninja".into(), "bench".into()]
+            }
+            (RemoteExecLanguage::Cpp, RemoteExecCommand::Custom(c)) => {
+                c.split_whitespace().map(String::from).collect()
+            }
+
+            (RemoteExecLanguage::Swift, RemoteExecCommand::Check) => {
+                vec!["swift".into(), "build".into()]
+            }
+            (RemoteExecLanguage::Swift, RemoteExecCommand::Test) => {
+                vec!["swift".into(), "test".into()]
+            }
+            (RemoteExecLanguage::Swift, RemoteExecCommand::Lint) => {
+                let mut v = vec!["swiftlint".into()];
+                if self.format == RemoteExecFormat::Json {
+                    v.push("--reporter".into());
+                    v.push("json".into());
+                }
+                v
+            }
+            (RemoteExecLanguage::Swift, RemoteExecCommand::Bench) => {
+                vec![
+                    "swift".into(),
+                    "run".into(),
+                    "-c".into(),
+                    "release".into(),
+                    "bench".into(),
+                ]
+            }
+            (RemoteExecLanguage::Swift, RemoteExecCommand::Custom(c)) => {
+                c.split_whitespace().map(String::from).collect()
+            }
+
+            (RemoteExecLanguage::Generic, RemoteExecCommand::Custom(c)) => {
+                c.split_whitespace().map(String::from).collect()
+            }
+            (RemoteExecLanguage::Generic, cmd) => {
+                vec![cmd.as_str().to_string()]
+            }
+        };
+
+        cmd.extend(self.args.clone());
+        cmd
+    }
+
+    /// Converts this high-level request into the low-level `ExecRequest` executed by the gateway.
+    pub fn into_exec_request(self) -> ExecRequest {
+        let command = self.to_argv();
+        ExecRequest {
+            client_workspace_root: self.client_workspace_root,
+            base_workspace_name: self.base_workspace_name,
+            command,
+            env: self.env,
+            timeout_secs: self.timeout_secs,
+            pull_changes: self.pull_changes,
+            subdir: self.subdir,
+            client_agent: self.client_agent,
+            client_host: self.client_host,
+        }
+    }
+}
+
+/// One source span within a diagnostic event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteExecSpan {
+    pub file: String,
+    pub line_start: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<u32>,
+    pub col_start: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col_end: Option<u32>,
+    #[serde(default)]
+    pub is_primary: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A structured compiler or linter diagnostic finding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteExecDiagnostic {
+    pub level: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<RemoteExecSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+}
+
+/// A structured test or benchmark execution event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum RemoteExecTestEvent {
+    Started {
+        name: String,
+    },
+    Passed {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
+    Failed {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assertion_diff: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backtrace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+    Skipped {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    Bench {
+        name: String,
+        estimate: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        range: Option<String>,
+    },
+}
+
+impl RemoteExecTestEvent {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Started { name }
+            | Self::Passed { name, .. }
+            | Self::Failed { name, .. }
+            | Self::Skipped { name, .. }
+            | Self::Bench { name, .. } => name,
+        }
+    }
+}
+
+/// Real-time streaming message emitted during remote execution (Roadmap 6.1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteExecStream {
+    Chunk(ExecChunk),
+    Diagnostic(RemoteExecDiagnostic),
+    TestEvent(RemoteExecTestEvent),
+}
+
+/// Final execution verdict and summary across compiler and test runs (Roadmap 6.1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteExecResult {
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub server_workspace_root: String,
+    #[serde(default)]
+    pub timed_out: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ExecUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<RemoteExecDiagnostic>,
+    #[serde(default)]
+    pub tests_passed: u64,
+    #[serde(default)]
+    pub tests_failed: u64,
+    #[serde(default)]
+    pub tests_skipped: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_failures: Vec<RemoteExecTestEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benches: Vec<RemoteExecTestEvent>,
+}
+
+impl RemoteExecResult {
+    pub fn ok(&self) -> bool {
+        self.exit_code == Some(0) && !self.timed_out && self.error.is_none()
+    }
+}
+
+/// Parse a line from `cargo --message-format=json` into a diagnostic or test event if applicable.
+pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if let Some(reason) = value.get("reason").and_then(|r| r.as_str()) {
+        if reason == "compiler-message" {
+            let msg = value.get("message")?;
+            let level = msg.get("level")?.as_str()?.to_string();
+            let message_text = msg.get("message")?.as_str()?.to_string();
+            let code = msg
+                .get("code")
+                .and_then(|c| c.get("code"))
+                .and_then(|c| c.as_str())
+                .map(str::to_string);
+            let rendered = msg.get("rendered").and_then(|r| r.as_str()).map(str::to_string);
+
+            let mut spans = Vec::new();
+            if let Some(spans_arr) = msg.get("spans").and_then(|s| s.as_array()) {
+                for s in spans_arr {
+                    if let Some(file) = s.get("file_name").and_then(|f| f.as_str()) {
+                        let line_start = s.get("line_start").and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                        let line_end = s.get("line_end").and_then(|l| l.as_u64()).map(|l| l as u32);
+                        let col_start = s.get("column_start").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                        let col_end = s.get("column_end").and_then(|c| c.as_u64()).map(|c| c as u32);
+                        let is_primary = s.get("is_primary").and_then(|p| p.as_bool()).unwrap_or(false);
+                        let label = s.get("label").and_then(|lbl| lbl.as_str()).map(str::to_string);
+                        spans.push(RemoteExecSpan {
+                            file: file.to_string(),
+                            line_start,
+                            line_end,
+                            col_start,
+                            col_end,
+                            is_primary,
+                            label,
+                        });
+                    }
+                }
+            }
+
+            return Some(RemoteExecStream::Diagnostic(RemoteExecDiagnostic {
+                level,
+                code,
+                message: message_text,
+                spans,
+                rendered,
+                suggestion: None,
+            }));
+        }
+    }
+
+    if let Some(t) = value.get("type").and_then(|t| t.as_str()) {
+        if t == "test" {
+            let event = value.get("event").and_then(|e| e.as_str()).unwrap_or("");
+            let name = value.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+            let duration_ms = value.get("exec_time").and_then(|t| t.as_f64()).map(|s| (s * 1000.0) as u64);
+            match event {
+                "started" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name })),
+                "ok" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms })),
+                "failed" => {
+                    let output = value.get("stdout").and_then(|o| o.as_str()).map(str::to_string);
+                    return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
+                        name,
+                        duration_ms,
+                        message: None,
+                        assertion_diff: None,
+                        backtrace: None,
+                        output,
+                    }));
+                }
+                "ignored" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, reason: None })),
+                "bench" => {
+                    let median = value.get("median").and_then(|m| m.as_f64()).unwrap_or(0.0);
+                    return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Bench {
+                        name,
+                        estimate: format!("{median:.2} ns/iter"),
+                        range: None,
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse a line from `go test -json` into a test event if applicable.
+pub fn parse_go_test_json_event(line: &str) -> Option<RemoteExecStream> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let action = value.get("Action").and_then(|a| a.as_str())?;
+    let test = value.get("Test").and_then(|t| t.as_str())?;
+    let pkg = value.get("Package").and_then(|p| p.as_str()).unwrap_or("");
+    let name = format!("{pkg}.{test}");
+    let duration_ms = value.get("Elapsed").and_then(|e| e.as_f64()).map(|s| (s * 1000.0) as u64);
+
+    match action {
+        "run" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name })),
+        "pass" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms })),
+        "fail" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
+            name,
+            duration_ms,
+            message: None,
+            assertion_diff: None,
+            backtrace: None,
+            output: None,
+        })),
+        "skip" => Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, reason: None })),
+        _ => None,
+    }
+}
+
+
 /// A request to read a file on the gateway host, for definitions that resolve outside the
 /// checkout (toolchain sources, dependency caches, system headers).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1583,6 +2149,179 @@ mod wire_tests {
         // 0.50 (load) + 0.40 (mem) + 0.40 (disk) = 1.30
         assert!((unmeasured.congestion_score() - 1.30).abs() < 1e-4);
         assert!(unmeasured.congestion_score() > idle.congestion_score());
+    }
+
+    #[test]
+    fn remote_exec_request_to_argv_and_round_trip() {
+        let req = RemoteExecRequest {
+            client_workspace_root: "/path/to/project".into(),
+            base_workspace_name: Some("project".into()),
+            language: RemoteExecLanguage::Rust,
+            command: RemoteExecCommand::Check,
+            args: vec!["--lib".into()],
+            env: vec![("RUST_BACKTRACE".into(), "1".into())],
+            format: RemoteExecFormat::Json,
+            timeout_secs: 60,
+            pull_changes: true,
+            subdir: Some("subcrate".into()),
+            client_agent: Some("agent-cli".into()),
+            client_host: Some("host.lan".into()),
+        };
+
+        // 1. Verify toolchain argv generation
+        let argv = req.to_argv();
+        assert_eq!(
+            argv,
+            vec!["cargo", "check", "--workspace", "--all-targets", "--message-format=json", "--lib"]
+        );
+
+        // 2. Verify conversion into ExecRequest
+        let exec_req = req.clone().into_exec_request();
+        assert_eq!(exec_req.command, argv);
+        assert_eq!(exec_req.timeout_secs, 60);
+        assert!(exec_req.pull_changes);
+
+        // 3. Verify wire round-trip as WireMessage::RemoteExecRequest
+        let wire = WireMessage::RemoteExecRequest(req.clone());
+        let json = serde_json::to_string(&wire).unwrap();
+        let decoded: WireMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(wire, decoded);
+
+        // 4. Test other languages argv generation
+        let go_test = RemoteExecRequest {
+            language: RemoteExecLanguage::Go,
+            command: RemoteExecCommand::Test,
+            format: RemoteExecFormat::Json,
+            args: vec!["-run".into(), "TestOrder".into()],
+            ..req.clone()
+        };
+        assert_eq!(go_test.to_argv(), vec!["go", "test", "-json", "./...", "-run", "TestOrder"]);
+
+        let ts_lint = RemoteExecRequest {
+            language: RemoteExecLanguage::TypeScript,
+            command: RemoteExecCommand::Lint,
+            format: RemoteExecFormat::Json,
+            args: vec![],
+            ..req.clone()
+        };
+        assert_eq!(ts_lint.to_argv(), vec!["npx", "--no-install", "eslint", ".", "--format=json"]);
+
+        let py_test = RemoteExecRequest {
+            language: RemoteExecLanguage::Python,
+            command: RemoteExecCommand::Test,
+            format: RemoteExecFormat::Json,
+            args: vec!["-k".into(), "test_auth".into()],
+            ..req.clone()
+        };
+        assert_eq!(py_test.to_argv(), vec!["pytest", "--json-report", "-k", "test_auth"]);
+    }
+
+    #[test]
+    fn remote_exec_stream_and_result_round_trip() {
+        let diag = RemoteExecDiagnostic {
+            level: "error".into(),
+            code: Some("E0308".into()),
+            message: "mismatched types".into(),
+            spans: vec![RemoteExecSpan {
+                file: "src/lib.rs".into(),
+                line_start: 12,
+                line_end: Some(12),
+                col_start: 5,
+                col_end: Some(15),
+                is_primary: true,
+                label: Some("expected u32, found &str".into()),
+            }],
+            rendered: Some("error[E0308]: mismatched types".into()),
+            suggestion: None,
+        };
+
+        let stream_msg = WireMessage::RemoteExecStream(RemoteExecStream::Diagnostic(diag.clone()));
+        let json = serde_json::to_string(&stream_msg).unwrap();
+        let decoded: WireMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(stream_msg, decoded);
+
+        let test_ev = RemoteExecTestEvent::Failed {
+            name: "test_login".into(),
+            duration_ms: Some(145),
+            message: Some("assertion failed: `left == right`".into()),
+            assertion_diff: Some("- expected 200\n+ got 403".into()),
+            backtrace: Some("at test_login (tests/auth.rs:42)".into()),
+            output: Some("panicked at tests/auth.rs:42".into()),
+        };
+
+        let stream_ev = WireMessage::RemoteExecStream(RemoteExecStream::TestEvent(test_ev.clone()));
+        let json_ev = serde_json::to_string(&stream_ev).unwrap();
+        let decoded_ev: WireMessage = serde_json::from_str(&json_ev).unwrap();
+        assert_eq!(stream_ev, decoded_ev);
+
+        let result = RemoteExecResult {
+            exit_code: Some(1),
+            duration_ms: 1250,
+            server_workspace_root: "/home/alex/storage/ws".into(),
+            timed_out: false,
+            error: None,
+            usage: Some(ExecUsage {
+                cpu_user_ms: 850,
+                cpu_sys_ms: 120,
+                max_rss_kb: 45000,
+            }),
+            platform: Some("linux x86_64".into()),
+            diagnostics: vec![diag],
+            tests_passed: 10,
+            tests_failed: 1,
+            tests_skipped: 2,
+            test_failures: vec![test_ev],
+            benches: vec![RemoteExecTestEvent::Bench {
+                name: "bench_throughput".into(),
+                estimate: "254.5 ns/iter".into(),
+                range: Some("+/- 12".into()),
+            }],
+        };
+
+        let result_msg = WireMessage::RemoteExecResult(result.clone());
+        let json_res = serde_json::to_string(&result_msg).unwrap();
+        let decoded_res: WireMessage = serde_json::from_str(&json_res).unwrap();
+        assert_eq!(result_msg, decoded_res);
+        assert!(!result.ok());
+    }
+
+    #[test]
+    fn parse_cargo_and_go_test_json_events_correctly() {
+        // Cargo compiler message
+        let cargo_diag_json = r#"{"reason":"compiler-message","package_id":"foo","message":{"level":"error","code":{"code":"E0425"},"message":"cannot find value `x` in this scope","spans":[{"file_name":"src/lib.rs","line_start":3,"column_start":9,"is_primary":true,"label":"not found in this scope"}],"rendered":"error[E0425]: cannot find value `x` in this scope\n"}}"#;
+        let event = parse_cargo_json_event(cargo_diag_json).unwrap();
+        match event {
+            RemoteExecStream::Diagnostic(d) => {
+                assert_eq!(d.level, "error");
+                assert_eq!(d.code.as_deref(), Some("E0425"));
+                assert_eq!(d.spans.len(), 1);
+                assert_eq!(d.spans[0].file, "src/lib.rs");
+                assert_eq!(d.spans[0].line_start, 3);
+            }
+            other => panic!("expected Diagnostic, got {other:?}"),
+        }
+
+        // Cargo test passed
+        let cargo_test_ok = r#"{"type":"test","event":"ok","name":"tests::it_works","exec_time":0.005}"#;
+        let event = parse_cargo_json_event(cargo_test_ok).unwrap();
+        match event {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms }) => {
+                assert_eq!(name, "tests::it_works");
+                assert_eq!(duration_ms, Some(5));
+            }
+            other => panic!("expected TestEvent::Passed, got {other:?}"),
+        }
+
+        // Go test fail event
+        let go_fail = r#"{"Time":"2026-10-02T12:00:00Z","Action":"fail","Package":"pkg/orders","Test":"TestCalculateTotal","Elapsed":0.042}"#;
+        let event = parse_go_test_json_event(go_fail).unwrap();
+        match event {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { name, duration_ms, .. }) => {
+                assert_eq!(name, "pkg/orders.TestCalculateTotal");
+                assert_eq!(duration_ms, Some(42));
+            }
+            other => panic!("expected TestEvent::Failed, got {other:?}"),
+        }
     }
 }
 

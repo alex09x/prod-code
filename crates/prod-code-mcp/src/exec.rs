@@ -6,7 +6,10 @@ use crate::sync::{
 };
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{ExecExit, ExecRequest, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{
+    ExecExit, ExecRequest, ProdCodeCodec, RemoteExecRequest, RemoteExecResult, RemoteExecStream,
+    WireMessage,
+};
 use std::net::SocketAddr;
 use std::path::Path;
 use tokio_util::codec::Framed;
@@ -256,6 +259,118 @@ pub async fn run_remote(
         }
     }
 }
+
+/// Result of a polyglot remote command execution including structured results.
+#[derive(Debug, Clone)]
+pub struct PolyglotRemoteOutcome {
+    pub result: RemoteExecResult,
+    pub pulled_files: Vec<String>,
+    pub relaid_files: Vec<String>,
+    pub kept_files: Vec<String>,
+}
+
+impl PolyglotRemoteOutcome {
+    pub fn changed_code(&self) -> Vec<String> {
+        self.pulled_files
+            .iter()
+            .filter(|f| !self.relaid_files.contains(f))
+            .cloned()
+            .collect()
+    }
+}
+
+pub async fn run_polyglot_remote(
+    remote: SocketAddr,
+    root: &Path,
+    req: RemoteExecRequest,
+    mut on_stream: impl FnMut(RemoteExecStream),
+) -> Result<PolyglotRemoteOutcome> {
+    let identity: WorkspaceIdentity = workspace_identity(root);
+    let started = std::time::SystemTime::now();
+    let stream = prod_code_protocol::transport::connect(remote)
+        .await
+        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    push_workspace_sync(&mut framed, root, &identity, None)
+        .await
+        .context("pre-flight workspace sync failed")?;
+
+    framed
+        .send(WireMessage::RemoteExecRequest(req))
+        .await?;
+
+    let mut pulled_files = Vec::new();
+    let mut relaid_files = Vec::new();
+    let mut kept_files = Vec::new();
+    loop {
+        match framed.next().await {
+            Some(Ok(WireMessage::RemoteExecStream(stream_ev))) => {
+                on_stream(stream_ev);
+            }
+            Some(Ok(WireMessage::ExecChanges(changes))) => {
+                let mut written = Vec::new();
+                for delta in changes.files {
+                    let local = root.join(&delta.relative_path);
+                    let current = std::fs::read(&local).ok();
+                    if current.as_deref() == delta.content.as_deref() {
+                        continue;
+                    }
+                    if edited_since(&local, started) {
+                        kept_files.push(delta.relative_path);
+                        continue;
+                    }
+                    if let (Some(old), Some(new)) = (&current, delta.content.as_deref())
+                        && layout_only(old, new)
+                    {
+                        relaid_files.push(delta.relative_path.clone());
+                    }
+                    written.push(delta);
+                }
+                pulled_files.extend(apply_pulled_files_for(root, &remote.to_string(), &written)?);
+            }
+            Some(Ok(WireMessage::RemoteExecResult(result))) => {
+                let _ = framed
+                    .send(WireMessage::Disconnect {
+                        reason: "remote exec finished".to_string(),
+                    })
+                    .await;
+                return Ok(PolyglotRemoteOutcome {
+                    result,
+                    pulled_files,
+                    relaid_files,
+                    kept_files,
+                });
+            }
+            Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
+            Some(Ok(other)) => anyhow::bail!("unexpected message during remote exec: {other:?}"),
+            Some(Err(e)) => {
+                if !pulled_files.is_empty() {
+                    anyhow::bail!(
+                        "lost the connection to the gateway after receiving and applying {} changed file(s) ({e}); the command's exit code is unknown",
+                        pulled_files.len()
+                    );
+                } else {
+                    anyhow::bail!(
+                        "lost the connection to the gateway during remote exec ({e}); the command's result is unknown"
+                    );
+                }
+            }
+            None => {
+                if !pulled_files.is_empty() {
+                    anyhow::bail!(
+                        "gateway closed the connection after sending {} changed file(s); the command's exit code is unknown",
+                        pulled_files.len()
+                    );
+                } else {
+                    anyhow::bail!(
+                        "gateway closed the connection during remote exec; the command's result is unknown"
+                    );
+                }
+            }
+        }
+    }
+}
+
 
 /// Keeps the last `limit` bytes of combined output for a compact tool result.
 pub struct TailBuffer {

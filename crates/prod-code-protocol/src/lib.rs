@@ -20,6 +20,9 @@ pub use messages::{
     ShadowHypothesis, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse,
     SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, client_host,
     content_hash, detect_client_agent, platform,
+    RemoteExecCommand, RemoteExecDiagnostic, RemoteExecFormat, RemoteExecLanguage,
+    RemoteExecRequest, RemoteExecResult, RemoteExecSpan, RemoteExecStream, RemoteExecTestEvent,
+    parse_cargo_json_event, parse_go_test_json_event,
 };
 pub use negotiation::{
     ProtocolNegotiationError, SUPPORTED_PROTOCOL_VERSIONS, default_server_capabilities,

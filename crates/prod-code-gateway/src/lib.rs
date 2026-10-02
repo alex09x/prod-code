@@ -25,8 +25,10 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     AnyStream, ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp,
     HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PathTranslator, PeerInfo, PlaceRequest,
-    PlaceResponse, ProdCodeCodec, StatusResponse, SyncProbeRequest, SyncProbeResponse, SyncRequest,
-    SyncResponse, WireMessage, content_hash, negotiate_protocol_version,
+    PlaceResponse, ProdCodeCodec, RemoteExecFormat, RemoteExecLanguage, RemoteExecRequest,
+    RemoteExecResult, RemoteExecStream, RemoteExecTestEvent, StatusResponse, SyncProbeRequest,
+    SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
+    negotiate_protocol_version, parse_cargo_json_event, parse_go_test_json_event,
     path::{file_uri, uri_or_path},
 };
 use std::net::SocketAddr;
@@ -2874,6 +2876,439 @@ pub async fn run_exec(
     Ok(())
 }
 
+pub async fn run_remote_exec(
+    storage_root: &std::path::Path,
+    metrics: &metrics::Metrics,
+    workspace_manager: &WorkspaceManager,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    req: RemoteExecRequest,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    let start = Instant::now();
+    let workspace = workspace::server_workspace_path(
+        storage_root,
+        &req.client_workspace_root,
+        req.base_workspace_name.as_deref(),
+    );
+    let workspace_str = workspace.to_string_lossy().to_string();
+    let fail = |error: String| RemoteExecResult {
+        exit_code: None,
+        duration_ms: 0,
+        server_workspace_root: workspace_str.clone(),
+        timed_out: false,
+        error: Some(error),
+        usage: None,
+        platform: Some(prod_code_protocol::platform()),
+        diagnostics: Vec::new(),
+        tests_passed: 0,
+        tests_failed: 0,
+        tests_skipped: 0,
+        test_failures: Vec::new(),
+        benches: Vec::new(),
+    };
+
+    if !workspace.is_dir() {
+        framed
+            .send(WireMessage::RemoteExecResult(fail(format!(
+                "workspace {workspace_str} is not synced to this gateway"
+            ))))
+            .await?;
+        return Ok(());
+    }
+    workspace::touch_last_used(&workspace);
+
+    let argv = req.to_argv();
+    let Some((program, args)) = argv.split_first() else {
+        framed
+            .send(WireMessage::RemoteExecResult(fail("empty command".to_string())))
+            .await?;
+        return Ok(());
+    };
+
+    if let Some((free, total)) = workspace::free_and_total_bytes(&workspace)
+        .or_else(|| workspace::free_and_total_bytes(storage_root))
+    {
+        let free_gb = free as f64 / (1024.0 * 1024.0 * 1024.0);
+        let used_pct = if total > 0 {
+            (1.0 - (free as f64 / total as f64)) * 100.0
+        } else {
+            0.0
+        };
+        let hostname = get_hostname();
+        if free_gb < 5.0 || used_pct > 95.0 {
+            framed
+                .send(WireMessage::RemoteExecResult(fail(format!(
+                    "refused: node {hostname} has only {free_gb:.1} GB free on {} ({used_pct:.0}% full)",
+                    workspace.display()
+                ))))
+                .await?;
+            return Ok(());
+        }
+        if free_gb < 10.0 {
+            let warn = format!(
+                "[prod-code exec] WARNING: {free_gb:.1} GB free on node {hostname} ({used_pct:.0}% used)\n"
+            );
+            let _ = framed
+                .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(ExecChunk {
+                    stderr: true,
+                    data: Some(warn.into_bytes()),
+                })))
+                .await;
+        }
+    }
+
+    let snapshot_started = Instant::now();
+    let before = Arc::new(if req.pull_changes {
+        let root = workspace.clone();
+        tokio::task::spawn_blocking(move || snapshot_tree(&root))
+            .await
+            .unwrap_or_default()
+    } else {
+        TreeSnapshot::default()
+    });
+
+    let run_dir = match req.subdir.as_deref() {
+        Some(sub)
+            if !sub.is_empty()
+                && !sub.starts_with('/')
+                && !sub.split('/').any(|c| c == "..")
+                && workspace.join(sub).is_dir() =>
+        {
+            workspace.join(sub)
+        }
+        _ => workspace.clone(),
+    };
+
+    let (mut cmd, report) = exec_shim::command(program);
+    cmd.args(args)
+        .current_dir(&run_dir)
+        .envs(compiler_cache_env(&workspace, on_path("ccache")))
+        .envs(req.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
+        cmd.env_remove(var);
+    }
+    for var in prod_code_protocol::tls::TLS_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            framed
+                .send(WireMessage::RemoteExecResult(fail(format!(
+                    "failed to start {program}: {e}"
+                ))))
+                .await?;
+            return Ok(());
+        }
+    };
+
+    tracing::info!(
+        workspace = %workspace_str,
+        command = %argv.join(" "),
+        language = ?req.language,
+        "🛠️ [REMOTE_EXEC] started"
+    );
+    let _running = RunningEntry::start(&workspace, &argv);
+
+    let (tx, mut rx) = rapidfire::mpsc::bounded::<ExecChunk>(256);
+    let mut readers = Vec::new();
+    if let Some(mut out) = child
+        .stdout
+        .take()
+        .and_then(|o| tokio::process::ChildStdout::from_std(o).ok())
+    {
+        let tx = tx.clone();
+        readers.push(tokio::spawn(async move {
+            let mut buf = vec![0u8; 16 * 1024];
+            while let Ok(n) = out.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                if tx
+                    .send(ExecChunk {
+                        stderr: false,
+                        data: Some(buf[..n].to_vec()),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+    if let Some(mut err) = child
+        .stderr
+        .take()
+        .and_then(|e| tokio::process::ChildStderr::from_std(e).ok())
+    {
+        let tx = tx.clone();
+        readers.push(tokio::spawn(async move {
+            let mut buf = vec![0u8; 16 * 1024];
+            while let Ok(n) = err.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                if tx
+                    .send(ExecChunk {
+                        stderr: true,
+                        data: Some(buf[..n].to_vec()),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+    drop(tx);
+
+    let pid = child.id();
+    let exited = Arc::new(std::sync::Mutex::new(false));
+    let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
+    {
+        let exited = exited.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = exit_tx.send(wait_with_usage(pid as i32, &exited));
+            drop(child);
+        });
+    }
+
+    let timeout = std::time::Duration::from_secs(if req.timeout_secs == 0 {
+        EXEC_DEFAULT_TIMEOUT_SECS
+    } else {
+        req.timeout_secs
+    });
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut timed_out = false;
+    let mut status = None;
+    let mut chunks_open = true;
+    let mut client_left = false;
+
+    let mut stdout_line_buf = String::new();
+    let mut diagnostics = Vec::new();
+    let mut tests_passed = 0;
+    let mut tests_failed = 0;
+    let mut tests_skipped = 0;
+    let mut test_failures = Vec::new();
+    let mut benches = Vec::new();
+
+    loop {
+        tokio::select! {
+            chunk = rx.recv(), if chunks_open => match chunk {
+                Ok(chunk) => {
+                    let is_stderr = chunk.stderr;
+                    let chunk_data = chunk.data.clone();
+                    if framed.send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(chunk))).await.is_err() {
+                        client_left = true;
+                    } else if req.format == RemoteExecFormat::Json && !is_stderr {
+                        if let Some(bytes) = chunk_data {
+                            if let Ok(text) = std::str::from_utf8(&bytes) {
+                                stdout_line_buf.push_str(text);
+                                while let Some(pos) = stdout_line_buf.find('\n') {
+                                    let line = stdout_line_buf[..pos].trim_end().to_string();
+                                    stdout_line_buf.drain(..=pos);
+                                    if line.is_empty() {
+                                        continue;
+                                    }
+                                    let stream_event = match req.language {
+                                        RemoteExecLanguage::Rust => parse_cargo_json_event(&line),
+                                        RemoteExecLanguage::Go => parse_go_test_json_event(&line),
+                                        _ => None,
+                                    };
+                                    if let Some(ev) = stream_event {
+                                        match &ev {
+                                            RemoteExecStream::Diagnostic(diag) => {
+                                                diagnostics.push(diag.clone());
+                                            }
+                                            RemoteExecStream::TestEvent(test_ev) => match test_ev {
+                                                RemoteExecTestEvent::Passed { .. } => tests_passed += 1,
+                                                RemoteExecTestEvent::Failed { .. } => {
+                                                    tests_failed += 1;
+                                                    test_failures.push(test_ev.clone());
+                                                }
+                                                RemoteExecTestEvent::Skipped { .. } => tests_skipped += 1,
+                                                RemoteExecTestEvent::Bench { .. } => benches.push(test_ev.clone()),
+                                                _ => {}
+                                            },
+                                            _ => {}
+                                        }
+                                        if framed.send(WireMessage::RemoteExecStream(ev)).await.is_err() {
+                                            client_left = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => chunks_open = false,
+            },
+            exit = &mut exit_rx, if status.is_none() => {
+                status = Some(exit.ok().flatten());
+            }
+            _ = tokio::time::sleep_until(deadline), if !timed_out && status.is_none() => {
+                timed_out = true;
+                kill_exec_group(pid, &exited);
+            }
+            incoming = framed.next(), if status.is_none() => match incoming {
+                Some(Ok(WireMessage::Ping)) => {
+                    client_left = framed.send(WireMessage::Pong).await.is_err();
+                }
+                Some(Ok(WireMessage::Disconnect { .. })) | Some(Err(_)) | None => client_left = true,
+                _ => {}
+            }
+        }
+        if client_left || (!chunks_open && status.is_some()) {
+            break;
+        }
+    }
+
+    if client_left {
+        kill_exec_group(pid, &exited);
+        drop(rx);
+        if status.is_none() {
+            let _ = exit_rx.await;
+        }
+        if req.pull_changes {
+            let restored =
+                restore_after_lost_client(workspace_manager, &workspace, before, snapshot_started)
+                    .await;
+            tracing::info!(
+                workspace = %workspace_str,
+                "🛠️ [REMOTE_EXEC] client left; command killed; {restored} file(s) it changed restored"
+            );
+        } else {
+            tracing::info!(workspace = %workspace_str, "🛠️ [REMOTE_EXEC] client left; command killed");
+        }
+        return Ok(());
+    }
+
+    for reader in readers {
+        let _ = reader.await;
+    }
+
+    let report_status = report.as_ref().and_then(exec_shim::ReportFile::read);
+    let shim_raw_status = status.flatten();
+    let had_report = report.is_some();
+    drop(report);
+    let (exit_code, usage, exec_err) = if let Some((raw, usage)) = report_status {
+        use std::os::unix::process::ExitStatusExt;
+        (std::process::ExitStatus::from_raw(raw).code(), Some(usage), None)
+    } else if let Some((raw, usage)) = shim_raw_status {
+        use std::os::unix::process::ExitStatusExt;
+        let exit_status = std::process::ExitStatus::from_raw(raw);
+        if exit_status.code() == Some(74) && had_report && !timed_out {
+            (
+                Some(74),
+                Some(usage),
+                Some("exec shim failed to write process report (disk full or write error)".to_string()),
+            )
+        } else {
+            (exit_status.code(), Some(usage), None)
+        }
+    } else {
+        (None, None, None)
+    };
+
+    if exit_code == Some(254) {
+        tokio::task::spawn_blocking(crate::shadow::ensure_sccache_server).await.ok();
+    }
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    tracing::info!(
+        workspace = %workspace_str,
+        command = %argv.join(" "),
+        exit_code = ?exit_code,
+        timed_out,
+        duration_ms,
+        "🛠️ [REMOTE_EXEC] finished"
+    );
+
+    {
+        let mut ev = metrics::Event::blank("remote_exec");
+        ev.agent = req
+            .client_agent
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        ev.host = req
+            .client_host
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        ev.workspace = workspace
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        ev.command = argv.join(" ");
+        ev.duration_ms = duration_ms;
+        ev.exit_code = exit_code;
+        ev.ok = exit_code == Some(0) && exec_err.is_none();
+        metrics.record(ev);
+    }
+
+    if req.pull_changes {
+        let (root, snapshot) = (workspace.clone(), Arc::clone(&before));
+        let files = tokio::task::spawn_blocking(move || changed_since(&root, &snapshot.stamps))
+            .await
+            .unwrap_or_default();
+        if !files.is_empty() {
+            if let Err(e) = framed
+                .send(WireMessage::ExecChanges(ExecChanges {
+                    files: files.clone(),
+                }))
+                .await
+            {
+                let restored = restore_after_lost_client(
+                    workspace_manager,
+                    &workspace,
+                    before,
+                    snapshot_started,
+                )
+                .await;
+                tracing::info!(
+                    workspace = %workspace_str,
+                    "🛠️ [REMOTE_EXEC] client left before the changes were sent; {restored} file(s) restored"
+                );
+                return Err(e.into());
+            }
+            refresh_engines(workspace_manager, &workspace, &files).await;
+        }
+    }
+
+    framed
+        .send(WireMessage::RemoteExecResult(RemoteExecResult {
+            exit_code,
+            duration_ms,
+            server_workspace_root: workspace_str,
+            timed_out,
+            error: exec_err,
+            usage,
+            platform: Some(prod_code_protocol::platform()),
+            diagnostics,
+            tests_passed,
+            tests_failed,
+            tests_skipped,
+            test_failures,
+            benches,
+        }))
+        .await?;
+
+    Ok(())
+}
+
+
 /// What `wait4` says about a finished child: its raw wait status and what it and the
 /// descendants it waited for used.
 fn wait_with_usage(
@@ -3227,6 +3662,16 @@ pub async fn handle_client(
             }
             WireMessage::ExecRequest(req) => {
                 run_exec(
+                    &state.storage_root,
+                    &state.metrics,
+                    &state.workspace_manager,
+                    &mut framed,
+                    req,
+                )
+                .await?;
+            }
+            WireMessage::RemoteExecRequest(req) => {
+                run_remote_exec(
                     &state.storage_root,
                     &state.metrics,
                     &state.workspace_manager,

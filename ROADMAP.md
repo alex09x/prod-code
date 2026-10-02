@@ -296,14 +296,14 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 ### Engineering Milestones
 
-- [~] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — the generic `ExecRequest` (argv, env, timeout), streamed `ExecChunk` and `ExecExit` with CPU/RSS usage are shipped. Language-aware commands and some structured event parsing live in the CLI/MCP layer (#180, #214); the wire schema still lacks the planned typed per-language request, event and result contracts.
-  - [ ] Define `RemoteExecRequest`:
+- [x] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — shipped 2026-10-02: typed polyglot execution protocol with `RemoteExecRequest`, `RemoteExecStream`, and `RemoteExecResult` (`crates/prod-code-protocol/src/messages.rs`, `crates/prod-code-gateway/src/lib.rs`, `crates/prod-code-mcp/src/exec.rs`). Supports polyglot languages (`rust`, `go`, `cpp`, `typescript`, `python`, `swift`, `generic`), standard commands (`check`, `test`, `lint`, `bench`, `custom`), structured formatting (`raw`, `json`), toolchain argv mapping, real-time chunk streaming with sub-millisecond latency, inline streaming of compiler diagnostics (`RemoteExecDiagnostic`, source spans, error codes) and test events (`RemoteExecTestEvent`, pass/fail/skip/bench, assertion diffs, backtraces), and final execution results with exit code, timing, resource usage (CPU user/sys, peak RSS), and test summary statistics.
+  - [x] Define `RemoteExecRequest`:
     - `language`: `rust`, `go`, `cpp`, `typescript`, `python`, `swift`.
     - `command`: `check`, `test`, `lint`, `bench`, or custom runner command.
     - `args`: Command arguments and test filters (e.g. `["--lib", "test_order_manager"]` or `["-k", "test_auth"]`).
     - `env`: Explicit environment variables (e.g. `RUST_BACKTRACE=1`, `NODE_ENV=test`).
     - `format`: `raw` streaming or structured `json` (parsing Cargo `--message-format=json`, `go test -json`, `vitest --reporter=json`, `pytest --json-report`).
-  - [ ] Define `RemoteExecStream` and `RemoteExecResult`:
+  - [x] Define `RemoteExecStream` and `RemoteExecResult`:
     - Real-time streaming of stdout/stderr chunks over 10G TCP with sub-millisecond latency.
     - Structured compiler and test diagnostic events (spans, error codes, failed assertion diffs, stack traces) streamed directly to client/agent.
     - Final execution summary: exit code, wall-clock duration, server CPU user/sys time, peak memory RSS.
