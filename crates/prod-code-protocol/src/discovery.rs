@@ -455,29 +455,25 @@ pub fn bind_discovery_socket() -> std::io::Result<UdpSocket> {
 }
 
 /// Generate a cryptographically secure 128-bit hex nonce for discovery challenges.
-pub fn generate_nonce() -> String {
+///
+/// Fails closed with an error if the secure random number generator is unavailable.
+pub fn generate_nonce() -> std::io::Result<String> {
     let mut buf = [0u8; 16];
-    if rustls::crypto::ring::default_provider()
+    rustls::crypto::ring::default_provider()
         .secure_random
         .fill(&mut buf)
-        .is_err()
-    {
-        use std::time::SystemTime;
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let pid = std::process::id();
-        let fallback_str = format!("{nanos}:{pid}");
-        let hash = <sha2::Sha256 as sha2::Digest>::digest(fallback_str.as_bytes());
-        buf.copy_from_slice(&hash[..16]);
-    }
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "cryptographically secure random number generator (ring) failed to generate nonce",
+            )
+        })?;
     let mut s = String::with_capacity(32);
     for b in buf {
         use std::fmt::Write;
         let _ = write!(s, "{b:02x}");
     }
-    s
+    Ok(s)
 }
 
 /// Format the probe datagram payload with optional replay-protection challenge nonce.
@@ -573,7 +569,13 @@ pub fn discover_with_token(seeds: &[SocketAddr], token: Option<&str>) -> Vec<Dis
     let _ = sock.set_broadcast(true);
     let _ = sock.set_read_timeout(Some(COLLECT_TIMEOUT));
 
-    let challenge_nonce = generate_nonce();
+    let challenge_nonce = match generate_nonce() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(%e, "cannot discover nodes: secure random number generator failed");
+            return Vec::new();
+        }
+    };
     let probe_payload = format_probe_with_nonce(token, Some(&challenge_nonce));
 
     // Send probes.
@@ -595,23 +597,13 @@ pub fn discover_with_token(seeds: &[SocketAddr], token: Option<&str>) -> Vec<Dis
             Ok((n, from)) => {
                 if let Ok(text) = std::str::from_utf8(&buf[..n]) {
                     for line in text.lines() {
+                        // Replay protection: require the exact challenge nonce on unicast probe replies
                         if let Some(node) = parse_node_line_with_auth_and_nonce(
                             line,
                             token,
                             Some(from.ip()),
-                            None,
+                            Some(&challenge_nonce),
                         ) {
-                            // Replay protection: if the reply echoes a nonce, it must match our challenge nonce.
-                            // If token is configured, replies carrying detailed telemetry must echo the challenge nonce.
-                            if let Some(ref node_nonce) = node.nonce {
-                                if node_nonce != &challenge_nonce {
-                                    tracing::warn!(addr = %node.addr, "rejecting reply with mismatched challenge nonce");
-                                    continue;
-                                }
-                            } else if token.is_some() && !node.workspaces.is_empty() {
-                                tracing::warn!(addr = %node.addr, "rejecting replayed reply lacking challenge nonce");
-                                continue;
-                            }
                             nodes.entry(node.addr).or_insert(node);
                         }
                     }
@@ -882,7 +874,7 @@ mod tests {
     #[test]
     fn challenge_nonce_probe_and_reply_verification() {
         let token = "test-token-nonce";
-        let nonce = generate_nonce();
+        let nonce = generate_nonce().unwrap();
         assert_eq!(nonce.len(), 32);
 
         // Probe formatting and inspection
@@ -906,7 +898,7 @@ mod tests {
         assert_eq!(node.workspaces[0].name, "secure-project");
 
         // Reply with wrong expected nonce is rejected
-        let different_nonce = generate_nonce();
+        let different_nonce = generate_nonce().unwrap();
         assert!(
             parse_node_line_with_auth_and_nonce(&reply_line, Some(token), Some(sender_ip), Some(&different_nonce)).is_none(),
             "must reject when expected nonce differs from wire nonce"
@@ -921,11 +913,28 @@ mod tests {
             8, 16000, 8000, 1, &[], Some(token),
         );
         let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
-        let fresh_nonce = generate_nonce();
+        let fresh_nonce = generate_nonce().unwrap();
 
         assert!(
             parse_node_line_with_auth_and_nonce(&old_line, Some(token), Some(sender_ip), Some(&fresh_nonce)).is_none(),
             "must reject replayed line that lacks fresh challenge nonce"
+        );
+    }
+
+    #[test]
+    fn replayed_signed_reply_with_empty_workspaces_fails_without_nonce() {
+        let token = "test-token-empty-ws";
+        // Node with empty workspaces: ws_csv is "-"
+        let empty_ws_reply = format_node_line(
+            "192.168.2.168:9400", "rust", 500, 0.1,
+            8, 16000, 8000, 0, &[], Some(token),
+        );
+        let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+        let fresh_nonce = generate_nonce().unwrap();
+
+        assert!(
+            parse_node_line_with_auth_and_nonce(&empty_ws_reply, Some(token), Some(sender_ip), Some(&fresh_nonce)).is_none(),
+            "must reject replayed signed reply even when workspaces are empty"
         );
     }
 }

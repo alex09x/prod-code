@@ -679,8 +679,6 @@ pub mod pki {
     use super::*;
     use std::fs::OpenOptions;
     use std::io::Write;
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub struct PkiInitReport {
@@ -768,6 +766,9 @@ pub mod pki {
     }
 
     /// Write certificate and private key files with restrictive permissions (0600 on keys).
+    ///
+    /// Writes private keys through an exclusive temporary file created with mode 0600 and
+    /// verified permissions before writing any secret material, replacing any preexisting file atomically.
     pub fn write_cert_and_key(
         out_dir: &Path,
         prefix: &str,
@@ -783,21 +784,124 @@ pub mod pki {
 
         #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::fs::PermissionsExt;
+
+            // Safe replacement: write secret bytes to a private temporary file exclusively with mode 0600
+            let tmp_key_path = out_dir.join(format!("{prefix}.key.tmp.{}", std::process::id()));
+            let _ = std::fs::remove_file(&tmp_key_path);
+
             let mut opts = OpenOptions::new();
-            opts.write(true).create(true).truncate(true).mode(0o600);
-            let mut f = opts.open(&key_path)?;
+            opts.write(true).create_new(true).mode(0o600);
+            let mut f = opts.open(&tmp_key_path).map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("Failed to create private temporary key file '{tmp_key_path:?}': {e}"),
+                )
+            })?;
+
+            // Explicitly set 0600 mode on the file descriptor before writing any secret bytes
+            let mut perms = f.metadata()?.permissions();
+            perms.set_mode(0o600);
+            f.set_permissions(perms)?;
+
+            // Verify permissions before writing key pem
+            check_key_permissions(&tmp_key_path)?;
+
             f.write_all(key_pem.as_bytes())?;
             f.flush()?;
+            drop(f);
+
+            // Double check permissions before atomic replacement
+            check_key_permissions(&tmp_key_path)?;
+
+            // If key_path exists, remove it first so the new 0600 inode replaces it cleanly
+            if key_path.exists() {
+                let _ = std::fs::remove_file(&key_path);
+            }
+
+            // Atomic rename of the 0600 temporary file over key_path
+            std::fs::rename(&tmp_key_path, &key_path)?;
+
+            // Verify final destination key permissions
+            check_key_permissions(&key_path)?;
         }
         #[cfg(not(unix))]
         {
             std::fs::write(&key_path, key_pem)?;
         }
 
-        // Verify key permissions pass our safety check
-        check_key_permissions(&key_path)?;
-
         Ok((cert_path, key_path))
+    }
+
+    /// Perform X.509 path validation of a certificate against a set of CA root certificates.
+    ///
+    /// Validates signatures, issuer chain, validity period, key usage, and optionally expected server name.
+    pub fn verify_cert_against_ca(
+        cert: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        ca_certs: &[CertificateDer<'_>],
+        expected_server_name: Option<&str>,
+    ) -> Result<()> {
+        ensure_crypto_provider();
+        let mut roots = RootCertStore::empty();
+        for ca in ca_certs {
+            roots.add(ca.clone()).map_err(|e| {
+                Error::new(ErrorKind::InvalidData, format!("Invalid CA certificate: {e}"))
+            })?;
+        }
+        if roots.is_empty() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "No valid CA root certificates provided",
+            ));
+        }
+
+        let now = UnixTime::now();
+        let roots_arc = Arc::new(roots);
+
+        // If an explicit server name is supplied, verify server certificate with that server name.
+        if let Some(name) = expected_server_name {
+            let server_name = ServerName::try_from(name.to_string()).map_err(|_| {
+                Error::new(ErrorKind::InvalidInput, format!("Invalid server name: '{name}'"))
+            })?;
+            let verifier = rustls::client::WebPkiServerVerifier::builder(roots_arc)
+                .build()
+                .map_err(|e| Error::new(ErrorKind::InvalidData, format!("Failed building server verifier: {e}")))?;
+            verifier
+                .verify_server_cert(cert, intermediates, &server_name, &[], now)
+                .map_err(|e| Error::new(ErrorKind::InvalidData, format!("Server certificate validation failed for '{name}': {e}")))?;
+            return Ok(());
+        }
+
+        // Without an explicit server name, try default server name ("prod-code.internal") first.
+        if let Ok(server_name) = ServerName::try_from(DEFAULT_TLS_SERVER_NAME) {
+            let server_verifier = rustls::client::WebPkiServerVerifier::builder(roots_arc.clone())
+                .build()
+                .map_err(|e| Error::new(ErrorKind::InvalidData, format!("Failed building server verifier: {e}")))?;
+            if server_verifier
+                .verify_server_cert(cert, intermediates, &server_name, &[], now)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+
+        // Also attempt client-cert verification (which validates the full CA chain, signatures, validity period,
+        // and client auth usage without requiring a specific hostname/IP SAN).
+        let client_verifier = rustls::server::WebPkiClientVerifier::builder(roots_arc)
+            .build()
+            .map_err(|e| Error::new(ErrorKind::InvalidData, format!("Failed building client verifier: {e}")))?;
+        client_verifier
+            .verify_client_cert(cert, intermediates, now)
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Certificate trust chain or validity verification failed against CA: {e}"),
+                )
+            })?;
+
+        Ok(())
     }
 
     /// Calculate the SHA-256 certificate pin (lowercase hex) from PEM certificate bytes.
@@ -1295,5 +1399,79 @@ pub(crate) mod tests {
         let node_pem = std::fs::read(&report.node_cert_path).unwrap();
         let pin = pki::compute_cert_pin(&node_pem).unwrap();
         assert_eq!(pin, report.cert_pin);
+    }
+
+    #[test]
+    fn pki_write_overwrites_insecure_existing_key_with_strict_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let out_dir = temp.path().join("pki_sec");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let key_path = out_dir.join("test.key");
+
+        // Pre-create an insecure key file with world-readable permissions (0666)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::fs::PermissionsExt;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).mode(0o666);
+            let mut f = opts.open(&key_path).unwrap();
+            let mut perms = f.metadata().unwrap().permissions();
+            perms.set_mode(0o666);
+            let _ = f.set_permissions(perms);
+            use std::io::Write;
+            let _ = writeln!(f, "insecure-preexisting-content");
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&key_path, "insecure-preexisting-content").unwrap();
+        }
+
+        // Call write_cert_and_key
+        let (_ca_cert, ca_key) = pki::generate_ca("Test Insecure Overwrite CA").unwrap();
+        let (written_cert, written_key) = pki::write_cert_and_key(&out_dir, "test", "cert-pem", &ca_key).unwrap();
+
+        assert_eq!(written_key, key_path);
+        assert!(written_cert.exists());
+        assert!(written_key.exists());
+
+        // Verify the key file permissions are now strictly 0600
+        check_key_permissions(&written_key).expect("permissions must be tightened to 0600");
+    }
+
+    #[test]
+    fn verify_cert_against_ca_validates_chain_and_rejects_untrusted() {
+        let (ca_cert_pem, ca_key_pem) = pki::generate_ca("Trusted Test CA").unwrap();
+        let (node_cert_pem, _node_key_pem) = pki::generate_node_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            &["node.trusted.internal".into()],
+            &[],
+        ).unwrap();
+
+        let ca_certs = load_certs_from_pem(&ca_cert_pem).unwrap();
+        let node_certs = load_certs_from_pem(&node_cert_pem).unwrap();
+        let node_leaf = &node_certs[0];
+
+        // 1. Verification succeeds against the issuing CA
+        pki::verify_cert_against_ca(node_leaf, &[], &ca_certs, Some("node.trusted.internal")).unwrap();
+
+        // 2. Verification fails when checked against an unrelated CA
+        let (unrelated_ca_pem, _) = pki::generate_ca("Unrelated Untrusted CA").unwrap();
+        let unrelated_ca_certs = load_certs_from_pem(&unrelated_ca_pem).unwrap();
+        let err = pki::verify_cert_against_ca(node_leaf, &[], &unrelated_ca_certs, Some("node.trusted.internal"))
+            .expect_err("must reject certificate signed by different untrusted CA");
+        assert!(err.to_string().contains("UnknownIssuer") || err.to_string().contains("failed"));
+
+        // 3. Verification fails when checked with wrong hostname
+        let name_err = pki::verify_cert_against_ca(node_leaf, &[], &ca_certs, Some("wrong.attacker.internal"))
+            .expect_err("must reject certificate with mismatched server name");
+        assert!(name_err.to_string().contains("validation failed") || name_err.to_string().contains("NotValidForName"));
+    }
+
+    fn load_certs_from_pem(pem: &str) -> std::io::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+        let mut reader = std::io::BufReader::new(pem.as_bytes());
+        rustls_pemfile::certs(&mut reader).collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }

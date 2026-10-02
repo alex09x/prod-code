@@ -70,6 +70,9 @@ pub enum CertCommands {
         /// Optional path to CA certificate (PEM) for trust validation.
         #[arg(long)]
         ca_cert: Option<PathBuf>,
+        /// Optional server name (DNS or IP) expected in certificate SAN during CA trust verification.
+        #[arg(long)]
+        server_name: Option<String>,
         /// Optional expected SHA-256 certificate pin.
         #[arg(long)]
         pin: Option<String>,
@@ -191,6 +194,7 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
             cert_file,
             key_file,
             ca_cert,
+            server_name,
             pin,
         } => {
             let cert_bytes = std::fs::read(&cert_file).with_context(|| {
@@ -199,7 +203,7 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
             let cert_pin = prod_code_protocol::tls::pki::compute_cert_pin(&cert_bytes)?;
             let certs = prod_code_protocol::tls::load_certs(&cert_file)
                 .with_context(|| format!("failed parsing certificate at {}", cert_file.display()))?;
-            let _first_cert = certs.first().context("no certificate found in file")?;
+            let first_cert = certs.first().context("no certificate found in file")?;
 
             println!("Certificate: {}", cert_file.display());
             println!("  SHA-256 Pin: {}", cert_pin);
@@ -217,7 +221,16 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
                 let ca_certs = prod_code_protocol::tls::load_certs(&ca_path)
                     .with_context(|| format!("failed loading CA certs from {}", ca_path.display()))?;
                 println!("  CA Certificate: {}", ca_path.display());
-                println!("  [OK] Loaded {} CA certificate(s).", ca_certs.len());
+                
+                prod_code_protocol::tls::pki::verify_cert_against_ca(
+                    first_cert,
+                    if certs.len() > 1 { &certs[1..] } else { &[] },
+                    &ca_certs,
+                    server_name.as_deref(),
+                ).with_context(|| {
+                    format!("certificate trust verification failed against CA {}", ca_path.display())
+                })?;
+                println!("  [OK] Certificate trust chain and validity period verified against CA.");
             }
 
             if let Some(key_path) = key_file {
@@ -279,6 +292,7 @@ mod tests {
             cert_file: node_crt.clone(),
             key_file: Some(node_key.clone()),
             ca_cert: Some(ca_crt.clone()),
+            server_name: Some("cluster.internal".to_string()),
             pin: Some(expected_pin.clone()),
         })
         .await
@@ -291,6 +305,7 @@ mod tests {
                 cert_file: node_crt.clone(),
                 key_file: Some(node_key.clone()),
                 ca_cert: Some(ca_crt.clone()),
+                server_name: None,
                 pin: Some(bad_pin),
             })
             .await
@@ -318,11 +333,34 @@ mod tests {
         run_cert(CertCommands::Verify {
             cert_file: client_crt,
             key_file: Some(client_key),
-            ca_cert: Some(ca_crt),
+            ca_cert: Some(ca_crt.clone()),
+            server_name: Some("client.internal".to_string()),
             pin: None,
         })
         .await
         .unwrap();
+
+        // 6. Verify against unrelated untrusted CA fails
+        let fake_ca_dir = temp.path().join("fake_ca");
+        run_cert(CertCommands::Ca {
+            out_dir: fake_ca_dir.clone(),
+            common_name: "Unrelated Impostor CA".to_string(),
+        })
+        .await
+        .unwrap();
+        let fake_ca_crt = fake_ca_dir.join("ca.crt");
+        assert!(
+            run_cert(CertCommands::Verify {
+                cert_file: node_crt.clone(),
+                key_file: None,
+                ca_cert: Some(fake_ca_crt),
+                server_name: None,
+                pin: None,
+            })
+            .await
+            .is_err(),
+            "verification against untrusted CA must fail"
+        );
     }
 }
 
