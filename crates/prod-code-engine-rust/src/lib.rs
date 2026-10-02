@@ -2,6 +2,14 @@
 
 use anyhow::{Context, Result};
 use ra_ap_cfg::{CfgAtom, CfgDiff};
+use ra_ap_base_db::salsa::Cancelled;
+
+/// Returns true if the error was caused by Salsa query cancellation (e.g. concurrent mutation).
+pub fn is_salsa_cancelled(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<Cancelled>().is_some()
+        || err.to_string().contains("canceled")
+        || err.to_string().contains("cancelled")
+}
 use ra_ap_ide::{
     Analysis, AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig,
     DiagnosticsConfig, FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig,
@@ -2071,6 +2079,12 @@ impl RustEngine {
         self.worktrees.reload_file(db, &mut vfs, &abs);
         self.changes += 1;
         Ok(())
+    }
+
+    /// Trigger cooperative Salsa cancellation on all active snapshots of this engine,
+    /// recycling stuck worker queries when capacity is threatened.
+    pub fn trigger_cancellation(&mut self) {
+        self.host.trigger_cancellation();
     }
 
     pub fn workspace_symbols_for(

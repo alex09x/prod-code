@@ -12,6 +12,21 @@ use url::Url;
 
 /// Return list of tools exposed by the MCP server.
 pub fn list_tools() -> Vec<McpTool> {
+    static CACHED: std::sync::OnceLock<Vec<McpTool>> = std::sync::OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::thread::Builder::new()
+                .name("build-tools".into())
+                .stack_size(8 * 1024 * 1024)
+                .spawn(build_tools_raw)
+                .expect("spawn build_tools thread")
+                .join()
+                .expect("build_tools succeeded")
+        })
+        .clone()
+}
+
+fn build_tools_raw() -> Vec<McpTool> {
     let mut tools = vec![
         McpTool {
             name: "code_exec".to_string(),
@@ -1421,6 +1436,15 @@ pub async fn execute_tool(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    execute_tool_inner(remote, workspace_root, tool_name, args).await
+}
+
+async fn execute_tool_inner(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    tool_name: &str,
+    args: serde_json::Value,
+) -> Result<McpToolCallResult> {
     // Invalid explicit positions are refused before symbol lookup, routing or any write.
     validate_position_arguments(tool_name, &args)?;
     // Notes left by an earlier call are not this answer's (#391).
@@ -1491,7 +1515,17 @@ pub async fn execute_tool(
         args.get("path").and_then(|v| v.as_str()),
     )
     .await?;
-    let result = match tool_name {
+    let result = Box::pin(dispatch_tool(remote, workspace_root, tool_name, args)).await;
+    with_indexing_notes(result, workspace_root)
+}
+
+async fn dispatch_tool(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    tool_name: &str,
+    args: serde_json::Value,
+) -> Result<McpToolCallResult> {
+    match tool_name {
         "code_symbols" => handle_symbols(remote, workspace_root, &args).await,
         "code_safe_delete" => handle_safe_delete(remote, workspace_root, &args).await,
         "code_assists" | "code_assist" => {
@@ -1709,8 +1743,7 @@ pub async fn execute_tool(
         "code_propose_expression" => handle_propose_expression(workspace_root, &args).await,
 
         unknown => Ok(McpToolCallResult::error(format!("Unknown tool: {unknown}"))),
-    };
-    with_indexing_notes(result, workspace_root)
+    }
 }
 
 async fn handle_dependencies(
@@ -2001,7 +2034,8 @@ async fn handle_outline(
     } else {
         outline_file(remote, workspace_root, &file_path, path_str, &options).await?
     };
-    let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['));
+    let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['))
+        || (is_dir && text.contains("subdirectories with sources:"));
     if !has_symbols {
         return Ok(McpToolCallResult::error(format!(
             "no outline symbols found for {path_str}"

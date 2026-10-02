@@ -2499,6 +2499,20 @@ pub fn free_share(path: &Path) -> Option<f64> {
     (total > 0.0).then(|| stat.f_bavail as f64 * stat.f_frsize as f64 / total)
 }
 
+/// The free and total bytes of the filesystem holding `path`; `None` when it cannot be read (#809, #810).
+pub fn free_and_total_bytes(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `statvfs` only writes the struct it is given, and the path is NUL-terminated.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    let total = stat.f_blocks as u64 * stat.f_frsize as u64;
+    let free = stat.f_bavail as u64 * stat.f_frsize as u64;
+    Some((free, total))
+}
+
 /// How long a worktree copy must have gone unused before it may be removed to free space: one in
 /// use between two sessions stays.
 const SPACE_PRUNE_MIN_IDLE: Duration = Duration::from_secs(3600);

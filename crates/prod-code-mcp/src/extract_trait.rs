@@ -1205,7 +1205,7 @@ pub async fn extract_trait_ext(
         }
     }
 
-    if migrate_callers {
+    if migrate_callers && imp.generics.is_empty() && !imp.self_ty.contains('<') {
         let current_text = files.get(file).cloned().unwrap_or(new_text);
         let modified_files = crate::caller_migration::migrate_callers_in_workspace(
             root,

@@ -95,6 +95,45 @@ fn running_commands() -> Vec<prod_code_protocol::RunningCommand> {
 pub static TOTAL_QUERIES: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_QUERIES: AtomicU64 = AtomicU64::new(0);
 
+/// Ensure standard I/O file descriptors are in blocking mode (#806, #807).
+///
+/// When the gateway daemon runs under systemd with journald or under piped supervision,
+/// some supervisors or previous subprocesses may leave stdin, stdout, or stderr with O_NONBLOCK set.
+/// If tracing or rust-analyzer writes to a non-blocking stderr while the socket buffer is full,
+/// standard library `eprintln!` panics with EAGAIN ("os error 11: Resource temporarily unavailable").
+#[cfg(unix)]
+pub fn ensure_blocking_stdio() {
+    for fd in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags >= 0 && (flags & libc::O_NONBLOCK) != 0 {
+                libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn ensure_blocking_stdio() {}
+
+#[cfg(unix)]
+fn get_hostname() -> String {
+    let mut buf = [0u8; 256];
+    if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } == 0 {
+        if let Some(pos) = buf.iter().position(|&b| b == 0) {
+            return String::from_utf8_lossy(&buf[..pos]).to_string();
+        }
+    }
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "node".to_string())
+}
+
+#[cfg(not(unix))]
+fn get_hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "node".to_string())
+}
+
 struct ActiveSession<'a>(&'a AtomicUsize);
 
 impl<'a> ActiveSession<'a> {
@@ -1348,17 +1387,9 @@ impl ManagedLsp<'_> {
                 if let Some(items) = engine.pull_diagnostics(uri).await {
                     return Ok(items);
                 }
-                match engine.current_diagnostics_for(uri, CURRENT_DIAGNOSTICS_WAIT).await {
-                    Ok(items) => Ok(items),
-                    Err(err) => {
-                        if engine.is_alive() {
-                            tracing::warn!(uri = %uri, error = %err, "Language server published no diagnostics within wait window; treating as clean document");
-                            Ok(Vec::new())
-                        } else {
-                            Err(err.into())
-                        }
-                    }
-                }
+                Ok(engine
+                    .current_diagnostics_for(uri, CURRENT_DIAGNOSTICS_WAIT)
+                    .await?)
             }
         }
     }
@@ -1747,7 +1778,7 @@ fn hierarchy_item_json(item: &prod_code_engine_rust::HierarchyItem) -> serde_jso
 
 /// Call hierarchy and implementation queries on the in-memory Rust engine, in LSP shape.
 fn hierarchy_query(
-    engine: &prod_code_engine_rust::RustEngine,
+    snapshot: &prod_code_engine_rust::RustEngineSnapshot,
     method: &str,
     path: &std::path::Path,
     line: u32,
@@ -1755,7 +1786,7 @@ fn hierarchy_query(
 ) -> anyhow::Result<serde_json::Value> {
     Ok(match method {
         "textDocument/prepareCallHierarchy" => serde_json::Value::Array(
-            engine
+            snapshot
                 .prepare_call_hierarchy(path, line, col)?
                 .iter()
                 .map(hierarchy_item_json)
@@ -1764,9 +1795,9 @@ fn hierarchy_query(
         "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" => {
             let incoming = method == "callHierarchy/incomingCalls";
             let edges = if incoming {
-                engine.incoming_calls(path, line, col)?
+                snapshot.incoming_calls(path, line, col)?
             } else {
-                engine.outgoing_calls(path, line, col)?
+                snapshot.outgoing_calls(path, line, col)?
             };
             serde_json::Value::Array(
                 edges
@@ -1790,7 +1821,7 @@ fn hierarchy_query(
             )
         }
         "textDocument/diagnostic" => {
-            let items: Vec<serde_json::Value> = engine
+            let items: Vec<serde_json::Value> = snapshot
                 .diagnostics(path)?
                 .iter()
                 .map(|d| {
@@ -1807,7 +1838,7 @@ fn hierarchy_query(
             serde_json::json!({ "kind": "full", "items": items })
         }
         "textDocument/implementation" => serde_json::Value::Array(
-            engine
+            snapshot
                 .goto_implementation(path, line, col)?
                 .iter()
                 .map(|t| {
@@ -1820,6 +1851,201 @@ fn hierarchy_query(
         ),
         other => anyhow::bail!("unsupported hierarchy method {other}"),
     })
+}
+
+/// Maximum duration a semantic read query (references, definition, hover, call hierarchy,
+/// symbols) may run before being terminated with a server-side timeout error.
+const SEMANTIC_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Maximum transparent retries when a snapshot query is cancelled by a concurrent mutation
+/// (e.g. an edit or sync mutating the Salsa database).
+const MAX_CANCELLATION_RETRIES: usize = 3;
+
+/// Maximum concurrent semantic read queries executing in the blocking pool (#3111).
+const MAX_CONCURRENT_SEMANTIC_QUERIES: usize = 16;
+
+/// Global semaphore bounding concurrent semantic queries to strictly limit the number
+/// of outstanding blocking query tasks, preventing exhaustion of Tokio's blocking pool (#3111).
+static SEMANTIC_QUERY_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SEMANTIC_QUERIES)));
+
+/// Counter of currently active queries that have timed out and are still running in the background.
+static STALLED_QUERIES_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Executes a read query on a thread-safe snapshot of `RustEngine`.
+///
+/// Holds the engine lock only briefly (<10 µs) to activate session overlays and take
+/// an `Analysis` snapshot. The query then runs on a blocking thread pool worker without
+/// retaining the shared engine lock, bounded by `SEMANTIC_QUERY_TIMEOUT`.
+///
+/// Bounded by `SEMANTIC_QUERY_SEMAPHORE` so outstanding blocking queries cannot accumulate
+/// or exhaust Tokio's blocking pool. If timed-out queries accumulate and threaten capacity,
+/// the engine is cooperatively recycled to purge stuck workers while active queries transparently
+/// retry on fresh snapshots (#3109, #3111).
+async fn execute_bounded_query<T, F>(
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+    session_id: u64,
+    file_path: &Path,
+    query_fn: F,
+) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: Fn(&prod_code_engine_rust::RustEngineSnapshot) -> anyhow::Result<T> + Clone + Send + 'static,
+{
+    let deadline = Instant::now() + SEMANTIC_QUERY_TIMEOUT;
+    let mut retries = 0;
+
+    let now = Instant::now();
+    if now >= deadline {
+        return Err(anyhow::anyhow!(
+            "query timed out after {}s",
+            SEMANTIC_QUERY_TIMEOUT.as_secs()
+        ));
+    }
+    let remaining = deadline - now;
+
+    let permit = match tokio::time::timeout(
+        remaining,
+        SEMANTIC_QUERY_SEMAPHORE.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_closed)) => anyhow::bail!("semantic query semaphore closed"),
+        Err(_elapsed) => {
+            if STALLED_QUERIES_COUNT.load(Ordering::Relaxed) > 0 {
+                let engine_for_recycle = Arc::clone(engine_lock);
+                tokio::task::spawn(async move {
+                    if let Ok(mut engine) =
+                        tokio::time::timeout(Duration::from_secs(2), engine_for_recycle.lock()).await
+                    {
+                        engine.trigger_cancellation();
+                    }
+                });
+            }
+            anyhow::bail!("query timed out waiting for available execution slot");
+        }
+    };
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(anyhow::anyhow!(
+                "query timed out after {}s",
+                SEMANTIC_QUERY_TIMEOUT.as_secs()
+            ));
+        }
+        let remaining = deadline - now;
+
+        let snapshot = match tokio::time::timeout(remaining, engine_lock.lock()).await {
+            Ok(mut engine) => {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                if file_path.is_dir() {
+                    engine.snapshot_for(file_path)
+                } else {
+                    engine.snapshot_for_path(file_path)
+                }
+            }
+            Err(_elapsed) => {
+                return Err(anyhow::anyhow!(
+                    "query timed out after {}s waiting for engine lock",
+                    SEMANTIC_QUERY_TIMEOUT.as_secs()
+                ));
+            }
+        };
+
+        let q_fn = query_fn.clone();
+        let mut query_task = Box::pin(tokio::task::spawn_blocking(move || {
+            let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| q_fn(&snapshot)));
+            match panic_res {
+                Ok(res) => res,
+                Err(panic_payload) => {
+                    let msg = panic_message(panic_payload);
+                    Err(anyhow::anyhow!("analyzer panic: {msg}"))
+                }
+            }
+        }));
+
+        let now = Instant::now();
+        if now >= deadline {
+            let stalled = STALLED_QUERIES_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            let engine_for_recycle = Arc::clone(engine_lock);
+            tokio::task::spawn(async move {
+                let _held_permit = permit;
+                if stalled >= (MAX_CONCURRENT_SEMANTIC_QUERIES / 2) {
+                    tracing::warn!(
+                        stalled,
+                        "Stalled semantic queries reached threshold; recycling engine to reclaim blocking pool workers"
+                    );
+                    if let Ok(mut engine) =
+                        tokio::time::timeout(Duration::from_secs(2), engine_for_recycle.lock()).await
+                    {
+                        engine.trigger_cancellation();
+                    }
+                }
+                let _ = query_task.await;
+                STALLED_QUERIES_COUNT.fetch_sub(1, Ordering::Relaxed);
+            });
+            return Err(anyhow::anyhow!(
+                "query timed out after {}s",
+                SEMANTIC_QUERY_TIMEOUT.as_secs()
+            ));
+        }
+        let remaining = deadline - now;
+
+        match tokio::time::timeout(remaining, query_task.as_mut()).await {
+            Ok(Ok(Ok(val))) => return Ok(val),
+            Ok(Ok(Err(err))) => {
+                if prod_code_engine_rust::is_salsa_cancelled(&err)
+                    && retries < MAX_CANCELLATION_RETRIES
+                {
+                    let backoff = Duration::from_millis(5 * (retries + 1) as u64);
+                    if Instant::now() + backoff < deadline {
+                        retries += 1;
+                        tracing::debug!(
+                            session = session_id,
+                            file = %file_path.display(),
+                            attempt = retries,
+                            "Salsa query was cancelled by concurrent mutation; retrying with fresh snapshot"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                }
+                return Err(err);
+            }
+            Ok(Err(join_err)) => return Err(anyhow::anyhow!("native query task failed: {join_err}")),
+            Err(_elapsed) => {
+                // The query timed out. Retain the permit while the detached task continues,
+                // so that running timed-out tasks count against the concurrency bound and
+                // cannot accumulate beyond MAX_CONCURRENT_SEMANTIC_QUERIES (#3111).
+                let stalled = STALLED_QUERIES_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                let engine_for_recycle = Arc::clone(engine_lock);
+                tokio::task::spawn(async move {
+                    let _held_permit = permit;
+                    if stalled >= (MAX_CONCURRENT_SEMANTIC_QUERIES / 2) {
+                        tracing::warn!(
+                            stalled,
+                            "Stalled semantic queries reached threshold; recycling engine to reclaim blocking pool workers"
+                        );
+                        if let Ok(mut engine) =
+                            tokio::time::timeout(Duration::from_secs(2), engine_for_recycle.lock()).await
+                        {
+                            engine.trigger_cancellation();
+                        }
+                    }
+                    let _ = query_task.await;
+                    STALLED_QUERIES_COUNT.fetch_sub(1, Ordering::Relaxed);
+                });
+                return Err(anyhow::anyhow!(
+                    "query timed out after {}s",
+                    SEMANTIC_QUERY_TIMEOUT.as_secs()
+                ));
+            }
+        }
+    }
 }
 
 /// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: new files
@@ -2284,6 +2510,37 @@ pub async fn run_exec(
             .await?;
         return Ok(());
     };
+    if let Some((free, total)) = workspace::free_and_total_bytes(&workspace)
+        .or_else(|| workspace::free_and_total_bytes(storage_root))
+    {
+        let free_gb = free as f64 / (1024.0 * 1024.0 * 1024.0);
+        let used_pct = if total > 0 {
+            (1.0 - (free as f64 / total as f64)) * 100.0
+        } else {
+            0.0
+        };
+        let hostname = get_hostname();
+        if free_gb < 5.0 || used_pct > 95.0 {
+            framed
+                .send(WireMessage::ExecExit(fail(format!(
+                    "refused: node {hostname} has only {free_gb:.1} GB free on {} ({used_pct:.0}% full)",
+                    workspace.display()
+                ))))
+                .await?;
+            return Ok(());
+        }
+        if free_gb < 10.0 {
+            let warn = format!(
+                "[prod-code exec] WARNING: {free_gb:.1} GB free on node {hostname} ({used_pct:.0}% used)\n"
+            );
+            let _ = framed
+                .send(WireMessage::ExecChunk(ExecChunk {
+                    stderr: true,
+                    data: Some(warn.into_bytes()),
+                }))
+                .await;
+        }
+    }
     // Syncs that land after this are the client's newer text, which a restore leaves alone.
     let snapshot_started = Instant::now();
     let before = Arc::new(if req.pull_changes {
@@ -2481,17 +2738,27 @@ pub async fn run_exec(
     }
     // The shim's report describes the command itself. There is none when the group was killed
     // on a timeout, and then what `wait4` said about the shim stands in for it.
-    let status = report
-        .as_ref()
-        .and_then(exec_shim::ReportFile::read)
-        .or(status.flatten());
+    let report_status = report.as_ref().and_then(exec_shim::ReportFile::read);
+    let shim_raw_status = status.flatten();
+    let had_report = report.is_some();
     drop(report);
-    let (exit_code, usage) = match status {
-        Some((raw, usage)) => {
-            use std::os::unix::process::ExitStatusExt;
-            (std::process::ExitStatus::from_raw(raw).code(), Some(usage))
+    let (exit_code, usage, exec_err) = if let Some((raw, usage)) = report_status {
+        use std::os::unix::process::ExitStatusExt;
+        (std::process::ExitStatus::from_raw(raw).code(), Some(usage), None)
+    } else if let Some((raw, usage)) = shim_raw_status {
+        use std::os::unix::process::ExitStatusExt;
+        let exit_status = std::process::ExitStatus::from_raw(raw);
+        if exit_status.code() == Some(74) && had_report && !timed_out {
+            (
+                Some(74),
+                Some(usage),
+                Some("exec shim failed to write process report (disk full or write error)".to_string()),
+            )
+        } else {
+            (exit_status.code(), Some(usage), None)
         }
-        None => (None, None),
+    } else {
+        (None, None, None)
     };
     if exit_code == Some(254) {
         tracing::warn!("exec command exited with 254; ensuring sccache server is running cleanly on host");
@@ -2523,7 +2790,7 @@ pub async fn run_exec(
         ev.command = req.command.join(" ");
         ev.duration_ms = start.elapsed().as_millis() as u64;
         ev.exit_code = exit_code;
-        ev.ok = exit_code == Some(0);
+        ev.ok = exit_code == Some(0) && exec_err.is_none();
         metrics.record(ev);
     }
     if req.pull_changes {
@@ -2566,7 +2833,7 @@ pub async fn run_exec(
             duration_ms,
             server_workspace_root: workspace_str,
             timed_out,
-            error: None,
+            error: exec_err,
             usage,
             platform: Some(prod_code_protocol::platform()),
         }))
@@ -2784,15 +3051,23 @@ pub async fn apply_sync_with_metrics(
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    tracing::info!(
-        folder_name,
-        files_updated,
-        files_deleted,
-        bytes_transferred,
-        fresh = workspace_was_fresh,
-        duration_ms = %format!("{duration_ms}ms"),
-        "⚡ [SYNC] Workspace fast-sync applied"
-    );
+    if files_updated > 0 || files_deleted > 0 || workspace_was_fresh {
+        tracing::info!(
+            folder_name,
+            files_updated,
+            files_deleted,
+            bytes_transferred,
+            fresh = workspace_was_fresh,
+            duration_ms = %format!("{duration_ms}ms"),
+            "[SYNC] Workspace fast-sync applied"
+        );
+    } else {
+        tracing::debug!(
+            folder_name,
+            duration_ms = %format!("{duration_ms}ms"),
+            "[SYNC] Workspace fast-sync (no changes)"
+        );
+    }
 
     if let Some(metrics) = metrics {
         let mut ev = metrics::Event::blank("sync");
@@ -3290,11 +3565,11 @@ pub async fn handle_client(
                     .unregister_session_view(session_view)
                     .await;
 
-                tracing::info!(session_id, "Client session retired: {:?}", session_res);
+                tracing::debug!(session_id, "Client session retired: {:?}", session_res);
                 return session_res;
             }
             WireMessage::Disconnect { reason } => {
-                tracing::info!(%addr, reason, "Client disconnected cleanly");
+                tracing::debug!(%addr, reason, "Client disconnected cleanly");
                 break;
             }
             other => {
@@ -4671,7 +4946,7 @@ async fn on_client_message(
             return Flow::Stop;
         }
         None => {
-            tracing::info!("Client disconnected");
+            tracing::debug!("Client disconnected");
             return Flow::Stop;
         }
         _ => {}
@@ -4721,26 +4996,22 @@ fn lsp_call_hierarchy(
     let session_id = view.session_id;
 
     tokio::task::spawn(async move {
-        let outcome = {
-            let mut engine = engine_arc.lock_owned().await;
-            let m = method_name.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                hierarchy_query(&engine, &m, &fp_clone, line, col)
-            })
-            .await
-            .unwrap_or_else(|e| {
-                // A panic in the analyzer while checking a file is the analyzer's, not the
-                // request's: the file simply could not be checked. As an error the whole
-                // validation failed; as one diagnostic it is reported and the rest goes on (#94).
-                if e.is_panic() && method_name == "textDocument/diagnostic" {
-                    Ok(analyzer_panic_report(&panic_message(e.into_panic())))
-                } else {
-                    Err(anyhow::anyhow!("query task failed: {e}"))
-                }
-            })
+        let m = method_name.clone();
+        let fp = fp_clone.clone();
+        let outcome = execute_bounded_query(&engine_arc, session_id, &fp_clone, move |snapshot| {
+            hierarchy_query(snapshot, &m, &fp, line, col)
+        })
+        .await;
+        let outcome = match outcome {
+            Err(ref e)
+                if method_name == "textDocument/diagnostic"
+                    && e.to_string().starts_with("analyzer panic: ") =>
+            {
+                let msg = e.to_string();
+                let msg = msg.strip_prefix("analyzer panic: ").unwrap_or(&msg);
+                Ok(analyzer_panic_report(msg))
+            }
+            other => other,
         };
         let ms = query_start.elapsed().as_secs_f64() * 1000.0;
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -5164,21 +5435,12 @@ fn lsp_workspace_symbol(
     let ws_root = view.workspace.root.clone();
 
     tokio::task::spawn(async move {
-        let syms = {
-            let mut engine = engine_arc.lock_owned().await;
-            let q = query.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                engine.workspace_symbols_for(&ws_root, &q, limit).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, session = session_id, "query failed");
-                    Vec::new()
-                })
-            })
-            .await
-            .unwrap_or_default()
-        };
+        let q = query.clone();
+        let syms = execute_bounded_query(&engine_arc, session_id, &ws_root, move |snapshot| {
+            snapshot.workspace_symbols(&q, limit)
+        })
+        .await
+        .unwrap_or_default();
         let ms = query_start.elapsed().as_secs_f64() * 1000.0;
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         tracing::info!(
@@ -5250,26 +5512,18 @@ fn lsp_document_symbol(
     let session_id = view.session_id;
 
     tokio::task::spawn(async move {
-        let syms = {
-            // Hold the engine for the whole query: activating the session view and
-            // running the query under one lock keeps other sessions' buffers out and
-            // prevents a concurrent edit from cancelling this snapshot.
-            let mut engine = engine_arc.lock_owned().await;
-            tokio::task::spawn_blocking(move || {
-                 if let Err(e) = engine.activate_session(session_id) {
-                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                 }
-                 // An error is the answer, not an empty file: a README in a Rust workspace is
-                 // refused with the reason, and an agent must be able to tell that from a file
-                 // that declares nothing (#270).
-                 engine.document_symbols(&fp_clone).map_err(|e| {
-                     tracing::warn!(error = %e, session = session_id, "query failed");
-                     e.to_string()
-                 })
-             })
-             .await
-             .unwrap_or_else(|e| Err(e.to_string()))
-        };
+        let fp = fp_clone.clone();
+        let syms = execute_bounded_query(&engine_arc, session_id, &fp_clone, move |snapshot| {
+            // An error is the answer, not an empty file: a README in a Rust workspace is
+            // refused with the reason, and an agent must be able to tell that from a file
+            // that declares nothing (#270).
+            snapshot.document_symbols(&fp).map_err(|e| {
+                tracing::warn!(error = %e, session = session_id, "query failed");
+                e
+            })
+        })
+        .await
+        .map_err(|e| e.to_string());
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -5378,18 +5632,11 @@ fn lsp_references(
     let session_id = view.session_id;
 
     tokio::task::spawn(async move {
-        let refs = {
-            // Hold the engine for the whole query: activating the session view and
-            // running the query under one lock keeps other sessions' buffers out and
-            // prevents a concurrent edit from cancelling this snapshot.
-            let mut engine = engine_arc.lock_owned().await;
-            tokio::task::spawn_blocking(move || {
-                engine.activate_session(session_id)?;
-                engine.find_all_refs(&fp_clone, line, col)
-            })
-            .await
-            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
-        };
+        let refs = execute_bounded_query(&engine_arc, session_id, &fp_clone, {
+            let fp = fp_clone.clone();
+            move |snapshot| snapshot.find_all_refs(&fp, line, col)
+        })
+        .await;
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -5483,18 +5730,11 @@ fn lsp_definition(
     let session_id = view.session_id;
 
     tokio::task::spawn(async move {
-        let defs = {
-            // Hold the engine for the whole query: activating the session view and
-            // running the query under one lock keeps other sessions' buffers out and
-            // prevents a concurrent edit from cancelling this snapshot.
-            let mut engine = engine_arc.lock_owned().await;
-            tokio::task::spawn_blocking(move || {
-                engine.activate_session(session_id)?;
-                engine.goto_definition(&fp_clone, line, col)
-            })
-            .await
-            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
-        };
+        let defs = execute_bounded_query(&engine_arc, session_id, &fp_clone, {
+            let fp = fp_clone.clone();
+            move |snapshot| snapshot.goto_definition(&fp, line, col)
+        })
+        .await;
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -5589,18 +5829,11 @@ fn lsp_hover(
     let session_id = view.session_id;
 
     tokio::task::spawn(async move {
-        let hover_res = {
-            // Hold the engine for the whole query: activating the session view and
-            // running the query under one lock keeps other sessions' buffers out and
-            // prevents a concurrent edit from cancelling this snapshot.
-            let mut engine = engine_arc.lock_owned().await;
-            tokio::task::spawn_blocking(move || {
-                engine.activate_session(session_id)?;
-                engine.hover(&fp_clone, line, col)
-            })
-            .await
-            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
-        };
+        let hover_res = execute_bounded_query(&engine_arc, session_id, &fp_clone, {
+            let fp = fp_clone.clone();
+            move |snapshot| snapshot.hover(&fp, line, col)
+        })
+        .await;
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -6201,6 +6434,7 @@ async fn janitor(
 
 /// Runs the gateway: bind, serve, and return when a signal says to stop.
 pub async fn run(cli: ServerCli) -> Result<()> {
+    ensure_blocking_stdio();
     prefer_rustup_toolchain();
     let shadow_root = cli
         .shadow_dir

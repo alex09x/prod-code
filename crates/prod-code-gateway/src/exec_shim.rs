@@ -58,9 +58,10 @@ pub fn run(args: &[OsString]) -> i32 {
     };
     if let Err(e) = std::fs::write(report, format_report(status, &usage)) {
         eprintln!(
-            "{BINARY_NAME} {SHIM_FLAG}: cannot write {}: {e}",
+            "{BINARY_NAME} {SHIM_FLAG}: cannot write report {}: {e}",
             report.display()
         );
+        return 74;
     }
     if libc::WIFEXITED(status) {
         return libc::WEXITSTATUS(status);
@@ -287,9 +288,9 @@ mod tests {
             127
         );
 
-        // A report that cannot be written does not change the exit code.
+        // A report that cannot be written fails closed with EX_IOERR (74) (#809, #810).
         let unwritable = dir.path().join("missing-dir").join("report");
-        assert_eq!(run(&args(&[unwritable.to_str().unwrap(), "--", "true"])), 0);
+        assert_eq!(run(&args(&[unwritable.to_str().unwrap(), "--", "true"])), 74);
     }
 
     #[test]

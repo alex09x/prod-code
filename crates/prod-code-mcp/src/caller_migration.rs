@@ -696,6 +696,9 @@ pub(crate) fn find_caller_migrations(
             }
         }
         Language::Rust => {
+            if type_name.contains('<') || interface_name.contains('<') {
+                return candidates;
+            }
             // Find `ident:\s*&mut\s+type_name\b`, `ident:\s*&type_name\b`, `ident:\s*type_name\b`
             for (pos, _) in text.match_indices(type_name) {
                 if !mask[pos] {

@@ -4514,7 +4514,8 @@ async fn run_symbols(
         let text =
             prod_code_mcp::tools::outline_directory(remote, &ws_root, &abs_path, file, options)
                 .await?;
-        let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['));
+        let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['))
+            || text.contains("subdirectories with sources:");
         if !has_symbols {
             eprintln!("no outline symbols found for {}", file.display());
             std::process::exit(1);
