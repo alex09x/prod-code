@@ -4,8 +4,9 @@ use crate::sync::{push_workspace_sync, workspace_identity};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, WireMessage};
+use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio_util::codec::Framed;
 use url::Url;
 
@@ -2586,41 +2587,42 @@ async fn handle_references(
     )
     .await?;
     let mut out = String::new();
-    let is_external = crate::remote_fs::is_external(workspace_root, &file_path.to_string_lossy());
-    if res.as_array().is_none_or(|a| a.is_empty())
-        && let Some(name) = line_text.as_deref().and_then(|t| name_at(t, character))
-        && let Some((use_path, use_line, use_col)) =
-            checkout_use_of(remote, workspace_root, &file_path, line, character, &name).await
-    {
-        let use_uri = Url::from_file_path(&use_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", use_path))?
-            .to_string();
-        res = execute_lsp_query(
+
+    let mut all_locs = Vec::new();
+    let mut seen_locs = HashSet::new();
+    let mut seen_files = HashSet::new();
+    let mut unindexed_callers = Vec::new();
+
+    add_locations(&res, &mut seen_locs, &mut seen_files, &mut all_locs);
+    let initial_was_empty = all_locs.is_empty();
+    if !initial_was_empty {
+        seen_files.insert(std::fs::canonicalize(&file_path).unwrap_or_else(|_| file_path.clone()));
+    }
+
+    let name_opt = line_text.as_deref().and_then(|t| name_at(t, character));
+
+    if let Some(ref name) = name_opt {
+        if let Some(note) = collect_multi_target_references(
             remote,
             workspace_root,
-            &use_path,
-            "textDocument/references",
-            serde_json::json!({
-                "textDocument": { "uri": use_uri },
-                "position": { "line": use_line - 1, "character": use_col - 1 },
-                "context": { "includeDeclaration": include_decl }
-            }),
+            &file_path,
+            line,
+            character,
+            name,
+            include_decl,
+            initial_was_empty,
+            &mut seen_locs,
+            &mut seen_files,
+            &mut all_locs,
+            &mut unindexed_callers,
         )
-        .await?;
-        let origin = if is_external {
-            "at the dependency's own declaration the server found none"
-        } else {
-            "at the declaration the server found none"
-        };
-        out.push_str(&format!(
-            "(asked from a use of `{name}` in the checkout, {}:{use_line}:{use_col}: {origin})\n",
-            use_path
-                .strip_prefix(workspace_root)
-                .unwrap_or(&use_path)
-                .display()
-        ));
+        .await
+        {
+            out.push_str(&note);
+        }
     }
-    if res.as_array().is_none_or(|a| a.is_empty())
+
+    if all_locs.is_empty()
         && let Some((built, note)) = build_swift_index(remote, workspace_root, &file_path).await
     {
         out.push_str(&note);
@@ -2634,8 +2636,10 @@ async fn handle_references(
                 params,
             )
             .await?;
+            add_locations(&res, &mut seen_locs, &mut seen_files, &mut all_locs);
         }
     }
+
     // An empty answer says what the position stood on, so a position one line off (an
     // attribute above the function) shows as such (#373).
     let stood_on = line_text
@@ -2643,35 +2647,56 @@ async fn handle_references(
         .and_then(|text| Some((name_at(text, character)?, text.trim())))
         .map(|(name, text)| format!("\n(the position is on `{name}`; the line reads `{text}`)"))
         .unwrap_or_default();
-    if let Some(arr) = res.as_array() {
-        if arr.is_empty() {
-            out.push_str("No references found.");
-            out.push_str(&stood_on);
-        } else {
-            out.push_str(&format!("Found {} reference(s):\n", arr.len()));
-            for loc in arr {
-                let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                let start_line = loc
-                    .get("range")
-                    .and_then(|r| r.get("start"))
-                    .and_then(|s| s.get("line"))
-                    .and_then(|l| l.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                let start_col = loc
-                    .get("range")
-                    .and_then(|r| r.get("start"))
-                    .and_then(|s| s.get("character"))
-                    .and_then(|c| c.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                out.push_str(&format!("  • {uri}:{start_line}:{start_col}\n"));
-            }
-        }
-    } else {
+
+    if all_locs.is_empty() {
         out.push_str("No references found.");
         out.push_str(&stood_on);
+    } else {
+        out.push_str(&format!("Found {} reference(s):\n", all_locs.len()));
+        for loc in &all_locs {
+            let uri = loc
+                .get("uri")
+                .or_else(|| loc.get("targetUri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let start_line = loc
+                .pointer("/range/start/line")
+                .or_else(|| loc.pointer("/targetRange/start/line"))
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0)
+                + 1;
+            let start_col = loc
+                .pointer("/range/start/character")
+                .or_else(|| loc.pointer("/targetRange/start/character"))
+                .and_then(|c| c.as_u64())
+                .unwrap_or(0)
+                + 1;
+            out.push_str(&format!("  • {uri}:{start_line}:{start_col}\n"));
+        }
     }
+
+    unindexed_callers.retain(|p| {
+        let norm = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        !seen_files.contains(&norm)
+    });
+    unindexed_callers.sort();
+    unindexed_callers.dedup();
+    if !unindexed_callers.is_empty() {
+        let list = unindexed_callers
+            .iter()
+            .map(|p| {
+                p.strip_prefix(workspace_root)
+                    .unwrap_or(p)
+                    .display()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "\n(warning: references may have incomplete coverage across configured targets: unindexed call site(s) found in {list})"
+        ));
+    }
+
     Ok(McpToolCallResult::text(out.trim_end()))
 }
 
@@ -2801,83 +2826,214 @@ const MAX_USES_ASKED: usize = 40;
 /// that resolves elsewhere in a file means the same elsewhere through the rest of it.
 const MAX_USES_ASKED_PER_FILE: usize = 2;
 
-/// A use in the checkout of the item declared at 1-based `line` of `declaration` (a file only
-/// the node has): a place in a source file of the same language where `name` stands as a word
-/// and whose definition is that line (#373). 1-based line and column.
-async fn checkout_use_of(
+/// Whether `text` writes `name(` with `name` as a whole word, a call or a declaration.
+fn writes_call(text: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && text[at + name.len()..].trim_start().starts_with('(')
+    })
+}
+
+fn add_locations(
+    locations: &serde_json::Value,
+    seen_locs: &mut HashSet<(String, u64, u64)>,
+    seen_files: &mut HashSet<PathBuf>,
+    all_locs: &mut Vec<serde_json::Value>,
+) {
+    if let Some(arr) = locations.as_array() {
+        for loc in arr {
+            let uri = loc
+                .get("uri")
+                .or_else(|| loc.get("targetUri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let start_line = loc
+                .pointer("/range/start/line")
+                .or_else(|| loc.pointer("/targetRange/start/line"))
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0)
+                + 1;
+            let start_col = loc
+                .pointer("/range/start/character")
+                .or_else(|| loc.pointer("/targetRange/start/character"))
+                .and_then(|c| c.as_u64())
+                .unwrap_or(0)
+                + 1;
+            if seen_locs.insert((uri.to_string(), start_line, start_col)) {
+                all_locs.push(loc.clone());
+                if let Ok(parsed) = Url::parse(uri)
+                    && let Ok(path) = parsed.to_file_path()
+                {
+                    let norm = std::fs::canonicalize(&path).unwrap_or(path);
+                    seen_files.insert(norm);
+                }
+            }
+        }
+    }
+}
+
+/// Collects references across multiple feature-gated targets, shared modules, or separate checkouts (#783).
+/// Scans candidate source files across the workspace that contain `name`. When a candidate use resolves
+/// to the target declaration via `textDocument/definition`, queries references from that target's context
+/// to capture all call sites in live adapters and secondary targets. Also collects unindexed call sites
+/// for warning reporting.
+async fn collect_multi_target_references(
     remote: SocketAddr,
-    root: &Path,
+    workspace_root: &Path,
     declaration: &Path,
-    line: u32,
-    col: u32,
+    decl_line: u32,
+    decl_col: u32,
     name: &str,
-) -> Option<(std::path::PathBuf, u32, u32)> {
+    include_decl: bool,
+    initial_was_empty: bool,
+    seen_locs: &mut HashSet<(String, u64, u64)>,
+    seen_files: &mut HashSet<PathBuf>,
+    all_locs: &mut Vec<serde_json::Value>,
+    unindexed_callers: &mut Vec<PathBuf>,
+) -> Option<String> {
     let language = crate::sync::engine_for_file(declaration)?;
     let declared = declaration.to_string_lossy().into_owned();
     let wanted: Vec<char> = name.chars().collect();
     let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
     let mut asked = 0usize;
-    let candidates = source_files(root)
+    let mut checkout_use_note = None;
+    let candidates = source_files(workspace_root)
         .filter(|path| crate::sync::engine_for_file(path) == Some(language))
         .take(MAX_SCANNED_FILES);
     for path in candidates {
+        let is_declaration_file = path == declaration;
+        let norm_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if seen_files.contains(&norm_path) && (!is_declaration_file || !initial_was_empty) {
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
         if !names_word(&text, name) {
             continue;
         }
-        let uri = Url::from_file_path(&path).ok()?.to_string();
-        let is_declaration_file = path == declaration;
+        let Ok(uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+        let uri_str = uri.to_string();
         let wanted_len = wanted.len();
-        let file_uses = text.lines().enumerate().flat_map(|(index, text_line)| {
-            let is_declaration_line = is_declaration_file && index as u32 + 1 == line;
-            let chars: Vec<char> = text_line.chars().collect();
-            (0..chars.len())
-                .filter(|&c| {
-                    if !chars[c..].starts_with(&wanted)
-                        || (c > 0 && is_name(chars.get(c - 1)))
-                        || is_name(chars.get(c + wanted_len))
-                    {
-                        return false;
-                    }
-                    if is_declaration_line {
-                        // Skip only the declaration occurrence covering `col`
-                        let match_start = c as u32 + 1;
-                        let match_end = match_start + wanted_len as u32;
-                        if match_start <= col && col <= match_end {
+        let file_uses: Vec<(usize, usize)> = text
+            .lines()
+            .enumerate()
+            .flat_map(|(index, text_line)| {
+                let is_declaration_line = is_declaration_file && index as u32 + 1 == decl_line;
+                let chars: Vec<char> = text_line.chars().collect();
+                (0..chars.len())
+                    .filter(|&c| {
+                        if !chars[c..].starts_with(&wanted)
+                            || (c > 0 && is_name(chars.get(c - 1)))
+                            || is_name(chars.get(c + wanted_len))
+                        {
                             return false;
                         }
-                    }
-                    true
-                })
-                .map(move |c| (index, c))
-                .collect::<Vec<_>>()
-        });
-        for (index, col) in file_uses.take(MAX_USES_ASKED_PER_FILE) {
+                        if is_declaration_line {
+                            let match_start = c as u32 + 1;
+                            let match_end = match_start + wanted_len as u32;
+                            if match_start <= decl_col && decl_col <= match_end {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .map(move |c| (index, c))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for (index, col) in file_uses.into_iter().take(MAX_USES_ASKED_PER_FILE) {
             asked += 1;
             if asked > MAX_USES_ASKED {
-                return None;
+                return checkout_use_note;
             }
             let params = serde_json::json!({
-                "textDocument": { "uri": uri },
+                "textDocument": { "uri": &uri_str },
                 "position": { "line": index, "character": col }
             });
-            let Ok(found) =
-                execute_lsp_query(remote, root, &path, "textDocument/definition", params).await
-            else {
-                continue;
-            };
-            if definition_is(&found, &declared, line.saturating_sub(1)) {
-                return Some((path, index as u32 + 1, col as u32 + 1));
-            }
-            if found.as_array().is_some_and(|a| !a.is_empty()) || found.is_object() {
-                // The name means another item in this file.
+            let found_def = execute_lsp_query(
+                remote,
+                workspace_root,
+                &path,
+                "textDocument/definition",
+                params,
+            )
+            .await
+            .ok();
+
+            if let Some(ref found) = found_def
+                && definition_is(found, &declared, decl_line.saturating_sub(1))
+            {
+                seen_files.insert(norm_path.clone());
+                let use_line = (index + 1) as u64;
+                let use_col = (col + 1) as u64;
+
+                let ref_params = serde_json::json!({
+                    "textDocument": { "uri": &uri_str },
+                    "position": { "line": index, "character": col },
+                    "context": { "includeDeclaration": include_decl }
+                });
+                if let Ok(target_refs) = execute_lsp_query(
+                    remote,
+                    workspace_root,
+                    &path,
+                    "textDocument/references",
+                    ref_params,
+                )
+                .await
+                {
+                    add_locations(&target_refs, seen_locs, seen_files, all_locs);
+                }
+
+                if seen_locs.insert((uri_str.clone(), use_line, use_col)) {
+                    all_locs.push(serde_json::json!({
+                        "uri": &uri_str,
+                        "range": {
+                            "start": { "line": index, "character": col },
+                            "end": { "line": index, "character": col + wanted_len }
+                        }
+                    }));
+                }
+
+                if checkout_use_note.is_none() && initial_was_empty {
+                    let is_external = crate::remote_fs::is_external(
+                        workspace_root,
+                        &declaration.to_string_lossy(),
+                    );
+                    let origin = if is_external {
+                        "at the dependency's own declaration the server found none"
+                    } else {
+                        "at the declaration the server found none"
+                    };
+                    checkout_use_note = Some(format!(
+                        "(asked from a use of `{name}` in the checkout, {}:{use_line}:{use_col}: {origin})\n",
+                        path.strip_prefix(workspace_root)
+                            .unwrap_or(&path)
+                            .display()
+                    ));
+                }
                 break;
+            } else {
+                if let Some(ref found) = found_def {
+                    if found.as_array().is_some_and(|a| !a.is_empty()) || found.is_object() {
+                        // The name means another item in this file.
+                        break;
+                    }
+                }
+                let has_no_def = found_def.as_ref().map_or(true, |f| {
+                    f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object()
+                });
+                if !is_declaration_file && has_no_def && writes_call(&text, name) {
+                    unindexed_callers.push(path.clone());
+                }
             }
         }
     }
-    None
+    checkout_use_note
 }
 
 /// Whether a `textDocument/definition` answer (a location, a list of them, or of links) names
