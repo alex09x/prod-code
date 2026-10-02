@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added
+- **Parser-Backed Validation for Markdown & SVG Proposals** (`crates/prod-code-mcp`, `crates/prod-code-client`):
+  Added dedicated in-memory syntax parsers for Markdown documentation (with YAML and TOML frontmatter validation, code block fence matching, and link destination syntax) and XML/SVG vector graphics (validating XML well-formedness, attribute quoting, duplicate attribute detection, tag nesting and matching, and `<svg>` root requirement). `prod-code validate`, `code_validate_edit`, and `code_validate_edits` now validate Markdown and SVG directly in memory with 0 ms LSP round-trips (#778).
+- **Mixed-Language Validation Routing**:
+  Validation batches containing both source code and documentation/assets (e.g. TypeScript + Markdown + SVG in Astro blogs or web applications) are automatically routed: syntax files are checked by internal parsers while source code is verified against the appropriate language server in a single unified overlay (#778).
+
+### Fixed
+- **Cluster Validation Failover Under Memory Pressure** (`crates/prod-code-gateway`):
+  When a gateway node under memory pressure returns `CapacityRefused` on `validation_view()`, requests transparently fail over to alive, low-pressure cluster peers serving the requested engine, or to the generic validation session for non-C++ languages (#799).
+- **Direct Connect & BSD Socket ARP Resilience** (`crates/prod-code-client`, `crates/prod-code-protocol`, `crates/prod-code-mcp`):
+  Explicit `--remote` targets strictly connect to the specified node without falling back to cached loopback placements (`127.0.0.1:19400`). Added exponential backoff retry for macOS BSD socket `EHOSTUNREACH` (errno 65) during cold ARP lookup, raised probe timeout from 400ms to 1500ms, and annotated placement views (#798).
+- **JavaScript Function Attribution & Polyglot Impact Analysis** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Impact analysis correctly attributes edits inside JavaScript and TypeScript arrow functions, variable assignments (`const fn = () => {}`), and nested closures in mixed-language checkouts (e.g. Go backend + JS extension), avoiding unnecessary full-test suite runs when edits are within functions (#800, #802).
+- **Shadow-Run Compiler Error Retention** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Retain compiler errors in `shadow-run` outputs even when compiler warning logs exceed the tail byte cap (#794, #797).
+- **Cross-Target Reference Discovery in Shared Trees** (`crates/prod-code-mcp`):
+  `code_references` discovers symbol usages across all configured targets and crates sharing source trees (#783, #795).
+- **Transport Closure & Definition Capacity Failover** (`crates/prod-code-mcp`):
+  Added connection recovery and cluster gateway capacity failover for `code_definition` queries (#792, #780, #784, #793).
+- **Unindexed Struct & Class Field Resolution** (`crates/prod-code-mcp`):
+  `code_symbols` resolves unindexed struct and class fields by bare symbol name without requiring explicit enclosing type path (#791).
+- **Remote Dependency Source Fetching in Slice** (`crates/prod-code-mcp`):
+  `code_slice` automatically fetches remote dependency source text from the gateway when missing from local checkout cache (#789).
+- **Rust-Analyzer Worktree Overlay Pinning** (`crates/prod-code-engine-rust`):
+  Pinned `rust-analyzer` (ra_ap_ide) to verified revision `3abd2c9` with worktree overlay support, filtering `file_id_for_path` by worktree view (#787).
+
 ## v0.3.21 — 2026-10-01
 
 ### Added

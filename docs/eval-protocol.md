@@ -231,7 +231,7 @@ For every refactoring tool tested:
 ### Step 8: Synthesis & In-Memory Pre-validation
 1. Test fixture generation: `prod-code -r <node> fixture --type <symbol>`.
 2. Propose in-scope expression: `prod-code -r <node> propose-expression <file> <line> <col> <type>`.
-3. Test in-memory edit validation: pipe modified file to `prod-code -r <node> validate` over stdin without saving to disk. Verify compiler catches syntax/type errors in RAM.
+3. Test in-memory edit validation: pipe modified file to `prod-code -r <node> validate` over stdin without saving to disk. Verify compiler catches syntax/type errors in RAM (supporting source files via LSP, plus JSON manifests, Markdown documentation, and SVG graphics via syntax parsers).
 4. Run multi-hypothesis shadow run: `prod-code -r <node> shadow-run <spec.json> -- <cmd>`.
 
 ### Step 9: Remote Execution, Blast Radius & CI
