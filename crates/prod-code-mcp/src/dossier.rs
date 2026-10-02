@@ -591,7 +591,13 @@ fn collect_functions(symbols: &[serde_json::Value], out: &mut Vec<(String, u32, 
             .get("range")
             .or_else(|| sym.get("location").and_then(|l| l.get("range")));
         let sel = sym.get("selectionRange").or(range);
-        if matches!(kind, 6 | 9 | 12)
+        let is_callable = matches!(kind, 6 | 9 | 12)
+            || (matches!(kind, 7 | 8 | 13 | 14)
+                && sym
+                    .get("detail")
+                    .and_then(|d| d.as_str())
+                    .is_some_and(|d| d.contains("=>") || d.contains("function") || d.contains('(')));
+        if is_callable
             && let (Some(range), Some(sel)) = (range, sel)
             && let (Some(start), Some(end), Some(ss)) =
                 (range.get("start"), range.get("end"), sel.get("start"))

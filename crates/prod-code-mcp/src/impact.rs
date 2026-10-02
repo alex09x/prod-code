@@ -849,10 +849,15 @@ fn is_source_file(path: &str) -> bool {
         Some(
             "rs" | "go"
                 | "py"
+                | "pyi"
                 | "ts"
                 | "tsx"
+                | "mts"
+                | "cts"
                 | "js"
                 | "jsx"
+                | "mjs"
+                | "cjs"
                 | "c"
                 | "cc"
                 | "cpp"
@@ -863,6 +868,13 @@ fn is_source_file(path: &str) -> bool {
                 | "swift"
                 | "m"
                 | "mm"
+                | "java"
+                | "kt"
+                | "kts"
+                | "cs"
+                | "scala"
+                | "sc"
+                | "zig"
         )
     )
 }
@@ -887,11 +899,43 @@ fn symbol_range(sym: &serde_json::Value) -> Option<(u32, u32, u32, u32)> {
     (start <= end).then_some((start, end, sl, sc))
 }
 
-/// Functions and methods (LSP kinds 6, 9, 12) in a document, flattened with their ranges. An
-/// entry that is not a symbol (no name or kind, children that are not a list, a function
-/// without a readable range) is an error: skipped, it would hide a changed function.
+fn is_callable_symbol(kind: u64, sym: &serde_json::Value, text: Option<&str>) -> bool {
+    if matches!(kind, 6 | 9 | 12) {
+        return true;
+    }
+    if matches!(kind, 7 | 8 | 13 | 14) {
+        if let Some(detail) = sym.get("detail").and_then(|d| d.as_str())
+            && (detail.contains("=>") || detail.contains("function") || detail.contains('('))
+        {
+            return true;
+        }
+        if let Some(text) = text
+            && let Some((_, _, sl, _)) = symbol_range(sym)
+            && sl > 0
+        {
+            let lines: Vec<&str> = text.lines().collect();
+            let idx = (sl - 1) as usize;
+            for line in lines.iter().skip(idx).take(3) {
+                let trimmed = line.trim();
+                if trimmed.contains("=>")
+                    || trimmed.contains("function")
+                    || trimmed.contains("async ")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Functions and methods (LSP kinds 6, 9, 12, and callable properties/variables) in a document,
+/// flattened with their ranges. An entry that is not a symbol (no name or kind, children that
+/// are not a list, a function without a readable range) is an error: skipped, it would hide a
+/// changed function.
 fn collect_functions(
     symbols: &[serde_json::Value],
+    text: Option<&str>,
     out: &mut Vec<(String, u32, u32, u32, u32)>,
 ) -> std::result::Result<(), String> {
     for sym in symbols {
@@ -905,13 +949,13 @@ fn collect_functions(
         if name.is_empty() || !(1..=26).contains(&kind) {
             return Err(malformed());
         }
-        if matches!(kind, 6 | 9 | 12) && !name.is_empty() {
+        if is_callable_symbol(kind, sym, text) && !name.is_empty() {
             let (start, end, sl, sc) = symbol_range(sym).ok_or_else(malformed)?;
             out.push((name.to_string(), start, end, sl, sc));
         }
         match sym.get("children") {
             None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::Array(children)) => collect_functions(children, out)?,
+            Some(serde_json::Value::Array(children)) => collect_functions(children, text, out)?,
             Some(_) => return Err(malformed()),
         }
     }
@@ -1346,6 +1390,24 @@ pub fn test_marker(language: &str, text: &str, line: u32, name: &str) -> Option<
                 .filter(|class| class.contains("TestCase"))
                 .map(|_| name.to_string())
         }
+        "typescript" => {
+            let t = here.trim_start();
+            if t.starts_with("it(")
+                || t.starts_with("test(")
+                || t.starts_with("it.only(")
+                || t.starts_with("test.only(")
+            {
+                if let Some(rest) = t.split_once('(').map(|x| x.1.trim_start())
+                    && let Some(quote) = rest.chars().next().filter(|&c| c == '"' || c == '\'' || c == '`')
+                    && let Some(desc) = rest[1..].split(quote).next()
+                {
+                    return Some(desc.to_string());
+                }
+                Some(name.to_string())
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -1558,6 +1620,78 @@ fn rel(root: &Path, uri: &str) -> String {
         .unwrap_or(path)
 }
 
+/// The language of a file in the workspace, judged by its extension or engine_project.
+pub fn file_language(root: &Path, file: &str) -> Option<&'static str> {
+    let p = Path::new(file);
+    crate::sync::engine_for_file(p).or_else(|| {
+        let abs = root.join(file);
+        crate::sync::engine_project(root, &abs).1
+    })
+}
+
+pub fn test_command_for_tests(
+    root: &Path,
+    default_language: &str,
+    tools: &crate::verify::ProjectTools,
+    tests: &[Symbol],
+) -> Option<Vec<String>> {
+    if tests.is_empty() {
+        return None;
+    }
+    let test_langs: HashSet<&str> = tests
+        .iter()
+        .map(|t| file_language(root, &t.file).unwrap_or(default_language))
+        .collect();
+    if test_langs.len() == 1 {
+        let lang = test_langs.into_iter().next().unwrap();
+        test_command(lang, tools, tests)
+    } else {
+        test_command(default_language, tools, tests)
+    }
+}
+
+struct SessionPool<'a> {
+    remote: SocketAddr,
+    root: &'a Path,
+    sessions: HashMap<String, LspSession>,
+}
+
+impl<'a> SessionPool<'a> {
+    fn new(remote: SocketAddr, root: &'a Path) -> Self {
+        Self {
+            remote,
+            root,
+            sessions: HashMap::new(),
+        }
+    }
+
+    async fn session_for_file(&mut self, file: &Path) -> Result<&mut LspSession> {
+        let (subpath, mut engine) = crate::sync::engine_project(self.root, file);
+        if let Some(own) = crate::sync::engine_for_file(file)
+            && engine == crate::sync::expected_engine(self.root)
+            && Some(own) != engine
+        {
+            engine = Some(own);
+        }
+        let key = format!(
+            "{}|{}",
+            subpath.as_deref().unwrap_or(""),
+            engine.unwrap_or("generic")
+        );
+        if !self.sessions.contains_key(&key) {
+            let session = LspSession::open(self.remote, self.root, Some(file)).await?;
+            self.sessions.insert(key.clone(), session);
+        }
+        Ok(self.sessions.get_mut(&key).expect("session exists"))
+    }
+
+    async fn close_all(&mut self) {
+        for (_, session) in self.sessions.drain() {
+            session.close().await;
+        }
+    }
+}
+
 /// Runs the analysis against the checkout at `root` placed on `remote`.
 pub async fn analyze(
     remote: SocketAddr,
@@ -1599,7 +1733,7 @@ pub async fn analyze(
     } else {
         None
     };
-    let mut session = LspSession::open(remote, root, None).await?;
+    let mut session_pool = SessionPool::new(remote, root);
     let changed_files: Vec<String> = changes.keys().cloned().collect();
     let mut changed: Vec<Symbol> = Vec::new();
     let mut unattributed: Vec<String> = Vec::new();
@@ -1632,6 +1766,21 @@ pub async fn analyze(
             Ok(text) => text,
             Err(e) => {
                 let error = format!("it cannot be read: {e}");
+                note(
+                    &mut incomplete,
+                    Gap::Symbols {
+                        file: file.clone(),
+                        error,
+                    },
+                );
+                continue;
+            }
+        };
+        let file_lang = file_language(root, file).unwrap_or(&language);
+        let session = match session_pool.session_for_file(&abs).await {
+            Ok(s) => s,
+            Err(e) => {
+                let error = format!("{e:#}");
                 note(
                     &mut incomplete,
                     Gap::Symbols {
@@ -1692,7 +1841,7 @@ pub async fn analyze(
             }
         };
         let mut functions = Vec::new();
-        if let Err(error) = collect_functions(&symbols, &mut functions) {
+        if let Err(error) = collect_functions(&symbols, Some(&text), &mut functions) {
             let file = file.clone();
             note(&mut incomplete, Gap::Symbols { file, error });
             continue;
@@ -1711,7 +1860,7 @@ pub async fn analyze(
 
                 let current_lines: Vec<&str> = text.lines().collect();
                 if let Some((sig_start, sig_end, curr_sig)) =
-                    extract_signature_span(&current_lines, *sl, name, &language)
+                    extract_signature_span(&current_lines, *sl, name, file_lang)
                     && file_hunks.iter().any(|h| h.touches(sig_start, sig_end))
                 {
                     let base_ref = base.unwrap_or("HEAD");
@@ -1719,9 +1868,9 @@ pub async fn analyze(
                         && let Ok(base_text) = std::str::from_utf8(&base_bytes)
                     {
                         let base_lines: Vec<&str> = base_text.lines().collect();
-                        if let Some(base_line) = find_function_in_text(&base_lines, name, &language)
+                        if let Some(base_line) = find_function_in_text(&base_lines, name, file_lang)
                             && let Some((_, _, base_sig)) =
-                                extract_signature_span(&base_lines, base_line, name, &language)
+                                extract_signature_span(&base_lines, base_line, name, file_lang)
                             && base_sig != curr_sig
                         {
                             adjusted_signatures.push((
@@ -1750,7 +1899,8 @@ pub async fn analyze(
     let mut reaches: Vec<Reach> = Vec::new();
     let mut origins: Vec<(Symbol, bool)> = Vec::with_capacity(changed.len());
     for sym in &changed {
-        match test_name(root, &language, &sym.name, &sym.file, sym.line, false) {
+        let sym_file_lang = file_language(root, &sym.file).unwrap_or(&language);
+        match test_name(root, sym_file_lang, &sym.name, &sym.file, sym.line, false) {
             Ok(Some(name)) => {
                 let test = Symbol {
                     name,
@@ -1791,15 +1941,21 @@ pub async fn analyze(
     if language != "rust"
         && let Some(first) = changed.first()
     {
-        let mut answer = incoming_calls(&mut session, root, &language, first).await;
-        for _ in 0..COLD_RETRIES {
-            if matches!(&answer, Incoming::Callers(found) if !found.is_empty()) {
-                break;
+        let first_abs = root.join(&first.file);
+        let first_lang = file_language(root, &first.file).unwrap_or(&language);
+        if let Ok(first_session) = session_pool.session_for_file(&first_abs).await {
+            let mut answer = incoming_calls(first_session, root, first_lang, first).await;
+            for _ in 0..COLD_RETRIES {
+                if matches!(&answer, Incoming::Callers(found) if !found.is_empty()) {
+                    break;
+                }
+                tokio::time::sleep(COLD_WAIT).await;
+                if let Ok(first_session) = session_pool.session_for_file(&first_abs).await {
+                    answer = incoming_calls(first_session, root, first_lang, first).await;
+                }
             }
-            tokio::time::sleep(COLD_WAIT).await;
-            answer = incoming_calls(&mut session, root, &language, first).await;
+            cache.insert(key(first), answer);
         }
-        cache.insert(key(first), answer);
     }
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
     for (origin, origin_is_test) in &origins {
@@ -1811,7 +1967,15 @@ pub async fn analyze(
             VecDeque::from([(origin.clone(), *origin_is_test, 0)]);
         while let Some((sym, is_test, level)) = queue.pop_front() {
             if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key(&sym)) {
-                slot.insert(incoming_calls(&mut session, root, &language, &sym).await);
+                let sym_abs = root.join(&sym.file);
+                let incoming = match session_pool.session_for_file(&sym_abs).await {
+                    Ok(sym_session) => {
+                        let sym_lang = file_language(root, &sym.file).unwrap_or(&language);
+                        incoming_calls(sym_session, root, sym_lang, &sym).await
+                    }
+                    Err(e) => Incoming::Failed(format!("{e:#}")),
+                };
+                slot.insert(incoming);
             }
             let found = match &cache[&key(&sym)] {
                 Incoming::Callers(found) => found.clone(),
@@ -1874,7 +2038,11 @@ pub async fn analyze(
 
     let mut signature_warnings: Vec<SignatureWarning> = Vec::new();
     for (sym, old_sig, new_sig, sig_start, sig_end) in adjusted_signatures {
-        let sites = discover_call_sites(&mut session, root, &sym).await;
+        let sym_abs = root.join(&sym.file);
+        let sites = match session_pool.session_for_file(&sym_abs).await {
+            Ok(sym_session) => discover_call_sites(sym_session, root, &sym).await,
+            Err(_) => Vec::new(),
+        };
         let mut unadjusted = Vec::new();
         for (call_file, call_line, call_col, caller) in sites {
             if call_file == sym.file && call_line >= sig_start && call_line <= sig_end {
@@ -1914,9 +2082,9 @@ pub async fn analyze(
         }
     }
 
-    session.close().await;
+    session_pool.close_all().await;
     let tests: Vec<Symbol> = tests.into_iter().collect();
-    let test_command = test_command(&language, &tools, &tests);
+    let test_command = test_command_for_tests(root, &language, &tools, &tests);
     Ok(ImpactReport {
         language,
         base: base.unwrap_or("HEAD").to_string(),
@@ -2148,6 +2316,35 @@ fn find_function_in_text(lines: &[&str], name: &str, language: &str) -> Option<u
                         after
                             .strip_prefix(name)
                             .is_some_and(|tail| tail.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_'))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            "typescript" | "javascript" => {
+                let has_decl = trimmed.contains("function")
+                    || trimmed.contains("=>")
+                    || trimmed.contains(&format!("{name}("))
+                    || trimmed.contains(&format!("{name} ="))
+                    || trimmed.contains(&format!("{name}:"))
+                    || trimmed.contains(&format!("{name} :"))
+                    || trimmed.contains(&format!("{name}<"));
+                if has_decl {
+                    if let Some(pos) = trimmed.find(name) {
+                        let before_ok = if pos == 0 {
+                            true
+                        } else {
+                            let prev = trimmed[..pos].chars().last().unwrap();
+                            !prev.is_alphanumeric() && prev != '_' && prev != '.'
+                        };
+                        let after_pos = pos + name.len();
+                        let after_ok = trimmed[after_pos..]
+                            .chars()
+                            .next()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+                        before_ok && after_ok
                     } else {
                         false
                     }
@@ -2487,7 +2684,8 @@ fn caller(
     } else {
         name.to_string()
     };
-    let is_test = match test_name(root, language, &name, &file, line, flagged)? {
+    let caller_file_lang = file_language(root, &file).unwrap_or(language);
+    let is_test = match test_name(root, caller_file_lang, &name, &file, line, flagged)? {
         Some(test) => {
             name = test;
             true
@@ -2916,7 +3114,7 @@ mod tests {
         };
         let mut out = Vec::new();
         assert_eq!(
-            collect_functions(&[function(serde_json::json!(1))], &mut out),
+            collect_functions(&[function(serde_json::json!(1))], None, &mut out),
             Ok(())
         );
         assert_eq!(out, vec![("f".to_string(), 2, 4, 2, 4)]);
@@ -2936,14 +3134,49 @@ mod tests {
             module(serde_json::json!({ "x": 1 })),
             module(serde_json::json!([function(serde_json::json!("1"))])),
         ] {
-            let error = collect_functions(std::slice::from_ref(&bad), &mut Vec::new()).unwrap_err();
+            let error = collect_functions(std::slice::from_ref(&bad), None, &mut Vec::new()).unwrap_err();
             assert!(error.contains("cannot read"), "{bad}: {error}");
         }
         // An empty list, or a symbol with no children, is a complete answer.
-        assert_eq!(collect_functions(&[], &mut Vec::new()), Ok(()));
+        assert_eq!(collect_functions(&[], None, &mut Vec::new()), Ok(()));
         assert_eq!(
-            collect_functions(&[module(serde_json::json!([]))], &mut Vec::new()),
+            collect_functions(&[module(serde_json::json!([]))], None, &mut Vec::new()),
             Ok(())
+        );
+
+        // JavaScript/TypeScript arrow functions and nested functions
+        let js_syms = vec![
+            serde_json::json!({
+                "name": "handleTabCreated",
+                "kind": 12,
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 8, "character": 1 } },
+                "selectionRange": { "start": { "line": 0, "character": 16 }, "end": { "line": 0, "character": 32 } },
+                "children": [
+                    {
+                        "name": "addChildTabHandoff",
+                        "kind": 12,
+                        "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 4, "character": 5 } },
+                        "selectionRange": { "start": { "line": 1, "character": 13 }, "end": { "line": 1, "character": 31 } }
+                    }
+                ]
+            }),
+            serde_json::json!({
+                "name": "routeMethod",
+                "kind": 14,
+                "detail": "(req: any) => any",
+                "range": { "start": { "line": 10, "character": 0 }, "end": { "line": 12, "character": 2 } },
+                "selectionRange": { "start": { "line": 10, "character": 13 }, "end": { "line": 10, "character": 24 } }
+            }),
+        ];
+        let mut js_out = Vec::new();
+        assert_eq!(collect_functions(&js_syms, None, &mut js_out), Ok(()));
+        assert_eq!(
+            js_out,
+            vec![
+                ("handleTabCreated".to_string(), 1, 9, 1, 17),
+                ("addChildTabHandoff".to_string(), 2, 5, 2, 14),
+                ("routeMethod".to_string(), 11, 13, 11, 14),
+            ]
         );
     }
 
@@ -3227,5 +3460,64 @@ mod tests {
             hunks.contains_key("untracked.rs"),
             "expected untracked.rs to be included in diff_hunks"
         );
+    }
+
+    #[test]
+    fn test_javascript_functions_and_markers() {
+        let js_code = r#"export async function handleTabCreated(tab) {
+    function addChildTabHandoff(child) {
+        return child.id;
+    }
+    return addChildTabHandoff(tab);
+}
+
+export const routeMethod = (req) => {
+    return req.method;
+};
+"#;
+        let symbols = serde_json::json!([
+            {
+                "name": "handleTabCreated",
+                "kind": 12,
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 5, "character": 1 } },
+                "selectionRange": { "start": { "line": 0, "character": 22 }, "end": { "line": 0, "character": 38 } },
+                "children": [
+                    {
+                        "name": "addChildTabHandoff",
+                        "kind": 12,
+                        "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 3, "character": 5 } },
+                        "selectionRange": { "start": { "line": 1, "character": 13 }, "end": { "line": 1, "character": 31 } }
+                    }
+                ]
+            },
+            {
+                "name": "routeMethod",
+                "kind": 14,
+                "detail": "(req: any) => any",
+                "range": { "start": { "line": 7, "character": 0 }, "end": { "line": 9, "character": 2 } },
+                "selectionRange": { "start": { "line": 7, "character": 13 }, "end": { "line": 7, "character": 24 } }
+            }
+        ]);
+        let mut out = Vec::new();
+        collect_functions(symbols.as_array().unwrap(), Some(js_code), &mut out).unwrap();
+        let names: Vec<&str> = out.iter().map(|(n, _, _, _, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["handleTabCreated", "addChildTabHandoff", "routeMethod"]);
+
+        // Test marker recognition
+        let test_src = "it('should create tab', async () => {});\ntest(\"route valid request\", () => {});\n";
+        assert_eq!(
+            test_marker("typescript", test_src, 1, "anonymous").as_deref(),
+            Some("should create tab")
+        );
+        assert_eq!(
+            test_marker("typescript", test_src, 2, "anonymous").as_deref(),
+            Some("route valid request")
+        );
+
+        // Test file convention
+        assert!(looks_like_test("typescript", "anyFunc", "extension/background.test.js"));
+        assert!(looks_like_test("typescript", "anyFunc", "test/unit.spec.ts"));
+        assert!(looks_like_test("typescript", "anyFunc", "src/__tests__/app.js"));
+        assert!(!looks_like_test("typescript", "anyFunc", "extension/background.js"));
     }
 }

@@ -2868,3 +2868,207 @@ async fn reachability_preserves_unverified_symbols_under_contract_435() {
     assert_eq!(report.unverified.len(), 1);
     assert_eq!(report.unverified[0].name.as_deref(), Some("unverified_fn"));
 }
+
+/// In a mixed Go/JavaScript repository, JavaScript edits (including arrow functions and nested
+/// declarations) are correctly attributed to their functions rather than treated as edits outside
+/// any function (#800).
+#[tokio::test]
+async fn analyze_mixed_repo_attributes_javascript_functions_and_nested_declarations() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/mixed\ngo 1.22\n"),
+        (
+            "extension/background.js",
+            "export async function handleTabCreated(tab) {\n    function addChildTabHandoff(child) {\n        return child.id;\n    }\n    return addChildTabHandoff(tab);\n}\n\nexport const routeMethod = (req) => {\n    return req.method;\n};\n",
+        ),
+    ]);
+    let root = ws.root();
+    // Edit inside handleTabCreated (and its nested addChildTabHandoff) and routeMethod
+    ws.write(
+        "extension/background.js",
+        "export async function handleTabCreated(tab) {\n    function addChildTabHandoff(child) {\n        return child.id + 1;\n    }\n    return addChildTabHandoff(tab) || null;\n}\n\nexport const routeMethod = (req) => {\n    return req.method.toLowerCase();\n};\n",
+    );
+
+    let js_uri = prod_code_protocol::path::file_uri(ws.path("extension/background.js").as_path());
+    let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => {
+            let uri = params.pointer("/textDocument/uri").and_then(|u| u.as_str()).unwrap_or("");
+            if uri == js_uri {
+                serde_json::json!([
+                    {
+                        "name": "handleTabCreated",
+                        "kind": 12,
+                        "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 5, "character": 1 } },
+                        "selectionRange": { "start": { "line": 0, "character": 22 }, "end": { "line": 0, "character": 38 } },
+                        "children": [
+                            {
+                                "name": "addChildTabHandoff",
+                                "kind": 12,
+                                "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 3, "character": 5 } },
+                                "selectionRange": { "start": { "line": 1, "character": 13 }, "end": { "line": 1, "character": 31 } }
+                            }
+                        ]
+                    },
+                    {
+                        "name": "routeMethod",
+                        "kind": 14,
+                        "detail": "(req: any) => any",
+                        "range": { "start": { "line": 7, "character": 0 }, "end": { "line": 9, "character": 2 } },
+                        "selectionRange": { "start": { "line": 7, "character": 13 }, "end": { "line": 7, "character": 24 } }
+                    }
+                ])
+            } else {
+                serde_json::Value::Array(vec![])
+            }
+        }
+        "textDocument/prepareCallHierarchy" => {
+            serde_json::json!([{
+                "name": "mock",
+                "kind": 12,
+                "uri": js_uri,
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+            }])
+        }
+        "callHierarchy/incomingCalls" => {
+            serde_json::json!([])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await
+    .addr();
+
+    let report = impact::analyze(remote, &root, None, 2)
+        .await
+        .expect("analysis runs");
+
+    assert_eq!(report.language, "go");
+    assert_eq!(report.changed_files, vec!["extension/background.js".to_string()]);
+    let changed_names: Vec<&str> = report.changed.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        changed_names.contains(&"handleTabCreated"),
+        "expected handleTabCreated in changed: {:?}",
+        changed_names
+    );
+    assert!(
+        changed_names.contains(&"addChildTabHandoff"),
+        "expected nested addChildTabHandoff in changed: {:?}",
+        changed_names
+    );
+    assert!(
+        changed_names.contains(&"routeMethod"),
+        "expected routeMethod in changed: {:?}",
+        changed_names
+    );
+    assert!(
+        report.unattributed_files.is_empty(),
+        "unattributed files must be empty but was: {:?}",
+        report.unattributed_files
+    );
+    assert_eq!(report.full_suite_reason(), None);
+}
+
+/// In a mixed Go/JavaScript repository, when the language server for JavaScript is unavailable,
+/// the report records an explicit incomplete Gap and does not claim lines changed outside functions (#800).
+#[tokio::test]
+async fn analyze_mixed_repo_handles_unsupported_language_without_claiming_outside_functions() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/mixed\ngo 1.22\n"),
+        (
+            "extension/background.js",
+            "export function handleTabCreated(tab) {\n    return tab.id;\n}\n",
+        ),
+    ]);
+    let root = ws.root();
+    ws.write(
+        "extension/background.js",
+        "export function handleTabCreated(tab) {\n    return tab.id + 1;\n}\n",
+    );
+
+    // Custom gateway that refuses handshake when preferred_engine is typescript
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut framed = Framed::new(socket, ProdCodeCodec::new());
+                while let Some(Ok(msg)) = framed.next().await {
+                    match msg {
+                        WireMessage::SyncProbeRequest(req) => {
+                            let _ = framed.send(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                                server_workspace_root: req.client_workspace_root,
+                                seeded: false,
+                                files_deleted: 0,
+                                missing: Vec::new(),
+                            })).await;
+                        }
+                        WireMessage::SyncRequest(req) => {
+                            let _ = framed.send(WireMessage::SyncResponse(SyncResponse {
+                                server_workspace_root: req.client_workspace_root,
+                                files_updated: 0,
+                                files_deleted: 0,
+                                bytes_transferred: 0,
+                                duration_ms: 0,
+                                workspace_was_fresh: false,
+                                stale_paths: Vec::new(),
+                            })).await;
+                        }
+                        WireMessage::HandshakeRequest(req) => {
+                            if req.preferred_engine.as_deref() == Some("typescript") {
+                                let _ = framed.send(WireMessage::Disconnect {
+                                    reason: "engine typescript is not served by this node".to_string(),
+                                }).await;
+                                return;
+                            }
+                            let _ = framed.send(WireMessage::HandshakeResponse(HandshakeResponse {
+                                protocol_version: PROTOCOL_VERSION,
+                                server_pid: std::process::id(),
+                                session_id: 1,
+                                server_workspace_root: req.client_workspace_root,
+                                detected_engine: "go".to_string(),
+                                stale_paths: Vec::new(),
+                                engine_age_ms: None,
+                                index_gated: false,
+                                capabilities: None,
+                            })).await;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+    });
+
+    let report = impact::analyze(addr, &root, None, 2)
+        .await
+        .expect("analysis runs");
+
+    assert_eq!(report.language, "go");
+    assert!(
+        report.unattributed_files.is_empty(),
+        "unattributed files must be empty but was: {:?}",
+        report.unattributed_files
+    );
+    assert_eq!(report.incomplete.len(), 1);
+    match &report.incomplete[0] {
+        Gap::Symbols { file, error } => {
+            assert_eq!(file, "extension/background.js");
+            assert!(
+                error.contains("refused") || error.contains("engine typescript is not served") || error.contains("closed"),
+                "expected engine error in gap: {error}"
+            );
+        }
+        other => panic!("expected Gap::Symbols, got {other:?}"),
+    }
+    let reason = report.full_suite_reason().expect("reason exists");
+    assert!(
+        reason.contains("incomplete"),
+        "expected incomplete analysis in reason: {reason}"
+    );
+    assert!(
+        !reason.contains("lines changed outside any function"),
+        "must NOT claim lines changed outside functions: {reason}"
+    );
+}

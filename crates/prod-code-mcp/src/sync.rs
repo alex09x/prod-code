@@ -258,6 +258,9 @@ pub fn engine_for_file(path: &Path) -> Option<&'static str> {
         "swift" => "swift",
         "java" => "java",
         "kt" | "kts" => "kotlin",
+        "cs" => "csharp",
+        "scala" | "sc" => "scala",
+        "zig" => "zig",
         _ => return None,
     })
 }
