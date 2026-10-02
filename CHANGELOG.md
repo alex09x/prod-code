@@ -1,14 +1,28 @@
 # Changelog
 
-## Unreleased
+## v0.3.22 — 2026-10-02
 
 ### Added
+- **Single-Owner Direct-Edit Fast Path & Overlay Bypass (Phase 2.2)** (`crates/prod-code-gateway`, `crates/prod-code-engine-rust`):
+  Dedicated worktrees with single-owner sessions bypass overlay crate cones and apply unsaved `didOpen` / `didChange` edits directly into base Salsa file inputs in memory. When a second session joins the same worktree, the direct-edit lease is dynamically revoked via `Arc<AtomicBool>`, and in-memory edits are atomically migrated under the engine mutex into session overlays while the clean on-disk text is restored into base Salsa DB (#808, #817).
+- **Polyglot Remote Build & Test Execution Wire Protocol (Phase 6.1)** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-mcp`):
+  Introduced typed wire execution messages (`RemoteExecCommand`, `BuildCheckStreamMessage`, `TestExecutionEvent`) supporting remote build checks, unit tests, and benchmarks across Rust, Go, Python, TypeScript, C/C++, and Swift with streaming JSON and verbose raw event parsing.
+- **Discovery Privacy, Replay-Resistant Challenge, and Cluster PKI (Phase 5.6)** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-client`):
+  Added mutual TLS cluster authentication, peer certificate verification, replay-resistant challenge discovery nonces, and `prod-code cert` CLI tooling for CA root and leaf certificate provisioning.
+- **Dynamic Cluster Load Balancing & Transparent Migration**:
+  Added congestion scoring with conservative telemetry penalties and transparent client redirection to cluster peers based on workspace placement, memory pressure, and engine affinity.
 - **Parser-Backed Validation for Markdown & SVG Proposals** (`crates/prod-code-mcp`, `crates/prod-code-client`):
-  Added dedicated in-memory syntax parsers for Markdown documentation (with YAML and TOML frontmatter validation, code block fence matching, and link destination syntax) and XML/SVG vector graphics (validating XML well-formedness, attribute quoting, duplicate attribute detection, tag nesting and matching, and `<svg>` root requirement). `prod-code validate`, `code_validate_edit`, and `code_validate_edits` now validate Markdown and SVG directly in memory with 0 ms LSP round-trips (#778).
+  Added dedicated in-memory syntax parsers for Markdown documentation and XML/SVG vector graphics with 0 ms LSP round-trips (#778).
 - **Mixed-Language Validation Routing**:
-  Validation batches containing both source code and documentation/assets (e.g. TypeScript + Markdown + SVG in Astro blogs or web applications) are automatically routed: syntax files are checked by internal parsers while source code is verified against the appropriate language server in a single unified overlay (#778).
+  Validation batches containing both source code and documentation/assets are automatically routed and verified in a single unified overlay (#778).
 
 ### Fixed
+- **Blocking Stdio Enforcement & Stderr Panic Prevention** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Enforced blocking mode (`libc::O_NONBLOCK` cleared) on standard I/O streams across gateway and client processes, eliminating `Resource temporarily unavailable (os error 11)` panics when writing diagnostics or logs under systemd / pipe supervision (#806, #812, #814).
+- **Stale Worktree & Workspace Idle Pruning** (`crates/prod-code-gateway`):
+  Automatic background pruning of stale worktree directories and unreferenced workspaces upon idle timeout and low disk headroom, preventing node storage exhaustion.
+- **Shadow Run Timeout & Response Handling** (`crates/prod-code-client`, `crates/prod-code-gateway`):
+  Bounded `run_shadow_once` frame reads with deadlines, added full `WireMessage::ShadowRunRequest` support in scripted test gateway, and bounded stdout buffers to prevent test hangs.
 - **Cluster Validation Failover Under Memory Pressure** (`crates/prod-code-gateway`):
   When a gateway node under memory pressure returns `CapacityRefused` on `validation_view()`, requests transparently fail over to alive, low-pressure cluster peers serving the requested engine, or to the generic validation session for non-C++ languages (#799).
 - **Direct Connect & BSD Socket ARP Resilience** (`crates/prod-code-client`, `crates/prod-code-protocol`, `crates/prod-code-mcp`):
