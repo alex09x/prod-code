@@ -749,6 +749,10 @@ impl WorkspaceManager {
                     .collect()
             })
             .await;
+        for ws in &evicted {
+            let ts = ws.last_used.load(Ordering::Relaxed);
+            touch_last_used_at(&ws.root, ts);
+        }
         let roots = evicted.iter().map(|ws| ws.root.clone()).collect();
         release(evicted).await;
         roots
@@ -2638,7 +2642,12 @@ pub async fn prune_stale_worktree_dirs(
         }
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {
-                tracing::info!(workspace = %path.display(), idle_days = idle.as_secs() / 86_400, "🧹 pruned stale worktree workspace");
+                tracing::info!(
+                    workspace = %path.display(),
+                    idle_hours = idle.as_secs() / 3600,
+                    idle_secs = idle.as_secs(),
+                    "🧹 pruned stale worktree workspace"
+                );
                 removed.push(path);
             }
             Err(e) => {
@@ -2649,10 +2658,108 @@ pub async fn prune_stale_worktree_dirs(
     removed
 }
 
+/// Removes main (non-worktree) workspace directories that have not been used for `max_age`,
+/// are not loaded, and have no active or loaded worktree copies. Returns the removed paths.
+pub async fn prune_stale_main_workspace_dirs(
+    storage_root: &Path,
+    max_age: Duration,
+    worktree_max_age: Duration,
+    manager: &WorkspaceManager,
+) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(storage_root) else {
+        return removed;
+    };
+    let now = SystemTime::now();
+    let all_paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+
+    for path in &all_paths {
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // Skip hidden directories (e.g. .prod-code-shadow, .git)
+        if name.starts_with('.') || name == "lost+found" {
+            continue;
+        }
+        // Worktrees are handled separately by prune_stale_worktree_dirs
+        if name.contains("--wt-") {
+            continue;
+        }
+        // Main workspace must not be loaded in memory
+        if manager.is_loaded(path).await {
+            continue;
+        }
+        let idle = idle_for(path, now);
+        if idle < max_age {
+            continue;
+        }
+
+        // Base repository protection:
+        // Check if any worktree of this base repo is currently loaded or still active on disk.
+        let wt_prefix = format!("{name}--wt-");
+        let mut has_active_worktree = false;
+        for other in &all_paths {
+            let Some(other_name) = other.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if other.is_dir() && other_name.starts_with(&wt_prefix) {
+                // If the worktree is loaded in memory, the base repo must not be pruned
+                if manager.is_loaded(other).await {
+                    has_active_worktree = true;
+                    break;
+                }
+                // If worktree pruning is disabled (worktree_max_age == 0) or worktree was used within worktree_max_age,
+                // the worktree is still active on disk, so protect the base repo.
+                if worktree_max_age.is_zero() || idle_for(other, now) < worktree_max_age {
+                    has_active_worktree = true;
+                    break;
+                }
+            }
+        }
+
+        if has_active_worktree {
+            tracing::debug!(
+                workspace = %path.display(),
+                "main workspace is idle but protected by active worktrees"
+            );
+            continue;
+        }
+
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {
+                tracing::info!(
+                    workspace = %path.display(),
+                    idle_hours = idle.as_secs() / 3600,
+                    idle_secs = idle.as_secs(),
+                    "🧹 pruned stale main workspace"
+                );
+                removed.push(path.clone());
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, workspace = %path.display(), "failed to prune main workspace")
+            }
+        }
+    }
+    removed
+}
+
 /// Records a handshake on the workspace directory for [`prune_stale_worktree_dirs`].
 pub fn touch_last_used(workspace_dir: &Path) {
     let marker = workspace_dir.join(LAST_USED_MARKER);
     let _ = std::fs::write(&marker, unix_now().to_string());
+}
+
+/// Persists a specific timestamp as the last-used time on the workspace directory.
+pub fn touch_last_used_at(workspace_dir: &Path, ts: u64) {
+    let marker = workspace_dir.join(LAST_USED_MARKER);
+    let _ = std::fs::write(&marker, ts.to_string());
+    if let Ok(file) = std::fs::File::options().write(true).open(&marker) {
+        let system_time = SystemTime::UNIX_EPOCH + Duration::from_secs(ts);
+        let _ = file.set_modified(system_time);
+    }
 }
 
 /// File in a workspace directory that lists, one per line, the files the gateway removed from
@@ -3832,6 +3939,142 @@ while True:
         assert!(!old.exists());
         assert!(recent.exists());
         assert!(main.exists());
+    }
+
+    #[tokio::test]
+    async fn test_prune_stale_main_workspace_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path();
+        let manager = WorkspaceManager::new();
+
+        let old_main = storage.join("repo-old");
+        let recent_main = storage.join("repo-recent");
+        let hidden = storage.join(".prod-code-shadow");
+        let lost_found = storage.join("lost+found");
+        let wt = storage.join("repo-old--wt-12345678");
+
+        for d in [&old_main, &recent_main, &hidden, &lost_found, &wt] {
+            std::fs::create_dir_all(d).unwrap();
+            touch_last_used(d);
+        }
+
+        let now = SystemTime::now();
+        let two_days_ago = now - Duration::from_secs(2 * 86_400);
+        let ten_minutes_ago = now - Duration::from_secs(600);
+
+        // old_main is 2 days old
+        touch_last_used_at(&old_main, unix_now().saturating_sub(2 * 86_400));
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(old_main.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(two_days_ago);
+
+        // recent_main is 10 minutes old
+        touch_last_used_at(&recent_main, unix_now().saturating_sub(600));
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(recent_main.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(ten_minutes_ago);
+
+        // hidden and lost+found are also old
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(hidden.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(two_days_ago);
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(lost_found.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(two_days_ago);
+
+        // wt is also old, but prune_stale_main_workspace_dirs ignores worktrees
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(wt.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(two_days_ago);
+
+        // Pruning with 1-day (86400s) timeout
+        let removed = prune_stale_main_workspace_dirs(
+            storage,
+            Duration::from_secs(86_400),
+            Duration::from_secs(3600),
+            &manager,
+        )
+        .await;
+
+        assert_eq!(removed, vec![old_main.clone()]);
+        assert!(!old_main.exists());
+        assert!(recent_main.exists());
+        assert!(hidden.exists());
+        assert!(lost_found.exists());
+        assert!(wt.exists()); // not pruned by main workspace pruner
+    }
+
+    #[tokio::test]
+    async fn test_prune_stale_main_workspace_protected_by_active_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path();
+        let manager = WorkspaceManager::new();
+
+        let main = storage.join("active-project");
+        let active_wt = storage.join("active-project--wt-abcdef12");
+
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&active_wt).unwrap();
+        touch_last_used(&main);
+        touch_last_used(&active_wt);
+
+        let now = SystemTime::now();
+        let two_days_ago = now - Duration::from_secs(2 * 86_400);
+
+        // Main is old (2 days ago)
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(main.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(two_days_ago);
+
+        // Active worktree is fresh (just touched)
+        // Main should be protected because active_wt is idle < 3600s
+        let removed = prune_stale_main_workspace_dirs(
+            storage,
+            Duration::from_secs(86_400),
+            Duration::from_secs(3600),
+            &manager,
+        )
+        .await;
+        assert!(removed.is_empty());
+        assert!(main.exists());
+        assert!(active_wt.exists());
+
+        // Now age the worktree to 2 hours ago
+        let two_hours_ago = now - Duration::from_secs(2 * 3600);
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(active_wt.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(two_hours_ago);
+
+        // First worktree pruner cleans up stale worktree
+        let wt_removed =
+            prune_stale_worktree_dirs(storage, Duration::from_secs(3600), &manager).await;
+        assert_eq!(wt_removed, vec![active_wt.clone()]);
+        assert!(!active_wt.exists());
+
+        // Now main workspace has no active worktrees, and can be pruned
+        let main_removed = prune_stale_main_workspace_dirs(
+            storage,
+            Duration::from_secs(86_400),
+            Duration::from_secs(3600),
+            &manager,
+        )
+        .await;
+        assert_eq!(main_removed, vec![main.clone()]);
+        assert!(!main.exists());
     }
 
     #[test]

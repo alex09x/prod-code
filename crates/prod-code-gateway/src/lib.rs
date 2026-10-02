@@ -149,7 +149,7 @@ impl Drop for ActiveSession<'_> {
     }
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(
     name = "prod-code-server",
     author,
@@ -194,9 +194,21 @@ pub struct ServerCli {
     )]
     pub max_concurrent_engine_loads: usize,
 
-    /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables).
-    #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
-    pub prune_worktree_days: u64,
+    /// Delete `<repo>--wt-*` workspace directories unused for this many seconds (0 disables). Defaults to 3600 (1 hour).
+    #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_SECS", default_value_t = 3600)]
+    pub prune_worktree_secs: u64,
+
+    /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables). Overrides `--prune-worktree-secs` if set.
+    #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS")]
+    pub prune_worktree_days: Option<u64>,
+
+    /// Delete main (non-worktree) workspace directories unused for this many seconds (0 disables). Defaults to 86400 (24 hours).
+    #[arg(long, env = "PROD_CODE_PRUNE_WORKSPACE_SECS", default_value_t = 86400)]
+    pub prune_workspace_secs: u64,
+
+    /// Delete main (non-worktree) workspace directories unused for this many days (0 disables). Overrides `--prune-workspace-secs` if set.
+    #[arg(long, env = "PROD_CODE_PRUNE_WORKSPACE_DAYS")]
+    pub prune_workspace_days: Option<u64>,
 
     /// Below this share of free space (percent) on the storage filesystem, idle worktree copies
     /// are deleted oldest first, however young, until it is reached again (0 disables) (#386).
@@ -224,6 +236,24 @@ pub struct ServerCli {
     /// primary interface when absent.
     #[arg(long, env = "PROD_CODE_ADVERTISE")]
     pub advertise: Option<String>,
+}
+
+impl ServerCli {
+    /// Effective timeout for pruning stale worktree directories, in seconds (0 disables).
+    pub fn effective_prune_worktree_secs(&self) -> u64 {
+        match self.prune_worktree_days {
+            Some(days) => days.saturating_mul(86_400),
+            None => self.prune_worktree_secs,
+        }
+    }
+
+    /// Effective timeout for pruning stale main workspace directories, in seconds (0 disables).
+    pub fn effective_prune_workspace_secs(&self) -> u64 {
+        match self.prune_workspace_days {
+            Some(days) => days.saturating_mul(86_400),
+            None => self.prune_workspace_secs,
+        }
+    }
 }
 
 pub struct ServerState {
@@ -2504,6 +2534,7 @@ pub async fn run_exec(
             .await?;
         return Ok(());
     }
+    workspace::touch_last_used(&workspace);
     let Some((program, args)) = req.command.split_first() else {
         framed
             .send(WireMessage::ExecExit(fail("empty command".to_string())))
@@ -6377,7 +6408,8 @@ fn evict_after(idle_evict_secs: u64, memory_short: bool) -> Option<Duration> {
 async fn janitor(
     state: Arc<ServerState>,
     idle_evict_secs: u64,
-    prune_worktree_days: u64,
+    prune_worktree_secs: u64,
+    prune_workspace_secs: u64,
     prune_below_free_percent: u64,
 ) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -6412,22 +6444,40 @@ async fn janitor(
                 tracing::info!(workspace = %root.display(), idle_secs = after.as_secs(), memory_short, "💤 [EVICT] unloaded idle workspace engine");
             }
         }
-        if prune_worktree_days > 0 {
-            workspace::prune_stale_worktree_dirs(
+        if prune_worktree_secs > 0 {
+            let pruned = workspace::prune_stale_worktree_dirs(
                 &state.storage_root,
-                std::time::Duration::from_secs(prune_worktree_days * 86_400),
+                std::time::Duration::from_secs(prune_worktree_secs),
                 &state.workspace_manager,
             )
             .await;
+            for path in pruned {
+                state.search_indexes.forget(&path);
+            }
+        }
+        if prune_workspace_secs > 0 {
+            let pruned = workspace::prune_stale_main_workspace_dirs(
+                &state.storage_root,
+                std::time::Duration::from_secs(prune_workspace_secs),
+                std::time::Duration::from_secs(prune_worktree_secs),
+                &state.workspace_manager,
+            )
+            .await;
+            for path in pruned {
+                state.search_indexes.forget(&path);
+            }
         }
         if prune_below_free_percent > 0 {
-            workspace::prune_worktree_dirs_for_space(
+            let pruned = workspace::prune_worktree_dirs_for_space(
                 &state.storage_root,
                 prune_below_free_percent as f64 / 100.0,
                 &state.workspace_manager,
                 workspace::free_share,
             )
             .await;
+            for path in pruned {
+                state.search_indexes.forget(&path);
+            }
         }
     }
 }
@@ -6457,6 +6507,8 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         cli.storage
     );
 
+    let prune_worktree_secs = cli.effective_prune_worktree_secs();
+    let prune_workspace_secs = cli.effective_prune_workspace_secs();
     let mut state = ServerState::new(cli.storage);
     state.workspace_manager = Arc::new(WorkspaceManager::with_admission_and_concurrency(
         Arc::new(admission::Admission::host(cli.engine_reserve_mib)),
@@ -6553,7 +6605,8 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     tokio::spawn(janitor(
         Arc::clone(&state),
         cli.idle_evict_secs,
-        cli.prune_worktree_days,
+        prune_worktree_secs,
+        prune_workspace_secs,
         cli.prune_below_free_percent,
     ));
 
@@ -8576,6 +8629,44 @@ mod exec_resilience_tests {
             is_executable: false,
         }];
         refresh_engines(&manager, &ws_dir, &files).await;
+    }
+
+    #[test]
+    fn test_effective_prune_timeouts() {
+        let cli = ServerCli {
+            bind: "0.0.0.0:9400".parse().unwrap(),
+            socket_path: None,
+            storage: PathBuf::from("/tmp/storage"),
+            idle_evict_secs: 1800,
+            engine_reserve_mib: 0,
+            max_concurrent_engine_loads: 0,
+            prune_worktree_secs: 3600,
+            prune_worktree_days: None,
+            prune_workspace_secs: 86400,
+            prune_workspace_days: None,
+            prune_below_free_percent: 15,
+            engines: vec![],
+            shadow_dir: None,
+            peers: String::new(),
+            advertise: None,
+        };
+        // Defaults: 1 hour (3600s) for worktrees, 24 hours (86400s) for main workspaces
+        assert_eq!(cli.effective_prune_worktree_secs(), 3600);
+        assert_eq!(cli.effective_prune_workspace_secs(), 86400);
+
+        // Days overrides
+        let mut cli_days = cli.clone();
+        cli_days.prune_worktree_days = Some(7);
+        cli_days.prune_workspace_days = Some(3);
+        assert_eq!(cli_days.effective_prune_worktree_secs(), 7 * 86_400);
+        assert_eq!(cli_days.effective_prune_workspace_secs(), 3 * 86_400);
+
+        // Disabling with 0
+        let mut cli_disabled = cli.clone();
+        cli_disabled.prune_worktree_secs = 0;
+        cli_disabled.prune_workspace_days = Some(0);
+        assert_eq!(cli_disabled.effective_prune_worktree_secs(), 0);
+        assert_eq!(cli_disabled.effective_prune_workspace_secs(), 0);
     }
 }
 
