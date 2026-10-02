@@ -215,9 +215,10 @@ pub(crate) async fn run_shadow_once(
             client_host: Some(prod_code_protocol::client_host()),
         }))
         .await?;
+    let budget = std::time::Duration::from_secs(timeout_secs.saturating_add(30));
     let response = loop {
-        match framed.next().await {
-            Some(Ok(WireMessage::ShadowRunResponse(response))) => {
+        match tokio::time::timeout(budget, framed.next()).await {
+            Ok(Some(Ok(WireMessage::ShadowRunResponse(response)))) => {
                 let _ = framed
                     .send(WireMessage::Disconnect {
                         reason: "shadow run finished".to_string(),
@@ -225,10 +226,11 @@ pub(crate) async fn run_shadow_once(
                     .await;
                 break response;
             }
-            Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
-            Some(Ok(other)) => anyhow::bail!("unexpected message during shadow run: {other:?}"),
-            Some(Err(e)) => anyhow::bail!("frame decode error during shadow run: {e}"),
-            None => anyhow::bail!("gateway closed the connection during the shadow run"),
+            Ok(Some(Ok(WireMessage::Pong))) | Ok(Some(Ok(WireMessage::LspPayload(_)))) => {}
+            Ok(Some(Ok(other))) => anyhow::bail!("unexpected message during shadow run: {other:?}"),
+            Ok(Some(Err(e))) => anyhow::bail!("frame decode error during shadow run: {e}"),
+            Ok(None) => anyhow::bail!("gateway closed the connection during the shadow run"),
+            Err(_) => anyhow::bail!("timed out waiting for shadow run response from gateway"),
         }
     };
     if let Some(error) = response.error {

@@ -53,6 +53,31 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     .await;
                                 return;
                             }
+
+                            if req.timeout_secs > 86400 * 7 {
+                                let _ = framed
+                                    .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                        exit_code: None,
+                                        duration_ms: 0,
+                                        server_workspace_root: workspace.to_string_lossy().to_string(),
+                                        timed_out: false,
+                                        error: Some(format!(
+                                            "timeout_secs ({}) exceeds maximum allowed (604800)",
+                                            req.timeout_secs
+                                        )),
+                                        usage: None,
+                                        platform: Some(prod_code_protocol::platform()),
+                                        diagnostics: Vec::new(),
+                                        tests_passed: 0,
+                                        tests_failed: 0,
+                                        tests_skipped: 0,
+                                        test_failures: Vec::new(),
+                                        benches: Vec::new(),
+                                    }))
+                                    .await;
+                                return;
+                            }
+
                             if req.command == RemoteExecCommand::Check && req.language == RemoteExecLanguage::Rust {
                                 // Simulate cargo compiler JSON message stream
                                 let diag_json = r#"{"reason":"compiler-message","package_id":"foo","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":10,"column_start":5,"is_primary":true,"label":"expected u32, found &str"}],"rendered":"error[E0308]: mismatched types\n"}}"#;
@@ -92,6 +117,62 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                         tests_failed: 0,
                                         tests_skipped: 0,
                                         test_failures: Vec::new(),
+                                        benches: Vec::new(),
+                                    }))
+                                    .await;
+                            } else if req.command == RemoteExecCommand::Test && req.language == RemoteExecLanguage::Rust {
+                                // Simulate cargo test output: mixed compiler JSON and standard libtest text lines
+                                let lines = [
+                                    r#"{"reason":"compiler-artifact","package_id":"my-crate"}"#,
+                                    "running 3 tests",
+                                    "test tests::test_pass ... ok",
+                                    "test tests::test_fail ... FAILED",
+                                    "test tests::test_skip ... ignored",
+                                    "test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+                                ];
+                                let mut passed = 0;
+                                let mut failed = 0;
+                                let mut skipped = 0;
+                                let mut failures = Vec::new();
+                                for line in lines {
+                                    let _ = framed
+                                        .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
+                                            ExecChunk {
+                                                stderr: false,
+                                                data: Some(format!("{line}\n").into_bytes()),
+                                            },
+                                        )))
+                                        .await;
+                                    if let Some(stream_ev) = prod_code_protocol::parse_cargo_json_event(line) {
+                                        match &stream_ev {
+                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { .. }) => passed += 1,
+                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { .. }) => {
+                                                failed += 1;
+                                                if let RemoteExecStream::TestEvent(te) = &stream_ev {
+                                                    failures.push(te.clone());
+                                                }
+                                            }
+                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { .. }) => skipped += 1,
+                                            _ => {}
+                                        }
+                                        let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                    }
+                                }
+
+                                let _ = framed
+                                    .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                        exit_code: Some(1),
+                                        duration_ms: 180,
+                                        server_workspace_root: workspace.to_string_lossy().to_string(),
+                                        timed_out: false,
+                                        error: None,
+                                        usage: None,
+                                        platform: Some("linux x86_64".into()),
+                                        diagnostics: Vec::new(),
+                                        tests_passed: passed,
+                                        tests_failed: failed,
+                                        tests_skipped: skipped,
+                                        test_failures: failures,
                                         benches: Vec::new(),
                                     }))
                                     .await;
@@ -302,6 +383,114 @@ async fn test_polyglot_remote_exec_unsynced_workspace_error() {
         WireMessage::RemoteExecResult(res) => {
             assert!(res.error.is_some());
             assert!(res.error.unwrap().contains("not synced"));
+            assert_eq!(res.exit_code, None);
+        }
+        other => panic!("expected RemoteExecResult, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_polyglot_remote_exec_rust_test_flow() {
+    let (addr, _server_handle, _temp) = start_test_gateway().await;
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+    let req = RemoteExecRequest {
+        client_workspace_root: "/Users/test/my-test-workspace".into(),
+        base_workspace_name: Some("my-test-workspace".into()),
+        language: RemoteExecLanguage::Rust,
+        command: RemoteExecCommand::Test,
+        args: vec!["--test".into(), "unit".into()],
+        env: vec![],
+        format: RemoteExecFormat::Json,
+        timeout_secs: 30,
+        pull_changes: false,
+        subdir: None,
+        client_agent: Some("agent-unit-test".into()),
+        client_host: Some("localhost".into()),
+    };
+
+    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+
+    let mut stream_events = Vec::new();
+    let mut final_result = None;
+
+    while let Some(Ok(msg)) = framed.next().await {
+        match msg {
+            WireMessage::RemoteExecStream(ev) => {
+                stream_events.push(ev);
+            }
+            WireMessage::RemoteExecResult(res) => {
+                final_result = Some(res);
+                break;
+            }
+            other => panic!("unexpected wire message: {other:?}"),
+        }
+    }
+
+    assert!(final_result.is_some());
+    let res = final_result.unwrap();
+    assert_eq!(res.exit_code, Some(1));
+    assert_eq!(res.tests_passed, 1);
+    assert_eq!(res.tests_failed, 1);
+    assert_eq!(res.tests_skipped, 1);
+    assert_eq!(res.test_failures.len(), 1);
+    assert_eq!(res.test_failures[0].name(), "tests::test_fail");
+
+    let has_pass_event = stream_events.iter().any(|ev| {
+        matches!(
+            ev,
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, .. }) if name == "tests::test_pass"
+        )
+    });
+    let has_fail_event = stream_events.iter().any(|ev| {
+        matches!(
+            ev,
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { name, .. }) if name == "tests::test_fail"
+        )
+    });
+    let has_skip_event = stream_events.iter().any(|ev| {
+        matches!(
+            ev,
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, .. }) if name == "tests::test_skip"
+        )
+    });
+    assert!(has_pass_event);
+    assert!(has_fail_event);
+    assert!(has_skip_event);
+}
+
+#[tokio::test]
+async fn test_polyglot_remote_exec_timeout_overflow_rejected() {
+    let (addr, _server_handle, _temp) = start_test_gateway().await;
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+    let req = RemoteExecRequest {
+        client_workspace_root: "/Users/test/my-test-workspace".into(),
+        base_workspace_name: Some("my-test-workspace".into()),
+        language: RemoteExecLanguage::Rust,
+        command: RemoteExecCommand::Check,
+        args: vec![],
+        env: vec![],
+        format: RemoteExecFormat::Json,
+        timeout_secs: 10_000_000, // Exceeds 7-day limit (604,800s)
+        pull_changes: false,
+        subdir: None,
+        client_agent: None,
+        client_host: None,
+    };
+
+    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+
+    let msg = framed.next().await.unwrap().unwrap();
+    match msg {
+        WireMessage::RemoteExecResult(res) => {
+            assert!(res.error.is_some());
+            assert!(
+                res.error.unwrap().contains("exceeds maximum allowed"),
+                "expected timeout error"
+            );
             assert_eq!(res.exit_code, None);
         }
         other => panic!("expected RemoteExecResult, got {other:?}"),

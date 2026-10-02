@@ -1164,7 +1164,11 @@ impl RemoteExecRequest {
             }
 
             (RemoteExecLanguage::Python, RemoteExecCommand::Check) => {
-                vec!["python3".into(), "-m".into(), "py_compile".into()]
+                let mut v = vec!["python3".into(), "-m".into(), "compileall".into(), "-q".into()];
+                if self.args.is_empty() {
+                    v.push(".".into());
+                }
+                v
             }
             (RemoteExecLanguage::Python, RemoteExecCommand::Test) => {
                 let mut v = vec!["pytest".into()];
@@ -1383,84 +1387,133 @@ impl RemoteExecResult {
     }
 }
 
-/// Parse a line from `cargo --message-format=json` into a diagnostic or test event if applicable.
+/// Parse a line from `cargo --message-format=json` (or standard Cargo/libtest output) into a diagnostic or test event if applicable.
 pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
-    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-    if let Some(reason) = value.get("reason").and_then(|r| r.as_str()) {
-        if reason == "compiler-message" {
-            let msg = value.get("message")?;
-            let level = msg.get("level")?.as_str()?.to_string();
-            let message_text = msg.get("message")?.as_str()?.to_string();
-            let code = msg
-                .get("code")
-                .and_then(|c| c.get("code"))
-                .and_then(|c| c.as_str())
-                .map(str::to_string);
-            let rendered = msg.get("rendered").and_then(|r| r.as_str()).map(str::to_string);
+    let trimmed = line.trim();
 
-            let mut spans = Vec::new();
-            if let Some(spans_arr) = msg.get("spans").and_then(|s| s.as_array()) {
-                for s in spans_arr {
-                    if let Some(file) = s.get("file_name").and_then(|f| f.as_str()) {
-                        let line_start = s.get("line_start").and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                        let line_end = s.get("line_end").and_then(|l| l.as_u64()).map(|l| l as u32);
-                        let col_start = s.get("column_start").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                        let col_end = s.get("column_end").and_then(|c| c.as_u64()).map(|c| c as u32);
-                        let is_primary = s.get("is_primary").and_then(|p| p.as_bool()).unwrap_or(false);
-                        let label = s.get("label").and_then(|lbl| lbl.as_str()).map(str::to_string);
-                        spans.push(RemoteExecSpan {
-                            file: file.to_string(),
-                            line_start,
-                            line_end,
-                            col_start,
-                            col_end,
-                            is_primary,
-                            label,
-                        });
+    // 1. Try parsing JSON format (compiler messages or unstable/custom json test records)
+    if trimmed.starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(reason) = value.get("reason").and_then(|r| r.as_str()) {
+                if reason == "compiler-message" {
+                    if let Some(msg) = value.get("message") {
+                        let level = msg.get("level").and_then(|l| l.as_str()).unwrap_or("error").to_string();
+                        let message_text = msg.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                        let code = msg
+                            .get("code")
+                            .and_then(|c| c.get("code"))
+                            .and_then(|c| c.as_str())
+                            .map(str::to_string);
+                        let rendered = msg.get("rendered").and_then(|r| r.as_str()).map(str::to_string);
+
+                        let mut spans = Vec::new();
+                        if let Some(spans_arr) = msg.get("spans").and_then(|s| s.as_array()) {
+                            for s in spans_arr {
+                                if let Some(file) = s.get("file_name").and_then(|f| f.as_str()) {
+                                    let line_start = s.get("line_start").and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                                    let line_end = s.get("line_end").and_then(|l| l.as_u64()).map(|l| l as u32);
+                                    let col_start = s.get("column_start").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                                    let col_end = s.get("column_end").and_then(|c| c.as_u64()).map(|c| c as u32);
+                                    let is_primary = s.get("is_primary").and_then(|p| p.as_bool()).unwrap_or(false);
+                                    let label = s.get("label").and_then(|lbl| lbl.as_str()).map(str::to_string);
+                                    spans.push(RemoteExecSpan {
+                                        file: file.to_string(),
+                                        line_start,
+                                        line_end,
+                                        col_start,
+                                        col_end,
+                                        is_primary,
+                                        label,
+                                    });
+                                }
+                            }
+                        }
+
+                        return Some(RemoteExecStream::Diagnostic(RemoteExecDiagnostic {
+                            level,
+                            code,
+                            message: message_text,
+                            spans,
+                            rendered,
+                            suggestion: None,
+                        }));
                     }
                 }
             }
 
-            return Some(RemoteExecStream::Diagnostic(RemoteExecDiagnostic {
-                level,
-                code,
-                message: message_text,
-                spans,
-                rendered,
-                suggestion: None,
-            }));
+            if let Some(t) = value.get("type").and_then(|t| t.as_str()) {
+                if t == "test" {
+                    let event = value.get("event").and_then(|e| e.as_str()).unwrap_or("");
+                    let name = value.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                    let duration_ms = value.get("exec_time").and_then(|t| t.as_f64()).map(|s| (s * 1000.0) as u64);
+                    match event {
+                        "started" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name })),
+                        "ok" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms })),
+                        "failed" => {
+                            let output = value.get("stdout").and_then(|o| o.as_str()).map(str::to_string);
+                            return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
+                                name,
+                                duration_ms,
+                                message: None,
+                                assertion_diff: None,
+                                backtrace: None,
+                                output,
+                            }));
+                        }
+                        "ignored" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, reason: None })),
+                        "bench" => {
+                            let median = value.get("median").and_then(|m| m.as_f64()).unwrap_or(0.0);
+                            return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Bench {
+                                name,
+                                estimate: format!("{median:.2} ns/iter"),
+                                range: None,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
-    if let Some(t) = value.get("type").and_then(|t| t.as_str()) {
-        if t == "test" {
-            let event = value.get("event").and_then(|e| e.as_str()).unwrap_or("");
-            let name = value.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-            let duration_ms = value.get("exec_time").and_then(|t| t.as_f64()).map(|s| (s * 1000.0) as u64);
-            match event {
-                "started" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started { name })),
-                "ok" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms })),
-                "failed" => {
-                    let output = value.get("stdout").and_then(|o| o.as_str()).map(str::to_string);
-                    return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
-                        name,
+    // 2. Parse standard Cargo/libtest text output lines (emitted by the test runner during `cargo test`)
+    // Format: `test <name> ... ok` / `test <name> ... FAILED` / `test <name> ... ignored` / `test <name> ... bench: <est>`
+    if let Some(rest) = trimmed.strip_prefix("test ") {
+        if !rest.starts_with("result:") {
+            if let Some((name, outcome_part)) = rest.rsplit_once(" ... ") {
+                let test_name = name.trim().to_string();
+                let outcome = outcome_part.trim();
+                if outcome == "ok" || outcome.starts_with("ok ") {
+                    let duration_ms = outcome
+                        .find('(')
+                        .and_then(|open| outcome[open..].find('s').map(|close| &outcome[open + 1..open + close]))
+                        .and_then(|s_str| s_str.trim().parse::<f64>().ok())
+                        .map(|s| (s * 1000.0) as u64);
+                    return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed {
+                        name: test_name,
                         duration_ms,
+                    }));
+                } else if outcome == "FAILED" || outcome.starts_with("FAILED ") {
+                    return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed {
+                        name: test_name,
+                        duration_ms: None,
                         message: None,
                         assertion_diff: None,
                         backtrace: None,
-                        output,
+                        output: None,
                     }));
-                }
-                "ignored" => return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, reason: None })),
-                "bench" => {
-                    let median = value.get("median").and_then(|m| m.as_f64()).unwrap_or(0.0);
+                } else if outcome == "ignored" || outcome.starts_with("ignored ") {
+                    return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped {
+                        name: test_name,
+                        reason: None,
+                    }));
+                } else if let Some(bench_str) = outcome.strip_prefix("bench:") {
                     return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Bench {
-                        name,
-                        estimate: format!("{median:.2} ns/iter"),
+                        name: test_name,
+                        estimate: bench_str.trim().to_string(),
                         range: None,
                     }));
                 }
-                _ => {}
             }
         }
     }
@@ -2322,6 +2375,90 @@ mod wire_tests {
             }
             other => panic!("expected TestEvent::Failed, got {other:?}"),
         }
+
+        // Standard Cargo/libtest text output parsing
+        let pass_line = "test tests::my_test_pass ... ok";
+        let pass_ev = parse_cargo_json_event(pass_line).unwrap();
+        match pass_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms }) => {
+                assert_eq!(name, "tests::my_test_pass");
+                assert_eq!(duration_ms, None);
+            }
+            other => panic!("expected TestEvent::Passed, got {other:?}"),
+        }
+
+        let pass_with_dur = "test tests::my_test_fast ... ok (0.012s)";
+        let pass_dur_ev = parse_cargo_json_event(pass_with_dur).unwrap();
+        match pass_dur_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { name, duration_ms }) => {
+                assert_eq!(name, "tests::my_test_fast");
+                assert_eq!(duration_ms, Some(12));
+            }
+            other => panic!("expected TestEvent::Passed with duration, got {other:?}"),
+        }
+
+        let fail_line = "test tests::my_test_fail ... FAILED";
+        let fail_ev = parse_cargo_json_event(fail_line).unwrap();
+        match fail_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { name, .. }) => {
+                assert_eq!(name, "tests::my_test_fail");
+            }
+            other => panic!("expected TestEvent::Failed, got {other:?}"),
+        }
+
+        let skip_line = "test tests::my_test_skip ... ignored";
+        let skip_ev = parse_cargo_json_event(skip_line).unwrap();
+        match skip_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, .. }) => {
+                assert_eq!(name, "tests::my_test_skip");
+            }
+            other => panic!("expected TestEvent::Skipped, got {other:?}"),
+        }
+
+        let bench_line = "test tests::bench_compute ... bench: 45.20 ns/iter (+/- 2)";
+        let bench_ev = parse_cargo_json_event(bench_line).unwrap();
+        match bench_ev {
+            RemoteExecStream::TestEvent(RemoteExecTestEvent::Bench { name, estimate, .. }) => {
+                assert_eq!(name, "tests::bench_compute");
+                assert_eq!(estimate, "45.20 ns/iter (+/- 2)");
+            }
+            other => panic!("expected TestEvent::Bench, got {other:?}"),
+        }
+
+        // Summary line should be ignored
+        let summary_line = "test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s";
+        assert!(parse_cargo_json_event(summary_line).is_none());
+    }
+
+    #[test]
+    fn python_check_default_and_custom_targets() {
+        let default_check = RemoteExecRequest {
+            client_workspace_root: "/test".into(),
+            base_workspace_name: None,
+            language: RemoteExecLanguage::Python,
+            command: RemoteExecCommand::Check,
+            args: vec![],
+            env: vec![],
+            format: RemoteExecFormat::Raw,
+            timeout_secs: 10,
+            pull_changes: false,
+            subdir: None,
+            client_agent: None,
+            client_host: None,
+        };
+        assert_eq!(
+            default_check.to_argv(),
+            vec!["python3", "-m", "compileall", "-q", "."]
+        );
+
+        let custom_check = RemoteExecRequest {
+            args: vec!["src/mypackage".into(), "tests/".into()],
+            ..default_check
+        };
+        assert_eq!(
+            custom_check.to_argv(),
+            vec!["python3", "-m", "compileall", "-q", "src/mypackage", "tests/"]
+        );
     }
 }
 

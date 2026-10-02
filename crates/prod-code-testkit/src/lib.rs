@@ -26,8 +26,8 @@
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeResponse, ProdCodeCodec, ReadFileResponse, SyncProbeResponse, SyncResponse,
-    WireMessage, negotiate_protocol_version,
+    HandshakeResponse, ProdCodeCodec, ReadFileResponse, ShadowRunResponse, SyncProbeResponse,
+    SyncResponse, WireMessage, negotiate_protocol_version,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -250,6 +250,44 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                 };
                 framed
                     .send(WireMessage::LspPayload(response.to_string()))
+                    .await?;
+            }
+            WireMessage::ShadowRunRequest(req) => {
+                let said = answer(
+                    "prod-code/shadow-run",
+                    &serde_json::json!({
+                        "command": req.command,
+                    }),
+                );
+                let (results, error) = if let Some(err) = said.get("error").and_then(|e| e.as_str()) {
+                    (Vec::new(), Some(err.to_string()))
+                } else if said.is_null() {
+                    (Vec::new(), Some("shadow run not supported by scripted gateway".to_string()))
+                } else {
+                    let exit_code = said.get("exit_code").and_then(|c| c.as_i64()).map(|c| c as i32).unwrap_or(0);
+                    let results = req
+                        .hypotheses
+                        .into_iter()
+                        .map(|h| prod_code_protocol::ShadowHypothesisResult {
+                            name: h.name,
+                            exit_code: Some(exit_code),
+                            duration_ms: 10,
+                            timed_out: false,
+                            error: None,
+                            output_tail: Some(Vec::new()),
+                            output_len: 0,
+                        })
+                        .collect();
+                    (results, None)
+                };
+                let root = req.client_workspace_root.clone();
+                framed
+                    .send(WireMessage::ShadowRunResponse(ShadowRunResponse {
+                        server_workspace_root: root,
+                        mode: "mock".to_string(),
+                        results,
+                        error,
+                    }))
                     .await?;
             }
             WireMessage::Disconnect { .. } => break,

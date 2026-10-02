@@ -25,7 +25,7 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     AnyStream, ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp,
     HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PathTranslator, PeerInfo, PlaceRequest,
-    PlaceResponse, ProdCodeCodec, RemoteExecFormat, RemoteExecLanguage, RemoteExecRequest,
+    PlaceResponse, ProdCodeCodec, RemoteExecCommand, RemoteExecFormat, RemoteExecLanguage, RemoteExecRequest,
     RemoteExecResult, RemoteExecStream, RemoteExecTestEvent, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
     negotiate_protocol_version, parse_cargo_json_event, parse_go_test_json_event,
@@ -2123,6 +2123,12 @@ fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serd
 /// Default wall-clock limit for a remote command when the client does not set one.
 const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 3600;
 
+/// Maximum supported timeout for remote execution (7 days) to prevent overflow in deadline arithmetic.
+const MAX_REMOTE_EXEC_TIMEOUT_SECS: u64 = 86400 * 7;
+
+/// Maximum line buffer size for parsing structured JSON/text test streams (1 MiB).
+const MAX_JSON_LINE_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// Largest file whose old bytes a pre-command snapshot keeps, so that the gateway can put it
 /// back when the command's changes never reach the client (#262). Source files are far smaller;
 /// what is larger is mostly data a command regenerates anyway.
@@ -2545,6 +2551,32 @@ pub async fn run_exec(
             .await?;
         return Ok(());
     };
+
+    let timeout_secs = if req.timeout_secs == 0 {
+        EXEC_DEFAULT_TIMEOUT_SECS
+    } else {
+        req.timeout_secs
+    };
+    if timeout_secs > MAX_REMOTE_EXEC_TIMEOUT_SECS {
+        framed
+            .send(WireMessage::ExecExit(fail(format!(
+                "timeout_secs ({timeout_secs}) exceeds maximum allowed ({MAX_REMOTE_EXEC_TIMEOUT_SECS})"
+            ))))
+            .await?;
+        return Ok(());
+    }
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let deadline = match tokio::time::Instant::now().checked_add(timeout) {
+        Some(d) => d,
+        None => {
+            framed
+                .send(WireMessage::ExecExit(fail(
+                    "timeout_secs overflowed deadline calculation".to_string(),
+                )))
+                .await?;
+            return Ok(());
+        }
+    };
     if let Some((free, total)) = workspace::free_and_total_bytes(&workspace)
         .or_else(|| workspace::free_and_total_bytes(storage_root))
     {
@@ -2707,12 +2739,6 @@ pub async fn run_exec(
         });
     }
 
-    let timeout = std::time::Duration::from_secs(if req.timeout_secs == 0 {
-        EXEC_DEFAULT_TIMEOUT_SECS
-    } else {
-        req.timeout_secs
-    });
-    let deadline = tokio::time::Instant::now() + timeout;
     let mut timed_out = false;
     let mut status = None;
     let mut chunks_open = true;
@@ -2926,6 +2952,32 @@ pub async fn run_remote_exec(
         return Ok(());
     };
 
+    let timeout_secs = if req.timeout_secs == 0 {
+        EXEC_DEFAULT_TIMEOUT_SECS
+    } else {
+        req.timeout_secs
+    };
+    if timeout_secs > MAX_REMOTE_EXEC_TIMEOUT_SECS {
+        framed
+            .send(WireMessage::RemoteExecResult(fail(format!(
+                "timeout_secs ({timeout_secs}) exceeds maximum allowed ({MAX_REMOTE_EXEC_TIMEOUT_SECS})"
+            ))))
+            .await?;
+        return Ok(());
+    }
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let deadline = match tokio::time::Instant::now().checked_add(timeout) {
+        Some(d) => d,
+        None => {
+            framed
+                .send(WireMessage::RemoteExecResult(fail(
+                    "timeout_secs overflowed deadline calculation".to_string(),
+                )))
+                .await?;
+            return Ok(());
+        }
+    };
+
     if let Some((free, total)) = workspace::free_and_total_bytes(&workspace)
         .or_else(|| workspace::free_and_total_bytes(storage_root))
     {
@@ -3085,12 +3137,6 @@ pub async fn run_remote_exec(
         });
     }
 
-    let timeout = std::time::Duration::from_secs(if req.timeout_secs == 0 {
-        EXEC_DEFAULT_TIMEOUT_SECS
-    } else {
-        req.timeout_secs
-    });
-    let deadline = tokio::time::Instant::now() + timeout;
     let mut timed_out = false;
     let mut status = None;
     let mut chunks_open = true;
@@ -3112,11 +3158,19 @@ pub async fn run_remote_exec(
                     let chunk_data = chunk.data.clone();
                     if framed.send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(chunk))).await.is_err() {
                         client_left = true;
-                    } else if req.format == RemoteExecFormat::Json && !is_stderr {
+                    } else if (req.format == RemoteExecFormat::Json || matches!(req.command, RemoteExecCommand::Test | RemoteExecCommand::Bench)) && !is_stderr {
                         if let Some(bytes) = chunk_data {
                             if let Ok(text) = std::str::from_utf8(&bytes) {
                                 stdout_line_buf.push_str(text);
                                 while let Some(pos) = stdout_line_buf.find('\n') {
+                                    if pos > MAX_JSON_LINE_BUFFER_BYTES {
+                                        tracing::warn!(
+                                            line_len = pos,
+                                            "stdout line exceeded limit of {MAX_JSON_LINE_BUFFER_BYTES} bytes; dropping unparsed line"
+                                        );
+                                        stdout_line_buf.drain(..=pos);
+                                        continue;
+                                    }
                                     let line = stdout_line_buf[..pos].trim_end().to_string();
                                     stdout_line_buf.drain(..=pos);
                                     if line.is_empty() {
@@ -3149,6 +3203,13 @@ pub async fn run_remote_exec(
                                             break;
                                         }
                                     }
+                                }
+                                if stdout_line_buf.len() > MAX_JSON_LINE_BUFFER_BYTES {
+                                    tracing::warn!(
+                                        buf_len = stdout_line_buf.len(),
+                                        "stdout buffer without newline exceeded limit of {MAX_JSON_LINE_BUFFER_BYTES} bytes; dropping unparsed buffer"
+                                    );
+                                    stdout_line_buf.clear();
                                 }
                             }
                         }
@@ -3198,6 +3259,36 @@ pub async fn run_remote_exec(
 
     for reader in readers {
         let _ = reader.await;
+    }
+
+    if (req.format == RemoteExecFormat::Json
+        || matches!(req.command, RemoteExecCommand::Test | RemoteExecCommand::Bench))
+        && !stdout_line_buf.is_empty()
+    {
+        let line = stdout_line_buf.trim_end().to_string();
+        if !line.is_empty() && line.len() <= MAX_JSON_LINE_BUFFER_BYTES {
+            let stream_event = match req.language {
+                RemoteExecLanguage::Rust => parse_cargo_json_event(&line),
+                RemoteExecLanguage::Go => parse_go_test_json_event(&line),
+                _ => None,
+            };
+            if let Some(ev) = stream_event {
+                match &ev {
+                    RemoteExecStream::Diagnostic(diag) => diagnostics.push(diag.clone()),
+                    RemoteExecStream::TestEvent(test_ev) => match test_ev {
+                        RemoteExecTestEvent::Passed { .. } => tests_passed += 1,
+                        RemoteExecTestEvent::Failed { .. } => {
+                            tests_failed += 1;
+                            test_failures.push(test_ev.clone());
+                        }
+                        RemoteExecTestEvent::Skipped { .. } => tests_skipped += 1,
+                        RemoteExecTestEvent::Bench { .. } => benches.push(test_ev.clone()),
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
     }
 
     let report_status = report.as_ref().and_then(exec_shim::ReportFile::read);
