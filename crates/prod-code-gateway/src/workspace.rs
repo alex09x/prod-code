@@ -2364,15 +2364,12 @@ impl WorkspaceManager {
     /// Migrates unsaved direct edits from a revoked single-owner session into its session overlay in the engine,
     /// and restores the clean on-disk text into the base Salsa database.
     pub async fn migrate_direct_edits_to_overlays(lease: DirectEditLeaseHandle) {
-        let files: Vec<(PathBuf, String)> = {
-            let mut open = lease.open_files.lock().unwrap_or_else(|e| e.into_inner());
-            open.drain().collect()
-        };
-        if files.is_empty() {
-            return;
-        }
         if let Some(engine_lock) = &lease.workspace.rust_engine {
             let mut engine = engine_lock.lock().await;
+            let files: Vec<(PathBuf, String)> = {
+                let mut open = lease.open_files.lock().unwrap_or_else(|e| e.into_inner());
+                open.drain().collect()
+            };
             for (path, buffer_text) in files {
                 if let Err(e) = engine.reload_file(&path) {
                     tracing::warn!(error = %e, file = %path.display(), "failed to reload disk text before migrating direct edit");
