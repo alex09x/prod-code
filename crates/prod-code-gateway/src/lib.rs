@@ -215,6 +215,8 @@ pub struct ServerState {
     pub search_indexes: search::SearchIndexes,
     /// The token every connection must open with (#402); `None` takes every connection.
     pub auth_token: Option<String>,
+    /// Outbound client TLS credentials / configuration when TLS is enabled.
+    pub client_tls: Option<prod_code_protocol::transport::BuiltClientTls>,
 }
 
 /// How long a connection to a gateway that requires a token may take to send it.
@@ -286,6 +288,7 @@ impl ServerState {
             metrics: Arc::new(metrics::Metrics::new(metrics_dir)),
             engine_allowlist: Vec::new(),
             auth_token: None,
+            client_tls: None,
         }
     }
 
@@ -2307,10 +2310,6 @@ pub async fn run_exec(
     // status (#180); tokio only gets the pipes. The gateway binary starts it through its exec
     // shim, so that the peak memory reported is the command's and not the gateway's (#255).
     let (mut cmd, report) = exec_shim::command(program);
-    // The cluster's token is not the command's to see or send (#402).
-    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
-        cmd.env_remove(var);
-    }
     cmd.args(args)
         .current_dir(&run_dir)
         .envs(compiler_cache_env(&workspace, on_path("ccache")))
@@ -2318,6 +2317,14 @@ pub async fn run_exec(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // The cluster's secret credentials (token and TLS material) are never given to executed commands (#402, Phase 5.6).
+    // Scrubbed AFTER request env is applied so that client requests cannot inject or read cluster secrets.
+    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
+        cmd.env_remove(var);
+    }
+    for var in prod_code_protocol::tls::TLS_ENV_VARS {
+        cmd.env_remove(var);
+    }
     // Own process group, so a timeout or client disconnect can take down the whole tree
     // (cargo -> test binary -> its helpers), not just the direct child.
     {
@@ -5970,9 +5977,10 @@ async fn gossip_loop(state: Arc<ServerState>) {
                 let reply = tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     let addr: SocketAddr = peer.parse().ok()?;
                     // Peers share the cluster's token with the clients (#402).
-                    let stream = prod_code_protocol::transport::connect_with(
+                    let stream = prod_code_protocol::transport::connect_stream_with_client_config(
                         addr,
                         state.auth_token.as_deref(),
+                        state.client_tls.clone(),
                     )
                     .await
                     .ok()?;
@@ -6245,6 +6253,35 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         }
         Some(reason) => tracing::info!(reason, "shadow runs: in-place mode"),
     }
+
+    let tls_mode = prod_code_protocol::tls::TlsMode::from_env()?;
+    let server_tls = prod_code_protocol::tls::ServerTlsConfig::from_env()?;
+    let tls_acceptor = if let Some(tls_cfg) = server_tls {
+        Some(tls_cfg.build_acceptor()?)
+    } else {
+        None
+    };
+
+    // Load and build outbound client TLS configuration before scrubbing TLS_KEY_ENV (#Phase 5.6):
+    let client_tls_built = match prod_code_protocol::tls::ClientTlsConfig::from_env()? {
+        Some(cfg) => Some(cfg.build()?),
+        None => None,
+    };
+    prod_code_protocol::transport::set_default_client_tls_built(client_tls_built.clone());
+    state.client_tls = client_tls_built;
+
+    if tls_mode.is_required() && tls_acceptor.is_none() {
+        return Err(anyhow::anyhow!(
+            "TLS mode {:?} is strictly required, but server TLS credentials/CA are not configured",
+            tls_mode
+        ));
+    }
+    tracing::info!(
+        mode = ?tls_mode,
+        tls_enabled = tls_acceptor.is_some(),
+        "cluster transport security (Phase 5.6)"
+    );
+
     let state = Arc::new(state);
     let listener = TcpListener::bind(cli.bind).await?;
     // The address it actually bound, not the one it was asked for: with a port of 0, or an
@@ -6330,16 +6367,92 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         }
     }
 
+    let handshake_limiter = Arc::new(tokio::sync::Semaphore::new(128));
+    let tls_acceptor = tls_acceptor.map(Arc::new);
+
     loop {
-        let (stream, addr): (AnyStream, String) = tokio::select! {
+        tokio::select! {
             accepted = listener.accept() => {
-                let (socket, addr) = accepted?;
+                let (socket, addr) = match accepted {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::warn!(%e, "TCP accept error");
+                        continue;
+                    }
+                };
+                let permit = match handshake_limiter.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        tracing::warn!(%addr, "Too many concurrent handshakes; dropping connection");
+                        continue;
+                    }
+                };
                 prod_code_protocol::transport::tune(&socket);
-                (AnyStream::Tcp(socket), addr.to_string())
+                let state_clone = Arc::clone(&state);
+                let tls_acceptor = tls_acceptor.clone();
+                let tls_mode = tls_mode;
+                let addr_str = addr.to_string();
+
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let stream = if let Some(ref acceptor) = tls_acceptor {
+                        let mut peek_buf = [0u8; 1];
+                        let peek_result = tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            socket.peek(&mut peek_buf),
+                        ).await;
+                        match peek_result {
+                            Ok(Ok(1)) if peek_buf[0] == 0x16 => {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    acceptor.accept(socket),
+                                ).await {
+                                    Ok(Ok(tls_stream)) => AnyStream::TlsServer(tls_stream),
+                                    Ok(Err(e)) => {
+                                        tracing::warn!(%addr, %e, "TLS handshake failed on accepted connection");
+                                        return;
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!(%addr, "TLS handshake timed out");
+                                        return;
+                                    }
+                                }
+                            }
+                            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                                if tls_mode.is_required() {
+                                    tracing::warn!(%addr, "Plaintext connection rejected: TLS mode {:?} is strictly required", tls_mode);
+                                    return;
+                                }
+                                AnyStream::Tcp(socket)
+                            }
+                        }
+                    } else if tls_mode.is_required() {
+                        tracing::warn!(%addr, "Connection rejected: TLS mode {:?} is required but no server TLS acceptor configured", tls_mode);
+                        return;
+                    } else {
+                        AnyStream::Tcp(socket)
+                    };
+
+                    drop(_permit);
+                    if let Err(err) = handle_client(stream, addr_str.clone(), state_clone).await {
+                        tracing::error!(addr = %addr_str, %err, "Error in client connection");
+                    }
+                });
             }
             accepted = accept_unix(&unix_listener) => {
-                let (socket, _) = accepted?;
-                (AnyStream::Unix(socket), "unix-socket".to_string())
+                let (socket, _) = match accepted {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::warn!(%e, "Unix socket accept error");
+                        continue;
+                    }
+                };
+                let state_clone = Arc::clone(&state);
+                tokio::spawn(async move {
+                    if let Err(err) = handle_client(AnyStream::Unix(socket), "unix-socket".to_string(), state_clone).await {
+                        tracing::error!(addr = "unix-socket", %err, "Error in client connection");
+                    }
+                });
             }
             _ = terminate.recv() => {
                 tracing::info!("SIGTERM: no longer accepting connections");
@@ -6349,13 +6462,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
                 tracing::info!("SIGINT: no longer accepting connections");
                 return Ok(());
             }
-        };
-        let state_clone = Arc::clone(&state);
-        tokio::spawn(async move {
-            if let Err(err) = handle_client(stream, addr.clone(), state_clone).await {
-                tracing::error!(%addr, %err, "Error in client connection");
-            }
-        });
+        }
     }
 }
 

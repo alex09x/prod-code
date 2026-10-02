@@ -466,6 +466,13 @@ impl BackendWorker {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        // The cluster's secret credentials (token and TLS material) are never given to backend language servers (#402, Phase 5.6).
+        for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
+            cmd.env_remove(var);
+        }
+        for var in prod_code_protocol::tls::TLS_ENV_VARS {
+            cmd.env_remove(var);
+        }
 
         let mut child = cmd
             .spawn()

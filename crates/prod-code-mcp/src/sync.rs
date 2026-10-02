@@ -3,13 +3,13 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    FileDelta, FileStamp, ProdCodeCodec, SyncProbeRequest, SyncRequest, WireMessage, content_hash,
+    AnyStream, FileDelta, FileStamp, ProdCodeCodec, SyncProbeRequest, SyncRequest, WireMessage,
+    content_hash,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MiB per source file limit
@@ -953,7 +953,7 @@ pub struct SyncOutcome {
 }
 
 async fn wait_for_message<T>(
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
     what: &str,
     pick: impl Fn(WireMessage) -> Option<T>,
 ) -> Result<T> {
@@ -986,7 +986,7 @@ async fn wait_for_message<T>(
 /// later rounds send the watermark delta. The watermark is committed once the gateway has
 /// acknowledged the uploads.
 pub async fn push_workspace_sync(
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
     root: &Path,
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
@@ -1008,7 +1008,7 @@ pub async fn push_workspace_sync(
 }
 
 /// The `host:port` of the gateway on the other end of `framed`, which keys its watermark.
-pub fn gateway_node(framed: &Framed<TcpStream, ProdCodeCodec>) -> String {
+pub fn gateway_node(framed: &Framed<AnyStream, ProdCodeCodec>) -> String {
     framed
         .get_ref()
         .peer_addr()
@@ -1017,7 +1017,7 @@ pub fn gateway_node(framed: &Framed<TcpStream, ProdCodeCodec>) -> String {
 }
 
 async fn push_sync_round(
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
     root: &Path,
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,

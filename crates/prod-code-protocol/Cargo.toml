@@ -21,3 +21,11 @@ url.workspace = true
 socket2.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pki-types.workspace = true
+rustls-pemfile.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+tempfile.workspace = true

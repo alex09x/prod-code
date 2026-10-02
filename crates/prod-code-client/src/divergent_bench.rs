@@ -36,15 +36,14 @@ use crate::LatencyStats;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
-    validate_selected_protocol_version,
+    AnyStream, HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage,
+    supported_protocol_versions, validate_selected_protocol_version,
 };
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
 use url::Url;
@@ -903,7 +902,7 @@ fn extract_hover_text(result: &serde_json::Value) -> String {
 }
 
 async fn read_response_matching_id(
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
     id: i64,
     query_timeout: Duration,
 ) -> Result<serde_json::Value> {
@@ -993,7 +992,7 @@ async fn open_session(
     remote: SocketAddr,
     wt: &DivergentWorktree,
     client_name: String,
-) -> Result<Framed<TcpStream, ProdCodeCodec>> {
+) -> Result<Framed<AnyStream, ProdCodeCodec>> {
     open_session_with_timeout(remote, wt, client_name, SESSION_SETUP_TIMEOUT).await
 }
 
@@ -1004,7 +1003,7 @@ async fn open_session_with_timeout(
     wt: &DivergentWorktree,
     client_name: String,
     setup_timeout: Duration,
-) -> Result<Framed<TcpStream, ProdCodeCodec>> {
+) -> Result<Framed<AnyStream, ProdCodeCodec>> {
     timeout(
         setup_timeout,
         open_session_unbounded(remote, wt, client_name),
@@ -1021,7 +1020,7 @@ async fn open_session_unbounded(
     remote: SocketAddr,
     wt: &DivergentWorktree,
     client_name: String,
-) -> Result<Framed<TcpStream, ProdCodeCodec>> {
+) -> Result<Framed<AnyStream, ProdCodeCodec>> {
     let ws_root_str = wt.root.to_string_lossy().to_string();
     let stream = prod_code_protocol::transport::connect(remote)
         .await
@@ -1108,7 +1107,7 @@ async fn open_session_unbounded(
 
 /// One didOpen/hover/didClose round on an open session; returns the hover text for `wt.symbol`.
 async fn hover_in_session(
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
     wt: &DivergentWorktree,
     language: Language,
     request_id: i64,
@@ -1187,7 +1186,7 @@ async fn hover_in_session(
     Ok(hover_text)
 }
 
-async fn close_session(mut framed: Framed<TcpStream, ProdCodeCodec>) {
+async fn close_session(mut framed: Framed<AnyStream, ProdCodeCodec>) {
     let _ = framed
         .send(WireMessage::Disconnect {
             reason: "divergent-bench session finished".to_string(),
@@ -1553,7 +1552,7 @@ mod tests {
     }
 
     async fn receive_sync_then_handshake(
-        framed: &mut Framed<TcpStream, ProdCodeCodec>,
+        framed: &mut Framed<tokio::net::TcpStream, ProdCodeCodec>,
     ) -> HandshakeRequest {
         loop {
             match framed

@@ -10,20 +10,19 @@ use crate::sync::{
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
-    validate_selected_protocol_version,
+    AnyStream, HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage,
+    supported_protocol_versions, validate_selected_protocol_version,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use url::Url;
 
 pub struct LspSession {
     remote: SocketAddr,
-    framed: Framed<TcpStream, ProdCodeCodec>,
+    framed: Framed<AnyStream, ProdCodeCodec>,
     root: PathBuf,
     /// The documents open in the server, by URI: the file, and a hash of the disk text last
     /// sent for it (`None` for a proposed text, which is not the file's).
@@ -738,7 +737,7 @@ mod tests {
         LspSession {
             remote: addr,
             framed: Framed::new(
-                TcpStream::connect(addr).await.unwrap(),
+                AnyStream::connect(addr).await.unwrap(),
                 ProdCodeCodec::new(),
             ),
             root: PathBuf::new(),

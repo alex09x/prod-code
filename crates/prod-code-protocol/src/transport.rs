@@ -5,6 +5,7 @@
 use crate::messages::{AuthToken, WireMessage};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -67,15 +68,11 @@ fn resolve_token(env: Option<&str>, file: Option<&Path>) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
-/// Connects to `addr`, [`tune`]s the connection, and opens it with the cluster's
-/// [`auth_token`] when there is one.
-pub async fn connect(addr: SocketAddr) -> std::io::Result<TcpStream> {
-    connect_with(addr, auth_token().as_deref()).await
-}
 
-/// Connects to `addr`, [`tune`]s the connection, and sends `token` as its first frame when one
-/// is given.
-pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Result<TcpStream> {
+/// Establishes a raw tuned TCP connection to `addr` with backoff retries for transient ARP/network errors.
+///
+/// This is crate-private to prevent downstream callers from bypassing TLS enforcement (#Phase 5.6).
+pub(crate) async fn connect_raw_tcp(addr: SocketAddr) -> std::io::Result<TcpStream> {
     let mut last_err = None;
     for attempt in 0..3 {
         if attempt > 0 {
@@ -88,14 +85,8 @@ pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Res
             tokio::time::sleep(backoff).await;
         }
         match TcpStream::connect(addr).await {
-            Ok(mut stream) => {
+            Ok(stream) => {
                 tune(&stream);
-                if let Some(token) = token {
-                    let mut frame = bytes::BytesMut::new();
-                    crate::codec::ProdCodeCodec::new()
-                        .encode(WireMessage::Auth(AuthToken(token.to_string())), &mut frame)?;
-                    stream.write_all(&frame).await?;
-                }
                 return Ok(stream);
             }
             Err(e) => {
@@ -104,6 +95,149 @@ pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Res
         }
     }
     Err(last_err.unwrap())
+}
+
+/// Connects to `addr` with a raw tuned TCP stream, failing closed if TLS is strictly required.
+pub(crate) async fn connect_raw_tcp_with(
+    addr: SocketAddr,
+    token: Option<&str>,
+) -> std::io::Result<TcpStream> {
+    let mode = crate::tls::TlsMode::from_env()?;
+    if mode.is_required() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("Refusing plaintext TCP connection to {addr}: TLS mode '{mode:?}' is strictly required"),
+        ));
+    }
+    let mut stream = connect_raw_tcp(addr).await?;
+    if let Some(token) = token {
+        let mut frame = bytes::BytesMut::new();
+        crate::codec::ProdCodeCodec::new()
+            .encode(WireMessage::Auth(AuthToken(token.to_string())), &mut frame)?;
+        stream.write_all(&frame).await?;
+    }
+    Ok(stream)
+}
+
+/// Pre-negotiated/built client TLS 1.3 configuration and SNI server name.
+pub type BuiltClientTls = (Arc<rustls::ClientConfig>, rustls::pki_types::ServerName<'static>);
+
+static DEFAULT_CLIENT_TLS: RwLock<Option<Option<BuiltClientTls>>> = RwLock::new(None);
+
+/// Pre-sets or caches built client TLS configuration for the current process.
+pub fn set_default_client_tls_built(built: Option<BuiltClientTls>) {
+    if let Ok(mut guard) = DEFAULT_CLIENT_TLS.write() {
+        *guard = Some(built);
+    }
+}
+
+/// Sets and caches default client TLS configuration from an existing [`crate::tls::ClientTlsConfig`].
+pub fn set_default_client_tls(config: Option<crate::tls::ClientTlsConfig>) -> std::io::Result<()> {
+    let built = match config {
+        Some(cfg) => Some(cfg.build()?),
+        None => None,
+    };
+    set_default_client_tls_built(built);
+    Ok(())
+}
+
+/// Initializes and caches client TLS configuration from the process environment before credentials are scrubbed.
+pub fn init_client_tls_from_env() -> std::io::Result<()> {
+    let config = crate::tls::ClientTlsConfig::from_env()?;
+    set_default_client_tls(config)
+}
+
+/// Returns the currently cached default client TLS configuration, if explicitly configured or cached.
+pub fn default_client_tls_built() -> Option<Option<BuiltClientTls>> {
+    DEFAULT_CLIENT_TLS.read().ok().and_then(|guard| guard.clone())
+}
+
+/// Clears the cached client TLS configuration (primarily for unit tests).
+pub fn clear_client_tls_cache() {
+    if let Ok(mut guard) = DEFAULT_CLIENT_TLS.write() {
+        *guard = None;
+    }
+}
+
+/// Connects to `addr`, negotiating TLS 1.3 / mTLS if configured in the environment,
+/// and sending the cluster's auth token strictly inside the encrypted channel.
+pub async fn connect_stream(addr: SocketAddr) -> std::io::Result<AnyStream> {
+    connect_stream_with(addr, auth_token().as_deref()).await
+}
+
+/// Connects to `addr`, negotiating TLS 1.3 / mTLS using the provided client TLS configuration (or falling back to
+/// the process default / environment), transmitting `token` strictly inside the TLS encrypted channel.
+pub async fn connect_stream_with_client_config(
+    addr: SocketAddr,
+    token: Option<&str>,
+    client_config: Option<BuiltClientTls>,
+) -> std::io::Result<AnyStream> {
+    let mode = crate::tls::TlsMode::from_env()?;
+    let configured_tls = match client_config {
+        Some(c) => Some(c),
+        None => {
+            if let Some(cached) = default_client_tls_built() {
+                cached
+            } else if let Some(client_tls) = crate::tls::ClientTlsConfig::from_env()? {
+                Some(client_tls.build()?)
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some((config, server_name)) = configured_tls {
+        let tcp = connect_raw_tcp(addr).await?;
+        let mut tls = crate::tls::upgrade_client_stream(tcp, config, server_name).await?;
+        if let Some(token) = token {
+            let mut frame = bytes::BytesMut::new();
+            crate::codec::ProdCodeCodec::new()
+                .encode(WireMessage::Auth(AuthToken(token.to_string())), &mut frame)?;
+            tls.write_all(&frame).await?;
+            tls.flush().await?;
+        }
+        return Ok(AnyStream::TlsClient(tls));
+    } else if mode.is_required() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("TLS is strictly required by PROD_CODE_TLS_MODE ({mode:?}), but no valid client TLS credentials/CA or pins are configured"),
+        ));
+    }
+
+    connect_raw_tcp_with(addr, token).await.map(AnyStream::Tcp)
+}
+
+/// Connects to `addr`, negotiating TLS 1.3 / mTLS with an optional explicit [`crate::tls::ClientTlsConfig`].
+pub async fn connect_stream_with_tls(
+    addr: SocketAddr,
+    token: Option<&str>,
+    client_tls: Option<&crate::tls::ClientTlsConfig>,
+) -> std::io::Result<AnyStream> {
+    let client_config = match client_tls {
+        Some(cfg) => Some(cfg.clone().build()?),
+        None => None,
+    };
+    connect_stream_with_client_config(addr, token, client_config).await
+}
+
+/// Connects to `addr`, negotiating TLS 1.3 / mTLS if configured, and transmitting `token`
+/// strictly inside the TLS encrypted channel. Never falls back to plaintext if TLS mode is Strict or Mutual.
+pub async fn connect_stream_with(
+    addr: SocketAddr,
+    token: Option<&str>,
+) -> std::io::Result<AnyStream> {
+    connect_stream_with_client_config(addr, token, None).await
+}
+
+/// Connects to `addr`, [`tune`]s the connection, and sends `token` as its first frame when one
+/// is given. When TLS is configured or required, establishes a TLS 1.3 channel before sending credentials.
+pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Result<AnyStream> {
+    connect_stream_with(addr, token).await
+}
+
+/// Connects to `addr` using the default auth token and TLS 1.3 negotiation when configured.
+pub async fn connect(addr: SocketAddr) -> std::io::Result<AnyStream> {
+    connect_stream(addr).await
 }
 
 /// Connects to the Unix domain socket at `path` and opens it with the cluster's
@@ -156,18 +290,60 @@ pub async fn connect_named_pipe_with(
     Ok(client)
 }
 
-/// A transport stream that can be either TCP, a local Unix domain socket, or a Windows Named Pipe.
+/// A transport stream that can be either TCP, TLS, a local Unix domain socket, or a Windows Named Pipe.
 pub enum AnyStream {
     Tcp(TcpStream),
+    TlsClient(tokio_rustls::client::TlsStream<TcpStream>),
+    TlsServer(tokio_rustls::server::TlsStream<TcpStream>),
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
     #[cfg(windows)]
     NamedPipe(tokio::net::windows::named_pipe::NamedPipeClient),
 }
 
+impl std::fmt::Debug for AnyStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnyStream::Tcp(s) => f.debug_tuple("Tcp").field(s).finish(),
+            AnyStream::TlsClient(_) => f.debug_tuple("TlsClient").field(&self.peer_addr().ok()).finish(),
+            AnyStream::TlsServer(_) => f.debug_tuple("TlsServer").field(&self.peer_addr().ok()).finish(),
+            #[cfg(unix)]
+            AnyStream::Unix(s) => f.debug_tuple("Unix").field(s).finish(),
+            #[cfg(windows)]
+            AnyStream::NamedPipe(_) => f.debug_tuple("NamedPipe").finish(),
+        }
+    }
+}
+
 impl AnyStream {
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        match self {
+            AnyStream::Tcp(s) => s.peer_addr(),
+            AnyStream::TlsClient(s) => s.get_ref().0.peer_addr(),
+            AnyStream::TlsServer(s) => s.get_ref().0.peer_addr(),
+            #[cfg(unix)]
+            AnyStream::Unix(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "unix domain socket has no IP peer_addr",
+            )),
+            #[cfg(windows)]
+            AnyStream::NamedPipe(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "named pipe has no IP peer_addr",
+            )),
+        }
+    }
+
+    pub async fn connect(addr: SocketAddr) -> std::io::Result<Self> {
+        connect_stream(addr).await
+    }
+
     pub async fn connect_tcp(addr: SocketAddr) -> std::io::Result<Self> {
-        connect(addr).await.map(AnyStream::Tcp)
+        connect_stream(addr).await
+    }
+
+    pub async fn connect_stream(addr: SocketAddr) -> std::io::Result<Self> {
+        connect_stream(addr).await
     }
 
     #[cfg(unix)]
@@ -184,6 +360,18 @@ impl AnyStream {
 impl From<TcpStream> for AnyStream {
     fn from(s: TcpStream) -> Self {
         AnyStream::Tcp(s)
+    }
+}
+
+impl From<tokio_rustls::client::TlsStream<TcpStream>> for AnyStream {
+    fn from(s: tokio_rustls::client::TlsStream<TcpStream>) -> Self {
+        AnyStream::TlsClient(s)
+    }
+}
+
+impl From<tokio_rustls::server::TlsStream<TcpStream>> for AnyStream {
+    fn from(s: tokio_rustls::server::TlsStream<TcpStream>) -> Self {
+        AnyStream::TlsServer(s)
     }
 }
 
@@ -209,6 +397,8 @@ impl tokio::io::AsyncRead for AnyStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.get_mut() {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            AnyStream::TlsClient(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            AnyStream::TlsServer(s) => std::pin::Pin::new(s).poll_read(cx, buf),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_read(cx, buf),
             #[cfg(windows)]
@@ -225,6 +415,8 @@ impl tokio::io::AsyncWrite for AnyStream {
     ) -> std::task::Poll<std::io::Result<usize>> {
         match self.get_mut() {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            AnyStream::TlsClient(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            AnyStream::TlsServer(s) => std::pin::Pin::new(s).poll_write(cx, buf),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_write(cx, buf),
             #[cfg(windows)]
@@ -238,6 +430,8 @@ impl tokio::io::AsyncWrite for AnyStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.get_mut() {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_flush(cx),
+            AnyStream::TlsClient(s) => std::pin::Pin::new(s).poll_flush(cx),
+            AnyStream::TlsServer(s) => std::pin::Pin::new(s).poll_flush(cx),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_flush(cx),
             #[cfg(windows)]
@@ -251,6 +445,8 @@ impl tokio::io::AsyncWrite for AnyStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.get_mut() {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            AnyStream::TlsClient(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            AnyStream::TlsServer(s) => std::pin::Pin::new(s).poll_shutdown(cx),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_shutdown(cx),
             #[cfg(windows)]
@@ -397,7 +593,7 @@ mod tests {
     async fn a_connection_has_keepalive_and_no_nagle_on_both_ends() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let (client, accepted) = tokio::join!(connect_with(addr, None), listener.accept());
+        let (client, accepted) = tokio::join!(connect_raw_tcp(addr), listener.accept());
         let client = client.unwrap();
         let (server, _) = accepted.unwrap();
         tune(&server);
@@ -659,10 +855,146 @@ mod lsp_frame_tests {
         let any: AnyStream = client.into();
         match any {
             AnyStream::Tcp(_) => {}
-            #[cfg(unix)]
-            AnyStream::Unix(_) => panic!("expected Tcp"),
-            #[cfg(windows)]
-            AnyStream::NamedPipe(_) => panic!("expected Tcp"),
+            _ => panic!("expected Tcp"),
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_tcp_with_fails_closed_when_tls_required_even_without_token() {
+        let _lock = crate::tls::tests::TEST_ENV_LOCK.lock().await;
+        unsafe {
+            std::env::set_var(crate::tls::TLS_MODE_ENV, "strict");
+        }
+        let dummy_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let err = connect_raw_tcp_with(dummy_addr, None).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        unsafe {
+            std::env::remove_var(crate::tls::TLS_MODE_ENV);
+        }
+    }
+
+
+    #[tokio::test]
+    async fn raw_tcp_with_fails_on_invalid_mode() {
+        let _lock = crate::tls::tests::TEST_ENV_LOCK.lock().await;
+        unsafe {
+            std::env::set_var(crate::tls::TLS_MODE_ENV, "stricts");
+        }
+        let dummy_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let err = connect_raw_tcp_with(dummy_addr, None).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        unsafe {
+            std::env::remove_var(crate::tls::TLS_MODE_ENV);
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_stream_with_succeeds_in_mutual_mode_after_caching_and_scrubbing_key_env() {
+        use crate::tls::{ServerTlsConfig, upgrade_server_stream};
+        use tokio::io::AsyncReadExt;
+
+        let _lock = crate::tls::tests::TEST_ENV_LOCK.lock().await;
+        clear_client_tls_cache();
+
+        let mut client_cert_params =
+            rcgen::CertificateParams::new(vec!["gateway-outbound".to_string()]).unwrap();
+        client_cert_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "gateway-outbound");
+        let client_key_pair = rcgen::KeyPair::generate().unwrap();
+        let client_ca_key = rcgen::KeyPair::generate().unwrap();
+        let client_ca_cert =
+            rcgen::CertificateParams::new(vec!["client-ca".to_string()]).unwrap()
+                .self_signed(&client_ca_key)
+                .unwrap();
+        let signed_client_cert = client_cert_params
+            .signed_by(&client_key_pair, &client_ca_cert, &client_ca_key)
+            .unwrap();
+
+        let cert_file = tempfile::NamedTempFile::new().unwrap();
+        let key_file = tempfile::NamedTempFile::new().unwrap();
+        let ca_file = tempfile::NamedTempFile::new().unwrap();
+
+        std::fs::write(cert_file.path(), signed_client_cert.pem()).unwrap();
+        std::fs::write(key_file.path(), client_key_pair.serialize_pem()).unwrap();
+
+        let mut ca_params = rcgen::CertificateParams::new(vec!["server-ca".to_string()]).unwrap();
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "server-ca");
+        let ca_key_pair = rcgen::KeyPair::generate().unwrap();
+        let ca_cert_obj = ca_params.self_signed(&ca_key_pair).unwrap();
+        std::fs::write(ca_file.path(), ca_cert_obj.pem()).unwrap();
+
+        let mut server_params =
+            rcgen::CertificateParams::new(vec!["cluster-peer".to_string()]).unwrap();
+        server_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "cluster-peer");
+        let s_key = rcgen::KeyPair::generate().unwrap();
+        let s_cert = server_params
+            .signed_by(&s_key, &ca_cert_obj, &ca_key_pair)
+            .unwrap();
+
+        let s_cert_der = rustls::pki_types::CertificateDer::from(s_cert.der().to_vec());
+        let s_key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(s_key.serialize_der()),
+        );
+
+        let mut client_roots = rustls::RootCertStore::empty();
+        client_roots
+            .add(rustls::pki_types::CertificateDer::from(client_ca_cert.der().to_vec()))
+            .unwrap();
+
+        let server_tls = ServerTlsConfig::new(vec![s_cert_der], s_key_der)
+            .with_client_ca(client_roots, true)
+            .build()
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut tls_stream = upgrade_server_stream(stream, server_tls).await.unwrap();
+            let mut token_buf = [0u8; 100];
+            let n = tls_stream.read(&mut token_buf).await.unwrap();
+            assert!(n > 0);
+        });
+
+        unsafe {
+            std::env::set_var(crate::tls::TLS_MODE_ENV, "mutual");
+            std::env::set_var(crate::tls::TLS_CERT_ENV, cert_file.path());
+            std::env::set_var(crate::tls::TLS_KEY_ENV, key_file.path());
+            std::env::set_var(crate::tls::TLS_CA_ENV, ca_file.path());
+            std::env::set_var(crate::tls::TLS_SERVER_NAME_ENV, "cluster-peer");
+        }
+
+        init_client_tls_from_env().unwrap();
+
+        // Simulate gateway scrubbing TLS_KEY_ENV at startup:
+        unsafe {
+            std::env::remove_var(crate::tls::TLS_KEY_ENV);
+        }
+
+        // Direct ClientTlsConfig::from_env() now fails:
+        assert!(crate::tls::ClientTlsConfig::from_env().is_err());
+
+        // But connect_stream_with uses cached default client TLS configuration and succeeds:
+        let stream = connect_stream_with(addr, Some("cluster-token")).await.unwrap();
+        match stream {
+            AnyStream::TlsClient(_) => {}
+            _ => panic!("expected TlsClient stream"),
+        }
+
+        server_task.await.unwrap();
+
+        clear_client_tls_cache();
+        unsafe {
+            std::env::remove_var(crate::tls::TLS_MODE_ENV);
+            std::env::remove_var(crate::tls::TLS_CERT_ENV);
+            std::env::remove_var(crate::tls::TLS_CA_ENV);
+            std::env::remove_var(crate::tls::TLS_SERVER_NAME_ENV);
         }
     }
 }

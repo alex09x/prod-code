@@ -4953,7 +4953,7 @@ async fn open_editor_session(
     cwd_str: String,
     identity: prod_code_mcp::sync::WorkspaceIdentity,
 ) -> Result<(
-    Framed<tokio::net::TcpStream, ProdCodeCodec>,
+    Framed<prod_code_protocol::AnyStream, ProdCodeCodec>,
     prod_code_protocol::HandshakeResponse,
 )> {
     let stream = prod_code_protocol::transport::connect(remote)

@@ -1309,7 +1309,7 @@ async fn the_handshake_says_how_old_the_engine_is() {
     commit_in(&root);
 
     let age = |root: PathBuf| async move {
-        let stream = tokio::net::TcpStream::connect(gateway.addr)
+        let stream = prod_code_protocol::transport::connect(gateway.addr)
             .await
             .expect("connect");
         let mut framed = Framed::new(stream, ProdCodeCodec::new());
@@ -2185,7 +2185,7 @@ async fn the_remaining_branches_of_the_dispatch() {
 
 /// An editor's session on the wire: synced, handshaken as an editor, initialised.
 struct EditorSession {
-    framed: tokio_util::codec::Framed<tokio::net::TcpStream, prod_code_protocol::ProdCodeCodec>,
+    framed: tokio_util::codec::Framed<prod_code_protocol::AnyStream, prod_code_protocol::ProdCodeCodec>,
     next_id: u64,
     notes: Vec<serde_json::Value>,
 }
@@ -2222,7 +2222,7 @@ impl EditorSession {
         purpose: Option<String>,
     ) -> (Self, serde_json::Value) {
         use futures_util::{SinkExt, StreamExt};
-        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let stream = prod_code_protocol::transport::connect(addr).await.expect("connect");
         let mut framed =
             tokio_util::codec::Framed::new(stream, prod_code_protocol::ProdCodeCodec::new());
         let identity = prod_code_mcp::sync::workspace_identity(root);
