@@ -399,6 +399,10 @@ impl RustEngineSnapshot {
             self.analysis.crates_for(f).is_ok_and(|c| !c.is_empty())
         });
         if is_safe_file_id(file_id) {
+            let overlay = self.current_overlay();
+            if !self.is_in_view(file_id, overlay.as_ref()) {
+                return None;
+            }
             Some(file_id)
         } else {
             tracing::error!(?file_id, "FileId exceeded MAX_SAFE_FILE_ID (0x007F_FFFF)");
@@ -3712,6 +3716,86 @@ fn main() {
         assert!(engine.detach_worktree(&invalid_wt));
         assert!(!engine.has_worktree(&invalid_wt));
         assert_eq!(engine.worktree_attachment_count(&invalid_wt), 0);
+    }
+
+    #[test]
+    fn test_worktree_file_id_for_path_isolation() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("base");
+        std::fs::create_dir_all(base_dir.join("src")).unwrap();
+        std::fs::write(
+            base_dir.join("Cargo.toml"),
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base_dir.join("src/lib.rs"),
+            "pub fn base_fn() {}\n",
+        )
+        .unwrap();
+
+        let mut engine = RustEngine::load(&base_dir).unwrap();
+
+        let wt1_dir = temp.path().join("wt1");
+        std::fs::create_dir_all(wt1_dir.join("src")).unwrap();
+        std::fs::write(
+            wt1_dir.join("Cargo.toml"),
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt1_dir.join("src/lib.rs"),
+            "pub fn base_fn() {}\n",
+        )
+        .unwrap();
+
+        let wt2_dir = temp.path().join("wt2");
+        std::fs::create_dir_all(wt2_dir.join("src")).unwrap();
+        std::fs::write(
+            wt2_dir.join("Cargo.toml"),
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt2_dir.join("src/lib.rs"),
+            "pub fn base_fn() {}\n",
+        )
+        .unwrap();
+
+        engine.attach_worktree(&wt1_dir).unwrap();
+        engine.attach_worktree(&wt2_dir).unwrap();
+
+        let wt1_private_file = wt1_dir.join("src/private_a.rs");
+        let wt2_private_file = wt2_dir.join("src/private_b.rs");
+
+        engine
+            .update_base(&wt1_private_file, Some("pub fn private_a() {}\n".to_string()))
+            .unwrap();
+        engine
+            .update_base(&wt2_private_file, Some("pub fn private_b() {}\n".to_string()))
+            .unwrap();
+
+        let snap_base = engine.snapshot();
+        let snap_wt1 = engine.snapshot_for(&wt1_dir);
+        let snap_wt2 = engine.snapshot_for(&wt2_dir);
+
+        // wt1 snapshot can see wt1's private file, but NOT wt2's private file
+        assert!(snap_wt1.file_id_for_path(&wt1_private_file).is_some());
+        assert!(
+            snap_wt1.file_id_for_path(&wt2_private_file).is_none(),
+            "WT1 snapshot must not leak file_id for WT2's private file"
+        );
+
+        // wt2 snapshot can see wt2's private file, but NOT wt1's private file
+        assert!(snap_wt2.file_id_for_path(&wt2_private_file).is_some());
+        assert!(
+            snap_wt2.file_id_for_path(&wt1_private_file).is_none(),
+            "WT2 snapshot must not leak file_id for WT1's private file"
+        );
+
+        // Base snapshot cannot see either worktree's private files
+        assert!(snap_base.file_id_for_path(&wt1_private_file).is_none());
+        assert!(snap_base.file_id_for_path(&wt2_private_file).is_none());
     }
 }
 
