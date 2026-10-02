@@ -3149,19 +3149,80 @@ pub async fn handle_client(
                     match validation_view {
                         Ok(view) => session_view.workspace = view,
                         Err(err) => {
-                            let reason = format!("private validation engine unavailable: {err:#}");
-                            tracing::warn!(
-                                session_id,
-                                engine,
-                                reason,
-                                "refusing validation handshake"
-                            );
-                            state
-                                .workspace_manager
-                                .unregister_session_view(session_view)
-                                .await;
-                            framed.send(WireMessage::Disconnect { reason }).await?;
-                            return Ok(());
+                            let is_capacity = err
+                                .downcast_ref::<crate::admission::CapacityRefused>()
+                                .is_some()
+                                || err.root_cause().is::<crate::admission::CapacityRefused>()
+                                || err.to_string().contains("capacity:");
+
+                            if is_capacity && req.redirect_count < 2 {
+                                let view = state.cluster_view().await;
+                                let own_addr = state.advertise.read().await.clone();
+                                let ws_name = req
+                                    .base_workspace_name
+                                    .as_deref()
+                                    .unwrap_or(&req.client_workspace_root);
+                                let target = view
+                                    .nodes
+                                    .iter()
+                                    .filter(|n| {
+                                        n.alive
+                                            && !n.addr.is_empty()
+                                            && n.addr != own_addr
+                                            && n.addr != view.this_node
+                                            && cluster_supports_engine(&n.status, engine)
+                                            && n.status.host.pressure().is_none()
+                                    })
+                                    .max_by_key(|n| n.workspaces.iter().any(|w| w.name == ws_name));
+
+                                if let Some(target) = target {
+                                    tracing::info!(
+                                        session_id,
+                                        engine,
+                                        target = %target.addr,
+                                        "redirecting validation session under gateway memory pressure"
+                                    );
+                                    state
+                                        .workspace_manager
+                                        .unregister_session_view(session_view)
+                                        .await;
+                                    let _ = framed
+                                        .send(WireMessage::Redirect {
+                                            target_addr: target.addr.clone(),
+                                            reason: Some(format!(
+                                                "gateway memory pressure; validating {engine} on {}",
+                                                target.addr
+                                            )),
+                                        })
+                                        .await;
+                                    return Ok(());
+                                }
+                            }
+
+                            if is_capacity
+                                && engine != "cpp"
+                                && session_view.accounted.generic_engine.is_some()
+                            {
+                                tracing::warn!(
+                                    session_id,
+                                    engine,
+                                    "private validation engine unavailable under memory pressure; validating on the main engine"
+                                );
+                            } else {
+                                let reason = format!("private validation engine unavailable: {err:#}");
+                                tracing::warn!(
+                                    session_id,
+                                    engine,
+                                    reason,
+                                    "refusing validation handshake"
+                                );
+                                state
+                                    .workspace_manager
+                                    .unregister_session_view(session_view)
+                                    .await;
+                                framed.send(WireMessage::Disconnect { reason }).await?;
+                                return Ok(());
+                            }
                         }
                     }
                 }
