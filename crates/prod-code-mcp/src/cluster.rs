@@ -614,19 +614,26 @@ pub async fn evaluate_cluster_rebalance_with(
     let current_status = match node_status(current_node).await {
         Ok(s) => s,
         Err(_) => {
-            // Current node is down: pick the best available node immediately
+            // Current node is down: pick the best available node immediately, keeping
+            // generic (non-macOS) work off macOS nodes unless no other peer exists.
             let mut candidates = Vec::new();
+            let mut macos_fallback = Vec::new();
             for node in cluster_nodes {
                 if *node == current_node {
                     continue;
                 }
                 if let Ok(st) = node_status(*node).await {
                     if status_fits(&st, engine, os) && st.host.pressure().is_none() {
-                        candidates.push((*node, st.congestion_score()));
+                        if os.is_none() && runs_os(&st, "macos") {
+                            macos_fallback.push((*node, st.congestion_score()));
+                        } else {
+                            candidates.push((*node, st.congestion_score()));
+                        }
                     }
                 }
             }
-            if let Some(best) = choose_best_node(&candidates) {
+            let chosen = choose_best_node(&candidates).or_else(|| choose_best_node(&macos_fallback));
+            if let Some(best) = chosen {
                 return Some((
                     best,
                     format!("current node {current_node} is unreachable, migrating to live peer {best}"),
@@ -1648,6 +1655,50 @@ mod tests {
 
         assert_eq!(chosen, roomy);
         assert_eq!(load_placement(&placement).workspaces.get("subject"), Some(&roomy));
+    }
+
+    #[tokio::test]
+    async fn unreachable_node_failover_avoids_macos_when_linux_peer_available() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+
+        // Dead node (unbound port)
+        let dead: SocketAddr = "127.0.0.1:40999".parse().unwrap();
+
+        // macOS node: very quiet (load 0)
+        let mac_node = node_with(
+            &["rust", "swift"],
+            Some("macos aarch64"),
+            0,
+            HostResources::default(),
+        )
+        .await;
+
+        // Linux node: moderate load
+        let linux_node = node_with(
+            &["rust"],
+            Some("linux x86_64"),
+            100,
+            HostResources::default(),
+        )
+        .await;
+
+        let mut rem = Placement::default();
+        rem.workspaces.insert("generic-work".to_string(), dead);
+        save_placement(&placement, &rem);
+
+        // When dead node is evaluated for generic work (os = None), it must pick the Linux node,
+        // despite the macOS node having lower load.
+        let rebalance = evaluate_cluster_rebalance_with(
+            &[dead, mac_node, linux_node],
+            dead,
+            "generic-work",
+            Some("rust"),
+            None,
+        )
+        .await;
+
+        assert_eq!(rebalance.map(|(addr, _)| addr), Some(linux_node));
     }
 }
 
