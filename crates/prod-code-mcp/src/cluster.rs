@@ -304,6 +304,15 @@ fn save_placement(path: &Path, placement: &Placement) {
     }
 }
 
+/// Remember the chosen node for `workspace_name` in the placement file.
+pub fn remember_placement(workspace_name: &str, node: SocketAddr) {
+    if let Some(path) = placement_path() {
+        let mut placement = load_placement(&path);
+        placement.workspaces.insert(workspace_name.to_string(), node);
+        save_placement(&path, &placement);
+    }
+}
+
 /// Whether a gateway lists `engine` (`rust`, `go`, `swift`, ...) among the engines it can
 /// serve; entries look like `swift (sourcekit-lsp)`.
 pub fn supports_engine(status: &StatusResponse, engine: &str) -> bool {
@@ -365,6 +374,13 @@ pub async fn pick_node_with(
                     tokio::time::sleep(RESTART_WAIT).await;
                     tries += 1;
                     still_fits = node_fits(remembered, engine, os).await;
+                }
+                if still_fits {
+                    if let Ok(status) = node_status(remembered).await {
+                        if status.host.pressure().is_some() {
+                            still_fits = false;
+                        }
+                    }
                 }
                 if still_fits {
                     return Ok(remembered);

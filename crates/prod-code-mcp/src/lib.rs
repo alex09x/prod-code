@@ -76,6 +76,7 @@ pub use sync::scan_workspace_files;
 pub use tools::{execute_tool, list_tools};
 
 use anyhow::{Context, Result};
+use futures_util::FutureExt;
 use protocol::{JsonRpcRequest, JsonRpcResponse};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -162,6 +163,9 @@ pub async fn handle_mcp_request(
                     let old = *remote;
                     if let Some(new_addr) = rediscover_node(old, workspace_root).await {
                         *remote = new_addr;
+                        let identity = crate::sync::workspace_identity(workspace_root);
+                        let name = identity.base.unwrap_or(identity.name);
+                        crate::cluster::remember_placement(&name, new_addr);
                         tracing::info!(
                             old = %old,
                             new = %new_addr,
@@ -246,7 +250,7 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
 /// the command and dropped connection during execution, replaying it on another node can
 /// cause duplicate external side-effects (e.g. database migrations, external API calls).
 /// Similarly, any error where the command result is unknown is non-retryable.
-fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool {
+pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool {
     if tool_name == "code_exec" {
         return false;
     }
@@ -262,6 +266,17 @@ fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool {
         || msg.contains("no route to host")
         || msg.contains("network is unreachable")
         || msg.contains("timed out")
+        || msg.contains("timeout")
+        || msg.contains("broken pipe")
+        || msg.contains("connection reset")
+        || msg.contains("connection closed")
+        || msg.contains("transport closed")
+        || msg.contains("server closed connection")
+        || msg.contains("capacity: this node has no memory")
+        || msg.contains("gateway refused the session: capacity")
+        || msg.contains("this node has no memory for a new")
+        || msg.contains("refused for capacity")
+        || msg.contains("capacity admission")
 }
 
 /// Run a 250ms UDP discovery probe (multicast + unicast to the old address) and return
@@ -272,7 +287,7 @@ fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool {
 /// 2. Nodes that already have the current workspace loaded (warm engine, no cold start)
 /// 3. Among those (or all candidates if none has it), pick the one with the most available memory
 ///    and the lowest load.
-async fn rediscover_node(old: SocketAddr, workspace_root: &std::path::Path) -> Option<SocketAddr> {
+pub async fn rediscover_node(old: SocketAddr, workspace_root: &std::path::Path) -> Option<SocketAddr> {
     let seeds = vec![old];
     let nodes = tokio::task::spawn_blocking(move || {
         prod_code_protocol::discovery::discover(&seeds)
@@ -356,14 +371,28 @@ async fn rediscover_node(old: SocketAddr, workspace_root: &std::path::Path) -> O
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
-    // Prefer a node that already has this workspace loaded (warm engine).
+    // Prefer a node that already has this workspace loaded (warm engine),
+    // provided it has sufficient memory (at least 512 MB available).
     let warm: Vec<_> = candidates
         .iter()
-        .filter(|n| n.workspaces.iter().any(|w| w.name == ws_name))
+        .filter(|n| n.workspaces.iter().any(|w| w.name == ws_name) && n.mem_avail_mb >= 512)
         .copied()
         .collect();
 
-    let pool = if warm.is_empty() { &candidates } else { &warm };
+    // Prefer nodes with at least 512 MB available memory if any exist.
+    let roomy: Vec<_> = candidates
+        .iter()
+        .filter(|n| n.mem_avail_mb >= 512)
+        .copied()
+        .collect();
+
+    let pool = if !warm.is_empty() {
+        &warm
+    } else if !roomy.is_empty() {
+        &roomy
+    } else {
+        &candidates
+    };
 
     // Score: more available memory is better, lower load is better.
     pool.iter()
@@ -462,8 +491,12 @@ where
                     continue;
                 }
             };
-            match handle_mcp_request(&mut remote, &workspace_root, req_json).await {
-                Ok(Some(resp_val)) => {
+            let req_id = req_json.get("id").cloned();
+            let handle_future = std::panic::AssertUnwindSafe(
+                handle_mcp_request(&mut remote, &workspace_root, req_json)
+            );
+            match handle_future.catch_unwind().await {
+                Ok(Ok(Some(resp_val))) => {
                     let out = match serde_json::to_string(&resp_val) {
                         Ok(mut s) => {
                             s.push('\n');
@@ -488,12 +521,32 @@ where
                         break;
                     }
                 }
-                Ok(None) => {}
-                Err(e) => {
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
                     tracing::error!(error = %e, "MCP request handler internal error");
                     let err_resp = serde_json::json!({
                         "jsonrpc": "2.0",
                         "error": { "code": -32603, "message": format!("Internal error: {e}") }
+                    });
+                    if let Ok(mut out) = serde_json::to_string(&err_resp) {
+                        out.push('\n');
+                        let _ = writer.write_all(out.as_bytes()).await;
+                        let _ = writer.flush().await;
+                    }
+                }
+                Err(panic_payload) => {
+                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    tracing::error!(panic = %msg, "MCP request handler panicked");
+                    let err_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": { "code": -32603, "message": format!("Internal error (panic): {msg}") }
                     });
                     if let Ok(mut out) = serde_json::to_string(&err_resp) {
                         out.push('\n');
@@ -789,9 +842,13 @@ mod tests {
         let connect_err = anyhow::anyhow!("Failed to connect to remote gateway: Connection refused (os error 111)");
         let exec_unknown_err = anyhow::anyhow!("lost the connection to the gateway during exec (connection reset); the command's result is unknown");
         let generic_err = anyhow::anyhow!("syntax error in file.rs");
+        let capacity_err = anyhow::anyhow!("the gateway refused the session: capacity: this node has no memory for a new rust engine (memory 80% used)");
+        let transport_closed_err = anyhow::anyhow!("tool call failed for prod-code/code_definition: Transport closed");
+        let broken_pipe_err = anyhow::anyhow!("broken pipe");
 
-        // 1. code_exec must NEVER be retried even on connection refused
+        // 1. code_exec must NEVER be retried even on connection refused or capacity
         assert!(!is_retryable_connection_error("code_exec", &connect_err));
+        assert!(!is_retryable_connection_error("code_exec", &capacity_err));
 
         // 2. Unknown outcome during/after exec must NEVER be retried
         assert!(!is_retryable_connection_error("code_check", &exec_unknown_err));
@@ -800,8 +857,55 @@ mod tests {
         // 3. Pre-dispatch connection errors for read-only tools ARE retryable
         assert!(is_retryable_connection_error("code_definition", &connect_err));
         assert!(is_retryable_connection_error("code_references", &connect_err));
+        assert!(is_retryable_connection_error("code_symbols", &capacity_err));
+        assert!(is_retryable_connection_error("code_definition", &transport_closed_err));
+        assert!(is_retryable_connection_error("code_definition", &broken_pipe_err));
 
         // 4. Non-connection errors are not retryable
         assert!(!is_retryable_connection_error("code_definition", &generic_err));
+    }
+
+    #[tokio::test]
+    async fn serve_mcp_requests_recovers_from_panic_and_returns_jsonrpc_error() {
+        let (client, handle) = spawn_server(false);
+        let mut reader = tokio::io::BufReader::new(client);
+
+        // Ping works normally
+        reader
+            .get_mut()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(resp["id"], 1);
+        assert_eq!(resp["result"], serde_json::json!({}));
+
+        // Send a tool call with unknown tool, server handles it cleanly without dying
+        line.clear();
+        reader
+            .get_mut()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"non_existent_tool_12345\"}}\n")
+            .await
+            .unwrap();
+        reader.read_line(&mut line).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(resp["id"], 2);
+
+        // Server is still alive: ping succeeds
+        line.clear();
+        reader
+            .get_mut()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+        reader.read_line(&mut line).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(resp["id"], 3);
+
+        drop(reader);
+        assert!(handle.await.unwrap().is_ok());
     }
 }
