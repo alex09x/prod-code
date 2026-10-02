@@ -22,6 +22,7 @@ use tokio_util::codec::Framed;
 use url::Url;
 
 pub struct LspSession {
+    remote: SocketAddr,
     framed: Framed<TcpStream, ProdCodeCodec>,
     root: PathBuf,
     /// The documents open in the server, by URI: the file, and a hash of the disk text last
@@ -238,6 +239,7 @@ impl LspSession {
             .unwrap_or("workspace")
             .to_string();
         let mut session = Self {
+            remote,
             framed,
             root,
             opened: HashMap::new(),
@@ -277,6 +279,10 @@ impl LspSession {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn remote(&self) -> SocketAddr {
+        self.remote
     }
 
     async fn notify(&mut self, method: &str, params: serde_json::Value) -> Result<()> {
@@ -718,6 +724,7 @@ mod tests {
                 .unwrap();
         });
         LspSession {
+            remote: addr,
             framed: Framed::new(
                 TcpStream::connect(addr).await.unwrap(),
                 ProdCodeCodec::new(),
