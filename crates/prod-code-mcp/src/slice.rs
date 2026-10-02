@@ -760,8 +760,21 @@ impl FileFacts {
 /// hold makes the answer malformed, like a declaration without a range: slicing it would cut
 /// lines that are not there.
 async fn file_facts(session: &mut LspSession, file: &Path) -> Result<FileFacts> {
-    let text =
-        std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(_) => {
+            let (bytes, _) = crate::remote_fs::read_source(
+                session.remote(),
+                session.root(),
+                &file.to_string_lossy(),
+            )
+            .await
+            .with_context(|| format!("cannot read {}", file.display()))?;
+            String::from_utf8(bytes).or_else(|e| {
+                Ok::<String, anyhow::Error>(String::from_utf8_lossy(&e.into_bytes()).into_owned())
+            })?
+        }
+    };
     let uri = session.uri_for(file)?;
     let symbols = session
         .query(

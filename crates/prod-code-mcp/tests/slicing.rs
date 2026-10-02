@@ -1594,3 +1594,59 @@ async fn validate_compile_reports_metadata_warmup_start_errors() {
 async fn validate_compile_reports_metadata_warmup_timeouts() {
     validate_compile_metadata_warmup_case(None, true, None, Some("timed out")).await;
 }
+
+#[tokio::test]
+async fn slice_fetches_dependency_source_from_remote_gateway_when_not_on_local_disk() {
+    let ws = Workspace::new(&[("src/lib.rs", "fn main() {}\n")]);
+    let root = ws.root();
+
+    let remote_file = "/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/alloy-primitives-1.3.0/src/sig.rs";
+    let remote_source = "pub fn recover_address_from_prehash() -> bool {\n    true\n}\n";
+
+    let gateway = ScriptedGateway::start(move |method, params| match method {
+        "prod-code/readFile" => {
+            let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path == remote_file {
+                serde_json::json!(remote_source)
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            if uri.ends_with("sig.rs") {
+                serde_json::json!([
+                    answers::document_symbol("recover_address_from_prehash", 12, 1, 3, 8)
+                ])
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let seed_file = std::path::Path::new(remote_file);
+    let report = slice::slice_with_options(
+        gateway.addr(),
+        &root,
+        seed_file,
+        1,
+        1,
+        slice::SliceOptions {
+            depth: 0,
+            max_bytes: 1800,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("slicing remote dependency succeeds");
+
+    assert_eq!(report.items.len(), 1);
+    assert_eq!(report.items[0].name, "recover_address_from_prehash");
+    assert!(report.items[0].text.contains("pub fn recover_address_from_prehash"));
+}
+
