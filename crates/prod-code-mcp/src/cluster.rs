@@ -17,7 +17,7 @@ use std::time::Duration;
 use tokio_util::codec::Framed;
 
 /// How long a node has to accept a TCP connection before it counts as down.
-pub const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
+pub const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// The cluster a process may route a request to by the path it names, and the workspace name
 /// placements are remembered under. Set once at startup; unset in tests and in library use,
@@ -499,12 +499,13 @@ pub async fn pick_node_with(
         });
     };
     let loopback: SocketAddr = "127.0.0.1:9400".parse().unwrap();
-    if ((*only == loopback && !is_alive(*only).await)
-        || (engine.is_some() && !node_fits(*only, engine, os).await))
+    if *only == loopback
+        && (!is_alive(*only).await || (engine.is_some() && !node_fits(*only, engine, os).await))
         && let Some(path) = placement_file
     {
         let placement = load_placement(path);
         if let Some(remembered) = placement.workspaces.get(workspace_name).copied()
+            && remembered != loopback
             && node_fits(remembered, engine, os).await
         {
             return Ok(remembered);
@@ -1351,6 +1352,55 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(picked, mac, "pick_node_with must choose remembered mac node");
+    }
+
+    #[tokio::test]
+    async fn explicit_remote_does_not_fall_back_to_remembered_placement() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+
+        let remembered = node_on(&["rust"], Some("linux x86_64")).await;
+        let mut rem = Placement::default();
+        rem.workspaces.insert("subject".to_string(), remembered);
+        save_placement(&placement, &rem);
+
+        let explicit_remote: SocketAddr = "192.168.2.168:9400".parse().unwrap();
+        let picked = pick_node_with(
+            &[explicit_remote],
+            "subject",
+            Some("rust"),
+            None,
+            Some(&placement),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(picked, explicit_remote);
+    }
+
+    #[tokio::test]
+    async fn default_loopback_remote_falls_back_to_remembered_placement_when_dead() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+
+        let remembered = node_on(&["rust"], Some("linux x86_64")).await;
+        let mut rem = Placement::default();
+        rem.workspaces.insert("subject".to_string(), remembered);
+        save_placement(&placement, &rem);
+
+        let default_loopback: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        if !is_alive(default_loopback).await {
+            let picked = pick_node_with(
+                &[default_loopback],
+                "subject",
+                Some("rust"),
+                None,
+                Some(&placement),
+            )
+            .await
+            .unwrap();
+            assert_eq!(picked, remembered);
+        }
     }
 }
 

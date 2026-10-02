@@ -1878,6 +1878,20 @@ async fn main() -> Result<()> {
             }
         }
     }
+    if let Some(Commands::Status { json }) = cli.command {
+        startup.report();
+        let target = if pinned {
+            seeds[0]
+        } else {
+            picked.unwrap_or(seeds[0])
+        };
+        let note = if !pinned && target.ip().is_loopback() && target.port() != 9400 {
+            Some("loopback forward".to_string())
+        } else {
+            None
+        };
+        return run_status_probe(target, json, note).await;
+    }
     // An editor learns why its server could not start from the answer to its `initialize`,
     // not from a process that is gone before it asks (#338).
     if let (Some(Commands::Lsp { .. }), Err(err)) = (&cli.command, &picked) {
@@ -1890,9 +1904,7 @@ async fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Lsp { language: None }) {
         Commands::Lsp { .. } => run_lsp_bridge(remote, lsp_engine).await,
-        // `status` is about the node you name, not about where this checkout is placed.
-        // The node this checkout is placed on, not the first address configured (#329).
-        Commands::Status { json } => run_status_probe(remote, json).await,
+        Commands::Status { .. } => unreachable!("handled before placement"),
         Commands::Cluster { json } => run_cluster(&remotes, &placement_key, cwd_engine, json).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::ReportIssue { .. } => unreachable!("handled before placement"),
@@ -4606,7 +4618,11 @@ fn status_snapshot(
 }
 
 /// Query remote gateway for health and status snapshot.
-async fn run_status_probe(remote: SocketAddr, json: bool) -> Result<()> {
+async fn run_status_probe(
+    remote: SocketAddr,
+    json: bool,
+    fallback_note: Option<String>,
+) -> Result<()> {
     let start = std::time::Instant::now();
     let stream = prod_code_protocol::transport::connect(remote)
         .await
@@ -4619,7 +4635,12 @@ async fn run_status_probe(remote: SocketAddr, json: bool) -> Result<()> {
     if let Some(msg) = framed.next().await {
         match msg? {
             WireMessage::StatusResponse(resp) if json => {
-                let snapshot = status_snapshot(remote, rtt, &resp);
+                let mut snapshot = status_snapshot(remote, rtt, &resp);
+                if let Some(note) = &fallback_note {
+                    if let Some(obj) = snapshot.as_object_mut() {
+                        obj.insert("fallback_transport".to_string(), serde_json::json!(note));
+                    }
+                }
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             }
             WireMessage::StatusResponse(resp) => {
@@ -4629,7 +4650,11 @@ async fn run_status_probe(remote: SocketAddr, json: bool) -> Result<()> {
 
                 println!("⚡ prod-code Remote Code Intelligence Gateway");
                 println!("────────────────────────────────────────────────────");
-                println!("Remote Address:    {remote} ({:.2?} RTT)", rtt);
+                let note_suffix = fallback_note
+                    .as_deref()
+                    .map(|n| format!(" [{n}]"))
+                    .unwrap_or_default();
+                println!("Remote Address:    {remote} ({:.2?} RTT){note_suffix}", rtt);
                 println!("Server PID:        {}", resp.server_pid);
                 println!("Uptime:            {}h {}m {}s", hours, minutes, seconds);
                 if let Some(mb) = resp.memory_rss_mb() {
@@ -5252,13 +5277,16 @@ async fn cluster_snapshot(
     let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
         .first()
         .map(|n| n.to_string());
+    let remembered = prod_code_mcp::cluster::remembered_node(workspace_name);
+    let placed_on_is_cached = remembered.is_some_and(|r| !nodes.contains(&r));
     serde_json::json!({
         "gossip": gossip,
         "nodes": listed,
         "workspace": workspace_name,
         "engine": engine,
         "home": home,
-        "placed_on": prod_code_mcp::cluster::remembered_node(workspace_name).map(|n| n.to_string()),
+        "placed_on": remembered.map(|n| n.to_string()),
+        "placed_on_is_cached": placed_on_is_cached,
     })
 }
 
@@ -5353,7 +5381,8 @@ async fn run_cluster(
         println!("Home node (hash):    {home}");
     }
     match remembered {
-        Some(node) => println!("Placed on:           {node}"),
+        Some(node) if nodes.contains(&node) => println!("Placed on:           {node}"),
+        Some(node) => println!("Placed on:           {node} (cached placement)"),
         None => println!("Placed on:           (not yet)"),
     }
     Ok(())
