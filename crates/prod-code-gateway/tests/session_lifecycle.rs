@@ -691,3 +691,303 @@ async fn dropping_a_public_cold_acquisition_releases_its_workspace_count() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validation_under_memory_pressure_falls_back_to_main_generic_engine() {
+    let storage = tempfile::tempdir().unwrap();
+    let client = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        None,
+    );
+    std::fs::create_dir_all(&server_root).unwrap();
+    let workspace = fake_generic_workspace(&server_root).await;
+
+    // Simulate memory pressure: 90% used (above MEMORY_PRESSURE_USED = 85%)
+    let admission = Arc::new(prod_code_gateway::admission::Admission::with_probe(
+        Arc::new(|| Some((10 * 1024 * 1024, 100 * 1024 * 1024))),
+        0,
+        Duration::ZERO,
+    ));
+    let manager = Arc::new(WorkspaceManager::with_admission(admission));
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    let state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = Arc::clone(&state);
+    let server = OwnedTask::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+
+    let mut client = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
+            client_name: "validation-fallback-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("python".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
+            redirect_count: 0,
+        }))
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(Duration::from_secs(5), client.next())
+        .await
+        .expect("validation handshake completes")
+        .expect("response frame")
+        .expect("wire message");
+
+    assert!(
+        matches!(response, WireMessage::HandshakeResponse(_)),
+        "validation under memory pressure must fall back to the main generic engine, got: {response:?}"
+    );
+
+    drop(client);
+    let _ = server.join().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validation_under_memory_pressure_redirects_to_available_cluster_peer() {
+    let storage = tempfile::tempdir().unwrap();
+    let client = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        None,
+    );
+    std::fs::create_dir_all(&server_root).unwrap();
+    let workspace = fake_generic_workspace(&server_root).await;
+
+    // Simulate memory pressure: 90% used
+    let admission = Arc::new(prod_code_gateway::admission::Admission::with_probe(
+        Arc::new(|| Some((10 * 1024 * 1024, 100 * 1024 * 1024))),
+        0,
+        Duration::ZERO,
+    ));
+    let manager = Arc::new(WorkspaceManager::with_admission(admission));
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    *state.advertise.write().await = "127.0.0.1:9400".to_string();
+
+    let peer_addr = "192.168.2.168:9400".to_string();
+    {
+        let mut cluster = state.cluster.write().await;
+        cluster.insert(
+            peer_addr.clone(),
+            prod_code_gateway::PeerEntry {
+                gossip: prod_code_protocol::NodeGossip {
+                    addr: peer_addr.clone(),
+                    status: prod_code_protocol::StatusResponse {
+                        server_pid: 9999,
+                        uptime_seconds: 100,
+                        active_sessions: 0,
+                        loaded_workspaces: 0,
+                        detected_engines: vec!["python (basedpyright)".to_string()],
+                        memory_rss_bytes: None,
+                        total_queries: 0,
+                        active_queries: 0,
+                        load_average_millis: None,
+                        cpu_count: None,
+                        platform: None,
+                        running_commands: vec![],
+                        host: prod_code_protocol::HostResources {
+                            memory_available_bytes: Some(60 * 1024 * 1024 * 1024),
+                            memory_total_bytes: Some(64 * 1024 * 1024 * 1024),
+                            storage_free_millis: Some(500),
+                        },
+                    },
+                    workspaces: vec![],
+                    peers: vec![],
+                    sent_at_ms: 0,
+                },
+                last_seen: std::time::Instant::now(),
+            },
+        );
+    }
+    let state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = Arc::clone(&state);
+    let server = OwnedTask::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+
+    let mut client = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
+            client_name: "validation-redirect-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("python".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
+            redirect_count: 0,
+        }))
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(Duration::from_secs(5), client.next())
+        .await
+        .expect("validation handshake completes")
+        .expect("response frame")
+        .expect("wire message");
+
+    match response {
+        WireMessage::Redirect { target_addr, reason } => {
+            assert_eq!(target_addr, peer_addr);
+            assert!(
+                reason.as_deref().unwrap_or("").contains("memory pressure"),
+                "reason was: {reason:?}"
+            );
+        }
+        other => panic!("expected WireMessage::Redirect, got {other:?}"),
+    }
+
+    drop(client);
+    let _ = server.join().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validation_under_memory_pressure_falls_back_when_redirect_count_reached() {
+    let storage = tempfile::tempdir().unwrap();
+    let client = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        None,
+    );
+    std::fs::create_dir_all(&server_root).unwrap();
+    let workspace = fake_generic_workspace(&server_root).await;
+
+    // Simulate memory pressure: 90% used
+    let admission = Arc::new(prod_code_gateway::admission::Admission::with_probe(
+        Arc::new(|| Some((10 * 1024 * 1024, 100 * 1024 * 1024))),
+        0,
+        Duration::ZERO,
+    ));
+    let manager = Arc::new(WorkspaceManager::with_admission(admission));
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    *state.advertise.write().await = "127.0.0.1:9400".to_string();
+
+    let peer_addr = "192.168.2.168:9400".to_string();
+    {
+        let mut cluster = state.cluster.write().await;
+        cluster.insert(
+            peer_addr.clone(),
+            prod_code_gateway::PeerEntry {
+                gossip: prod_code_protocol::NodeGossip {
+                    addr: peer_addr.clone(),
+                    status: prod_code_protocol::StatusResponse {
+                        server_pid: 9999,
+                        uptime_seconds: 100,
+                        active_sessions: 0,
+                        loaded_workspaces: 0,
+                        detected_engines: vec!["python (basedpyright)".to_string()],
+                        memory_rss_bytes: None,
+                        total_queries: 0,
+                        active_queries: 0,
+                        load_average_millis: None,
+                        cpu_count: None,
+                        platform: None,
+                        running_commands: vec![],
+                        host: prod_code_protocol::HostResources {
+                            memory_available_bytes: Some(60 * 1024 * 1024 * 1024),
+                            memory_total_bytes: Some(64 * 1024 * 1024 * 1024),
+                            storage_free_millis: Some(500),
+                        },
+                    },
+                    workspaces: vec![],
+                    peers: vec![],
+                    sent_at_ms: 0,
+                },
+                last_seen: std::time::Instant::now(),
+            },
+        );
+    }
+    let state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = Arc::clone(&state);
+    let server = OwnedTask::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+
+    let mut client = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    // Send with redirect_count: 2 (limit reached)
+    client
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
+            client_name: "validation-max-redirects-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("python".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
+            redirect_count: 2,
+        }))
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(Duration::from_secs(5), client.next())
+        .await
+        .expect("validation handshake completes")
+        .expect("response frame")
+        .expect("wire message");
+
+    assert!(
+        matches!(response, WireMessage::HandshakeResponse(_)),
+        "validation with max redirects under memory pressure must fall back to the main generic engine, got: {response:?}"
+    );
+
+    drop(client);
+    let _ = server.join().await;
+}
