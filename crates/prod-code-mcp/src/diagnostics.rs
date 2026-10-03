@@ -1434,6 +1434,19 @@ pub fn next_batch_counter() -> u64 {
     BATCH_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+fn stream_session_disk_path(key: &StreamSessionKey) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.remote.hash(&mut hasher);
+    key.root.hash(&mut hasher);
+    key.file.hash(&mut hasher);
+    key.session_id.hash(&mut hasher);
+    let hash = hasher.finish();
+    let dir = std::env::temp_dir().join("prod-code-stream-sessions");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("{:016x}.session", hash))
+}
+
 impl StreamSessionManager {
     pub fn new() -> Self {
         Self {
@@ -1450,6 +1463,7 @@ impl StreamSessionManager {
         if let Ok(mut tombstones) = self.tombstones.lock() {
             tombstones.remove(&key);
         }
+        let _ = std::fs::remove_file(stream_session_disk_path(&key));
     }
 
     fn insert_tombstone(tombstones: &mut HashMap<StreamSessionKey, Instant>, key: StreamSessionKey) {
@@ -1476,6 +1490,7 @@ impl StreamSessionManager {
         if let Ok(mut tombstones) = self.tombstones.lock() {
             Self::insert_tombstone(&mut tombstones, key.clone());
         }
+        let _ = std::fs::remove_file(stream_session_disk_path(key));
     }
 
     pub fn prune_stale(&self, max_age: std::time::Duration) {
@@ -1534,6 +1549,26 @@ impl StreamSessionManager {
                 if let Ok(mut tombstones) = self.tombstones.lock() {
                     tombstones.remove(&key);
                 }
+                let _ = std::fs::remove_file(stream_session_disk_path(&key));
+            } else if !map.contains_key(&key) {
+                let disk_path = stream_session_disk_path(&key);
+                if let Ok(data) = std::fs::read_to_string(&disk_path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                        if let (Some(acc), Some(count)) =
+                            (val["accumulated"].as_str(), val["chunk_count"].as_u64())
+                        {
+                            map.insert(
+                                key.clone(),
+                                StreamSession {
+                                    key: key.clone(),
+                                    accumulated: acc.to_string(),
+                                    chunk_count: count as usize,
+                                    last_activity: Instant::now(),
+                                },
+                            );
+                        }
+                    }
+                }
             }
 
             if !map.contains_key(&key) {
@@ -1569,6 +1604,7 @@ impl StreamSessionManager {
                 if let Ok(mut tombstones) = self.tombstones.lock() {
                     Self::insert_tombstone(&mut tombstones, key.clone());
                 }
+                let _ = std::fs::remove_file(stream_session_disk_path(&key));
                 anyhow::bail!(
                     "stream session accumulated buffer ({} bytes) exceeds maximum limit of {} bytes",
                     current_len + chunk.len(),
@@ -1586,6 +1622,14 @@ impl StreamSessionManager {
             session.accumulated.push_str(chunk);
             session.chunk_count += 1;
             session.last_activity = Instant::now();
+
+            let disk_path = stream_session_disk_path(&key);
+            let payload = serde_json::json!({
+                "accumulated": &session.accumulated,
+                "chunk_count": session.chunk_count,
+            });
+            let _ = std::fs::write(disk_path, payload.to_string());
+
             (session.accumulated.clone(), session.chunk_count)
         };
 

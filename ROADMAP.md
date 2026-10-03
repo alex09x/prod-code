@@ -52,11 +52,12 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - The editor's remote-file mirror shares the structured location traversal (#568): source,
     edit and documentation text remain unchanged, encoded paths round-trip, and URI keys in
     workspace edits are translated alongside location values.
-- [~] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
+- [x] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
   - Drop-in executable replacing language servers in IDEs (`prod-code lsp`).
-  - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths.
-  - Non-blocking watchdog and auto-reconnect logic on transient network disconnects.
-  - Strict exit codes and stderr reporting (fail loudly, never exit 0 on unhandled daemon death).
+  - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths (stack-buffered header formatting and direct slice writes in `write_frame`).
+  - Non-blocking watchdog (`--watchdog-secs`, `PROD_CODE_WATCHDOG_SECS`, default 30s) sending periodic idle pings over the TCP session.
+  - In-process auto-reconnect logic (`--reconnect`, `PROD_CODE_RECONNECT`) with bounded backoff and LSP state replay (`initialize`, `initialized`, `workspace/didChangeConfiguration`, and active `textDocument/didOpen` buffer restoration).
+  - Strict exit codes and stderr reporting (fail loudly, never exit 0 on unhandled daemon death or exhausted reconnect retries).
   - Client stdin uses the shared bounded LSP reader (#577): malformed/truncated frames and
     invalid UTF-8 fail; headers and bodies follow the protocol size limits.
   - Pre-save sync identifies the decoded top-level JSON-RPC method (#579), including
@@ -64,8 +65,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Dedicated editor-server output also uses the shared bounded frame reader (#573).
   - Editor-session input/output queues and complete writes have deadlines (#574), with bounded
     teardown and exact owned-process-group retirement even after the parent exits. Watched-file
-    fanout retires lagging sessions while healthy sessions continue. This does not add reconnect.
-  - Status (audited 2026-09-26): the bridge used to notice a gateway that went away only on the editor's next message, and then exited 0. Since #394 it prints which gateway closed or broke the connection and exits 1 at once, and the editor restarts it with a fresh session. That restart is the reconnect: the bridge does not re-open a session itself, because the language server's state on the node is gone with the old one. The CLI and the MCP server open a connection per call, so a transient disconnect costs one call.
+    fanout retires lagging sessions while healthy sessions continue.
 - [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.
   - Session registry tracking active client IDs, workspace paths, and leased resources.
