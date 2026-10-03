@@ -143,6 +143,7 @@ evidence remain above; the original mechanism or required scope remains open.
 - **7.3**: declaration-level slicing extended with intra-function backward data-flow and control-dependency slicing inside function bodies and explicit completeness contract (Complete, Bounded, Incomplete) in #680.
 - **7.4**: overlayfs shadows live beside storage by default and may fall back in place; RAM-backed shadow mechanism implemented via `PROD_CODE_SHADOW_RAM=1` and `/dev/shm` tmpfs in #664.
 - **7.5**: `code_dead_code` reference counting extended with whole-program entry-point reachability analysis, unreachable circular dead cycle detection and cluster grouping in #675.
+- **7.5 `supertypes` / `call_tree`**: transitive supertypes depth traversal (`code_supertypes` / `prod-code supertypes --depth N`) across LSP servers and Rust trait/type hierarchies, in-memory call graph caching with bounded TTL (<5ms response time), and enriched declaration previews in `code_implementations`.
 - **7.6**: planning and direct all-or-rollback writes are not an atomic multi-repository
   `WorkspaceEdit`; atomic multi-repository `WorkspaceEdit` protocol with cross-repository transactional journaling and all-or-nothing rollback implemented by #666.
 - **8.4**: typed AST graph fusion in semantic search with 3-way RRF, graph centrality, attributable evidence, and sub-10ms latency implemented in #686.

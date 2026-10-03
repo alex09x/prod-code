@@ -842,6 +842,7 @@ pub fn save_sync_cache_for(root: &Path, node: &str, cache: &SyncCache) {
 
 /// Forgets the watermarks of `root` for every node.
 pub fn clear_sync_cache(root: &Path) {
+    crate::call_tree::clear_call_hierarchy_cache_for(root);
     for path in cache_file_paths(root) {
         let _ = std::fs::remove_file(path);
     }
@@ -849,6 +850,7 @@ pub fn clear_sync_cache(root: &Path) {
 
 /// Forgets the watermark of `root` for one node only.
 pub fn clear_sync_cache_for(root: &Path, node: &str) {
+    crate::call_tree::clear_call_hierarchy_cache_for(root);
     let _ = std::fs::remove_file(cache_file_path(root, node));
 }
 
@@ -856,6 +858,7 @@ pub fn clear_sync_cache_for(root: &Path, node: &str) {
 /// uploads them again. Used after the client rewrote files itself (refactorings), which no
 /// gateway has seen.
 pub fn forget_synced_files(root: &Path, rel_paths: &[String]) {
+    crate::call_tree::clear_call_hierarchy_cache_for(root);
     for path in cache_file_paths(root) {
         let Ok(data) = std::fs::read(&path) else {
             continue;
@@ -1327,6 +1330,7 @@ pub fn apply_pulled_files_for(root: &Path, node: &str, files: &[FileDelta]) -> R
     }
     if !touched.is_empty() {
         save_sync_cache_for(&canonical_root, node, &state);
+        crate::call_tree::clear_call_hierarchy_cache_for(&canonical_root);
     }
     Ok(touched)
 }

@@ -8,16 +8,69 @@
 
 use crate::tools::execute_lsp_query;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 /// The deepest tree asked for; a larger depth is read as this.
 pub const MAX_DEPTH: usize = 6;
 /// Functions shown in one tree, over every level.
 pub const MAX_NODES: usize = 300;
+
+fn normalize_root(root: &Path) -> String {
+    std::fs::canonicalize(root)
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) type CallCacheKey = (SocketAddr, String, String, u64, u64, bool, u64); // (remote, root, uri, line, col, incoming, generation)
+
+#[derive(Clone)]
+pub(crate) struct CallCacheEntry {
+    pub(crate) edges: serde_json::Value,
+    pub(crate) timestamp: Instant,
+}
+
+pub(crate) static CALL_CACHE: LazyLock<Mutex<HashMap<CallCacheKey, CallCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(crate) type PrepareCacheKey = (SocketAddr, String, String, u32, u32, u64); // (remote, root, uri, line, character, generation)
+
+#[derive(Clone)]
+pub(crate) struct PrepareCacheEntry {
+    pub(crate) items: serde_json::Value,
+    pub(crate) timestamp: Instant,
+}
+
+pub(crate) static PREPARE_CACHE: LazyLock<Mutex<HashMap<PrepareCacheKey, PrepareCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Clear in-memory call hierarchy caches (called on workspace changes or in tests).
+pub fn clear_call_hierarchy_cache() {
+    if let Ok(mut lock) = CALL_CACHE.lock() {
+        lock.clear();
+    }
+    if let Ok(mut lock) = PREPARE_CACHE.lock() {
+        lock.clear();
+    }
+}
+
+/// Clear in-memory call hierarchy caches for the specified workspace root.
+pub fn clear_call_hierarchy_cache_for(root: &Path) {
+    let root_str = normalize_root(root);
+    let raw_str = root.to_string_lossy();
+    if let Ok(mut lock) = CALL_CACHE.lock() {
+        lock.retain(|(_, r, ..), _| r != &root_str && r != raw_str.as_ref());
+    }
+    if let Ok(mut lock) = PREPARE_CACHE.lock() {
+        lock.retain(|(_, r, ..), _| r != &root_str && r != raw_str.as_ref());
+    }
+}
 
 /// One function in the tree, with where it calls (or is called) and what is below it.
 #[derive(Debug, Clone, PartialEq)]
@@ -197,6 +250,7 @@ struct Walk<'a> {
     file: &'a Path,
     incoming: bool,
     depth: usize,
+    generation: u64,
     seen: HashSet<(String, u64, u64)>,
     shown: usize,
     truncated: bool,
@@ -216,22 +270,56 @@ impl Walk<'_> {
                 "callHierarchy/outgoingCalls"
             };
             let side = if self.incoming { "from" } else { "to" };
-            let edges = execute_lsp_query(
+            let (key_uri, key_line, key_col) = key_of(&item);
+            let root_str = normalize_root(self.root);
+            let cache_key = (
                 self.remote,
-                self.root,
-                self.file,
-                method,
-                serde_json::json!({ "item": item }),
-            )
-            .await?;
+                root_str,
+                key_uri,
+                key_line,
+                key_col,
+                self.incoming,
+                self.generation,
+            );
+            let cached_edges = {
+                let mut lock = CALL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                if lock.len() > 2048 {
+                    lock.clear();
+                }
+                lock.get(&cache_key)
+                    .filter(|e| e.timestamp.elapsed().as_secs() < 60)
+                    .map(|e| e.edges.clone())
+            };
+            let (edges, from_cache) = match cached_edges {
+                Some(edges) => (edges, true),
+                None => {
+                    let res = execute_lsp_query(
+                        self.remote,
+                        self.root,
+                        self.file,
+                        method,
+                        serde_json::json!({ "item": item }),
+                    )
+                    .await?;
+                    (res, false)
+                }
+            };
             let edges_array = match &edges {
-                serde_json::Value::Null => return Ok(Vec::new()),
+                serde_json::Value::Null => {
+                    if !from_cache {
+                        let mut lock = CALL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                        lock.insert(cache_key, CallCacheEntry {
+                            edges: edges.clone(),
+                            timestamp: Instant::now(),
+                        });
+                    }
+                    return Ok(Vec::new());
+                }
                 serde_json::Value::Array(a) => a,
                 other => {
                     anyhow::bail!("the analyzer's {method} answer is not an array or null: {other}")
                 }
             };
-            let mut nodes = Vec::new();
             for edge in edges_array {
                 anyhow::ensure!(
                     edge.is_object(),
@@ -252,6 +340,17 @@ impl Walk<'_> {
                         "call hierarchy edge 'fromRanges' entry in {method} is not a valid range: {range}"
                     );
                 }
+            }
+            if !from_cache {
+                let mut lock = CALL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                lock.insert(cache_key, CallCacheEntry {
+                    edges: edges.clone(),
+                    timestamp: Instant::now(),
+                });
+            }
+            let mut nodes = Vec::new();
+            for edge in edges_array {
+                let other = edge.get(side).unwrap();
                 if self.shown >= MAX_NODES {
                     self.truncated = true;
                     break;
@@ -285,29 +384,70 @@ pub async fn call_tree(
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {file:?}"))?
         .to_string();
-    let items = execute_lsp_query(
-        remote,
-        root,
-        file,
-        "textDocument/prepareCallHierarchy",
-        serde_json::json!({
-            "textDocument": { "uri": uri },
-            "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
-        }),
-    )
-    .await?;
+    let generation = crate::watch::current_generation(root);
+    let root_str = normalize_root(root);
+    let prepare_key = (remote, root_str, uri.clone(), line, character, generation);
+    let cached_items = {
+        let mut lock = PREPARE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if lock.len() > 1024 {
+            lock.clear();
+        }
+        lock.get(&prepare_key)
+            .filter(|e| e.timestamp.elapsed().as_secs() < 60)
+            .map(|e| e.items.clone())
+    };
+    let (items, from_cache) = match cached_items {
+        Some(items) => (items, true),
+        None => {
+            let res = execute_lsp_query(
+                remote,
+                root,
+                file,
+                "textDocument/prepareCallHierarchy",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+                }),
+            )
+            .await?;
+            (res, false)
+        }
+    };
     let items_array = match &items {
-        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::Null => {
+            if !from_cache {
+                let mut lock = PREPARE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                lock.insert(prepare_key, PrepareCacheEntry {
+                    items: items.clone(),
+                    timestamp: Instant::now(),
+                });
+            }
+            return Ok(None);
+        }
         serde_json::Value::Array(a) => a,
         other => anyhow::bail!(
             "the analyzer's prepareCallHierarchy answer is not an array or null: {other}"
         ),
     };
     if items_array.is_empty() {
+        if !from_cache {
+            let mut lock = PREPARE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            lock.insert(prepare_key, PrepareCacheEntry {
+                items: items.clone(),
+                timestamp: Instant::now(),
+            });
+        }
         return Ok(None);
     }
     for item in items_array {
         validate_call_hierarchy_item(item)?;
+    }
+    if !from_cache {
+        let mut lock = PREPARE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        lock.insert(prepare_key, PrepareCacheEntry {
+            items: items.clone(),
+            timestamp: Instant::now(),
+        });
     }
     let item = items_array[0].clone();
     let depth = depth.clamp(1, MAX_DEPTH);
@@ -317,6 +457,7 @@ pub async fn call_tree(
         file,
         incoming,
         depth,
+        generation,
         seen: HashSet::from([key_of(&item)]),
         shown: 0,
         truncated: false,
@@ -405,5 +546,104 @@ mod tests {
             node_of(&serde_json::json!({}), &serde_json::json!({})).name,
             "?"
         );
+    }
+
+    #[test]
+    fn clear_call_hierarchy_cache_clears_entries() {
+        clear_call_hierarchy_cache();
+        {
+            let mut lock = CALL_CACHE.lock().unwrap();
+            lock.insert(
+                (
+                    "127.0.0.1:9000".parse().unwrap(),
+                    "/w".into(),
+                    "file:///w/a.rs".into(),
+                    1,
+                    1,
+                    true,
+                    1,
+                ),
+                CallCacheEntry {
+                    edges: serde_json::json!([]),
+                    timestamp: Instant::now(),
+                },
+            );
+            assert_eq!(lock.len(), 1);
+        }
+        clear_call_hierarchy_cache();
+        let lock = CALL_CACHE.lock().unwrap();
+        assert!(lock.is_empty());
+    }
+
+    #[test]
+    fn clear_call_hierarchy_cache_for_retains_unrelated_roots() {
+        clear_call_hierarchy_cache();
+        {
+            let mut lock = CALL_CACHE.lock().unwrap();
+            lock.insert(
+                (
+                    "127.0.0.1:9000".parse().unwrap(),
+                    "/w1".into(),
+                    "file:///w1/a.rs".into(),
+                    1,
+                    1,
+                    true,
+                    1,
+                ),
+                CallCacheEntry {
+                    edges: serde_json::json!([]),
+                    timestamp: Instant::now(),
+                },
+            );
+            lock.insert(
+                (
+                    "127.0.0.1:9000".parse().unwrap(),
+                    "/w2".into(),
+                    "file:///w2/a.rs".into(),
+                    1,
+                    1,
+                    true,
+                    1,
+                ),
+                CallCacheEntry {
+                    edges: serde_json::json!([]),
+                    timestamp: Instant::now(),
+                },
+            );
+            assert_eq!(lock.len(), 2);
+        }
+        clear_call_hierarchy_cache_for(Path::new("/w1"));
+        {
+            let lock = CALL_CACHE.lock().unwrap();
+            assert_eq!(lock.len(), 1);
+            assert!(lock.keys().any(|(_, r, ..)| r == "/w2"));
+        }
+        clear_call_hierarchy_cache();
+    }
+
+    #[test]
+    fn workspace_generation_invalidates_cached_graph() {
+        clear_call_hierarchy_cache();
+        let remote = "127.0.0.1:9000".parse().unwrap();
+        let root = Path::new("/test_workspace");
+        let root_str = normalize_root(root);
+        let uri = "file:///test_workspace/lib.rs";
+        {
+            let mut lock = PREPARE_CACHE.lock().unwrap();
+            lock.insert(
+                (remote, root_str.clone(), uri.into(), 10, 5, 1),
+                PrepareCacheEntry {
+                    items: serde_json::json!([{ "name": "fn1", "uri": uri, "range": { "start": { "line": 9, "character": 0 }, "end": { "line": 9, "character": 10 } }, "selectionRange": { "start": { "line": 9, "character": 4 }, "end": { "line": 9, "character": 7 } } }]),
+                    timestamp: Instant::now(),
+                },
+            );
+        }
+        // Generation 2 cannot hit generation 1 entry
+        let cached = {
+            let lock = PREPARE_CACHE.lock().unwrap();
+            lock.get(&(remote, root_str, uri.into(), 10, 5, 2)).cloned()
+        };
+        assert!(cached.is_none(), "workspace generation advance must invalidate cached item lookup");
+        clear_call_hierarchy_cache();
     }
 }

@@ -188,6 +188,9 @@ enum Commands {
         /// declared or used there (#330).
         #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
+        /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
     },
     /// Declarations named like a query across the workspace: prod-code symbols <name>. Given an
     /// existing file instead, its outline (the same as `prod-code outline <file>`).
@@ -2053,15 +2056,25 @@ async fn main() -> Result<()> {
             line,
             col,
             symbol,
+            depth,
         } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_supertypes", &symbol, file).await,
+            Some(symbol) => {
+                let mut args = symbol_args(&symbol, file);
+                args["depth"] = serde_json::json!(depth);
+                run_tool(remote, "code_supertypes", args).await
+            }
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 let file = std::fs::canonicalize(&file).unwrap_or(file);
                 run_tool(
                     remote,
                     "code_supertypes",
-                    serde_json::json!({ "path": file.to_string_lossy(), "line": line, "character": col }),
+                    serde_json::json!({
+                        "path": file.to_string_lossy(),
+                        "line": line,
+                        "character": col,
+                        "depth": depth,
+                    }),
                 )
                 .await
             }

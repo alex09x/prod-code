@@ -16,8 +16,14 @@
 
 use crate::tools::execute_lsp_query;
 use anyhow::Result;
+use std::collections::HashSet;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+
+/// The deepest type hierarchy asked for; a larger depth is read as this.
+pub const MAX_DEPTH: usize = 6;
 
 /// One supertype, and where the relation is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +34,22 @@ pub struct Supertype {
     /// Where the impl, the derive or the supertype itself is (1-based); `None` for a supertrait
     /// read from a header.
     pub at: Option<(PathBuf, u32, u32)>,
+    /// Supertypes of this supertype (when depth > 1).
+    pub children: Vec<Supertype>,
+    /// Already shown higher in the hierarchy (cycle avoidance).
+    pub repeated: bool,
+}
+
+impl Supertype {
+    pub fn new(name: impl Into<String>, derived: bool, at: Option<(PathBuf, u32, u32)>) -> Self {
+        Self {
+            name: name.into(),
+            derived,
+            at,
+            children: Vec::new(),
+            repeated: false,
+        }
+    }
 }
 
 /// What the supertypes are of, which decides how they are named.
@@ -47,11 +69,20 @@ pub struct Supertypes {
     pub of: String,
     pub kind: Kind,
     pub list: Vec<Supertype>,
+    pub depth: usize,
     /// Why there is no answer: the language server has no type hierarchy.
     pub unsupported: Option<String>,
 }
 
 impl Supertypes {
+    /// Every supertype in the hierarchy, at every level.
+    pub fn count(&self) -> usize {
+        fn count_nodes(nodes: &[Supertype]) -> usize {
+            nodes.iter().map(|n| 1 + count_nodes(&n.children)).sum()
+        }
+        count_nodes(&self.list)
+    }
+
     pub fn render(&self, root: &Path) -> String {
         if let Some(why) = &self.unsupported {
             return why.clone();
@@ -64,24 +95,44 @@ impl Supertypes {
         if self.list.is_empty() {
             return format!("`{}` {verb} no {noun}.", self.of);
         }
-        let mut out = format!("`{}` {verb} {} {noun}(s):", self.of, self.list.len());
-        for s in &self.list {
-            out.push_str(&format!("\n  • {}", s.name));
-            if s.derived {
-                out.push_str("  (derived)");
-            }
-            if let Some((path, line, col)) = &s.at {
-                let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-                let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-                let shown = path
-                    .strip_prefix(root)
-                    .or_else(|_| canonical_path.strip_prefix(&canonical_root))
-                    .or_else(|_| path.strip_prefix(&canonical_root))
-                    .or_else(|_| canonical_path.strip_prefix(root))
-                    .unwrap_or(path);
-                out.push_str(&format!("  {}:{line}:{col}", shown.display()));
+        let mut out = if self.depth > 1 {
+            format!(
+                "`{}` {verb} {} {noun}(s), {} in all to depth {}:",
+                self.of,
+                self.list.len(),
+                self.count(),
+                self.depth
+            )
+        } else {
+            format!("`{}` {verb} {} {noun}(s):", self.of, self.list.len())
+        };
+        fn render_nodes(out: &mut String, nodes: &[Supertype], root: &Path, indent: usize) {
+            for s in nodes {
+                out.push('\n');
+                out.push_str(&"  ".repeat(indent));
+                out.push_str(&format!("• {}", s.name));
+                if s.derived {
+                    out.push_str("  (derived)");
+                }
+                if let Some((path, line, col)) = &s.at {
+                    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                    let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                    let shown = path
+                        .strip_prefix(root)
+                        .or_else(|_| canonical_path.strip_prefix(&canonical_root))
+                        .or_else(|_| path.strip_prefix(&canonical_root))
+                        .or_else(|_| canonical_path.strip_prefix(root))
+                        .unwrap_or(path);
+                    out.push_str(&format!("  {}:{line}:{col}", shown.display()));
+                }
+                if s.repeated {
+                    out.push_str("  (shown above)");
+                } else if !s.children.is_empty() {
+                    render_nodes(out, &s.children, root, indent + 1);
+                }
             }
         }
+        render_nodes(&mut out, &self.list, root, 1);
         out
     }
 }
@@ -377,7 +428,9 @@ pub async fn supertypes(
     file: &Path,
     line: u32,
     character: u32,
+    depth: usize,
 ) -> Result<Supertypes> {
+    let depth = depth.clamp(1, MAX_DEPTH);
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {file:?}"))?
         .to_string();
@@ -386,7 +439,7 @@ pub async fn supertypes(
         "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
     });
     if file.extension().is_some_and(|e| e == "rs") {
-        return rust_supertypes(remote, root, file, line, character, position).await;
+        return rust_supertypes(remote, root, file, line, character, position, depth).await;
     }
     let prepared = execute_lsp_query(
         remote,
@@ -402,6 +455,7 @@ pub async fn supertypes(
                 of: format!("{}:{line}:{character}", file.display()),
                 kind: Kind::Other,
                 list: Vec::new(),
+                depth,
                 unsupported: Some(format!(
                     "No type hierarchy at {}:{line}:{character}: the language server answered none (not every server has one).",
                     file.display()
@@ -418,6 +472,7 @@ pub async fn supertypes(
             of: format!("{}:{line}:{character}", file.display()),
             kind: Kind::Other,
             list: Vec::new(),
+            depth,
             unsupported: Some(format!(
                 "No type hierarchy at {}:{line}:{character}: the language server answered none (not every server has one).",
                 file.display()
@@ -428,46 +483,13 @@ pub async fn supertypes(
         validate_type_hierarchy_item(item)?;
     }
     let item = &prepared_array[0];
-    let supers = execute_lsp_query(
-        remote,
-        root,
-        file,
-        "typeHierarchy/supertypes",
-        serde_json::json!({ "item": item }),
-    )
-    .await?;
-    let supers_array = match &supers {
-        serde_json::Value::Null => {
-            return Ok(Supertypes {
-                of: item
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                kind: Kind::Other,
-                list: Vec::new(),
-                unsupported: None,
-            });
-        }
-        serde_json::Value::Array(a) => a,
-        other => anyhow::bail!(
-            "the analyzer's typeHierarchy/supertypes answer is not an array or null: {other}"
-        ),
-    };
-    let mut list = Vec::with_capacity(supers_array.len());
-    for s in supers_array {
-        validate_type_hierarchy_item(s)?;
-        let name = s.get("name").and_then(|n| n.as_str()).unwrap().to_string();
-        let uri = s.get("uri").and_then(|u| u.as_str()).unwrap();
-        let start = hierarchy_start(s).unwrap();
-        let line = start.get("line").and_then(|v| v.as_u64()).unwrap() as u32 + 1;
-        let col = start.get("character").and_then(|v| v.as_u64()).unwrap() as u32 + 1;
-        list.push(Supertype {
-            name,
-            derived: false,
-            at: Some((PathBuf::from(crate::remote_fs::uri_to_path(uri)), line, col)),
-        });
-    }
+    let mut seen = HashSet::new();
+    let root_item_start = hierarchy_start(item);
+    let root_line = root_item_start.and_then(|s| s.get("line")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let root_col = root_item_start.and_then(|s| s.get("character")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let root_uri = item.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+    seen.insert(format!("{root_uri}:{root_line}:{root_col}"));
+    let list = expand_lsp_supertypes(remote, root, file, item.clone(), 1, depth, &mut seen).await?;
     Ok(Supertypes {
         of: item
             .get("name")
@@ -476,7 +498,158 @@ pub async fn supertypes(
             .to_string(),
         kind: Kind::Other,
         list,
+        depth,
         unsupported: None,
+    })
+}
+
+fn expand_lsp_supertypes<'a>(
+    remote: SocketAddr,
+    root: &'a Path,
+    file: &'a Path,
+    item: serde_json::Value,
+    level: usize,
+    max_depth: usize,
+    seen: &'a mut HashSet<String>,
+) -> Pin<Box<dyn Future<Output = Result<Vec<Supertype>>> + Send + 'a>> {
+    Box::pin(async move {
+        if level > max_depth {
+            return Ok(Vec::new());
+        }
+        let supers = execute_lsp_query(
+            remote,
+            root,
+            file,
+            "typeHierarchy/supertypes",
+            serde_json::json!({ "item": item }),
+        )
+        .await?;
+        let supers_array = match &supers {
+            serde_json::Value::Null => return Ok(Vec::new()),
+            serde_json::Value::Array(a) => a,
+            other => anyhow::bail!(
+                "the analyzer's typeHierarchy/supertypes answer is not an array or null: {other}"
+            ),
+        };
+        let mut list = Vec::with_capacity(supers_array.len());
+        for s in supers_array {
+            validate_type_hierarchy_item(s)?;
+            let name = s.get("name").and_then(|n| n.as_str()).unwrap().to_string();
+            let uri = s.get("uri").and_then(|u| u.as_str()).unwrap();
+            let start = hierarchy_start(s).unwrap();
+            let line = start.get("line").and_then(|v| v.as_u64()).unwrap() as u32 + 1;
+            let col = start.get("character").and_then(|v| v.as_u64()).unwrap() as u32 + 1;
+            let path = PathBuf::from(crate::remote_fs::uri_to_path(uri));
+            let mut node = Supertype::new(name, false, Some((path, line, col)));
+            let key = format!("{uri}:{line}:{col}");
+            if !seen.insert(key.clone()) {
+                node.repeated = true;
+            } else if level < max_depth {
+                node.children =
+                    expand_lsp_supertypes(remote, root, file, s.clone(), level + 1, max_depth, seen)
+                        .await?;
+            }
+            list.push(node);
+        }
+        Ok(list)
+    })
+}
+
+fn expand_rust_trait_supertraits<'a>(
+    remote: SocketAddr,
+    root: &'a Path,
+    file: &'a Path,
+    trait_name: &'a str,
+    ref_file: &'a Path,
+    ref_line: u32,
+    ref_col: u32,
+    level: usize,
+    max_depth: usize,
+    seen: &'a mut HashSet<String>,
+) -> Pin<Box<dyn Future<Output = Vec<Supertype>> + Send + 'a>> {
+    Box::pin(async move {
+        if level >= max_depth {
+            return Vec::new();
+        }
+        let bare = trait_name.split('<').next().unwrap_or(trait_name).trim();
+        if bare.starts_with('\'') || bare.is_empty() {
+            return Vec::new();
+        }
+        let ref_uri = match url::Url::from_file_path(ref_file) {
+            Ok(u) => u.to_string(),
+            Err(_) => return Vec::new(),
+        };
+        let def_res = execute_lsp_query(
+            remote,
+            root,
+            ref_file,
+            "textDocument/definition",
+            serde_json::json!({
+                "textDocument": { "uri": ref_uri },
+                "position": { "line": ref_line.saturating_sub(1), "character": ref_col.saturating_sub(1) },
+            }),
+        )
+        .await;
+        let Some((def_file, def_line, def_col)) = def_res.ok().and_then(|v| locations(&v).into_iter().next()) else {
+            return Vec::new();
+        };
+        let key = format!("{}:{def_line}:{def_col}", def_file.display());
+        if !seen.insert(key.clone()) {
+            return Vec::new();
+        }
+        let text = if let Ok((bytes, _)) =
+            crate::remote_fs::read_source(remote, root, &def_file.to_string_lossy()).await
+        {
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            std::fs::read_to_string(&def_file).unwrap_or_default()
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        if def_line as usize >= lines.len() {
+            return Vec::new();
+        }
+        let decl = lines[def_line as usize];
+        if !is_trait_decl(decl) {
+            return Vec::new();
+        }
+        let sub_names = supertraits(&header_from(&lines, def_line as usize));
+        let mut children = Vec::with_capacity(sub_names.len());
+        for name in sub_names {
+            let bare_sub = name.split('<').next().unwrap_or(&name).trim();
+            let mut sub_line = def_line + 1;
+            let mut sub_col = def_col + 1;
+            for (idx, line_str) in lines.iter().enumerate().skip(def_line as usize) {
+                if let Some(pos) = line_str.find(bare_sub) {
+                    sub_line = idx as u32 + 1;
+                    sub_col = pos as u32 + 1;
+                    break;
+                }
+                if line_str.contains(['{', ';']) {
+                    break;
+                }
+            }
+            let mut node = Supertype::new(name.clone(), false, None);
+            let child_key = format!("{name}:{sub_line}:{sub_col}");
+            if seen.contains(&child_key) {
+                node.repeated = true;
+            } else if level + 1 < max_depth {
+                node.children = expand_rust_trait_supertraits(
+                    remote,
+                    root,
+                    file,
+                    &name,
+                    &def_file,
+                    sub_line,
+                    sub_col,
+                    level + 1,
+                    max_depth,
+                    seen,
+                )
+                .await;
+            }
+            children.push(node);
+        }
+        children
     })
 }
 
@@ -487,6 +660,7 @@ async fn rust_supertypes(
     line: u32,
     character: u32,
     position: serde_json::Value,
+    depth: usize,
 ) -> Result<Supertypes> {
     // The declaration: where the name at the position is defined, or the position itself.
     let definition = execute_lsp_query(remote, root, file, "textDocument/definition", position)
@@ -512,6 +686,7 @@ async fn rust_supertypes(
             of: "?".to_string(),
             kind: Kind::Other,
             list: Vec::new(),
+            depth,
             unsupported: None,
         });
     }
@@ -519,18 +694,47 @@ async fn rust_supertypes(
     let decl = lines.get(decl_idx).copied().unwrap_or("");
     let of = word_at(decl, decl_col + 1).unwrap_or_else(|| "?".to_string());
     if is_trait_decl(decl) {
-        let list = supertraits(&header_from(&lines, decl_idx))
-            .into_iter()
-            .map(|name| Supertype {
-                name,
-                derived: false,
-                at: None,
-            })
-            .collect();
+        let raw_supertraits = supertraits(&header_from(&lines, decl_idx));
+        let mut seen = HashSet::new();
+        seen.insert(format!("{}:{decl_line}:{decl_col}", decl_file.display()));
+        let mut list = Vec::with_capacity(raw_supertraits.len());
+        for name in raw_supertraits {
+            let mut node = Supertype::new(name.clone(), false, None);
+            if depth > 1 {
+                let bare_sub = name.split('<').next().unwrap_or(&name).trim();
+                let mut sub_line = decl_line + 1;
+                let mut sub_col = decl_col + 1;
+                for (idx, line_str) in lines.iter().enumerate().skip(decl_idx) {
+                    if let Some(pos) = line_str.find(bare_sub) {
+                        sub_line = idx as u32 + 1;
+                        sub_col = pos as u32 + 1;
+                        break;
+                    }
+                    if line_str.contains(['{', ';']) {
+                        break;
+                    }
+                }
+                node.children = expand_rust_trait_supertraits(
+                    remote,
+                    root,
+                    file,
+                    &name,
+                    &decl_file,
+                    sub_line,
+                    sub_col,
+                    1,
+                    depth,
+                    &mut seen,
+                )
+                .await;
+            }
+            list.push(node);
+        }
         return Ok(Supertypes {
             of,
             kind: Kind::Trait,
             list,
+            depth,
             unsupported: None,
         });
     }
@@ -550,11 +754,7 @@ async fn rust_supertypes(
     .await?;
     let mut list: Vec<Supertype> = derives_above(&lines, decl_idx)
         .into_iter()
-        .map(|(name, l, c)| Supertype {
-            name,
-            derived: true,
-            at: Some((decl_file.clone(), l, c)),
-        })
+        .map(|(name, l, c)| Supertype::new(name, true, Some((decl_file.clone(), l, c))))
         .collect();
     for (path, l, c) in locations(&impls) {
         let text = if let Ok((bytes, _)) =
@@ -575,18 +775,36 @@ async fn rust_supertypes(
         if let Some(name) = impl_trait(&header_from(&lines, start))
             && !list.iter().any(|s| s.name == name)
         {
-            list.push(Supertype {
-                name,
-                derived: false,
-                at: Some((path.clone(), l + 1, c + 1)),
-            });
+            list.push(Supertype::new(name, false, Some((path.clone(), l + 1, c + 1))));
         }
     }
     list.sort_by(|a, b| a.name.cmp(&b.name));
+    if depth > 1 {
+        let mut seen = HashSet::new();
+        seen.insert(format!("{}:{decl_line}:{decl_col}", decl_file.display()));
+        for s in &mut list {
+            if let Some((path, l, c)) = &s.at {
+                s.children = expand_rust_trait_supertraits(
+                    remote,
+                    root,
+                    file,
+                    &s.name,
+                    path,
+                    *l,
+                    *c,
+                    1,
+                    depth,
+                    &mut seen,
+                )
+                .await;
+            }
+        }
+    }
     Ok(Supertypes {
         of,
         kind: Kind::Type,
         list,
+        depth,
         unsupported: None,
     })
 }
@@ -703,17 +921,10 @@ mod tests {
             of: "Cache".into(),
             kind: Kind::Type,
             list: vec![
-                Supertype {
-                    name: "Clone".into(),
-                    derived: true,
-                    at: Some((PathBuf::from("/w/src/lib.rs"), 1, 10)),
-                },
-                Supertype {
-                    name: "Default".into(),
-                    derived: false,
-                    at: Some((PathBuf::from("/w/src/lib.rs"), 5, 18)),
-                },
+                Supertype::new("Clone", true, Some((PathBuf::from("/w/src/lib.rs"), 1, 10))),
+                Supertype::new("Default", false, Some((PathBuf::from("/w/src/lib.rs"), 5, 18))),
             ],
+            depth: 1,
             unsupported: None,
         };
         assert_eq!(
@@ -724,6 +935,7 @@ mod tests {
             of: "Embed".into(),
             kind: Kind::Trait,
             list: vec![],
+            depth: 1,
             unsupported: None,
         };
         assert_eq!(none.render(root), "`Embed` requires no supertrait.");
@@ -749,5 +961,28 @@ mod tests {
         assert!(derives_above(&[], 232).is_empty());
         let lines = ["struct Foo;"];
         assert!(derives_above(&lines, 50).is_empty());
+    }
+
+    #[test]
+    fn multi_level_supertypes_render_as_nested_tree() {
+        let root = Path::new("/w");
+        let mut parent = Supertype::new("Store", false, Some((PathBuf::from("/w/src/lib.rs"), 10, 5)));
+        let child = Supertype::new("Send", false, None);
+        let mut repeated_child = Supertype::new("Store", false, Some((PathBuf::from("/w/src/lib.rs"), 10, 5)));
+        repeated_child.repeated = true;
+        parent.children.push(child);
+        parent.children.push(repeated_child);
+
+        let st = Supertypes {
+            of: "Cache".into(),
+            kind: Kind::Type,
+            list: vec![parent],
+            depth: 2,
+            unsupported: None,
+        };
+        assert_eq!(
+            st.render(root),
+            "`Cache` implements 1 trait(s), 3 in all to depth 2:\n  • Store  src/lib.rs:10:5\n    • Send\n    • Store  src/lib.rs:10:5  (shown above)"
+        );
     }
 }

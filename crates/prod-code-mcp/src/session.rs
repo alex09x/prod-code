@@ -476,6 +476,7 @@ impl LspSession {
     /// `exec` whose formatter's output came back, another agent) may have pushed it to the node
     /// already, and this sync then pushes nothing for it (#360).
     pub async fn refresh(&mut self) -> Result<()> {
+        crate::call_tree::clear_call_hierarchy_cache_for(&self.root);
         let identity = workspace_identity(&self.root);
         let outcome = push_workspace_sync(&mut self.framed, &self.root, &identity, None)
             .await
@@ -675,6 +676,7 @@ async fn pooled_query_with_budget(
                 if crate::watch::sync_due(&root, generation) {
                     current.refresh().await?;
                     crate::watch::mark_synced(&root, generation);
+                    crate::call_tree::clear_call_hierarchy_cache_for(&root);
                 }
                 current.query(file, method, params.clone()).await
             }

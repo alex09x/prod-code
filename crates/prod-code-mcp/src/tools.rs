@@ -192,14 +192,15 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_supertypes".to_string(),
-            description: "What a type implements, or what a trait requires: the upward half of the type hierarchy (`code_implementations` is the downward half). For a Rust type, the traits it implements, derived or written as impl blocks, each with the position of the impl or the derive; inherent impls are not listed. For a Rust trait, its supertraits. Other languages ask their server's own type hierarchy (clangd and gopls answer it) and say so when it has none. Give `symbol` or a file position."
+            description: "What a type implements, or what a trait requires: the upward half of the type hierarchy (`code_implementations` is the downward half). For a Rust type, the traits it implements, derived or written as impl blocks, each with the position of the impl or the derive; inherent impls are not listed. For a Rust trait, its supertraits. Other languages ask their server's own type hierarchy (clangd and gopls answer it) and say so when it has none. Give `symbol` or a file position; `depth` (at most 6) walks the hierarchy transitively."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line number" },
-                    "character": { "type": "integer", "description": "1-based column/character number" }
+                    "character": { "type": "integer", "description": "1-based column/character number" },
+                    "depth": { "type": "integer", "description": "Hierarchy depth to traverse (default 1, max 6)" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -1555,6 +1556,7 @@ async fn dispatch_tool(
                     .map(|v| v as u32)
                     .with_context(|| format!("Missing '{key}' argument"))
             };
+            let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
             let file_path = resolve_file_path(workspace_root, path_str);
             let found = crate::supertypes::supertypes(
                 remote,
@@ -1562,6 +1564,7 @@ async fn dispatch_tool(
                 &file_path,
                 num("line")?,
                 num("character")?,
+                depth,
             )
             .await?;
             Ok(McpToolCallResult::text(found.render(workspace_root)))
@@ -5883,7 +5886,31 @@ async fn handle_implementations(
             .and_then(|c| c.as_u64())
             .unwrap_or(0)
             + 1;
-        out.push_str(&format!("  • {uri}:{l}:{c}\n"));
+        let mut snippet = String::new();
+        let target_path = url::Url::parse(uri)
+            .ok()
+            .and_then(|u| u.to_file_path().ok())
+            .unwrap_or_else(|| PathBuf::from(crate::remote_fs::uri_to_path(uri)));
+        let content_opt = std::fs::read_to_string(&target_path).ok();
+        if let Some(content) = content_opt {
+            if let Some(line_str) = content.lines().nth(l.saturating_sub(1) as usize) {
+                let trimmed = line_str.trim();
+                if !trimmed.is_empty() {
+                    snippet = format!("  `{trimmed}`");
+                }
+            }
+        } else if let Ok((bytes, _)) =
+            crate::remote_fs::read_source(remote, workspace_root, &target_path.to_string_lossy()).await
+        {
+            let content = String::from_utf8_lossy(&bytes);
+            if let Some(line_str) = content.lines().nth(l.saturating_sub(1) as usize) {
+                let trimmed = line_str.trim();
+                if !trimmed.is_empty() {
+                    snippet = format!("  `{trimmed}`");
+                }
+            }
+        }
+        out.push_str(&format!("  • {uri}:{l}:{c}{snippet}\n"));
     }
     Ok(McpToolCallResult::text(out.trim_end().to_string()))
 }

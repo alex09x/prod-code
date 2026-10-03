@@ -1083,14 +1083,16 @@ async fn code_supertypes_asks_other_servers_for_their_type_hierarchy() {
     let shape = serde_json::json!([{ "name": "Shape", "kind": 11, "uri": uri.clone(),
         "range": { "start": { "line": 9, "character": 5 }, "end": { "line": 9, "character": 10 } },
         "selectionRange": { "start": { "line": 9, "character": 5 }, "end": { "line": 9, "character": 10 } } }]);
+    let item1 = item.clone();
+    let shape1 = shape.clone();
     let remote = scripted_gateway(Arc::new(move |method, params| {
         match (
             method,
             params.pointer("/position/line").and_then(|l| l.as_u64()),
         ) {
-            ("textDocument/prepareTypeHierarchy", Some(2)) => serde_json::json!([item.clone()]),
+            ("textDocument/prepareTypeHierarchy", Some(2)) => serde_json::json!([item1.clone()]),
             ("textDocument/prepareTypeHierarchy", _) => serde_json::Value::Null,
-            ("typeHierarchy/supertypes", _) => shape.clone(),
+            ("typeHierarchy/supertypes", _) => shape1.clone(),
             _ => serde_json::Value::Null,
         }
     }))
@@ -1108,6 +1110,40 @@ async fn code_supertypes_asks_other_servers_for_their_type_hierarchy() {
     assert_eq!(
         found,
         "`Square` has 1 supertype(s):\n  • Shape  shape.go:10:6"
+    );
+
+    let item2 = item.clone();
+    let shape2 = shape.clone();
+    let object = serde_json::json!([{ "name": "Object", "kind": 11, "uri": uri.clone(),
+        "range": { "start": { "line": 14, "character": 5 }, "end": { "line": 14, "character": 11 } },
+        "selectionRange": { "start": { "line": 14, "character": 5 }, "end": { "line": 14, "character": 11 } } }]);
+    let remote_depth = scripted_gateway(Arc::new(move |method, params| {
+        match (
+            method,
+            params.pointer("/position/line").and_then(|l| l.as_u64()),
+            params.pointer("/item/name").and_then(|n| n.as_str()),
+        ) {
+            ("textDocument/prepareTypeHierarchy", Some(2), _) => serde_json::json!([item2.clone()]),
+            ("typeHierarchy/supertypes", _, Some("Square")) => shape2.clone(),
+            ("typeHierarchy/supertypes", _, Some("Shape")) => object.clone(),
+            ("typeHierarchy/supertypes", _, Some("Object")) => serde_json::json!([]),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let found_depth = text_of(
+        &execute_tool(
+            remote_depth,
+            &ws.root(),
+            "code_supertypes",
+            serde_json::json!({ "path": "shape.go", "line": 3, "character": 6, "depth": 2 }),
+        )
+        .await
+        .expect("supertypes depth run"),
+    );
+    assert_eq!(
+        found_depth,
+        "`Square` has 1 supertype(s), 2 in all to depth 2:\n  • Shape  shape.go:10:6\n    • Object  shape.go:15:6"
     );
     let none = text_of(
         &execute_tool(

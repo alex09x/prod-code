@@ -471,11 +471,13 @@ pub fn apply_multi_repository_workspace_edit(
             run.journal.commit();
             remember_applied_multi(&run.originals);
             forget_synced_across_roots(&canonical_roots, &run.touched, &run.also_forget);
+            crate::call_tree::clear_call_hierarchy_cache();
             Ok(run.touched)
         }
         Err(err) => {
             let (restored, failed) = run.journal.roll_back();
             forget_synced_across_roots(&canonical_roots, &run.touched, &run.also_forget);
+            crate::call_tree::clear_call_hierarchy_cache();
             if failed.is_empty() {
                 if canonical_roots.len() == 1 {
                     Err(err.context(format!(
@@ -1040,6 +1042,46 @@ mod tests {
         let outside = serde_json::json!({ "changes": { "file:///etc/hosts": [] } });
         assert!(apply_workspace_edit(&root, &outside).is_err());
         crate::sync::clear_sync_cache(&root);
+    }
+
+    #[test]
+    fn apply_workspace_edit_invalidates_call_hierarchy_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let lib = root.join("src/lib.rs");
+        std::fs::write(&lib, "pub fn old() {}\n").unwrap();
+        // Seed call hierarchy cache
+        {
+            let mut lock = crate::call_tree::CALL_CACHE.lock().unwrap();
+            lock.insert(
+                (
+                    "127.0.0.1:9000".parse().unwrap(),
+                    root.to_string_lossy().into_owned(),
+                    format!("file://{}/src/lib.rs", root.display()),
+                    1,
+                    1,
+                    true,
+                    1,
+                ),
+                crate::call_tree::CallCacheEntry {
+                    edges: serde_json::json!([]),
+                    timestamp: std::time::Instant::now(),
+                },
+            );
+            assert_eq!(lock.len(), 1);
+        }
+        let edit = serde_json::json!({ "changes": { format!("file://{}", lib.display()): [
+            { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } },
+              "newText": "pub fn new() {}\n" }
+        ] } });
+        let touched = apply_workspace_edit(&root, &edit).unwrap();
+        assert_eq!(touched, vec!["src/lib.rs"]);
+        // Call hierarchy cache must be cleared after edit is applied
+        {
+            let lock = crate::call_tree::CALL_CACHE.lock().unwrap();
+            assert!(lock.is_empty(), "cache must be cleared on workspace edits");
+        }
     }
 
     /// A report rendered after an edit was written still has the old text to diff against (#122),
