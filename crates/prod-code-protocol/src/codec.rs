@@ -391,10 +391,15 @@ mod tests {
     #[test]
     fn test_codec_oversized_frame_aborts_early_and_does_not_retain_capacity() {
         let codec = ProdCodeCodec::new();
-        let mut buf = BytesMut::with_capacity(64);
-        buf.put_slice(b"existing-prefix");
+        // Start with 16 bytes of capacity and an 8-byte prefix.
+        // Adding the 4-byte length header leaves only 4 bytes of capacity,
+        // so serializing up to the 50-byte bound forces BytesMut to reallocate and grow.
+        let mut buf = BytesMut::with_capacity(16);
+        buf.put_slice(b"prefix8B");
         let initial_len = buf.len();
         let initial_cap = buf.capacity();
+        assert_eq!(initial_len, 8);
+        assert_eq!(initial_cap, 16);
 
         let original = WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: 1,
@@ -413,17 +418,18 @@ mod tests {
             redirect_count: 0,
         });
 
-        // Limit to 20 bytes: the message is ~200 bytes, so BoundedWriter aborts serialization early
+        // Limit to 50 bytes: the message is ~200 bytes, so BoundedWriter aborts serialization
+        // after growing the buffer past initial_cap (16 bytes).
         let err = codec
-            .encode_ref_bounded(&original, &mut buf, 20)
-            .expect_err("must fail early when frame exceeds 20 bytes");
+            .encode_ref_bounded(&original, &mut buf, 50)
+            .expect_err("must fail early when frame exceeds 50 bytes");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("Message size exceeds maximum allowed frame size"));
 
         // Preexisting bytes are untouched and logical length is restored
         assert_eq!(buf.len(), initial_len);
-        assert_eq!(&buf[..initial_len], b"existing-prefix");
-        // Capacity did not stay grown or leak memory
+        assert_eq!(&buf[..initial_len], b"prefix8B");
+        // Capacity restoration branch was exercised and restored the original capacity
         assert_eq!(buf.capacity(), initial_cap);
     }
 }

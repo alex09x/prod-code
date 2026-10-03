@@ -35,13 +35,13 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 **Objective**: Establish the core client-server wire protocol over 10G TCP/QUIC with transparent path translation and zero-overhead client bridging.
 
-- [x] **1.1. Protocol Specification (`crates/prod-code-protocol`)**
+- [~] **1.1. Protocol Specification (`crates/prod-code-protocol`)**
   - Binary framing layer with length-prefixed messages and NUL completion markers.
   - Session handshake with protocol version negotiation, client capabilities, and authentication tokens.
   - Streaming transport support: 10 GbE TCP stream with TCP_NODELAY and socket buffer tuning.
   - Fallback local transport: Unix domain socket / Windows named pipe for local execution.
   - Status (audited 2026-10-03):
-    - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). Direct buffer streaming via `serde_json::to_writer((&mut *dst).writer(), ...)` eliminates intermediate heap vector allocations on the hot path, with `encode_ref(&WireMessage, &mut BytesMut)` avoiding message clones.
+    - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). Direct buffer streaming via `serde_json::to_writer` with `BoundedWriter` eliminates intermediate heap allocations on the hot path (#830), aborts early on oversized frames, and restores buffer capacity on failure. Length-delimited framing ends with the declared length, so NUL completion markers remain omitted.
     - Since #537, clients offer their implemented versions and the gateway selects the highest common version before creating a session. An absent offer means the legacy `protocol_version`; empty or incompatible offers refuse. Every client validates the selection before LSP initialization. Version 1 remains the only implemented version. Negotiated capability sets (`ClientCapabilities` / `ServerCapabilities`) implemented in #659.
     - Authentication tokens followed on 2026-09-26 (#402): an optional cluster token (`PROD_CODE_AUTH_TOKEN` or `PROD_CODE_AUTH_TOKEN_FILE`) is every connection's first frame. Full TLS 1.3 encryption, mTLS peer authentication, certificate pinning, and dual-CA rolling trust bootstrap delivered in Phase 5.6 (#828).
     - TCP_NODELAY and keepalive (30 s idle, 10 s probes, 3 retries, #256) are set on both ends. Socket buffers configurable via `PROD_CODE_TCP_BUFFER_SIZE`, `PROD_CODE_TCP_RECV_BUFFER`, and `PROD_CODE_TCP_SEND_BUFFER`.
