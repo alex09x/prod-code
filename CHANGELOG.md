@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **ReadFileRequest Protocol Dropping in Active Sessions & 64MiB Artifact Pulls (#820)** (`crates/prod-code-gateway`, `crates/prod-code-mcp`):
+  Added `WireMessage::ReadFileRequest` dispatch to active session message loop (`on_client_message`) in the gateway, preventing requests from being dropped after session handshake. Raised maximum file pull limit for workspace files from 2 MiB to 64 MiB (`MAX_PULL_BYTES`). In `pull_remote_files`, added a 30s timeout per frame, explicit truncation and error checks, and executable detection (ELF, Mach-O, shebang) to ensure pulled binaries retain executable permissions (`0o755`).
+- **Multiline Function Header Slice Panic in Expression Synthesis** (`crates/prod-code-mcp`):
+  Guarded multiline parameter extraction against empty slicing ranges when the target line is a multiline function signature itself without closing parentheses, preventing panic under expression synthesis queries.
+
 ## v0.3.23 — 2026-10-02
 
 ### Added

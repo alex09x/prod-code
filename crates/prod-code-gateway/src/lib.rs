@@ -1367,14 +1367,15 @@ fn read_server_file(
     }
     let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
     let in_workspace = canonical.starts_with(storage_root);
-    let max = if req.max_bytes == 0 {
-        if in_workspace {
-            MAX_PULL_BYTES
-        } else {
-            DEFAULT_MAX_SOURCE
-        }
+    let ceiling = if in_workspace {
+        MAX_PULL_BYTES
     } else {
-        req.max_bytes.min(MAX_PULL_BYTES)
+        DEFAULT_MAX_SOURCE
+    };
+    let max = if req.max_bytes == 0 {
+        ceiling
+    } else {
+        req.max_bytes.min(ceiling)
     };
     match std::fs::read(&path) {
         Ok(mut bytes) => {
@@ -7482,6 +7483,60 @@ mod tests {
         );
         assert!(flatten_writer_result(result).is_err());
         owned.clear_finished();
+    }
+
+    #[test]
+    fn read_server_file_caps_external_source_to_2mib_even_with_explicit_large_limit() {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let external_base = home.join(".cargo/registry");
+        if std::fs::create_dir_all(&external_base).is_err() {
+            return;
+        }
+        let test_file = external_base.join(format!("test_cap_{}.txt", std::process::id()));
+        let data = vec![b'x'; 3 * 1024 * 1024]; // 3 MiB
+        if std::fs::write(&test_file, &data).is_err() {
+            return;
+        }
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _guard = Cleanup(test_file.clone());
+
+        let temp_storage = tempfile::tempdir().unwrap();
+
+        let req = prod_code_protocol::ReadFileRequest {
+            path: test_file.to_string_lossy().into_owned(),
+            max_bytes: 64 * 1024 * 1024, // Explicit 64 MiB requested
+        };
+        let resp = read_server_file(temp_storage.path(), &req);
+
+        assert!(resp.error.is_none(), "read_server_file failed: {:?}", resp.error);
+        assert!(resp.truncated, "external source must be truncated to 2 MiB");
+        let content = resp.content.expect("content present");
+        assert_eq!(content.len(), 2 * 1024 * 1024, "external source capped at 2 MiB");
+    }
+
+    #[test]
+    fn read_server_file_allows_workspace_artifact_up_to_64mib() {
+        let temp_storage = tempfile::tempdir().unwrap();
+        let artifact = temp_storage.path().join("target/release/large_bin");
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        let data = vec![b'y'; 3 * 1024 * 1024]; // 3 MiB
+        std::fs::write(&artifact, &data).unwrap();
+
+        let req = prod_code_protocol::ReadFileRequest {
+            path: artifact.to_string_lossy().into_owned(),
+            max_bytes: 0, // Default in workspace
+        };
+        let resp = read_server_file(temp_storage.path(), &req);
+        assert!(resp.error.is_none(), "read_server_file failed: {:?}", resp.error);
+        assert!(!resp.truncated, "workspace artifact must not be truncated under 64 MiB");
+        assert_eq!(resp.content.expect("content").len(), 3 * 1024 * 1024);
     }
 
     #[tokio::test]
