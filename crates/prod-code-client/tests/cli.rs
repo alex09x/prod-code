@@ -645,8 +645,8 @@ async fn cli_resolves_definition_location_and_reports_when_none_found() {
     .await;
 
     let out_empty = run_cli(&ws, gw_empty.addr, &["def", "src/lib.rs", "1", "5"]).await;
-    assert!(out_empty.status.success());
-    assert!(stdout_of(&out_empty).contains("No definition found."));
+    assert!(!out_empty.status.success());
+    assert!(stderr_of(&out_empty).contains("no definition found"));
 }
 
 #[tokio::test]
@@ -675,6 +675,34 @@ async fn scripted_gateway_answers_hover_query() {
     let out = run_cli(&ws, gateway.addr(), &["hover", "src/lib.rs", "1", "5"]).await;
     assert!(out.status.success());
     assert!(stdout_of(&out).contains("hover via scripted gateway"));
+}
+
+#[tokio::test]
+async fn cli_hover_blank_contents_returns_typed_error() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/hover" => serde_json::json!({ "contents": { "kind": "markdown", "value": "   \n  " } }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(&ws, gw.addr, &["hover", "src/lib.rs", "1", "12"]).await;
+    assert!(!out.status.success());
+    assert!(stderr_of(&out).contains("no hover information found"));
+}
+
+#[tokio::test]
+async fn cli_hover_empty_array_contents_returns_typed_error() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/hover" => serde_json::json!({ "contents": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(&ws, gw.addr, &["hover", "src/lib.rs", "1", "12"]).await;
+    assert!(!out.status.success());
+    assert!(stderr_of(&out).contains("no hover information found"));
 }
 
 #[tokio::test]

@@ -1731,16 +1731,42 @@ impl GenericLspEngine {
         let stderr = child.stderr.take();
         let stderr_tail = Arc::new(StdMutex::new(std::collections::VecDeque::<String>::with_capacity(32)));
         let stderr_tail_writer = Arc::clone(&stderr_tail);
-        if let Some(stderr) = stderr {
+        if let Some(mut stderr) = stderr {
             tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let mut tail = lock_unpoisoned(&stderr_tail_writer);
-                    if tail.len() >= 30 {
-                        tail.pop_front();
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 4096];
+                let mut current_line = String::new();
+                while let Ok(n) = stderr.read(&mut buf).await {
+                    if n == 0 {
+                        break;
                     }
-                    tail.push_back(line);
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+                    for c in chunk.chars() {
+                        if c == '\n' {
+                            let mut tail = lock_unpoisoned(&stderr_tail_writer);
+                            while tail.len() >= 30
+                                || tail.iter().map(|s| s.len()).sum::<usize>() + current_line.len() > 16 * 1024
+                            {
+                                if tail.pop_front().is_none() {
+                                    break;
+                                }
+                            }
+                            tail.push_back(std::mem::take(&mut current_line));
+                        } else if current_line.len() < 512 {
+                            current_line.push(c);
+                        }
+                    }
+                }
+                if !current_line.is_empty() {
+                    let mut tail = lock_unpoisoned(&stderr_tail_writer);
+                    while tail.len() >= 30
+                        || tail.iter().map(|s| s.len()).sum::<usize>() + current_line.len() > 16 * 1024
+                    {
+                        if tail.pop_front().is_none() {
+                            break;
+                        }
+                    }
+                    tail.push_back(current_line);
                 }
             });
         }
@@ -1917,7 +1943,15 @@ impl GenericLspEngine {
                                     })
                                 }
                                 "workspace/workspaceFolders" => {
-                                    let ws_str = config_root.to_string_lossy().to_string();
+                                    let ws_uri = url::Url::from_directory_path(&config_root)
+                                        .map(|u| u.to_string())
+                                        .unwrap_or_else(|_| {
+                                            url::Url::from_file_path(&config_root)
+                                                .map(|u| u.to_string())
+                                                .unwrap_or_else(|_| {
+                                                    format!("file://{}", config_root.display())
+                                                })
+                                        });
                                     let ws_name = config_root
                                         .file_name()
                                         .and_then(|n| n.to_str())
@@ -1928,7 +1962,7 @@ impl GenericLspEngine {
                                         "result": [
                                             {
                                                 "name": ws_name,
-                                                "uri": format!("file://{}", ws_str)
+                                                "uri": ws_uri
                                             }
                                         ]
                                     })
