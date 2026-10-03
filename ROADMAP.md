@@ -308,25 +308,20 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     - Structured compiler and test diagnostic events (spans, error codes, failed assertion diffs, stack traces) streamed directly to client/agent.
     - Final execution summary: exit code, wall-clock duration, server CPU user/sys time, peak memory RSS.
 
-- [~] **6.2. Server-Side Execution Engine & Warm Polyglot Caches (`crates/prod-code-gateway`)** — commands run inside the synced workspace copy; `target/` and `node_modules/` persist per workspace between runs (2026-09-19).
+- [x] **6.2. Server-Side Execution Engine & Warm Polyglot Caches (`crates/prod-code-gateway`)** — shipped in #825: polyglot warm compiler cache environment variables (`polyglot_compiler_cache_env`) across Rust (`CARGO_TARGET_DIR`), Go (`GOCACHE`, `GOMODCACHE`), Python (`UV_CACHE_DIR`, `PIP_CACHE_DIR`), Node (`npm_config_cache`, `npm_config_store_dir`, `YARN_CACHE_FOLDER`), and C/C++ (`ccache`); automated virtualenv bytecode pre-warming with isolated host python (`-I -S -m compileall -q -f`) preventing untrusted workspace execution; and in-memory RAM-disk build isolation with >= 20% tmpfs headroom validation and automatic fallback to NVMe.
   - Dispatch execution to dedicated high-performance Linux worker nodes (a 32-core x86 node, or a 128-core Ampere node / 250 GB RAM).
   - Persistent server-side build caches on fast NVMe / RAM-disk (`/dev/shm`):
-    - Rust: shared `~/.cargo/registry`, `target/` on NVMe.
+    - Rust: shared `~/.cargo/registry`, `target/` on NVMe / `/dev/shm`.
     - Go: warm shared `GOCACHE` and `GOPATH/pkg/mod`.
     - C++: shared `ccache` / `sccache` and precompiled headers.
     - TypeScript: shared global `pnpm` store and pre-resolved `@types/*`.
     - Python: pre-warmed `.venv` wheels and pycache.
   - Because code deltas are synced incrementally in < 2 ms, only modified files trigger re-compilation; dependencies stay permanently warm in server RAM.
-  - Status (2026-09-26, checked on a node):
-    - Shared by every workspace copy on a node, since all run as one user: Rust `~/.cargo/registry`, Go `GOCACHE` and `GOMODCACHE`, npm `~/.npm` (pnpm 12.6 and yarn 1.22 installed, so a pnpm store is shared too), uv `~/.cache/uv`, and ccache for C/C++ (#243).
-    - Kept per workspace: `target/`, `node_modules/` and virtual environments. A new worktree's copy starts from the main copy's (#278, #412, #414).
-    - Not built: caches on a RAM disk (they are on each node's disk) and pre-warmed pycache. sccache is configured as a Cargo compiler wrapper on inspected build nodes; overlay shadows now use client-side compilation and reject incompatible logging or distributed-compiler settings (#426).
 
-- [~] **6.3. Concurrent Multi-Worktree Build Isolation** — every worktree owns `<repo>--wt-<hash>` with its own build cache (2026-09-19). Process-group supervision was checked on 2026-09-23. Each exec runs in its own process group (`process_group(0)`), and the whole tree is killed on a timeout or a client disconnect. `bash -c '(sleep 283 &); sleep 282'` left no process on the node after a 3 s timeout, and none when the client was killed. A new worktree's copy takes the main copy's compiled Rust dependencies since 2026-09-24 (#278): `target/debug/{deps,build,.fingerprint}` is copied when the copy is seeded, with modification times kept, so its first `cargo test --workspace --no-run` compiled 8 crates in 38.8 s against 305 in 106.2 s. The copy is the worktree's own; nothing is shared afterwards. C/C++ gets the same effect from ccache (#243).
+- [x] **6.3. Concurrent Multi-Worktree Build Isolation** — shipped in #825: isolated per-workspace target directories on RAM-disk (`/dev/shm/prod-code-build/<ws>-<hash>/target`) or NVMe; OS-managed advisory file locking (`RamBuildLease` holding `flock(LOCK_EX | LOCK_NB)`) protecting active builds against concurrent sweeping; automatic crash recovery (`is_ram_lease_active`) unlinking stale markers and sweeping expired caches without permanent protection; and process group supervision on client disconnect or timeout.
   - Isolated build artifacts per worktree session to eliminate build cache lock contention across concurrent agents.
   - Shared read-only dependency artifact cache across worktrees.
   - Process group supervision: automatic SIGKILL tree cleanup on client disconnect or timeout.
-  - Status (2026-09-26): a new worktree's copy now starts from the main copy's dependencies in every language that keeps them in the tree: compiled Rust crates (#278), `node_modules` (#412) and virtual environments (#414). It no longer takes caches that hold the main copy's paths, such as CMake's `build/`, SwiftPM's `.build` and clangd's `.cache` (#416). Each worktree still owns its copy, so no build waits on another's lock. What is shared read-only is the per-user caches listed under 6.2. Not built: a clangd index shared across copies (see 3.4).
 
 - [x] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec`; typed `prod-code check | lint | test [FILTER]` and MCP `code_check`, `code_lint`, `code_test` with structured diagnostics (cargo JSON, rustc text, libtest failures, go build/vet, go test -json) (2026-09-19). `--json` prints the full report (2026-09-19). Benchmarks followed on 2026-09-23 (#178). `prod-code benchmarks [FILTER]` and MCP `code_benchmarks` run `cargo bench --workspace` or `go test -run '^$' -bench`. The results are parsed from criterion (estimate and interval, with a long name read from the line before), libtest (`ns/iter (+/- N)`) and Go (`ns/op`). `prod-code bench` stays the gateway's own load benchmark. CPU and peak RSS in the exec summary followed on 2026-09-23 (#180).
   - **Client CLI Commands**:
