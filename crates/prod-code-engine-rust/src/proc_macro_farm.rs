@@ -94,8 +94,8 @@ impl ProcMacroWorkerFarm {
         self.allocate_workers_timeout(workspace_root, desired, Duration::ZERO)
     }
 
-    /// Allocates worker processes for a workspace with fair-share capacity governance,
-    /// dynamic permit rebalancing from multi-worker workspaces under load, and optional timeout queuing.
+    /// Allocates worker processes for a workspace with fair-share capacity governance
+    /// and optional timeout queuing.
     pub fn allocate_workers_timeout(
         self: &Arc<Self>,
         workspace_root: &Path,
@@ -113,28 +113,20 @@ impl ProcMacroWorkerFarm {
             );
         }
 
-        // Fair share ceiling: no single workspace can hoard more than half the farm
-        // if capacity > 1.
-        let fair_share = if self.capacity > 1 {
-            (self.capacity / 2).max(1)
-        } else {
+        // Fair share ceiling: ensure multi-tenant fairness so a single workspace
+        // cannot monopolize the farm and starve subsequent workspaces.
+        // On nodes with capacity <= 4, allow at most 1 worker per workspace.
+        // On larger nodes, allow at most capacity / 4 workers (clamped to 1..4).
+        let fair_share = if self.capacity <= 4 {
             1
+        } else {
+            (self.capacity / 4).clamp(1, 4)
         };
         let target = desired.min(fair_share);
 
         let mut active = self.active_workers.lock().unwrap_or_else(|e| e.into_inner());
 
-        let can_allocate = |act: usize, allocs: &HashMap<PathBuf, usize>| -> bool {
-            if act < self.capacity {
-                return true;
-            }
-            allocs.iter().any(|(p, &c)| p.as_path() != workspace_root && c > 1)
-        };
-
-        let mut allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
-
-        if !can_allocate(*active, &allocs) && !timeout.is_zero() {
-            drop(allocs);
+        if *active >= self.capacity && !timeout.is_zero() {
             match self.cvar.wait_timeout_while(active, timeout, |act| *act >= self.capacity) {
                 Ok((new_active, _)) => {
                     active = new_active;
@@ -143,34 +135,10 @@ impl ProcMacroWorkerFarm {
                     active = e.into_inner().0;
                 }
             }
-            allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
         }
 
         let remaining = self.capacity.saturating_sub(*active);
-        let mut allocated = target.min(remaining);
-
-        // If direct capacity was not enough to grant at least 1 worker,
-        // rebalance from a loaded workspace that holds > 1 worker.
-        let mut rebalanced_from_donor = false;
-        if allocated == 0 && *active >= self.capacity {
-            let donor = allocs
-                .iter_mut()
-                .filter(|(p, _)| p.as_path() != workspace_root)
-                .max_by_key(|(_, c)| **c);
-
-            if let Some((donor_ws, donor_count)) = donor
-                && *donor_count > 1
-            {
-                *donor_count -= 1;
-                allocated = 1;
-                rebalanced_from_donor = true;
-                tracing::info!(
-                    donor = %donor_ws.display(),
-                    recipient = %workspace_root.display(),
-                    "Rebalanced proc-macro worker permit for incoming workspace"
-                );
-            }
-        }
+        let allocated = target.min(remaining);
 
         if allocated == 0 {
             tracing::warn!(
@@ -189,9 +157,8 @@ impl ProcMacroWorkerFarm {
             );
         }
 
-        if !rebalanced_from_donor {
-            *active += allocated;
-        }
+        let mut allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
+        *active += allocated;
         *allocs.entry(workspace_root.to_path_buf()).or_insert(0) += allocated;
 
         tracing::info!(
@@ -561,42 +528,55 @@ mod tests {
         // Workspace 1 asks for 6, capped at fair share (8 / 2 = 4)
         let ws1 = PathBuf::from("/tmp/ws1");
         let (w1, permit1) = farm.allocate_workers(&ws1, 6);
-        assert_eq!(w1, 4, "Must cap single workspace to fair share");
-        assert_eq!(permit1.worker_count(), 4);
-        assert_eq!(farm.active_workers(), 4);
+        assert_eq!(w1, 2, "Must cap single workspace to fair share");
+        assert_eq!(permit1.worker_count(), 2);
+        assert_eq!(farm.active_workers(), 2);
         assert_eq!(farm.active_workspaces(), 1);
 
-        // Next workspace asks for 6, also gets fair share 4 (4 + 4 = 8)
+        // Next workspaces ask for workers, each capped at fair share 2
         let ws2 = PathBuf::from("/tmp/ws2");
         let (w2, permit2) = farm.allocate_workers(&ws2, 6);
-        assert_eq!(w2, 4);
-        assert_eq!(farm.active_workers(), 8);
+        assert_eq!(w2, 2);
+        assert_eq!(farm.active_workers(), 4);
         assert_eq!(farm.active_workspaces(), 2);
 
-        // Third workspace asks for workers when capacity is full:
-        // rebalances 1 from ws1 (donor with max workers > 1) to avoid starvation
         let ws3 = PathBuf::from("/tmp/ws3");
         let (w3, permit3) = farm.allocate_workers(&ws3, 4);
-        assert_eq!(w3, 1, "Must rebalance 1 worker from multi-worker workspace to avoid starvation");
-        assert_eq!(permit3.worker_count(), 1);
-        assert_eq!(farm.active_workers(), 8, "Total active workers must not exceed capacity");
+        assert_eq!(w3, 2);
+        assert_eq!(farm.active_workers(), 6);
         assert_eq!(farm.active_workspaces(), 3);
 
-        // Fourth workspace asks for workers: rebalances 1 from ws2
         let ws4 = PathBuf::from("/tmp/ws4");
         let (w4, permit4) = farm.allocate_workers(&ws4, 2);
-        assert_eq!(w4, 1, "Must rebalance 1 worker from ws2");
+        assert_eq!(w4, 2);
         assert_eq!(farm.active_workers(), 8);
         assert_eq!(farm.active_workspaces(), 4);
 
-        // Dropping ws1 frees its remaining 3 workers
+        // Fifth workspace asks for workers when capacity is full:
+        // Must be rejected with 0 workers (no overcommit / phantom rebalancing)
+        let ws5 = PathBuf::from("/tmp/ws5");
+        let (w5, permit5) = farm.allocate_workers(&ws5, 2);
+        assert_eq!(w5, 0, "Must be rejected when farm is at full capacity");
+        assert_eq!(permit5.worker_count(), 0);
+        assert_eq!(farm.active_workers(), 8, "Total active workers must not exceed capacity");
+        assert_eq!(farm.active_workspaces(), 4);
+
+        // Dropping ws1 frees its 2 workers
         drop(permit1);
-        assert_eq!(farm.active_workers(), 5);
+        assert_eq!(farm.active_workers(), 6);
         assert_eq!(farm.active_workspaces(), 3);
+
+        // Now ws5 can allocate the freed workers
+        let (w5_retry, permit5_retry) = farm.allocate_workers(&ws5, 2);
+        assert_eq!(w5_retry, 2);
+        assert_eq!(farm.active_workers(), 8);
+        assert_eq!(farm.active_workspaces(), 4);
 
         drop(permit2);
         drop(permit3);
         drop(permit4);
+        drop(permit5);
+        drop(permit5_retry);
         assert_eq!(farm.active_workers(), 0);
         assert_eq!(farm.active_workspaces(), 0);
     }
@@ -669,11 +649,11 @@ mod tests {
 
     #[test]
     fn test_farm_metrics_snapshot() {
-        let farm = Arc::new(ProcMacroWorkerFarm::new(12));
+        let farm = Arc::new(ProcMacroWorkerFarm::new(16));
         let ws = PathBuf::from("/tmp/ws_metrics");
         let (_w, permit) = farm.allocate_workers(&ws, 4);
         let m = farm.metrics();
-        assert_eq!(m.capacity, 12);
+        assert_eq!(m.capacity, 16);
         assert_eq!(m.active_workers, 4);
         assert_eq!(m.active_workspaces, 1);
         assert_eq!(m.default_memory_limit_mb, 2048);
