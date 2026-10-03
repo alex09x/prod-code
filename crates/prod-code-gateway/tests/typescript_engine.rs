@@ -532,3 +532,53 @@ fn test_seed_typescript_worktree_rejects_out_of_root_symlinks() {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
     }
 }
+
+#[test]
+fn test_seed_typescript_worktree_rejects_out_of_root_traversal_root() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("ts-cache-root-security");
+    unsafe {
+        std::env::set_var(TS_TYPES_CACHE_ENV, &cache_dir);
+    }
+
+    // External directory simulating sensitive host files
+    let outside_dir = temp.path().join("outside_sensitive_dir");
+    fs::create_dir_all(&outside_dir).unwrap();
+    fs::write(outside_dir.join("config.json"), "{\"secret\": \"OUTSIDE_SECRET\"}\n").unwrap();
+    fs::write(outside_dir.join("types.d.ts"), "declare const sensitive: any;\n").unwrap();
+
+    let from_evil = temp.path().join("from_evil");
+    let to_evil = temp.path().join("to_evil");
+    fs::create_dir_all(&from_evil).unwrap();
+    fs::create_dir_all(&to_evil).unwrap();
+    fs::write(from_evil.join("package.json"), "{}").unwrap();
+
+    let evil_node_modules = from_evil.join("node_modules");
+    fs::create_dir_all(&evil_node_modules).unwrap();
+
+    // node_modules/@types ITSELF is a symlink pointing to outside_dir!
+    let evil_at_types = evil_node_modules.join("@types");
+    let _ = std::os::unix::fs::symlink(&outside_dir, &evil_at_types);
+
+    // find_project_types must reject this out-of-root traversal root
+    let discovered = find_project_types(&from_evil);
+    assert!(discovered.is_empty(), "find_project_types must reject out-of-root traversal root symlink");
+
+    // tree_size must return 0
+    let size = tree_size(&evil_at_types);
+    assert_eq!(size, 0, "tree_size must reject out-of-root traversal root symlink");
+
+    // merge_types must return 0 and not copy anything
+    let merged = merge_types(&evil_at_types, &cache_dir).unwrap();
+    assert_eq!(merged, 0, "merge_types must return 0 for out-of-root traversal root");
+
+    // seed_typescript_worktree must not copy any external files
+    let _ = seed_typescript_worktree(&from_evil, &to_evil).unwrap();
+    assert!(!cache_dir.join("config.json").exists());
+    assert!(!cache_dir.join("types.d.ts").exists());
+
+    unsafe {
+        std::env::remove_var(TS_TYPES_CACHE_ENV);
+    }
+}
