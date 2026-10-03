@@ -3004,6 +3004,456 @@ async fn code_validate_edit_checks_proposed_text_without_writing() {
     assert_eq!(std::fs::read_to_string(&lib).unwrap(), "pub fn a() {}\n");
 }
 
+#[tokio::test]
+async fn code_validate_edit_stream_chunks_intercepts_invalid_methods() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => serde_json::json!({
+            "kind": "full",
+            "items": [{
+                "severity": 1,
+                "code": "unresolved-method",
+                "message": "no method named `hallucinated_execute` found for struct `Client`",
+                "range": {
+                    "start": { "line": 2, "character": 4 },
+                    "end": { "line": 2, "character": 24 }
+                }
+            }]
+        }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "stream_chunks": [
+                "pub struct Client;\n",
+                "impl Client {\n",
+                "    pub fn run(&self) {\n",
+                "        self.hallucinated_execute();\n",
+                "    }\n",
+                "}\n"
+            ]
+        }),
+    )
+    .await
+    .expect("stream validation executes");
+    assert!(result.is_error);
+    let text = text_of(&result);
+    assert!(text.contains("INTERCEPT"), "{text}");
+    assert!(text.contains("hallucinated_execute"), "{text}");
+}
+
+#[tokio::test]
+async fn code_validate_edit_incremental_chunk_feeding_intercepts_on_the_fly() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let last_text = Arc::new(std::sync::Mutex::new(String::new()));
+    let text_clone = Arc::clone(&last_text);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/didOpen" => {
+            if let Some(t) = params.pointer("/textDocument/text").and_then(|v| v.as_str()) {
+                *text_clone.lock().unwrap() = t.to_string();
+            }
+            serde_json::Value::Null
+        }
+        "textDocument/didChange" => {
+            if let Some(changes) = params.pointer("/contentChanges").and_then(|v| v.as_array()) {
+                if let Some(t) = changes.last().and_then(|c| c.get("text")).and_then(|v| v.as_str()) {
+                    *text_clone.lock().unwrap() = t.to_string();
+                }
+            }
+            serde_json::Value::Null
+        }
+        "textDocument/diagnostic" => {
+            let current = text_clone.lock().unwrap().clone();
+            if current.contains("hallucinated_execute") {
+                serde_json::json!({
+                    "kind": "full",
+                    "items": [{
+                        "severity": 1,
+                        "code": "unresolved-method",
+                        "message": "no method named `hallucinated_execute` found for struct `Client`",
+                        "range": {
+                            "start": { "line": 2, "character": 4 },
+                            "end": { "line": 2, "character": 24 }
+                        }
+                    }]
+                })
+            } else {
+                answers::no_diagnostics()
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let sid = "session-test-intercept";
+    // Chunk 1
+    let r1 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "pub struct Client;\n",
+            "session_id": sid,
+            "reset": true
+        }),
+    )
+    .await
+    .expect("chunk 1 executes");
+    assert!(!r1.is_error, "chunk 1 should pass: {}", text_of(&r1));
+
+    // Chunk 2: introduces hallucination at checkpoint
+    let r2 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "impl Client {\n    pub fn run(&self) {\n        self.hallucinated_execute();\n",
+            "session_id": sid
+        }),
+    )
+    .await
+    .expect("chunk 2 executes");
+    assert!(r2.is_error, "chunk 2 should be intercepted");
+    let t2 = text_of(&r2);
+    assert!(t2.contains("INTERCEPT"), "{t2}");
+    assert!(t2.contains("hallucinated_execute"), "{t2}");
+}
+
+#[tokio::test]
+async fn code_validate_edit_incremental_chunk_feeding_clean_completion() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let sid = "session-test-clean";
+    let r1 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "pub struct Client;\n",
+            "session_id": sid,
+            "reset": true
+        }),
+    )
+    .await
+    .expect("chunk 1 executes");
+    assert!(!r1.is_error);
+
+    let r2 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "impl Client {\n    pub fn run(&self) {}\n}\n",
+            "session_id": sid,
+            "close": true
+        }),
+    )
+    .await
+    .expect("chunk 2 executes");
+    assert!(!r2.is_error);
+    let t2 = text_of(&r2);
+    assert!(t2.contains("stream generation validated clean"), "{t2}");
+}
+
+#[tokio::test]
+async fn code_validate_edit_stream_sessions_isolated_across_files() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    let _other = write(&ws, "src/other.rs", "pub struct Server;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    // Both use the same session_id "shared-turn", but on different files
+    let r1 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "pub struct Client;\n",
+            "session_id": "shared-turn",
+            "reset": true
+        }),
+    )
+    .await
+    .expect("chunk lib executes");
+    assert!(!r1.is_error);
+
+    let r2 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/other.rs",
+            "chunk": "pub struct Server;\n",
+            "session_id": "shared-turn",
+            "reset": true
+        }),
+    )
+    .await
+    .expect("chunk other executes");
+    assert!(!r2.is_error);
+
+    // lib chunk 2 closes cleanly and has only Client content
+    let r3 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "impl Client { pub fn hello(&self) {} }\n",
+            "session_id": "shared-turn",
+            "close": true
+        }),
+    )
+    .await
+    .expect("chunk lib close executes");
+    assert!(!r3.is_error);
+    assert!(text_of(&r3).contains("stream generation validated clean"));
+}
+
+#[tokio::test]
+async fn code_validate_edit_stream_chunk_limit_enforced() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let oversized_chunk = "x".repeat(prod_code_mcp::diagnostics::MAX_STREAM_CHUNK_BYTES + 10);
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": oversized_chunk,
+            "session_id": "s-limit",
+            "reset": true
+        }),
+    )
+    .await;
+    assert!(err.is_err());
+    let err_str = format!("{:#}", err.unwrap_err());
+    assert!(err_str.contains("exceeds maximum limit"), "{err_str}");
+}
+
+#[tokio::test]
+async fn code_validate_edit_stream_session_tombstone_prevents_lost_prefix() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    // 1. Initial chunk
+    let r1 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "pub struct Client;\n",
+            "session_id": "s-tomb",
+            "reset": true
+        }),
+    )
+    .await
+    .expect("initial chunk succeeds");
+    assert!(!r1.is_error);
+
+    // 2. Final chunk closes the session and adds tombstone
+    let r2 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "impl Client { pub fn hello(&self) {} }\n",
+            "session_id": "s-tomb",
+            "close": true
+        }),
+    )
+    .await
+    .expect("close chunk succeeds");
+    assert!(!r2.is_error);
+
+    // 3. Subsequent chunk with same session_id without reset: true must be rejected via tombstone
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "impl Client { pub fn extra(&self) {} }\n",
+            "session_id": "s-tomb"
+        }),
+    )
+    .await;
+    assert!(err.is_err(), "expected chunk to be rejected because session is tombstoned");
+    let err_str = format!("{:#}", err.unwrap_err());
+    assert!(
+        err_str.contains("has expired or was terminated"),
+        "error must mention expiration/termination: {err_str}"
+    );
+
+    // 4. Passing reset: true clears tombstone and allows restart
+    let r3 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "pub struct Client;\n",
+            "session_id": "s-tomb",
+            "reset": true
+        }),
+    )
+    .await
+    .expect("reset chunk succeeds");
+    assert!(!r3.is_error);
+}
+
+#[tokio::test]
+async fn code_validate_edit_stream_tombstones_capacity_bounded_and_evicted_sessions_rejected() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let mgr = prod_code_mcp::diagnostics::stream_manager();
+    let root = ws.root();
+    let file = root.join("src/lib.rs");
+
+    // Feed and close MAX_STREAM_TOMBSTONES + 50 sessions
+    let total = prod_code_mcp::diagnostics::MAX_STREAM_TOMBSTONES + 50;
+    for i in 0..total {
+        let sid = format!("tomb-cap-{i}");
+        let res = mgr
+            .feed_chunk(remote, &root, &file, &sid, "pub struct Client;\n", true, true, false)
+            .await
+            .expect("feed and close succeeds");
+        assert!(!res.intercepted);
+    }
+
+    // Verify tombstone map is bounded by MAX_STREAM_TOMBSTONES
+    let count = mgr.tombstone_count();
+    assert!(
+        count <= prod_code_mcp::diagnostics::MAX_STREAM_TOMBSTONES,
+        "tombstone count {count} must not exceed limit {}",
+        prod_code_mcp::diagnostics::MAX_STREAM_TOMBSTONES
+    );
+
+    // Session 0 was the earliest, so its tombstone has been evicted by LRU capacity
+    // Feeding a chunk without reset: true to the evicted session must STILL be rejected!
+    let evicted_err = mgr
+        .feed_chunk(remote, &root, &file, "tomb-cap-0", "impl Client {}\n", false, false, false)
+        .await;
+    assert!(evicted_err.is_err(), "evicted session without reset must be rejected");
+    let err_msg = format!("{:#}", evicted_err.unwrap_err());
+    assert!(
+        err_msg.contains("not found or was evicted") || err_msg.contains("has expired or was terminated"),
+        "error must mention eviction/expiration: {err_msg}"
+    );
+
+    // But passing reset: true allows starting fresh
+    let restarted = mgr
+        .feed_chunk(remote, &root, &file, "tomb-cap-0", "pub struct Client;\n", true, true, false)
+        .await
+        .expect("reset allows restarting evicted session");
+    assert!(!restarted.intercepted);
+}
+
+#[tokio::test]
+async fn code_validate_edit_stream_chunks_validates_clean() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "stream_chunks": [
+                "pub struct Client;\n",
+                "impl Client {\n",
+                "    pub fn run(&self) {}\n",
+                "}\n"
+            ]
+        }),
+    )
+    .await
+    .expect("stream validation executes");
+    assert!(!result.is_error);
+    let text = text_of(&result);
+    assert!(text.contains("stream generation validated clean"), "{text}");
+}
+
+#[tokio::test]
+async fn code_validate_edit_borrow_check_verifies_proof() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub fn a() {}\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "new_text": "pub fn a() -> u32 { 42 }\n"
+        }),
+    )
+    .await
+    .expect("validate edit runs");
+    assert!(!res.is_error);
+    assert!(text_of(&res).contains("0 error(s), 0 warning(s)"));
+}
+
 /// Every session a validation opens, the one that reads the file as it is on disk included,
 /// asks for the validation engine: that is the engine the gateway warms, and the main engine
 /// is cold for a large file's diagnostics after a restart (#235).

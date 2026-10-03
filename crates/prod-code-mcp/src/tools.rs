@@ -898,16 +898,38 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_validate_edit".to_string(),
-            description: "Check a proposed new content for a file BEFORE writing it: the analyzer sees the proposed text as the document and reports errors and warnings. Nothing is written anywhere. Use it to catch hallucinated APIs, type errors and unresolved imports before touching the checkout. For Rust the analyzer runs no borrow checker; `compile: true` has the compiler judge the text too."
+            description: "Check a proposed new content for a file BEFORE writing it: the analyzer sees the proposed text as the document and reports errors and warnings. Nothing is written anywhere. Use it to catch hallucinated APIs, type errors and unresolved imports before touching the checkout. `stream_chunks` enables on-the-fly incremental validation during agent code generation, intercepting hallucinations before turn conclusion (Roadmap 7.7). For Rust the analyzer runs no borrow checker; `compile: true` or `borrow_check: true` has the compiler and borrow checker judge the text too."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute); may be a new file" },
                     "new_text": { "type": "string", "description": "The complete proposed content of the file" },
-                    "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION }
+                    "chunk": {
+                        "type": "string",
+                        "description": "Incremental code chunk to feed to an active streaming validation session (Roadmap 7.7)"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session identifier for stateful incremental stream validation (default: 'default')"
+                    },
+                    "close": {
+                        "type": "boolean",
+                        "description": "Mark the streaming session as closed/final on this chunk, triggering final validation and borrow-checking"
+                    },
+                    "reset": {
+                        "type": "boolean",
+                        "description": "Reset session buffer before feeding this chunk"
+                    },
+                    "stream_chunks": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Streamed code chunks to validate incrementally during agent generation, intercepting hallucinations at delimiter checkpoints before turn completion (Roadmap 7.7)"
+                    },
+                    "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION },
+                    "borrow_check": { "type": "boolean", "description": "Enforce borrow checker and full compiler verification in a shadow workspace (Roadmap 7.7)" }
                 },
-                "required": ["path", "new_text"]
+                "required": ["path"]
             }),
         },
         McpTool {
@@ -936,7 +958,8 @@ fn build_tools_raw() -> Vec<McpTool> {
                         "items": { "type": "string" },
                         "description": "Unchanged files to diagnose against the proposed edits (optional)"
                     },
-                    "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION }
+                    "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION },
+                    "borrow_check": { "type": "boolean", "description": "Enforce borrow checker and full compiler verification in a shadow workspace (Roadmap 7.7)" }
                 },
                 "anyOf": [
                     { "required": ["edits"] },
@@ -5636,7 +5659,9 @@ async fn handle_validate_edits(
         text.push_str(&report.render());
     }
     let mut errors = errors;
-    if args.get("compile").and_then(|v| v.as_bool()) == Some(true) {
+    let borrow_check = args.get("borrow_check").and_then(|v| v.as_bool()) == Some(true);
+    let compile = args.get("compile").and_then(|v| v.as_bool()) == Some(true);
+    if compile || borrow_check {
         let (compiled_errors, compiled) = compile_check(remote, workspace_root, &edits).await?;
         text.push_str(&format!("\n{compiled}"));
         errors += compiled_errors;
@@ -5660,6 +5685,78 @@ async fn handle_diagnostics(
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
     let file_path = resolve_file_path(workspace_root, path_str);
+
+    if tool_name == "code_validate_edit" {
+        if let Some(chunk) = args.get("chunk").and_then(|v| v.as_str()) {
+            let session_id = match args.get("session_id").and_then(|v| v.as_str()) {
+                Some(id) if !id.trim().is_empty() => id.to_string(),
+                _ => {
+                    let counter = crate::diagnostics::next_batch_counter();
+                    format!("stream-{}-{}", std::process::id(), counter)
+                }
+            };
+            let close = args
+                .get("close")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let reset = args
+                .get("reset")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let borrow_check = args
+                .get("borrow_check")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || args
+                    .get("compile")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            let mgr = crate::diagnostics::stream_manager();
+            let chunk_res = mgr
+                .feed_chunk(
+                    remote,
+                    workspace_root,
+                    &file_path,
+                    &session_id,
+                    chunk,
+                    close,
+                    reset,
+                    borrow_check,
+                )
+                .await?;
+            let text = chunk_res.render();
+            let ok = !chunk_res.intercepted;
+            return Ok(if ok {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            });
+        }
+        if let Some(chunks) = args.get("stream_chunks").and_then(|v| v.as_array()) {
+            let chunk_strs: Vec<String> = chunks
+                .iter()
+                .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                .collect();
+            let borrow_check = args.get("borrow_check").and_then(|v| v.as_bool()).unwrap_or(false)
+                || args.get("compile").and_then(|v| v.as_bool()).unwrap_or(false);
+            let stream_res = crate::diagnostics::validate_stream_chunks(
+                remote,
+                workspace_root,
+                &file_path,
+                &chunk_strs,
+                borrow_check,
+            )
+            .await?;
+            let text = stream_res.render();
+            let ok = !stream_res.intercepted;
+            return Ok(if ok {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            });
+        }
+    }
+
     let report = match args.get("new_text").and_then(|v| v.as_str()) {
         Some(text) if tool_name == "code_validate_edit" => {
             crate::diagnostics::validate_text(remote, workspace_root, &file_path, text).await?
@@ -5673,8 +5770,10 @@ async fn handle_diagnostics(
     };
     let mut text = report.render();
     let mut ok = report.ok();
+    let borrow_check = args.get("borrow_check").and_then(|v| v.as_bool()).unwrap_or(false);
+    let compile = args.get("compile").and_then(|v| v.as_bool()).unwrap_or(false);
     if tool_name == "code_validate_edit"
-        && args.get("compile").and_then(|v| v.as_bool()) == Some(true)
+        && (compile || borrow_check)
         && let Some(proposed) = args.get("new_text").and_then(|v| v.as_str())
     {
         let (errors, compiled) =
@@ -5787,11 +5886,25 @@ pub async fn compile_check(
     } else {
         format!("compiler: {run}: {} error(s)", errors.len())
     };
+    let has_borrow_violation = errors.iter().any(|d| {
+        d.code.as_deref().map(crate::diagnostics::is_borrow_checker_error_code).unwrap_or(false)
+            || d.message.contains("borrow")
+            || d.message.contains("moved value")
+            || d.message.contains("lifetime")
+            || d.message.contains("cannot borrow")
+            || d.message.contains("cannot move out")
+    });
+    if has_borrow_violation {
+        report.push_str("\n  [INTERCEPT: BORROW CHECKER VIOLATION detected in proposed edits]");
+    }
     for diagnostic in errors.iter().take(20) {
         report.push_str(&format!("\n  {}", diagnostic.render()));
     }
     if errors.len() > 20 {
         report.push_str(&format!("\n  … {} more", errors.len() - 20));
+    }
+    if errors.is_empty() && result.exit_code == Some(0) {
+        report.push_str(" (full compiler & borrow-checker proof verified clean)");
     }
     let count = if errors.is_empty() && result.exit_code != Some(0) {
         1

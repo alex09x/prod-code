@@ -3,12 +3,121 @@
 
 use crate::session::LspSession;
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HallucinationKind {
+    InvalidMethodInvocation,
+    IncorrectArgumentType,
+    BorrowCheckerError,
+    SyntaxError,
+    UnresolvedIdentifier,
+}
+
+impl std::fmt::Display for HallucinationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidMethodInvocation => write!(f, "InvalidMethodInvocation"),
+            Self::IncorrectArgumentType => write!(f, "IncorrectArgumentType"),
+            Self::BorrowCheckerError => write!(f, "BorrowCheckerError"),
+            Self::SyntaxError => write!(f, "SyntaxError"),
+            Self::UnresolvedIdentifier => write!(f, "UnresolvedIdentifier"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HallucinationInterception {
+    pub kind: HallucinationKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_or_target: Option<String>,
+    pub message: String,
+    pub line: u32,
+    pub col: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+}
+
+/// Result of validating a streamed sequence of chunks during agent code generation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamValidationResult {
+    pub completed_chunks: usize,
+    pub total_chunks: usize,
+    pub intercepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interception: Option<HallucinationInterception>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intercept_chunk_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_report: Option<DiagnosticsReport>,
+    pub summary: String,
+}
+
+impl StreamValidationResult {
+    pub fn render(&self) -> String {
+        let mut out = format!("Streamed validation: {}\n", self.summary);
+        if let Some(intercept) = &self.interception {
+            out.push_str(&format!(
+                "  [INTERCEPT at chunk {}]: {}\n",
+                self.intercept_chunk_index.map(|i| i + 1).unwrap_or(0),
+                intercept.message
+            ));
+            if let Some(sugg) = &intercept.suggestion {
+                out.push_str(&format!("    --> {sugg}\n"));
+            }
+        }
+        if let Some(report) = &self.final_report {
+            out.push_str(&report.render());
+        }
+        out
+    }
+}
+
+/// Result of incrementally validating an incoming chunk in a stateful streaming session (Phase 7.7).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamChunkResult {
+    pub session_id: String,
+    pub chunk_index: usize,
+    pub accumulated_bytes: usize,
+    pub checkpoint_evaluated: bool,
+    pub intercepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interception: Option<HallucinationInterception>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_report: Option<DiagnosticsReport>,
+    pub summary: String,
+}
+
+impl StreamChunkResult {
+    pub fn render(&self) -> String {
+        let mut out = format!(
+            "Stream chunk {} [{}]: {}\n",
+            self.chunk_index, self.session_id, self.summary
+        );
+        if let Some(intercept) = &self.interception {
+            out.push_str(&format!(
+                "  [INTERCEPT at chunk {}]: {}\n",
+                self.chunk_index, intercept.message
+            ));
+            if let Some(sugg) = &intercept.suggestion {
+                out.push_str(&format!("    --> {sugg}\n"));
+            }
+        }
+        if let Some(report) = &self.final_report {
+            out.push_str(&report.render());
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocDiagnostic {
     pub severity: String,
     pub code: Option<String>,
@@ -18,14 +127,14 @@ pub struct DocDiagnostic {
     pub source: Option<String>,
     /// Extra explanation added by prod-code (for example that the failing line uses a symbol
     /// the proposed edits removed or renamed).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Where the range ends, 1-based line and column, when the analyzer gave one.
-    #[serde(skip)]
+    #[serde(skip, default)]
     pub end: Option<(u32, u32)>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsReport {
     pub file: String,
     pub errors: usize,
@@ -34,18 +143,22 @@ pub struct DiagnosticsReport {
     /// Diagnostics the file already had on disk, before the edit under review: the same
     /// severity, code and message on a line with the same text. They are not the edit's, so
     /// they are neither in `items` nor counted in `errors` and `warnings`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preexisting: Vec<DocDiagnostic>,
     /// "type annotations needed" on a `#[derive(...)]` line: the analyzer failing to type its
     /// own expansion of the derive (`serde::Deserialize` does it), which rustc does not report.
     /// Not counted, even in a new file that has no text on disk to compare with (#159).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub in_derive: Vec<DocDiagnostic>,
     /// E0277 that a type is not `Send`, `Sync` or `Unpin`, in a Rust file: rust-analyzer does
     /// not always prove an auto trait rustc proves (through a recursive `async fn`, #327). Shown,
     /// not counted; `cargo check` (`verify: "compile"`) decides.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_trait: Vec<DocDiagnostic>,
+    /// Intercepted hallucinations (roadmap 7.7): invalid method invocations, parameter/argument
+    /// mismatches, borrow checker errors, and syntax anomalies detected on the fly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hallucinations: Vec<HallucinationInterception>,
 }
 
 impl DiagnosticsReport {
@@ -103,6 +216,22 @@ impl DiagnosticsReport {
             ));
             if let Some(note) = &d.note {
                 out.push_str(&format!("    note: {note}\n"));
+            }
+        }
+        if !self.hallucinations.is_empty() {
+            out.push_str("  === Intercepted Hallucinations (Phase 7.7) ===\n");
+            for h in &self.hallucinations {
+                out.push_str(&format!(
+                    "  [INTERCEPT] {}: {} ({}:{}:{})\n",
+                    h.kind,
+                    h.message.lines().next().unwrap_or(""),
+                    self.file,
+                    h.line,
+                    h.col
+                ));
+                if let Some(sugg) = &h.suggestion {
+                    out.push_str(&format!("    --> {sugg}\n"));
+                }
             }
         }
         out
@@ -753,6 +882,7 @@ fn invalid_report(file: &str, reason: &str) -> DiagnosticsReport {
         preexisting: Vec::new(),
         in_derive: Vec::new(),
         auto_trait: Vec::new(),
+        hallucinations: Vec::new(),
     }
 }
 
@@ -814,6 +944,172 @@ fn parse_diagnostic(d: &serde_json::Value) -> Result<DocDiagnostic, String> {
     })
 }
 
+pub fn is_borrow_checker_error_code(code: &str) -> bool {
+    let clean = code.trim().trim_start_matches('[').trim_end_matches(']');
+    matches!(
+        clean,
+        "E0382"
+            | "E0499"
+            | "E0502"
+            | "E0503"
+            | "E0505"
+            | "E0506"
+            | "E0507"
+            | "E0515"
+            | "E0521"
+            | "E0596"
+            | "E0597"
+            | "E0716"
+    )
+}
+
+fn extract_method_name(msg: &str) -> Option<String> {
+    if let Some(start) = msg.find("no method named `") {
+        let rest = &msg[start + "no method named `".len()..];
+        if let Some(end) = rest.find('`') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    if let Some(start) = msg.find("Property '") {
+        let rest = &msg[start + "Property '".len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    if let Some(idx) = msg.find(" undefined") {
+        let prefix = &msg[..idx];
+        if let Some(dot) = prefix.rfind('.') {
+            return Some(prefix[dot + 1..].trim().to_string());
+        }
+    }
+    if let Some(start) = msg.find("Cannot access member '") {
+        let rest = &msg[start + "Cannot access member '".len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    if let Some(start) = msg.find("no member named '") {
+        let rest = &msg[start + "no member named '".len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    if let Some(start) = msg.find("has no attribute '") {
+        let rest = &msg[start + "has no attribute '".len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+pub fn classify_hallucination(d: &DocDiagnostic) -> Option<HallucinationInterception> {
+    let msg_lower = d.message.to_ascii_lowercase();
+    let code_str = d.code.as_deref().unwrap_or("");
+
+    if is_borrow_checker_error_code(code_str)
+        || msg_lower.contains("borrow")
+        || msg_lower.contains("use of moved value")
+        || msg_lower.contains("does not live long enough")
+        || msg_lower.contains("returns a value referencing data owned by the current function")
+    {
+        return Some(HallucinationInterception {
+            kind: HallucinationKind::BorrowCheckerError,
+            symbol_or_target: None,
+            message: d.message.clone(),
+            line: d.line,
+            col: d.col,
+            suggestion: Some("Review value ownership, adjust borrow scopes, clone, or adjust reference lifetimes".to_string()),
+        });
+    }
+
+    if code_str == "unresolved-method"
+        || code_str == "no-such-field"
+        || code_str == "2339"
+        || code_str == "2551"
+        || msg_lower.contains("no method named")
+        || msg_lower.contains("does not exist on type")
+        || (msg_lower.contains("has no field or method") && msg_lower.contains("undefined"))
+        || msg_lower.contains("cannot access member")
+        || msg_lower.contains("no member named")
+        || msg_lower.contains("has no attribute")
+    {
+        let target = extract_method_name(&d.message);
+        return Some(HallucinationInterception {
+            kind: HallucinationKind::InvalidMethodInvocation,
+            symbol_or_target: target,
+            message: d.message.clone(),
+            line: d.line,
+            col: d.col,
+            suggestion: Some("Verify method existence on type or check trait imports".to_string()),
+        });
+    }
+
+    if code_str == "syntax-error"
+        || code_str == "parse-error"
+        || msg_lower.contains("syntax error")
+        || (msg_lower.contains("expected ")
+            && (msg_lower.contains("found `;`")
+                || msg_lower.contains("found `}`")
+                || msg_lower.contains("found `{`")
+                || msg_lower.contains("expected token")))
+        || msg_lower.contains("unclosed delimiter")
+        || msg_lower.contains("unexpected token")
+    {
+        return Some(HallucinationInterception {
+            kind: HallucinationKind::SyntaxError,
+            symbol_or_target: None,
+            message: d.message.clone(),
+            line: d.line,
+            col: d.col,
+            suggestion: Some("Correct unbalanced syntax or missing delimiter".to_string()),
+        });
+    }
+
+    if code_str == "E0308"
+        || code_str == "E0061"
+        || code_str == "type-mismatch"
+        || code_str == "2345"
+        || code_str == "2554"
+        || msg_lower.contains("mismatched types")
+        || (msg_lower.contains("expected ") && msg_lower.contains("found "))
+        || msg_lower.contains("is not assignable to parameter")
+        || (msg_lower.contains("this function takes") && msg_lower.contains("arguments but"))
+        || (msg_lower.contains("cannot use") && msg_lower.contains("value in argument"))
+        || msg_lower.contains("cannot be assigned to parameter")
+    {
+        return Some(HallucinationInterception {
+            kind: HallucinationKind::IncorrectArgumentType,
+            symbol_or_target: None,
+            message: d.message.clone(),
+            line: d.line,
+            col: d.col,
+            suggestion: Some("Verify function signature and argument types".to_string()),
+        });
+    }
+
+    if code_str == "E0425"
+        || code_str == "unresolved-ident"
+        || code_str == "unresolved-path"
+        || code_str == "2304"
+        || msg_lower.contains("cannot find value")
+        || msg_lower.contains("cannot find function")
+        || msg_lower.contains("cannot find name")
+        || msg_lower.contains("undefined:")
+    {
+        return Some(HallucinationInterception {
+            kind: HallucinationKind::UnresolvedIdentifier,
+            symbol_or_target: None,
+            message: d.message.clone(),
+            line: d.line,
+            col: d.col,
+            suggestion: Some("Check symbol spelling or add missing import".to_string()),
+        });
+    }
+
+    None
+}
+
 fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
     // This client never sends a previousResultId, so an unchanged report has no cached
     // evidence to refer to. Older adapters omit kind but still provide the complete items.
@@ -841,6 +1137,11 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
             Err(reason) => return invalid_report(file, &format!("diagnostic {index}: {reason}")),
         }
     }
+    let hallucinations = items
+        .iter()
+        .filter(|d| d.severity == "error")
+        .filter_map(classify_hallucination)
+        .collect();
     DiagnosticsReport {
         file: file.to_string(),
         errors: items.iter().filter(|d| d.severity == "error").count(),
@@ -849,6 +1150,7 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
         preexisting: Vec::new(),
         in_derive: Vec::new(),
         auto_trait: Vec::new(),
+        hallucinations,
     }
 }
 
@@ -941,27 +1243,38 @@ pub fn validate_json(shown: &str, text: &str) -> DiagnosticsReport {
             preexisting: Vec::new(),
             in_derive: Vec::new(),
             auto_trait: Vec::new(),
+            hallucinations: Vec::new(),
         },
         Err(err) => {
             let line = (err.line() as u32).max(1);
             let col = (err.column() as u32).max(1);
+            let diag = DocDiagnostic {
+                severity: "error".to_string(),
+                message: format!("JSON syntax error: {err}"),
+                code: Some("json-syntax".to_string()),
+                line,
+                col,
+                source: None,
+                end: None,
+                note: None,
+            };
+            let hallucinations = vec![HallucinationInterception {
+                kind: HallucinationKind::SyntaxError,
+                symbol_or_target: None,
+                message: diag.message.clone(),
+                line,
+                col,
+                suggestion: Some("Correct invalid JSON syntax".to_string()),
+            }];
             DiagnosticsReport {
                 file: shown.to_string(),
                 errors: 1,
                 warnings: 0,
-                items: vec![DocDiagnostic {
-                    severity: "error".to_string(),
-                    message: format!("JSON syntax error: {err}"),
-                    code: Some("json-syntax".to_string()),
-                    line,
-                    col,
-                    source: None,
-                    end: None,
-                    note: None,
-                }],
+                items: vec![diag],
                 preexisting: Vec::new(),
                 in_derive: Vec::new(),
                 auto_trait: Vec::new(),
+                hallucinations,
             }
         }
     }
@@ -1055,6 +1368,418 @@ pub async fn validate_text(
         report = reports.pop().unwrap();
     }
     Ok(report)
+}
+
+/// Maximum size of a single stream chunk (1 MB).
+pub const MAX_STREAM_CHUNK_BYTES: usize = 1024 * 1024;
+/// Maximum accumulated source buffer allowed per stream session (16 MB).
+pub const MAX_STREAM_SESSION_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum number of concurrently retained active stream sessions.
+pub const MAX_ACTIVE_STREAM_SESSIONS: usize = 128;
+/// Maximum number of tombstone entries tracked to prevent silent prefix loss.
+pub const MAX_STREAM_TOMBSTONES: usize = 1024;
+
+/// Unique key scoping a stream session to its gateway remote, canonical workspace root, canonical file, and session ID.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StreamSessionKey {
+    pub remote: SocketAddr,
+    pub root: PathBuf,
+    pub file: PathBuf,
+    pub session_id: String,
+}
+
+impl StreamSessionKey {
+    pub fn new(remote: SocketAddr, root: &Path, file: &Path, session_id: &str) -> Self {
+        let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let abs_file = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            canonical_root.join(file)
+        };
+        let canonical_file = std::fs::canonicalize(&abs_file).unwrap_or(abs_file);
+        Self {
+            remote,
+            root: canonical_root,
+            file: canonical_file,
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
+/// Stateful stream validation session (Roadmap 7.7).
+#[derive(Debug, Clone)]
+pub struct StreamSession {
+    pub key: StreamSessionKey,
+    pub accumulated: String,
+    pub chunk_count: usize,
+    pub last_activity: Instant,
+}
+
+/// Global manager for stateful streaming validation sessions (Roadmap 7.7).
+/// Allows external producers (CLI line-by-line stdin pipe, MCP stream calls) to feed incremental chunks,
+/// evaluate syntax and type checks at syntactic checkpoints, and interrupt generation on-the-fly.
+pub struct StreamSessionManager {
+    sessions: Mutex<HashMap<StreamSessionKey, StreamSession>>,
+    tombstones: Mutex<HashMap<StreamSessionKey, Instant>>,
+}
+
+static STREAM_MANAGER: OnceLock<StreamSessionManager> = OnceLock::new();
+static BATCH_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+pub fn stream_manager() -> &'static StreamSessionManager {
+    STREAM_MANAGER.get_or_init(StreamSessionManager::new)
+}
+
+pub fn next_batch_counter() -> u64 {
+    BATCH_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+impl StreamSessionManager {
+    pub fn new() -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            tombstones: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn reset_session(&self, remote: SocketAddr, root: &Path, file: &Path, session_id: &str) {
+        let key = StreamSessionKey::new(remote, root, file, session_id);
+        if let Ok(mut map) = self.sessions.lock() {
+            map.remove(&key);
+        }
+        if let Ok(mut tombstones) = self.tombstones.lock() {
+            tombstones.remove(&key);
+        }
+    }
+
+    fn insert_tombstone(tombstones: &mut HashMap<StreamSessionKey, Instant>, key: StreamSessionKey) {
+        if !tombstones.contains_key(&key) && tombstones.len() >= MAX_STREAM_TOMBSTONES {
+            if let Some(oldest) = tombstones
+                .iter()
+                .min_by_key(|(_, t)| *t)
+                .map(|(k, _)| k.clone())
+            {
+                tombstones.remove(&oldest);
+            }
+        }
+        tombstones.insert(key, Instant::now());
+    }
+
+    pub fn tombstone_count(&self) -> usize {
+        self.tombstones.lock().map(|t| t.len()).unwrap_or(0)
+    }
+
+    fn remove_session_key(&self, key: &StreamSessionKey) {
+        if let Ok(mut map) = self.sessions.lock() {
+            map.remove(key);
+        }
+        if let Ok(mut tombstones) = self.tombstones.lock() {
+            Self::insert_tombstone(&mut tombstones, key.clone());
+        }
+    }
+
+    pub fn prune_stale(&self, max_age: std::time::Duration) {
+        let now = Instant::now();
+        if let Ok(mut map) = self.sessions.lock() {
+            let mut expired = Vec::new();
+            for (k, s) in map.iter() {
+                if now.duration_since(s.last_activity) >= max_age {
+                    expired.push(k.clone());
+                }
+            }
+            if !expired.is_empty() {
+                for k in &expired {
+                    map.remove(k);
+                }
+                if let Ok(mut tombstones) = self.tombstones.lock() {
+                    for k in expired {
+                        Self::insert_tombstone(&mut tombstones, k);
+                    }
+                }
+            }
+        }
+        if let Ok(mut tombstones) = self.tombstones.lock() {
+            tombstones.retain(|_, t| now.duration_since(*t) < std::time::Duration::from_secs(900));
+        }
+    }
+
+    /// Feed a chunk into a stateful streaming session and validate incrementally.
+    pub async fn feed_chunk(
+        &self,
+        remote: SocketAddr,
+        root: &Path,
+        file: &Path,
+        session_id: &str,
+        chunk: &str,
+        is_last: bool,
+        reset: bool,
+        borrow_check: bool,
+    ) -> Result<StreamChunkResult> {
+        if chunk.len() > MAX_STREAM_CHUNK_BYTES {
+            anyhow::bail!(
+                "stream chunk size ({} bytes) exceeds maximum limit of {} bytes",
+                chunk.len(),
+                MAX_STREAM_CHUNK_BYTES
+            );
+        }
+
+        self.prune_stale(std::time::Duration::from_secs(300));
+        let key = StreamSessionKey::new(remote, root, file, session_id);
+
+        let (accumulated, chunk_index) = {
+            let mut map = self.sessions.lock().unwrap();
+
+            if reset {
+                map.remove(&key);
+                if let Ok(mut tombstones) = self.tombstones.lock() {
+                    tombstones.remove(&key);
+                }
+            }
+
+            if !map.contains_key(&key) {
+                if !reset {
+                    let is_tombstone = self
+                        .tombstones
+                        .lock()
+                        .map(|t| t.contains_key(&key))
+                        .unwrap_or(false);
+                    if is_tombstone {
+                        anyhow::bail!(
+                            "stream session '{}' has expired or was terminated; pass reset: true to start a new stream",
+                            session_id
+                        );
+                    }
+                    anyhow::bail!(
+                        "stream session '{}' not found or was evicted; pass reset: true to start a new stream",
+                        session_id
+                    );
+                }
+
+                if map.len() >= MAX_ACTIVE_STREAM_SESSIONS {
+                    anyhow::bail!(
+                        "maximum concurrent active stream sessions limit ({}) reached; retry later or reset unused sessions",
+                        MAX_ACTIVE_STREAM_SESSIONS
+                    );
+                }
+            }
+
+            let current_len = map.get(&key).map(|s| s.accumulated.len()).unwrap_or(0);
+            if current_len + chunk.len() > MAX_STREAM_SESSION_BYTES {
+                map.remove(&key);
+                if let Ok(mut tombstones) = self.tombstones.lock() {
+                    Self::insert_tombstone(&mut tombstones, key.clone());
+                }
+                anyhow::bail!(
+                    "stream session accumulated buffer ({} bytes) exceeds maximum limit of {} bytes",
+                    current_len + chunk.len(),
+                    MAX_STREAM_SESSION_BYTES
+                );
+            }
+
+            let session = map.entry(key.clone()).or_insert_with(|| StreamSession {
+                key: key.clone(),
+                accumulated: String::new(),
+                chunk_count: 0,
+                last_activity: Instant::now(),
+            });
+
+            session.accumulated.push_str(chunk);
+            session.chunk_count += 1;
+            session.last_activity = Instant::now();
+            (session.accumulated.clone(), session.chunk_count)
+        };
+
+        let accumulated_bytes = accumulated.len();
+
+        let is_checkpoint = is_last
+            || chunk.contains('\n')
+            || chunk.contains(';')
+            || chunk.contains('}');
+
+        if !is_checkpoint {
+            return Ok(StreamChunkResult {
+                session_id: session_id.to_string(),
+                chunk_index,
+                accumulated_bytes,
+                checkpoint_evaluated: false,
+                intercepted: false,
+                interception: None,
+                final_report: None,
+                summary: format!("buffered chunk {} ({} bytes)", chunk_index, accumulated_bytes),
+            });
+        }
+
+        match validate_text(remote, root, file, &accumulated).await {
+            Ok(report) => {
+                let serious_intercept = report
+                    .hallucinations
+                    .iter()
+                    .find(|h| {
+                        if is_last {
+                            true
+                        } else {
+                            matches!(
+                                h.kind,
+                                HallucinationKind::InvalidMethodInvocation
+                                    | HallucinationKind::IncorrectArgumentType
+                                    | HallucinationKind::BorrowCheckerError
+                            )
+                        }
+                    })
+                    .cloned();
+
+                if let Some(intercept) = serious_intercept {
+                    self.remove_session_key(&key);
+                    return Ok(StreamChunkResult {
+                        session_id: session_id.to_string(),
+                        chunk_index,
+                        accumulated_bytes,
+                        checkpoint_evaluated: true,
+                        intercepted: true,
+                        interception: Some(intercept.clone()),
+                        final_report: Some(report),
+                        summary: format!(
+                            "intercepted {} at chunk {} (line {}:{})",
+                            intercept.kind, chunk_index, intercept.line, intercept.col
+                        ),
+                    });
+                }
+
+                if is_last {
+                    self.remove_session_key(&key);
+                    let errors = report.errors;
+                    if borrow_check && errors == 0 {
+                        let (compiled_errors, compiled_out) =
+                            crate::tools::compile_check(remote, root, &[(file.to_path_buf(), accumulated.clone())]).await?;
+                        if compiled_errors > 0 {
+                            return Ok(StreamChunkResult {
+                                session_id: session_id.to_string(),
+                                chunk_index,
+                                accumulated_bytes,
+                                checkpoint_evaluated: true,
+                                intercepted: true,
+                                interception: Some(HallucinationInterception {
+                                    kind: HallucinationKind::BorrowCheckerError,
+                                    symbol_or_target: None,
+                                    message: compiled_out,
+                                    line: 0,
+                                    col: 0,
+                                    suggestion: Some("Address compiler/borrow-checker violations".to_string()),
+                                }),
+                                final_report: Some(report),
+                                summary: "borrow-checker / compiler verification rejected proposal".to_string(),
+                            });
+                        }
+                    }
+
+                    let passed = errors == 0;
+                    return Ok(StreamChunkResult {
+                        session_id: session_id.to_string(),
+                        chunk_index,
+                        accumulated_bytes,
+                        checkpoint_evaluated: true,
+                        intercepted: !passed,
+                        interception: report.hallucinations.first().cloned(),
+                        final_report: Some(report),
+                        summary: if passed {
+                            "stream generation validated clean: 0 hallucinations intercepted".to_string()
+                        } else {
+                            format!("stream completed with {errors} error(s)")
+                        },
+                    });
+                }
+
+                Ok(StreamChunkResult {
+                    session_id: session_id.to_string(),
+                    chunk_index,
+                    accumulated_bytes,
+                    checkpoint_evaluated: true,
+                    intercepted: false,
+                    interception: None,
+                    final_report: None,
+                    summary: format!("checkpoint at chunk {} passed", chunk_index),
+                })
+            }
+            Err(err) => {
+                if is_last {
+                    self.remove_session_key(&key);
+                    Err(err)
+                } else {
+                    Ok(StreamChunkResult {
+                        session_id: session_id.to_string(),
+                        chunk_index,
+                        accumulated_bytes,
+                        checkpoint_evaluated: true,
+                        intercepted: false,
+                        interception: None,
+                        final_report: None,
+                        summary: format!("checkpoint at chunk {} skipped due to intermediate syntax: {err}", chunk_index),
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// Streamed syntax and type check verification during agent code generation (Phase 7.7).
+/// Intercepts invalid method invocations, incorrect argument types, or borrow-checker errors
+/// before the agent even finishes generating its turn, providing immediate feedback and
+/// eliminating multi-turn debugging cycles.
+pub async fn validate_stream_chunks(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    chunks: &[String],
+    borrow_check: bool,
+) -> Result<StreamValidationResult> {
+    let count = BATCH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let session_id = format!("batch-{}-{}", std::process::id(), count);
+    let mgr = stream_manager();
+    mgr.reset_session(remote, root, file, &session_id);
+    let total_chunks = chunks.len();
+
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let is_last = idx + 1 == total_chunks;
+        let is_first = idx == 0;
+        let res = mgr
+            .feed_chunk(remote, root, file, &session_id, chunk, is_last, is_first, borrow_check)
+            .await?;
+        if res.intercepted {
+            mgr.reset_session(remote, root, file, &session_id);
+            return Ok(StreamValidationResult {
+                completed_chunks: idx + 1,
+                total_chunks,
+                intercepted: true,
+                interception: res.interception,
+                intercept_chunk_index: Some(idx),
+                final_report: res.final_report,
+                summary: res.summary,
+            });
+        }
+        if is_last {
+            mgr.reset_session(remote, root, file, &session_id);
+            return Ok(StreamValidationResult {
+                completed_chunks: total_chunks,
+                total_chunks,
+                intercepted: false,
+                interception: None,
+                intercept_chunk_index: None,
+                final_report: res.final_report,
+                summary: res.summary,
+            });
+        }
+    }
+
+    mgr.reset_session(remote, root, file, &session_id);
+    Ok(StreamValidationResult {
+        completed_chunks: total_chunks,
+        total_chunks,
+        intercepted: false,
+        interception: None,
+        intercept_chunk_index: None,
+        final_report: None,
+        summary: "stream completed".to_string(),
+    })
 }
 
 /// The diagnostics of `file` as it is on disk, and that text, or `None` for a file that does
@@ -1240,6 +1965,7 @@ pub async fn validate_texts(
                         preexisting: Vec::new(),
                         in_derive: Vec::new(),
                         auto_trait: Vec::new(),
+                        hallucinations: Vec::new(),
                     }
                 })
             })
@@ -1868,6 +2594,7 @@ mod tests {
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }
     }
 
@@ -2133,6 +2860,7 @@ mod tests {
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -2174,6 +2902,7 @@ mod tests {
                 preexisting: vec![],
                 in_derive: vec![],
                 auto_trait: vec![],
+                hallucinations: vec![],
             },
             DiagnosticsReport {
                 file: "crates/gateway/src/workspace.rs".to_string(),
@@ -2183,6 +2912,7 @@ mod tests {
                 preexisting: vec![],
                 in_derive: vec![],
                 auto_trait: vec![],
+                hallucinations: vec![],
             },
         ];
         let mut sources = HashMap::new();
@@ -2226,6 +2956,7 @@ mod tests {
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -2258,6 +2989,7 @@ pub fn work() {}\n"
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         annotate_missing_symbols(
             &mut reports_with_warning,
@@ -2278,6 +3010,7 @@ pub fn work() {}\n"
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -2305,6 +3038,7 @@ pub fn work() {}\n"
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -2341,6 +3075,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -2391,6 +3126,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -2400,7 +3136,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
     covers_everything();\n\
     my_covers_fn();\n\
 }\n"
-            .to_string(),
+                .to_string(),
         );
         let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
         annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
@@ -2418,6 +3154,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
             preexisting: vec![],
             in_derive: vec![],
             auto_trait: vec![],
+            hallucinations: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -2488,3 +3225,167 @@ mod definition_evidence_tests {
         assert!(err.contains("cannot read"), "unexpected error: {err}");
     }
 }
+
+#[cfg(test)]
+mod hallucination_interception_phase77_tests {
+    use super::*;
+
+    #[test]
+    fn borrow_checker_error_codes_identified() {
+        for code in &[
+            "E0382", "E0499", "E0502", "E0503", "E0505", "E0506", "E0507", "E0515", "E0521",
+            "E0596", "E0597", "E0716",
+        ] {
+            assert!(
+                is_borrow_checker_error_code(code),
+                "expected {code} to be borrow-checker error"
+            );
+        }
+        for non_borrow in &["E0308", "E0425", "E0061", "E0277", "syntax-error"] {
+            assert!(
+                !is_borrow_checker_error_code(non_borrow),
+                "expected {non_borrow} not to be borrow-checker error"
+            );
+        }
+    }
+
+    #[test]
+    fn polyglot_method_name_extraction() {
+        assert_eq!(
+            extract_method_name("no method named `stream_tokens` found for struct `Session`"),
+            Some("stream_tokens".to_string())
+        );
+        assert_eq!(
+            extract_method_name("Property 'executeAsync' does not exist on type 'Worker'"),
+            Some("executeAsync".to_string())
+        );
+        assert_eq!(
+            extract_method_name("client.FetchBatch undefined (type Client has no field or method FetchBatch)"),
+            Some("FetchBatch".to_string())
+        );
+        assert_eq!(
+            extract_method_name("'Manager' object has no attribute 'dispatch_event'"),
+            Some("dispatch_event".to_string())
+        );
+        assert_eq!(
+            extract_method_name("no member named 'compute_digest' in 'HashBuilder'"),
+            Some("compute_digest".to_string())
+        );
+    }
+
+    #[test]
+    fn hallucination_classification_rules() {
+        let borrow_diag = DocDiagnostic {
+            severity: "error".to_string(),
+            code: Some("E0502".to_string()),
+            message: "cannot borrow `cache` as mutable because it is also borrowed as immutable".to_string(),
+            line: 42,
+            col: 10,
+            source: Some("rustc".to_string()),
+            note: None,
+            end: None,
+        };
+        let intercept = classify_hallucination(&borrow_diag).expect("classified as hallucination");
+        assert_eq!(intercept.kind, HallucinationKind::BorrowCheckerError);
+        assert!(intercept.suggestion.unwrap().contains("borrow"));
+
+        let method_diag = DocDiagnostic {
+            severity: "error".to_string(),
+            code: Some("unresolved-method".to_string()),
+            message: "no method named `nonexistent_api` found for struct `Client`".to_string(),
+            line: 15,
+            col: 8,
+            source: Some("rust-analyzer".to_string()),
+            note: None,
+            end: None,
+        };
+        let intercept = classify_hallucination(&method_diag).expect("classified as hallucination");
+        assert_eq!(intercept.kind, HallucinationKind::InvalidMethodInvocation);
+        assert_eq!(intercept.symbol_or_target.as_deref(), Some("nonexistent_api"));
+
+        let type_diag = DocDiagnostic {
+            severity: "error".to_string(),
+            code: Some("E0308".to_string()),
+            message: "mismatched types: expected `u64`, found `&str`".to_string(),
+            line: 25,
+            col: 12,
+            source: Some("rustc".to_string()),
+            note: None,
+            end: None,
+        };
+        let intercept = classify_hallucination(&type_diag).expect("classified as hallucination");
+        assert_eq!(intercept.kind, HallucinationKind::IncorrectArgumentType);
+
+        let syntax_diag = DocDiagnostic {
+            severity: "error".to_string(),
+            code: Some("syntax-error".to_string()),
+            message: "expected `;`, found `}`".to_string(),
+            line: 30,
+            col: 1,
+            source: Some("rust-analyzer".to_string()),
+            note: None,
+            end: None,
+        };
+        let intercept = classify_hallucination(&syntax_diag).expect("classified as hallucination");
+        assert_eq!(intercept.kind, HallucinationKind::SyntaxError);
+    }
+
+    #[test]
+    fn diagnostics_report_and_stream_result_render() {
+        let intercept = HallucinationInterception {
+            kind: HallucinationKind::InvalidMethodInvocation,
+            symbol_or_target: Some("hallucinated_fn".to_string()),
+            message: "method `hallucinated_fn` does not exist".to_string(),
+            line: 12,
+            col: 5,
+            suggestion: Some("Check symbol declarations via code_definition".to_string()),
+        };
+        let report = DiagnosticsReport {
+            file: "src/engine.rs".to_string(),
+            errors: 1,
+            warnings: 0,
+            items: vec![DocDiagnostic {
+                severity: "error".to_string(),
+                code: Some("unresolved-method".to_string()),
+                message: "method `hallucinated_fn` does not exist".to_string(),
+                line: 12,
+                col: 5,
+                source: Some("rust-analyzer".to_string()),
+                note: None,
+                end: None,
+            }],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+            hallucinations: vec![intercept.clone()],
+        };
+
+        let rendered = report.render();
+        assert!(rendered.contains("=== Intercepted Hallucinations (Phase 7.7) ==="));
+        assert!(rendered.contains("[INTERCEPT] InvalidMethodInvocation:"));
+        assert!(rendered.contains("hallucinated_fn"));
+        assert!(rendered.contains("Check symbol declarations"));
+
+        let stream_res = StreamValidationResult {
+            completed_chunks: 3,
+            total_chunks: 5,
+            intercepted: true,
+            interception: Some(intercept),
+            intercept_chunk_index: Some(2),
+            final_report: Some(report),
+            summary: "intercepted InvalidMethodInvocation at chunk 3".to_string(),
+        };
+
+        let stream_rendered = stream_res.render();
+        assert!(stream_rendered.contains("Streamed validation:"));
+        assert!(stream_rendered.contains("[INTERCEPT at chunk 3]:"));
+        assert!(stream_rendered.contains("--> Check symbol declarations"));
+
+        // Verify JSON serialization roundtrip
+        let serialized = serde_json::to_string(&stream_res).unwrap();
+        let deserialized: StreamValidationResult = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.completed_chunks, 3);
+        assert_eq!(deserialized.intercepted, true);
+    }
+}
+

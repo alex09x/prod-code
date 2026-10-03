@@ -157,6 +157,7 @@ pub fn validate_markdown(shown: &str, text: &str) -> DiagnosticsReport {
         preexisting: Vec::new(),
         in_derive: Vec::new(),
         auto_trait: Vec::new(),
+        hallucinations: Vec::new(),
     }
 }
 

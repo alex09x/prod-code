@@ -310,6 +310,25 @@ enum Commands {
         /// (borrow checker, private items of another crate) (#376).
         #[arg(long)]
         compile: bool,
+        /// Incremental stream validation: validate code as streamed line-by-line or chunk-by-chunk from stdin,
+        /// intercepting hallucinated methods and type errors on the fly before turn completion (Roadmap 7.7).
+        #[arg(long)]
+        stream: bool,
+        /// Single chunk to feed to an incremental stream validation session (Roadmap 7.7).
+        #[arg(long, conflicts_with = "from")]
+        chunk: Option<String>,
+        /// Session ID for stateful incremental stream validation (Roadmap 7.7).
+        #[arg(long)]
+        session: Option<String>,
+        /// Mark the stream session as closed/final on this chunk (Roadmap 7.7).
+        #[arg(long)]
+        close: bool,
+        /// Reset the stream session state before feeding this chunk (Roadmap 7.7).
+        #[arg(long)]
+        reset: bool,
+        /// Enforce compiler and borrow-checker verification proof in a shadow copy on the node (Roadmap 7.7).
+        #[arg(long)]
+        borrow_check: bool,
         #[arg(long)]
         json: bool,
     },
@@ -2162,10 +2181,41 @@ async fn main() -> Result<()> {
             diff,
             with,
             compile,
+            stream,
+            chunk,
+            session,
+            close,
+            reset,
+            borrow_check,
             json,
         } => {
-            if compile && json {
+            if compile && json && !stream && chunk.is_none() {
                 anyhow::bail!("--compile reports as text; leave out --json");
+            }
+            if borrow_check && json && !stream && chunk.is_none() {
+                anyhow::bail!("--borrow-check reports as text; leave out --json");
+            }
+            if let Some(ch) = chunk {
+                let file = file.context("give the file to validate with --chunk")?;
+                let session_id = session.unwrap_or_else(|| {
+                    let counter = prod_code_mcp::diagnostics::next_batch_counter();
+                    format!("cli-{}-{}", std::process::id(), counter)
+                });
+                return run_validate_chunk(
+                    remote,
+                    &file,
+                    &session_id,
+                    &ch,
+                    close,
+                    reset,
+                    borrow_check || compile,
+                    json,
+                )
+                .await;
+            }
+            if stream {
+                let file = file.context("give the file to validate with --stream")?;
+                return run_validate_stream(remote, &file, from, session, borrow_check || compile, json).await;
             }
             if let Some(diff) = diff {
                 let patch = if diff.as_os_str() == "-" {
@@ -2179,7 +2229,11 @@ async fn main() -> Result<()> {
                 return run_tool(
                     remote,
                     "code_validate_edits",
-                    serde_json::json!({ "diff": patch, "compile": compile }),
+                    serde_json::json!({
+                        "diff": patch,
+                        "compile": compile || borrow_check,
+                        "borrow_check": borrow_check,
+                    }),
                 )
                 .await;
             }
@@ -2193,8 +2247,8 @@ async fn main() -> Result<()> {
                     buf
                 }
             };
-            if compile {
-                run_validate_compiled(remote, &file, text, &with).await
+            if compile || borrow_check {
+                run_validate_compiled(remote, &file, text, &with, borrow_check).await
             } else if with.is_empty() {
                 run_diagnostics(remote, &file, Some(text), json).await
             } else {
@@ -4337,6 +4391,7 @@ async fn run_validate_compiled(
     file: &Path,
     text: String,
     with: &[String],
+    borrow_check: bool,
 ) -> Result<()> {
     let abs = |p: &Path| {
         std::fs::canonicalize(p).unwrap_or_else(|_| {
@@ -4360,13 +4415,160 @@ async fn run_validate_compiled(
             "new_text": new_text,
         }));
     }
-    eprintln!("Running the remote compiler check for the proposed changes...");
+    if borrow_check {
+        eprintln!("Running the remote compiler check for the proposed changes (with borrow-checker proof)...");
+    } else {
+        eprintln!("Running the remote compiler check for the proposed changes...");
+    }
     run_tool(
         remote,
         "code_validate_edits",
-        serde_json::json!({ "edits": edits, "compile": true }),
+        serde_json::json!({
+            "edits": edits,
+            "compile": true,
+            "borrow_check": borrow_check,
+        }),
     )
     .await
+}
+
+/// Validate an individual chunk fed into a stateful streaming session (Roadmap 7.7).
+async fn run_validate_chunk(
+    remote: SocketAddr,
+    file: &Path,
+    session: &str,
+    chunk: &str,
+    close: bool,
+    reset: bool,
+    borrow_check: bool,
+    json: bool,
+) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let mgr = prod_code_mcp::diagnostics::stream_manager();
+    let res = mgr
+        .feed_chunk(remote, &root, &abs_path, session, chunk, close, reset, borrow_check)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&res)?);
+    } else {
+        print!("{}", res.render());
+    }
+    if res.intercepted {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Validate code as streamed line-by-line or chunk-by-chunk from stdin (or a file),
+/// intercepting hallucinated methods and type errors on the fly before turn completion (Roadmap 7.7).
+async fn run_validate_stream(
+    remote: SocketAddr,
+    file: &Path,
+    from: Option<PathBuf>,
+    session_id: Option<String>,
+    borrow_check: bool,
+    json: bool,
+) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let session = session_id.unwrap_or_else(|| {
+        let counter = prod_code_mcp::diagnostics::next_batch_counter();
+        format!("stream-{}-{}", std::process::id(), counter)
+    });
+    let mgr = prod_code_mcp::diagnostics::stream_manager();
+    mgr.reset_session(remote, &root, &abs_path, &session);
+
+    let started = std::time::Instant::now();
+    let mut chunk_idx = 0;
+
+    if let Some(from_path) = from {
+        let content = std::fs::read_to_string(&from_path)
+            .with_context(|| format!("failed to read {}", from_path.display()))?;
+        let lines: Vec<&str> = content.split_inclusive('\n').collect();
+        let total = lines.len();
+        for (i, line) in lines.iter().enumerate() {
+            chunk_idx += 1;
+            let is_last = i + 1 == total;
+            let is_first = i == 0;
+            let res = mgr
+                .feed_chunk(remote, &root, &abs_path, &session, line, is_last, is_first, borrow_check)
+                .await?;
+            if res.intercepted {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&res)?);
+                } else {
+                    print!("{}", res.render());
+                    eprintln!(
+                        "[prod-code stream] INTERCEPTED on-the-fly at line/chunk {} ({:.2}s)",
+                        chunk_idx,
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+                std::process::exit(1);
+            }
+            if is_last {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&res)?);
+                } else {
+                    print!("{}", res.render());
+                    eprintln!(
+                        "[prod-code stream] {} chunk(s) validated clean in {:.2}s",
+                        chunk_idx,
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+            }
+        }
+    } else {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        let mut reader = std::io::BufReader::new(stdin.lock());
+        let mut line = String::new();
+        while reader.read_line(&mut line)? > 0 {
+            chunk_idx += 1;
+            let is_first = chunk_idx == 1;
+            let res = mgr
+                .feed_chunk(remote, &root, &abs_path, &session, &line, false, is_first, borrow_check)
+                .await?;
+            line.clear();
+            if res.intercepted {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&res)?);
+                } else {
+                    print!("{}", res.render());
+                    eprintln!(
+                        "[prod-code stream] INTERCEPTED on-the-fly at chunk {} after {:.2}s - terminating stream",
+                        chunk_idx,
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+                std::process::exit(1);
+            }
+        }
+        // End of stream from stdin: close the session and run final validation & borrow checking
+        let is_first = chunk_idx == 0;
+        let final_res = mgr
+            .feed_chunk(remote, &root, &abs_path, &session, "", true, is_first, borrow_check)
+            .await?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&final_res)?);
+        } else {
+            print!("{}", final_res.render());
+            eprintln!(
+                "[prod-code stream] {} chunk(s) streamed and validated in {:.2}s",
+                chunk_idx,
+                started.elapsed().as_secs_f64()
+            );
+        }
+        if final_res.intercepted {
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
 }
 
 /// Several proposed files checked together in one overlay, so a change to one is judged against
