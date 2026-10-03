@@ -354,3 +354,33 @@ fn test_seed_swift_worktree_skips_heavy_dirs_when_disk_space_insufficient() {
         std::env::remove_var(SWIFT_MODULE_CACHE_ENV);
     }
 }
+
+#[test]
+fn test_prune_stale_module_cache_ignores_symlink_directories_and_external_targets() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let external_dir = temp.path().join("external-system-dir");
+    fs::create_dir_all(&cache_dir).unwrap();
+    fs::create_dir_all(&external_dir).unwrap();
+
+    // Create an important external file
+    let external_file = external_dir.join("critical_module.pcm");
+    fs::write(&external_file, b"do not delete me!").unwrap();
+
+    // Symlink inside cache pointing to external directory
+    let symlinked_dir = cache_dir.join("symlink_to_external");
+    std::os::unix::fs::symlink(&external_dir, &symlinked_dir).unwrap();
+
+    // Create a regular cache file inside cache_dir that is over budget
+    let regular_file = cache_dir.join("regular.pcm");
+    fs::write(&regular_file, vec![1u8; 5000]).unwrap();
+
+    // Prune cache with max_size_bytes 100
+    let evicted = prune_stale_module_cache_in(&cache_dir, Duration::from_secs(3600), 100).unwrap();
+    assert_eq!(evicted, 1);
+    assert!(!regular_file.exists(), "regular cache file should be pruned");
+
+    // Critical assertion: external file MUST NOT be deleted, and directory symlink must not be traversed or removed
+    assert!(external_file.is_file(), "external file outside cache root must never be deleted by pruner");
+    assert!(symlinked_dir.exists(), "directory symlink itself must not be deleted");
+}
