@@ -244,9 +244,6 @@ fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
         }
     };
 
-    // Synchronize mtime from source to temporary file before atomic rename
-    sync_mtime(src, &tmp_path);
-
     if let Err(e) = fs::rename(&tmp_path, dst) {
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
@@ -600,6 +597,31 @@ fn copy_dir_fallback(src: &Path, dst: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
+/// Extracts the creation timestamp from a temporary stub filename formatted as `.tmp-stub-{pid}-{nonce}-{ts:x}`.
+pub(crate) fn parse_tmp_stub_timestamp(name: &str) -> Option<SystemTime> {
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() == 5 && parts[0] == ".tmp" && parts[1] == "stub" {
+        let _pid: u32 = parts[2].parse().ok()?;
+        let _nonce: u64 = parts[3].parse().ok()?;
+        let ts_str = parts[4];
+        if let Ok(nanos) = u128::from_str_radix(ts_str, 16) {
+            // Must be a reasonable epoch timestamp (after year 2020: ~1.57e18 nanos)
+            const MIN_VALID_NANOS: u128 = 1_500_000_000_000_000_000;
+            if nanos >= MIN_VALID_NANOS {
+                let secs = (nanos / 1_000_000_000) as u64;
+                let subsec = (nanos % 1_000_000_000) as u32;
+                return Some(SystemTime::UNIX_EPOCH + Duration::new(secs, subsec));
+            }
+        }
+    }
+    None
+}
+
+/// Grace period for temporary stub files created during atomic copy.
+/// Any temporary stub file older than this threshold is considered abandoned by a crashed process
+/// and safely unlinked during pruning.
+pub const TMP_STUB_GRACE_PERIOD: Duration = Duration::from_secs(3600);
+
 /// Evicts stale stub files from the shared stub cache based on age and max capacity.
 /// Uses secure directory-handle-relative traversal and O_NOFOLLOW to eliminate symlink TOCTOU.
 pub fn prune_stale_stub_cache(max_age: Duration, max_size_bytes: u64) -> io::Result<usize> {
@@ -607,20 +629,30 @@ pub fn prune_stale_stub_cache(max_age: Duration, max_size_bytes: u64) -> io::Res
     prune_stale_stub_cache_in(&cache_dir, max_age, max_size_bytes)
 }
 
-/// Prunes stale stub cache files within the specified directory.
+/// Prunes stale stub cache files within the specified directory using the default 1-hour grace period for temporary files.
 pub fn prune_stale_stub_cache_in(
     cache_dir: &Path,
     max_age: Duration,
     max_size_bytes: u64,
 ) -> io::Result<usize> {
+    prune_stale_stub_cache_with_grace(cache_dir, max_age, max_size_bytes, TMP_STUB_GRACE_PERIOD)
+}
+
+/// Prunes stale stub cache files with a configurable grace period for abandoned temporary stub files.
+pub fn prune_stale_stub_cache_with_grace(
+    cache_dir: &Path,
+    max_age: Duration,
+    max_size_bytes: u64,
+    tmp_grace_period: Duration,
+) -> io::Result<usize> {
     #[cfg(unix)]
     {
-        unix_pruner::prune_unix(cache_dir, max_age, max_size_bytes)
+        unix_pruner::prune_unix(cache_dir, max_age, max_size_bytes, tmp_grace_period)
     }
 
     #[cfg(not(unix))]
     {
-        prune_fallback(cache_dir, max_age, max_size_bytes)
+        prune_fallback(cache_dir, max_age, max_size_bytes, tmp_grace_period)
     }
 }
 
@@ -640,6 +672,7 @@ mod unix_pruner {
         cache_dir: &Path,
         max_age: Duration,
         max_size_bytes: u64,
+        tmp_grace_period: Duration,
     ) -> io::Result<usize> {
         let canonical_root = match fs::canonicalize(cache_dir) {
             Ok(c) => c,
@@ -685,17 +718,20 @@ mod unix_pruner {
         let mut total_size = 0u64;
         let mut rel_components = Vec::new();
 
+        let now = SystemTime::now();
+        let mut removed = 0;
+
         unsafe {
             collect_dir(
                 root_fd,
                 &mut rel_components,
                 &mut files,
                 &mut total_size,
+                now,
+                tmp_grace_period,
+                &mut removed,
             );
         }
-
-        let now = SystemTime::now();
-        let mut removed = 0;
 
         // 1. Remove files older than max_age
         files.retain(|f| {
@@ -737,6 +773,9 @@ mod unix_pruner {
         rel_components: &mut Vec<std::ffi::CString>,
         files: &mut Vec<CacheEntry>,
         total_size: &mut u64,
+        now: SystemTime,
+        tmp_grace_period: Duration,
+        removed: &mut usize,
     ) {
         unsafe {
             let dup_fd = libc::dup(current_fd);
@@ -760,7 +799,11 @@ mod unix_pruner {
                 if bytes == b"." || bytes == b".." {
                     continue;
                 }
-                if bytes.starts_with(b".") || bytes.ends_with(b".lock") {
+                if bytes.ends_with(b".lock") {
+                    continue;
+                }
+                let is_tmp_stub = bytes.starts_with(b".tmp-stub-");
+                if bytes.starts_with(b".") && !is_tmp_stub {
                     continue;
                 }
 
@@ -779,6 +822,34 @@ mod unix_pruner {
                 if mode == libc::S_IFLNK {
                     continue;
                 }
+
+                if is_tmp_stub {
+                    if mode == libc::S_IFREG {
+                        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                        let file_size = st.st_size as u64;
+                        let name_str = name.to_str().unwrap_or("");
+                        let created_at = parse_tmp_stub_timestamp(name_str);
+                        let age = match created_at {
+                            Some(ts) => now.duration_since(ts).unwrap_or_else(|_| {
+                                now.duration_since(modified).unwrap_or(Duration::ZERO)
+                            }),
+                            None => now.duration_since(modified).unwrap_or(Duration::ZERO),
+                        };
+
+                        if age > tmp_grace_period {
+                            // Abandoned temporary file: unlink immediately
+                            if libc::unlinkat(current_fd, name.as_ptr(), 0) == 0 {
+                                *removed += 1;
+                            }
+                        } else {
+                            // Active or recent temporary file: account for disk space in cache budget,
+                            // but DO NOT add to eviction candidate list `files` to protect active publishers.
+                            *total_size += file_size;
+                        }
+                    }
+                    continue;
+                }
+
                 if mode == libc::S_IFDIR {
                     let child_fd = libc::openat(
                         current_fd,
@@ -787,7 +858,15 @@ mod unix_pruner {
                     );
                     if child_fd >= 0 {
                         rel_components.push(name.to_owned());
-                        collect_dir(child_fd, rel_components, files, total_size);
+                        collect_dir(
+                            child_fd,
+                            rel_components,
+                            files,
+                            total_size,
+                            now,
+                            tmp_grace_period,
+                            removed,
+                        );
                         rel_components.pop();
                         libc::close(child_fd);
                     }
@@ -856,8 +935,100 @@ mod unix_pruner {
 }
 
 #[cfg(not(unix))]
-fn prune_fallback(_cache_dir: &Path, _max_age: Duration, _max_size_bytes: u64) -> io::Result<usize> {
-    Ok(0)
+fn prune_fallback(
+    cache_dir: &Path,
+    max_age: Duration,
+    max_size_bytes: u64,
+    tmp_grace_period: Duration,
+) -> io::Result<usize> {
+    if !cache_dir.is_dir() {
+        return Ok(0);
+    }
+    let now = SystemTime::now();
+    let mut removed = 0;
+    let mut files = Vec::new();
+    let mut total_size = 0u64;
+
+    fn walk(
+        dir: &Path,
+        files: &mut Vec<(PathBuf, u64, SystemTime)>,
+        total_size: &mut u64,
+        now: SystemTime,
+        tmp_grace_period: Duration,
+        removed: &mut usize,
+    ) {
+        let Ok(entries) = fs::read_dir(dir) else { return; };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else { continue; };
+            if file_type.is_symlink() { continue; }
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with(".lock") { continue; }
+            let is_tmp_stub = name_str.starts_with(".tmp-stub-");
+            if name_str.starts_with('.') && !is_tmp_stub { continue; }
+
+            if file_type.is_dir() {
+                walk(&path, files, total_size, now, tmp_grace_period, removed);
+            } else if file_type.is_file() {
+                let Ok(meta) = fs::metadata(&path) else { continue; };
+                let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let size = meta.len();
+                let created_at = parse_tmp_stub_timestamp(&name_str);
+                let age = match created_at {
+                    Some(ts) => now.duration_since(ts).unwrap_or_else(|_| {
+                        now.duration_since(modified).unwrap_or(Duration::ZERO)
+                    }),
+                    None => now.duration_since(modified).unwrap_or(Duration::ZERO),
+                };
+
+                if is_tmp_stub {
+                    if age > tmp_grace_period {
+                        if fs::remove_file(&path).is_ok() {
+                            *removed += 1;
+                        }
+                    } else {
+                        *total_size += size;
+                    }
+                } else {
+                    *total_size += size;
+                    files.push((path, size, modified));
+                }
+            }
+        }
+    }
+
+    walk(cache_dir, &mut files, &mut total_size, now, tmp_grace_period, &mut removed);
+
+    // Evict files older than max_age
+    files.retain(|(path, size, modified)| {
+        if let Ok(age) = now.duration_since(*modified) {
+            if age > max_age {
+                if fs::remove_file(path).is_ok() {
+                    *total_size = total_size.saturating_sub(*size);
+                    removed += 1;
+                    return false;
+                }
+            }
+        }
+        true
+    });
+
+    // Evict oldest stubs if still over budget
+    if total_size > max_size_bytes {
+        files.sort_by_key(|(_, _, modified)| *modified);
+        for (path, size, _) in files {
+            if total_size <= max_size_bytes {
+                break;
+            }
+            if fs::remove_file(&path).is_ok() {
+                total_size = total_size.saturating_sub(size);
+                removed += 1;
+            }
+        }
+    }
+
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -926,5 +1097,23 @@ mod tests {
         assert_eq!(fs::read_link(&to_typings).unwrap(), custom_cache);
 
         unsafe { std::env::remove_var(PYTHON_STUB_CACHE_ENV); }
+    }
+
+    #[test]
+    fn test_parse_tmp_stub_timestamp() {
+        let now = SystemTime::now();
+        let nanos = now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+        let name = format!(".tmp-stub-1234-5-{nanos:x}");
+        let parsed = parse_tmp_stub_timestamp(&name).unwrap();
+        let diff = if now > parsed {
+            now.duration_since(parsed).unwrap()
+        } else {
+            parsed.duration_since(now).unwrap()
+        };
+        assert!(diff < Duration::from_millis(1));
+
+        assert!(parse_tmp_stub_timestamp("regular.pyi").is_none());
+        assert!(parse_tmp_stub_timestamp(".tmp-stub-invalid").is_none());
+        assert!(parse_tmp_stub_timestamp(".tmp-stub-active-worker-2").is_none());
     }
 }
