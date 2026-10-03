@@ -64,6 +64,11 @@ pub struct SchemaRename {
 }
 
 impl SchemaRename {
+    /// Generates an atomic LSP `WorkspaceEdit` (`documentChanges`) for this schema rename.
+    pub fn workspace_edit(&self) -> serde_json::Value {
+        make_workspace_edit(&self.rewritten)
+    }
+
     pub fn render(&self, diff_budget: usize) -> String {
         let mut out = format!("`{}` → `{}`\n\n", self.field, self.to);
         for line in &self.summary {
@@ -865,8 +870,8 @@ pub async fn rename(
 /// What [`rename`] says when the field is nowhere in the area it searched.
 const NOT_FOUND: &str = "does not appear under";
 
-/// Writes every rewritten file of the checkout at `root` in one edit.
-fn write_rewritten(root: &Path, rewritten: &[(PathBuf, String)]) -> Result<()> {
+/// Builds a standard LSP `WorkspaceEdit` (`documentChanges`) representing the rewritten files.
+pub fn make_workspace_edit(rewritten: &[(PathBuf, String)]) -> serde_json::Value {
     let changes: Vec<serde_json::Value> = rewritten
         .iter()
         .map(|(path, new_text)| {
@@ -885,10 +890,13 @@ fn write_rewritten(root: &Path, rewritten: &[(PathBuf, String)]) -> Result<()> {
             })
         })
         .collect();
-    crate::refactor::apply_workspace_edit(
-        root,
-        &serde_json::json!({ "documentChanges": changes }),
-    )?;
+    serde_json::json!({ "documentChanges": changes })
+}
+
+/// Writes every rewritten file of the checkout at `root` in one edit.
+fn write_rewritten(root: &Path, rewritten: &[(PathBuf, String)]) -> Result<()> {
+    let edit = make_workspace_edit(rewritten);
+    crate::refactor::apply_workspace_edit(root, &edit)?;
     Ok(())
 }
 
@@ -904,6 +912,16 @@ pub struct AcrossRepos {
 }
 
 impl AcrossRepos {
+    /// Generates an atomic multi-repository LSP `WorkspaceEdit` (`documentChanges`) across all repositories.
+    pub fn workspace_edit(&self) -> serde_json::Value {
+        let all_rewritten: Vec<(PathBuf, String)> = self
+            .repos
+            .iter()
+            .flat_map(|r| r.rewritten.clone())
+            .collect();
+        make_workspace_edit(&all_rewritten)
+    }
+
     /// Every repository's analyzers accept its result.
     pub fn clean(&self) -> bool {
         self.repos.iter().all(|r| r.diagnostics.is_empty())
@@ -984,41 +1002,13 @@ pub async fn rename_across(
             errors.len(),
             errors.join("\n  ")
         );
-        let mut written: Vec<(PathBuf, String)> = Vec::new();
-        for repo in &repos {
-            let before: Vec<(PathBuf, String)> = repo
-                .rewritten
-                .iter()
-                .map(|(path, _)| {
-                    (
-                        path.clone(),
-                        std::fs::read_to_string(path).unwrap_or_default(),
-                    )
-                })
-                .collect();
-            if let Err(err) = write_rewritten(&repo.root, &repo.rewritten) {
-                let unrestored: Vec<String> = written
-                    .iter()
-                    .filter_map(|(path, text)| {
-                        std::fs::write(path, text)
-                            .err()
-                            .map(|e| format!("{}: {e}", path.display()))
-                    })
-                    .collect();
-                anyhow::ensure!(
-                    unrestored.is_empty(),
-                    "writing {} failed ({err:#}), and these files could not be put back:\n  {}",
-                    repo.root.display(),
-                    unrestored.join("\n  ")
-                );
-                return Err(err.context(format!(
-                    "writing {} failed; the repositories written before it were put back, so \
-                     nothing changed",
-                    repo.root.display()
-                )));
-            }
-            written.extend(before);
-        }
+        let repo_roots: Vec<&Path> = repos.iter().map(|r| r.root.as_path()).collect();
+        let all_rewritten: Vec<(PathBuf, String)> = repos
+            .iter()
+            .flat_map(|r| r.rewritten.clone())
+            .collect();
+        let multi_edit = make_workspace_edit(&all_rewritten);
+        crate::refactor::apply_multi_repository_workspace_edit(&repo_roots, &multi_edit)?;
         for repo in &mut repos {
             repo.applied = true;
         }
@@ -1465,5 +1455,52 @@ let order_id = 1;
         // its 0-based LSP character is 22 rather than the scalar-based 21.
         assert_eq!(occurrence.col, 22);
         assert_eq!(lsp_position(text, &occurrence), (0, 22));
+    }
+
+    #[test]
+    fn make_workspace_edit_generates_valid_document_changes() {
+        let rewritten = vec![
+            (PathBuf::from("/w1/schema.proto"), "message Trade {}\n".to_string()),
+            (PathBuf::from("/w2/types.ts"), "export interface Trade {}\n".to_string()),
+        ];
+        let edit = make_workspace_edit(&rewritten);
+        let changes = edit
+            .get("documentChanges")
+            .and_then(|c| c.as_array())
+            .expect("documentChanges array");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0]["textDocument"]["uri"], "file:///w1/schema.proto");
+        assert_eq!(changes[0]["edits"][0]["newText"], "message Trade {}\n");
+        assert_eq!(changes[1]["textDocument"]["uri"], "file:///w2/types.ts");
+        assert_eq!(changes[1]["edits"][0]["newText"], "export interface Trade {}\n");
+    }
+
+    #[test]
+    fn schema_rename_across_repos_atomic_application() {
+        let temp_a = tempfile::tempdir().unwrap();
+        let temp_b = tempfile::tempdir().unwrap();
+        let root_a = std::fs::canonicalize(temp_a.path()).unwrap();
+        let root_b = std::fs::canonicalize(temp_b.path()).unwrap();
+        let proto = root_a.join("schema.proto");
+        let ts = root_b.join("types.ts");
+        std::fs::write(&proto, "message Order { string order_id = 1; }\n").unwrap();
+        std::fs::write(&ts, "export interface Order { orderId: string; }\n").unwrap();
+
+        let rewritten = vec![
+            (proto.clone(), "message Order { string trade_id = 1; }\n".to_string()),
+            (ts.clone(), "export interface Order { tradeId: string; }\n".to_string()),
+        ];
+        let multi_edit = make_workspace_edit(&rewritten);
+        let roots = [root_a.as_path(), root_b.as_path()];
+        let touched = crate::refactor::apply_multi_repository_workspace_edit(&roots, &multi_edit).unwrap();
+        assert_eq!(touched.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(&proto).unwrap(),
+            "message Order { string trade_id = 1; }\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&ts).unwrap(),
+            "export interface Order { tradeId: string; }\n"
+        );
     }
 }

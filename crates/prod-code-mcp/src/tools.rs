@@ -251,7 +251,8 @@ fn build_tools_raw() -> Vec<McpTool> {
                     "repos": { "type": "array", "items": { "type": "string" }, "description": "More repositories to rename in as one change (`../frontend`): paths, absolute or relative to this workspace. Each is planned and checked by its own analyzers, and `apply` writes all of them or none. Not with `path` or `verify`" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the rename (default false: report the diff and the checks only)" },
-                    "force": { "type": "boolean", "description": "Allow a short name, a large number of occurrences, and writing a result that does not compile" }
+                    "force": { "type": "boolean", "description": "Allow a short name, a large number of occurrences, and writing a result that does not compile" },
+                    "workspace_edit": { "type": "boolean", "description": "Emit standard LSP WorkspaceEdit (documentChanges) JSON payload" }
                 },
                 "required": ["field", "to"]
             }),
@@ -5172,6 +5173,10 @@ async fn handle_schema_rename(
         .context("Missing 'to' argument")?;
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let workspace_edit = args
+        .get("workspace_edit")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let scope = args
         .get("path")
         .and_then(|v| v.as_str())
@@ -5200,6 +5205,14 @@ async fn handle_schema_rename(
         let mut roots = vec![workspace_root.to_path_buf()];
         roots.extend(repos);
         let done = crate::schema::rename_across(remote, &roots, field, to, apply, force).await?;
+        if workspace_edit {
+            let json = serde_json::to_string_pretty(&done.workspace_edit())?;
+            return Ok(if done.clean() {
+                McpToolCallResult::text(json)
+            } else {
+                McpToolCallResult::error(json)
+            });
+        }
         let text = done.render(6000);
         return Ok(if done.clean() {
             McpToolCallResult::text(text)
@@ -5241,6 +5254,14 @@ async fn handle_schema_rename(
         done.applied = true;
     }
     let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    if workspace_edit {
+        let json = serde_json::to_string_pretty(&done.workspace_edit())?;
+        return Ok(if clean {
+            McpToolCallResult::text(json)
+        } else {
+            McpToolCallResult::error(json)
+        });
+    }
     let mut text = done.render(6000);
     if let Some(gate) = &gate {
         text.push_str(&gate.text);

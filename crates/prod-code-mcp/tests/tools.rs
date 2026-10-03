@@ -3663,6 +3663,53 @@ async fn code_schema_rename_renames_a_field_and_reports_clean() {
 }
 
 #[tokio::test]
+async fn code_schema_rename_emits_workspace_edit_when_requested() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub struct Order {\n    pub order_id: String,\n}\n",
+    );
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/rename" => answers::whole_file(
+            &path,
+            "pub struct Order {\n    pub order_id: String,\n}\n",
+            "pub struct Order {\n    pub trade_id: String,\n}\n",
+        ),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_schema_rename",
+        serde_json::json!({ "field": "order_id", "to": "trade_id", "workspace_edit": true }),
+    )
+    .await
+    .expect("the rename runs");
+    assert!(!result.is_error);
+    let text = text_of(&result);
+    let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+    let changes = parsed
+        .get("documentChanges")
+        .and_then(|c| c.as_array())
+        .expect("documentChanges array");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(
+        changes[0]["edits"][0]["newText"],
+        "pub struct Order {\n    pub trade_id: String,\n}\n"
+    );
+}
+
+#[tokio::test]
 async fn code_change_signature_reorders_parameters_and_call_sites() {
     let ws = workspace();
     write(

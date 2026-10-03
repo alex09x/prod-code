@@ -561,6 +561,9 @@ enum Commands {
         /// Allow a short name, many occurrences, and a result that does not compile.
         #[arg(long, default_value_t = false)]
         force: bool,
+        /// Emit standard LSP WorkspaceEdit (documentChanges) JSON payload.
+        #[arg(long = "workspace-edit", default_value_t = false)]
+        workspace_edit: bool,
     },
     /// Change a declared type and report every site that no longer fits.
     MigrateType {
@@ -2368,7 +2371,21 @@ async fn main() -> Result<()> {
             verify,
             apply,
             force,
-        } => run_schema_rename_cli(remote, field, to, path, repos, verify, apply, force).await,
+            workspace_edit,
+        } => {
+            run_schema_rename_cli(
+                remote,
+                field,
+                to,
+                path,
+                repos,
+                verify,
+                apply,
+                force,
+                workspace_edit,
+            )
+            .await
+        }
         Commands::MigrateType {
             symbol,
             to,
@@ -5659,10 +5676,17 @@ async fn run_schema_rename_cli(
     verify: Option<String>,
     apply: bool,
     force: bool,
+    workspace_edit: bool,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let mut args = serde_json::json!({ "field": field, "to": to, "apply": apply, "force": force });
+    let mut args = serde_json::json!({
+        "field": field,
+        "to": to,
+        "apply": apply,
+        "force": force,
+        "workspace_edit": workspace_edit,
+    });
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
     }
