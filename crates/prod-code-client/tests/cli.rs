@@ -3476,7 +3476,15 @@ where
                             });
                             (format!("lsp {method}"), reply)
                         }
-                        WireMessage::Ping => ("ping".to_string(), Some(WireMessage::Pong)),
+                        WireMessage::Ping => {
+                            let ignore_ping = answer(&serde_json::json!({"method": "test/checkPing"}))
+                                == Some(serde_json::json!("__ignore_ping__"));
+                            if ignore_ping {
+                                ("ping_ignored".to_string(), None)
+                            } else {
+                                ("ping".to_string(), Some(WireMessage::Pong))
+                            }
+                        }
                         WireMessage::Disconnect { .. } => break,
                         _ => ("other".to_string(), None),
                     };
@@ -3716,10 +3724,16 @@ async fn lsp_auto_reconnects_and_replays_state_on_transient_disconnect() {
     use tokio::io::AsyncWriteExt;
     let ws = make_workspace();
     let home = tempfile::tempdir().expect("home");
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dropped_clone = std::sync::Arc::clone(&dropped);
     let (addr, seen) = recording_gateway_with(
-        |val| {
+        move |val| {
             if val["method"] == "prod-code/dropOnce" {
-                Some(serde_json::json!("__close__"))
+                if !dropped_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    Some(serde_json::json!("__close__"))
+                } else {
+                    Some(serde_json::json!({}))
+                }
             } else if val["method"] == "textDocument/hover" {
                 Some(serde_json::json!({ "contents": "mocked hover answer" }))
             } else {
@@ -3955,6 +3969,400 @@ async fn lsp_watchdog_pings_idle_session_periodically() {
     let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
         .await
         .expect("child exits on stdin close")
+        .expect("status");
+    assert!(status.success());
+}
+
+#[tokio::test]
+async fn lsp_in_flight_requests_are_replayed_and_resolved_after_reconnect() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let dropped_once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dropped_once_clone = std::sync::Arc::clone(&dropped_once);
+
+    let (addr, seen) = recording_gateway_with(
+        move |val| {
+            if val["method"] == "textDocument/hover" {
+                if !dropped_once_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    Some(serde_json::json!("__close__"))
+                } else {
+                    Some(serde_json::json!({ "contents": "replayed hover success" }))
+                }
+            } else {
+                None
+            }
+        },
+        HashMap::new(),
+        true,
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr.to_string(), "--reconnect"])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+
+    // 1. Initialize
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialize");
+    let init_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(init_resp["id"], 1);
+
+    // 2. Open document
+    let test_uri = format!("file://{}/src/lib.rs", ws.root().display());
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": test_uri,
+                        "languageId": "rust",
+                        "version": 1,
+                        "text": "pub fn hello_world() {}\n"
+                    }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("didOpen");
+
+    // 3. Send hover request with id 42. Conn 1 will drop without replying!
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": test_uri },
+                    "position": { "line": 0, "character": 7 }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("hover");
+
+    // Editor should receive the hover response with id 42 after automatic reconnect and replay!
+    let hover_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(hover_resp["id"], 42);
+    assert_eq!(hover_resp["result"]["contents"], "replayed hover success");
+
+    let events = seen.lock().expect("seen").clone();
+    let conn2_events: Vec<String> = events
+        .iter()
+        .filter(|(c, _)| *c == 2)
+        .map(|(_, ev)| ev.clone())
+        .collect();
+    assert!(
+        conn2_events.contains(&"lsp textDocument/hover".to_string()),
+        "conn2 events should contain replayed hover: {conn2_events:?}"
+    );
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("child exits")
+        .expect("status");
+    assert!(status.success());
+}
+
+#[tokio::test]
+async fn lsp_did_change_is_not_duplicated_on_reconnect_replay() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dropped_clone = std::sync::Arc::clone(&dropped);
+
+    let (addr, seen) = recording_gateway_with(
+        move |val| {
+            if val["method"] == "prod-code/dropOnce" {
+                if !dropped_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    Some(serde_json::json!("__close__"))
+                } else {
+                    Some(serde_json::json!({}))
+                }
+            } else if val["method"] == "textDocument/hover" {
+                Some(serde_json::json!({ "contents": "ok" }))
+            } else {
+                None
+            }
+        },
+        HashMap::new(),
+        true,
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr.to_string(), "--reconnect"])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+
+    // 1. Initialize
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialize");
+    let _ = read_lsp_message(&mut stdout).await;
+
+    // 2. Open document with "ab"
+    let test_uri = format!("file://{}/src/lib.rs", ws.root().display());
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": test_uri,
+                        "languageId": "rust",
+                        "version": 1,
+                        "text": "ab"
+                    }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("didOpen");
+
+    // 3. Send incremental change: replace range 1..1 with "X" -> text becomes "aXb"
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": test_uri, "version": 2 },
+                    "contentChanges": [{
+                        "range": {
+                            "start": { "line": 0, "character": 1 },
+                            "end": { "line": 0, "character": 1 }
+                        },
+                        "text": "X"
+                    }]
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("didChange");
+
+    // 4. Drop connection
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "prod-code/dropOnce",
+                "params": {}
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("dropOnce");
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 5. Send hover on conn 2
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": test_uri },
+                    "position": { "line": 0, "character": 1 }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("hover");
+
+    let hover_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(hover_resp["id"], 3);
+
+    // Verify conn 2 replayed didOpen and DID NOT send didChange again!
+    let events = seen.lock().expect("seen").clone();
+    let conn2_events: Vec<String> = events
+        .iter()
+        .filter(|(c, _)| *c == 2)
+        .map(|(_, ev)| ev.clone())
+        .collect();
+    assert!(
+        conn2_events.contains(&"lsp textDocument/didOpen".to_string()),
+        "conn2 must replay didOpen"
+    );
+    assert!(
+        !conn2_events.contains(&"lsp textDocument/didChange".to_string()),
+        "conn2 must NOT duplicate didChange after state replay: {conn2_events:?}"
+    );
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("child exits")
+        .expect("status");
+    assert!(status.success());
+}
+
+#[tokio::test]
+async fn lsp_watchdog_reconnects_when_pong_deadline_expires() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+
+    let ignore_pings = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ignore_pings_clone = std::sync::Arc::clone(&ignore_pings);
+
+    let (addr, seen) = recording_gateway_with(
+        move |val| {
+            if val["method"] == "test/checkPing" {
+                if ignore_pings_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    Some(serde_json::json!("__ignore_ping__"))
+                } else {
+                    None
+                }
+            } else if val["method"] == "textDocument/hover" {
+                Some(serde_json::json!({ "contents": "hover after pong recovery" }))
+            } else {
+                None
+            }
+        },
+        HashMap::new(),
+        true,
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr.to_string(), "--reconnect", "--watchdog-secs", "1"])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+
+    // 1. Initialize
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialize");
+    let _ = read_lsp_message(&mut stdout).await;
+
+    // 2. Start ignoring pings to simulate dead/blackholed TCP connection
+    ignore_pings.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    // 3. Wait 2.5 seconds (interval = 1s, deadline = 1s, plus reconnect time)
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+    // Now resume normal pings on conn 2
+    ignore_pings.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    // 4. Send hover request over the reconnected session
+    let test_uri = format!("file://{}/src/lib.rs", ws.root().display());
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": test_uri },
+                    "position": { "line": 0, "character": 0 }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("hover");
+
+    let hover_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(hover_resp["id"], 2);
+    assert_eq!(hover_resp["result"]["contents"], "hover after pong recovery");
+
+    let events = seen.lock().expect("seen").clone();
+    let connections: std::collections::HashSet<usize> = events.iter().map(|(c, _)| *c).collect();
+    assert!(
+        connections.len() >= 2,
+        "watchdog pong timeout must have triggered a reconnect (connections: {connections:?})"
+    );
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("child exits")
         .expect("status");
     assert!(status.success());
 }

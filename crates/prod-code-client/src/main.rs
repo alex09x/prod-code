@@ -5308,12 +5308,16 @@ impl LspStateTracker {
     }
 }
 
+type PendingRequests = std::sync::Arc<tokio::sync::Mutex<Vec<(serde_json::Value, String)>>>;
+
 fn spawn_editor_stdout_task(
     mut socket_rx: SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
     stdout_files: std::sync::Arc<prod_code_client::editor_files::RemoteFiles>,
     stdout_trace: LspTrace,
     stdout_identity: prod_code_mcp::sync::WorkspaceIdentity,
     editor_out: std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    pending_requests: PendingRequests,
+    outstanding_ping: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (
     tokio::task::JoinHandle<()>,
     tokio::sync::oneshot::Receiver<String>,
@@ -5322,34 +5326,49 @@ fn spawn_editor_stdout_task(
     let handle = tokio::spawn(async move {
         let why = loop {
             match socket_rx.next().await {
-                Some(Ok(WireMessage::LspPayload(json))) => {
-                    let json = stdout_files.to_editor(json).await;
-                    trace_message(&stdout_trace, "<-", &json);
-                    let mut stdout = editor_out.lock().await;
-                    if prod_code_client::editor_files::write_frame(&mut *stdout, &json)
-                        .await
-                        .is_err()
-                    {
-                        return;
+                Some(Ok(msg)) => {
+                    // Any valid incoming message from gateway acknowledges responsiveness
+                    outstanding_ping.store(false, std::sync::atomic::Ordering::Release);
+                    match msg {
+                        WireMessage::LspPayload(json) => {
+                            // Check if this is a response to an editor request
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                                if val.get("id").is_some() && val.get("method").is_none() {
+                                    if let Some(id) = val.get("id") {
+                                        let mut pending = pending_requests.lock().await;
+                                        pending.retain(|(p_id, _)| p_id != id);
+                                    }
+                                }
+                            }
+                            let json = stdout_files.to_editor(json).await;
+                            trace_message(&stdout_trace, "<-", &json);
+                            let mut stdout = editor_out.lock().await;
+                            if prod_code_client::editor_files::write_frame(&mut *stdout, &json)
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                        WireMessage::Redirect { target_addr, reason } => {
+                            tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
+                            if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                                prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
+                            }
+                            continue;
+                        }
+                        WireMessage::Pong => {
+                            tracing::trace!("received watchdog pong from gateway");
+                            continue;
+                        }
+                        WireMessage::Disconnect { reason } => {
+                            break format!("closed the session: {reason}");
+                        }
+                        _ => {}
                     }
-                }
-                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
-                    tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
-                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
-                        prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
-                    }
-                    continue;
-                }
-                Some(Ok(WireMessage::Pong)) => {
-                    tracing::trace!("received watchdog pong from gateway");
-                    continue;
-                }
-                Some(Ok(WireMessage::Disconnect { reason })) => {
-                    break format!("closed the session: {reason}");
                 }
                 Some(Err(err)) => break format!("broke the connection: {err}"),
                 None => break "closed the connection".to_string(),
-                Some(Ok(_)) => {}
             }
         };
         let _ = closed_tx.send(why);
@@ -5442,6 +5461,7 @@ async fn reconnect_editor_session(
     identity: &prod_code_mcp::sync::WorkspaceIdentity,
     tracker: &LspStateTracker,
     files: &prod_code_client::editor_files::RemoteFiles,
+    pending_requests: &PendingRequests,
 ) -> Result<(
     SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
     SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
@@ -5470,6 +5490,26 @@ async fn reconnect_editor_session(
                 let (mut new_tx, mut new_rx) = framed.split();
                 match replay_lsp_state(&mut new_tx, &mut new_rx, tracker, files).await {
                     Ok(()) => {
+                        let pending = {
+                            let lock = pending_requests.lock().await;
+                            lock.clone()
+                        };
+                        let mut replay_err = None;
+                        for (_id, req) in pending {
+                            if let Err(err) = new_tx
+                                .send(WireMessage::LspPayload(files.to_node(&req)))
+                                .await
+                            {
+                                replay_err = Some(err);
+                                break;
+                            }
+                        }
+                        if let Some(err) = replay_err {
+                            tracing::warn!(%err, "failed to replay in-flight requests during reconnect");
+                            last_err = Some(err.into());
+                            continue;
+                        }
+
                         tracing::info!("successfully reconnected to gateway and replayed LSP state");
                         return Ok((new_tx, new_rx));
                     }
@@ -5487,6 +5527,32 @@ async fn reconnect_editor_session(
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all reconnect attempts failed")))
+}
+
+async fn fail_pending_requests(
+    pending_requests: &PendingRequests,
+    editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
+    error_msg: &str,
+) {
+    let pending = {
+        let mut lock = pending_requests.lock().await;
+        std::mem::take(&mut *lock)
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let mut stdout = editor_out.lock().await;
+    for (id, _) in pending {
+        let err_resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32097,
+                "message": format!("prod-code lsp: gateway connection lost ({error_msg})"),
+            }
+        });
+        let _ = prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
+    }
 }
 
 /// Run full-duplex stdio LSP bridge connecting local editor to remote daemon over TCP.
@@ -5542,6 +5608,10 @@ async fn run_lsp_bridge(
         std::sync::Arc::clone(&pushing),
     ));
 
+    let pending_requests: PendingRequests =
+        std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let mut outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Spawn background task to read responses from server and write LSP to stdout
     let editor_out = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
     let (mut stdout_task, mut closed_rx) = spawn_editor_stdout_task(
@@ -5550,6 +5620,8 @@ async fn run_lsp_bridge(
         trace.clone(),
         identity.clone(),
         std::sync::Arc::clone(&editor_out),
+        std::sync::Arc::clone(&pending_requests),
+        std::sync::Arc::clone(&outstanding_ping),
     );
 
     let mut tracker = LspStateTracker::default();
@@ -5576,27 +5648,32 @@ async fn run_lsp_bridge(
                 Ok(why) => {
                     if reconnect {
                         eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files).await {
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
                             Ok((new_tx, new_rx)) => {
                                 socket_tx = new_tx;
+                                outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                                 let (new_task, new_closed_rx) = spawn_editor_stdout_task(
                                     new_rx,
                                     std::sync::Arc::clone(&files),
                                     trace.clone(),
                                     identity.clone(),
                                     std::sync::Arc::clone(&editor_out),
+                                    std::sync::Arc::clone(&pending_requests),
+                                    std::sync::Arc::clone(&outstanding_ping),
                                 );
                                 stdout_task = new_task;
                                 closed_rx = new_closed_rx;
                                 continue;
                             }
                             Err(rec_err) => {
+                                fail_pending_requests(&pending_requests, &editor_out, &format!("{why} (reconnect failed: {rec_err})")).await;
                                 keeper.abort();
                                 eprintln!("prod-code lsp: the gateway at {remote} {why} (reconnect failed: {rec_err})");
                                 std::process::exit(1);
                             }
                         }
                     } else {
+                        fail_pending_requests(&pending_requests, &editor_out, &why).await;
                         keeper.abort();
                         eprintln!("prod-code lsp: the gateway at {remote} {why}");
                         std::process::exit(1);
@@ -5611,31 +5688,74 @@ async fn run_lsp_bridge(
                     None => std::future::pending().await,
                 }
             } => {
-                if let Err(err) = socket_tx.send(WireMessage::Ping).await {
+                if outstanding_ping.load(std::sync::atomic::Ordering::Acquire) {
+                    let err_msg = format!("did not respond to watchdog ping within {watchdog_secs}s");
                     if reconnect {
                         stdout_task.abort();
-                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection during watchdog ping: {err}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files).await {
+                        eprintln!("prod-code lsp: the gateway at {remote} {err_msg}; reconnecting...");
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
                             Ok((new_tx, new_rx)) => {
                                 socket_tx = new_tx;
+                                outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                                 let (new_task, new_closed_rx) = spawn_editor_stdout_task(
                                     new_rx,
                                     std::sync::Arc::clone(&files),
                                     trace.clone(),
                                     identity.clone(),
                                     std::sync::Arc::clone(&editor_out),
+                                    std::sync::Arc::clone(&pending_requests),
+                                    std::sync::Arc::clone(&outstanding_ping),
                                 );
                                 stdout_task = new_task;
                                 closed_rx = new_closed_rx;
                                 continue;
                             }
                             Err(rec_err) => {
+                                fail_pending_requests(&pending_requests, &editor_out, &format!("{err_msg} (reconnect failed: {rec_err})")).await;
+                                keeper.abort();
+                                eprintln!("prod-code lsp: the gateway at {remote} {err_msg} (reconnect failed: {rec_err})");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        fail_pending_requests(&pending_requests, &editor_out, &err_msg).await;
+                        keeper.abort();
+                        eprintln!("prod-code lsp: the gateway at {remote} {err_msg}");
+                        std::process::exit(1);
+                    }
+                }
+
+                outstanding_ping.store(true, std::sync::atomic::Ordering::Release);
+                if let Err(err) = socket_tx.send(WireMessage::Ping).await {
+                    if reconnect {
+                        stdout_task.abort();
+                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection during watchdog ping: {err}; reconnecting...");
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
+                            Ok((new_tx, new_rx)) => {
+                                socket_tx = new_tx;
+                                outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                let (new_task, new_closed_rx) = spawn_editor_stdout_task(
+                                    new_rx,
+                                    std::sync::Arc::clone(&files),
+                                    trace.clone(),
+                                    identity.clone(),
+                                    std::sync::Arc::clone(&editor_out),
+                                    std::sync::Arc::clone(&pending_requests),
+                                    std::sync::Arc::clone(&outstanding_ping),
+                                );
+                                stdout_task = new_task;
+                                closed_rx = new_closed_rx;
+                                continue;
+                            }
+                            Err(rec_err) => {
+                                fail_pending_requests(&pending_requests, &editor_out, &format!("{err} (reconnect failed: {rec_err})")).await;
                                 keeper.abort();
                                 eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})");
                                 std::process::exit(1);
                             }
                         }
                     } else {
+                        fail_pending_requests(&pending_requests, &editor_out, &err.to_string()).await;
                         keeper.abort();
                         eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
                         std::process::exit(1);
@@ -5655,6 +5775,17 @@ async fn run_lsp_bridge(
         };
 
         tracker.record_client_message(&json_payload);
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_payload) {
+            if let (Some(id), Some(method)) = (val.get("id"), val.get("method").and_then(|m| m.as_str())) {
+                if method != "initialize" && !method.starts_with("prod-code/") {
+                    pending_requests.lock().await.push((id.clone(), json_payload.clone()));
+                }
+            } else if val.get("method").and_then(|m| m.as_str()) == Some("$/cancelRequest") {
+                if let Some(cancel_id) = val.pointer("/params/id") {
+                    pending_requests.lock().await.retain(|(p_id, _)| p_id != cancel_id);
+                }
+            }
+        }
         trace_message(&trace, "->", &json_payload);
         // What the editor saved, or saw change, reaches the node before the server hears of it:
         // rust-analyzer checks the crate on save, and must check what was saved (#332).
@@ -5689,29 +5820,31 @@ async fn run_lsp_bridge(
             if reconnect {
                 stdout_task.abort();
                 eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}; reconnecting...");
-                match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files).await {
+                match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
                     Ok((new_tx, new_rx)) => {
                         socket_tx = new_tx;
+                        outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                         let (new_task, new_closed_rx) = spawn_editor_stdout_task(
                             new_rx,
                             std::sync::Arc::clone(&files),
                             trace.clone(),
                             identity.clone(),
                             std::sync::Arc::clone(&editor_out),
+                            std::sync::Arc::clone(&pending_requests),
+                            std::sync::Arc::clone(&outstanding_ping),
                         );
                         stdout_task = new_task;
                         closed_rx = new_closed_rx;
-                        let _ = socket_tx
-                            .send(WireMessage::LspPayload(files.to_node(&json_payload)))
-                            .await;
                     }
                     Err(rec_err) => {
+                        fail_pending_requests(&pending_requests, &editor_out, &format!("{err} (reconnect failed: {rec_err})")).await;
                         keeper.abort();
                         eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})");
                         std::process::exit(1);
                     }
                 }
             } else {
+                fail_pending_requests(&pending_requests, &editor_out, &err.to_string()).await;
                 keeper.abort();
                 eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
                 std::process::exit(1);

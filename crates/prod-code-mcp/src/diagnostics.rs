@@ -1434,6 +1434,64 @@ pub fn next_batch_counter() -> u64 {
     BATCH_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+fn stream_session_dir() -> PathBuf {
+    let dir = if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+        PathBuf::from(cache_home).join("prod-code/stream-sessions")
+    } else if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        if cfg!(target_os = "macos") {
+            home.join("Library/Caches/prod-code/stream-sessions")
+        } else {
+            home.join(".cache/prod-code/stream-sessions")
+        }
+    } else {
+        let user = std::env::var("USER").unwrap_or_else(|_| "default".to_string());
+        std::env::temp_dir().join(format!("prod-code-{user}-stream-sessions"))
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        builder.mode(0o700);
+        let _ = builder.create(&dir);
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&dir) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o700);
+            let _ = std::fs::set_permissions(&dir, perms);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+
+    dir
+}
+
+fn write_private_session_file(path: &Path, content: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(content.as_bytes())?;
+        file.flush()?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content)?;
+    }
+    Ok(())
+}
+
 fn stream_session_disk_path(key: &StreamSessionKey) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1442,9 +1500,7 @@ fn stream_session_disk_path(key: &StreamSessionKey) -> PathBuf {
     key.file.hash(&mut hasher);
     key.session_id.hash(&mut hasher);
     let hash = hasher.finish();
-    let dir = std::env::temp_dir().join("prod-code-stream-sessions");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join(format!("{:016x}.session", hash))
+    stream_session_dir().join(format!("{:016x}.session", hash))
 }
 
 impl StreamSessionManager {
@@ -1505,6 +1561,7 @@ impl StreamSessionManager {
             if !expired.is_empty() {
                 for k in &expired {
                     map.remove(k);
+                    let _ = std::fs::remove_file(stream_session_disk_path(k));
                 }
                 if let Ok(mut tombstones) = self.tombstones.lock() {
                     for k in expired {
@@ -1515,6 +1572,23 @@ impl StreamSessionManager {
         }
         if let Ok(mut tombstones) = self.tombstones.lock() {
             tombstones.retain(|_, t| now.duration_since(*t) < std::time::Duration::from_secs(900));
+        }
+        let dir = stream_session_dir();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("session") {
+                    if let Ok(meta) = std::fs::metadata(&path) {
+                        if let Ok(modified) = meta.modified() {
+                            if let Ok(age) = std::time::SystemTime::now().duration_since(modified) {
+                                if age >= std::cmp::max(max_age, std::time::Duration::from_secs(300)) {
+                                    let _ = std::fs::remove_file(&path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1550,46 +1624,84 @@ impl StreamSessionManager {
                     tombstones.remove(&key);
                 }
                 let _ = std::fs::remove_file(stream_session_disk_path(&key));
-            } else if !map.contains_key(&key) {
-                let disk_path = stream_session_disk_path(&key);
-                if let Ok(data) = std::fs::read_to_string(&disk_path) {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if let (Some(acc), Some(count)) =
-                            (val["accumulated"].as_str(), val["chunk_count"].as_u64())
-                        {
-                            map.insert(
-                                key.clone(),
-                                StreamSession {
-                                    key: key.clone(),
-                                    accumulated: acc.to_string(),
-                                    chunk_count: count as usize,
-                                    last_activity: Instant::now(),
-                                },
+            } else {
+                let is_tombstone = self
+                    .tombstones
+                    .lock()
+                    .map(|t| t.contains_key(&key))
+                    .unwrap_or(false);
+                if is_tombstone {
+                    let _ = std::fs::remove_file(stream_session_disk_path(&key));
+                    anyhow::bail!(
+                        "stream session '{}' has expired or was terminated; pass reset: true to start a new stream",
+                        session_id
+                    );
+                }
+
+                if !map.contains_key(&key) {
+                    let disk_path = stream_session_disk_path(&key);
+                    let mut restored = false;
+                    if disk_path.is_file() {
+                        let is_expired = if let Ok(meta) = std::fs::metadata(&disk_path) {
+                            if let Ok(modified) = meta.modified() {
+                                std::time::SystemTime::now()
+                                    .duration_since(modified)
+                                    .map(|d| d >= std::time::Duration::from_secs(300))
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if is_expired {
+                            let _ = std::fs::remove_file(&disk_path);
+                            if let Ok(mut tombstones) = self.tombstones.lock() {
+                                Self::insert_tombstone(&mut tombstones, key.clone());
+                            }
+                            anyhow::bail!(
+                                "stream session '{}' has expired or was terminated; pass reset: true to start a new stream",
+                                session_id
                             );
                         }
+
+                        if map.len() >= MAX_ACTIVE_STREAM_SESSIONS {
+                            anyhow::bail!(
+                                "maximum concurrent active stream sessions limit ({}) reached; retry later or reset unused sessions",
+                                MAX_ACTIVE_STREAM_SESSIONS
+                            );
+                        }
+
+                        if let Ok(data) = std::fs::read_to_string(&disk_path) {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                                if let (Some(acc), Some(count)) =
+                                    (val["accumulated"].as_str(), val["chunk_count"].as_u64())
+                                {
+                                    map.insert(
+                                        key.clone(),
+                                        StreamSession {
+                                            key: key.clone(),
+                                            accumulated: acc.to_string(),
+                                            chunk_count: count as usize,
+                                            last_activity: Instant::now(),
+                                        },
+                                    );
+                                    restored = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if !restored {
+                        anyhow::bail!(
+                            "stream session '{}' not found or was evicted; pass reset: true to start a new stream",
+                            session_id
+                        );
                     }
                 }
             }
 
             if !map.contains_key(&key) {
-                if !reset {
-                    let is_tombstone = self
-                        .tombstones
-                        .lock()
-                        .map(|t| t.contains_key(&key))
-                        .unwrap_or(false);
-                    if is_tombstone {
-                        anyhow::bail!(
-                            "stream session '{}' has expired or was terminated; pass reset: true to start a new stream",
-                            session_id
-                        );
-                    }
-                    anyhow::bail!(
-                        "stream session '{}' not found or was evicted; pass reset: true to start a new stream",
-                        session_id
-                    );
-                }
-
                 if map.len() >= MAX_ACTIVE_STREAM_SESSIONS {
                     anyhow::bail!(
                         "maximum concurrent active stream sessions limit ({}) reached; retry later or reset unused sessions",
@@ -1628,7 +1740,7 @@ impl StreamSessionManager {
                 "accumulated": &session.accumulated,
                 "chunk_count": session.chunk_count,
             });
-            let _ = std::fs::write(disk_path, payload.to_string());
+            let _ = write_private_session_file(&disk_path, &payload.to_string());
 
             (session.accumulated.clone(), session.chunk_count)
         };
