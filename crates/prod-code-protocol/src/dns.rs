@@ -94,19 +94,20 @@ pub fn is_code_internal_domain(domain: &str) -> bool {
 }
 
 /// Extracts the target project name from a `.code.internal` domain name.
-/// E.g. "shop.code.internal" -> Some("shop"), "shop.code.internal:9400" -> Some("shop"),
+/// E.g. "shop.code.internal" -> Some("shop"), "SHOP.CODE.INTERNAL:9400" -> Some("shop"),
 /// "cluster.code.internal" -> Some("cluster").
-pub fn extract_project_name(domain: &str) -> Option<&str> {
+pub fn extract_project_name(domain: &str) -> Option<String> {
     let trimmed = domain.trim();
     let host = trimmed.split(':').next().unwrap_or(trimmed);
-    if host.eq_ignore_ascii_case(CODE_INTERNAL_ROOT) {
-        return Some("cluster");
+    let lower = host.to_ascii_lowercase();
+    if lower == CODE_INTERNAL_ROOT {
+        return Some("cluster".to_string());
     }
-    if let Some(prefix) = host.strip_suffix(CODE_INTERNAL_SUFFIX) {
-        return Some(prefix);
+    if let Some(prefix) = lower.strip_suffix(CODE_INTERNAL_SUFFIX) {
+        return Some(prefix.to_string());
     }
-    if let Some(prefix) = host.strip_suffix(".code.local") {
-        return Some(prefix);
+    if let Some(prefix) = lower.strip_suffix(".code.local") {
+        return Some(prefix.to_string());
     }
     None
 }
@@ -141,7 +142,7 @@ pub fn resolve_project_node<'a>(project: &str, nodes: &'a [DiscoveredNode]) -> O
 
     // 3. Fallback to deterministic rendezvous hashing over available nodes
     nodes.iter().max_by_key(|n| {
-        let key = format!("{}:{}", proj_clean, n.addr);
+        let key = format!("{}:{}", proj_clean.to_ascii_lowercase(), n.addr);
         content_hash(key.as_bytes())
     })
 }
@@ -168,14 +169,18 @@ pub fn resolve_smart_domain(
         return Some(vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)]);
     }
 
-    let project = extract_project_name(host).unwrap_or(host);
+    let mut sorted_nodes = nodes.to_vec();
+    sorted_nodes.sort_by_key(|n| n.addr);
+
+    let project_owned = extract_project_name(host);
+    let project = project_owned.as_deref().unwrap_or(host);
 
     if project.eq_ignore_ascii_case("cluster")
         || project.eq_ignore_ascii_case("all")
         || host.starts_with(SRV_SERVICE_NAME)
     {
         // Return all known nodes, using node's own port if port was default
-        let addrs: Vec<SocketAddr> = nodes
+        let addrs: Vec<SocketAddr> = sorted_nodes
             .iter()
             .map(|n| {
                 let p = if port == default_port { n.addr.port() } else { port };
@@ -185,17 +190,33 @@ pub fn resolve_smart_domain(
         return Some(addrs);
     }
 
-    // Check if host matches a specific node IP (e.g. "node-192-168-2-10.code.internal")
-    for node in nodes {
+    // 1. Direct match for node target names (e.g. "node-192-168-2-10", "node-192-168-2-10-9400")
+    for node in &sorted_nodes {
         let ip_slug = node.addr.ip().to_string().replace('.', "-");
-        if project.contains(&ip_slug) {
+        let port_slug = format!("node-{ip_slug}-{}", node.addr.port());
+        let standard_slug = format!("node-{ip_slug}");
+        if project.eq_ignore_ascii_case(&port_slug)
+            || project.eq_ignore_ascii_case(&standard_slug)
+            || project.eq_ignore_ascii_case(&ip_slug)
+        {
             let p = if port == default_port { node.addr.port() } else { port };
             return Some(vec![SocketAddr::new(node.addr.ip(), p)]);
         }
     }
 
-    // Resolve designated project node via warm check & rendezvous hashing
-    if let Some(node) = resolve_project_node(project, nodes) {
+    // 2. Also support 1-based index targets: "node-1", "node-2"
+    if let Some(idx_str) = project.strip_prefix("node-") {
+        if let Ok(idx) = idx_str.parse::<usize>() {
+            if idx >= 1 && idx <= sorted_nodes.len() {
+                let node = &sorted_nodes[idx - 1];
+                let p = if port == default_port { node.addr.port() } else { port };
+                return Some(vec![SocketAddr::new(node.addr.ip(), p)]);
+            }
+        }
+    }
+
+    // 3. Resolve designated project node via warm check & rendezvous hashing
+    if let Some(node) = resolve_project_node(project, &sorted_nodes) {
         let p = if port == default_port { node.addr.port() } else { port };
         return Some(vec![SocketAddr::new(node.addr.ip(), p)]);
     }
@@ -205,13 +226,21 @@ pub fn resolve_smart_domain(
 
 /// Generates dynamic DNS SRV records for all active cluster daemon instances (RFC 2782).
 pub fn generate_srv_records(nodes: &[DiscoveredNode]) -> Vec<DnsSrvRecord> {
-    let mut records = Vec::with_capacity(nodes.len());
-    for (i, node) in nodes.iter().enumerate() {
+    let mut sorted_nodes = nodes.to_vec();
+    sorted_nodes.sort_by_key(|n| n.addr);
+
+    let mut records = Vec::with_capacity(sorted_nodes.len());
+    for node in &sorted_nodes {
         // Priority: lower number = higher priority. Scale with load: nodes with low load get priority 10.
         let priority = if node.load_per_cpu < 0.5 { 10 } else { 20 };
         // Weight: proportional to available memory (min 10)
         let weight = ((node.mem_avail_mb / 1024).clamp(10, 1000)) as u16;
-        let target = format!("node-{}.code.internal", i + 1);
+        let ip_slug = node.addr.ip().to_string().replace('.', "-");
+        let target = if node.addr.port() == 9400 {
+            format!("node-{ip_slug}.code.internal")
+        } else {
+            format!("node-{ip_slug}-{}.code.internal", node.addr.port())
+        };
         records.push(DnsSrvRecord {
             priority,
             weight,
@@ -328,6 +357,7 @@ pub fn format_dns_response(
     question: &DnsQuestion,
     answers: &[DnsAnswer],
     authoritative: bool,
+    rcode: u8,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(512);
 
@@ -337,9 +367,7 @@ pub fn format_dns_response(
     if authoritative {
         flags |= 0x0400; // Authoritative Answer bit
     }
-    if answers.is_empty() {
-        flags |= 0x0003; // NXDOMAIN if no answers
-    }
+    flags |= (rcode as u16) & 0x000F;
     out.extend_from_slice(&flags.to_be_bytes());
     out.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT = 1
     out.extend_from_slice(&(answers.len() as u16).to_be_bytes()); // ANCOUNT
@@ -401,43 +429,55 @@ pub fn handle_dns_packet(buf: &[u8], nodes: &[DiscoveredNode]) -> Option<Vec<u8>
     let mut answers = Vec::new();
     let ttl = 60; // 60s TTL for dynamic discovery
 
-    match question.qtype {
-        DnsQueryType::A | DnsQueryType::ANY => {
-            if let Some(addrs) = resolve_smart_domain(&question.name, nodes, 9400) {
-                for addr in addrs {
-                    if let IpAddr::V4(ipv4) = addr.ip() {
-                        answers.push(DnsAnswer {
-                            name: question.name.clone(),
-                            ttl,
-                            data: DnsRecordData::A(ipv4),
-                        });
+    let domain_exists = if question.name.starts_with(SRV_SERVICE_NAME) {
+        true
+    } else {
+        resolve_smart_domain(&question.name, nodes, 9400).is_some()
+    };
+
+    if domain_exists {
+        match question.qtype {
+            DnsQueryType::A | DnsQueryType::ANY => {
+                if let Some(addrs) = resolve_smart_domain(&question.name, nodes, 9400) {
+                    for addr in addrs {
+                        if let IpAddr::V4(ipv4) = addr.ip() {
+                            answers.push(DnsAnswer {
+                                name: question.name.clone(),
+                                ttl,
+                                data: DnsRecordData::A(ipv4),
+                            });
+                        }
                     }
                 }
             }
-        }
-        DnsQueryType::SRV => {
-            let srvs = generate_srv_records(nodes);
-            for srv in srvs {
+            DnsQueryType::SRV => {
+                let srvs = generate_srv_records(nodes);
+                for srv in srvs {
+                    answers.push(DnsAnswer {
+                        name: question.name.clone(),
+                        ttl,
+                        data: DnsRecordData::SRV(srv),
+                    });
+                }
+            }
+            DnsQueryType::TXT => {
+                let count = nodes.len();
+                let txt = format!("prod-code-cluster: nodes={count} domain=code.internal");
                 answers.push(DnsAnswer {
                     name: question.name.clone(),
                     ttl,
-                    data: DnsRecordData::SRV(srv),
+                    data: DnsRecordData::TXT(txt),
                 });
             }
+            _ => {
+                // Unsupported query type (e.g. AAAA = 28): return NOERROR with 0 answers (NODATA)
+            }
         }
-        DnsQueryType::TXT => {
-            let count = nodes.len();
-            let txt = format!("prod-code-cluster: nodes={count} domain=code.internal");
-            answers.push(DnsAnswer {
-                name: question.name.clone(),
-                ttl,
-                data: DnsRecordData::TXT(txt),
-            });
-        }
-        _ => {}
+        Some(format_dns_response(id, &question, &answers, true, 0))
+    } else {
+        // Name does not exist: return NXDOMAIN (RCODE = 3)
+        Some(format_dns_response(id, &question, &answers, true, 3))
     }
-
-    Some(format_dns_response(id, &question, &answers, true))
 }
 
 /// Queries a DNS server over UDP for a specific name and query type.
@@ -598,11 +638,29 @@ mod tests {
 
     #[test]
     fn test_extract_project_name() {
-        assert_eq!(extract_project_name("shop.code.internal"), Some("shop"));
-        assert_eq!(extract_project_name("billing.code.internal:9400"), Some("billing"));
-        assert_eq!(extract_project_name("cluster.code.internal"), Some("cluster"));
-        assert_eq!(extract_project_name("code.internal"), Some("cluster"));
+        assert_eq!(extract_project_name("shop.code.internal").as_deref(), Some("shop"));
+        assert_eq!(extract_project_name("SHOP.CODE.INTERNAL").as_deref(), Some("shop"));
+        assert_eq!(extract_project_name("Shop.Code.Internal").as_deref(), Some("shop"));
+        assert_eq!(extract_project_name("billing.code.internal:9400").as_deref(), Some("billing"));
+        assert_eq!(extract_project_name("cluster.code.internal").as_deref(), Some("cluster"));
+        assert_eq!(extract_project_name("code.internal").as_deref(), Some("cluster"));
         assert_eq!(extract_project_name("example.com"), None);
+    }
+
+    #[test]
+    fn test_internal_domain_case_insensitivity_warm_placement() {
+        let node1 = mock_node("192.168.2.10:9400", &[("shop", "rust", 1)]);
+        let node2 = mock_node("192.168.2.20:9400", &[("billing", "go", 2)]);
+        let nodes = vec![node1, node2];
+
+        // Lowercase, uppercase, and mixed-case must all resolve to the exact same warm workspace node
+        let lower = resolve_smart_domain("shop.code.internal", &nodes, 9400).expect("lower");
+        let upper = resolve_smart_domain("SHOP.CODE.INTERNAL", &nodes, 9400).expect("upper");
+        let mixed = resolve_smart_domain("ShOp.CoDe.InTeRnAl:9400", &nodes, 9400).expect("mixed");
+
+        assert_eq!(lower, vec!["192.168.2.10:9400".parse().unwrap()]);
+        assert_eq!(upper, lower);
+        assert_eq!(mixed, lower);
     }
 
     #[test]
@@ -656,7 +714,7 @@ mod tests {
             }
         ];
 
-        let packet = format_dns_response(1234, &question, &answers, true);
+        let packet = format_dns_response(1234, &question, &answers, true, 0);
         assert!(!packet.is_empty());
 
         let (parsed_id, parsed_q) = parse_dns_query(&packet).expect("parse query");
@@ -675,7 +733,7 @@ mod tests {
             name: "api-gateway.code.internal".into(),
             qtype: DnsQueryType::A,
             qclass: 1,
-        }, &[], false);
+        }, &[], false, 0);
 
         let resp_a = handle_dns_packet(&query_a, &nodes).expect("resp A");
         assert!(!resp_a.is_empty());
@@ -685,10 +743,46 @@ mod tests {
             name: "_prod-code._tcp.code.internal".into(),
             qtype: DnsQueryType::SRV,
             qclass: 1,
-        }, &[], false);
+        }, &[], false, 0);
 
         let resp_srv = handle_dns_packet(&query_srv, &nodes).expect("resp SRV");
         assert!(!resp_srv.is_empty());
+    }
+
+    #[test]
+    fn test_unsupported_qtype_returns_noerror_nodata() {
+        let node = mock_node("192.168.2.15:9400", &[("api-gateway", "rust", 1)]);
+        let nodes = vec![node];
+
+        // Query AAAA (type 28) for existing internal name
+        let query_aaaa = format_dns_response(777, &DnsQuestion {
+            name: "api-gateway.code.internal".into(),
+            qtype: DnsQueryType::Other(28),
+            qclass: 1,
+        }, &[], false, 0);
+
+        let resp = handle_dns_packet(&query_aaaa, &nodes).expect("response");
+        assert!(resp.len() >= 12);
+        let flags = u16::from_be_bytes([resp[2], resp[3]]);
+        let rcode = flags & 0x000F;
+        let ancount = u16::from_be_bytes([resp[6], resp[7]]);
+
+        // Standards-compliant: NOERROR (RCODE = 0) with ANCOUNT = 0 (NODATA)
+        assert_eq!(rcode, 0, "must return NOERROR for existing name with unsupported qtype");
+        assert_eq!(ancount, 0, "must return 0 answers for unsupported qtype");
+    }
+
+    #[test]
+    fn test_nonexistent_domain_returns_nxdomain() {
+        // Query when nodes list is empty and name is unrecognized
+        let query = format_dns_response(888, &DnsQuestion {
+            name: "nonexistent.example.internal".into(),
+            qtype: DnsQueryType::A,
+            qclass: 1,
+        }, &[], false, 0);
+
+        // Not in .code.internal virtual domain -> ignored (None)
+        assert!(handle_dns_packet(&query, &[]).is_none());
     }
 
     #[test]
@@ -708,13 +802,34 @@ mod tests {
         assert_eq!(srvs[0].priority, 10);
         assert_eq!(srvs[0].weight, 64);
         assert_eq!(srvs[0].port, 9400);
-        assert_eq!(srvs[0].target, "node-1.code.internal");
+        assert_eq!(srvs[0].target, "node-192-168-2-11.code.internal");
 
         // Node 2 (high load) has priority 20, weight 16
         assert_eq!(srvs[1].priority, 20);
         assert_eq!(srvs[1].weight, 16);
         assert_eq!(srvs[1].port, 9400);
-        assert_eq!(srvs[1].target, "node-2.code.internal");
+        assert_eq!(srvs[1].target, "node-192-168-2-12.code.internal");
+    }
+
+    #[test]
+    fn test_srv_targets_resolve_to_advertised_nodes() {
+        let node1 = mock_node("192.168.2.10:9400", &[("shop", "rust", 1)]);
+        let node2 = mock_node("192.168.2.20:9401", &[("billing", "go", 2)]);
+        let node3 = mock_node("192.168.2.30:9400", &[]);
+        let nodes = vec![node1.clone(), node2.clone(), node3.clone()];
+
+        let srv_records = generate_srv_records(&nodes);
+        assert_eq!(srv_records.len(), 3);
+
+        // End-to-end SRV then A lookup: each advertised SRV target must resolve back to that exact node
+        for srv in &srv_records {
+            let resolved = resolve_smart_domain(&srv.target, &nodes, 9400)
+                .unwrap_or_else(|| panic!("failed to resolve target {}", srv.target));
+            assert_eq!(resolved.len(), 1);
+            let addr = resolved[0];
+            assert_eq!(addr.port(), srv.port);
+            assert!(nodes.iter().any(|n| n.addr == addr), "resolved address {} must match an advertised node", addr);
+        }
     }
 
     #[test]
@@ -723,7 +838,7 @@ mod tests {
             priority: 10,
             weight: 64,
             port: 9400,
-            target: "node-1.code.internal".to_string(),
+            target: "node-192-168-2-10.code.internal".to_string(),
         };
         let serialized = serde_json::to_string(&srv).expect("serialize srv");
         let deserialized: DnsSrvRecord = serde_json::from_str(&serialized).expect("deserialize srv");
