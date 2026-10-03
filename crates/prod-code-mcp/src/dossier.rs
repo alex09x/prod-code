@@ -91,29 +91,19 @@ impl AssertionEvidence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureDossier {
-    #[serde(alias = "failing_test")]
     pub test: String,
     pub output: String,
     pub sites: Vec<FailureSite>,
     /// Changed functions whose callers reach this test, nearest first, with the hops and the
     /// diff of their file when no site above already shows it.
-    #[serde(default, alias = "suspect_recent_changes")]
     pub suspects: Vec<Suspect>,
     /// Optional backward-compatible structured runtime assertion evidence.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "runtime_values",
-        alias = "structured_assertion"
-    )]
     pub assertion: Option<AssertionEvidence>,
     /// Exact line of the failure/panic from the stack trace or failure site (Roadmap 8.2).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panic_line: Option<u32>,
     /// Extracted assertion expression or condition under test (Roadmap 8.2).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<String>,
 }
 
@@ -141,6 +131,64 @@ impl Serialize for FailureDossier {
             state.serialize_field("expression", e)?;
         }
         state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for FailureDossier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawDossier {
+            #[serde(default)]
+            test: Option<String>,
+            #[serde(default)]
+            failing_test: Option<String>,
+            #[serde(default)]
+            output: Option<String>,
+            #[serde(default)]
+            sites: Vec<FailureSite>,
+            #[serde(default)]
+            suspects: Option<Vec<Suspect>>,
+            #[serde(default)]
+            suspect_recent_changes: Option<Vec<Suspect>>,
+            #[serde(default)]
+            assertion: Option<AssertionEvidence>,
+            #[serde(default)]
+            runtime_values: Option<AssertionEvidence>,
+            #[serde(default)]
+            structured_assertion: Option<AssertionEvidence>,
+            #[serde(default)]
+            panic_line: Option<u32>,
+            #[serde(default)]
+            expression: Option<String>,
+        }
+
+        let raw = RawDossier::deserialize(deserializer)?;
+        let test = raw
+            .failing_test
+            .or(raw.test)
+            .ok_or_else(|| serde::de::Error::missing_field("test or failing_test"))?;
+        let output = raw.output.unwrap_or_default();
+        let suspects = raw
+            .suspect_recent_changes
+            .or(raw.suspects)
+            .unwrap_or_default();
+        let assertion = raw
+            .runtime_values
+            .or(raw.assertion)
+            .or(raw.structured_assertion);
+
+        Ok(FailureDossier {
+            test,
+            output,
+            sites: raw.sites,
+            suspects,
+            assertion,
+            panic_line: raw.panic_line,
+            expression: raw.expression,
+        })
     }
 }
 
@@ -2000,6 +2048,71 @@ mod tests {
         assert_eq!(json.get("expression").and_then(|v| v.as_str()), Some("left == right"));
         assert!(json.get("runtime_values").is_some());
         assert!(json.get("suspect_recent_changes").is_some());
+    }
+
+    #[test]
+    fn failure_dossier_json_round_trip() {
+        let dossier = FailureDossier {
+            test: "test_roundtrip".to_string(),
+            panic_line: Some(99),
+            expression: Some("a == b".to_string()),
+            output: "failure details".to_string(),
+            sites: vec![FailureSite {
+                file: "src/lib.rs".to_string(),
+                line: 99,
+                snippet: "> 99 | assert_eq!(a, b)".to_string(),
+                function: Some("test_roundtrip".to_string()),
+                callers: vec!["main".to_string()],
+                diff: Some("+ diff".to_string()),
+            }],
+            assertion: Some(AssertionEvidence {
+                format: "assert_eq".to_string(),
+                expression: Some("left == right".to_string()),
+                actual: None,
+                expected: None,
+                left: Some("foo".to_string()),
+                right: Some("bar".to_string()),
+                operands: vec!["foo".to_string(), "bar".to_string()],
+                excerpt: "assertion `left == right` failed".to_string(),
+            }),
+            suspects: vec![Suspect {
+                function: "helper".to_string(),
+                file: "src/util.rs".to_string(),
+                line: 12,
+                hops: 1,
+                diff: None,
+            }],
+        };
+
+        let json_str = serde_json::to_string(&dossier).expect("serialize");
+        let deserialized: FailureDossier = serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(dossier, deserialized);
+
+        // Also test deserializing from legacy JSON without aliases
+        let legacy_json = serde_json::json!({
+            "test": "test_legacy",
+            "output": "out",
+            "sites": [],
+            "suspects": [],
+            "assertion": null
+        });
+        let from_legacy: FailureDossier = serde_json::from_value(legacy_json).expect("from legacy");
+        assert_eq!(from_legacy.test, "test_legacy");
+
+        // Also test deserializing from roadmap-only JSON
+        let roadmap_json = serde_json::json!({
+            "failing_test": "test_roadmap",
+            "output": "out",
+            "sites": [],
+            "suspect_recent_changes": [],
+            "runtime_values": null,
+            "panic_line": 50,
+            "expression": "x > 0"
+        });
+        let from_roadmap: FailureDossier = serde_json::from_value(roadmap_json).expect("from roadmap");
+        assert_eq!(from_roadmap.test, "test_roadmap");
+        assert_eq!(from_roadmap.panic_line, Some(50));
+        assert_eq!(from_roadmap.expression.as_deref(), Some("x > 0"));
     }
 
     #[test]
