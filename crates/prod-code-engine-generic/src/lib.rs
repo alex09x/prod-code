@@ -208,12 +208,41 @@ impl GenericLspConfig {
             ReadySignal::Unknown
         };
 
+        let mut env = HashMap::new();
+        if let Some(val) = std::env::var_os("PROD_CODE_PYTHON_STUB_CACHE") {
+            env.insert(
+                "PROD_CODE_PYTHON_STUB_CACHE".to_string(),
+                val.to_string_lossy().into_owned(),
+            );
+        }
+        if let Some(val) = std::env::var_os("MYPYPATH") {
+            env.insert("MYPYPATH".to_string(), val.to_string_lossy().into_owned());
+        }
+        if let Some(val) = std::env::var_os("TYPINGS_PATH") {
+            env.insert("TYPINGS_PATH".to_string(), val.to_string_lossy().into_owned());
+        }
+
+        let initialization_options = if cmd.contains("pyright") {
+            let stub_path = std::env::var("PROD_CODE_PYTHON_STUB_CACHE")
+                .ok()
+                .unwrap_or_else(|| "typings".to_string());
+            Some(serde_json::json!({
+                "python": {
+                    "analysis": {
+                        "stubPath": stub_path
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
         Self {
             command: cmd.clone(),
             args,
-            env: HashMap::new(),
+            env,
             working_dir: None,
-            initialization_options: None,
+            initialization_options,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready,
             index_wait: INDEX_WAIT,

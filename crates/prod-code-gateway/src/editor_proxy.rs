@@ -100,7 +100,23 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
             ready: ReadySignal::Progress,
         },
         "cpp" => from(GenericLspConfig::for_cpp()),
-        "python" => from(GenericLspConfig::for_python()),
+        "python" => {
+            let mut cfg = GenericLspConfig::for_python();
+            for (k, v) in crate::python_cache::python_stub_cache_env() {
+                cfg.env.insert(k, v);
+            }
+            if let Some(opts) = cfg.initialization_options.as_mut().and_then(|o| o.as_object_mut()) {
+                if let Some(py) = opts.get_mut("python").and_then(|p| p.as_object_mut()) {
+                    if let Some(an) = py.get_mut("analysis").and_then(|a| a.as_object_mut()) {
+                        an.insert(
+                            "stubPath".to_string(),
+                            serde_json::Value::String(crate::python_cache::python_stub_cache_dir().to_string_lossy().into_owned()),
+                        );
+                    }
+                }
+            }
+            from(cfg)
+        }
         "typescript" => from(GenericLspConfig::for_typescript()),
         "swift" => {
             let mut cfg = GenericLspConfig::for_swift();
