@@ -851,6 +851,51 @@ async fn tools_call_times_out_with_typed_error_under_budget() {
     assert!(text.contains("timed out after"), "{text}");
 }
 
+/// Review finding fix: caller-supplied `timeout_secs` cannot exceed `MCP_TOOL_CALL_TIMEOUT` (150s).
+#[test]
+fn resolve_tool_call_timeout_clamps_caller_override_to_mcp_ceiling() {
+    use prod_code_mcp::{resolve_tool_call_timeout, MCP_TOOL_CALL_TIMEOUT};
+
+    // Default when omitted
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({})),
+        MCP_TOOL_CALL_TIMEOUT
+    );
+
+    // Short valid timeouts are preserved (with +1s margin)
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 10 })),
+        std::time::Duration::from_secs(11)
+    );
+
+    // Minimal bound
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 0 })),
+        std::time::Duration::from_secs(2)
+    );
+
+    // Overrides exceeding ceiling are strictly clamped to MCP_TOOL_CALL_TIMEOUT
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 180 })),
+        MCP_TOOL_CALL_TIMEOUT
+    );
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 3600 })),
+        MCP_TOOL_CALL_TIMEOUT
+    );
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": u64::MAX })),
+        MCP_TOOL_CALL_TIMEOUT
+    );
+
+    // Invalid non-integer types safely fall back to default
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": "unlimited" })),
+        MCP_TOOL_CALL_TIMEOUT
+    );
+}
+
+
 #[tokio::test]
 async fn code_definition_reports_locations_or_says_there_are_none() {
     let ws = workspace();
