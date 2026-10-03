@@ -3968,3 +3968,43 @@ async fn lsp_syncs_only_the_decoded_top_level_save_method_before_forwarding() {
         .expect("wait bridge");
     assert!(status.success(), "{status}");
 }
+
+#[tokio::test]
+async fn test_cli_resolve_smart_domain() {
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["resolve", "shop.code.internal", "--json"])
+        .output()
+        .await
+        .expect("resolve output");
+    assert!(out.status.success(), "resolve exited successfully");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("parse json");
+    assert_eq!(json["query"], "shop.code.internal");
+    assert_eq!(json["is_internal"], true);
+    assert_eq!(json["project"], "shop");
+}
+
+#[tokio::test]
+async fn test_cli_resolve_srv_service() {
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["resolve", "_prod-code._tcp.code.internal"])
+        .output()
+        .await
+        .expect("resolve srv output");
+    assert!(out.status.success(), "resolve srv exited successfully");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Internal cluster domain") || text.contains("Type:"));
+}
+
+#[tokio::test]
+async fn test_cli_prod_code_cluster_env_defaults_to_auto() {
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["resolve", "cluster.code.internal", "--json"])
+        .env("PROD_CODE_CLUSTER", "10G")
+        .env_remove("PROD_CODE_REMOTE")
+        .output()
+        .await
+        .expect("resolve with cluster env");
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("parse json");
+    assert_eq!(json["is_internal"], true);
+}

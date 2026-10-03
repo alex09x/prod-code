@@ -11,7 +11,7 @@ use prod_code_protocol::{
     validate_selected_protocol_version,
 };
 use std::env;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use tokio::io::BufReader;
 use tokio_util::codec::Framed;
@@ -68,6 +68,14 @@ enum Commands {
     Cluster {
         /// One JSON object: the gossip view, each node's status or error, and the placement
         #[arg(long)]
+        json: bool,
+    },
+    /// Inspect DNS and SRV service discovery resolution for *.code.internal or cluster nodes.
+    Resolve {
+        /// The domain or service query to resolve (e.g. `shop.code.internal`, `cluster.code.internal`, `_prod-code._tcp.code.internal`).
+        domain: String,
+        /// One JSON object with resolution details, endpoints, and dynamic SRV records.
+        #[arg(long, default_value_t = false)]
         json: bool,
     },
     /// Push current worktree delta to remote storage over 10G LAN (or pull files with --pull).
@@ -1743,10 +1751,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     startup.mark("parse_args");
 
-    let seeds = prod_code_mcp::cluster::parse_remotes(&cli.remote)?;
+    let pinned = env::args().any(|a| a == "-r" || a == "--remote" || a.starts_with("--remote="));
+    let mut remote_spec = cli.remote.clone();
+    if !pinned && env::var_os("PROD_CODE_REMOTE").is_none() && env::var_os("PROD_CODE_CLUSTER").is_some() {
+        remote_spec = "auto".to_string();
+    }
+    let seeds = prod_code_mcp::cluster::parse_remotes(&remote_spec)?;
     // Nodes named with `--remote` on the command line are the ones to use, as given (#125);
     // otherwise one seed is enough and the rest of the cluster comes from its gossip view.
-    let pinned = env::args().any(|a| a == "-r" || a == "--remote" || a.starts_with("--remote="));
     let remotes = if pinned {
         seeds.clone()
     } else {
@@ -1849,6 +1861,10 @@ async fn main() -> Result<()> {
     if let Some(Commands::Cluster { json }) = cli.command {
         startup.report();
         return run_cluster(&remotes, &placement_key, cwd_engine, json).await;
+    }
+    if let Some(Commands::Resolve { domain, json }) = cli.command {
+        startup.report();
+        return run_resolve(&domain, json).await;
     }
 
     // A Go module whose cgo includes macOS headers builds only on macOS; a Linux node would
@@ -1957,6 +1973,7 @@ async fn main() -> Result<()> {
         Commands::Lsp { .. } => run_lsp_bridge(remote, lsp_engine).await,
         Commands::Status { .. } => unreachable!("handled before placement"),
         Commands::Cluster { json } => run_cluster(&remotes, &placement_key, cwd_engine, json).await,
+        Commands::Resolve { domain, json } => run_resolve(&domain, json).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::ReportIssue { .. } => unreachable!("handled before placement"),
         Commands::Mcp => run_mcp_server(remote).await,
@@ -5702,6 +5719,91 @@ async fn run_cluster(
         Some(node) if nodes.contains(&node) => println!("Placed on:           {node}"),
         Some(node) => println!("Placed on:           {node} (cached placement)"),
         None => println!("Placed on:           (not yet)"),
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct ResolveOutput {
+    query: String,
+    domain: String,
+    is_internal: bool,
+    project: Option<String>,
+    designated_node: Option<String>,
+    endpoints: Vec<String>,
+    srv_records: Vec<prod_code_protocol::dns::DnsSrvRecord>,
+    discovered_nodes: usize,
+}
+
+/// Inspect DNS and SRV service discovery resolution for *.code.internal or cluster nodes.
+async fn run_resolve(domain: &str, json: bool) -> Result<()> {
+    let clean_domain = domain.trim();
+    let is_internal = prod_code_protocol::dns::is_code_internal_domain(clean_domain);
+    let discovered = prod_code_mcp::cluster::discover_auto_nodes_sync();
+    let project = prod_code_protocol::dns::extract_project_name(clean_domain).map(|s| s.to_string());
+    let designated_node = project.as_deref().and_then(|p| {
+        prod_code_protocol::dns::resolve_project_node(p, &discovered).map(|n| n.addr.to_string())
+    });
+    let endpoints = if is_internal {
+        prod_code_protocol::dns::resolve_smart_domain(clean_domain, &discovered, 9400)
+            .unwrap_or_default()
+    } else {
+        match clean_domain.to_socket_addrs() {
+            Ok(iter) => iter.collect(),
+            Err(_) => match (clean_domain, 9400).to_socket_addrs() {
+                Ok(iter) => iter.collect(),
+                Err(_) => Vec::new(),
+            },
+        }
+    };
+    let srv_records = prod_code_protocol::dns::generate_srv_records(&discovered);
+
+    if json {
+        let out = ResolveOutput {
+            query: domain.to_string(),
+            domain: clean_domain.to_string(),
+            is_internal,
+            project,
+            designated_node,
+            endpoints: endpoints.iter().map(|e| e.to_string()).collect(),
+            srv_records,
+            discovered_nodes: discovered.len(),
+        };
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    println!("⚡ prod-code resolve: {clean_domain}");
+    println!("────────────────────────────────────────────────────");
+    if is_internal {
+        println!("Type:               Internal cluster domain (*.code.internal)");
+        if let Some(ref proj) = project {
+            if let Some(ref node) = designated_node {
+                println!("Project:            {proj} -> node {node} (warm workspace / rendezvous)");
+            } else {
+                println!("Project:            {proj}");
+            }
+        }
+    } else {
+        println!("Type:               Standard host / external address");
+    }
+    println!("Discovered nodes:   {}", discovered.len());
+    println!("Endpoints ({}):", endpoints.len());
+    if endpoints.is_empty() {
+        println!("  (none)");
+    } else {
+        for ep in &endpoints {
+            println!("  - {ep}");
+        }
+    }
+    if !srv_records.is_empty() {
+        println!("Dynamic SRV records ({}):", prod_code_protocol::dns::SRV_SERVICE_NAME);
+        for srv in &srv_records {
+            println!(
+                "  - {} (priority: {}, weight: {}, port: {})",
+                srv.target, srv.priority, srv.weight, srv.port
+            );
+        }
     }
     Ok(())
 }
