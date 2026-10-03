@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+- **Dedicated Editor Language Server Health Supervision & Stress Policy (Phase 3.3)** (`crates/prod-code-gateway`):
+  Implemented periodic health probes for dedicated editor sessions (`run_with_options` in `editor_proxy.rs`). Probes run on configurable intervals (default 60s, timeout 30s) and are deferred under loaded-project stress (in-flight client requests, active language-server indexing/busy readiness progress, and recent ordinary traffic). Reserved probe IDs (`prod-code-editor-health:`) from clients are rejected immediately with JSON-RPC error -32600, private probe replies from the server are intercepted and withheld from the editor, and three consecutive idle probe timeouts retire the session and reap the child process group.
+
 ### Fixed
 - **ReadFileRequest Protocol Dropping in Active Sessions & 64MiB Artifact Pulls (#820)** (`crates/prod-code-gateway`, `crates/prod-code-mcp`):
   Added `WireMessage::ReadFileRequest` dispatch to active session message loop (`on_client_message`) in the gateway, preventing requests from being dropped after session handshake. Raised maximum file pull limit for workspace files from 2 MiB to 64 MiB (`MAX_PULL_BYTES`). In `pull_remote_files`, added a 30s timeout per frame, explicit truncation and error checks, and executable detection (ELF, Mach-O, shebang) to ensure pulled binaries retain executable permissions (`0o755`).
