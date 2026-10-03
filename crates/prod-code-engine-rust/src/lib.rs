@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 pub mod editor;
 mod load_budget;
+pub mod proc_macro_farm;
 
 /// Per-repository analysis settings, read from `prod-code.toml` at the workspace root:
 ///
@@ -70,6 +71,27 @@ pub struct RustAnalysisOptions {
     /// proc-macro crates exist, and expand proc macros through rust-analyzer's out-of-process
     /// proc-macro server. Without it derives and attribute macros resolve to nothing.
     pub build_scripts: bool,
+    /// Execution mode for procedural macros: "sandboxed" (default), "sysroot", or "disabled".
+    pub proc_macro_srv: ProcMacroServerKind,
+    /// Optional limit on proc-macro worker processes allocated to this workspace.
+    /// When None, concurrency is dynamically governed by the shared worker farm.
+    pub proc_macro_workers: Option<usize>,
+    /// Optional virtual memory / address space limit in megabytes per worker process (default 2048 MB = 2 GiB).
+    pub proc_macro_memory_limit_mb: Option<u64>,
+}
+
+/// Execution strategy for Rust procedural macro expansion.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcMacroServerKind {
+    /// Isolated, sandboxed worker pool with memory limits, core dump suppression,
+    /// lowered scheduling priority, and secret-scrubbed environment (default).
+    #[default]
+    Sandboxed,
+    /// Direct sysroot proc-macro server without sandboxing wrapper.
+    Sysroot,
+    /// Completely disabled proc-macro expansion.
+    Disabled,
 }
 
 impl Default for RustAnalysisOptions {
@@ -80,6 +102,9 @@ impl Default for RustAnalysisOptions {
             all_targets: true,
             sysroot: true,
             build_scripts: true,
+            proc_macro_srv: ProcMacroServerKind::Sandboxed,
+            proc_macro_workers: None,
+            proc_macro_memory_limit_mb: None,
         }
     }
 }
@@ -1629,6 +1654,8 @@ pub struct RustEngine {
     label: &'static str,
     /// Changes applied to the database since the load; each starts a new revision.
     changes: u64,
+    /// Proc-macro worker farm allocation permit. Kept alive until this engine is dropped.
+    _proc_macro_farm_permit: Option<proc_macro_farm::ProcMacroFarmPermit>,
 }
 
 /// Per-session live buffers layered over the shared base workspace.
@@ -1912,17 +1939,10 @@ impl RustEngine {
             .extra_args
             .push(format!("--jobs={num_threads}"));
         let build_scripts = config.rust.build_scripts;
-        let load_config = LoadCargoConfig {
-            load_out_dirs_from_check: build_scripts,
-            with_proc_macro_server: if build_scripts {
-                ProcMacroServerChoice::Sysroot
-            } else {
-                ProcMacroServerChoice::None
-            },
-            prefill_caches: false,
-            num_worker_threads: num_threads,
-            proc_macro_processes: num_threads.min(8),
-        };
+        let farm = proc_macro_farm::shared();
+        let desired_workers = config.rust.proc_macro_workers.unwrap_or_else(|| {
+            num_threads.min(8)
+        });
 
         tracing::info!(
             ?workspace_root,
@@ -1945,6 +1965,39 @@ impl RustEngine {
             ws.set_build_scripts(scripts);
         }
 
+        let (proc_macro_choice, proc_macro_processes, farm_permit) = match config.rust.proc_macro_srv {
+            ProcMacroServerKind::Disabled => (ProcMacroServerChoice::None, 0, None),
+            _ if !build_scripts => (ProcMacroServerChoice::None, 0, None),
+            ProcMacroServerKind::Sysroot => {
+                let (workers, permit) = farm.allocate_workers(workspace_root, desired_workers);
+                (ProcMacroServerChoice::Sysroot, workers, Some(permit))
+            }
+            ProcMacroServerKind::Sandboxed => {
+                let (workers, permit) = farm.allocate_workers(workspace_root, desired_workers);
+                let memory_limit_mb = config.rust.proc_macro_memory_limit_mb.unwrap_or(2048);
+                let choice = if let Some(Ok(ref sysroot_srv)) = ws.find_sysroot_proc_macro_srv() {
+                    match proc_macro_farm::prepare_sandboxed_srv(sysroot_srv.as_ref(), memory_limit_mb) {
+                        Ok(wrapper) => ProcMacroServerChoice::Explicit(AbsPathBuf::assert_utf8(wrapper)),
+                        Err(err) => {
+                            tracing::warn!(?err, "Failed to prepare sandboxed proc-macro server, falling back to sysroot");
+                            ProcMacroServerChoice::Sysroot
+                        }
+                    }
+                } else {
+                    ProcMacroServerChoice::Sysroot
+                };
+                (choice, workers, Some(permit))
+            }
+        };
+
+        let load_config = LoadCargoConfig {
+            load_out_dirs_from_check: build_scripts,
+            with_proc_macro_server: proc_macro_choice,
+            prefill_caches: false,
+            num_worker_threads: num_threads,
+            proc_macro_processes,
+        };
+
         let (worktrees, db, vfs) =
             Worktrees::load(ws, &FxHashMap::default(), &load_config)
                 .map_err(|e| anyhow::anyhow!("Failed to load cargo workspace: {e}"))?;
@@ -1961,7 +2014,13 @@ impl RustEngine {
             overlays: SessionOverlays::default(),
             label: "main",
             changes: 0,
+            _proc_macro_farm_permit: farm_permit,
         })
+    }
+
+    /// Returns current metrics for the node-wide shared proc-macro worker farm.
+    pub fn proc_macro_farm_metrics() -> proc_macro_farm::FarmMetrics {
+        proc_macro_farm::shared().metrics()
     }
 
     /// Obtain a lightweight, thread-safe analysis snapshot for parallel execution.
@@ -3878,6 +3937,60 @@ fn main() {
         // Base snapshot cannot see either worktree's private files
         assert!(snap_base.file_id_for_path(&wt1_private_file).is_none());
         assert!(snap_base.file_id_for_path(&wt2_private_file).is_none());
+    }
+
+    #[test]
+    fn test_rust_analysis_options_proc_macro_deserialization() {
+        let toml_str = r#"
+[rust]
+build_scripts = true
+proc_macro_srv = "sandboxed"
+proc_macro_workers = 3
+proc_macro_memory_limit_mb = 1024
+"#;
+        let config: ProdCodeConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.rust.proc_macro_srv, ProcMacroServerKind::Sandboxed);
+        assert_eq!(config.rust.proc_macro_workers, Some(3));
+        assert_eq!(config.rust.proc_macro_memory_limit_mb, Some(1024));
+
+        let sysroot_toml = r#"
+[rust]
+proc_macro_srv = "sysroot"
+"#;
+        let config: ProdCodeConfig = toml::from_str(sysroot_toml).unwrap();
+        assert_eq!(config.rust.proc_macro_srv, ProcMacroServerKind::Sysroot);
+
+        let disabled_toml = r#"
+[rust]
+proc_macro_srv = "disabled"
+"#;
+        let config: ProdCodeConfig = toml::from_str(disabled_toml).unwrap();
+        assert_eq!(config.rust.proc_macro_srv, ProcMacroServerKind::Disabled);
+    }
+
+    #[test]
+    fn test_rust_engine_proc_macro_farm_lifecycle() {
+        let (temp, lib_path) = create_test_fixture();
+
+        // Write prod-code.toml specifying sandboxed worker with 2 workers
+        std::fs::write(
+            temp.path().join("prod-code.toml"),
+            "[rust]\nbuild_scripts = true\nproc_macro_srv = \"sandboxed\"\nproc_macro_workers = 2\n",
+        )
+        .unwrap();
+
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture with sandboxed proc-macro farm");
+
+        let active_metrics = RustEngine::proc_macro_farm_metrics();
+        assert!(active_metrics.active_workers >= 1, "Must have active workers while engine is alive");
+        assert!(active_metrics.active_workspaces >= 1, "Must have active workspaces while engine is alive");
+
+        // Document symbols on fixture continue to work
+        let syms = engine.document_symbols(&lib_path).unwrap();
+        assert!(syms.iter().any(|s| s.name == "DEFAULT_PORT"));
+
+        // Dropping engine releases worker permits back to shared farm
+        drop(engine);
     }
 }
 
