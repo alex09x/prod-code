@@ -8993,13 +8993,21 @@ async fn symbol_search_across_projects(
     if named(&hits) {
         return Ok(hits);
     }
+    let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
     if let Some(hint) = hint {
         // The project a path names may keep no index (sourcekit-lsp before a build): the
         // outlines of its files that name the symbol still find it (#358).
         if let (_, Some(engine)) = crate::sync::engine_project(root, hint) {
-            let node = crate::cluster::route_for_path(remote, root, hint.to_str())
-                .await
-                .unwrap_or(remote);
+            let node = match tokio::time::timeout_at(
+                deadline,
+                crate::cluster::route_for_path(remote, root, hint.to_str()),
+            )
+            .await
+            {
+                Ok(Ok(n)) => n,
+                Ok(Err(_)) => remote,
+                Err(_) => return Ok(hits),
+            };
             let files = if hint.is_file() {
                 std::fs::read_to_string(hint)
                     .is_ok_and(|text| names_word(&text, name))
@@ -9007,9 +9015,15 @@ async fn symbol_search_across_projects(
                     .into_iter()
                     .collect()
             } else {
-                files_naming(hint, engine, name)
+                files_naming(hint, engine, name, deadline)
             };
-            hits.extend(declarations_in(node, root, &files, name).await?);
+            if !files.is_empty() {
+                if let Ok(Ok(decls)) =
+                    tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name)).await
+                {
+                    hits.extend(decls);
+                }
+            }
         }
         return Ok(hits);
     }
@@ -9018,12 +9032,12 @@ async fn symbol_search_across_projects(
     // and no nested project's sources explicitly name the query, avoid falling back to
     // arbitrary nested project anchors which can cause runaway timeouts (#829).
     let has_relevant_hits = hits.iter().any(|hit| match_rank(&hit.name, query) < 4);
-    let mut anchors = projects_naming(root, name);
+    let mut anchors = projects_naming(root, name, deadline);
     if anchors.is_empty() {
         if has_relevant_hits {
             return Ok(hits);
         }
-        for anchor in nested_project_anchors(root) {
+        for anchor in nested_project_anchors(root, deadline) {
             if anchors.len() >= MAX_NESTED_PROJECTS {
                 break;
             }
@@ -9035,7 +9049,6 @@ async fn symbol_search_across_projects(
             }
         }
     }
-    let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
     for (anchor, subpath, engine) in anchors {
         if tokio::time::Instant::now() >= deadline {
             tracing::warn!(
@@ -9096,7 +9109,7 @@ async fn symbol_search_across_projects(
         if !named_here && tokio::time::Instant::now() < deadline {
             // sourcekit-lsp has no index for Swift files a package does not build, and answers
             // `workspace/symbol` with nothing: their outlines still name what they declare.
-            let files = files_naming(&root.join(&subpath), engine, name);
+            let files = files_naming(&root.join(&subpath), engine, name, deadline);
             if !files.is_empty() {
                 match tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name)).await {
                     Ok(Ok(decls)) => hits.extend(decls),
@@ -9123,9 +9136,17 @@ const MAX_OUTLINED_FILES: usize = 8;
 
 /// Files of `engine`'s language under `dir` whose text has `name` as a word, prioritizing files
 /// that declare `name`.
-fn files_naming(dir: &Path, engine: &str, name: &str) -> Vec<std::path::PathBuf> {
+fn files_naming(
+    dir: &Path,
+    engine: &str,
+    name: &str,
+    deadline: tokio::time::Instant,
+) -> Vec<std::path::PathBuf> {
     let mut files: Vec<(bool, std::path::PathBuf)> = Vec::new();
     for path in source_files(dir).filter(|path| crate::sync::engine_for_file(path) == Some(engine)) {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -9179,7 +9200,11 @@ const MAX_SCANNED_FILES: usize = 5000;
 /// One file of each nested project whose sources name `name`, in path order: the projects to
 /// ask first (#358). A walk that takes the first projects it meets spent every slot on a C++
 /// dependency and loose scripts while the declaration sat in a Swift package after them.
-fn projects_naming(root: &Path, name: &str) -> Vec<(std::path::PathBuf, String, &'static str)> {
+fn projects_naming(
+    root: &Path,
+    name: &str,
+    deadline: tokio::time::Instant,
+) -> Vec<(std::path::PathBuf, String, &'static str)> {
     let root_engine = crate::sync::expected_engine(root);
     let mut projects = std::collections::HashSet::new();
     let mut anchors = Vec::new();
@@ -9187,6 +9212,9 @@ fn projects_naming(root: &Path, name: &str) -> Vec<(std::path::PathBuf, String, 
         .filter(|path| crate::sync::engine_for_file(path).is_some_and(|e| Some(e) != root_engine))
         .take(MAX_SCANNED_FILES)
     {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
         if !std::fs::read_to_string(&path).is_ok_and(|text| names_word(&text, name)) {
             continue;
         }
@@ -9279,11 +9307,17 @@ fn collect_named(
 /// One source file of each project in the checkout besides the root's, with the project's
 /// directory (relative) and engine: a nested project of another language, or a loose file of
 /// one, as `engine_project` places them (#247, #318).
-fn nested_project_anchors(root: &Path) -> Vec<(std::path::PathBuf, String, &'static str)> {
+fn nested_project_anchors(
+    root: &Path,
+    deadline: tokio::time::Instant,
+) -> Vec<(std::path::PathBuf, String, &'static str)> {
     let mut seen_dirs = std::collections::HashSet::new();
     let mut projects = std::collections::HashSet::new();
     let mut anchors = Vec::new();
     for path in source_files(root) {
+        if tokio::time::Instant::now() >= deadline {
+            return anchors;
+        }
         let Some(engine) = crate::sync::engine_for_file(&path) else {
             continue;
         };
