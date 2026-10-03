@@ -50,13 +50,21 @@ if ! mount -t overlay overlay -o "lowerdir=$SHADOW_LOWER,upperdir=$SHADOW_UPPER,
   exit 1
 fi
 if [ -n "$SHADOW_MOUNT_STATUS" ]; then
-  printf "ok" > "$SHADOW_MOUNT_STATUS"
+  status_file="$SHADOW_MOUNT_STATUS"
+  control_dir="$SHADOW_CONTROL_DIR"
+  printf "ok" > "$status_file"
+  if [ -n "$control_dir" ] && [ -d "$control_dir" ]; then
+    mount -t tmpfs -o size=1m,mode=000 tmpfs "$control_dir" || true
+  fi
 fi
 if [ -s "$SHADOW_DELETE" ]; then
   while IFS= read -r p; do rm -f "$SHADOW_LOWER/$p"; done < "$SHADOW_DELETE"
 fi
 cd "$SHADOW_LOWER/$SHADOW_SUBDIR"
-exec "$SHADOW_SETPRIV" --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs "$@" 2>&1
+unset SHADOW_LOWER SHADOW_UPPER SHADOW_WORK SHADOW_DELETE SHADOW_SUBDIR SHADOW_MOUNT_STATUS SHADOW_CONTROL_DIR
+setpriv_cmd="$SHADOW_SETPRIV"
+unset SHADOW_SETPRIV
+exec "$setpriv_cmd" --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs "$@" 2>&1
 "#;
 
 fn is_diagnostic_error_header(line: &str) -> bool {
@@ -1133,11 +1141,13 @@ pub async fn run_overlay(
     let upper = dir.join("upper");
     let work = dir.join("work");
     let delete_list = dir.join("delete.txt");
-    let mount_status = dir.join("mount_status");
+    let control_dir = dir.join("control");
+    let mount_status = control_dir.join("mount_status");
     let script = dir.join("run.sh");
     let staged = (|| -> Result<()> {
         std::fs::create_dir_all(&upper)?;
         std::fs::create_dir_all(&work)?;
+        std::fs::create_dir_all(&control_dir)?;
         let deleted = stage_upper(&upper, &job.files)?;
         let mut list = String::new();
         for path in deleted {
@@ -1186,6 +1196,7 @@ pub async fn run_overlay(
         .env("SHADOW_WORK", &work)
         .env("SHADOW_DELETE", &delete_list)
         .env("SHADOW_SUBDIR", &job.subdir)
+        .env("SHADOW_CONTROL_DIR", &control_dir)
         .env("SHADOW_MOUNT_STATUS", &mount_status)
         .env("SHADOW_SETPRIV", setpriv)
         .current_dir(&job.workspace);
@@ -2031,6 +2042,41 @@ mod tests {
         assert!(
             ran_in_ram.load(std::sync::atomic::Ordering::Relaxed),
             "command exiting 253 after successful mount must not trigger disk fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_overlay_isolates_mount_status_from_user_command() {
+        if overlay_unavailable().is_some() {
+            return;
+        }
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a.txt"), "base\n").unwrap();
+        let ram_shadow = tempfile::tempdir().unwrap();
+        let disk_shadow = tempfile::tempdir().unwrap();
+        let ran_in_ram = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        // The user command tries to inspect SHADOW_MOUNT_STATUS and SHADOW_CONTROL_DIR
+        let mut test_job = job(
+            ws.path(),
+            ram_shadow.path(),
+            "unshare_isolation_hyp",
+            vec![delta("a.txt", Some("overlay content\n"))],
+            &[
+                "sh",
+                "-c",
+                "test -z \"$SHADOW_MOUNT_STATUS\" && test -z \"$SHADOW_CONTROL_DIR\"",
+            ],
+        );
+        test_job.fallback_shadow_root = Some(disk_shadow.path().to_path_buf());
+        test_job.ran_in_ram = Some(ran_in_ram.clone());
+
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let res = run_overlay(test_job, rx).await;
+        assert_eq!(res.exit_code, Some(0), "{:?} {}", res.error, output(&res));
+        assert!(
+            ran_in_ram.load(std::sync::atomic::Ordering::Relaxed),
+            "command must run in RAM and not trigger fallback"
         );
     }
 
