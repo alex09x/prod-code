@@ -343,16 +343,95 @@ impl VisitedDirs {
     }
 }
 
+/// Builds the set of canonical approved roots from which symlinks may be safely dereferenced.
+/// Includes the project root(s) and any validated pnpm virtual/global stores.
+pub fn build_approved_roots(roots: &[&Path]) -> Vec<PathBuf> {
+    let mut approved = Vec::new();
+    for r in roots {
+        if let Ok(c) = r.canonicalize() {
+            approved.push(c);
+        } else {
+            approved.push(r.to_path_buf());
+        }
+    }
+
+    // Include PNPM_HOME / global pnpm store if valid
+    if let Some(pnpm_home) = std::env::var_os("PNPM_HOME") {
+        let p = PathBuf::from(pnpm_home);
+        if let Ok(c) = p.canonicalize() {
+            approved.push(c);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_path = PathBuf::from(home);
+        for pnpm_sub in &[".local/share/pnpm", ".pnpm-store", "Library/pnpm"] {
+            let candidate = home_path.join(pnpm_sub);
+            if candidate.is_dir() {
+                if let Ok(c) = candidate.canonicalize() {
+                    approved.push(c);
+                }
+            }
+        }
+    }
+
+    approved
+}
+
+/// Finds the enclosing project root by searching parent directories for standard manifests.
+pub fn find_enclosing_project_root(path: &Path) -> PathBuf {
+    let mut current = if path.is_file() {
+        path.parent()
+    } else {
+        Some(path)
+    };
+    let mut candidate = None;
+    while let Some(dir) = current {
+        if dir.join("package.json").is_file()
+            || dir.join("tsconfig.json").is_file()
+            || dir.join("pnpm-workspace.yaml").is_file()
+            || dir.join(".git").exists()
+        {
+            candidate = Some(dir.to_path_buf());
+        }
+        current = dir.parent();
+    }
+    candidate.unwrap_or_else(|| {
+        path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| path.to_path_buf())
+    })
+}
+
+/// Checks whether a symlink's target canonical path is inside an approved project or package root.
+fn is_target_approved(target: &Path, approved_roots: &[PathBuf]) -> bool {
+    let Ok(canon) = target.canonicalize() else {
+        return false;
+    };
+    approved_roots.iter().any(|root| canon.starts_with(root))
+}
+
 /// Recursively copies and merges type declarations from `src_dir` into `dst_dir`.
 ///
 /// Only declaration files (`.d.ts`, `.d.mts`, `.d.cts`, `.d.ts.map`, `.json`, etc.)
 /// and subdirectories containing them are indexed.
 /// Safely dereferences valid package symlinks (such as pnpm package symlinks into virtual stores)
-/// and tracks visited directory inodes to prevent recursion cycles (#835, #836).
+/// while strictly rejecting out-of-root symlinks and tracking visited directory inodes to prevent cycles (#835, #836).
 /// Returns total bytes written or updated.
 pub fn merge_types(src_dir: &Path, dst_dir: &Path) -> io::Result<u64> {
+    let project_root = find_enclosing_project_root(src_dir);
+    merge_types_within(src_dir, dst_dir, &[&project_root])
+}
+
+/// Recursively copies and merges type declarations from `src_dir` into `dst_dir` constraining
+/// symlinks to explicit approved roots (such as `from` and `to` project worktrees).
+pub fn merge_types_within(
+    src_dir: &Path,
+    dst_dir: &Path,
+    approved_roots: &[&Path],
+) -> io::Result<u64> {
+    let approved = build_approved_roots(approved_roots);
     let mut visited = VisitedDirs::default();
-    merge_types_inner(src_dir, dst_dir, &mut visited)
+    merge_types_inner(src_dir, dst_dir, &approved, &mut visited)
 }
 
 fn is_type_declaration_file(name: &str) -> bool {
@@ -370,6 +449,7 @@ fn is_type_declaration_file(name: &str) -> bool {
 fn merge_types_inner(
     src_dir: &Path,
     dst_dir: &Path,
+    approved_roots: &[PathBuf],
     visited: &mut VisitedDirs,
 ) -> io::Result<u64> {
     if !src_dir.is_dir() || !visited.insert(src_dir) {
@@ -396,8 +476,13 @@ fn merge_types_inner(
         }
 
         // Safely dereference symlinks (e.g. pnpm package symlinks into virtual stores).
-        // Cyclic or repeated directory targets are safely handled by VisitedDirs tracking (dev, ino).
+        // Only follow symlinks whose targets resolve inside approved project/package roots (#836).
+        // Out-of-root symlinks (e.g. pointing to host files/directories) are strictly rejected.
         let (is_dir, is_file) = if file_type.is_symlink() {
+            if !is_target_approved(&path, approved_roots) {
+                tracing::debug!(path = %path.display(), "skipping symlink pointing outside approved roots");
+                continue;
+            }
             match fs::metadata(&path) {
                 Ok(meta) => (meta.is_dir(), meta.is_file()),
                 Err(_) => continue, // dangling symlink, skip safely
@@ -408,7 +493,7 @@ fn merge_types_inner(
 
         if is_dir {
             let sub_dst = dst_dir.join(&file_name);
-            let sub_bytes = merge_types_inner(&path, &sub_dst, visited)?;
+            let sub_bytes = merge_types_inner(&path, &sub_dst, approved_roots, visited)?;
             bytes_written += sub_bytes;
         } else if is_file && is_type_declaration_file(&name_str) {
             let target_file = dst_dir.join(&file_name);
@@ -421,13 +506,24 @@ fn merge_types_inner(
 }
 
 /// Recursively computes total size of all regular declaration files in a directory,
-/// safely dereferencing valid symlinks (e.g. pnpm package symlinks) and tracking visited inodes to prevent cycles.
+/// safely dereferencing valid symlinks within approved roots and tracking visited inodes to prevent cycles.
 pub fn tree_size(dir: &Path) -> u64 {
-    let mut visited = VisitedDirs::default();
-    tree_size_inner(dir, &mut visited)
+    let project_root = find_enclosing_project_root(dir);
+    tree_size_within(dir, &[&project_root])
 }
 
-fn tree_size_inner(dir: &Path, visited: &mut VisitedDirs) -> u64 {
+/// Computes total size of declaration files in a directory, constraining symlinks to explicit approved roots.
+pub fn tree_size_within(dir: &Path, approved_roots: &[&Path]) -> u64 {
+    let approved = build_approved_roots(approved_roots);
+    let mut visited = VisitedDirs::default();
+    tree_size_inner(dir, &approved, &mut visited)
+}
+
+fn tree_size_inner(
+    dir: &Path,
+    approved_roots: &[PathBuf],
+    visited: &mut VisitedDirs,
+) -> u64 {
     if !visited.insert(dir) {
         return 0;
     }
@@ -445,8 +541,11 @@ fn tree_size_inner(dir: &Path, visited: &mut VisitedDirs) -> u64 {
                 continue;
             }
 
-            // Safely dereference symlinks for sizing (e.g. pnpm package symlinks into virtual stores).
+            // Safely dereference symlinks for sizing only if within approved roots (#836).
             let (is_dir, is_file, file_len) = if file_type.is_symlink() {
+                if !is_target_approved(&path, approved_roots) {
+                    continue;
+                }
                 match fs::metadata(&path) {
                     Ok(meta) => (meta.is_dir(), meta.is_file(), meta.len()),
                     Err(_) => continue,
@@ -461,7 +560,7 @@ fn tree_size_inner(dir: &Path, visited: &mut VisitedDirs) -> u64 {
             };
 
             if is_dir {
-                total += tree_size_inner(&path, visited);
+                total += tree_size_inner(&path, approved_roots, visited);
             } else if is_file && is_type_declaration_file(&name_str) {
                 total += file_len;
             }
@@ -490,7 +589,10 @@ pub fn seed_typescript_worktree_within(
 
     // 1. Gather all candidate type declaration directories
     let discovered_types = find_project_types(from);
-    let aggregate_size: u64 = discovered_types.iter().map(|d| tree_size(d)).sum();
+    let aggregate_size: u64 = discovered_types
+        .iter()
+        .map(|d| tree_size_within(d, &[from, to]))
+        .sum();
 
     // 2. Enforce disk budget before merging into shared cache
     if aggregate_size > 0 && seed_fits("typescript types cache", aggregate_size, space) {
@@ -501,7 +603,7 @@ pub fn seed_typescript_worktree_within(
             } else {
                 cache_dir.join(dir_name)
             };
-            let merged = merge_types(type_dir, &dst_target)?;
+            let merged = merge_types_within(type_dir, &dst_target, &[from, to])?;
             total_bytes += merged;
         }
     }
@@ -542,9 +644,9 @@ pub fn seed_typescript_worktree_within(
         Ok(m) if m.is_dir() => {
             // If it's a real directory (e.g. copied by dependency trees or created by pnpm),
             // safely dereference valid package links and merge into shared cache before deduplicating.
-            let to_size = tree_size(&to_at_types);
+            let to_size = tree_size_within(&to_at_types, &[from, to]);
             if to_size == 0 || seed_fits("typescript types cache", to_size, space) {
-                let merged = merge_types(&to_at_types, &cache_dir)?;
+                let merged = merge_types_within(&to_at_types, &cache_dir, &[from, to])?;
                 total_bytes += merged;
 
                 // Deduplicate: replace real directory with symlink to shared cache to eliminate duplicate gigabytes
@@ -552,7 +654,7 @@ pub fn seed_typescript_worktree_within(
                 {
                     let backup = to_node_modules.join(".old-at-types");
                     if fs::rename(&to_at_types, &backup).is_ok() {
-                        let to_had_types = tree_size(&backup) > 0;
+                        let to_had_types = tree_size_within(&backup, &[from, to]) > 0;
                         let cache_has_types = tree_size(&cache_dir) > 0;
                         // If backup had valid types, ensure cache has types before committing to symlink
                         if (!to_had_types || cache_has_types)

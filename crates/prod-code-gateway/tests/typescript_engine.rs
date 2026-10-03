@@ -469,3 +469,66 @@ fn test_seed_typescript_worktree_deduplicates_pnpm_concrete_at_types_dir() {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
     }
 }
+
+#[test]
+fn test_seed_typescript_worktree_rejects_out_of_root_symlinks() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("ts-cache-security");
+    unsafe {
+        std::env::set_var(TS_TYPES_CACHE_ENV, &cache_dir);
+    }
+
+    // External directory simulating sensitive host files
+    let outside_dir = temp.path().join("outside_host_data");
+    fs::create_dir_all(&outside_dir).unwrap();
+    fs::write(outside_dir.join("secret_credentials.json"), "{\"token\": \"SECRET_HOST_TOKEN\"}\n").unwrap();
+    fs::write(outside_dir.join("host_lib.d.ts"), "declare const hostSecret: string;\n").unwrap();
+
+    let from = temp.path().join("from");
+    let to = temp.path().join("to");
+    fs::create_dir_all(&from).unwrap();
+    fs::create_dir_all(&to).unwrap();
+    fs::write(from.join("package.json"), "{}").unwrap();
+
+    let from_at_types = from.join("node_modules").join("@types");
+    fs::create_dir_all(&from_at_types).unwrap();
+
+    // 1. Malicious symlink pointing to an out-of-root host directory
+    let outside_link = from_at_types.join("outside_pkg");
+    let _ = std::os::unix::fs::symlink(&outside_dir, &outside_link);
+
+    // 2. Malicious symlink pointing to an out-of-root host file
+    let file_link = from_at_types.join("stolen.json");
+    let _ = std::os::unix::fs::symlink(outside_dir.join("secret_credentials.json"), &file_link);
+
+    // 3. Legitimate in-workspace pnpm package symlink
+    let pnpm_valid = from
+        .join("node_modules")
+        .join(".pnpm")
+        .join("@types+valid@1.0.0")
+        .join("node_modules")
+        .join("@types")
+        .join("valid");
+    fs::create_dir_all(&pnpm_valid).unwrap();
+    fs::write(pnpm_valid.join("index.d.ts"), "export declare const validPkg: boolean;\n").unwrap();
+
+    let valid_link = from_at_types.join("valid");
+    let _ = std::os::unix::fs::symlink(&pnpm_valid, &valid_link);
+
+    // Seed worktree
+    let _ = seed_typescript_worktree(&from, &to).unwrap();
+
+    // The legitimate in-root package must be present in the shared cache
+    assert!(cache_dir.join("valid").join("index.d.ts").is_file());
+
+    // Out-of-root symlinks must NEVER be dereferenced or copied into the shared cache
+    assert!(!cache_dir.join("outside_pkg").exists(), "Out-of-root directory symlinks must be rejected!");
+    assert!(!cache_dir.join("stolen.json").exists(), "Out-of-root file symlinks must be rejected!");
+    assert!(!cache_dir.join("secret_credentials.json").exists());
+    assert!(!cache_dir.join("host_lib.d.ts").exists());
+
+    unsafe {
+        std::env::remove_var(TS_TYPES_CACHE_ENV);
+    }
+}
