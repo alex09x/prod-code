@@ -287,6 +287,8 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
         shadow_dir: None,
         peers: String::new(),
         advertise: None,
+        build_cache_ram: false,
+        build_cache_dir: None,
     };
 
     let server_task = tokio::spawn(async move {
