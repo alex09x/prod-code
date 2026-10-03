@@ -3,8 +3,9 @@
 use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::python_cache::{
     find_venv_stubs, is_python_project, merge_stubs, prune_stale_stub_cache_in,
-    python_stub_cache_dir, python_stub_cache_env, seed_python_worktree,
-    seed_python_worktree_within, tree_size, PYTHON_STUB_CACHE_ENV,
+    prune_stale_stub_cache_with_grace, python_stub_cache_dir, python_stub_cache_env,
+    seed_python_worktree, seed_python_worktree_within, tree_size,
+    PYTHON_STUB_CACHE_ENV, TMP_STUB_GRACE_PERIOD,
 };
 use std::fs;
 use std::time::Duration;
@@ -424,4 +425,98 @@ fn test_tree_size_and_merge_stubs_handle_symlink_cycle() {
     assert_eq!(fs::read(dst.join("sub").join("types.pyi")).unwrap(), b"x: int = 10\n");
     assert!(!dst.join("sub").join("cycle_to_parent").exists());
     assert!(!dst.join("sub").join("cycle_to_self").exists());
+}
+
+#[test]
+fn test_prune_stale_stub_cache_cleans_abandoned_tmp_files_and_preserves_active() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+    assert_eq!(TMP_STUB_GRACE_PERIOD, Duration::from_secs(3600));
+
+    let old_tmp = cache_dir.join(".tmp-stub-crashed-worker-1");
+    let recent_tmp = cache_dir.join(".tmp-stub-active-worker-2");
+    let valid_stub = cache_dir.join("module.pyi");
+
+    fs::write(&old_tmp, vec![0xaa; 10_000]).unwrap();
+    fs::write(&recent_tmp, vec![0xbb; 5_000]).unwrap();
+    fs::write(&valid_stub, vec![0xcc; 2_000]).unwrap();
+
+    // Backdate old_tmp modification time to 2 hours ago (> 1h grace period)
+    let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+    let sec = two_hours_ago.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+    let times = [
+        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+    ];
+    let c_path = std::ffi::CString::new(old_tmp.to_str().unwrap()).unwrap();
+    unsafe {
+        libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
+    }
+
+    // Prune with large size limit so only age matters
+    let evicted = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
+    assert_eq!(evicted, 1, "abandoned temp file must be unlinked");
+    assert!(!old_tmp.exists(), "abandoned temp file must no longer exist");
+    assert!(recent_tmp.is_file(), "active recent temp file must be preserved");
+    assert!(valid_stub.is_file(), "valid stub file must be preserved");
+}
+
+#[test]
+fn test_prune_stale_stub_cache_accounts_for_recent_tmp_files_in_size_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+
+    let active_tmp = cache_dir.join(".tmp-stub-active");
+    let old_stub = cache_dir.join("old_module.pyi");
+    let new_stub = cache_dir.join("new_module.pyi");
+
+    fs::write(&active_tmp, vec![1u8; 6_000]).unwrap();
+    fs::write(&old_stub, vec![2u8; 4_000]).unwrap();
+    fs::write(&new_stub, vec![3u8; 1_000]).unwrap();
+
+    // Backdate old_stub mtime so it is older than new_stub
+    let ten_mins_ago = std::time::SystemTime::now() - Duration::from_secs(600);
+    let sec = ten_mins_ago.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+    let times = [
+        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+    ];
+    let c_path = std::ffi::CString::new(old_stub.to_str().unwrap()).unwrap();
+    unsafe {
+        libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
+    }
+
+    // Total size = 6000 (tmp) + 4000 (old) + 1000 (new) = 11000 bytes.
+    // Max budget = 8000 bytes.
+    // Active tmp file must NOT be evicted, old_stub must be evicted to satisfy the budget.
+    let evicted = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 8_000).unwrap();
+    assert_eq!(evicted, 1);
+    assert!(active_tmp.is_file(), "active temp file must not be evicted under size pressure");
+    assert!(!old_stub.exists(), "oldest regular stub must be evicted");
+    assert!(new_stub.is_file(), "newer regular stub must remain");
+}
+
+#[test]
+fn test_prune_stale_stub_cache_with_custom_grace_period() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+
+    let fast_tmp = cache_dir.join(".tmp-stub-fast-expire");
+    fs::write(&fast_tmp, b"temporary payload").unwrap();
+
+    std::thread::sleep(Duration::from_millis(60));
+
+    // Custom grace period of 30ms will consider fast_tmp abandoned
+    let evicted = prune_stale_stub_cache_with_grace(
+        &cache_dir,
+        Duration::from_secs(3600),
+        100_000,
+        Duration::from_millis(30),
+    ).unwrap();
+
+    assert_eq!(evicted, 1);
+    assert!(!fast_tmp.exists());
 }
