@@ -39,32 +39,51 @@ fn test_proc_macro_farm_shared_concurrency_and_permit_lifecycle() {
     assert_eq!(farm.active_workers(), 10);
     assert_eq!(farm.active_workspaces(), 3);
 
-    // Workspace 4 requests workers when farm is full: must be rejected with 0 workers
-    let ws_full = PathBuf::from("/tmp/repo_full");
-    let (w_full, permit_full) = farm.allocate_workers(&ws_full, 2);
-    assert_eq!(w_full, 0, "Must be rejected when farm is at full capacity");
-    assert_eq!(permit_full.worker_count(), 0);
+    // Workspace 4 requests workers when farm is full: rebalances 1 from ws2 (has 5 > 1) to avoid starvation
+    let ws4 = PathBuf::from("/tmp/repo4");
+    let (w4, permit4) = farm.allocate_workers(&ws4, 2);
+    assert_eq!(w4, 1, "Must rebalance 1 worker from multi-worker workspace to avoid starvation");
+    assert_eq!(permit4.worker_count(), 1);
     assert_eq!(farm.active_workers(), 10, "Total active workers must not exceed capacity");
-    assert_eq!(farm.active_workspaces(), 3);
+    assert_eq!(farm.active_workspaces(), 4);
 
     // When Workspace 1 finishes / is evicted, its 4 workers are returned
     drop(permit1);
     assert_eq!(farm.active_workers(), 6);
-    assert_eq!(farm.active_workspaces(), 2);
+    assert_eq!(farm.active_workspaces(), 3);
 
     // Workspace 5 can now allocate workers freed by Workspace 1
     let ws5 = PathBuf::from("/tmp/repo5");
     let (w5, permit5) = farm.allocate_workers(&ws5, 3);
     assert_eq!(w5, 3);
     assert_eq!(farm.active_workers(), 9);
-    assert_eq!(farm.active_workspaces(), 3);
+    assert_eq!(farm.active_workspaces(), 4);
 
     drop(permit2);
     drop(permit3);
-    drop(permit_full);
+    drop(permit4);
     drop(permit5);
     assert_eq!(farm.active_workers(), 0);
     assert_eq!(farm.active_workspaces(), 0);
+
+    // Test rejection when farm is at full capacity and all workspaces have 1 worker (no donor > 1)
+    let farm_saturated = Arc::new(ProcMacroWorkerFarm::new(2));
+    let ws_a = PathBuf::from("/tmp/repo_a");
+    let ws_b = PathBuf::from("/tmp/repo_b");
+    let ws_c = PathBuf::from("/tmp/repo_c");
+    let (wa, pa) = farm_saturated.allocate_workers(&ws_a, 1);
+    let (wb, pb) = farm_saturated.allocate_workers(&ws_b, 1);
+    assert_eq!(wa, 1);
+    assert_eq!(wb, 1);
+    assert_eq!(farm_saturated.active_workers(), 2);
+    let (wc, pc) = farm_saturated.allocate_workers(&ws_c, 1);
+    assert_eq!(wc, 0, "Must be rejected when every workspace has 1 worker and farm is at capacity");
+    assert_eq!(pc.worker_count(), 0);
+    assert_eq!(farm_saturated.active_workers(), 2);
+    drop(pa);
+    drop(pb);
+    drop(pc);
+    assert_eq!(farm_saturated.active_workers(), 0);
 }
 
 #[test]

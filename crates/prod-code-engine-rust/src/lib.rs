@@ -1972,7 +1972,7 @@ impl RustEngine {
                 let (workers, permit) = farm.allocate_workers_timeout(
                     workspace_root,
                     desired_workers,
-                    std::time::Duration::from_millis(500),
+                    std::time::Duration::from_millis(2000),
                 );
                 if workers == 0 {
                     tracing::warn!(
@@ -1989,7 +1989,7 @@ impl RustEngine {
                 let (workers, permit) = farm.allocate_workers_timeout(
                     workspace_root,
                     desired_workers,
-                    std::time::Duration::from_millis(500),
+                    std::time::Duration::from_millis(2000),
                 );
                 if workers == 0 {
                     tracing::warn!(
