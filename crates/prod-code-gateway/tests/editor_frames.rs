@@ -43,6 +43,7 @@ fn fake_editor(dir: &Path, frame: &str, close_stdout: bool) -> (ServerCommand, s
             program: program.to_string_lossy().into_owned(),
             args: Vec::new(),
             env: vec![("EDITOR_PID".to_string(), pid.to_string_lossy().into_owned())],
+            ready: prod_code_protocol::readiness::ReadySignal::default(),
         },
         pid,
     )

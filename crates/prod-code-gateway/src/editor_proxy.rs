@@ -15,10 +15,13 @@ use crate::workspace::WatchedChange;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    AnyStream, PathTranslator, ProdCodeCodec, WireMessage, transport::read_lsp_frame,
+    AnyStream, PathTranslator, ProdCodeCodec, WireMessage,
+    readiness::{Readiness, ReadySignal},
+    transport::read_lsp_frame,
 };
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::{AbortHandle, JoinHandle};
@@ -28,14 +31,30 @@ use tokio_util::codec::Framed;
 const CHANNEL_CAPACITY: usize = 1024;
 const WRITE_BUDGET: Duration = Duration::from_secs(30);
 const TEARDOWN_BUDGET: Duration = Duration::from_secs(5);
+pub const DEFAULT_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+pub const DEFAULT_HEALTH_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const MAX_IDLE_PROBE_TIMEOUTS: usize = 3;
+pub const HEALTH_PROBE_METHOD: &str = "prodCode/healthProbe";
+pub const HEALTH_PROBE_ID_PREFIX: &str = "prod-code-editor-health:";
+
+static NEXT_HEALTH_PROBE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 
 /// How to start a language server for an editor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ServerCommand {
     pub program: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    pub ready: ReadySignal,
 }
+
+impl PartialEq for ServerCommand {
+    fn eq(&self, other: &Self) -> bool {
+        self.program == other.program && self.args == other.args && self.env == other.env
+    }
+}
+
+impl Eq for ServerCommand {}
 
 /// Whether editors get servers of their own: `PROD_CODE_EDITOR_SERVERS=off` serves them from
 /// the shared engines instead.
@@ -63,12 +82,14 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         program: config.command,
         args: config.args,
         env: config.env.into_iter().collect(),
+        ready: config.ready,
     };
     let command = match engine {
         "rust" => ServerCommand {
             program: "rust-analyzer".to_string(),
             args: Vec::new(),
             env: Vec::new(),
+            ready: ReadySignal::Progress,
         },
         "go" => ServerCommand {
             program: prod_code_engine_go::find_gopls_binary(None)?
@@ -76,6 +97,7 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
                 .into_owned(),
             args: Vec::new(),
             env: Vec::new(),
+            ready: ReadySignal::Progress,
         },
         "cpp" => from(GenericLspConfig::for_cpp()),
         "python" => from(GenericLspConfig::for_python()),
@@ -468,6 +490,83 @@ async fn finish_task(
     }
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct ProbeState {
+    pub consecutive_timeouts: usize,
+    pub latest_valid_sequence: u64,
+    pub valid_evidence_epoch: u64,
+    pub valid_completions: u64,
+}
+
+struct HealthProbePending {
+    id: String,
+    response: tokio::sync::oneshot::Sender<serde_json::Value>,
+}
+
+pub fn health_probe_sequence(id: &serde_json::Value, id_prefix: &str) -> Option<u64> {
+    id.as_str()?
+        .strip_prefix(id_prefix)?
+        .parse::<u64>()
+        .ok()
+}
+
+pub fn valid_dispatch_response(value: &serde_json::Value) -> bool {
+    let Some(envelope) = value.as_object() else {
+        return false;
+    };
+    if envelope.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
+        || envelope.get("id").is_none_or(serde_json::Value::is_null)
+        || envelope.contains_key("method")
+    {
+        return false;
+    }
+    match (envelope.get("result"), envelope.get("error")) {
+        (Some(_), None) => true,
+        (None, Some(error)) => {
+            error
+                .get("code")
+                .and_then(serde_json::Value::as_i64)
+                .is_some()
+                && error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        }
+        _ => false,
+    }
+}
+
+fn record_liveness(
+    last_activity: &std::sync::Mutex<Instant>,
+    probe_state: &std::sync::Mutex<ProbeState>,
+) {
+    *last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    let mut state = probe_state.lock().unwrap_or_else(|e| e.into_inner());
+    state.consecutive_timeouts = 0;
+}
+
+/// Options controlling editor proxy timeouts, budgets, and idle health probing.
+#[derive(Debug, Clone)]
+pub struct EditorProxyOptions {
+    pub write_budget: Duration,
+    pub teardown_budget: Duration,
+    pub health_probe_interval: Option<Duration>,
+    pub health_response_timeout: Duration,
+    pub probe_state: Option<Arc<std::sync::Mutex<ProbeState>>>,
+}
+
+impl Default for EditorProxyOptions {
+    fn default() -> Self {
+        Self {
+            write_budget: WRITE_BUDGET,
+            teardown_budget: TEARDOWN_BUDGET,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+            health_response_timeout: DEFAULT_HEALTH_RESPONSE_TIMEOUT,
+            probe_state: None,
+        }
+    }
+}
+
 /// Runs an editor's session: starts `command` in `root` and carries the protocol between the
 /// editor on `framed` and the server until either ends.
 pub async fn run<S>(
@@ -481,15 +580,14 @@ pub async fn run<S>(
 where
     S: Into<AnyStream>,
 {
-    run_with_budgets(
+    run_with_options(
         framed,
         translator,
         command,
         root,
         servers,
         session_id,
-        WRITE_BUDGET,
-        TEARDOWN_BUDGET,
+        EditorProxyOptions::default(),
     )
     .await
 }
@@ -506,6 +604,35 @@ pub async fn run_with_budgets<S>(
     session_id: u64,
     write_budget: Duration,
     teardown_budget: Duration,
+) -> Result<()>
+where
+    S: Into<AnyStream>,
+{
+    run_with_options(
+        framed,
+        translator,
+        command,
+        root,
+        servers,
+        session_id,
+        EditorProxyOptions {
+            write_budget,
+            teardown_budget,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// Runs an editor's session with specific [`EditorProxyOptions`].
+pub async fn run_with_options<S>(
+    framed: Framed<S, ProdCodeCodec>,
+    translator: PathTranslator,
+    command: ServerCommand,
+    root: &Path,
+    servers: &EditorServers,
+    session_id: u64,
+    options: EditorProxyOptions,
 ) -> Result<()>
 where
     S: Into<AnyStream>,
@@ -565,7 +692,7 @@ where
     let _stderr_guard = TaskAbortGuard::new(&stderr_task);
 
     let (to_server_tx, to_server_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
-    let mut registration = servers.register(root.to_path_buf(), to_server_tx.clone(), write_budget);
+    let mut registration = servers.register(root.to_path_buf(), to_server_tx.clone(), options.write_budget);
     let mut writer_task = tokio::spawn(write_server_frames(stdin, to_server_rx));
     let _writer_guard = TaskAbortGuard::new(&writer_task);
 
@@ -573,14 +700,176 @@ where
     let (to_editor_tx, to_editor_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
     let mut socket_writer_task = tokio::spawn(write_editor_messages(socket_tx, to_editor_rx));
     let _socket_writer_guard = TaskAbortGuard::new(&socket_writer_task);
+
+    let health_probe_id_prefix: Arc<str> = Arc::from(format!(
+        "{HEALTH_PROBE_ID_PREFIX}{}:",
+        NEXT_HEALTH_PROBE_NAMESPACE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let probe_state = options
+        .probe_state
+        .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(ProbeState::default())));
+    let health_pending: Arc<std::sync::Mutex<Option<HealthProbePending>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let next_probe_id = Arc::new(AtomicU64::new(1));
+    let last_activity = Arc::new(std::sync::Mutex::new(Instant::now()));
+    let readiness = Arc::new(Readiness::new(command.ready));
+    let in_flight_requests = Arc::new(AtomicUsize::new(0));
+    let (retire_tx, mut retire_rx) = tokio::sync::watch::channel(false);
+
+    let probe_task = options.health_probe_interval.map(|interval| {
+        let to_server_tx = to_server_tx.clone();
+        let health_pending = Arc::clone(&health_pending);
+        let probe_state = Arc::clone(&probe_state);
+        let next_probe_id = Arc::clone(&next_probe_id);
+        let health_probe_id_prefix = Arc::clone(&health_probe_id_prefix);
+        let last_activity = Arc::clone(&last_activity);
+        let readiness = Arc::clone(&readiness);
+        let in_flight_requests = Arc::clone(&in_flight_requests);
+        let retire_tx = retire_tx.clone();
+        let response_timeout = options.health_response_timeout;
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                if *retire_tx.borrow() {
+                    break;
+                }
+
+                // Loaded-project stress policy:
+                // 1. In-flight requests from editor: server is actively handling requests
+                if in_flight_requests.load(Ordering::Acquire) > 0 {
+                    continue;
+                }
+
+                // 2. Server readiness: indexing / loading in progress
+                if readiness.busy().is_some() {
+                    continue;
+                }
+
+                // 3. Traffic occurred recently
+                let elapsed = last_activity
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .elapsed();
+                if elapsed < interval {
+                    continue;
+                }
+
+                // 4. Issue health probe
+                let sequence = next_probe_id.fetch_add(1, Ordering::Relaxed);
+                let id = format!("{health_probe_id_prefix}{sequence}");
+                let probe_body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": &id,
+                    "method": HEALTH_PROBE_METHOD,
+                    "params": {}
+                })
+                .to_string();
+
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                *health_pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(HealthProbePending {
+                    id: id.clone(),
+                    response: tx,
+                });
+
+                let deadline = Instant::now() + response_timeout;
+                if to_server_tx
+                    .try_send(PendingServerFrame {
+                        body: probe_body,
+                        deadline,
+                    })
+                    .is_err()
+                {
+                    *health_pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    continue;
+                }
+
+                match tokio::time::timeout_at(deadline, rx).await {
+                    Ok(Ok(_)) => {}
+                    _ => {
+                        *health_pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        let mut state = probe_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.consecutive_timeouts += 1;
+                        tracing::warn!(
+                            session_id,
+                            consecutive_timeouts = state.consecutive_timeouts,
+                            "editor language server health probe timed out"
+                        );
+                        if state.consecutive_timeouts >= MAX_IDLE_PROBE_TIMEOUTS {
+                            tracing::error!(
+                                session_id,
+                                "editor language server exceeded max idle probe timeouts ({MAX_IDLE_PROBE_TIMEOUTS}); retiring session"
+                            );
+                            let _ = retire_tx.send(true);
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+    });
+    let _probe_guard = probe_task.as_ref().map(TaskAbortGuard::new);
+
     let reader_translator = translator.clone();
     let reader_tx = to_editor_tx.clone();
+    let reader_health_probe_id_prefix = Arc::clone(&health_probe_id_prefix);
+    let reader_health_pending = Arc::clone(&health_pending);
+    let reader_probe_state = Arc::clone(&probe_state);
+    let reader_last_activity = Arc::clone(&last_activity);
+    let reader_readiness = Arc::clone(&readiness);
+    let reader_in_flight_requests = Arc::clone(&in_flight_requests);
+    let write_budget = options.write_budget;
+
     let mut reader_task = tokio::spawn(async move {
         let mut stdout = BufReader::new(stdout);
         while let Some(body) = read_lsp_frame(&mut stdout)
             .await
             .context("reading an editor server output frame")?
         {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                reader_readiness.on_message(&val);
+                let id = val.get("id");
+                let method = val.get("method").and_then(|m| m.as_str());
+
+                let probe_seq = id.and_then(|id| health_probe_sequence(id, &reader_health_probe_id_prefix));
+                if method.is_none()
+                    && let (Some(id_str), Some(seq)) = (id.and_then(serde_json::Value::as_str), probe_seq)
+                {
+                    if valid_dispatch_response(&val) {
+                        let waiter = {
+                            let mut pending = reader_health_pending.lock().unwrap_or_else(|e| e.into_inner());
+                            if pending.as_ref().is_some_and(|p| p.id == id_str) {
+                                pending.take().map(|p| p.response)
+                            } else {
+                                None
+                            }
+                        };
+                        let mut state = reader_probe_state.lock().unwrap_or_else(|e| e.into_inner());
+                        if seq > state.latest_valid_sequence {
+                            state.latest_valid_sequence = seq;
+                            state.valid_evidence_epoch = state.valid_evidence_epoch.wrapping_add(1);
+                            state.consecutive_timeouts = 0;
+                            state.valid_completions += 1;
+                        }
+                        drop(state);
+                        if let Some(waiter) = waiter {
+                            let _ = waiter.send(val);
+                        }
+                    }
+                    // Withhold private health probe response from the editor!
+                    continue;
+                }
+
+                if method.is_none() {
+                    if id.is_some() {
+                        reader_in_flight_requests.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                            Some(count.saturating_sub(1))
+                        }).ok();
+                    }
+                }
+                record_liveness(&reader_last_activity, &reader_probe_state);
+            }
+
             let editor = reader_translator.translate_lsp_to_client(&body);
             let deadline = Instant::now() + write_budget;
             timeout_at(
@@ -606,7 +895,32 @@ where
         tokio::select! {
             message = socket_rx.next() => match message {
                 Some(Ok(WireMessage::LspPayload(raw))) => {
-                    let deadline = Instant::now() + write_budget;
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        if let Some(id) = val.get("id") {
+                            // Reject client requests attempting to use reserved probe prefix
+                            if id.as_str().is_some_and(|s| s.starts_with(HEALTH_PROBE_ID_PREFIX)) {
+                                let error_reply = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32600,
+                                        "message": "Invalid request ID: reserved for health probe"
+                                    }
+                                });
+                                let deadline = Instant::now() + options.write_budget;
+                                let _ = to_editor_tx.try_send(PendingEditorMessage {
+                                    message: WireMessage::LspPayload(error_reply.to_string()),
+                                    deadline,
+                                });
+                                continue;
+                            }
+                            if val.get("method").is_some() {
+                                in_flight_requests.fetch_add(1, Ordering::AcqRel);
+                            }
+                        }
+                    }
+                    record_liveness(&last_activity, &probe_state);
+                    let deadline = Instant::now() + options.write_budget;
                     if to_server_tx.try_send(PendingServerFrame {
                         body: to_server(&translator, &raw),
                         deadline,
@@ -615,7 +929,8 @@ where
                     }
                 }
                 Some(Ok(WireMessage::Ping)) => {
-                    let deadline = Instant::now() + write_budget;
+                    record_liveness(&last_activity, &probe_state);
+                    let deadline = Instant::now() + options.write_budget;
                     if to_editor_tx.try_send(PendingEditorMessage {
                         message: WireMessage::Pong,
                         deadline,
@@ -675,11 +990,21 @@ where
                 break;
             },
             _ = registration.retired() => break,
+            _ = retire_rx.changed() => {
+                if *retire_rx.borrow() {
+                    tracing::warn!(session_id, "editor session retired due to health probe failure");
+                    break;
+                }
+            }
         }
     }
     drop(registration);
     drop(to_server_tx);
-    let cleanup_deadline = Instant::now() + teardown_budget;
+    let cleanup_deadline = Instant::now() + options.teardown_budget;
+    if let Some(mut task) = probe_task {
+        task.abort();
+        let _ = timeout_at(cleanup_deadline, &mut task).await;
+    }
     // Retire the process tree before draining editor output: a non-reading editor can no
     // longer postpone ownership cleanup, while already queued final messages may still drain.
     child.retire(cleanup_deadline).await;
