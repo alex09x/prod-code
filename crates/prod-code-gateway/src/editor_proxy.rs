@@ -740,6 +740,12 @@ where
                     break;
                 }
 
+                let activity_before_wait = probe_ordinary_epoch.load(Ordering::Acquire);
+                let evidence_before_wait = probe_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .valid_evidence_epoch;
+
                 // Loaded-project stress policy:
                 // 1. In-flight requests from editor: server is actively handling requests
                 if in_flight_requests.load(Ordering::Acquire) > 0 {
@@ -760,11 +766,13 @@ where
                     continue;
                 }
 
-                let activity_before_wait = probe_ordinary_epoch.load(Ordering::Acquire);
-                let evidence_before_wait = probe_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .valid_evidence_epoch;
+                // Re-verify that no concurrent activity or in-flight requests occurred
+                if in_flight_requests.load(Ordering::Acquire) > 0
+                    || probe_ordinary_epoch.load(Ordering::Acquire) != activity_before_wait
+                    || readiness.busy().is_some()
+                {
+                    continue;
+                }
 
                 // 4. Issue health probe
                 let sequence = next_probe_id.fetch_add(1, Ordering::Relaxed);
