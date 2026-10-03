@@ -8509,14 +8509,14 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return String::new();
     }
-    let deadline = std::time::Instant::now() + UNINDEXED_DECLARATION_BUDGET;
+    let deadline = tokio::time::Instant::now() + UNINDEXED_DECLARATION_BUDGET;
     let mut out = String::new();
     let mut listed = 0usize;
     let files = source_files(root)
         .filter(|path| crate::sync::engine_for_file(path).is_some())
         .take(MAX_SCANNED_FILES);
     for path in files {
-        if std::time::Instant::now() >= deadline {
+        if tokio::time::Instant::now() >= deadline {
             break;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -8526,7 +8526,7 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
             continue;
         }
         for (index, line) in text.lines().enumerate() {
-            if std::time::Instant::now() >= deadline {
+            if tokio::time::Instant::now() >= deadline {
                 break;
             }
             let Some(col) = declared_at(line, name) else {
@@ -8535,7 +8535,7 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
             let Ok(uri) = Url::from_file_path(&path) else {
                 continue;
             };
-            let hover = execute_lsp_query(
+            let hover_fut = execute_lsp_query(
                 remote,
                 root,
                 &path,
@@ -8544,9 +8544,16 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
                     "textDocument": { "uri": uri.to_string() },
                     "position": { "line": index, "character": col }
                 }),
-            )
-            .await
-            .unwrap_or(serde_json::Value::Null);
+            );
+            let hover = match tokio::time::timeout_at(deadline, hover_fut).await {
+                Ok(Ok(val)) => val,
+                Ok(Err(_)) => serde_json::Value::Null,
+                Err(_) => {
+                    tracing::warn!("unindexed declaration hover query timed out against budget");
+                    return out;
+                }
+            };
+
             let why = if hover.is_null() {
                 "in a file the analyzer does not load: no target includes it (for Rust, no `mod` \
                  chain from a crate root reaches it)"
@@ -9028,9 +9035,9 @@ async fn symbol_search_across_projects(
             }
         }
     }
-    let deadline = std::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
+    let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
     for (anchor, subpath, engine) in anchors {
-        if std::time::Instant::now() >= deadline {
+        if tokio::time::Instant::now() >= deadline {
             tracing::warn!(
                 query,
                 "symbol search across projects reached query budget; returning accumulated hits"
@@ -9039,12 +9046,31 @@ async fn symbol_search_across_projects(
         }
         // Its own node: the checkout's may not serve its language (a Swift file needs a macOS
         // node, a Go module is placed on Linux).
-        let node = crate::cluster::route_for_path(remote, root, anchor.to_str())
-            .await
-            .unwrap_or(remote);
-        let found = match workspace_symbol_search(node, root, query, Some(&anchor), limit).await {
-            Ok(found) => found,
-            Err(err) => {
+        let node = match tokio::time::timeout_at(
+            deadline,
+            crate::cluster::route_for_path(remote, root, anchor.to_str()),
+        )
+        .await
+        {
+            Ok(Ok(n)) => n,
+            Ok(Err(_)) => remote,
+            Err(_) => {
+                tracing::warn!(
+                    query,
+                    "symbol search route_for_path reached budget; returning accumulated hits"
+                );
+                break;
+            }
+        };
+
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+
+        let search_fut = workspace_symbol_search(node, root, query, Some(&anchor), limit);
+        let found = match tokio::time::timeout_at(deadline, search_fut).await {
+            Ok(Ok(found)) => found,
+            Ok(Err(err)) => {
                 tracing::debug!(
                     anchor = %anchor.display(),
                     error = %format!("{err:#}"),
@@ -9055,17 +9081,34 @@ async fn symbol_search_across_projects(
                 }
                 Vec::new()
             }
+            Err(_) => {
+                tracing::warn!(
+                    query,
+                    "nested workspace_symbol_search reached budget; returning accumulated hits"
+                );
+                break;
+            }
         };
         let named_here = found
             .iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         hits.extend(found);
-        if !named_here && std::time::Instant::now() < deadline {
+        if !named_here && tokio::time::Instant::now() < deadline {
             // sourcekit-lsp has no index for Swift files a package does not build, and answers
             // `workspace/symbol` with nothing: their outlines still name what they declare.
             let files = files_naming(&root.join(&subpath), engine, name);
             if !files.is_empty() {
-                hits.extend(declarations_in(node, root, &files, name).await?);
+                match tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name)).await {
+                    Ok(Ok(decls)) => hits.extend(decls),
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => {
+                        tracing::warn!(
+                            query,
+                            "declarations_in reached budget; returning accumulated hits"
+                        );
+                        break;
+                    }
+                }
             }
         }
         if named(&hits) {
