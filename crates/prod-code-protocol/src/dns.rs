@@ -18,6 +18,9 @@ pub const CODE_INTERNAL_ROOT: &str = "code.internal";
 /// Standard DNS SRV service prefix for prod-code.
 pub const SRV_SERVICE_NAME: &str = "_prod-code._tcp";
 
+/// Canonical DNS SRV domain for prod-code cluster discovery.
+pub const SRV_SERVICE_DOMAIN: &str = "_prod-code._tcp.code.internal";
+
 /// Standard DNS query types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DnsQueryType {
@@ -83,6 +86,13 @@ pub struct DnsAnswer {
     pub data: DnsRecordData,
 }
 
+/// Checks whether a hostname or domain string targets the exact internal SRV service domain.
+pub fn is_srv_service_domain(domain: &str) -> bool {
+    let lower = domain.trim().to_ascii_lowercase();
+    let host = lower.split(':').next().unwrap_or(&lower);
+    host == SRV_SERVICE_DOMAIN || host == "_prod-code._tcp.code.local"
+}
+
 /// Checks whether a hostname or domain string targets the `.code.internal` virtual domain.
 pub fn is_code_internal_domain(domain: &str) -> bool {
     let lower = domain.trim().to_ascii_lowercase();
@@ -90,7 +100,6 @@ pub fn is_code_internal_domain(domain: &str) -> bool {
     host == CODE_INTERNAL_ROOT
         || host.ends_with(CODE_INTERNAL_SUFFIX)
         || host.ends_with(".code.local")
-        || host.starts_with(SRV_SERVICE_NAME)
 }
 
 /// Extracts the target project name from a `.code.internal` domain name.
@@ -177,7 +186,7 @@ pub fn resolve_smart_domain(
 
     if project.eq_ignore_ascii_case("cluster")
         || project.eq_ignore_ascii_case("all")
-        || host.starts_with(SRV_SERVICE_NAME)
+        || is_srv_service_domain(host)
     {
         // Return all known nodes, using node's own port if port was default
         let addrs: Vec<SocketAddr> = sorted_nodes
@@ -429,7 +438,7 @@ pub fn handle_dns_packet(buf: &[u8], nodes: &[DiscoveredNode]) -> Option<Vec<u8>
     let mut answers = Vec::new();
     let ttl = 60; // 60s TTL for dynamic discovery
 
-    let domain_exists = if question.name.starts_with(SRV_SERVICE_NAME) {
+    let domain_exists = if is_srv_service_domain(&question.name) {
         true
     } else {
         resolve_smart_domain(&question.name, nodes, 9400).is_some()
@@ -451,13 +460,18 @@ pub fn handle_dns_packet(buf: &[u8], nodes: &[DiscoveredNode]) -> Option<Vec<u8>
                 }
             }
             DnsQueryType::SRV => {
-                let srvs = generate_srv_records(nodes);
-                for srv in srvs {
-                    answers.push(DnsAnswer {
-                        name: question.name.clone(),
-                        ttl,
-                        data: DnsRecordData::SRV(srv),
-                    });
+                if is_srv_service_domain(&question.name)
+                    || question.name.eq_ignore_ascii_case("cluster.code.internal")
+                    || question.name.eq_ignore_ascii_case(CODE_INTERNAL_ROOT)
+                {
+                    let srvs = generate_srv_records(nodes);
+                    for srv in srvs {
+                        answers.push(DnsAnswer {
+                            name: question.name.clone(),
+                            ttl,
+                            data: DnsRecordData::SRV(srv),
+                        });
+                    }
                 }
             }
             DnsQueryType::TXT => {
@@ -849,5 +863,23 @@ mod tests {
     fn test_resolve_smart_domain_empty_nodes_fallback() {
         let addrs = resolve_smart_domain("shop.code.internal:9400", &[], 9400).expect("fallback");
         assert_eq!(addrs, vec!["127.0.0.1:9400".parse().unwrap()]);
+    }
+
+    #[test]
+    fn test_non_internal_srv_domain_rejected() {
+        let attacker_name = "_prod-code._tcp.attacker.example";
+        assert!(!is_code_internal_domain(attacker_name));
+        assert!(!is_srv_service_domain(attacker_name));
+
+        let node1 = mock_node("192.168.2.10:9400", &[]);
+        let nodes = vec![node1];
+
+        let attacker_query = format_dns_response(777, &DnsQuestion {
+            name: attacker_name.into(),
+            qtype: DnsQueryType::SRV,
+            qclass: 1,
+        }, &[], false, 0);
+
+        assert!(handle_dns_packet(&attacker_query, &nodes).is_none());
     }
 }
