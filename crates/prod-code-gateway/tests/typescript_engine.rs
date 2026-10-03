@@ -353,3 +353,119 @@ fn test_prune_stale_types_cache_never_unlinks_locked_temp_file_even_if_old() {
     assert_eq!(removed_after, 1);
     assert!(!tmp_locked.exists());
 }
+
+#[test]
+fn test_seed_typescript_worktree_pnpm_symlink_package() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("ts-cache-pnpm");
+    unsafe {
+        std::env::set_var(TS_TYPES_CACHE_ENV, &cache_dir);
+    }
+
+    let from = temp.path().join("from");
+    let to = temp.path().join("to");
+    fs::create_dir_all(&from).unwrap();
+    fs::create_dir_all(&to).unwrap();
+    fs::write(from.join("package.json"), "{}").unwrap();
+
+    // Create pnpm virtual store structure:
+    // from/node_modules/.pnpm/@types+node@20.11.0/node_modules/@types/node
+    let pnpm_pkg = from
+        .join("node_modules")
+        .join(".pnpm")
+        .join("@types+node@20.11.0")
+        .join("node_modules")
+        .join("@types")
+        .join("node");
+    fs::create_dir_all(&pnpm_pkg).unwrap();
+    fs::write(pnpm_pkg.join("index.d.ts"), "declare const pnpmProcess: any;\n").unwrap();
+    fs::write(pnpm_pkg.join("package.json"), "{\"name\":\"@types/node\"}\n").unwrap();
+
+    // Create from/node_modules/@types/node as symlink into pnpm store
+    let at_types = from.join("node_modules").join("@types");
+    fs::create_dir_all(&at_types).unwrap();
+    let link_target = at_types.join("node");
+    let _ = std::os::unix::fs::symlink(&pnpm_pkg, &link_target);
+
+    // Verify tree_size measures the dereferenced types (> 0)
+    let size = tree_size(&at_types);
+    assert!(size > 0, "tree_size must dereference valid package symlinks");
+
+    // Seed worktree
+    let result = seed_typescript_worktree(&from, &to).unwrap();
+    assert!(result.is_some());
+
+    // to/node_modules/@types must be symlink to shared cache
+    let to_at_types = to.join("node_modules").join("@types");
+    assert!(to_at_types.exists());
+    let meta = fs::symlink_metadata(&to_at_types).unwrap();
+    assert!(meta.file_type().is_symlink());
+
+    // to/node_modules/@types/node/index.d.ts must resolve and have content
+    let to_index = to_at_types.join("node").join("index.d.ts");
+    assert!(to_index.exists());
+    let content = fs::read_to_string(&to_index).unwrap();
+    assert!(content.contains("pnpmProcess"));
+
+    // Cache must have concrete files
+    let cache_index = cache_dir.join("node").join("index.d.ts");
+    assert!(cache_index.is_file());
+
+    unsafe {
+        std::env::remove_var(TS_TYPES_CACHE_ENV);
+    }
+}
+
+#[test]
+fn test_seed_typescript_worktree_deduplicates_pnpm_concrete_at_types_dir() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("ts-cache-pnpm-dedup");
+    unsafe {
+        std::env::set_var(TS_TYPES_CACHE_ENV, &cache_dir);
+    }
+
+    let from = temp.path().join("from");
+    let to = temp.path().join("to");
+    fs::create_dir_all(&from).unwrap();
+    fs::create_dir_all(&to).unwrap();
+    fs::write(from.join("package.json"), "{}").unwrap();
+
+    // Create destination worktree with a concrete node_modules/@types containing a pnpm symlink
+    let pnpm_react = to
+        .join("node_modules")
+        .join(".pnpm")
+        .join("@types+react@18.2.0")
+        .join("node_modules")
+        .join("@types")
+        .join("react");
+    fs::create_dir_all(&pnpm_react).unwrap();
+    fs::write(pnpm_react.join("index.d.ts"), "export declare function useState(): void;\n").unwrap();
+
+    let to_at_types = to.join("node_modules").join("@types");
+    fs::create_dir_all(&to_at_types).unwrap();
+    let react_link = to_at_types.join("react");
+    let _ = std::os::unix::fs::symlink(&pnpm_react, &react_link);
+
+    // Run seeding: to_at_types should be merged into cache and deduplicated to a symlink
+    let _ = seed_typescript_worktree(&from, &to).unwrap();
+
+    // to_at_types must now be a symlink to shared cache
+    let meta = fs::symlink_metadata(&to_at_types).unwrap();
+    assert!(meta.file_type().is_symlink());
+
+    // Declarations must NOT be dropped!
+    let to_react_index = to_at_types.join("react").join("index.d.ts");
+    assert!(to_react_index.exists(), "Type declarations must not be dropped after deduplication");
+    let content = fs::read_to_string(&to_react_index).unwrap();
+    assert!(content.contains("useState"));
+
+    // Cache must have react/index.d.ts as a concrete file
+    let cache_react_index = cache_dir.join("react").join("index.d.ts");
+    assert!(cache_react_index.is_file());
+
+    unsafe {
+        std::env::remove_var(TS_TYPES_CACHE_ENV);
+    }
+}
