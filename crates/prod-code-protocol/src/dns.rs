@@ -214,14 +214,14 @@ pub fn resolve_smart_domain(
     }
 
     // 2. Also support 1-based index targets: "node-1", "node-2"
-    if let Some(idx_str) = project.strip_prefix("node-") {
-        if let Ok(idx) = idx_str.parse::<usize>() {
-            if idx >= 1 && idx <= sorted_nodes.len() {
-                let node = &sorted_nodes[idx - 1];
-                let p = if port == default_port { node.addr.port() } else { port };
-                return Some(vec![SocketAddr::new(node.addr.ip(), p)]);
-            }
-        }
+    if let Some(idx) = project
+        .strip_prefix("node-")
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&idx| idx >= 1 && idx <= sorted_nodes.len())
+    {
+        let node = &sorted_nodes[idx - 1];
+        let p = if port == default_port { node.addr.port() } else { port };
+        return Some(vec![SocketAddr::new(node.addr.ip(), p)]);
     }
 
     // 3. Resolve designated project node via warm check & rendezvous hashing
