@@ -45,6 +45,22 @@ struct Occurrence {
     in_string: bool,
 }
 
+/// Returns the exact LSP 0-based (line, character) end position of `text`.
+/// Character offset is counted in UTF-16 code units per the LSP specification.
+pub fn lsp_end_position(text: &str) -> (u32, u32) {
+    let mut line = 0u32;
+    let mut col_utf16 = 0u32;
+    for ch in text.chars() {
+        if ch == '\n' {
+            line += 1;
+            col_utf16 = 0;
+        } else if ch != '\r' {
+            col_utf16 += ch.len_utf16() as u32;
+        }
+    }
+    (line, col_utf16)
+}
+
 /// What the rename did, or would do.
 #[derive(Debug)]
 pub struct SchemaRename {
@@ -55,6 +71,8 @@ pub struct SchemaRename {
     pub rewritten: Vec<(PathBuf, String)>,
     /// Line count of each file before the rename was applied.
     pub original_lines: BTreeMap<PathBuf, usize>,
+    /// LSP (line, character) end position of each file before the rename was applied.
+    pub original_ends: BTreeMap<PathBuf, (u32, u32)>,
     /// One line per language: how many occurrences, and how they were handled.
     pub summary: Vec<String>,
     /// Occurrences nothing rewrote: a comment, a language with no engine here, a rename the
@@ -68,7 +86,7 @@ pub struct SchemaRename {
 impl SchemaRename {
     /// Generates an atomic LSP `WorkspaceEdit` (`documentChanges`) for this schema rename.
     pub fn workspace_edit(&self) -> serde_json::Value {
-        make_workspace_edit_with_lines(&self.rewritten, &self.original_lines)
+        make_workspace_edit_with_ends(&self.rewritten, &self.original_ends)
     }
 
     pub fn render(&self, diff_budget: usize) -> String {
@@ -775,13 +793,15 @@ pub async fn rename(
     }
     rewritten.sort_by(|a, b| a.0.cmp(&b.0));
     let mut original_lines: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    let mut original_ends: BTreeMap<PathBuf, (u32, u32)> = BTreeMap::new();
     for (path, _) in &rewritten {
-        let count = originals
+        let raw = originals
             .get(path)
-            .map(|t| t.lines().count())
-            .or_else(|| std::fs::read_to_string(path).ok().map(|t| t.lines().count()))
-            .unwrap_or(0);
-        original_lines.insert(path.clone(), count);
+            .cloned()
+            .or_else(|| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        original_lines.insert(path.clone(), raw.lines().count());
+        original_ends.insert(path.clone(), lsp_end_position(&raw));
     }
     left.extend(notes);
 
@@ -862,7 +882,7 @@ pub async fn rename(
             diagnostics.len(),
             diagnostics.join("\n  ")
         );
-        write_rewritten(root, &rewritten, &original_lines)?;
+        write_rewritten(root, &rewritten, &original_ends)?;
         applied = true;
     }
 
@@ -872,6 +892,7 @@ pub async fn rename(
         root: root.to_path_buf(),
         rewritten,
         original_lines,
+        original_ends,
         summary,
         left,
         diagnostics,
@@ -884,27 +905,27 @@ const NOT_FOUND: &str = "does not appear under";
 
 /// Builds a standard LSP `WorkspaceEdit` (`documentChanges`) representing the rewritten files.
 pub fn make_workspace_edit(rewritten: &[(PathBuf, String)]) -> serde_json::Value {
-    make_workspace_edit_with_lines(rewritten, &BTreeMap::new())
+    make_workspace_edit_with_ends(rewritten, &BTreeMap::new())
 }
 
-/// Builds a standard LSP `WorkspaceEdit` (`documentChanges`) using known pre-apply line counts.
-pub fn make_workspace_edit_with_lines(
+/// Builds a standard LSP `WorkspaceEdit` (`documentChanges`) using known pre-apply end positions.
+pub fn make_workspace_edit_with_ends(
     rewritten: &[(PathBuf, String)],
-    known_lines: &BTreeMap<PathBuf, usize>,
+    known_ends: &BTreeMap<PathBuf, (u32, u32)>,
 ) -> serde_json::Value {
     let changes: Vec<serde_json::Value> = rewritten
         .iter()
         .map(|(path, new_text)| {
-            let old_lines = known_lines.get(path).copied().unwrap_or_else(|| {
+            let (end_line, end_char) = known_ends.get(path).copied().unwrap_or_else(|| {
                 let text = crate::refactor::text_before_apply(path);
-                text.lines().count()
+                lsp_end_position(&text)
             });
             serde_json::json!({
                 "textDocument": { "uri": prod_code_protocol::path::file_uri(path), "version": null },
                 "edits": [ {
                     "range": {
                         "start": { "line": 0, "character": 0 },
-                        "end": { "line": old_lines, "character": 0 }
+                        "end": { "line": end_line, "character": end_char }
                     },
                     "newText": new_text
                 } ]
@@ -914,13 +935,25 @@ pub fn make_workspace_edit_with_lines(
     serde_json::json!({ "documentChanges": changes })
 }
 
+/// Builds a standard LSP `WorkspaceEdit` (`documentChanges`) using known pre-apply line counts.
+pub fn make_workspace_edit_with_lines(
+    rewritten: &[(PathBuf, String)],
+    known_lines: &BTreeMap<PathBuf, usize>,
+) -> serde_json::Value {
+    let ends: BTreeMap<PathBuf, (u32, u32)> = known_lines
+        .iter()
+        .map(|(p, l)| (p.clone(), (*l as u32, 0)))
+        .collect();
+    make_workspace_edit_with_ends(rewritten, &ends)
+}
+
 /// Writes every rewritten file of the checkout at `root` in one edit.
 fn write_rewritten(
     root: &Path,
     rewritten: &[(PathBuf, String)],
-    lines: &BTreeMap<PathBuf, usize>,
+    ends: &BTreeMap<PathBuf, (u32, u32)>,
 ) -> Result<()> {
-    let edit = make_workspace_edit_with_lines(rewritten, lines);
+    let edit = make_workspace_edit_with_ends(rewritten, ends);
     crate::refactor::apply_workspace_edit(root, &edit)?;
     Ok(())
 }
@@ -939,13 +972,13 @@ pub struct AcrossRepos {
 impl AcrossRepos {
     /// Generates an atomic multi-repository LSP `WorkspaceEdit` (`documentChanges`) across all repositories.
     pub fn workspace_edit(&self) -> serde_json::Value {
-        let mut all_lines = BTreeMap::new();
+        let mut all_ends = BTreeMap::new();
         let mut all_rewritten = Vec::new();
         for repo in &self.repos {
-            all_lines.extend(repo.original_lines.clone());
+            all_ends.extend(repo.original_ends.clone());
             all_rewritten.extend(repo.rewritten.clone());
         }
-        make_workspace_edit_with_lines(&all_rewritten, &all_lines)
+        make_workspace_edit_with_ends(&all_rewritten, &all_ends)
     }
 
     /// Every repository's analyzers accept its result.
@@ -1029,13 +1062,13 @@ pub async fn rename_across(
             errors.join("\n  ")
         );
         let repo_roots: Vec<&Path> = repos.iter().map(|r| r.root.as_path()).collect();
-        let mut all_lines = BTreeMap::new();
+        let mut all_ends = BTreeMap::new();
         let mut all_rewritten = Vec::new();
         for r in &repos {
-            all_lines.extend(r.original_lines.clone());
+            all_ends.extend(r.original_ends.clone());
             all_rewritten.extend(r.rewritten.clone());
         }
-        let multi_edit = make_workspace_edit_with_lines(&all_rewritten, &all_lines);
+        let multi_edit = make_workspace_edit_with_ends(&all_rewritten, &all_ends);
         crate::refactor::apply_multi_repository_workspace_edit(&repo_roots, &multi_edit)?;
         for repo in &mut repos {
             repo.applied = true;
@@ -1560,5 +1593,48 @@ let order_id = 1;
         let post_apply_edit = make_workspace_edit(&rewritten);
         let post_changes = post_apply_edit["documentChanges"].as_array().unwrap();
         assert_eq!(post_changes[0]["edits"][0]["range"]["end"]["line"], 10);
+    }
+
+    #[test]
+    fn lsp_end_position_computes_exact_coordinates() {
+        assert_eq!(lsp_end_position(""), (0, 0));
+        assert_eq!(lsp_end_position("hello"), (0, 5));
+        assert_eq!(lsp_end_position("hello\n"), (1, 0));
+        assert_eq!(lsp_end_position("a\nb"), (1, 1));
+        assert_eq!(lsp_end_position("a\nb\n"), (2, 0));
+        assert_eq!(lsp_end_position("a\r\nb\r\n"), (2, 0));
+        assert_eq!(lsp_end_position("\u{1F600}"), (0, 2));
+    }
+
+    #[test]
+    fn workspace_edit_end_position_for_file_without_trailing_newline() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let proto = root.join("schema.proto");
+        // Original has 2 lines WITHOUT a trailing newline: "line 1\nline 2"
+        let original_content = "line 1\nline 2";
+        std::fs::write(&proto, original_content).unwrap();
+
+        let rewritten = vec![(proto.clone(), "line 1\nupdated 2\nline 3\n".to_string())];
+        let mut ends = BTreeMap::new();
+        ends.insert(proto.clone(), (1, 6)); // line 1, character 6 ("line 2")
+
+        let edit = make_workspace_edit_with_ends(&rewritten, &ends);
+        let changes = edit["documentChanges"].as_array().unwrap();
+        assert_eq!(changes[0]["edits"][0]["range"]["end"]["line"], 1);
+        assert_eq!(changes[0]["edits"][0]["range"]["end"]["character"], 6);
+
+        // Apply edit via refactor
+        crate::refactor::apply_workspace_edit(&root, &edit).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&proto).unwrap(),
+            "line 1\nupdated 2\nline 3\n"
+        );
+
+        // Generating edit post-apply with make_workspace_edit still reports (1, 6) because text_before_apply recalls original
+        let post_apply_edit = make_workspace_edit(&rewritten);
+        let post_changes = post_apply_edit["documentChanges"].as_array().unwrap();
+        assert_eq!(post_changes[0]["edits"][0]["range"]["end"]["line"], 1);
+        assert_eq!(post_changes[0]["edits"][0]["range"]["end"]["character"], 6);
     }
 }

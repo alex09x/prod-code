@@ -121,19 +121,34 @@ fn apply_edits_counting(
     width: fn(char) -> usize,
 ) -> Result<String> {
     let line_count = text.lines().count() as u64;
-    if let [edit] = edits
+    let is_full_replacement = if let [edit] = edits
         && edit.pointer("/range/start/line").and_then(|v| v.as_u64()) == Some(0)
         && edit
             .pointer("/range/start/character")
             .and_then(|v| v.as_u64())
             == Some(0)
-        && edit
+    {
+        let end_line = edit
             .pointer("/range/end/line")
             .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            >= line_count
-    {
-        return Ok(edit
+            .unwrap_or(0);
+        let end_char = edit
+            .pointer("/range/end/character")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        end_line >= line_count
+            || (end_line == line_count.saturating_sub(1)
+                && end_char
+                    >= text
+                        .lines()
+                        .last()
+                        .map(|l| l.chars().map(width).sum::<usize>() as u64)
+                        .unwrap_or(0))
+    } else {
+        false
+    };
+    if is_full_replacement {
+        return Ok(edits[0]
             .get("newText")
             .and_then(|t| t.as_str())
             .unwrap_or_default()
