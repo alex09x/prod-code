@@ -9,7 +9,7 @@
 //! A symbol whose references the analyzer did not establish is never on that list (#435): it is
 //! reported as unverified and kept.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,12 @@ pub struct Pruned {
     /// What the scan could not judge, kept whatever it is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unverified: Vec<crate::dead_code::Unverified>,
+    /// Formatted Git commit patch (git apply / git am compatible)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_patch: Option<String>,
+    /// Created Git commit SHA, if commit was requested
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
 }
 
 impl Pruned {
@@ -74,8 +80,8 @@ impl Pruned {
             let rel = full
                 .strip_prefix(&self.root)
                 .unwrap_or(full)
-                .display()
-                .to_string();
+                .to_string_lossy()
+                .replace('\\', "/");
             out.push('\n');
             out.push_str(
                 &similar::TextDiff::from_lines(old_text.as_str(), new_text.as_str())
@@ -101,12 +107,111 @@ impl Pruned {
                 out.push_str(&format!("  {d}\n"));
             }
         }
-        out.push_str(if self.applied {
-            "\n[applied] a second run may find what these removals orphaned\n"
+        if let Some(commit) = &self.git_commit {
+            out.push_str(&format!(
+                "\n[committed: {commit}] created Git commit with author Alexander Panasenko <alex@prod.codes>\n"
+            ));
+        } else if self.applied {
+            out.push_str("\n[applied] a second run may find what these removals orphaned\n");
         } else {
-            "\nnothing was written; pass `apply: true` to make this edit\n"
-        });
+            out.push_str("\nnothing was written; pass `apply: true` to make this edit\n");
+        }
+        if let Some(patch) = &self.git_patch {
+            out.push_str("\n--- Git Commit Patch ---\n");
+            out.push_str(patch);
+        }
         out
+    }
+
+    /// Generates a standard Git commit patch (compatible with `git apply` and `git am`).
+    pub fn generate_git_patch(&self) -> Option<String> {
+        if self.rewritten.is_empty() || self.removed.is_empty() {
+            return None;
+        }
+        let mut patch = String::new();
+        let commit_subject = format!(
+            "refactor(prune): remove {} unreferenced orphan(s)",
+            self.removed.len()
+        );
+        patch.push_str("From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\n");
+        patch.push_str("From: Alexander Panasenko <alex@prod.codes>\n");
+        patch.push_str("Date: Fri, 2 Oct 2026 20:00:00 +0000\n");
+        patch.push_str(&format!("Subject: [PATCH] {commit_subject}\n\n"));
+        patch.push_str(&format!(
+            "Pruned {} orphan(s) of {} symbol(s) checked:\n",
+            self.removed.len(),
+            self.symbols_checked
+        ));
+        for d in &self.removed {
+            patch.push_str(&format!("  - {} {} ({}:{})\n", d.kind, d.name, d.file, d.line));
+        }
+        patch.push_str("\n---\n");
+
+        let mut total_added = 0usize;
+        let mut total_deleted = 0usize;
+        let mut file_diffs = Vec::new();
+
+        for (path, new_text) in &self.rewritten {
+            let full = Path::new(path);
+            let old_text = if self.applied {
+                crate::refactor::text_before_apply(full)
+            } else {
+                std::fs::read_to_string(full).unwrap_or_default()
+            };
+            let rel = full
+                .strip_prefix(&self.root)
+                .unwrap_or(full)
+                .to_string_lossy()
+                .replace('\\', "/");
+
+            let diff = similar::TextDiff::from_lines(old_text.as_str(), new_text.as_str());
+            let mut added = 0usize;
+            let mut deleted = 0usize;
+            for change in diff.iter_all_changes() {
+                match change.tag() {
+                    similar::ChangeTag::Insert => added += 1,
+                    similar::ChangeTag::Delete => deleted += 1,
+                    similar::ChangeTag::Equal => {}
+                }
+            }
+            total_added += added;
+            total_deleted += deleted;
+
+            let unified = diff
+                .unified_diff()
+                .context_radius(3)
+                .header(&format!("a/{rel}"), &format!("b/{rel}"))
+                .to_string();
+
+            file_diffs.push((rel, added, deleted, unified));
+        }
+
+        for (rel, added, deleted, _) in &file_diffs {
+            let count = added + deleted;
+            let plus_bar = "+".repeat((*added).min(20));
+            let minus_bar = "-".repeat((*deleted).min(20));
+            patch.push_str(&format!(" {:<35} | {:>4} {plus_bar}{minus_bar}\n", rel, count));
+        }
+        let file_s = if file_diffs.len() == 1 { "file" } else { "files" };
+        let ins_s = if total_added == 1 { "insertion" } else { "insertions" };
+        let del_s = if total_deleted == 1 { "deletion" } else { "deletions" };
+        patch.push_str(&format!(
+            " {} {} changed, {} {}(+), {} {}(-)\n\n",
+            file_diffs.len(),
+            file_s,
+            total_added,
+            ins_s,
+            total_deleted,
+            del_s
+        ));
+
+        for (rel, _, _, unified) in file_diffs {
+            patch.push_str(&format!("diff --git a/{rel} b/{rel}\n"));
+            patch.push_str(&unified);
+        }
+        patch.push_str("-- \nprod-code\n");
+
+        Some(patch)
     }
 }
 
@@ -207,19 +312,26 @@ pub async fn prune_orphans(
         },
         apply,
         force,
+        false,
+        false,
     )
     .await
 }
 
 /// Removes every orphan found in the checkout at `root` using the specified options
-/// (including whole-program reachability analysis).
+/// (including whole-program reachability analysis, Git commit patch generation, and optional Git commit creation).
 pub async fn prune_orphans_opts(
     remote: SocketAddr,
     root: &Path,
     options: crate::dead_code::DeadCodeOptions,
-    apply: bool,
+    mut apply: bool,
     force: bool,
+    git_patch: bool,
+    commit: bool,
 ) -> Result<Pruned> {
+    if commit {
+        apply = true;
+    }
     let report = crate::dead_code::find_dead_code_opts(remote, root, options).await?;
     let mut merged: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     let mut removed = Vec::new();
@@ -293,6 +405,50 @@ pub async fn prune_orphans_opts(
             .collect();
     }
     let files: BTreeMap<PathBuf, String> = texts.into_iter().collect();
+    let mut git_dir = None;
+    if commit && !files.is_empty() {
+        let git_dir_out = std::process::Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .context("failed to execute git rev-parse --absolute-git-dir")?;
+        anyhow::ensure!(
+            git_dir_out.status.success(),
+            "cannot create git commit: {} is not inside a git repository",
+            root.display()
+        );
+        let resolved_git_dir = PathBuf::from(String::from_utf8_lossy(&git_dir_out.stdout).trim());
+        anyhow::ensure!(
+            resolved_git_dir.is_dir(),
+            "cannot create git commit: resolved git directory {} is not a directory",
+            resolved_git_dir.display()
+        );
+        git_dir = Some(resolved_git_dir);
+
+        let head_out = std::process::Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .context("failed to execute git rev-parse HEAD")?;
+        anyhow::ensure!(
+            head_out.status.success(),
+            "cannot create git commit: repository has no commits on HEAD"
+        );
+        let mut diff_cmd = std::process::Command::new("git");
+        diff_cmd.current_dir(root).args(["diff-index", "--name-only", "HEAD", "--"]);
+        for path in files.keys() {
+            diff_cmd.arg(path);
+        }
+        let diff_out = diff_cmd.output().context("failed to execute git diff-index")?;
+        anyhow::ensure!(diff_out.status.success(), "failed to check git status on HEAD");
+        let dirty = String::from_utf8_lossy(&diff_out.stdout).trim().to_string();
+        anyhow::ensure!(
+            dirty.is_empty(),
+            "cannot create git commit: touched file(s) have uncommitted changes relative to HEAD:\n  {}",
+            dirty.lines().collect::<Vec<_>>().join("\n  ")
+        );
+    }
+
     let mut applied = false;
     if apply && !files.is_empty() {
         anyhow::ensure!(
@@ -304,7 +460,8 @@ pub async fn prune_orphans_opts(
         crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files))?;
         applied = true;
     }
-    Ok(Pruned {
+
+    let mut pruned = Pruned {
         root: root.to_path_buf(),
         removed,
         skipped,
@@ -316,7 +473,149 @@ pub async fn prune_orphans_opts(
         applied,
         symbols_checked: report.symbols_checked,
         unverified: report.unverified,
-    })
+        git_patch: None,
+        git_commit: None,
+    };
+
+    let patch_text = pruned.generate_git_patch();
+    if git_patch {
+        pruned.git_patch = patch_text.clone();
+    }
+
+    if commit && applied && !pruned.rewritten.is_empty() {
+        if let (Some(patch), Some(git_dir)) = (patch_text, git_dir) {
+            let head_out = std::process::Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "--verify", "HEAD"])
+                .output()
+                .context("failed to execute git rev-parse HEAD")?;
+            anyhow::ensure!(
+                head_out.status.success(),
+                "cannot create git commit: repository has no commits on HEAD"
+            );
+            let head_sha = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+
+            let temp_index_path = git_dir.join(format!(
+                "prod_code_prune_index_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+
+            struct TempIndexGuard<'a>(&'a std::path::Path);
+            impl<'a> Drop for TempIndexGuard<'a> {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_file(self.0);
+                }
+            }
+            let _guard = TempIndexGuard(&temp_index_path);
+
+            let mut read_tree = std::process::Command::new("git");
+            read_tree
+                .current_dir(root)
+                .args(["read-tree", "HEAD"])
+                .env("GIT_INDEX_FILE", &temp_index_path);
+            let read_out = read_tree.output().context("failed to execute git read-tree")?;
+            anyhow::ensure!(
+                read_out.status.success(),
+                "git read-tree failed: {}",
+                String::from_utf8_lossy(&read_out.stderr)
+            );
+
+            let mut apply_cmd = std::process::Command::new("git");
+            apply_cmd
+                .current_dir(root)
+                .args(["apply", "--cached", "-"])
+                .env("GIT_INDEX_FILE", &temp_index_path)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = apply_cmd.spawn().context("failed to spawn git apply --cached")?;
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                stdin.write_all(patch.as_bytes()).context("failed to write patch to git apply")?;
+            }
+            let apply_out = child.wait_with_output().context("failed to wait on git apply")?;
+            anyhow::ensure!(
+                apply_out.status.success(),
+                "git apply --cached failed: {}",
+                String::from_utf8_lossy(&apply_out.stderr)
+            );
+
+            let mut write_tree = std::process::Command::new("git");
+            write_tree
+                .current_dir(root)
+                .arg("write-tree")
+                .env("GIT_INDEX_FILE", &temp_index_path);
+            let write_out = write_tree.output().context("failed to execute git write-tree")?;
+            anyhow::ensure!(
+                write_out.status.success(),
+                "git write-tree failed: {}",
+                String::from_utf8_lossy(&write_out.stderr)
+            );
+            let tree_sha = String::from_utf8_lossy(&write_out.stdout).trim().to_string();
+
+            let commit_title = format!("refactor(prune): remove {} unreferenced orphan(s)", pruned.removed.len());
+            let mut commit_body = format!(
+                "Pruned {} orphan(s) of {} symbol(s) checked:\n",
+                pruned.removed.len(),
+                pruned.symbols_checked
+            );
+            for d in &pruned.removed {
+                commit_body.push_str(&format!("  - {} {} ({}:{}\n)", d.kind, d.name, d.file, d.line));
+            }
+            let commit_msg = format!("{commit_title}\n\n{commit_body}");
+
+            let commit_tree_out = std::process::Command::new("git")
+                .current_dir(root)
+                .args(["commit-tree", &tree_sha, "-p", &head_sha, "-m", &commit_msg])
+                .env("GIT_AUTHOR_NAME", "Alexander Panasenko")
+                .env("GIT_AUTHOR_EMAIL", "alex@prod.codes")
+                .env("GIT_COMMITTER_NAME", "Alexander Panasenko")
+                .env("GIT_COMMITTER_EMAIL", "alex@prod.codes")
+                .output()
+                .context("failed to execute git commit-tree")?;
+            anyhow::ensure!(
+                commit_tree_out.status.success(),
+                "git commit-tree failed: {}",
+                String::from_utf8_lossy(&commit_tree_out.stderr)
+            );
+            let commit_sha = String::from_utf8_lossy(&commit_tree_out.stdout).trim().to_string();
+
+            let update_ref_out = std::process::Command::new("git")
+                .current_dir(root)
+                .args(["update-ref", "HEAD", &commit_sha, &head_sha])
+                .output()
+                .context("failed to execute git update-ref")?;
+            anyhow::ensure!(
+                update_ref_out.status.success(),
+                "git update-ref failed: {}",
+                String::from_utf8_lossy(&update_ref_out.stderr)
+            );
+
+            // Synchronize ambient repository index for the touched files only,
+            // leaving any other unrelated staged changes in the ambient index untouched.
+            let mut reset_cmd = std::process::Command::new("git");
+            reset_cmd.current_dir(root).args(["reset", "HEAD", "--"]);
+            for (path, _) in &pruned.rewritten {
+                let p = Path::new(path);
+                let rel = p.strip_prefix(root).unwrap_or(p);
+                reset_cmd.arg(rel);
+            }
+            let reset_out = reset_cmd.output().context("failed to execute git reset HEAD")?;
+            anyhow::ensure!(
+                reset_out.status.success(),
+                "git reset HEAD failed: {}",
+                String::from_utf8_lossy(&reset_out.stderr)
+            );
+
+            pruned.git_commit = Some(commit_sha);
+        }
+    }
+
+    Ok(pruned)
 }
 
 #[cfg(test)]
@@ -376,5 +675,53 @@ mod tests {
         assert_eq!(text_edits(&doc).unwrap()[0].0, "file:///x.rs");
         let moves = serde_json::json!({ "documentChanges": [ { "kind": "delete", "uri": "file:///x.rs" } ] });
         assert!(text_edits(&moves).is_none());
+    }
+
+    #[test]
+    fn test_generate_git_patch_format() {
+        let pruned = Pruned {
+            root: PathBuf::from("/workspace"),
+            removed: vec![DeadItem {
+                name: "unused_helper".into(),
+                kind: "function".into(),
+                file: "src/lib.rs".into(),
+                line: 12,
+                col: 4,
+                exported: false,
+            }],
+            skipped: Vec::new(),
+            rewritten: vec![("/workspace/src/lib.rs".into(), "fn active() {}\n".into())],
+            diagnostics: Vec::new(),
+            applied: false,
+            symbols_checked: 10,
+            unverified: Vec::new(),
+            git_patch: None,
+            git_commit: None,
+        };
+
+        let patch = pruned.generate_git_patch().unwrap();
+        assert!(patch.contains("From: Alexander Panasenko <alex@prod.codes>"));
+        assert!(patch.contains("Subject: [PATCH] refactor(prune): remove 1 unreferenced orphan(s)"));
+        assert!(patch.contains("Pruned 1 orphan(s) of 10 symbol(s) checked:"));
+        assert!(patch.contains("  - function unused_helper (src/lib.rs:12)"));
+        assert!(patch.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(patch.contains("-- \nprod-code\n"));
+    }
+
+    #[test]
+    fn test_generate_git_patch_empty_when_no_rewrites() {
+        let pruned = Pruned {
+            root: PathBuf::from("/workspace"),
+            removed: Vec::new(),
+            skipped: Vec::new(),
+            rewritten: Vec::new(),
+            diagnostics: Vec::new(),
+            applied: false,
+            symbols_checked: 5,
+            unverified: Vec::new(),
+            git_patch: None,
+            git_commit: None,
+        };
+        assert!(pruned.generate_git_patch().is_none());
     }
 }

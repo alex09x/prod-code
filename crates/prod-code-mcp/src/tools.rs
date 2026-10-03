@@ -1066,7 +1066,7 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_prune_orphans".to_string(),
-            description: "Remove every orphan the dead-code scan finds (unreferenced, not exported, not reachable through a trait) with the analyzer's safe delete, all in one edit. The whole result is type-checked in one overlay before anything is written. Deletions that overlap another are left for the next run, and so is what these removals orphan: run it again until it finds nothing."
+            description: "Remove every orphan the dead-code scan finds (unreferenced, not exported, not reachable through a trait) with the analyzer's safe delete, all in one edit. The whole result is type-checked in one overlay before anything is written. Supports generating Git commit patches (git_patch: true) and creating Git commits (commit: true). Deletions that overlap another are left for the next run, and so is what these removals orphan: run it again until it finds nothing."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -1074,7 +1074,9 @@ fn build_tools_raw() -> Vec<McpTool> {
                     "max_files": { "type": "integer", "description": "Stop after this many source files (default 400)" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report what would be removed and the type check)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" },
-                    "reachability": { "type": "boolean", "description": "Prune unreachable functions, types, and circular dead cycles detected by whole-program reachability analysis" }
+                    "reachability": { "type": "boolean", "description": "Prune unreachable functions, types, and circular dead cycles detected by whole-program reachability analysis" },
+                    "git_patch": { "type": "boolean", "description": "Output a formatted Git commit patch compatible with git apply / git am" },
+                    "commit": { "type": "boolean", "description": "Create a Git commit after applying the pruned changes (implies apply: true)" }
                 }
             }),
         },
@@ -1670,12 +1672,21 @@ async fn dispatch_tool(
                 .get("max_files")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(400) as usize;
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let reachability = args
                 .get("reachability")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let git_patch = args
+                .get("git_patch")
+                .or_else(|| args.get("patch"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let commit = args.get("commit").and_then(|v| v.as_bool()).unwrap_or(false);
+            if commit {
+                apply = true;
+            }
             let pruned = crate::prune::prune_orphans_opts(
                 remote,
                 workspace_root,
@@ -1686,9 +1697,15 @@ async fn dispatch_tool(
                 },
                 apply,
                 force,
+                git_patch,
+                commit,
             )
             .await?;
-            let text = pruned.render();
+            let text = if git_patch && !apply && !commit {
+                pruned.git_patch.clone().unwrap_or_else(|| pruned.render())
+            } else {
+                pruned.render()
+            };
             Ok(if pruned.diagnostics.is_empty() {
                 McpToolCallResult::text(text)
             } else {

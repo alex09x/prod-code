@@ -324,7 +324,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Remove every orphan the dead-code scan finds, in one type-checked edit: prod-code prune [--apply]
+    /// Remove every orphan the dead-code scan finds, in one type-checked edit: prod-code prune [--apply] [--patch] [--commit]
     Prune {
         /// Stop after this many source files
         #[arg(long, default_value_t = 400)]
@@ -338,6 +338,14 @@ enum Commands {
         /// Write even when the result does not compile.
         #[arg(long, default_value_t = false)]
         force: bool,
+        /// Output a formatted Git commit patch (compatible with git apply / git am)
+        #[arg(long)]
+        patch: bool,
+        /// Create a Git commit after applying the pruned changes
+        #[arg(long)]
+        commit: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Show a source file that lives on the gateway (std, registry, SDK): prod-code source <path> [--line N] [--context K]
     Source {
@@ -2122,19 +2130,10 @@ async fn main() -> Result<()> {
             apply,
             force,
             reachability,
-        } => {
-            run_tool(
-                remote,
-                "code_prune_orphans",
-                serde_json::json!({
-                    "max_files": max_files,
-                    "apply": apply,
-                    "force": force,
-                    "reachability": reachability,
-                }),
-            )
-            .await
-        }
+            patch,
+            commit,
+            json,
+        } => run_prune(remote, max_files, reachability, apply, force, patch, commit, json).await,
         Commands::Diagnostics { file, json } => run_diagnostics(remote, &file, None, json).await,
         Commands::Diagnose {
             filter,
@@ -4442,6 +4441,55 @@ async fn run_dead_code(
             "[prod-code dead-code] scanned in {:.2}s",
             started.elapsed().as_secs_f64()
         );
+    }
+    Ok(())
+}
+
+async fn run_prune(
+    remote: SocketAddr,
+    max_files: usize,
+    reachability: bool,
+    apply: bool,
+    force: bool,
+    patch: bool,
+    commit: bool,
+    json: bool,
+) -> Result<()> {
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let started = std::time::Instant::now();
+    let pruned = prod_code_mcp::prune::prune_orphans_opts(
+        remote,
+        &root,
+        prod_code_mcp::dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files,
+            reachability,
+        },
+        apply || commit,
+        force,
+        patch,
+        commit,
+    )
+    .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&pruned)?);
+    } else if patch && !apply && !commit {
+        if let Some(p) = &pruned.git_patch {
+            print!("{p}");
+        } else {
+            println!("nothing to patch; 0 orphans found");
+        }
+    } else {
+        print!("{}", pruned.render());
+        eprintln!(
+            "[prod-code prune] completed in {:.2}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+    if !pruned.diagnostics.is_empty() && !force {
+        std::process::exit(1);
     }
     Ok(())
 }

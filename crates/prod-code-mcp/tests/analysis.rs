@@ -1827,6 +1827,276 @@ async fn dead_code_report_render_covers_every_section() {
     assert!(text.contains("scan truncated by the file limit"));
 }
 
+/// [`Pruned::render`] displays removed orphans, Git commit information, and Git commit patch sections.
+#[tokio::test]
+async fn pruned_render_and_git_patch_contains_all_sections() {
+    let pruned = prod_code_mcp::prune::Pruned {
+        root: std::path::PathBuf::from("/workspace"),
+        removed: vec![DeadItem {
+            name: "unused_func".to_string(),
+            kind: "function".to_string(),
+            file: "src/lib.rs".to_string(),
+            line: 10,
+            col: 1,
+            exported: false,
+        }],
+        skipped: vec![],
+        rewritten: vec![("/workspace/src/lib.rs".to_string(), "fn active() {}\n".to_string())],
+        diagnostics: vec![],
+        applied: true,
+        symbols_checked: 25,
+        unverified: vec![],
+        git_patch: Some(
+            "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\nFrom: Alexander Panasenko <alex@prod.codes>\n".to_string(),
+        ),
+        git_commit: Some("abcdef1234567890".to_string()),
+    };
+
+    let text = pruned.render();
+    assert!(text.contains("1 orphan(s) of 25 symbol(s) checked"));
+    assert!(text.contains("- function unused_func (src/lib.rs:10)"));
+    assert!(text.contains("[committed: abcdef1234567890] created Git commit with author Alexander Panasenko <alex@prod.codes>"));
+    assert!(text.contains("--- Git Commit Patch ---"));
+    assert!(text.contains("From: Alexander Panasenko <alex@prod.codes>"));
+}
+
+/// [`prune_orphans_opts`] with `commit: true` creates a commit using an isolated index,
+/// preserving ambient staged changes in unrelated files without committing them,
+/// and refuses to commit if touched files have uncommitted changes relative to HEAD.
+#[tokio::test]
+async fn prune_commit_isolates_index_and_preserves_ambient_staged_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    let run_git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .status()
+            .expect("git execution");
+        assert!(status.success(), "git {:?}", args);
+    };
+
+    run_git(&["init"]);
+    run_git(&["config", "user.name", "Alexander Panasenko"]);
+    run_git(&["config", "user.email", "alex@prod.codes"]);
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let lib_rs = src_dir.join("lib.rs");
+    std::fs::write(&lib_rs, "pub fn keep() {}\nfn dead() {}\n").unwrap();
+    let unrelated = root.join("unrelated.txt");
+    std::fs::write(&unrelated, "initial unrelated\n").unwrap();
+    std::fs::write(root.join("Cargo.toml"), CARGO_TOML).unwrap();
+
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "initial"]);
+
+    // User stages unrelated change
+    std::fs::write(&unrelated, "modified unrelated staged\n").unwrap();
+    run_git(&["add", "unrelated.txt"]);
+
+    let lib_uri = url::Url::from_file_path(&lib_rs).unwrap().to_string();
+    let lib_uri_clone = lib_uri.clone();
+
+    // Fake LSP gateway that returns documentSymbol, zero references, safeDelete, and clean diagnostics
+    let lsp: Answer = Arc::new(move |method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            {
+                "name": "dead",
+                "kind": 12,
+                "selectionRange": {
+                    "start": { "line": 1, "character": 3 },
+                    "end": { "line": 1, "character": 11 }
+                }
+            }
+        ]),
+        "textDocument/references" => serde_json::json!([]),
+        "prodCode/safeDelete" => serde_json::json!({
+            "changes": {
+                &lib_uri_clone: [{
+                    "range": {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 2, "character": 0 }
+                    },
+                    "newText": ""
+                }]
+            }
+        }),
+        "textDocument/diagnostic" => serde_json::json!({ "items": [] }),
+        _ => serde_json::Value::Null,
+    });
+    let exec: ExecAnswer = Arc::new(|_| (Vec::new(), Vec::new(), Some(0)));
+    let gateway = ExecGateway::start(lsp, exec).await;
+
+    // Prune with commit: true and git_patch: true
+    let pruned = prod_code_mcp::prune::prune_orphans_opts(
+        gateway.addr(),
+        root,
+        prod_code_mcp::dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files: 100,
+            reachability: false,
+        },
+        true,  // apply
+        false, // force
+        true,  // git_patch
+        true,  // commit
+    )
+    .await
+    .expect("prune with commit succeeds");
+
+    assert!(pruned.applied);
+    let commit_sha = pruned.git_commit.expect("commit was created");
+    assert!(!commit_sha.is_empty());
+
+    // Verify commit contains only src/lib.rs, NOT unrelated.txt
+    let show_out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["show", "--stat", &commit_sha])
+        .output()
+        .expect("git show");
+    let show_text = String::from_utf8_lossy(&show_out.stdout);
+    assert!(show_text.contains("src/lib.rs"), "{show_text}");
+    assert!(!show_text.contains("unrelated.txt"), "{show_text}");
+
+    // Verify git status: unrelated.txt is STILL staged M, src/lib.rs is clean
+    let status_out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["status", "--porcelain"])
+        .output()
+        .expect("git status");
+    let status_text = String::from_utf8_lossy(&status_out.stdout);
+    assert!(status_text.contains("M  unrelated.txt"), "{status_text}");
+    assert!(!status_text.contains("src/lib.rs"), "{status_text}");
+
+    // Now test that dirty touched files are refused before applying
+    std::fs::write(&lib_rs, "pub fn keep() {}\n// dirty edit\n").unwrap();
+    let err = prod_code_mcp::prune::prune_orphans_opts(
+        gateway.addr(),
+        root,
+        prod_code_mcp::dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files: 100,
+            reachability: false,
+        },
+        true,
+        false,
+        true,
+        true,
+    )
+    .await
+    .expect_err("dirty touched file must be refused");
+    assert!(err.to_string().contains("touched file(s) have uncommitted changes"), "{err}");
+}
+
+/// [`prune_orphans_opts`] with `commit: true` functions in linked Git worktrees where `<root>/.git`
+/// is a file pointing to the main Git directory rather than a directory.
+#[tokio::test]
+async fn prune_commit_works_in_linked_worktree() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let main_repo = tmp.path().join("main_repo");
+    std::fs::create_dir_all(&main_repo).unwrap();
+
+    let run_git = |dir: &std::path::Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .expect("git execution");
+        assert!(status.success(), "git {:?} in {}", args, dir.display());
+    };
+
+    run_git(&main_repo, &["init"]);
+    run_git(&main_repo, &["config", "user.name", "Alexander Panasenko"]);
+    run_git(&main_repo, &["config", "user.email", "alex@prod.codes"]);
+
+    let src_dir = main_repo.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let lib_rs = src_dir.join("lib.rs");
+    std::fs::write(&lib_rs, "pub fn keep() {}\nfn dead() {}\n").unwrap();
+    std::fs::write(main_repo.join("Cargo.toml"), CARGO_TOML).unwrap();
+
+    run_git(&main_repo, &["add", "."]);
+    run_git(&main_repo, &["commit", "-m", "initial"]);
+
+    // Create a linked worktree
+    let wt_dir = tmp.path().join("linked_worktree");
+    run_git(
+        &main_repo,
+        &["worktree", "add", wt_dir.to_str().unwrap(), "-b", "wt-test-branch"],
+    );
+
+    // Verify .git in worktree is a file, not a directory
+    assert!(wt_dir.join(".git").is_file());
+
+    let wt_lib_rs = wt_dir.join("src/lib.rs");
+    let lib_uri = url::Url::from_file_path(&wt_lib_rs).unwrap().to_string();
+
+    let lsp: Answer = Arc::new(move |method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            {
+                "name": "dead",
+                "kind": 12,
+                "selectionRange": {
+                    "start": { "line": 1, "character": 3 },
+                    "end": { "line": 1, "character": 11 }
+                }
+            }
+        ]),
+        "textDocument/references" => serde_json::json!([]),
+        "prodCode/safeDelete" => serde_json::json!({
+            "changes": {
+                &lib_uri: [{
+                    "range": {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 2, "character": 0 }
+                    },
+                    "newText": ""
+                }]
+            }
+        }),
+        "textDocument/diagnostic" => serde_json::json!({ "items": [] }),
+        _ => serde_json::Value::Null,
+    });
+    let exec: ExecAnswer = Arc::new(|_| (Vec::new(), Vec::new(), Some(0)));
+    let gateway = ExecGateway::start(lsp, exec).await;
+
+    // Run prune with commit: true on the linked worktree root
+    let pruned = prod_code_mcp::prune::prune_orphans_opts(
+        gateway.addr(),
+        &wt_dir,
+        prod_code_mcp::dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files: 100,
+            reachability: false,
+        },
+        true,  // apply
+        false, // force
+        true,  // git_patch
+        true,  // commit
+    )
+    .await
+    .expect("prune in linked worktree succeeds");
+
+    assert!(pruned.applied);
+    let commit_sha = pruned.git_commit.expect("commit was created in linked worktree");
+    assert!(!commit_sha.is_empty());
+
+    // Verify HEAD in worktree matches created commit
+    let rev_out = std::process::Command::new("git")
+        .current_dir(&wt_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git rev-parse HEAD in worktree");
+    let wt_head = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
+    assert_eq!(wt_head, commit_sha);
+
+    // Verify the file was pruned on disk
+    let content = std::fs::read_to_string(&wt_lib_rs).unwrap();
+    assert_eq!(content, "pub fn keep() {}\n");
+}
+
 // ---------------------------------------------------------------------------------------------
 // dossier::locations_in / locations_in_with_hint
 // ---------------------------------------------------------------------------------------------
