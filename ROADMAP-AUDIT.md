@@ -165,7 +165,7 @@ of a fresh audit rerun into a failure.
 The full catalog of custom refactorings has been independently ported and verified across TypeScript/JavaScript, Python, Go, C/C++, Swift, and Rust: signature changes (#718), safe cascading deletion (#550, #567, #594, #718), declaration and module moves (#720), parameter inlining (#704), named function extraction with duplicate detection and parameterization (#722), field and interface extraction (#708, #698), caller type annotation migration (#724), delegation (#710), encapsulation (#700), receiver conversion (#702), transitive type migration (#728), Boolean inversion (#706), generics (#714), loop conversion (#716), custom return envelopes (#712, #726), factory and builder generation with call rewriting (#690), pull up and push down (#692), replacement of inheritance with delegation (#694), replacement of conditional with polymorphism (#696), structural AST codemods (#684), and polyglot fixture and mock generation (#682).
 
 Infrastructure requirements that remain ongoing operational considerations:
-- shared cross-copy clangd/PCH and Swift module caches across divergent worktrees (currently isolated per worktree to guarantee build isolation);
+- shared cross-copy clangd/PCH and Swift module caches across divergent worktrees (delivered in #833 and #834 via `cpp_index` and `swift_cache`);
 - editor in-process state replay on disconnect (editor process restart provides clean re-initialization);
 - sandboxed shared macro-worker service beyond per-workspace processes.
 

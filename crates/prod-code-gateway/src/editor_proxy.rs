@@ -102,7 +102,13 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         "cpp" => from(GenericLspConfig::for_cpp()),
         "python" => from(GenericLspConfig::for_python()),
         "typescript" => from(GenericLspConfig::for_typescript()),
-        "swift" => from(GenericLspConfig::for_swift()),
+        "swift" => {
+            let mut cfg = GenericLspConfig::for_swift();
+            for (k, v) in crate::swift_cache::swift_module_cache_env() {
+                cfg.env.insert(k, v);
+            }
+            from(cfg)
+        }
         "java" => from(GenericLspConfig::for_java()),
         "kotlin" => from(GenericLspConfig::for_kotlin()),
         "csharp" => from(GenericLspConfig::for_csharp()),
