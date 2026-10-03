@@ -1,13 +1,70 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=PROD_CODE_GIT_COMMIT");
-    if let Ok(output) = std::process::Command::new("git")
+    let git_dir = std::process::Command::new("git")
         .args(["rev-parse", "--git-dir"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        });
+    if let Some(ref dir) = git_dir {
+        let p = std::path::Path::new(dir);
+        println!("cargo:rerun-if-changed={}", p.join("HEAD").display());
+    }
+
+    let common_dir = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        });
+
+    if let Some(ref common) = common_dir {
+        let common_path = std::path::Path::new(common);
+        println!(
+            "cargo:rerun-if-changed={}",
+            common_path.join("packed-refs").display()
+        );
+    }
+
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
         .output()
     {
         if output.status.success() {
-            if let Ok(git_dir) = String::from_utf8(output.stdout) {
-                let p = std::path::Path::new(git_dir.trim());
-                println!("cargo:rerun-if-changed={}", p.join("HEAD").display());
+            if let Ok(ref_name) = String::from_utf8(output.stdout) {
+                let ref_rel = ref_name.trim();
+                if !ref_rel.is_empty() {
+                    if let Some(ref common) = common_dir {
+                        let common_path = std::path::Path::new(common);
+                        println!(
+                            "cargo:rerun-if-changed={}",
+                            common_path.join(ref_rel).display()
+                        );
+                    }
+                    if let Some(ref dir) = git_dir {
+                        if common_dir.as_deref() != Some(dir.as_str()) {
+                            let dir_path = std::path::Path::new(dir);
+                            println!(
+                                "cargo:rerun-if-changed={}",
+                                dir_path.join(ref_rel).display()
+                            );
+                        }
+                    }
+                }
             }
         }
     }
