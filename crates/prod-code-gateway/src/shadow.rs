@@ -20,8 +20,8 @@
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    FileDelta, ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse,
-    WireMessage,
+    FileDelta, ProdCodeCodec, ScrubSecrets, ShadowHypothesisResult, ShadowRunRequest,
+    ShadowRunResponse, WireMessage,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -654,12 +654,7 @@ async fn run_child(
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> ShadowHypothesisResult {
     // The cluster's secret credentials (token and TLS material) are never given to executed commands (#402, Phase 5.6).
-    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
-        cmd.env_remove(var);
-    }
-    for var in prod_code_protocol::tls::TLS_ENV_VARS {
-        cmd.env_remove(var);
-    }
+    cmd.scrub_cluster_secrets();
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

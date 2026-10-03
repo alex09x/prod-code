@@ -29,7 +29,7 @@ use prod_code_protocol::{
     RemoteExecResult, RemoteExecStream, RemoteExecTestEvent, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
     negotiate_protocol_version, parse_cargo_json_event, parse_go_test_json_event,
-    path::{file_uri, uri_or_path},
+    path::{file_uri, uri_or_path}, ScrubSecrets,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -3128,12 +3128,7 @@ pub async fn run_exec_with_ram(
         .stderr(std::process::Stdio::piped());
     // The cluster's secret credentials (token and TLS material) are never given to executed commands (#402, Phase 5.6).
     // Scrubbed AFTER request env is applied so that client requests cannot inject or read cluster secrets.
-    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
-        cmd.env_remove(var);
-    }
-    for var in prod_code_protocol::tls::TLS_ENV_VARS {
-        cmd.env_remove(var);
-    }
+    cmd.scrub_cluster_secrets();
     // Own process group, so a timeout or client disconnect can take down the whole tree
     // (cargo -> test binary -> its helpers), not just the direct child.
     {
@@ -3549,12 +3544,7 @@ pub async fn run_remote_exec_with_ram(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
-        cmd.env_remove(var);
-    }
-    for var in prod_code_protocol::tls::TLS_ENV_VARS {
-        cmd.env_remove(var);
-    }
+    cmd.scrub_cluster_secrets();
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);

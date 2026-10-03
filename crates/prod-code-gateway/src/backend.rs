@@ -7,6 +7,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Duration;
+use prod_code_protocol::ScrubSecrets;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, Notify, OwnedMutexGuard, RwLock, broadcast, oneshot};
@@ -467,12 +468,7 @@ impl BackendWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         // The cluster's secret credentials (token and TLS material) are never given to backend language servers (#402, Phase 5.6).
-        for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
-            cmd.env_remove(var);
-        }
-        for var in prod_code_protocol::tls::TLS_ENV_VARS {
-            cmd.env_remove(var);
-        }
+        cmd.scrub_cluster_secrets();
 
         let mut child = cmd
             .spawn()
