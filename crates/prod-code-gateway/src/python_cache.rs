@@ -144,16 +144,88 @@ pub fn find_venv_stubs(venv_root: &Path) -> Vec<PathBuf> {
     stubs
 }
 
+struct TargetLock {
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+impl TargetLock {
+    fn acquire(lock_path: &Path) -> io::Result<Self> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+
+        Ok(TargetLock {
+            #[cfg(unix)]
+            _file: file,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn sync_mtime(src: &Path, dst: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    if let Ok(meta) = fs::metadata(src) {
+        let times = [
+            libc::timespec {
+                tv_sec: meta.atime() as libc::time_t,
+                tv_nsec: meta.atime_nsec() as libc::c_long,
+            },
+            libc::timespec {
+                tv_sec: meta.mtime() as libc::time_t,
+                tv_nsec: meta.mtime_nsec() as libc::c_long,
+            },
+        ];
+        if let Ok(c_path) = std::ffi::CString::new(dst.as_os_str().as_bytes()) {
+            unsafe {
+                libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_mtime(_src: &Path, _dst: &Path) {}
+
 static STUB_FILE_NONCE: AtomicU64 = AtomicU64::new(1);
 
-/// Copies a file to `dst` atomically by copying to a unique temporary file alongside `dst`
-/// and then atomically renaming it over `dst`. This ensures that concurrent readers or writers
-/// never observe a truncated or partially written stub file.
-fn atomic_copy_file(src: &Path, dst: &Path) -> io::Result<u64> {
+/// Copies a file to `dst` atomically under a per-target lock, ensuring that concurrent seeders
+/// do not race and that older files never overwrite newer files.
+fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
     let parent = dst.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "destination file has no parent directory")
     })?;
     ensure_cache_dir(parent)?;
+
+    let file_name = dst.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination file has no name")
+    })?;
+    let lock_path = parent.join(format!(".lock-{}", file_name.to_string_lossy()));
+    let _lock = TargetLock::acquire(&lock_path)?;
+
+    // Recheck modification times under the lock to ensure newest-wins policy
+    let src_meta = fs::metadata(src)?;
+    let src_mod = src_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+
+    if let Ok(dst_meta) = fs::metadata(dst) {
+        let dst_mod = dst_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        if dst_mod > src_mod || (dst_mod == src_mod && dst_meta.len() == src_meta.len()) {
+            return Ok(0);
+        }
+    }
 
     let nonce = STUB_FILE_NONCE.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
@@ -172,13 +244,15 @@ fn atomic_copy_file(src: &Path, dst: &Path) -> io::Result<u64> {
         }
     };
 
+    // Synchronize mtime from source to temporary file before atomic rename
+    sync_mtime(src, &tmp_path);
+
     if let Err(e) = fs::rename(&tmp_path, dst) {
         let _ = fs::remove_file(&tmp_path);
-        if dst.exists() {
-            return Ok(bytes);
-        }
         return Err(e);
     }
+
+    sync_mtime(src, dst);
 
     Ok(bytes)
 }
@@ -220,18 +294,18 @@ pub fn merge_stubs(src_dir: &Path, dst_dir: &Path) -> io::Result<u64> {
                 continue;
             }
 
-            let should_copy = match (fs::metadata(&path), fs::metadata(&target_path)) {
+            let should_check = match (fs::metadata(&path), fs::metadata(&target_path)) {
                 (Ok(src_meta), Ok(dst_meta)) => {
                     let src_mod = src_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                     let dst_mod = dst_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    src_mod > dst_mod || src_meta.len() != dst_meta.len()
+                    src_mod > dst_mod || (src_mod == dst_mod && src_meta.len() != dst_meta.len())
                 }
                 (Ok(_), Err(_)) => true,
                 _ => false,
             };
 
-            if should_copy {
-                let copied = atomic_copy_file(&path, &target_path)?;
+            if should_check {
+                let copied = copy_and_publish_stub(&path, &target_path)?;
                 bytes_written += copied;
             }
         }
