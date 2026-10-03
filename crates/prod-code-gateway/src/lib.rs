@@ -2679,7 +2679,7 @@ pub fn resolve_ram_build_cache(
         }
     });
 
-    if let Some(space) = disk_space(base_dir.parent().unwrap_or(base_dir)) {
+    if let Some(space) = disk_space(base_dir) {
         let free_share = space.free as f64 / space.total.max(1) as f64;
         const MIN_FREE_RAM_SHARE: f64 = 0.20;
         const MIN_FREE_BYTES: u64 = 256 * 1024 * 1024;
@@ -2697,11 +2697,18 @@ pub fn resolve_ram_build_cache(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(&workspace, &mut hasher);
     let hash = std::hash::Hasher::finish(&hasher);
-    let target_dir = base_dir.join(format!("{workspace_name}-{hash:016x}")).join("target");
+    let ws_cache_dir = base_dir.join(format!("{workspace_name}-{hash:016x}"));
+    let target_dir = ws_cache_dir.join("target");
     if let Err(e) = std::fs::create_dir_all(&target_dir) {
         tracing::warn!(%e, dir = %target_dir.display(), "failed to create RAM build cache dir; falling back to disk");
         return None;
     }
+    let marker = ws_cache_dir.join(".last_used");
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&marker);
     Some(target_dir)
 }
 
@@ -2710,12 +2717,33 @@ pub fn sweep_ram_build_caches(base_dir: &Path) -> usize {
     if !base_dir.is_dir() {
         return 0;
     }
+    let running: std::collections::HashSet<String> = RUNNING_COMMANDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .map(|(ws, _, _)| ws.clone())
+        .collect();
+
     let mut removed = 0;
     if let Ok(entries) = std::fs::read_dir(base_dir) {
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 let path = entry.path();
-                if let Ok(meta) = entry.metadata() {
+                let dir_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                let is_running = running.iter().any(|ws| dir_name.starts_with(ws));
+                if is_running {
+                    continue;
+                }
+                let marker = path.join(".last_used");
+                let metadata_target = if marker.is_file() {
+                    marker.metadata().ok()
+                } else {
+                    entry.metadata().ok()
+                };
+                if let Some(meta) = metadata_target {
                     let is_old = meta
                         .modified()
                         .ok()
@@ -9790,6 +9818,8 @@ mod exec_resilience_tests {
         assert_ne!(target1, target2, "workspaces must receive isolated RAM target directories");
         assert!(target1.ends_with("target"));
         assert!(target2.ends_with("target"));
+        assert!(target1.parent().unwrap().join(".last_used").exists());
+        assert!(target2.parent().unwrap().join(".last_used").exists());
     }
 
     #[test]
