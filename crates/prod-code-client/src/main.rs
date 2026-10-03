@@ -2,8 +2,10 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig, WorkspaceMode};
+use std::collections::HashMap;
 use prod_code_mcp::report::ReportRequest;
 use prod_code_mcp::verify::VerifyKind;
 use prod_code_protocol::{
@@ -54,6 +56,12 @@ enum Commands {
         /// swift); by default the checkout root's
         #[arg(long)]
         language: Option<String>,
+        /// Attempt in-process auto-reconnect and LSP state replay on transient network disconnects
+        #[arg(long, env = "PROD_CODE_RECONNECT", default_value_t = false)]
+        reconnect: bool,
+        /// Watchdog idle ping interval in seconds (0 disables periodic watchdog pings)
+        #[arg(long, env = "PROD_CODE_WATCHDOG_SECS", default_value_t = 30)]
+        watchdog_secs: u64,
     },
     /// Run as Model Context Protocol (MCP) server for AI coding agents.
     Mcp,
@@ -1844,6 +1852,7 @@ async fn main() -> Result<()> {
     let lsp_engine = match &cli.command {
         Some(Commands::Lsp {
             language: Some(language),
+            ..
         }) => Some(
             prod_code_client::editor_files::engine_for_language(language).with_context(|| {
                 format!(
@@ -1972,8 +1981,16 @@ async fn main() -> Result<()> {
     startup.mark("pick_node");
     startup.report();
 
-    match cli.command.unwrap_or(Commands::Lsp { language: None }) {
-        Commands::Lsp { .. } => run_lsp_bridge(remote, lsp_engine).await,
+    match cli.command.unwrap_or(Commands::Lsp {
+        language: None,
+        reconnect: false,
+        watchdog_secs: 30,
+    }) {
+        Commands::Lsp {
+            reconnect,
+            watchdog_secs,
+            ..
+        } => run_lsp_bridge(remote, lsp_engine, reconnect, watchdog_secs).await,
         Commands::Status { .. } => unreachable!("handled before placement"),
         Commands::Cluster { json, rebalance } => {
             run_cluster(&remotes, &placement_key, cwd_engine, json, rebalance).await
@@ -5124,6 +5141,354 @@ async fn refuse_lsp(err: &anyhow::Error) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default, Debug, Clone)]
+struct TrackedDocument {
+    uri: String,
+    language_id: String,
+    version: i64,
+    text: String,
+}
+
+#[derive(Default, Debug, Clone)]
+struct LspStateTracker {
+    initialize_req: Option<String>,
+    initialized_sent: bool,
+    configuration_notifications: Vec<String>,
+    open_documents: HashMap<String, TrackedDocument>,
+}
+
+fn lsp_offset(text: &str, target_line: usize, target_col: usize) -> usize {
+    let mut current_line = 0;
+    let mut current_col = 0;
+    for (offset, ch) in text.char_indices() {
+        if current_line == target_line && current_col == target_col {
+            return offset;
+        }
+        if ch == '\n' {
+            current_line += 1;
+            current_col = 0;
+        } else {
+            current_col += ch.len_utf16();
+        }
+    }
+    text.len()
+}
+
+impl LspStateTracker {
+    fn record_client_message(&mut self, raw: &str) {
+        let method = prod_code_client::editor_files::method_of(raw);
+        let Some(method_str) = method.as_deref() else {
+            return;
+        };
+
+        match method_str {
+            "initialize" => {
+                self.initialize_req = Some(raw.to_string());
+            }
+            "initialized" => {
+                self.initialized_sent = true;
+            }
+            "workspace/didChangeConfiguration" => {
+                self.configuration_notifications.push(raw.to_string());
+            }
+            "textDocument/didOpen" => {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                    if let Some(td) = val.pointer("/params/textDocument") {
+                        let uri = td
+                            .get("uri")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let language_id = td
+                            .get("languageId")
+                            .and_then(|l| l.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let version = td.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+                        let text = td
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if !uri.is_empty() {
+                            self.open_documents.insert(
+                                uri.clone(),
+                                TrackedDocument {
+                                    uri,
+                                    language_id,
+                                    version,
+                                    text,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            "textDocument/didClose" => {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                    if let Some(uri) =
+                        val.pointer("/params/textDocument/uri").and_then(|u| u.as_str())
+                    {
+                        self.open_documents.remove(uri);
+                    }
+                }
+            }
+            "textDocument/didChange" => {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                    if let Some(params) = val.get("params") {
+                        if let Some(uri) =
+                            params.pointer("/textDocument/uri").and_then(|u| u.as_str())
+                        {
+                            if let Some(doc) = self.open_documents.get_mut(uri) {
+                                if let Some(version) = params
+                                    .pointer("/textDocument/version")
+                                    .and_then(|v| v.as_i64())
+                                {
+                                    doc.version = version;
+                                }
+                                if let Some(changes) =
+                                    params.get("contentChanges").and_then(|c| c.as_array())
+                                {
+                                    for change in changes {
+                                        if let Some(replacement) =
+                                            change.get("text").and_then(|t| t.as_str())
+                                        {
+                                            if let Some(range) = change.get("range") {
+                                                if let (
+                                                    Some(start_line),
+                                                    Some(start_col),
+                                                    Some(end_line),
+                                                    Some(end_col),
+                                                ) = (
+                                                    range
+                                                        .pointer("/start/line")
+                                                        .and_then(|l| l.as_u64()),
+                                                    range
+                                                        .pointer("/start/character")
+                                                        .and_then(|c| c.as_u64()),
+                                                    range
+                                                        .pointer("/end/line")
+                                                        .and_then(|l| l.as_u64()),
+                                                    range
+                                                        .pointer("/end/character")
+                                                        .and_then(|c| c.as_u64()),
+                                                ) {
+                                                    let start_off = lsp_offset(
+                                                        &doc.text,
+                                                        start_line as usize,
+                                                        start_col as usize,
+                                                    );
+                                                    let end_off = lsp_offset(
+                                                        &doc.text,
+                                                        end_line as usize,
+                                                        end_col as usize,
+                                                    );
+                                                    if start_off <= end_off
+                                                        && end_off <= doc.text.len()
+                                                    {
+                                                        doc.text.replace_range(
+                                                            start_off..end_off,
+                                                            replacement,
+                                                        );
+                                                    }
+                                                }
+                                            } else {
+                                                doc.text = replacement.to_string();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn spawn_editor_stdout_task(
+    mut socket_rx: SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
+    stdout_files: std::sync::Arc<prod_code_client::editor_files::RemoteFiles>,
+    stdout_trace: LspTrace,
+    stdout_identity: prod_code_mcp::sync::WorkspaceIdentity,
+    editor_out: std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::oneshot::Receiver<String>,
+) {
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<String>();
+    let handle = tokio::spawn(async move {
+        let why = loop {
+            match socket_rx.next().await {
+                Some(Ok(WireMessage::LspPayload(json))) => {
+                    let json = stdout_files.to_editor(json).await;
+                    trace_message(&stdout_trace, "<-", &json);
+                    let mut stdout = editor_out.lock().await;
+                    if prod_code_client::editor_files::write_frame(&mut *stdout, &json)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                    tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
+                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                        prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
+                    }
+                    continue;
+                }
+                Some(Ok(WireMessage::Pong)) => {
+                    tracing::trace!("received watchdog pong from gateway");
+                    continue;
+                }
+                Some(Ok(WireMessage::Disconnect { reason })) => {
+                    break format!("closed the session: {reason}");
+                }
+                Some(Err(err)) => break format!("broke the connection: {err}"),
+                None => break "closed the connection".to_string(),
+                Some(Ok(_)) => {}
+            }
+        };
+        let _ = closed_tx.send(why);
+    });
+    (handle, closed_rx)
+}
+
+async fn replay_lsp_state(
+    socket_tx: &mut SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
+    socket_rx: &mut SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
+    tracker: &LspStateTracker,
+    files: &prod_code_client::editor_files::RemoteFiles,
+) -> Result<()> {
+    if let Some(ref init_req) = tracker.initialize_req {
+        socket_tx
+            .send(WireMessage::LspPayload(files.to_node(init_req)))
+            .await
+            .context("failed to send replayed initialize request")?;
+
+        let init_timeout = tokio::time::Duration::from_secs(10);
+        let _ = tokio::time::timeout(init_timeout, async {
+            while let Some(msg) = socket_rx.next().await {
+                match msg {
+                    Ok(WireMessage::LspPayload(json)) => {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                            if val.get("id").is_some() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Ok(WireMessage::Pong) => continue,
+                    Ok(other) => {
+                        anyhow::bail!("unexpected message during initialize replay: {:?}", other)
+                    }
+                    Err(err) => anyhow::bail!("error during initialize replay: {err}"),
+                }
+            }
+            anyhow::bail!("connection closed while awaiting initialize replay response")
+        })
+        .await
+        .context("timed out waiting for initialize replay response")??;
+    }
+
+    if tracker.initialized_sent {
+        let initialized = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        });
+        socket_tx
+            .send(WireMessage::LspPayload(initialized.to_string()))
+            .await
+            .context("failed to send replayed initialized notification")?;
+    }
+
+    for config in &tracker.configuration_notifications {
+        socket_tx
+            .send(WireMessage::LspPayload(files.to_node(config)))
+            .await
+            .context("failed to send replayed configuration notification")?;
+    }
+
+    for doc in tracker.open_documents.values() {
+        let did_open = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": doc.uri,
+                    "languageId": doc.language_id,
+                    "version": doc.version,
+                    "text": doc.text,
+                }
+            }
+        });
+        socket_tx
+            .send(WireMessage::LspPayload(files.to_node(&did_open.to_string())))
+            .await
+            .context("failed to send replayed didOpen notification")?;
+    }
+
+    Ok(())
+}
+
+async fn reconnect_editor_session(
+    remote: SocketAddr,
+    engine: Option<&str>,
+    cwd: &Path,
+    cwd_str: &str,
+    identity: &prod_code_mcp::sync::WorkspaceIdentity,
+    tracker: &LspStateTracker,
+    files: &prod_code_client::editor_files::RemoteFiles,
+) -> Result<(
+    SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
+    SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
+)> {
+    let backoffs = [
+        tokio::time::Duration::from_millis(50),
+        tokio::time::Duration::from_millis(100),
+        tokio::time::Duration::from_millis(200),
+    ];
+
+    let mut last_err = None;
+    for (attempt, backoff) in backoffs.into_iter().enumerate() {
+        if attempt > 0 {
+            tokio::time::sleep(backoff).await;
+        }
+        match open_editor_session(
+            remote,
+            engine,
+            cwd,
+            cwd_str.to_string(),
+            identity.clone(),
+        )
+        .await
+        {
+            Ok((framed, _handshake_resp)) => {
+                let (mut new_tx, mut new_rx) = framed.split();
+                match replay_lsp_state(&mut new_tx, &mut new_rx, tracker, files).await {
+                    Ok(()) => {
+                        tracing::info!("successfully reconnected to gateway and replayed LSP state");
+                        return Ok((new_tx, new_rx));
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "LSP state replay failed during reconnect attempt");
+                        last_err = Some(err);
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(%err, "reconnect attempt failed to open editor session");
+                last_err = Some(err);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all reconnect attempts failed")))
+}
+
 /// Run full-duplex stdio LSP bridge connecting local editor to remote daemon over TCP.
 ///
 /// The checkout is pushed before the handshake, under the name the sync used, and kept
@@ -5132,14 +5497,19 @@ async fn refuse_lsp(err: &anyhow::Error) -> Result<()> {
 /// an editor's, so the node runs the language's own server for it (#332); `engine` names the
 /// language when it is not the checkout root's. Files the server points at that exist only on
 /// the node are mirrored locally (#333).
-async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Result<()> {
+async fn run_lsp_bridge(
+    remote: SocketAddr,
+    engine: Option<&'static str>,
+    reconnect: bool,
+    watchdog_secs: u64,
+) -> Result<()> {
     let cwd = env::current_dir().context("Failed to determine current working directory")?;
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let cwd_str = cwd.to_string_lossy().to_string();
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
     let (framed, handshake_resp) =
-        match open_editor_session(remote, engine, &cwd, cwd_str, identity.clone()).await {
+        match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone()).await {
             Ok(session) => session,
             Err(err) => return refuse_lsp(&err).await,
         };
@@ -5165,7 +5535,7 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
     ));
     let trace = lsp_trace();
     let pushing = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    let (mut socket_tx, mut socket_rx) = framed.split();
+    let (mut socket_tx, socket_rx) = framed.split();
     let keeper = tokio::spawn(keep_checkout_synced(
         remote,
         cwd.clone(),
@@ -5173,48 +5543,27 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
     ));
 
     // Spawn background task to read responses from server and write LSP to stdout
-    let stdout_files = std::sync::Arc::clone(&files);
-    let stdout_trace = trace.clone();
-    let stdout_identity = identity.clone();
-    // The server's messages and the bridge's own warnings share the editor's stdout.
     let editor_out = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
-    let stdout_out = std::sync::Arc::clone(&editor_out);
-    // Why the gateway's side ended, when it did; dropped unsent when the editor's side did.
-    let (closed_tx, mut closed_rx) = tokio::sync::oneshot::channel::<String>();
-    let stdout_task = tokio::spawn(async move {
-        let why = loop {
-            match socket_rx.next().await {
-                Some(Ok(WireMessage::LspPayload(json))) => {
-                    let json = stdout_files.to_editor(json).await;
-                    trace_message(&stdout_trace, "<-", &json);
-                    let mut stdout = stdout_out.lock().await;
-                    if prod_code_client::editor_files::write_frame(&mut *stdout, &json)
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
-                    tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
-                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
-                        prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
-                    }
-                    continue;
-                }
-                Some(Ok(WireMessage::Disconnect { reason })) => {
-                    break format!("closed the session: {reason}");
-                }
-                Some(Err(err)) => break format!("broke the connection: {err}"),
-                None => break "closed the connection".to_string(),
-                Some(Ok(_)) => {}
-            }
-        };
-        let _ = closed_tx.send(why);
-    });
+    let (mut stdout_task, mut closed_rx) = spawn_editor_stdout_task(
+        socket_rx,
+        std::sync::Arc::clone(&files),
+        trace.clone(),
+        identity.clone(),
+        std::sync::Arc::clone(&editor_out),
+    );
 
-    // Main loop: read standard LSP from stdin and forward as WireMessage::LspPayload over TCP
+    let mut tracker = LspStateTracker::default();
     let mut stdin_reader = BufReader::new(tokio::io::stdin());
+
+    let mut watchdog_interval = if watchdog_secs > 0 {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(watchdog_secs));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await; // Consume immediate first tick
+        Some(interval)
+    } else {
+        None
+    };
+
     loop {
         let frame = tokio::select! {
             frame = prod_code_client::editor_files::read_frame(&mut stdin_reader) => {
@@ -5225,13 +5574,75 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
                 // with a failure, which an editor answers by starting the server again. Left
                 // to the editor's next message, this hung and then exited 0 (#394).
                 Ok(why) => {
-                    keeper.abort();
-                    eprintln!("prod-code lsp: the gateway at {remote} {why}");
-                    std::process::exit(1);
+                    if reconnect {
+                        eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files).await {
+                            Ok((new_tx, new_rx)) => {
+                                socket_tx = new_tx;
+                                let (new_task, new_closed_rx) = spawn_editor_stdout_task(
+                                    new_rx,
+                                    std::sync::Arc::clone(&files),
+                                    trace.clone(),
+                                    identity.clone(),
+                                    std::sync::Arc::clone(&editor_out),
+                                );
+                                stdout_task = new_task;
+                                closed_rx = new_closed_rx;
+                                continue;
+                            }
+                            Err(rec_err) => {
+                                keeper.abort();
+                                eprintln!("prod-code lsp: the gateway at {remote} {why} (reconnect failed: {rec_err})");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        keeper.abort();
+                        eprintln!("prod-code lsp: the gateway at {remote} {why}");
+                        std::process::exit(1);
+                    }
                 }
                 // The editor stopped reading its answers.
                 Err(_) => break,
             },
+            _ = async {
+                match &mut watchdog_interval {
+                    Some(interval) => interval.tick().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Err(err) = socket_tx.send(WireMessage::Ping).await {
+                    if reconnect {
+                        stdout_task.abort();
+                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection during watchdog ping: {err}; reconnecting...");
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files).await {
+                            Ok((new_tx, new_rx)) => {
+                                socket_tx = new_tx;
+                                let (new_task, new_closed_rx) = spawn_editor_stdout_task(
+                                    new_rx,
+                                    std::sync::Arc::clone(&files),
+                                    trace.clone(),
+                                    identity.clone(),
+                                    std::sync::Arc::clone(&editor_out),
+                                );
+                                stdout_task = new_task;
+                                closed_rx = new_closed_rx;
+                                continue;
+                            }
+                            Err(rec_err) => {
+                                keeper.abort();
+                                eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        keeper.abort();
+                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
+                        std::process::exit(1);
+                    }
+                }
+                continue;
+            }
         };
         let Some(json_payload) = frame else {
             // Stdin EOF (editor exited)
@@ -5242,6 +5653,8 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
                 .await;
             break;
         };
+
+        tracker.record_client_message(&json_payload);
         trace_message(&trace, "->", &json_payload);
         // What the editor saved, or saw change, reaches the node before the server hears of it:
         // rust-analyzer checks the crate on save, and must check what was saved (#332).
@@ -5273,9 +5686,36 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
             .send(WireMessage::LspPayload(files.to_node(&json_payload)))
             .await
         {
-            keeper.abort();
-            eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
-            std::process::exit(1);
+            if reconnect {
+                stdout_task.abort();
+                eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}; reconnecting...");
+                match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files).await {
+                    Ok((new_tx, new_rx)) => {
+                        socket_tx = new_tx;
+                        let (new_task, new_closed_rx) = spawn_editor_stdout_task(
+                            new_rx,
+                            std::sync::Arc::clone(&files),
+                            trace.clone(),
+                            identity.clone(),
+                            std::sync::Arc::clone(&editor_out),
+                        );
+                        stdout_task = new_task;
+                        closed_rx = new_closed_rx;
+                        let _ = socket_tx
+                            .send(WireMessage::LspPayload(files.to_node(&json_payload)))
+                            .await;
+                    }
+                    Err(rec_err) => {
+                        keeper.abort();
+                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                keeper.abort();
+                eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
+                std::process::exit(1);
+            }
         }
     }
 

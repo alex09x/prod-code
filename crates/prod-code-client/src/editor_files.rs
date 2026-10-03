@@ -135,15 +135,21 @@ where
     Ok(())
 }
 
-/// Writes one LSP message to the editor.
+/// Writes one LSP message to the editor without intermediate heap string formatting.
 pub async fn write_frame<W>(writer: &mut W, body: &str) -> std::io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt;
-    writer
-        .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
-        .await?;
+    let mut header_buf = [0u8; 48];
+    let mut cursor = std::io::Cursor::new(&mut header_buf[..]);
+    let _ = std::io::Write::write_fmt(
+        &mut cursor,
+        format_args!("Content-Length: {}\r\n\r\n", body.len()),
+    );
+    let header_len = cursor.position() as usize;
+    writer.write_all(&header_buf[..header_len]).await?;
+    writer.write_all(body.as_bytes()).await?;
     writer.flush().await
 }
 

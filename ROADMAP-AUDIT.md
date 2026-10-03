@@ -102,8 +102,7 @@ The following 14 checkboxes changed from `[x]` to `[~]` (#480). Their delivered 
 evidence remain above; the original mechanism or required scope remains open.
 
 - **1.1**: length framing with zero-allocation direct buffer streaming and bounded writer (#830), compatibility defaults and loopback TCP. Version negotiation implemented by #537; negotiated capabilities and Unix domain socket transport implemented by #659; Windows named-pipe transport implemented in `AnyStream::NamedPipe` and `connect_named_pipe`; 10GbE TCP buffer size tuning implemented via `PROD_CODE_TCP_BUFFER_SIZE`, `PROD_CODE_TCP_RECV_BUFFER`, and `PROD_CODE_TCP_SEND_BUFFER`; TLS 1.3 encryption and mTLS peer authentication delivered in #828; NUL completion markers remain omitted in favor of length-delimited framing.
-- **1.3**: editor restart is not in-process reconnect, and the record does not establish
-  zero-allocation hot paths.
+- **1.3**: stdio-to-TCP bidirectional streaming with zero allocations on hot paths (stack-buffered header formatting and direct slice writes in `write_frame`), non-blocking watchdog idle ping (`--watchdog-secs`), in-process auto-reconnect (`--reconnect`) with bounded backoff and LSP state replay (`initialize`, `initialized`, `workspace/didChangeConfiguration`, active `textDocument/didOpen` buffer restoration), and strict exit codes/stderr reporting.
 - **3.3**: Go and generic periodic idle probes are implemented by #590; fallback periodic supervision remains open. Native macOS Swift 5.10 dispatch and hover are verified by #599; broader Swift-version coverage remains open.
 - **3.6**: copied virtual environments and bundled typeshed are not a shared virtual-environment
   stub cache.
