@@ -117,18 +117,22 @@ pub fn is_typescript_project(root: &Path) -> bool {
 /// 2. Monorepo subpackage `node_modules/@types` (e.g. `packages/*/node_modules/@types`)
 /// 3. Project-level custom `types/`, `@types/`, `typings/` containing declaration files.
 pub fn find_project_types(root: &Path) -> Vec<PathBuf> {
+    let approved_roots = build_approved_roots(&[root]);
     let mut type_dirs = Vec::new();
 
     // 1. Root node_modules/@types
     let root_types = root.join("node_modules").join("@types");
-    if root_types.is_dir() {
+    if root_types.is_dir() && is_target_approved(&root_types, &approved_roots) {
         type_dirs.push(root_types);
     }
 
     // 2. Custom local types directories
     for custom_name in &["types", "@types", "typings"] {
         let custom_dir = root.join(custom_name);
-        if custom_dir.is_dir() && has_declaration_files(&custom_dir) {
+        if custom_dir.is_dir()
+            && has_declaration_files(&custom_dir)
+            && is_target_approved(&custom_dir, &approved_roots)
+        {
             type_dirs.push(custom_dir);
         }
     }
@@ -141,12 +145,15 @@ pub fn find_project_types(root: &Path) -> Vec<PathBuf> {
                 let pkg_dir = entry.path();
                 if pkg_dir.is_dir() {
                     let sub_at_types = pkg_dir.join("node_modules").join("@types");
-                    if sub_at_types.is_dir() {
+                    if sub_at_types.is_dir() && is_target_approved(&sub_at_types, &approved_roots) {
                         type_dirs.push(sub_at_types);
                     }
                     for custom_name in &["types", "@types", "typings"] {
                         let sub_custom = pkg_dir.join(custom_name);
-                        if sub_custom.is_dir() && has_declaration_files(&sub_custom) {
+                        if sub_custom.is_dir()
+                            && has_declaration_files(&sub_custom)
+                            && is_target_approved(&sub_custom, &approved_roots)
+                        {
                             type_dirs.push(sub_custom);
                         }
                     }
@@ -452,13 +459,20 @@ fn merge_types_inner(
     approved_roots: &[PathBuf],
     visited: &mut VisitedDirs,
 ) -> io::Result<u64> {
-    if !src_dir.is_dir() || !visited.insert(src_dir) {
+    if !is_target_approved(src_dir, approved_roots) {
+        tracing::debug!(src_dir = %src_dir.display(), "skipping traversal root outside approved roots");
+        return Ok(0);
+    }
+    let Ok(canonical_src) = src_dir.canonicalize() else {
+        return Ok(0);
+    };
+    if !canonical_src.is_dir() || !visited.insert(&canonical_src) {
         return Ok(0);
     }
     ensure_cache_dir(dst_dir)?;
 
     let mut bytes_written = 0u64;
-    let Ok(entries) = fs::read_dir(src_dir) else {
+    let Ok(entries) = fs::read_dir(&canonical_src) else {
         return Ok(0);
     };
 
@@ -524,11 +538,17 @@ fn tree_size_inner(
     approved_roots: &[PathBuf],
     visited: &mut VisitedDirs,
 ) -> u64 {
-    if !visited.insert(dir) {
+    if !is_target_approved(dir, approved_roots) {
+        return 0;
+    }
+    let Ok(canonical_dir) = dir.canonicalize() else {
+        return 0;
+    };
+    if !canonical_dir.is_dir() || !visited.insert(&canonical_dir) {
         return 0;
     }
     let mut total = 0;
-    if let Ok(entries) = fs::read_dir(dir) {
+    if let Ok(entries) = fs::read_dir(&canonical_dir) {
         for entry in entries.flatten() {
             let Ok(file_type) = entry.file_type() else {
                 continue;
