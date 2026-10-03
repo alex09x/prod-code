@@ -1456,6 +1456,9 @@ enum Commands {
         /// Write the winning hypothesis into the checkout.
         #[arg(long, default_value_t = false)]
         apply: bool,
+        /// Run hypotheses in a lightweight RAM-backed (/dev/shm) in-memory overlay shadow root (Roadmap 7.4).
+        #[arg(long, alias = "in-memory", default_value_t = false)]
+        ram: bool,
         /// Command and arguments (put `--` before them).
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -3357,8 +3360,9 @@ async fn main() -> Result<()> {
             timeout_secs,
             parallel,
             apply,
+            ram,
             command,
-        } => run_shadow_cli(remote, spec, timeout_secs, parallel, apply, command).await,
+        } => run_shadow_cli(remote, spec, timeout_secs, parallel, apply, ram, command).await,
         Commands::Bench {
             workspaces,
             concurrency,
@@ -6273,6 +6277,7 @@ async fn run_shadow_cli(
     timeout_secs: u64,
     parallel: usize,
     apply: bool,
+    ram: bool,
     command: Vec<String>,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
@@ -6282,6 +6287,9 @@ async fn run_shadow_cli(
         .with_context(|| format!("cannot read {}", spec.display()))?;
     let json: serde_json::Value =
         serde_json::from_str(&text).with_context(|| format!("{} is not JSON", spec.display()))?;
+    let ram = ram
+        || json.get("in_memory").and_then(|v| v.as_bool()).unwrap_or(false)
+        || json.get("ram").and_then(|v| v.as_bool()).unwrap_or(false);
     let specs = prod_code_mcp::shadow::parse_specs(&root, &json, spec.parent())?;
     let outcome = prod_code_mcp::shadow::run_shadow(
         remote,
@@ -6293,6 +6301,7 @@ async fn run_shadow_cli(
         timeout_secs,
         parallel,
         64 * 1024,
+        ram,
     )
     .await?;
     let applied = match (apply, outcome.winner) {

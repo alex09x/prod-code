@@ -175,6 +175,7 @@ mod tests {
             subdir: None,
             parallel: 0,
             tail_bytes: 0,
+            in_memory: false,
             client_agent: None,
             client_host: None,
         });

@@ -314,6 +314,7 @@ async fn shadow_request(
                     subdir: None,
                     parallel: 1,
                     tail_bytes: 4096,
+                    in_memory: false,
                     client_agent: Some("issue591-test".to_string()),
                     client_host: Some("private-fixture".to_string()),
                 }))

@@ -83,11 +83,12 @@ pub(crate) async fn compile_go_shadow(
         120,
         1,
         16 * 1024,
+        false,
     )
     .await
     .context("the remote gateway could not run Go compiler verification")?;
     anyhow::ensure!(
-        matches!(outcome.mode.as_str(), "overlay" | "in-place"),
+        matches!(outcome.mode.as_str(), "overlay" | "overlay-ram" | "in-place"),
         "the remote gateway returned an unrecognized shadow mode {:?}",
         outcome.mode
     );

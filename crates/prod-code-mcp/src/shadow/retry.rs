@@ -16,6 +16,7 @@ pub async fn run_shadow(
     timeout_secs: u64,
     parallel: usize,
     tail_bytes: usize,
+    in_memory: bool,
 ) -> Result<ShadowOutcome> {
     let first = run_shadow_once(
         remote,
@@ -27,6 +28,7 @@ pub async fn run_shadow(
         timeout_secs,
         parallel,
         tail_bytes,
+        in_memory,
     )
     .await?;
     if !first.results.iter().any(|result| {
@@ -63,6 +65,7 @@ pub async fn run_shadow(
         timeout_secs,
         parallel,
         tail_bytes,
+        in_memory,
     )
     .await?;
     for result in &mut retry.results {

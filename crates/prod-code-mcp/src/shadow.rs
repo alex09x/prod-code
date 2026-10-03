@@ -63,6 +63,8 @@ pub struct ShadowOutcome {
     pub ranking: Vec<usize>,
     /// The best hypothesis when it passed.
     pub winner: Option<usize>,
+    /// Whether the shadow run executed in an in-memory RAM overlay.
+    pub in_memory: bool,
 }
 
 /// The `/`-separated path of `file` inside `root`.
@@ -174,6 +176,7 @@ pub(crate) async fn run_shadow_once(
     timeout_secs: u64,
     parallel: usize,
     tail_bytes: usize,
+    in_memory: bool,
 ) -> Result<ShadowOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     anyhow::ensure!(!specs.is_empty(), "no hypotheses");
@@ -211,6 +214,7 @@ pub(crate) async fn run_shadow_once(
             subdir: subdir.map(str::to_string),
             parallel,
             tail_bytes,
+            in_memory,
             client_agent: Some(prod_code_protocol::detect_client_agent()),
             client_host: Some(prod_code_protocol::client_host()),
         }))
@@ -263,12 +267,14 @@ pub(crate) async fn run_shadow_once(
         .collect();
     let ranking = rank(&results);
     let winner = ranking.first().copied().filter(|&i| results[i].passed());
+    let in_memory_outcome = response.mode == "overlay-ram" || response.mode.contains("ram");
     Ok(ShadowOutcome {
         mode: response.mode,
         server_workspace_root: response.server_workspace_root,
         results,
         ranking,
         winner,
+        in_memory: in_memory_outcome,
     })
 }
 
@@ -770,6 +776,7 @@ mod tests {
             results,
             ranking,
             winner,
+            in_memory: false,
         };
         let text = render_report(
             &shadow,
@@ -793,6 +800,7 @@ mod tests {
             results: results2,
             ranking: ranking2,
             winner: None,
+            in_memory: false,
         };
         let text2 = render_report(&shadow2, &["go".to_string(), "test".to_string()], None, 100);
         assert!(text2.contains("no hypothesis passed; closest:"), "{text2}");
@@ -815,6 +823,7 @@ mod tests {
             results,
             ranking,
             winner,
+            in_memory: false,
         };
         let text = render_report(
             &shadow,
@@ -865,6 +874,7 @@ mod tests {
             results,
             ranking,
             winner: Some(0),
+            in_memory: false,
         };
 
         let text = render_report(

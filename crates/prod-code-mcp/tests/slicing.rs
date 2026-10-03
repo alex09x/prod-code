@@ -758,6 +758,7 @@ async fn run_shadow_ranks_hypotheses_diffs_them_against_the_checkout_and_names_t
         30,
         2,
         4096,
+        false,
     )
     .await
     .expect("the run completes");
@@ -806,6 +807,7 @@ async fn run_shadow_surfaces_a_refusal_from_the_gateway() {
         10,
         1,
         100,
+        false,
     )
     .await
     .expect_err("a refusal is an error");
@@ -831,6 +833,7 @@ async fn run_shadow_rejects_a_message_it_does_not_expect() {
         10,
         1,
         100,
+        false,
     )
     .await
     .expect_err("a status response is not a shadow run response");
@@ -856,6 +859,7 @@ async fn run_shadow_errors_when_the_gateway_closes_without_answering() {
         10,
         1,
         100,
+        false,
     )
     .await
     .expect_err("no response ever arrives");
