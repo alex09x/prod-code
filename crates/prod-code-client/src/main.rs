@@ -3990,7 +3990,11 @@ async fn run_hover(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Resu
         } else if let Some(arr) = contents.as_array() {
             let mut found = false;
             for item in arr {
-                if let Some(v) = item.get("value").and_then(|v| v.as_str()) {
+                let v = item
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| item.as_str());
+                if let Some(v) = v {
                     if !v.trim().is_empty() {
                         println!("{v}");
                         found = true;
@@ -4008,16 +4012,7 @@ async fn run_hover(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Resu
         }
     }
 
-    if result.is_null()
-        || result
-            .as_object()
-            .map_or(false, |obj| obj.is_empty() || obj.values().all(|v| v.is_null()))
-    {
-        anyhow::bail!("no hover information found at {}:{}:{}", file.display(), line, col);
-    }
-
-    println!("{:#}", result);
-    Ok(())
+    anyhow::bail!("no hover information found at {}:{}:{}", file.display(), line, col);
 }
 
 async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
@@ -4040,7 +4035,7 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
 
     if let Some(arr) = result.as_array() {
         if arr.is_empty() {
-            println!("No definition found.");
+            anyhow::bail!("no definition found at {}:{}:{}", file.display(), line, col);
         } else {
             for loc in arr {
                 let uri = loc
@@ -4078,34 +4073,31 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
                     }
                 }
             }
+            return Ok(());
         }
     } else if let Some(obj) = result.as_object() {
-        if obj.is_empty() {
-            anyhow::bail!("no definition found at {}:{}:{}", file.display(), line, col);
+        if !obj.is_empty() {
+            let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+            let start_line = obj
+                .get("range")
+                .and_then(|r| r.get("start"))
+                .and_then(|s| s.get("line"))
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0)
+                + 1;
+            let start_col = obj
+                .get("range")
+                .and_then(|r| r.get("start"))
+                .and_then(|s| s.get("character"))
+                .and_then(|c| c.as_u64())
+                .unwrap_or(0)
+                + 1;
+            println!("📍 Definition: {uri}:{start_line}:{start_col}");
+            return Ok(());
         }
-        let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-        let start_line = obj
-            .get("range")
-            .and_then(|r| r.get("start"))
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0)
-            + 1;
-        let start_col = obj
-            .get("range")
-            .and_then(|r| r.get("start"))
-            .and_then(|s| s.get("character"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0)
-            + 1;
-        println!("📍 Definition: {uri}:{start_line}:{start_col}");
-    } else if result.is_null() {
-        anyhow::bail!("no definition found at {}:{}:{}", file.display(), line, col);
-    } else {
-        println!("{:#}", result);
     }
 
-    Ok(())
+    anyhow::bail!("no definition found at {}:{}:{}", file.display(), line, col);
 }
 
 /// Impact analysis of the working tree (or of the commits since `base`), optionally running
