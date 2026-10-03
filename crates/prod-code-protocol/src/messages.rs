@@ -423,7 +423,7 @@ pub struct HandshakeResponse {
 }
 
 /// Real-time health and session status of the remote gateway.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatusResponse {
     pub server_pid: u32,
     pub uptime_seconds: u64,
@@ -454,6 +454,12 @@ pub struct StatusResponse {
     /// gateways.
     #[serde(default)]
     pub host: HostResources,
+    /// The gateway's version, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The gateway's git commit hash, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
 }
 
 /// Past this share of physical memory in use, a node takes no new workspace while another can
@@ -2207,6 +2213,8 @@ mod wire_tests {
                 memory_total_bytes: Some(32 * gib), // 50% used
                 storage_free_millis: Some(650),      // 65% free
             },
+            version: None,
+            git_commit: None,
         };
         assert!((idle.congestion_score() - 0.02).abs() < 1e-6);
 

@@ -37,6 +37,7 @@ impl Gateway {
             .env("PROD_CODE_SHADOW_ROOT", storage.path().join("owned-shadow"))
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
+            .env("PROD_CODE_ENGINE_RESERVE_MIB", "64")
             .env_remove("RUST_LOG")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

@@ -985,26 +985,61 @@ async fn wait_for_message<T>(
 /// workspace from the origin repository's copy and report only the files it still lacks;
 /// later rounds send the watermark delta. The watermark is committed once the gateway has
 /// acknowledged the uploads.
+enum RoundResult {
+    Success(SyncOutcome),
+    NeedsFullResync,
+}
+
 pub async fn push_workspace_sync(
     framed: &mut Framed<AnyStream, ProdCodeCodec>,
     root: &Path,
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
 ) -> Result<SyncOutcome> {
-    let mut outcome = push_sync_round(framed, root, identity, subpath).await?;
-    // The gateway removed files a command changed after its client left and it could not put
-    // back (#262). They go in one more round on this connection, so that what runs next sees
-    // the checkout's version of them; a second report waits for the next sync.
-    if !outcome.stale_paths.is_empty() {
-        resend_lost_files(root, &gateway_node(framed), &outcome.stale_paths);
-        let again = push_sync_round(framed, root, identity, subpath).await?;
-        outcome.files_updated += again.files_updated;
-        outcome.files_deleted += again.files_deleted;
-        outcome.bytes_transferred += again.bytes_transferred;
-        outcome.changed_paths.extend(again.changed_paths);
-        outcome.stale_paths = again.stale_paths;
+    const MAX_RESET_RETRIES: usize = 2;
+    let mut resets = 0;
+    loop {
+        let mut outcome = match push_sync_round(framed, root, identity, subpath).await? {
+            RoundResult::Success(outcome) => outcome,
+            RoundResult::NeedsFullResync => {
+                resets += 1;
+                if resets > MAX_RESET_RETRIES {
+                    anyhow::bail!(
+                        "gateway workspace reset loop detected: server workspace remains fresh after resync for {}",
+                        identity.name
+                    );
+                }
+                continue;
+            }
+        };
+
+        // The gateway removed files a command changed after its client left and it could not put
+        // back (#262). They go in one more round on this connection, so that what runs next sees
+        // the checkout's version of them; a second report waits for the next sync.
+        if !outcome.stale_paths.is_empty() {
+            resend_lost_files(root, &gateway_node(framed), &outcome.stale_paths);
+            match push_sync_round(framed, root, identity, subpath).await? {
+                RoundResult::Success(again) => {
+                    outcome.files_updated += again.files_updated;
+                    outcome.files_deleted += again.files_deleted;
+                    outcome.bytes_transferred += again.bytes_transferred;
+                    outcome.changed_paths.extend(again.changed_paths);
+                    outcome.stale_paths = again.stale_paths;
+                }
+                RoundResult::NeedsFullResync => {
+                    resets += 1;
+                    if resets > MAX_RESET_RETRIES {
+                        anyhow::bail!(
+                            "gateway workspace reset loop detected: server workspace remains fresh after resync for {}",
+                            identity.name
+                        );
+                    }
+                    continue;
+                }
+            }
+        }
+        return Ok(outcome);
     }
-    Ok(outcome)
 }
 
 /// The `host:port` of the gateway on the other end of `framed`, which keys its watermark.
@@ -1021,7 +1056,7 @@ async fn push_sync_round(
     root: &Path,
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
-) -> Result<SyncOutcome> {
+) -> Result<RoundResult> {
     let node = gateway_node(framed);
     let mut plan = prepare_workspace_sync_for(root, &node, subpath)?;
     let root_str = root.to_string_lossy().to_string();
@@ -1030,7 +1065,7 @@ async fn push_sync_round(
         ..SyncOutcome::default()
     };
 
-    if plan.initial && !plan.files.is_empty() {
+    if plan.initial {
         framed
             .send(WireMessage::SyncProbeRequest(SyncProbeRequest {
                 client_workspace_root: root_str.clone(),
@@ -1084,7 +1119,7 @@ async fn push_sync_round(
                     "gateway workspace was reset; resyncing the full tree"
                 );
                 clear_sync_cache_for(root, &node);
-                return Box::pin(push_workspace_sync(framed, root, identity, subpath)).await;
+                return Ok(RoundResult::NeedsFullResync);
             }
             outcome.files_updated += resp.files_updated;
             outcome.files_deleted += resp.files_deleted;
@@ -1099,7 +1134,7 @@ async fn push_sync_round(
     }
 
     commit_workspace_sync(root, &plan);
-    Ok(outcome)
+    Ok(RoundResult::Success(outcome))
 }
 
 /// Build a sync plan from the last acknowledged git base plus the current working tree.

@@ -371,7 +371,7 @@ impl GenericLspConfig {
                     "classFileContentsSupport": true
                 }
             })),
-            request_timeout: Duration::from_secs(300),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
@@ -2341,7 +2341,18 @@ impl GenericLspEngine {
         }
         let kind = answer.pointer("/result/kind").and_then(|k| k.as_str());
         if kind == Some("full") {
-            return answer.pointer("/result/items")?.as_array().cloned();
+            let items = answer.pointer("/result/items")?.as_array().cloned()?;
+            let version = self.sent.read().await.get(uri).and_then(|s| s.version);
+            let mut published = self.diagnostics.write().await;
+            published.insert(
+                uri.to_string(),
+                Published {
+                    version,
+                    at: Instant::now(),
+                    items: items.clone(),
+                },
+            );
+            return Some(items);
         } else if kind == Some("unchanged") {
             let published = self.diagnostics.read().await;
             if let Some(p) = published.get(uri) {
@@ -2477,7 +2488,7 @@ impl GenericLspEngine {
             } else {
                 Unavailable::ServerExited
             };
-            let limit = if has_published {
+            let limit = if known || has_published {
                 wait
             } else {
                 wait.min(FIRST_PUBLICATION_WAIT)

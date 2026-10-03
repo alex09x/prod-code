@@ -500,3 +500,160 @@ async fn native_inline_test_module_relocation_keeps_definitions_and_fields_clean
     ]);
     compile(&candidate.root());
 }
+
+#[tokio::test]
+async fn javascript_moved_returned_object_property_produces_no_stale_reference() {
+    let ws = Workspace::new(&[
+        ("package.json", r#"{"name":"test-pkg","version":"1.0.0"}"#),
+        (
+            "src/service.js",
+            r#"export function handle(action) {
+    switch (action.type) {
+        case 'close': {
+            return { closedTabs: [] };
+        }
+    }
+}
+"#,
+        ),
+        (
+            "src/service.test.js",
+            r#"import { handle } from './service.js';
+const result = handle({ type: 'close' });
+const tabs = result.closedTabs;
+"#,
+        ),
+    ]);
+    let remote = ScriptedGateway::start(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+        match method {
+            "textDocument/didOpen" | "textDocument/didChange" => Value::Null,
+            "textDocument/documentSymbol" if uri.ends_with("/src/service.js") => json!([
+                {
+                    "name": "handle",
+                    "kind": 12,
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 7, "character": 1}},
+                    "selectionRange": {"start": {"line": 0, "character": 16}, "end": {"line": 0, "character": 22}},
+                    "children": [
+                        {
+                            "name": "closedTabs",
+                            "kind": 7,
+                            "range": {"start": {"line": 3, "character": 21}, "end": {"line": 3, "character": 35}},
+                            "selectionRange": {"start": {"line": 3, "character": 21}, "end": {"line": 3, "character": 31}}
+                        }
+                    ]
+                }
+            ]),
+            "textDocument/documentSymbol" => json!([]),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            "textDocument/definition" if uri.ends_with("/src/service.test.js") => json!({
+                "uri": uri.replace("service.test.js", "service.js"),
+                "range": {"start": {"line": 3, "character": 21}, "end": {"line": 3, "character": 31}}
+            }),
+            _ => Value::Null,
+        }
+    })
+    .await
+    .addr();
+
+    let proposed_service = r#"async function closeHelper() {
+    return { closedTabs: [] };
+}
+
+export function handle(action) {
+    switch (action.type) {
+        case 'close':
+            return closeHelper();
+    }
+}
+"#;
+
+    let reports = prod_code_mcp::diagnostics::validate_texts(
+        remote,
+        &ws.root(),
+        &[(ws.path("src/service.js"), proposed_service.to_string())],
+        &[ws.path("src/service.test.js")],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].errors, 0);
+    assert_eq!(reports[0].warnings, 0, "service.js must have 0 warnings: {}", reports[0].render());
+    assert_eq!(reports[1].errors, 0);
+    assert_eq!(
+        reports[1].warnings,
+        0,
+        "service.test.js must not have false positive stale-reference: {}",
+        reports[1].render()
+    );
+}
+
+#[tokio::test]
+async fn non_rust_unresolved_removed_symbol_is_flagged_as_stale_reference() {
+    let ws = Workspace::new(&[
+        ("package.json", r#"{"name":"test-pkg","version":"1.0.0"}"#),
+        (
+            "src/utils.js",
+            "export function oldHelper() {}\n",
+        ),
+        (
+            "src/app.js",
+            "import { oldHelper } from './utils.js';\noldHelper();\n",
+        ),
+    ]);
+    let has_old = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&has_old);
+    let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+        match method {
+            "textDocument/didOpen" | "textDocument/didChange" => {
+                let text = if method == "textDocument/didOpen" {
+                    params["textDocument"]["text"].as_str()
+                } else {
+                    params["contentChanges"]
+                        .as_array()
+                        .and_then(|changes| changes.first())
+                        .and_then(|change| change["text"].as_str())
+                };
+                if uri.ends_with("/src/utils.js") && let Some(text) = text {
+                    flag.store(text.contains("oldHelper"), Ordering::SeqCst);
+                }
+                Value::Null
+            }
+            "textDocument/documentSymbol" if uri.ends_with("/src/utils.js") => {
+                if flag.load(Ordering::SeqCst) {
+                    json!([{ "name": "oldHelper", "kind": 12 }])
+                } else {
+                    json!([{ "name": "newHelper", "kind": 12 }])
+                }
+            }
+            "textDocument/documentSymbol" => json!([]),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            "textDocument/definition" => Value::Null,
+            _ => Value::Null,
+        }
+    }))
+    .await
+    .addr();
+
+    let reports = prod_code_mcp::diagnostics::validate_texts(
+        remote,
+        &ws.root(),
+        &[(ws.path("src/utils.js"), "export function newHelper() {}\n".to_string())],
+        &[ws.path("src/app.js")],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].warnings, 0);
+    assert!(
+        reports[1]
+            .items
+            .iter()
+            .any(|d| d.code.as_deref() == Some(STALE_REFERENCE)),
+        "caller of removed JS function must be flagged: {}",
+        reports[1].render()
+    );
+}

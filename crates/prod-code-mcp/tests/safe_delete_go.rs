@@ -108,10 +108,9 @@ fn shadow_response(request: ShadowRunRequest, reply: &ShadowReply) -> ShadowRunR
     let expected = [
         "go",
         "test",
-        "-c",
+        "-exec=true",
+        "-run=^$",
         "-mod=readonly",
-        "-o",
-        ".prod-code-testbins/",
         "./...",
     ];
     let valid = request.command.iter().map(String::as_str).eq(expected)

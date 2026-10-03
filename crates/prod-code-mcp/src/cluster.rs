@@ -1107,6 +1107,8 @@ mod tests {
                                 platform: platform.map(String::from),
                                 running_commands: Vec::new(),
                                 host: host.clone(),
+                                version: None,
+                                git_commit: None,
                             };
                             let _ = framed.send(WireMessage::StatusResponse(status)).await;
                         } else {
@@ -1331,6 +1333,8 @@ mod tests {
             platform: None,
             running_commands: Vec::new(),
             host: Default::default(),
+            version: None,
+            git_commit: None,
         };
         assert!(supports_engine(&status, "rust"));
         assert!(supports_engine(&status, "swift"));
@@ -1480,6 +1484,8 @@ mod tests {
                                                 platform: Some("linux x86_64".to_string()),
                                                 running_commands: Vec::new(),
                                                 host: HostResources::default(),
+                                                version: None,
+                                                git_commit: None,
                                             },
                                             last_seen_secs: 0,
                                             workspaces: vec![],
@@ -1504,6 +1510,8 @@ mod tests {
                                     platform: Some("linux x86_64".to_string()),
                                     running_commands: Vec::new(),
                                     host: HostResources::default(),
+                                    version: None,
+                                    git_commit: None,
                                 };
                                 let _ = framed.send(WireMessage::StatusResponse(status)).await;
                             }

@@ -37,6 +37,8 @@ fn sample_status() -> StatusResponse {
         platform: None,
         running_commands: Vec::new(),
         host: Default::default(),
+        version: None,
+        git_commit: None,
     }
 }
 
@@ -1330,6 +1332,8 @@ async fn placement_server() -> SocketAddr {
                                 platform: None,
                                 running_commands: Vec::new(),
                                 host: Default::default(),
+                                version: None,
+                                git_commit: None,
                             }))
                             .await;
                     }

@@ -221,6 +221,8 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         platform: None,
                         running_commands: Vec::new(),
                         host: Default::default(),
+                        version: None,
+                        git_commit: None,
                     }))
                     .await?;
             }

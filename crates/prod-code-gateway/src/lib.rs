@@ -500,6 +500,9 @@ impl ServerState {
             platform: Some(prod_code_protocol::platform()),
             running_commands: running_commands(),
             host: self.host_resources(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            git_commit: Some(prod_code_protocol::git_commit().to_string())
+                .filter(|c| c != "unknown"),
         }
     }
 
@@ -3582,6 +3585,7 @@ pub async fn apply_sync_with_metrics(
         .filter(|(path, _)| !failed.contains(path))
         .collect();
     workspace::record_synced(&server_workspace, &synced);
+    workspace::touch_last_used(&server_workspace);
     let mut stale_paths =
         workspace::clear_stale_paths(&server_workspace, arrived.iter().map(String::as_str));
     workspace::record_stale_paths(&server_workspace, &failed);
@@ -5579,6 +5583,9 @@ async fn on_client_message(
                     platform: Some(prod_code_protocol::platform()),
                     running_commands: running_commands(),
                     host: memory::host_resources(&view.worktree_root),
+                    version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    git_commit: Some(prod_code_protocol::git_commit().to_string())
+                        .filter(|c| c != "unknown"),
                 }))
                 .await;
         }
@@ -7716,6 +7723,8 @@ mod tests {
                 platform: Some(platform.to_string()),
                 running_commands: Vec::new(),
                 host: Default::default(),
+                version: None,
+                git_commit: None,
             },
             workspaces: Vec::new(),
             last_seen_secs: 0,

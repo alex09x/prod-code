@@ -67,10 +67,9 @@ fn mock_compile(req: ShadowRunRequest) -> ShadowRunResponse {
     let expected = [
         "go",
         "test",
-        "-c",
+        "-exec=true",
+        "-run=^$",
         "-mod=readonly",
-        "-o",
-        ".prod-code-testbins/",
         "./...",
     ];
     let malformed = req.command.iter().map(String::as_str).ne(expected)

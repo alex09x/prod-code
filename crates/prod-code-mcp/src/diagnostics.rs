@@ -277,25 +277,37 @@ fn refuse_unchecked(report: &mut DiagnosticsReport) {
     }
 }
 
+/// LSP `SymbolKind::Method`: 6
+const SYMBOL_KIND_METHOD: u64 = 6;
+/// LSP `SymbolKind::Constructor`: 9
+const SYMBOL_KIND_CONSTRUCTOR: u64 = 9;
+/// LSP `SymbolKind::Function`: 12
+const SYMBOL_KIND_FUNCTION: u64 = 12;
 /// LSP `SymbolKind::Variable`: rust-analyzer lists a function's `let` bindings under it.
 const SYMBOL_KIND_VARIABLE: u64 = 13;
 
 /// Every symbol name in a `textDocument/documentSymbol` result (flat or hierarchical) that
 /// another file could refer to. A local variable is listed too, and it is not one of them: a
 /// `let edit` removed from one function is not what another file's `let edit` names (#136).
+/// Declarations and returned properties nested inside a function, method, or constructor
+/// are local execution details that external files cannot refer to (#818).
 fn symbol_names(result: &serde_json::Value) -> BTreeSet<String> {
     fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
         match value {
             serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
             serde_json::Value::Object(map) => {
-                let is_local =
-                    map.get("kind").and_then(|k| k.as_u64()) == Some(SYMBOL_KIND_VARIABLE);
+                let kind = map.get("kind").and_then(|k| k.as_u64());
+                let is_local = kind == Some(SYMBOL_KIND_VARIABLE);
+                let is_scoped = matches!(
+                    kind,
+                    Some(SYMBOL_KIND_FUNCTION | SYMBOL_KIND_METHOD | SYMBOL_KIND_CONSTRUCTOR)
+                );
                 if let Some(name) = map.get("name").and_then(|n| n.as_str())
                     && !is_local
                 {
                     out.insert(name.to_string());
                 }
-                if let Some(children) = map.get("children") {
+                if !is_scoped && let Some(children) = map.get("children") {
                     walk(children, out);
                 }
             }
@@ -532,12 +544,13 @@ fn rust_code_identifiers(text: &str) -> Vec<RustIdent> {
     tokens
 }
 
-/// Whether `line` mentions `name` as a whole identifier.
-fn mentions_identifier(line: &str, name: &str) -> bool {
+/// Finds 1-based UTF-16 column numbers where `name` appears in `line` as a whole identifier.
+fn identifier_columns(line: &str, name: &str) -> Vec<u32> {
     if name.is_empty() {
-        return false;
+        return Vec::new();
     }
     let bytes = line.as_bytes();
+    let mut cols = Vec::new();
     let mut from = 0;
     while let Some(pos) = line[from..].find(name) {
         let start = from + pos;
@@ -547,11 +560,21 @@ fn mentions_identifier(line: &str, name: &str) -> bool {
         let after_ok =
             end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
         if before_ok && after_ok {
-            return true;
+            let col = line[..start]
+                .chars()
+                .map(|c| c.len_utf16())
+                .sum::<usize>() as u32
+                + 1;
+            cols.push(col);
         }
         from = end;
     }
-    false
+    cols
+}
+
+/// Whether `line` mentions `name` as a whole identifier.
+fn mentions_identifier(line: &str, name: &str) -> bool {
+    !identifier_columns(line, name).is_empty()
 }
 
 /// Code of the warning prod-code synthesises for a line that still uses a removed symbol.
@@ -673,31 +696,33 @@ fn annotate_missing_symbols(
                 if flagged.contains(&line_no) {
                     continue;
                 }
-                let Some((name, from)) = relevant
-                    .iter()
-                    .find(|(name, _)| mentions_identifier(line, name))
-                else {
-                    continue;
-                };
-                let byte_pos = line.find(name.as_str()).unwrap_or(0);
-                let col = line[..byte_pos]
-                    .chars()
-                    .map(|c| c.len_utf16())
-                    .sum::<usize>() as u32
-                    + 1;
-                report.items.push(DocDiagnostic {
-                    severity: "warning".to_string(),
-                    code: Some(STALE_REFERENCE.to_string()),
-                    message: format!(
-                        "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
-                    ),
-                    line: line_no,
-                    col,
-                    source: Some("prod-code".to_string()),
-                    note: Some(note_for(name, from)),
-                    end: None,
-                });
-                report.warnings += 1;
+                for (name, from) in &relevant {
+                    let mut matched = false;
+                    for col in identifier_columns(line, name) {
+                        if resolved.contains(&(report.file.clone(), line_no, col)) {
+                            continue;
+                        }
+                        report.items.push(DocDiagnostic {
+                            severity: "warning".to_string(),
+                            code: Some(STALE_REFERENCE.to_string()),
+                            message: format!(
+                                "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
+                            ),
+                            line: line_no,
+                            col,
+                            source: Some("prod-code".to_string()),
+                            note: Some(note_for(name, from)),
+                            end: None,
+                        });
+                        report.warnings += 1;
+                        flagged.insert(line_no);
+                        matched = true;
+                        break;
+                    }
+                    if matched {
+                        break;
+                    }
+                }
             }
         }
         report.items.sort_by_key(|d| (d.line, d.col));
@@ -790,17 +815,6 @@ fn parse_diagnostic(d: &serde_json::Value) -> Result<DocDiagnostic, String> {
 }
 
 fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
-    if result.is_null() {
-        return DiagnosticsReport {
-            file: file.to_string(),
-            errors: 0,
-            warnings: 0,
-            items: Vec::new(),
-            preexisting: Vec::new(),
-            in_derive: Vec::new(),
-            auto_trait: Vec::new(),
-        };
-    }
     // This client never sends a previousResultId, so an unchanged report has no cached
     // evidence to refer to. Older adapters omit kind but still provide the complete items.
     if result
@@ -1063,14 +1077,25 @@ async fn on_disk(
     };
     let text = std::fs::read_to_string(&abs).ok()?;
     let uri = session.uri_for(file).ok()?;
-    let result = session
-        .query(
-            file,
-            "textDocument/diagnostic",
-            serde_json::json!({ "textDocument": { "uri": uri } }),
-        )
+    let query_params = serde_json::json!({ "textDocument": { "uri": uri } });
+    let result = match session
+        .query(file, "textDocument/diagnostic", query_params.clone())
         .await
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                file = %file.display(),
+                "initial on_disk diagnostic query failed, retrying once after backoff"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            session
+                .query(file, "textDocument/diagnostic", query_params)
+                .await
+                .ok()?
+        }
+    };
     Some((parse_items(shown, &result), text))
 }
 
@@ -1380,7 +1405,7 @@ async fn validate_texts_single_engine(
     }
     suppress_used_public_reexport_warnings(&mut session, root, edits.len(), &mut reports, &sources)
         .await;
-    let resolved = resolved_rust_tokens(&mut session, root, &reports, &sources, &missing).await;
+    let resolved = resolved_tokens(&mut session, root, &reports, &sources, &missing).await;
     session.close().await;
     annotate_missing_symbols(&mut reports, &sources, &missing, &resolved);
     let _ = reconcile_swift_cross_target_diagnostics(remote, root, edits, &mut reports).await;
@@ -1630,7 +1655,7 @@ fn public_reexport_token(text: &str, diagnostic: &DocDiagnostic) -> Option<u32> 
 /// A declaration removed from one file may still resolve in the complete proposal: a move,
 /// re-export or unrelated same-named binding is not a broken caller. Ask while the whole
 /// overlay is open. Missing or malformed semantic evidence keeps the conservative warning.
-async fn resolved_rust_tokens(
+async fn resolved_tokens(
     session: &mut LspSession,
     root: &Path,
     reports: &[DiagnosticsReport],
@@ -1641,7 +1666,7 @@ async fn resolved_rust_tokens(
     if missing.is_empty() {
         return resolved;
     }
-    for report in reports.iter().filter(|r| r.file.ends_with(".rs")) {
+    for report in reports.iter() {
         let Some(text) = sources.get(&report.file) else {
             continue;
         };
@@ -1656,21 +1681,44 @@ async fn resolved_rust_tokens(
         let Ok(uri) = session.uri_for(&root.join(&report.file)) else {
             continue;
         };
-        for token in rust_code_identifiers(text) {
-            if !names.contains(token.name.as_str()) {
-                continue;
+        let is_rust = report.file.ends_with(".rs");
+        if is_rust {
+            for token in rust_code_identifiers(text) {
+                if !names.contains(token.name.as_str()) {
+                    continue;
+                }
+                let answer = session
+                    .request(
+                        "textDocument/definition",
+                        serde_json::json!({
+                            "textDocument": {"uri": uri},
+                            "position": {"line": token.line - 1, "character": token.col - 1}
+                        }),
+                    )
+                    .await;
+                if answer.as_ref().is_ok_and(has_definition) {
+                    resolved.insert((report.file.clone(), token.line, token.col));
+                }
             }
-            let answer = session
-                .request(
-                    "textDocument/definition",
-                    serde_json::json!({
-                        "textDocument": {"uri": uri},
-                        "position": {"line": token.line - 1, "character": token.col - 1}
-                    }),
-                )
-                .await;
-            if answer.as_ref().is_ok_and(has_definition) {
-                resolved.insert((report.file.clone(), token.line, token.col));
+        } else {
+            for (idx, line) in text.lines().enumerate() {
+                let line_no = idx as u32 + 1;
+                for &name in &names {
+                    for col in identifier_columns(line, name) {
+                        let answer = session
+                            .request(
+                                "textDocument/definition",
+                                serde_json::json!({
+                                    "textDocument": {"uri": uri},
+                                    "position": {"line": line_no - 1, "character": col - 1}
+                                }),
+                            )
+                            .await;
+                        if answer.as_ref().is_ok_and(has_definition) {
+                            resolved.insert((report.file.clone(), line_no, col));
+                        }
+                    }
+                }
             }
         }
     }

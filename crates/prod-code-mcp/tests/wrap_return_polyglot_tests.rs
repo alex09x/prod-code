@@ -5,8 +5,25 @@ use std::fs;
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
 
 async fn fake_gateway() -> ScriptedGateway {
-    ScriptedGateway::start(|method, _params| match method {
+    ScriptedGateway::start(|method, params| match method {
         "textDocument/diagnostic" => answers::no_diagnostics(),
+        "textDocument/references" => {
+            let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+            if uri.ends_with("/src/math.rs") {
+                let client_uri = uri.replace("/src/math.rs", "/src/client.rs");
+                serde_json::json!([
+                    {
+                        "uri": client_uri,
+                        "range": {
+                            "start": { "line": 3, "character": 4 },
+                            "end": { "line": 3, "character": 13 }
+                        }
+                    }
+                ])
+            } else {
+                serde_json::json!([])
+            }
+        }
         _ => serde_json::Value::Null,
     })
     .await

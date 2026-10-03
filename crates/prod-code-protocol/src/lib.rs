@@ -45,3 +45,8 @@ pub use transport::{
 pub use transport::{connect_unix, connect_unix_with};
 
 pub const DEFAULT_PORT: u16 = 9400;
+
+/// The short git commit hash prod-code was built from, or "unknown".
+pub fn git_commit() -> &'static str {
+    option_env!("PROD_CODE_GIT_COMMIT").unwrap_or("unknown")
+}

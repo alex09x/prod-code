@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.23 — 2026-10-02
+
+### Added
+- **Git Commit Hash & Version Telemetry in Cluster and Diagnostics Reporting** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-client`, `crates/prod-code-mcp`):
+  Compiles git commit hash at build time via `crates/prod-code-protocol/build.rs` and exposes `prod_code_protocol::git_commit()`. Added `version` and `git_commit` fields to `StatusResponse` wire messages. Display gateway version and commit hash in `prod-code status` probe, `prod-code cluster` node engine listings, and embed client and remote node commit hashes into `prod-code report-issue` / `code_report_issue` environment diagnostics.
+
+### Fixed
+- **Sync Loop Stack Overflow Prevention on Fresh Workspaces (#817)** (`crates/prod-code-mcp`):
+  Replaced recursive retry between `sync_workspace_with_metrics` and `ensure_workspace` with a bounded iterative loop (`MAX_RESET_RETRIES = 2`), preventing `thread main has overflowed its stack` crashes during workspace synchronization with generated or excluded build outputs.
+- **False Positive Stale-Reference Filter on Moved Return-Object Properties (#818)** (`crates/prod-code-mcp`):
+  Refined symbol search recursion in `validate_property_access_references` to skip nested function and method declaration blocks, preventing returned object properties moved into helper functions or switch branches from triggering spurious `prod-code::stale-reference` warnings.
+- **Mixed-Language Validation Baseline Preservation on Cold Generic LSP Engines (#819)** (`crates/prod-code-engine-generic`, `crates/prod-code-mcp`):
+  Fixed premature diagnostic timeout in `GenericLspEngine::current_diagnostics_for` by waiting the full timeout when document text was sent (`known || has_published`), preventing cold generic servers (such as `tsc --lsp` in mixed Go/JS projects) from failing initial baseline queries. Cached full pull diagnostics in `self.diagnostics` for subsequent unchanged pulls, and added an automatic single retry with 500ms backoff in `on_disk` queries.
+
 ## v0.3.22 — 2026-10-02
 
 ### Added

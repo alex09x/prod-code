@@ -1892,7 +1892,7 @@ async fn main() -> Result<()> {
     }
     if let Some(Commands::Status { json }) = cli.command {
         startup.report();
-        let target = if pinned {
+        let target = if pinned && seeds.len() == 1 {
             seeds[0]
         } else {
             picked.unwrap_or(seeds[0])
@@ -4670,6 +4670,16 @@ async fn run_status_probe(
                     .map(|n| format!(" [{n}]"))
                     .unwrap_or_default();
                 println!("Remote Address:    {remote} ({:.2?} RTT){note_suffix}", rtt);
+                if let Some(v) = &resp.version {
+                    let commit_suffix = resp
+                        .git_commit
+                        .as_deref()
+                        .map(|c| format!(" (commit {c})"))
+                        .unwrap_or_default();
+                    println!("Gateway Version:   {}{}", v, commit_suffix);
+                } else if let Some(c) = &resp.git_commit {
+                    println!("Gateway Commit:    {}", c);
+                }
                 println!("Server PID:        {}", resp.server_pid);
                 println!("Uptime:            {}h {}m {}s", hours, minutes, seconds);
                 if let Some(mb) = resp.memory_rss_mb() {
@@ -5377,7 +5387,13 @@ async fn run_cluster(
                     .filter(|e| e.as_str() != "generic-lsp")
                     .map(|e| e.split(' ').next().unwrap_or(e))
                     .collect();
-                println!("{:<22} engines: {}", "", engines.join(", "));
+                let ver_suffix = match (&status.version, &status.git_commit) {
+                    (Some(v), Some(c)) => format!(" (prod-code {v}, commit {c})"),
+                    (Some(v), None) => format!(" (prod-code {v})"),
+                    (None, Some(c)) => format!(" (commit {c})"),
+                    (None, None) => String::new(),
+                };
+                println!("{:<22} engines: {}{}", "", engines.join(", "), ver_suffix);
                 let host = status.host.describe();
                 if !host.is_empty() {
                     match status.host.pressure() {

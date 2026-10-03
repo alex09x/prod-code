@@ -73,6 +73,8 @@ async fn handle_test_client(
                     platform: None,
                     running_commands: Vec::new(),
                     host: Default::default(),
+                    version: None,
+                    git_commit: None,
                 };
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }

@@ -185,18 +185,38 @@ fn keeps(address: &str) -> bool {
         || address.starts_with("203.0.113.")
 }
 
-/// The Environment section: the client's version and platform, and the platform and engines
-/// of the node the checkout is placed on, when it answered.
+/// The Environment section: the client's version, commit, and platform, and the platform,
+/// version, commit, and engines of the node the checkout is placed on, when it answered.
 pub fn environment(node: Option<&prod_code_protocol::StatusResponse>) -> String {
+    let client_commit = prod_code_protocol::git_commit();
+    let client_meta = if client_commit != "unknown" {
+        format!(" (commit {client_commit})")
+    } else {
+        String::new()
+    };
     let mut out = format!(
-        "## Environment\n\n- client: prod-code {} on {}\n",
+        "## Environment\n\n- client: prod-code {}{} on {}\n",
         env!("CARGO_PKG_VERSION"),
+        client_meta,
         prod_code_protocol::platform()
     );
     if let Some(status) = node {
+        let mut details = Vec::new();
+        if let Some(ver) = &status.version {
+            details.push(format!("prod-code {ver}"));
+        }
+        if let Some(commit) = &status.git_commit {
+            details.push(format!("commit {commit}"));
+        }
+        let meta = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", details.join(", "))
+        };
         out.push_str(&format!(
-            "- node: {}, engines: {}\n",
+            "- node: {}{}, engines: {}\n",
             status.platform.as_deref().unwrap_or("unknown platform"),
+            meta,
             status.detected_engines.join(", ")
         ));
     }
@@ -478,34 +498,54 @@ mod tests {
             platform: Some("linux x86_64".into()),
             running_commands: Vec::new(),
             host: Default::default(),
+            ..Default::default()
         };
-        let draft = draft(
+        let d1 = draft(
             "  code_references misses a field  ",
             "Ran `prod-code refs --symbol Store::limit` against 10.1.2.3 and got nothing back.",
             Some(&node),
         )
         .unwrap();
-        assert_eq!(draft.title, "code_references misses a field");
+        assert_eq!(d1.title, "code_references misses a field");
         assert!(
-            draft.body.contains("against <node> and got"),
+            d1.body.contains("against <node> and got"),
             "{}",
-            draft.body
+            d1.body
         );
         assert!(
-            draft
-                .body
+            d1.body
                 .contains("- node: linux x86_64, engines: rust, go"),
             "{}",
-            draft.body
+            d1.body
+        );
+
+        let node_with_meta = prod_code_protocol::StatusResponse {
+            server_pid: 2,
+            platform: Some("linux x86_64".into()),
+            detected_engines: vec!["rust".into()],
+            version: Some("0.3.23".into()),
+            git_commit: Some("3b0ae2a".into()),
+            ..Default::default()
+        };
+        let draft_with_meta = draft(
+            "code_references misses another field",
+            "Ran `prod-code refs --symbol Store::limit` against 10.1.2.3 and got nothing back.",
+            Some(&node_with_meta),
+        )
+        .unwrap();
+        assert!(
+            draft_with_meta
+                .body
+                .contains("- node: linux x86_64 (prod-code 0.3.23, commit 3b0ae2a), engines: rust"),
+            "{}",
+            draft_with_meta.body
         );
         assert!(
-            draft
-                .body
+            d1.body
                 .contains(&format!("prod-code {}", env!("CARGO_PKG_VERSION")))
         );
         assert!(
-            draft
-                .body
+            d1.body
                 .ends_with("_Filed with `prod-code report-issue`._\n")
         );
     }

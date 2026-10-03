@@ -160,6 +160,8 @@ async fn handle_client(
                                 platform: None,
                                 running_commands: Vec::new(),
                                 host: Default::default(),
+                                version: None,
+                                git_commit: None,
                             },
                             last_seen_secs: 0,
                             workspaces: vec![],
@@ -192,6 +194,8 @@ async fn handle_client(
                             memory_total_bytes: Some(64 << 30),
                             storage_free_millis: Some(412),
                         },
+                        version: None,
+                        git_commit: None,
                     }))
                     .await?;
             }
@@ -664,7 +668,7 @@ async fn cli_finds_references_and_reports_when_none_found() {
     .await;
 
     let out_empty = run_cli(&ws, gw_empty.addr, &["refs", "src/lib.rs", "1", "12"]).await;
-    assert!(out_empty.status.success());
+    assert_eq!(out_empty.status.code(), Some(1));
     assert!(stdout_of(&out_empty).contains("No references found."));
 }
 

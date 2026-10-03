@@ -662,35 +662,9 @@ pub async fn wrap_rust_ext(
     let mut blocked = Vec::new();
     let mut unmatched = Vec::new();
     let (nl, nc) = crate::signature::position_at(&text, start)?;
-    let mut refs = crate::signature::references(remote, root, file, nl, nc)
+    let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
-        .unwrap_or_default();
-
-    if refs.is_empty() {
-        for entry in ignore::WalkBuilder::new(root).build().flatten() {
-            let p = entry.path();
-            if p.is_file()
-                && p.extension().is_some_and(|ext| ext == "rs")
-                && let Ok(content) = std::fs::read_to_string(p)
-                && content.contains(&name)
-            {
-                for (idx, _) in content.match_indices(&name) {
-                    if idx > 0 && is_ident(content[..idx].chars().next_back().unwrap()) {
-                        continue;
-                    }
-                    if content[idx + name.len()..].starts_with(is_ident) {
-                        continue;
-                    }
-                    if p == file && idx >= start && idx <= close {
-                        continue;
-                    }
-                    if let Ok((l, c)) = crate::signature::position_at(&content, idx) {
-                        refs.push((p.to_path_buf(), l, c));
-                    }
-                }
-            }
-        }
-    }
+        .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;
 
     for (path, l, c) in refs {
         let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();

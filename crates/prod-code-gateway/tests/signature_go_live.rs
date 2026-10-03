@@ -32,6 +32,7 @@ impl Gateway {
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
+            .env("PROD_CODE_ENGINE_RESERVE_MIB", "64")
             .env_remove("RUST_LOG")
             .env("GOFLAGS", "-tags=prodcode_signature -mod=readonly")
             .stdout(Stdio::piped())
