@@ -678,6 +678,32 @@ async fn scripted_gateway_answers_hover_query() {
 }
 
 #[tokio::test]
+async fn cli_hover_null_returns_typed_error_not_null() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out = run_cli(&ws, gw.addr, &["hover", "src/lib.rs", "1", "12"]).await;
+    assert!(!out.status.success());
+    let stdout = stdout_of(&out);
+    let stderr = stderr_of(&out);
+    assert!(!stdout.contains("null"), "stdout must not print null: {stdout}");
+    assert!(stderr.contains("no hover information found"), "{stderr}");
+}
+
+#[tokio::test]
+async fn cli_definition_null_returns_typed_error_not_null() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out = run_cli(&ws, gw.addr, &["def", "src/lib.rs", "1", "12"]).await;
+    assert!(!out.status.success());
+    let stdout = stdout_of(&out);
+    let stderr = stderr_of(&out);
+    assert!(!stdout.contains("null"), "stdout must not print null: {stdout}");
+    assert!(stderr.contains("no definition found"), "{stderr}");
+}
+
+#[tokio::test]
 async fn cli_finds_references_and_reports_when_none_found() {
     let ws = make_workspace();
     let path = ws.path("src/lib.rs");
