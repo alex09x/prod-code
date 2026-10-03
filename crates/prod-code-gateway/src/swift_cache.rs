@@ -9,6 +9,9 @@ use std::time::{Duration, SystemTime};
 
 use crate::cpp_index::relocate_path_or_uri;
 use prod_code_protocol::transport::ScrubSecrets;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(1);
 
 /// The environment variable name used to explicitly configure the shared Swift module cache directory.
 pub const SWIFT_MODULE_CACHE_ENV: &str = "PROD_CODE_SWIFT_MODULE_CACHE";
@@ -301,15 +304,7 @@ pub fn seed_swift_worktree_within(
                     let to_sub = to_build.join(sub_name);
 
                     if from_sub.is_dir() && !to_sub.exists() {
-                        let sub_bytes = match copy_dir_preserving(&from_sub, &to_sub) {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                if to_sub.exists() {
-                                    let _ = fs::remove_dir_all(&to_sub);
-                                }
-                                return Err(e);
-                            }
-                        };
+                        let sub_bytes = copy_dir_preserving(&from_sub, &to_sub)?;
                         total_bytes += sub_bytes;
                         any_seeded = true;
                     }
@@ -336,15 +331,7 @@ pub fn seed_swift_worktree_within(
         let from_swiftpm = from_pkg.join(".swiftpm");
         let to_swiftpm = to_pkg.join(".swiftpm");
         if from_swiftpm.is_dir() && !to_swiftpm.exists() {
-            let bytes = match copy_dir_preserving(&from_swiftpm, &to_swiftpm) {
-                Ok(b) => b,
-                Err(e) => {
-                    if to_swiftpm.exists() {
-                        let _ = fs::remove_dir_all(&to_swiftpm);
-                    }
-                    return Err(e);
-                }
-            };
+            let bytes = copy_dir_preserving(&from_swiftpm, &to_swiftpm)?;
             total_bytes += bytes;
             any_seeded = true;
         }
@@ -472,53 +459,73 @@ fn merge_cache_files(src_dir: &Path, dst_dir: &Path) -> io::Result<u64> {
 }
 
 /// Copies a directory tree preserving modification times and symbolic links.
+/// Uses a unique per-attempt staging directory and atomic rename to ensure
+/// concurrent seeding attempts never clobber or delete each other's destinations.
 fn copy_dir_preserving(src: &Path, dst: &Path) -> io::Result<u64> {
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)?;
+    if dst.exists() {
+        return Ok(tree_size(dst));
     }
 
+    let parent = dst.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent")
+    })?;
+    fs::create_dir_all(parent)?;
+
+    // Create a unique staging path in the same parent directory (same filesystem for atomic rename)
+    let dst_name = dst
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("dir");
+    let staging_name = format!(
+        ".staging-{}-{}-{}",
+        dst_name,
+        std::process::id(),
+        NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let staging_dst = parent.join(staging_name);
+
     #[cfg(unix)]
-    {
+    let copy_result = {
         let mut cmd = std::process::Command::new("cp");
         cmd.scrub_cluster_secrets();
         let status = cmd
             .arg("-a")
             .arg(src)
-            .arg(dst)
+            .arg(&staging_dst)
             .status();
         match status {
-            Ok(s) if s.success() => Ok(tree_size(dst)),
-            Ok(s) => {
-                if dst.exists() {
-                    let _ = fs::remove_dir_all(dst);
-                }
-                Err(io::Error::other(format!(
-                    "copying {} to {} failed: {s}",
-                    src.display(),
-                    dst.display()
-                )))
-            }
-            Err(e) => {
-                if dst.exists() {
-                    let _ = fs::remove_dir_all(dst);
-                }
-                Err(e)
-            }
+            Ok(s) if s.success() => Ok(()),
+            Ok(s) => Err(io::Error::other(format!(
+                "copying {} to {} failed: {s}",
+                src.display(),
+                staging_dst.display()
+            ))),
+            Err(e) => Err(e),
         }
-    }
+    };
 
     #[cfg(not(unix))]
-    {
-        match copy_dir_fallback(src, dst) {
-            Ok(size) => Ok(size),
-            Err(e) => {
-                if dst.exists() {
-                    let _ = fs::remove_dir_all(dst);
-                }
-                Err(e)
-            }
+    let copy_result = copy_dir_fallback(src, &staging_dst).map(|_| ());
+
+    if let Err(e) = copy_result {
+        if staging_dst.exists() {
+            let _ = fs::remove_dir_all(&staging_dst);
         }
+        return Err(e);
     }
+
+    // Try atomic rename from staging to dst
+    if let Err(e) = fs::rename(&staging_dst, dst) {
+        // If dst was already populated concurrently, clean up staging and accept dst
+        if dst.exists() {
+            let _ = fs::remove_dir_all(&staging_dst);
+            return Ok(tree_size(dst));
+        }
+        let _ = fs::remove_dir_all(&staging_dst);
+        return Err(e);
+    }
+
+    Ok(tree_size(dst))
 }
 
 #[cfg(not(unix))]
@@ -551,6 +558,7 @@ pub fn prune_stale_module_cache(max_age: Duration, max_size_bytes: u64) -> io::R
 /// that are older than `max_age`, or when total cache size exceeds `max_size_bytes`
 /// (least recently modified files evicted first).
 ///
+/// Never traverses directory symlinks and never removes files outside `cache_dir` (#834).
 /// Returns the number of files removed.
 pub fn prune_stale_module_cache_in(
     cache_dir: &Path,
@@ -560,6 +568,11 @@ pub fn prune_stale_module_cache_in(
     if !cache_dir.is_dir() {
         return Ok(0);
     }
+
+    let canonical_root = match fs::canonicalize(cache_dir) {
+        Ok(c) => c,
+        Err(_) => cache_dir.to_path_buf(),
+    };
 
     struct CacheFile {
         path: PathBuf,
@@ -573,19 +586,35 @@ pub fn prune_stale_module_cache_in(
 
     fn collect_files(
         dir: &Path,
+        canonical_root: &Path,
         files: &mut Vec<CacheFile>,
         total_size: &mut u64,
     ) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            let meta = entry.metadata()?;
-            if meta.is_dir() {
-                collect_files(&path, files, total_size)?;
-            } else if meta.is_file() {
+            let ft = entry.file_type()?;
+            // Never follow or collect symlinks: symlinks to external directories
+            // or files must never be traversed or deleted (#834).
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                // Ensure directory does not escape canonical root
+                if let Ok(canon) = fs::canonicalize(&path) {
+                    if !canon.starts_with(canonical_root) {
+                        continue;
+                    }
+                }
+                collect_files(&path, canonical_root, files, total_size)?;
+            } else if ft.is_file() {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 // Never remove lock files or active sentinel files
                 if name.ends_with(".lock") || name.starts_with('.') {
+                    continue;
+                }
+                let meta = fs::symlink_metadata(&path)?;
+                if !meta.file_type().is_file() {
                     continue;
                 }
                 let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -597,7 +626,7 @@ pub fn prune_stale_module_cache_in(
         Ok(())
     }
 
-    let _ = collect_files(cache_dir, &mut files, &mut total_size);
+    let _ = collect_files(cache_dir, &canonical_root, &mut files, &mut total_size);
 
     let mut removed = 0;
 
@@ -605,10 +634,14 @@ pub fn prune_stale_module_cache_in(
     files.retain(|f| {
         if let Ok(age) = now.duration_since(f.modified) {
             if age > max_age {
-                if fs::remove_file(&f.path).is_ok() {
-                    total_size = total_size.saturating_sub(f.size);
-                    removed += 1;
-                    return false;
+                if let Ok(meta) = fs::symlink_metadata(&f.path) {
+                    if meta.file_type().is_file() {
+                        if fs::remove_file(&f.path).is_ok() {
+                            total_size = total_size.saturating_sub(f.size);
+                            removed += 1;
+                            return false;
+                        }
+                    }
                 }
             }
         }
@@ -622,9 +655,13 @@ pub fn prune_stale_module_cache_in(
             if total_size <= max_size_bytes {
                 break;
             }
-            if fs::remove_file(&f.path).is_ok() {
-                total_size = total_size.saturating_sub(f.size);
-                removed += 1;
+            if let Ok(meta) = fs::symlink_metadata(&f.path) {
+                if meta.file_type().is_file() {
+                    if fs::remove_file(&f.path).is_ok() {
+                        total_size = total_size.saturating_sub(f.size);
+                        removed += 1;
+                    }
+                }
             }
         }
     }
