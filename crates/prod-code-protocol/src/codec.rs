@@ -21,6 +21,36 @@ impl ProdCodeCodec {
     pub fn new() -> Self {
         Self
     }
+
+    /// Encode a referenced `WireMessage` directly into `dst` without allocating an intermediate heap buffer.
+    pub fn encode_ref(&self, item: &WireMessage, dst: &mut BytesMut) -> Result<(), io::Error> {
+        let header_offset = dst.len();
+        dst.reserve(4);
+        dst.put_u32(0); // Placeholder for 4-byte BE length
+
+        // Stream JSON directly into dst's spare capacity using serde_json::to_writer
+        // without allocating an intermediate Vec<u8> buffer.
+        let writer = (&mut *dst).writer();
+        if let Err(e) = serde_json::to_writer(writer, item) {
+            dst.truncate(header_offset);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to serialize WireMessage: {e}"),
+            ));
+        }
+
+        let frame_len = dst.len() - header_offset - 4;
+        if frame_len > MAX_FRAME_SIZE {
+            dst.truncate(header_offset);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Message size {frame_len} exceeds maximum {MAX_FRAME_SIZE}"),
+            ));
+        }
+
+        dst[header_offset..header_offset + 4].copy_from_slice(&(frame_len as u32).to_be_bytes());
+        Ok(())
+    }
 }
 
 impl Decoder for ProdCodeCodec {
@@ -69,26 +99,7 @@ impl Encoder<WireMessage> for ProdCodeCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: WireMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let json_bytes = serde_json::to_vec(&item).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Failed to serialize WireMessage: {e}"),
-            )
-        })?;
-
-        let frame_len = json_bytes.len();
-        if frame_len > MAX_FRAME_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Message size {frame_len} exceeds maximum {MAX_FRAME_SIZE}"),
-            ));
-        }
-
-        dst.reserve(4 + frame_len);
-        dst.put_u32(frame_len as u32);
-        dst.put_slice(&json_bytes);
-
-        Ok(())
+        self.encode_ref(&item, dst)
     }
 }
 
@@ -123,6 +134,44 @@ mod tests {
         assert!(buf.len() > 4);
 
         let decoded = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode message");
+        assert_eq!(decoded, original);
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_codec_encode_ref_roundtrip() {
+        let codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::with_capacity(1024);
+        let initial_cap = buf.capacity();
+
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            supported_versions: Some(vec![1]),
+            capabilities: None,
+            client_name: "test-client".to_string(),
+            client_pid: 1234,
+            auth_token: None,
+            client_workspace_root: "/home/user/project".to_string(),
+            preferred_engine: None,
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        });
+
+        // Encode via reference
+        codec.encode_ref(&original, &mut buf).unwrap();
+        assert!(buf.len() > 4);
+        // Did not reallocate or exceed preallocated capacity
+        assert_eq!(buf.capacity(), initial_cap);
+
+        let mut dec_codec = ProdCodeCodec::new();
+        let decoded = dec_codec
             .decode(&mut buf)
             .unwrap()
             .expect("should decode message");
@@ -248,5 +297,37 @@ mod tests {
             .unwrap()
             .expect("should decode SyncResponse");
         assert_eq!(decoded_resp, resp);
+    }
+
+    #[test]
+    fn test_codec_preserves_preexisting_bytes_and_appends() {
+        let codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+        buf.put_slice(b"preexisting-bytes");
+        let initial_len = buf.len();
+
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            supported_versions: Some(vec![1]),
+            capabilities: None,
+            client_name: "test-client".to_string(),
+            client_pid: 1234,
+            auth_token: None,
+            client_workspace_root: "/home/user/project".to_string(),
+            preferred_engine: None,
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        });
+
+        codec.encode_ref(&original, &mut buf).unwrap();
+        assert_eq!(&buf[..initial_len], b"preexisting-bytes");
+        let mut frame_buf = buf.split_off(initial_len);
+        let mut dec_codec = ProdCodeCodec::new();
+        let decoded = dec_codec.decode(&mut frame_buf).unwrap().expect("decodes");
+        assert_eq!(decoded, original);
     }
 }
