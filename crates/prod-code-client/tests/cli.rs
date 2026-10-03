@@ -2416,6 +2416,141 @@ async fn cli_validate_compile_runs_the_check_command_on_the_proposal() {
     );
 }
 
+#[tokio::test]
+async fn cli_validate_stream_validates_incrementally() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::json!([]),
+    })
+    .await;
+    let proposal = ws.root().join("streamed_proposal.rs");
+    std::fs::write(&proposal, "pub fn calculate() -> i32 {\n    42\n}\n").unwrap();
+    let proposal = proposal.to_string_lossy().into_owned();
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &["validate", "src/lib.rs", "--from", &proposal, "--stream"],
+    )
+    .await;
+    let text = stdout_of(&out);
+    assert!(out.status.success(), "{text}{}", stderr_of(&out));
+    assert!(
+        text.contains("stream generation validated clean") || text.contains("Streamed validation"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn cli_validate_borrow_check_verifies_clean() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::json!([]),
+    })
+    .await;
+    let proposal = ws.root().join("borrow_check_proposal.rs");
+    std::fs::write(&proposal, "pub fn calculate() -> i32 {\n    42\n}\n").unwrap();
+    let proposal = proposal.to_string_lossy().into_owned();
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &["validate", "src/lib.rs", "--from", &proposal, "--borrow-check"],
+    )
+    .await;
+    assert!(
+        stderr_of(&out).contains("Running the remote compiler check for the proposed changes"),
+        "{}",
+        stderr_of(&out)
+    );
+}
+
+#[tokio::test]
+async fn cli_validate_chunk_and_session() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::json!([]),
+    })
+    .await;
+
+    let out1 = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "validate",
+            "src/lib.rs",
+            "--chunk",
+            "pub struct Client;\n",
+            "--session",
+            "cli-test-s1",
+            "--reset",
+        ],
+    )
+    .await;
+    assert!(out1.status.success(), "{}", stderr_of(&out1));
+
+    let out2 = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "validate",
+            "src/lib.rs",
+            "--chunk",
+            "impl Client { pub fn run(&self) {} }\n",
+            "--session",
+            "cli-test-s1",
+            "--close",
+        ],
+    )
+    .await;
+    let text = stdout_of(&out2);
+    assert!(out2.status.success(), "{text}{}", stderr_of(&out2));
+    assert!(text.contains("stream generation validated clean"), "{text}");
+}
+
+#[tokio::test]
+async fn cli_validate_chunk_intercepts() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => serde_json::json!({
+            "kind": "full",
+            "items": [{
+                "severity": 1,
+                "code": "unresolved-method",
+                "message": "no method named `hallucinated_execute` found for struct `Client`",
+                "range": {
+                    "start": { "line": 2, "character": 4 },
+                    "end": { "line": 2, "character": 24 }
+                }
+            }]
+        }),
+        _ => serde_json::json!([]),
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "validate",
+            "src/lib.rs",
+            "--chunk",
+            "impl Client {\n    pub fn run(&self) {\n        self.hallucinated_execute();\n    }\n}\n",
+            "--session",
+            "cli-test-intercept",
+            "--reset",
+        ],
+    )
+    .await;
+    assert!(!out.status.success(), "should fail on interception");
+    let text = stdout_of(&out);
+    assert!(text.contains("INTERCEPT"), "{text}");
+    assert!(text.contains("hallucinated_execute"), "{text}");
+}
+
 /// `refs --symbol NAME --in DIR` answers for this checkout and the other one; `--in` needs a
 /// name (#375).
 #[tokio::test]

@@ -515,6 +515,7 @@ pub fn validate_xml(shown: &str, text: &str, is_svg: bool) -> DiagnosticsReport 
         preexisting: Vec::new(),
         in_derive: Vec::new(),
         auto_trait: Vec::new(),
+        hallucinations: Vec::new(),
     }
 }
 
