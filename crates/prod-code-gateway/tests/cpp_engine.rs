@@ -82,7 +82,7 @@ fn test_riff_shard_relocation_preserves_null_order_and_replaces_paths() {
         riff.push(0);
     }
 
-    let (relocated, source_path) = relocate_shard(&riff, from, to).unwrap();
+    let (relocated, source_path) = relocate_shard(&riff, from, to, None).unwrap();
     assert_eq!(
         source_path,
         Some(PathBuf::from(
@@ -106,23 +106,104 @@ fn test_riff_shard_relocation_preserves_null_order_and_replaces_paths() {
     let mut decomp = Vec::with_capacity(uncomp_size);
     decoder.read_to_end(&mut decomp).unwrap();
 
-    let decomp_strings: Vec<String> = decomp
+    let bytes = decomp.strip_suffix(&[0]).unwrap_or(&decomp);
+    let decomp_strings: Vec<String> = bytes
         .split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
         .map(|s| String::from_utf8_lossy(s).to_string())
         .collect();
 
-    // Positional order and count of interned strings preserved
-    assert_eq!(decomp_strings.len(), original_strings.len() - 1); // excluding empty initial string
-    assert!(decomp_strings.contains(&"/srv/workspaces/trading-engine--wt-feed".to_string()));
-    assert!(decomp_strings.contains(
-        &"/srv/workspaces/trading-engine--wt-feed/src/order.cpp".to_string()
-    ));
-    assert!(decomp_strings.contains(
-        &"file:///srv/workspaces/trading-engine--wt-feed/src/order.cpp".to_string()
-    ));
-    assert!(decomp_strings.contains(&"OrderBook::submit_limit".to_string()));
+    // Positional order and count of interned strings preserved, including index 0 sentinel
+    assert_eq!(decomp_strings.len(), original_strings.len());
+    assert_eq!(decomp_strings[0], "");
+    assert_eq!(decomp_strings[1], "/srv/workspaces/trading-engine--wt-feed");
+    assert_eq!(decomp_strings[2], "/srv/workspaces/trading-engine--wt-feed/src/order.cpp");
+    assert_eq!(decomp_strings[3], "file:///srv/workspaces/trading-engine--wt-feed/src/order.cpp");
+    assert_eq!(decomp_strings[4], "OrderBook::submit_limit");
+    assert_eq!(decomp_strings[5], "int");
     assert!(!decomp_strings.iter().any(|s| s.contains("trading-engine/src")));
+}
+
+#[test]
+fn test_clangd_relocation_derives_tu_from_shard_identity_and_ignores_included_headers() {
+    let from = Path::new("/srv/workspaces/complex-engine");
+    let to = Path::new("/srv/workspaces/complex-engine--wt-worker");
+
+    let header_path = "/srv/workspaces/complex-engine/include/common.h";
+    let source_path = "/srv/workspaces/complex-engine/src/z_dispatch.cpp";
+
+    // Alphabetically, include/common.h comes before src/z_dispatch.cpp
+    let original_strings = vec![
+        "".to_string(),
+        header_path.to_string(),
+        format!("file://{header_path}"),
+        source_path.to_string(),
+        format!("file://{source_path}"),
+        "dispatch_event".to_string(),
+    ];
+    let mut uncompressed = Vec::new();
+    for s in &original_strings {
+        uncompressed.extend_from_slice(s.as_bytes());
+        uncompressed.push(0);
+    }
+
+    let mut encoder =
+        flate2::write::ZlibEncoder::new(Vec::<u8>::new(), flate2::Compression::default());
+    encoder.write_all(&uncompressed).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let mut stri_data = Vec::new();
+    stri_data.extend_from_slice(&(uncompressed.len() as u32).to_le_bytes());
+    stri_data.extend_from_slice(&compressed);
+
+    let mut riff = Vec::new();
+    riff.extend_from_slice(b"RIFF");
+    let total_len = 4 + 8 + 4 + (8 + stri_data.len());
+    riff.extend_from_slice(&(total_len as u32).to_le_bytes());
+    riff.extend_from_slice(b"CdIx");
+    riff.extend_from_slice(b"meta");
+    riff.extend_from_slice(&4u32.to_le_bytes());
+    riff.extend_from_slice(&21u32.to_le_bytes());
+    riff.extend_from_slice(b"stri");
+    let stri_len = stri_data.len() as u32;
+    riff.extend_from_slice(&stri_len.to_le_bytes());
+    riff.extend_from_slice(&stri_data);
+    if stri_len % 2 != 0 {
+        riff.push(0);
+    }
+
+    let origin_digest = clangd_path_digest(source_path);
+    let shard_name = format!("z_dispatch.cpp.{origin_digest}.idx");
+
+    let (relocated, source) =
+        relocate_shard(&riff, from, to, Some(&shard_name)).unwrap();
+
+    // Must resolve to z_dispatch.cpp, not common.h
+    assert_eq!(
+        source,
+        Some(PathBuf::from(
+            "/srv/workspaces/complex-engine--wt-worker/src/z_dispatch.cpp"
+        ))
+    );
+
+    let target_shard = shard_filename_for_path(&source.unwrap()).unwrap();
+    assert!(target_shard.starts_with("z_dispatch.cpp."));
+    assert!(!target_shard.starts_with("common.h."));
+
+    // Check index 0 sentinel preservation
+    let stri_offset = 24;
+    let mut decoder = flate2::read::ZlibDecoder::new(&relocated[stri_offset + 12..]);
+    let mut decomp = Vec::new();
+    decoder.read_to_end(&mut decomp).unwrap();
+    let bytes = decomp.strip_suffix(&[0]).unwrap();
+    let decomp_strings: Vec<String> = bytes
+        .split(|&b| b == 0)
+        .map(|s| String::from_utf8_lossy(s).to_string())
+        .collect();
+
+    assert_eq!(decomp_strings.len(), original_strings.len());
+    assert_eq!(decomp_strings[0], "");
+    assert_eq!(decomp_strings[1], "/srv/workspaces/complex-engine--wt-worker/include/common.h");
+    assert_eq!(decomp_strings[3], "/srv/workspaces/complex-engine--wt-worker/src/z_dispatch.cpp");
 }
 
 #[test]
