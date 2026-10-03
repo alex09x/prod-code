@@ -1003,7 +1003,9 @@ fn build_tools_raw() -> Vec<McpTool> {
                     "apply": { "type": "boolean", "description": "Write the winning hypothesis into the checkout (default false)" },
                     "timeout_secs": { "type": "integer", "description": "Kill a hypothesis after this many seconds (default 3600)" },
                     "parallel": { "type": "integer", "description": "Hypotheses run at once (default: server cores / 8)" },
-                    "tail_bytes": { "type": "integer", "description": "Output kept per hypothesis (default 16384)" }
+                    "tail_bytes": { "type": "integer", "description": "Output kept per hypothesis (default 16384)" },
+                    "in_memory": { "type": "boolean", "description": "Run hypotheses in a lightweight RAM-backed (/dev/shm) in-memory overlay shadow root (Roadmap 7.4)" },
+                    "ram": { "type": "boolean", "description": "Alias for in_memory" }
                 },
                 "required": ["hypotheses", "argv"]
             }),
@@ -5560,6 +5562,11 @@ async fn handle_shadow_run(
         .and_then(|v| v.as_u64())
         .unwrap_or(16 * 1024) as usize;
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let in_memory = args
+        .get("in_memory")
+        .and_then(|v| v.as_bool())
+        .or_else(|| args.get("ram").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
     let subdir = args
         .get("cwd")
         .and_then(|v| v.as_str())
@@ -5575,6 +5582,7 @@ async fn handle_shadow_run(
         timeout_secs,
         parallel,
         tail_bytes,
+        in_memory,
     )
     .await?;
     let applied = match (apply, outcome.winner) {
@@ -5848,6 +5856,7 @@ pub async fn compile_check(
         900,
         1,
         1 << 20,
+        false,
     )
     .await?;
     let result = outcome
@@ -9546,6 +9555,8 @@ mod tests {
             serde_json::json!(["path", "new_text"])
         );
         assert_eq!(tool.input_schema["properties"]["apply"]["type"], "boolean");
+        assert_eq!(tool.input_schema["properties"]["in_memory"]["type"], "boolean");
+        assert_eq!(tool.input_schema["properties"]["ram"]["type"], "boolean");
     }
 
     #[test]

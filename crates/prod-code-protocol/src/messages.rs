@@ -1823,6 +1823,9 @@ pub struct ShadowRunRequest {
     /// Bytes of combined output kept per hypothesis (its tail); 0 means the server default.
     #[serde(default)]
     pub tail_bytes: usize,
+    /// Run hypotheses in a lightweight RAM-backed (/dev/shm) in-memory overlay shadow root.
+    #[serde(default)]
+    pub in_memory: bool,
     #[serde(default)]
     pub client_agent: Option<String>,
     #[serde(default)]

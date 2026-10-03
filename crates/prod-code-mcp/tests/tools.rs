@@ -301,10 +301,15 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                     .await?;
             }
             WireMessage::ShadowRunRequest(req) => {
+                let mode = if req.in_memory {
+                    "overlay-ram".to_string()
+                } else {
+                    "in-place".to_string()
+                };
                 framed
                     .send(WireMessage::ShadowRunResponse(ShadowRunResponse {
                         server_workspace_root: req.client_workspace_root,
-                        mode: "in-place".to_string(),
+                        mode,
                         results: script.shadow_results.clone(),
                         error: None,
                     }))
@@ -4759,6 +4764,69 @@ async fn code_shadow_run_ranks_and_can_apply_the_winner() {
         std::fs::read_to_string(ws.path("src/lib.rs")).unwrap(),
         "pub fn a() -> i32 {\n    2\n}\n"
     );
+}
+
+#[tokio::test]
+async fn code_shadow_run_supports_in_memory_ram_mode() {
+    let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
+    let remote = mock_gateway(Script {
+        shadow_results: vec![ShadowHypothesisResult {
+            name: "h1".to_string(),
+            exit_code: Some(0),
+            duration_ms: 10,
+            timed_out: false,
+            error: None,
+            output_tail: Some(b"test result: ok. 1 passed; 0 failed\n".to_vec()),
+            output_len: 30,
+        }],
+        ..Script::default()
+    })
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_shadow_run",
+        serde_json::json!({
+            "hypotheses": [ { "name": "h1", "edits": [ { "path": "src/lib.rs", "new_text": "pub fn a() -> i32 {\n    2\n}\n" } ] } ],
+            "argv": ["cargo", "test"],
+            "in_memory": true
+        }),
+    )
+    .await
+    .expect("shadow run runs");
+    assert!(!result.is_error);
+    let text = text_of(&result);
+    assert!(text.contains("overlay-ram mode"), "{text}");
+    assert!(text.contains("winner: h1"), "{text}");
+
+    let ram_remote = mock_gateway(Script {
+        shadow_results: vec![ShadowHypothesisResult {
+            name: "h1".to_string(),
+            exit_code: Some(0),
+            duration_ms: 10,
+            timed_out: false,
+            error: None,
+            output_tail: Some(b"test result: ok. 1 passed; 0 failed\n".to_vec()),
+            output_len: 30,
+        }],
+        ..Script::default()
+    })
+    .await;
+    let ram_result = execute_tool(
+        ram_remote,
+        &ws.root(),
+        "code_shadow_run",
+        serde_json::json!({
+            "hypotheses": [ { "name": "h1", "edits": [ { "path": "src/lib.rs", "new_text": "pub fn a() -> i32 {\n    2\n}\n" } ] } ],
+            "argv": ["cargo", "test"],
+            "ram": true
+        }),
+    )
+    .await
+    .expect("shadow run runs with ram alias");
+    assert!(!ram_result.is_error);
+    let ram_text = text_of(&ram_result);
+    assert!(ram_text.contains("overlay-ram mode"), "{ram_text}");
 }
 
 #[tokio::test]

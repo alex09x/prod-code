@@ -202,15 +202,46 @@ pub fn default_root(storage_root: &Path) -> PathBuf {
     if let Ok(ram_env) = std::env::var("PROD_CODE_SHADOW_RAM")
         && (ram_env == "1" || ram_env.eq_ignore_ascii_case("true"))
     {
-        let shm = Path::new("/dev/shm");
-        if shm.is_dir() {
-            return shm.join(format!(".prod-code-shadow-ram-{label}-{hash:016x}"));
+        if let Some(ram_root) = ram_shadow_root(storage_root) {
+            return ram_root;
         }
     }
     identity
         .parent()
         .map(|parent| parent.join(format!(".prod-code-shadow-{label}-{hash:016x}")))
         .unwrap_or_else(|| identity.join(format!(".shadow-{hash:016x}")))
+}
+
+/// A lightweight in-memory RAM overlay root in `/dev/shm` for speculative shadow execution (Roadmap 7.4).
+/// Returns `None` if `/dev/shm` does not exist or is not a directory.
+pub fn ram_shadow_root(storage_root: &Path) -> Option<PathBuf> {
+    let shm = Path::new("/dev/shm");
+    if !shm.is_dir() {
+        return None;
+    }
+    let identity = storage_identity(storage_root);
+    let label: String = identity
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("storage"))
+        .to_string_lossy()
+        .chars()
+        .take(32)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let hash = identity
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    Some(shm.join(format!(".prod-code-shadow-ram-{label}-{hash:016x}")))
 }
 
 fn storage_identity(storage_root: &Path) -> PathBuf {
@@ -1598,7 +1629,32 @@ pub async fn run_shadow(
         .await
         .unwrap_or(Some("overlay probe failed"));
     let overlay = overlay_reason.is_none();
-    let mode = if overlay { "overlay" } else { "in-place" };
+    let ram_requested = req.in_memory
+        || std::env::var("PROD_CODE_SHADOW_RAM")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let (effective_shadow_root, is_ram) = if overlay && ram_requested {
+        if let Some(ram_root) = ram_shadow_root(&state.storage_root) {
+            (ram_root, true)
+        } else {
+            tracing::warn!(
+                "🌓 [SHADOW] in-memory RAM overlay requested but /dev/shm is unavailable; falling back to disk overlay"
+            );
+            (state.shadow_root.clone(), false)
+        }
+    } else {
+        let is_ram = state.shadow_root.starts_with("/dev/shm");
+        (state.shadow_root.clone(), is_ram)
+    };
+
+    let mode = if !overlay {
+        "in-place"
+    } else if is_ram {
+        "overlay-ram"
+    } else {
+        "overlay"
+    };
     let parallel = if !overlay {
         1
     } else if req.parallel == 0 {
@@ -1613,8 +1669,8 @@ pub async fn run_shadow(
         );
     }
     if overlay {
-        std::fs::create_dir_all(&state.shadow_root)
-            .with_context(|| format!("cannot create {}", state.shadow_root.display()))?;
+        std::fs::create_dir_all(&effective_shadow_root)
+            .with_context(|| format!("cannot create {}", effective_shadow_root.display()))?;
         tokio::task::spawn_blocking(ensure_sccache_server).await.ok();
     }
     let names: Vec<String> = req.hypotheses.iter().map(|h| h.name.clone()).collect();
@@ -1645,7 +1701,7 @@ pub async fn run_shadow(
             tail_limit,
             workspace: workspace.clone(),
             subdir: subdir.clone(),
-            shadow_root: state.shadow_root.clone(),
+            shadow_root: effective_shadow_root.clone(),
             nonce,
         };
         let semaphore = Arc::clone(&semaphore);
@@ -1768,6 +1824,20 @@ mod tests {
 
     fn output(result: &ShadowHypothesisResult) -> String {
         String::from_utf8_lossy(result.output_tail.as_deref().unwrap_or_default()).into_owned()
+    }
+
+    #[test]
+    fn ram_shadow_root_returns_shm_path_when_available() {
+        let storage = Path::new("/var/lib/prod-code/storage/my-repo");
+        let result = ram_shadow_root(storage);
+        if Path::new("/dev/shm").is_dir() {
+            assert!(result.is_some());
+            let path = result.unwrap();
+            assert!(path.starts_with("/dev/shm"));
+            assert!(path.to_string_lossy().contains(".prod-code-shadow-ram-"));
+        } else {
+            assert_eq!(result, None);
+        }
     }
 
     #[test]
