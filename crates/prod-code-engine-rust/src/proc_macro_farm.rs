@@ -345,33 +345,9 @@ pub fn prepare_sandboxed_srv(
     ensure_secure_farm_dir(&scratch_dir)
         .with_context(|| format!("Failed to ensure secure scratch directory {}", scratch_dir.display()))?;
 
-    let mut hasher = DefaultHasher::new();
-    sysroot_srv.hash(&mut hasher);
-    memory_limit_mb.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    static INSTALL_LOCK: Mutex<()> = Mutex::new(());
-    static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let _install_guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-        let wrapper_path = farm_dir.join(format!("sandboxed-proc-macro-srv-{hash:016x}.sh"));
-        if wrapper_path.exists()
-            && let Ok(meta) = std::fs::symlink_metadata(&wrapper_path)
-            && meta.is_file()
-            && !meta.file_type().is_symlink()
-            && meta.uid() == uid
-            && (meta.mode() & 0o777) == 0o700
-        {
-            return Ok(wrapper_path);
-        }
-
-        let script = format!(
-            r#"#!/bin/sh
+    let script = format!(
+        r#"#!/bin/sh
 # prod-code isolated proc-macro worker farm sandbox
 set -e
 
@@ -420,10 +396,59 @@ else
     exec "{sysroot_srv}" "$@"
 fi
 "#,
-            memory_limit_kb = memory_limit_kb,
-            scratch_dir = scratch_dir.display(),
-            sysroot_srv = sysroot_srv.display(),
-        );
+        memory_limit_kb = memory_limit_kb,
+        scratch_dir = scratch_dir.display(),
+        sysroot_srv = sysroot_srv.display(),
+    );
+
+    #[cfg(not(unix))]
+    let script = format!(
+        r#"@echo off
+set PROD_CODE_AUTH_TOKEN=
+set PROD_CODE_AUTH_TOKEN_FILE=
+set PROD_CODE_TOKEN=
+set PROD_CODE_SECRET=
+set PROD_CODE_TLS_KEY=
+set PROD_CODE_TLS_CERT=
+set AWS_ACCESS_KEY_ID=
+set AWS_SECRET_ACCESS_KEY=
+set GITHUB_TOKEN=
+set TMPDIR={scratch_dir}
+set TEMP={scratch_dir}
+set TMP={scratch_dir}
+set RUST_ANALYZER_INTERNALS_DO_NOT_USE=this is unstable
+"{sysroot_srv}" %*
+"#,
+        scratch_dir = scratch_dir.display(),
+        sysroot_srv = sysroot_srv.display(),
+    );
+
+    let mut hasher = DefaultHasher::new();
+    sysroot_srv.hash(&mut hasher);
+    memory_limit_mb.hash(&mut hasher);
+    script.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+    static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let _install_guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let wrapper_path = farm_dir.join(format!("sandboxed-proc-macro-srv-{hash:016x}.sh"));
+        if wrapper_path.exists()
+            && let Ok(meta) = std::fs::symlink_metadata(&wrapper_path)
+            && meta.is_file()
+            && !meta.file_type().is_symlink()
+            && meta.uid() == uid
+            && (meta.mode() & 0o777) == 0o700
+            && std::fs::read_to_string(&wrapper_path).map_or(false, |content| content == script)
+        {
+            return Ok(wrapper_path);
+        }
 
         // Safe atomic launcher creation: use unique attempt counter to avoid collisions between concurrent attempts
         let attempt = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -458,34 +483,15 @@ fi
     #[cfg(not(unix))]
     {
         let wrapper_path = farm_dir.join(format!("sandboxed-proc-macro-srv-{hash:016x}.cmd"));
-        if wrapper_path.exists() {
+        if wrapper_path.exists()
+            && std::fs::read_to_string(&wrapper_path).map_or(false, |content| content == script)
+        {
             return Ok(wrapper_path);
         }
 
-        let script = format!(
-            r#"@echo off
-set PROD_CODE_AUTH_TOKEN=
-set PROD_CODE_AUTH_TOKEN_FILE=
-set PROD_CODE_TOKEN=
-set PROD_CODE_SECRET=
-set PROD_CODE_TLS_KEY=
-set PROD_CODE_TLS_CERT=
-set AWS_ACCESS_KEY_ID=
-set AWS_SECRET_ACCESS_KEY=
-set GITHUB_TOKEN=
-set TMPDIR={scratch_dir}
-set TEMP={scratch_dir}
-set TMP={scratch_dir}
-set RUST_ANALYZER_INTERNALS_DO_NOT_USE=this is unstable
-"{sysroot_srv}" %*
-"#,
-            scratch_dir = scratch_dir.display(),
-            sysroot_srv = sysroot_srv.display(),
-        );
-
         let attempt = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_wrapper = farm_dir.join(format!(".tmp-{hash:016x}-{attempt}.cmd"));
-        std::fs::write(&tmp_wrapper, script)?;
+        std::fs::write(&tmp_wrapper, &script)?;
         std::fs::rename(&tmp_wrapper, &wrapper_path)?;
         Ok(wrapper_path)
     }
@@ -706,5 +712,38 @@ exit 0
             assert_eq!(path, first, "All concurrent preparations must converge on identical validated launcher");
             assert!(path.exists());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_cached_wrapper_reinstalls_on_outdated_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_srv = temp.path().join("fake-outdated-srv.sh");
+        std::fs::write(&fake_srv, "#!/bin/sh\nexit 0\n").unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&fake_srv).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_srv, perms).unwrap();
+
+        let wrapper_path = prepare_sandboxed_srv(&fake_srv, 1024).unwrap();
+        assert!(wrapper_path.exists());
+        let original_content = std::fs::read_to_string(&wrapper_path).unwrap();
+        assert!(original_content.contains("exit 125"));
+
+        // Simulate an outdated pre-fix wrapper on disk with mode 0700
+        let outdated_script = "#!/bin/sh\nulimit -v 1048576 2>/dev/null || true\n";
+        std::fs::write(&wrapper_path, outdated_script).unwrap();
+        let mut perms = std::fs::metadata(&wrapper_path).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&wrapper_path, perms).unwrap();
+
+        // Preparing the sandbox again must detect the outdated content and reinstall
+        let repaired_path = prepare_sandboxed_srv(&fake_srv, 1024).unwrap();
+        assert_eq!(repaired_path, wrapper_path);
+        let repaired_content = std::fs::read_to_string(&repaired_path).unwrap();
+        assert_eq!(repaired_content, original_content, "Reinstalled wrapper must match fresh script exactly");
+        assert!(repaired_content.contains("exit 125"), "Must reinstall fail-closed error handling");
+        assert!(!repaired_content.contains("ulimit -v 1048576 2>/dev/null || true"), "Must replace outdated script content");
     }
 }
