@@ -2741,20 +2741,72 @@ pub fn resolve_ram_build_cache(
 }
 
 /// An RAII lease that marks a RAM-disk cache directory as actively in use by a running build.
+///
+/// On Unix, an advisory flock is held on the marker file for the entire lifetime of the lease.
+/// If the gateway process is killed or crashes, the OS kernel automatically closes the file
+/// descriptor and releases the lock, allowing sweepers to identify and clean stale markers.
 pub struct RamBuildLease {
     marker: Option<PathBuf>,
+    #[cfg(unix)]
+    _lock_file: Option<std::fs::File>,
 }
 
 impl RamBuildLease {
     pub fn acquire(target_dir: &Path) -> Self {
         if let Some(ws_cache_dir) = target_dir.parent() {
             let lease_id = NEXT_COMMAND_ID.fetch_add(1, Ordering::Relaxed);
-            let marker = ws_cache_dir.join(format!(".active_{}_{}", std::process::id(), lease_id));
-            if let Ok(()) = std::fs::write(&marker, b"") {
-                return Self { marker: Some(marker) };
+            let pid = std::process::id();
+            let marker = ws_cache_dir.join(format!(".active_{}_{}", pid, lease_id));
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::io::AsRawFd;
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&marker)
+                {
+                    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                    if ret == 0 {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let meta = format!(
+                            "{{\"pid\":{},\"lease_id\":{},\"created_at\":{}}}\n",
+                            pid, lease_id, now
+                        );
+                        let _ = file.write_all(meta.as_bytes());
+                        let _ = file.flush();
+                        return Self {
+                            marker: Some(marker),
+                            _lock_file: Some(file),
+                        };
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let meta = format!(
+                    "{{\"pid\":{},\"lease_id\":{},\"created_at\":{}}}\n",
+                    pid, lease_id, now
+                );
+                if let Ok(()) = std::fs::write(&marker, meta.as_bytes()) {
+                    return Self { marker: Some(marker) };
+                }
             }
         }
-        Self { marker: None }
+        Self {
+            marker: None,
+            #[cfg(unix)]
+            _lock_file: None,
+        }
     }
 }
 
@@ -2763,6 +2815,49 @@ impl Drop for RamBuildLease {
         if let Some(ref path) = self.marker {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// Checks whether a RAM-disk lease marker represents an active build process.
+///
+/// On Unix, an advisory flock is held for the lifetime of a live lease. If the process has died or crashed,
+/// flock acquisition succeeds; this function unlinks the stale marker and returns `false`.
+/// If the lock cannot be acquired because a running process is holding it, returns `true`.
+pub fn is_ram_lease_active(marker: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(marker)
+        {
+            let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if ret == 0 {
+                // Successfully locked: owning process died or exited without dropping the lease.
+                // Remove the stale marker file while holding the lock.
+                let _ = std::fs::remove_file(marker);
+                false
+            } else {
+                // Lock busy: active build process holds this lease.
+                true
+            }
+        } else {
+            // Already unlinked or cannot open
+            false
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let Ok(meta) = marker.metadata() {
+            if let Ok(elapsed) = meta.modified().and_then(|m| m.elapsed()) {
+                if elapsed.as_secs() > 7200 {
+                    let _ = std::fs::remove_file(marker);
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -2792,11 +2887,16 @@ pub fn sweep_ram_build_caches(base_dir: &Path) -> usize {
                     continue;
                 }
                 if let Ok(children) = std::fs::read_dir(&path) {
-                    let has_active_lease = children.flatten().any(|c| {
-                        c.file_name()
-                            .to_str()
-                            .is_some_and(|name| name.starts_with(".active_"))
-                    });
+                    let mut has_active_lease = false;
+                    for child in children.flatten() {
+                        let name = child.file_name();
+                        let name_str = name.to_str().unwrap_or_default();
+                        if name_str.starts_with(".active_") {
+                            if is_ram_lease_active(&child.path()) {
+                                has_active_lease = true;
+                            }
+                        }
+                    }
                     if has_active_lease {
                         continue;
                     }
@@ -9893,19 +9993,48 @@ mod exec_resilience_tests {
         let temp = tempfile::tempdir().unwrap();
         let ram_base = temp.path().join("shm");
         let ws_dir = ram_base.join("ws-old");
-        std::fs::create_dir_all(&ws_dir).unwrap();
+        let target_dir = ws_dir.join("target");
+        std::fs::create_dir_all(&target_dir).unwrap();
 
         // Fresh dir is not swept (not older than 24h)
         let swept = sweep_ram_build_caches(&ram_base);
         assert_eq!(swept, 0);
         assert!(ws_dir.exists());
 
-        // Active lease prevents sweeping
-        let _lease = ws_dir.join(".active_12345");
-        std::fs::write(&_lease, b"").unwrap();
+        // Active lease prevents sweeping and is recognized as active
+        let lease = RamBuildLease::acquire(&target_dir);
+        assert!(lease.marker.is_some());
+        let marker_path = lease.marker.clone().unwrap();
+        assert!(marker_path.exists());
+        assert!(is_ram_lease_active(&marker_path));
         let swept_active = sweep_ram_build_caches(&ram_base);
         assert_eq!(swept_active, 0);
         assert!(ws_dir.exists());
+        assert!(marker_path.exists());
+
+        // Dropping lease unlinks its marker file
+        drop(lease);
+        assert!(!marker_path.exists());
+
+        // Stale lease marker (left by crashed process) is detected as inactive and cleaned up
+        let stale_lease = ws_dir.join(".active_99999_1");
+        std::fs::write(&stale_lease, b"stale").unwrap();
+        assert!(stale_lease.exists());
+        assert!(!is_ram_lease_active(&stale_lease));
+        assert!(!stale_lease.exists(), "stale lease marker must be removed when unowned");
+
+        // Old dir (>24h) with stale lease marker is swept cleanly without being permanently protected
+        let stale_old = ws_dir.join(".active_88888_2");
+        std::fs::write(&stale_old, b"stale-old").unwrap();
+        let last_used = ws_dir.join(".last_used");
+        let f = std::fs::File::create(&last_used).unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(100_000);
+        f.set_modified(past).unwrap();
+        drop(f);
+
+        let swept_stale_old = sweep_ram_build_caches(&ram_base);
+        assert_eq!(swept_stale_old, 1);
+        assert!(!ws_dir.exists(), "stale crash-left marker must not permanently protect cache directory");
 
         // Non-existent base dir returns 0 safely
         let swept_none = sweep_ram_build_caches(&temp.path().join("does_not_exist"));
