@@ -62,6 +62,8 @@ pub struct SharedWorkspace {
     pub unloaded: AtomicBool,
     /// Whether this worktree overlay has been attached to the base validation engine.
     pub validation_attached: AtomicBool,
+    /// Broadcast channel for active session dynamic rebalancing redirects.
+    pub rebalance_tx: broadcast::Sender<(String, Option<String>)>,
 }
 
 impl SharedWorkspace {
@@ -89,6 +91,11 @@ impl SharedWorkspace {
             .as_ref()
             .map(|b| Arc::clone(&b.rust_engines))
             .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(rust_engine.iter().cloned().collect())));
+        let (rebalance_tx, _) = broadcast::channel(16);
+        let rebalance_tx = base_workspace
+            .as_ref()
+            .map(|b| b.rebalance_tx.clone())
+            .unwrap_or(rebalance_tx);
         Self {
             key: WorkspaceKey(root.clone()),
             root,
@@ -111,7 +118,18 @@ impl SharedWorkspace {
             detached: AtomicBool::new(false),
             unloaded: AtomicBool::new(false),
             validation_attached: AtomicBool::new(false),
+            rebalance_tx,
         }
+    }
+
+    /// Broadcasts a rebalance redirect request to all active sessions of this workspace.
+    pub fn trigger_rebalance(&self, target_addr: String, reason: Option<String>) -> usize {
+        self.rebalance_tx.send((target_addr, reason)).unwrap_or(0)
+    }
+
+    /// Subscribes to rebalance redirect requests for this workspace.
+    pub fn subscribe_rebalance(&self) -> broadcast::Receiver<(String, Option<String>)> {
+        self.rebalance_tx.subscribe()
     }
 
     /// Every Rust engine a change to a file under this root must reach.
@@ -186,6 +204,7 @@ impl SharedWorkspace {
                 detached: AtomicBool::new(false),
                 unloaded: AtomicBool::new(false),
                 validation_attached: AtomicBool::new(!is_main),
+                rebalance_tx: self.rebalance_tx.clone(),
             }));
         }
         self.base_validation_view(admission).await
@@ -221,6 +240,7 @@ impl SharedWorkspace {
             detached: AtomicBool::new(false),
             unloaded: AtomicBool::new(false),
             validation_attached: AtomicBool::new(false),
+            rebalance_tx: self.rebalance_tx.clone(),
         }))
     }
 }
@@ -377,6 +397,7 @@ impl SharedWorkspace {
             detached: AtomicBool::new(false),
             unloaded: AtomicBool::new(false),
             validation_attached: AtomicBool::new(false),
+            rebalance_tx: self.rebalance_tx.clone(),
         }))
     }
 
@@ -975,6 +996,57 @@ impl WorkspaceManager {
             .values()
             .filter(|state| matches!(state, LoadState::Ready(_)))
             .count()
+    }
+
+    /// Trigger rebalance redirect for all active sessions of a workspace matching `name`.
+    pub async fn trigger_rebalance_by_name(
+        &self,
+        name: &str,
+        target_addr: String,
+        reason: Option<String>,
+    ) -> usize {
+        let base_name = name.split('#').next().unwrap_or(name);
+        let guard = self.workspaces.read().await;
+        let mut notified = 0;
+        for (key, state) in guard.iter() {
+            if let LoadState::Ready(ws) = state {
+                let ws_name = ws
+                    .root
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default();
+                if ws_name == name
+                    || ws_name == base_name
+                    || key.0.to_string_lossy().contains(base_name)
+                    || ws.root.to_string_lossy().contains(base_name)
+                {
+                    notified += ws.trigger_rebalance(target_addr.clone(), reason.clone());
+                }
+            }
+        }
+        notified
+    }
+
+    /// Rebalance one active workspace to `target_addr` when under pressure.
+    pub async fn rebalance_one_active(&self, target_addr: &str, reason: &str) -> bool {
+        let guard = self.workspaces.read().await;
+        for state in guard.values() {
+            if let LoadState::Ready(ws) = state {
+                if ws.active_sessions.load(Ordering::Relaxed) > 0 {
+                    let notified = ws.trigger_rebalance(target_addr.to_string(), Some(reason.to_string()));
+                    if notified > 0 {
+                        tracing::info!(
+                            workspace = %ws.root.display(),
+                            target = %target_addr,
+                            notified,
+                            "rebalanced active workspace under host pressure"
+                        );
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Retrieve or load a shared workspace using leader-follower coalescing.

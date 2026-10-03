@@ -208,6 +208,16 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     calls.fetch_add(1, Ordering::Relaxed);
                     answer(method, &params)
                 };
+                if let Some(target_addr) = result.get("redirect").and_then(|v| v.as_str()) {
+                    let reason = result.get("reason").and_then(|v| v.as_str()).map(str::to_string);
+                    framed
+                        .send(WireMessage::Redirect {
+                            target_addr: target_addr.to_string(),
+                            reason,
+                        })
+                        .await?;
+                    break;
+                }
                 // A request of the server's own that the script wants passed on before the
                 // answer (`prod-code/server-request` returns it; it is given the question's id),
                 // as an older gateway passed on gopls's (#391).
