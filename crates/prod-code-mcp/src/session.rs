@@ -21,7 +21,7 @@ use tokio_util::codec::Framed;
 use url::Url;
 
 pub struct LspSession {
-    remote: SocketAddr,
+    pub remote: SocketAddr,
     framed: Framed<AnyStream, ProdCodeCodec>,
     root: PathBuf,
     /// The documents open in the server, by URI: the file, and a hash of the disk text last
@@ -680,6 +680,19 @@ async fn pooled_query_with_budget(
             if let Some(remembered) = crate::cluster::remembered_node(&ws_identity.name) {
                 target_remote = remembered;
             }
+            if let Some(ref current) = session {
+                if current.remote != target_remote {
+                    tracing::info!(
+                        from = %current.remote,
+                        to = %target_remote,
+                        "retiring established session because placement was rebalanced"
+                    );
+                    let old_session = session.take().expect("session present");
+                    tokio::spawn(async move {
+                        old_session.close().await;
+                    });
+                }
+            }
             if session.is_none() {
                 session = Some(LspSession::open(target_remote, &root, Some(file)).await?);
                 crate::watch::mark_synced(&root, crate::watch::current_generation(&root));
@@ -1025,5 +1038,79 @@ mod tests {
     fn rebalance_error_is_classified_as_connection_error() {
         let err = anyhow::anyhow!("session rebalanced to 127.0.0.1:9400: congested gateway");
         assert!(is_connection_error(&err));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn established_session_migrates_when_placement_is_rebalanced() {
+        let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+        let gateway1 = prod_code_testkit::ScriptedGateway::start(|_, _| serde_json::json!([])).await;
+        let gateway2 = prod_code_testkit::ScriptedGateway::start(|_, _| serde_json::json!([])).await;
+        let root = ws.root();
+        let file = ws.path("src/lib.rs");
+        let ws_identity = workspace_identity(&root);
+
+        // Query 1: runs on gateway1
+        pooled_query(
+            gateway1.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gateway1.calls(), 1);
+        assert_eq!(gateway2.calls(), 0);
+
+        // Rebalance workspace placement to gateway2
+        crate::cluster::remember_placement(&ws_identity.name, gateway2.addr());
+
+        // Query 2: established session on gateway1 must migrate to gateway2
+        pooled_query(
+            gateway1.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gateway1.calls(), 1);
+        assert_eq!(gateway2.calls(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn established_session_retries_on_mid_session_redirect() {
+        let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+        let gateway2 = prod_code_testkit::ScriptedGateway::start(|_, _| serde_json::json!([])).await;
+        let g2_addr = gateway2.addr();
+
+        let gateway1 = prod_code_testkit::ScriptedGateway::start(move |method, _| {
+            if method == "textDocument/documentSymbol" {
+                serde_json::json!({
+                    "redirect": g2_addr.to_string(),
+                    "reason": "congested gateway",
+                })
+            } else {
+                serde_json::json!([])
+            }
+        })
+        .await;
+
+        let root = ws.root();
+        let file = ws.path("src/lib.rs");
+
+        let result = pooled_query(
+            gateway1.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+        )
+        .await;
+
+        assert!(result.is_ok(), "query should succeed after following redirect");
+        assert_eq!(gateway1.calls(), 1);
+        assert_eq!(gateway2.calls(), 1);
     }
 }

@@ -506,7 +506,30 @@ impl ServerState {
     /// overloaded gateway moves to a much quieter one.
     pub async fn place(&self, req: &PlaceRequest) -> PlaceResponse {
         let view = self.cluster_view().await;
-        place_in(req, view)
+        let own_addr = self.advertise.read().await.clone();
+        let resp = place_in(req, view);
+        if req.rebalance_active
+            && let Some(ref target) = resp.node
+            && target != &own_addr
+        {
+            let notified = self
+                .workspace_manager
+                .trigger_rebalance_by_name(
+                    &req.workspace_name,
+                    target.clone(),
+                    Some(resp.reason.clone()),
+                )
+                .await;
+            if notified > 0 {
+                tracing::info!(
+                    workspace = %req.workspace_name,
+                    target = %target,
+                    notified,
+                    "triggered dynamic rebalance redirect for active sessions"
+                );
+            }
+        }
+        resp
     }
 
     pub async fn status(&self) -> StatusResponse {
@@ -4789,6 +4812,7 @@ async fn run_session_loop(
         view.workspace.backend.as_ref().map(|b| b.subscribe())
     };
 
+    let mut rebalance_rx = view.accounted.subscribe_rebalance();
     let mut writer_finished = false;
     let mut session_result = Ok(());
     loop {
@@ -4803,6 +4827,23 @@ async fn run_session_loop(
                 match on_client_message(client_msg_res, &out_tx, translator, view, &meta, &pending).await {
                     Flow::Next => continue,
                     Flow::Stop => break,
+                }
+            }
+
+            rebalance_msg = rebalance_rx.recv() => {
+                match rebalance_msg {
+                    Ok((target_addr, reason)) => {
+                        tracing::info!(
+                            session_id = meta.session_id,
+                            target = %target_addr,
+                            ?reason,
+                            "Session rebalanced: sending Redirect frame to active client"
+                        );
+                        let _ = out_tx.send(WireMessage::Redirect { target_addr, reason }).await;
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 }
             }
 
@@ -7681,6 +7722,28 @@ async fn janitor(
             _ => {}
         }
         was_short = short;
+        if was_short.is_some() {
+            let view = state.cluster_view().await;
+            let own_addr = state.advertise.read().await.clone();
+            let target = view
+                .nodes
+                .iter()
+                .filter(|n| {
+                    n.alive
+                        && !n.addr.is_empty()
+                        && n.addr != own_addr
+                        && n.addr != view.this_node
+                        && n.status.host.pressure().is_none()
+                })
+                .min_by_key(|n| n.workspaces.len());
+
+            if let Some(target) = target {
+                state
+                    .workspace_manager
+                    .rebalance_one_active(&target.addr, "evacuating node under memory pressure")
+                    .await;
+            }
+        }
         let memory_short = host
             .memory_used_share()
             .is_some_and(|used| used > prod_code_protocol::MEMORY_PRESSURE_USED);
