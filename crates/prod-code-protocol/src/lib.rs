@@ -40,7 +40,7 @@ pub use transport::{
     AnyStream, clear_client_tls_cache, connect, connect_stream, connect_stream_with,
     connect_stream_with_client_config, connect_stream_with_tls, connect_with,
     default_client_tls_built, init_client_tls_from_env, set_default_client_tls,
-    set_default_client_tls_built,
+    set_default_client_tls_built, ScrubSecrets,
 };
 #[cfg(unix)]
 pub use transport::{connect_unix, connect_unix_with};

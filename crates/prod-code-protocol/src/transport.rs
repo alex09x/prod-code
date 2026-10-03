@@ -124,6 +124,37 @@ pub const AUTH_TOKEN_FILE_ENV: &str = "PROD_CODE_AUTH_TOKEN_FILE";
 /// gateways of its own tests.
 pub const AUTH_TOKEN_VARS: [&str; 2] = [AUTH_TOKEN_ENV, AUTH_TOKEN_FILE_ENV];
 
+/// Helper trait to scrub all cluster secret credentials (cluster auth tokens and TLS material)
+/// from command environments before spawning child processes (#402, Phase 5.6).
+pub trait ScrubSecrets {
+    /// Removes all [`AUTH_TOKEN_VARS`] and [`crate::tls::TLS_ENV_VARS`] from the command environment.
+    fn scrub_cluster_secrets(&mut self) -> &mut Self;
+}
+
+impl ScrubSecrets for std::process::Command {
+    fn scrub_cluster_secrets(&mut self) -> &mut Self {
+        for var in AUTH_TOKEN_VARS {
+            self.env_remove(var);
+        }
+        for var in crate::tls::TLS_ENV_VARS {
+            self.env_remove(var);
+        }
+        self
+    }
+}
+
+impl ScrubSecrets for tokio::process::Command {
+    fn scrub_cluster_secrets(&mut self) -> &mut Self {
+        for var in AUTH_TOKEN_VARS {
+            self.env_remove(var);
+        }
+        for var in crate::tls::TLS_ENV_VARS {
+            self.env_remove(var);
+        }
+        self
+    }
+}
+
 /// The token every connection of this cluster opens with (#402), for clients and gateways
 /// alike: [`AUTH_TOKEN_ENV`], else the first line of the file [`AUTH_TOKEN_FILE_ENV`] names.
 /// `None` when neither is set, which is the default: a cluster without a token takes every

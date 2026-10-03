@@ -35,7 +35,7 @@ use prod_code_protocol::tls::{
 };
 use prod_code_protocol::transport::{
     clear_client_tls_cache, connect_with, default_client_tls_built, init_client_tls_from_env,
-    AUTH_TOKEN_VARS,
+    AUTH_TOKEN_VARS, ScrubSecrets,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::RootCertStore;
@@ -1011,13 +1011,9 @@ async fn test_secrets_absent_from_logs_and_child_environments() {
             std::env::set_var(TLS_SERVER_NAME_ENV, "node.internal");
         }
 
+        // Exercise production helper ScrubSecrets::scrub_cluster_secrets on std::process::Command
         let mut cmd = std::process::Command::new("env");
-        for var in AUTH_TOKEN_VARS {
-            cmd.env_remove(var);
-        }
-        for var in TLS_ENV_VARS {
-            cmd.env_remove(var);
-        }
+        cmd.scrub_cluster_secrets();
 
         let output = cmd.output().expect("execute env command in child process");
         assert!(output.status.success());
@@ -1043,6 +1039,28 @@ async fn test_secrets_absent_from_logs_and_child_environments() {
             !stdout.contains(canary_key_path),
             "child environment must never leak private key path"
         );
+
+        // Also exercise production helper ScrubSecrets::scrub_cluster_secrets on tokio::process::Command
+        let mut tokio_cmd = tokio::process::Command::new("env");
+        tokio_cmd.scrub_cluster_secrets();
+        let tokio_output = tokio_cmd
+            .output()
+            .await
+            .expect("execute tokio env command in child process");
+        assert!(tokio_output.status.success());
+        let tokio_stdout = String::from_utf8_lossy(&tokio_output.stdout);
+        for var in AUTH_TOKEN_VARS {
+            assert!(
+                !tokio_stdout.contains(&format!("{var}=")),
+                "tokio child process environment must not contain {var}"
+            );
+        }
+        for var in TLS_ENV_VARS {
+            assert!(
+                !tokio_stdout.contains(&format!("{var}=")),
+                "tokio child process environment must not contain {var}"
+            );
+        }
 
         unsafe {
             for var in AUTH_TOKEN_VARS {
