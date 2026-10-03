@@ -886,32 +886,48 @@ fn relocate_virtualenv(old: &std::path::Path, new: &std::path::Path) -> std::io:
     Ok(rewritten)
 }
 
+/// Finds a trusted host Python interpreter on the system (Roadmap 6.2).
+fn find_trusted_host_python() -> Option<PathBuf> {
+    const CANDIDATES: &[&str] = &[
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/usr/bin/python",
+    ];
+    for &cand in CANDIDATES {
+        let p = Path::new(cand);
+        if p.is_file() {
+            return Some(p.to_path_buf());
+        }
+    }
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .flat_map(|dir| [dir.join("python3"), dir.join("python")])
+            .find(|p| p.is_file())
+    })
+}
+
 /// Pre-warms Python bytecode (`.pyc` pycache) inside a virtual environment (Roadmap 6.2).
 ///
-/// Uses the virtualenv's Python interpreter to compile all `.py` files in `site-packages` into bytecode,
-/// eliminating cold import and parse latency when running pytest, basedpyright, or python scripts.
-/// If python cannot be executed or fails, logs and falls back gracefully without breaking workspace seeding.
+/// Uses the host's trusted Python interpreter in isolated mode with site initialization disabled
+/// (`-I -S`) to compile all `.py` files in `lib` into bytecode. This eliminates cold import and parse
+/// latency without executing untrusted workspace-provided binaries or running untrusted `sitecustomize.py` hooks.
 pub fn prewarm_virtualenv_pycache(venv: &std::path::Path) -> std::io::Result<usize> {
-    let python_bin = venv.join("bin/python");
-    let python3_bin = venv.join("bin/python3");
-    let interpreter = if python_bin.is_file() {
-        python_bin
-    } else if python3_bin.is_file() {
-        python3_bin
-    } else {
+    if !is_virtualenv(venv) {
         return Ok(0);
-    };
-
+    }
     let lib_dir = venv.join("lib");
-    let target_dir = if lib_dir.is_dir() {
-        lib_dir
-    } else {
-        venv.to_path_buf()
+    if !lib_dir.is_dir() {
+        return Ok(0);
+    }
+    let host_python = match find_trusted_host_python() {
+        Some(p) => p,
+        None => return Ok(0),
     };
 
-    match std::process::Command::new(&interpreter)
-        .args(["-m", "compileall", "-q", "-f"])
-        .arg(&target_dir)
+    match std::process::Command::new(&host_python)
+        .args(["-I", "-S", "-m", "compileall", "-q", "-f"])
+        .arg(&lib_dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -925,7 +941,7 @@ pub fn prewarm_virtualenv_pycache(venv: &std::path::Path) -> std::io::Result<usi
             Ok(0)
         }
         Err(err) => {
-            tracing::debug!(venv = %venv.display(), %err, "could not execute python for compileall; skipping pre-warming");
+            tracing::debug!(venv = %venv.display(), %err, "could not execute host python for compileall; skipping pre-warming");
             Ok(0)
         }
     }
@@ -2659,6 +2675,18 @@ pub fn polyglot_compiler_cache_env(
     env
 }
 
+pub fn is_ram_cache_enabled_with(enabled: bool, env_val: Option<&str>) -> bool {
+    enabled
+        || env_val
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+}
+
+pub fn is_ram_cache_enabled(enabled: bool) -> bool {
+    let env = std::env::var("PROD_CODE_BUILD_RAM").ok();
+    is_ram_cache_enabled_with(enabled, env.as_deref())
+}
+
 /// Resolves or initializes an isolated in-memory RAM-disk build cache for `workspace` (Roadmap 6.2).
 /// Returns `Some(PathBuf)` if enabled and headroom permits (>= 20% free and >= 256 MiB free); otherwise `None`.
 pub fn resolve_ram_build_cache(
@@ -2666,7 +2694,7 @@ pub fn resolve_ram_build_cache(
     enabled: bool,
     custom_dir: Option<&Path>,
 ) -> Option<PathBuf> {
-    if !enabled && std::env::var_os("PROD_CODE_BUILD_RAM").is_none() {
+    if !is_ram_cache_enabled(enabled) {
         return None;
     }
     let default_shm = Path::new("/dev/shm/prod-code-build");
@@ -2712,6 +2740,32 @@ pub fn resolve_ram_build_cache(
     Some(target_dir)
 }
 
+/// An RAII lease that marks a RAM-disk cache directory as actively in use by a running build.
+pub struct RamBuildLease {
+    marker: Option<PathBuf>,
+}
+
+impl RamBuildLease {
+    pub fn acquire(target_dir: &Path) -> Self {
+        if let Some(ws_cache_dir) = target_dir.parent() {
+            let lease_id = NEXT_COMMAND_ID.fetch_add(1, Ordering::Relaxed);
+            let marker = ws_cache_dir.join(format!(".active_{}_{}", std::process::id(), lease_id));
+            if let Ok(()) = std::fs::write(&marker, b"") {
+                return Self { marker: Some(marker) };
+            }
+        }
+        Self { marker: None }
+    }
+}
+
+impl Drop for RamBuildLease {
+    fn drop(&mut self) {
+        if let Some(ref path) = self.marker {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Sweeps stale or orphaned RAM-disk build caches on startup or periodic maintenance.
 pub fn sweep_ram_build_caches(base_dir: &Path) -> usize {
     if !base_dir.is_dir() {
@@ -2736,6 +2790,16 @@ pub fn sweep_ram_build_caches(base_dir: &Path) -> usize {
                 let is_running = running.iter().any(|ws| dir_name.starts_with(ws));
                 if is_running {
                     continue;
+                }
+                if let Ok(children) = std::fs::read_dir(&path) {
+                    let has_active_lease = children.flatten().any(|c| {
+                        c.file_name()
+                            .to_str()
+                            .is_some_and(|name| name.starts_with(".active_"))
+                    });
+                    if has_active_lease {
+                        continue;
+                    }
                 }
                 let marker = path.join(".last_used");
                 let metadata_target = if marker.is_file() {
@@ -2915,6 +2979,7 @@ pub async fn run_exec_with_ram(
     // status (#180); tokio only gets the pipes. The gateway binary starts it through its exec
     // shim, so that the peak memory reported is the command's and not the gateway's (#255).
     let ram_target = resolve_ram_build_cache(&workspace, build_cache_ram, build_cache_dir);
+    let _ram_lease = ram_target.as_deref().map(RamBuildLease::acquire);
     let (mut cmd, report) = exec_shim::command(program);
     cmd.args(args)
         .current_dir(&run_dir)
@@ -3336,6 +3401,7 @@ pub async fn run_remote_exec_with_ram(
     };
 
     let ram_target = resolve_ram_build_cache(&workspace, build_cache_ram, build_cache_dir);
+    let _ram_lease = ram_target.as_deref().map(RamBuildLease::acquire);
     let (mut cmd, report) = exec_shim::command(program);
     cmd.args(args)
         .current_dir(&run_dir)
@@ -9834,9 +9900,59 @@ mod exec_resilience_tests {
         assert_eq!(swept, 0);
         assert!(ws_dir.exists());
 
+        // Active lease prevents sweeping
+        let _lease = ws_dir.join(".active_12345");
+        std::fs::write(&_lease, b"").unwrap();
+        let swept_active = sweep_ram_build_caches(&ram_base);
+        assert_eq!(swept_active, 0);
+        assert!(ws_dir.exists());
+
         // Non-existent base dir returns 0 safely
         let swept_none = sweep_ram_build_caches(&temp.path().join("does_not_exist"));
         assert_eq!(swept_none, 0);
+    }
+
+    #[test]
+    fn test_prewarm_virtualenv_pycache_does_not_execute_workspace_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let malicious_venv = temp.path().join("malicious_venv");
+        let bin_dir = malicious_venv.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let canary = temp.path().join("canary_executed.txt");
+        let fake_python = bin_dir.join("python");
+        // Script that would create the canary file if executed
+        std::fs::write(
+            &fake_python,
+            format!("#!/bin/sh\ntouch {}\n", canary.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let _ = prewarm_virtualenv_pycache(&malicious_venv);
+        assert!(
+            !canary.exists(),
+            "prewarm_virtualenv_pycache must never execute untrusted workspace python binary"
+        );
+    }
+
+    #[test]
+    fn test_resolve_ram_build_cache_false_env_does_not_enable() {
+        assert!(!is_ram_cache_enabled_with(false, Some("false")));
+        assert!(!is_ram_cache_enabled_with(false, Some("0")));
+        assert!(!is_ram_cache_enabled_with(false, Some("no")));
+        assert!(!is_ram_cache_enabled_with(false, Some("off")));
+        assert!(!is_ram_cache_enabled_with(false, None));
+
+        assert!(is_ram_cache_enabled_with(false, Some("true")));
+        assert!(is_ram_cache_enabled_with(false, Some("1")));
+        assert!(is_ram_cache_enabled_with(false, Some("yes")));
+        assert!(is_ram_cache_enabled_with(false, Some("on")));
+        assert!(is_ram_cache_enabled_with(true, Some("false")));
+        assert!(is_ram_cache_enabled_with(true, None));
     }
 }
 
