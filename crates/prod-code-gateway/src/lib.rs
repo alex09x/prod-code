@@ -16,6 +16,7 @@ mod metrics;
 pub mod priming;
 pub mod search;
 pub mod shadow;
+pub mod swift_cache;
 pub mod workspace;
 
 pub use detect::detect_engine;
@@ -1350,6 +1351,12 @@ pub async fn apply_sync_probe(
                     None
                 });
                 let cpp_took = started.elapsed();
+                let started = Instant::now();
+                let swift_cache = swift_cache::seed_swift_worktree(&from, &to).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "seeding Swift module cache and package checkouts failed");
+                    None
+                });
+                let swift_took = started.elapsed();
                 Ok::<_, std::io::Error>((
                     files,
                     cache,
@@ -1358,11 +1365,23 @@ pub async fn apply_sync_probe(
                     packages_took,
                     cpp_cache,
                     cpp_took,
+                    swift_cache,
+                    swift_took,
                 ))
             })
             .await
             {
-                Ok(Ok((files, cache, cache_took, packages, packages_took, cpp_cache, cpp_took))) => {
+                Ok(Ok((
+                    files,
+                    cache,
+                    cache_took,
+                    packages,
+                    packages_took,
+                    cpp_cache,
+                    cpp_took,
+                    swift_cache,
+                    swift_took,
+                ))) => {
                     seeded = true;
                     tracing::info!(
                         workspace = %target.display(),
@@ -1374,6 +1393,8 @@ pub async fn apply_sync_probe(
                         dependencies_ms = packages_took.as_millis() as u64,
                         cpp_cache_mb = cpp_cache.map(|bytes| bytes / (1024 * 1024)),
                         cpp_cache_ms = cpp_took.as_millis() as u64,
+                        swift_cache_mb = swift_cache.map(|bytes| bytes / (1024 * 1024)),
+                        swift_cache_ms = swift_took.as_millis() as u64,
                         "🌱 [SEED] new worktree workspace seeded from origin copy"
                     );
                 }
@@ -2689,7 +2710,7 @@ pub fn compiler_cache_env(workspace: &Path, ccache: bool) -> Vec<(String, String
     ]
 }
 
-/// Polyglot compiler and build cache environment across Rust, Go, Python, Node, and C/C++ (Roadmap 6.2).
+/// Polyglot compiler and build cache environment across Rust, Go, Python, Node, C/C++, and Swift (Roadmap 6.2, 3.4, 3.7).
 pub fn polyglot_compiler_cache_env(
     workspace: &Path,
     ccache: bool,
@@ -2733,6 +2754,8 @@ pub fn polyglot_compiler_cache_env(
             env.push(("YARN_CACHE_FOLDER".to_string(), yarn_cache.to_string_lossy().into_owned()));
         }
     }
+    // Swift shared module cache across worktrees (Roadmap 3.7)
+    env.extend(swift_cache::swift_module_cache_env());
     env
 }
 
@@ -10238,6 +10261,9 @@ mod exec_resilience_tests {
         let ram_target = temp.path().join("ram-target");
         let envs = polyglot_compiler_cache_env(&ws, false, Some(&ram_target));
         assert!(envs.iter().any(|(k, v)| k == "CARGO_TARGET_DIR" && v == ram_target.to_str().unwrap()));
+        assert!(envs.iter().any(|(k, _)| k == "SWIFTPM_MODULECACHE_OVERRIDE"));
+        assert!(envs.iter().any(|(k, _)| k == "SWIFT_MODULE_CACHE_PATH"));
+        assert!(envs.iter().any(|(k, _)| k == "CLANG_MODULE_CACHE_PATH"));
 
         let ccache_envs = polyglot_compiler_cache_env(&ws, true, None);
         assert!(ccache_envs.iter().any(|(k, v)| k == "CCACHE_BASEDIR" && v == ws.to_str().unwrap()));

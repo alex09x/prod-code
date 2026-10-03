@@ -273,10 +273,29 @@ impl GenericLspConfig {
         } else {
             ("sourcekit-lsp".to_string(), vec![])
         };
+        let mut env = HashMap::new();
+        if let Some(val) = std::env::var_os("SWIFTPM_MODULECACHE_OVERRIDE") {
+            env.insert(
+                "SWIFTPM_MODULECACHE_OVERRIDE".to_string(),
+                val.to_string_lossy().into_owned(),
+            );
+        }
+        if let Some(val) = std::env::var_os("SWIFT_MODULE_CACHE_PATH") {
+            env.insert(
+                "SWIFT_MODULE_CACHE_PATH".to_string(),
+                val.to_string_lossy().into_owned(),
+            );
+        }
+        if let Some(val) = std::env::var_os("CLANG_MODULE_CACHE_PATH") {
+            env.insert(
+                "CLANG_MODULE_CACHE_PATH".to_string(),
+                val.to_string_lossy().into_owned(),
+            );
+        }
         Self {
             command: cmd,
             args,
-            env: HashMap::new(),
+            env,
             working_dir: None,
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,

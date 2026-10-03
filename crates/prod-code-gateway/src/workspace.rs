@@ -1459,9 +1459,13 @@ impl WorkspaceManager {
                 }
             }
             "swift" => {
+                let mut config = prod_code_engine_generic::GenericLspConfig::for_swift();
+                for (k, v) in crate::swift_cache::swift_module_cache_env() {
+                    config.env.insert(k, v);
+                }
                 match prod_code_engine_generic::GenericLspEngine::spawn(
                     workspace_root,
-                    prod_code_engine_generic::GenericLspConfig::for_swift(),
+                    config,
                 )
                 .await
                 {
