@@ -4833,6 +4833,9 @@ async fn run_session_loop(
             rebalance_msg = rebalance_rx.recv() => {
                 match rebalance_msg {
                     Ok((target_addr, reason)) => {
+                        if meta.editor {
+                            continue;
+                        }
                         tracing::info!(
                             session_id = meta.session_id,
                             target = %target_addr,
@@ -7725,23 +7728,44 @@ async fn janitor(
         if was_short.is_some() {
             let view = state.cluster_view().await;
             let own_addr = state.advertise.read().await.clone();
-            let target = view
-                .nodes
-                .iter()
-                .filter(|n| {
-                    n.alive
-                        && !n.addr.is_empty()
-                        && n.addr != own_addr
-                        && n.addr != view.this_node
-                        && n.status.host.pressure().is_none()
-                })
-                .min_by_key(|n| n.workspaces.len());
-
-            if let Some(target) = target {
-                state
-                    .workspace_manager
-                    .rebalance_one_active(&target.addr, "evacuating node under memory pressure")
-                    .await;
+            let ws_summary = state.workspace_manager.loaded_workspaces_for_rebalance().await;
+            for (ws, active) in ws_summary {
+                if active > 0 {
+                    let ws_name = ws
+                        .root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let os = if ws.engine == "swift" {
+                        Some("macos".to_string())
+                    } else {
+                        None
+                    };
+                    let place_req = PlaceRequest {
+                        workspace_name: ws_name,
+                        engine: Some(ws.engine.clone()),
+                        os,
+                        rebalance_active: true,
+                    };
+                    let place_resp = place_in(&place_req, view.clone());
+                    if let Some(target) = place_resp.node {
+                        if target != own_addr && target != view.this_node {
+                            let notified = ws.trigger_rebalance(
+                                target.clone(),
+                                Some("evacuating node under memory pressure".to_string()),
+                            );
+                            if notified > 0 {
+                                tracing::info!(
+                                    workspace = %ws.root.display(),
+                                    target = %target,
+                                    notified,
+                                    "rebalanced active workspace to compatible peer under host pressure"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
         let memory_short = host

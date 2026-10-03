@@ -1005,7 +1005,7 @@ impl WorkspaceManager {
         target_addr: String,
         reason: Option<String>,
     ) -> usize {
-        let base_name = name.split('#').next().unwrap_or(name);
+        let base_name = name.split('#').next().unwrap_or(name).trim();
         let guard = self.workspaces.read().await;
         let mut notified = 0;
         for (key, state) in guard.iter() {
@@ -1015,11 +1015,24 @@ impl WorkspaceManager {
                     .file_name()
                     .map(|n| n.to_string_lossy())
                     .unwrap_or_default();
-                if ws_name == name
-                    || ws_name == base_name
-                    || key.0.to_string_lossy().contains(base_name)
-                    || ws.root.to_string_lossy().contains(base_name)
-                {
+                let matches_exact_name = ws_name == name || ws_name == base_name;
+                let matches_exact_path = ws.root == Path::new(name)
+                    || ws.root == Path::new(base_name)
+                    || key.0 == Path::new(name)
+                    || key.0 == Path::new(base_name);
+                let matches_worktree_base = ws.base_workspace.as_ref().is_some_and(|b| {
+                    let b_name = b
+                        .root
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default();
+                    b_name == name
+                        || b_name == base_name
+                        || b.root == Path::new(name)
+                        || b.root == Path::new(base_name)
+                });
+
+                if matches_exact_name || matches_exact_path || matches_worktree_base {
                     notified += ws.trigger_rebalance(target_addr.clone(), reason.clone());
                 }
             }
@@ -1027,26 +1040,19 @@ impl WorkspaceManager {
         notified
     }
 
-    /// Rebalance one active workspace to `target_addr` when under pressure.
-    pub async fn rebalance_one_active(&self, target_addr: &str, reason: &str) -> bool {
+    /// Loaded workspaces and their active session counts.
+    pub async fn loaded_workspaces_for_rebalance(&self) -> Vec<(Arc<SharedWorkspace>, usize)> {
         let guard = self.workspaces.read().await;
-        for state in guard.values() {
-            if let LoadState::Ready(ws) = state {
-                if ws.active_sessions.load(Ordering::Relaxed) > 0 {
-                    let notified = ws.trigger_rebalance(target_addr.to_string(), Some(reason.to_string()));
-                    if notified > 0 {
-                        tracing::info!(
-                            workspace = %ws.root.display(),
-                            target = %target_addr,
-                            notified,
-                            "rebalanced active workspace under host pressure"
-                        );
-                        return true;
-                    }
+        guard
+            .values()
+            .filter_map(|state| match state {
+                LoadState::Ready(ws) => {
+                    let active = ws.active_sessions.load(Ordering::Relaxed);
+                    Some((Arc::clone(ws), active))
                 }
-            }
-        }
-        false
+                _ => None,
+            })
+            .collect()
     }
 
     /// Retrieve or load a shared workspace using leader-follower coalescing.
@@ -4784,5 +4790,71 @@ path = "src/lib.rs"
             assert!(!eng.has_worktree(&wt_dir));
             assert_eq!(eng.worktree_attachment_count(&wt_dir), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_trigger_rebalance_exact_name_matching_and_worktree() {
+        let manager = WorkspaceManager::new();
+        let path_shop = PathBuf::from("/work/shop");
+        let path_shopper = PathBuf::from("/work/shopper");
+        let path_shop_wt = PathBuf::from("/work/shop--wt1");
+
+        let ws_shop = Arc::new(SharedWorkspace::new(
+            path_shop.clone(),
+            "rust".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        let ws_shopper = Arc::new(SharedWorkspace::new(
+            path_shopper.clone(),
+            "rust".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        let ws_shop_wt = Arc::new(SharedWorkspace::with_base(
+            path_shop_wt.clone(),
+            "rust".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ws_shop)),
+        ));
+
+        let mut rx_shop = ws_shop.subscribe_rebalance();
+        let mut rx_shopper = ws_shopper.subscribe_rebalance();
+        let mut rx_shop_wt = ws_shop_wt.subscribe_rebalance();
+
+        {
+            let mut guard = manager.workspaces.write().await;
+            guard.insert(WorkspaceKey(path_shop), LoadState::Ready(Arc::clone(&ws_shop)));
+            guard.insert(WorkspaceKey(path_shopper), LoadState::Ready(Arc::clone(&ws_shopper)));
+            guard.insert(WorkspaceKey(path_shop_wt), LoadState::Ready(Arc::clone(&ws_shop_wt)));
+        }
+
+        // Rebalance "shop" to node-2:2026
+        let notified = manager
+            .trigger_rebalance_by_name("shop", "node-2:2026".to_string(), Some("test".to_string()))
+            .await;
+        assert!(notified >= 1);
+
+        // ws_shop and ws_shop_wt share the rebalance broadcast channel, so both receive redirect
+        let (target, reason) = rx_shop.try_recv().expect("shop must receive redirect");
+        assert_eq!(target, "node-2:2026");
+        assert_eq!(reason.as_deref(), Some("test"));
+
+        let (target_wt, reason_wt) = rx_shop_wt.try_recv().expect("shop worktree must receive redirect");
+        assert_eq!(target_wt, "node-2:2026");
+        assert_eq!(reason_wt.as_deref(), Some("test"));
+
+        // ws_shopper must NOT receive redirect (preventing substring false positive)
+        assert!(
+            rx_shopper.try_recv().is_err(),
+            "shopper must NOT receive redirect when rebalancing shop"
+        );
     }
 }
