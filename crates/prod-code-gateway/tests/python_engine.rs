@@ -520,3 +520,45 @@ fn test_prune_stale_stub_cache_with_custom_grace_period() {
     assert_eq!(evicted, 1);
     assert!(!fast_tmp.exists());
 }
+
+#[test]
+fn test_prune_stale_stub_cache_never_unlinks_locked_temp_file_even_if_old() {
+    use std::os::unix::io::AsRawFd;
+
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+
+    let locked_tmp = cache_dir.join(".tmp-stub-active-publisher-long-copy");
+    fs::write(&locked_tmp, vec![0xdd; 20_000]).unwrap();
+
+    // Backdate mtime to 3 hours ago (well beyond 1 hour grace period)
+    let three_hours_ago = std::time::SystemTime::now() - Duration::from_secs(3 * 3600);
+    let sec = three_hours_ago.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+    let times = [
+        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+    ];
+    let c_path = std::ffi::CString::new(locked_tmp.to_str().unwrap()).unwrap();
+    unsafe {
+        libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
+    }
+
+    // Active publisher holds an exclusive OS advisory flock on the file descriptor
+    let file = fs::OpenOptions::new().read(true).write(true).open(&locked_tmp).unwrap();
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    assert_eq!(ret, 0);
+
+    // Prune with 1 hour grace period: the file is 3 hours old, BUT held by active publisher
+    let evicted = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
+    assert_eq!(evicted, 0, "active publisher's locked temp file must NEVER be unlinked");
+    assert!(locked_tmp.is_file(), "locked file must remain present on disk");
+
+    // Publisher finishes and releases lock
+    drop(file);
+
+    // Subsequent prune pass detects file is unlocked and older than 1 hour -> safely unlinks
+    let evicted_after = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
+    assert_eq!(evicted_after, 1, "abandoned temp file must be unlinked once lock is released");
+    assert!(!locked_tmp.exists(), "abandoned temp file must be cleaned up");
+}
