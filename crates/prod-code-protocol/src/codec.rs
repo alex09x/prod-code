@@ -17,6 +17,43 @@ pub const MAX_FRAME_SIZE: usize = 256 * 1024 * 1024;
 #[derive(Debug, Default, Clone)]
 pub struct ProdCodeCodec;
 
+struct BoundedWriter<W> {
+    inner: W,
+    written: usize,
+    limit: usize,
+}
+
+impl<W: io::Write> BoundedWriter<W> {
+    fn new(inner: W, limit: usize) -> Self {
+        Self {
+            inner,
+            written: 0,
+            limit,
+        }
+    }
+}
+
+impl<W: io::Write> io::Write for BoundedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.written.saturating_add(buf.len()) > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Message size exceeds maximum allowed frame size {}",
+                    self.limit
+                ),
+            ));
+        }
+        let n = self.inner.write(buf)?;
+        self.written += n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 impl ProdCodeCodec {
     pub fn new() -> Self {
         Self
@@ -24,15 +61,30 @@ impl ProdCodeCodec {
 
     /// Encode a referenced `WireMessage` directly into `dst` without allocating an intermediate heap buffer.
     pub fn encode_ref(&self, item: &WireMessage, dst: &mut BytesMut) -> Result<(), io::Error> {
+        self.encode_ref_bounded(item, dst, MAX_FRAME_SIZE)
+    }
+
+    pub(crate) fn encode_ref_bounded(
+        &self,
+        item: &WireMessage,
+        dst: &mut BytesMut,
+        max_frame_size: usize,
+    ) -> Result<(), io::Error> {
+        let initial_capacity = dst.capacity();
         let header_offset = dst.len();
         dst.reserve(4);
         dst.put_u32(0); // Placeholder for 4-byte BE length
 
         // Stream JSON directly into dst's spare capacity using serde_json::to_writer
-        // without allocating an intermediate Vec<u8> buffer.
-        let writer = (&mut *dst).writer();
+        // bounded by BoundedWriter to abort serialization as soon as the payload exceeds max_frame_size.
+        let writer = BoundedWriter::new((&mut *dst).writer(), max_frame_size);
         if let Err(e) = serde_json::to_writer(writer, item) {
             dst.truncate(header_offset);
+            if dst.capacity() > initial_capacity {
+                let mut restored = BytesMut::with_capacity(initial_capacity);
+                restored.put_slice(&dst[..header_offset]);
+                *dst = restored;
+            }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Failed to serialize WireMessage: {e}"),
@@ -40,11 +92,16 @@ impl ProdCodeCodec {
         }
 
         let frame_len = dst.len() - header_offset - 4;
-        if frame_len > MAX_FRAME_SIZE {
+        if frame_len > max_frame_size {
             dst.truncate(header_offset);
+            if dst.capacity() > initial_capacity {
+                let mut restored = BytesMut::with_capacity(initial_capacity);
+                restored.put_slice(&dst[..header_offset]);
+                *dst = restored;
+            }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Message size {frame_len} exceeds maximum {MAX_FRAME_SIZE}"),
+                format!("Message size {frame_len} exceeds maximum {max_frame_size}"),
             ));
         }
 
@@ -329,5 +386,44 @@ mod tests {
         let mut dec_codec = ProdCodeCodec::new();
         let decoded = dec_codec.decode(&mut frame_buf).unwrap().expect("decodes");
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn test_codec_oversized_frame_aborts_early_and_does_not_retain_capacity() {
+        let codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::with_capacity(64);
+        buf.put_slice(b"existing-prefix");
+        let initial_len = buf.len();
+        let initial_cap = buf.capacity();
+
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            supported_versions: Some(vec![1]),
+            capabilities: None,
+            client_name: "test-client".to_string(),
+            client_pid: 1234,
+            auth_token: None,
+            client_workspace_root: "/home/user/project".to_string(),
+            preferred_engine: None,
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        });
+
+        // Limit to 20 bytes: the message is ~200 bytes, so BoundedWriter aborts serialization early
+        let err = codec
+            .encode_ref_bounded(&original, &mut buf, 20)
+            .expect_err("must fail early when frame exceeds 20 bytes");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("Message size exceeds maximum allowed frame size"));
+
+        // Preexisting bytes are untouched and logical length is restored
+        assert_eq!(buf.len(), initial_len);
+        assert_eq!(&buf[..initial_len], b"existing-prefix");
+        // Capacity did not stay grown or leak memory
+        assert_eq!(buf.capacity(), initial_cap);
     }
 }
