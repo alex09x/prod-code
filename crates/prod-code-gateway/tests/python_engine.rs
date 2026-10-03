@@ -296,3 +296,73 @@ fn test_merge_stubs_direct() {
     assert!(written > 0);
     assert!(dst.join("module.pyi").is_file());
 }
+
+#[test]
+fn test_seed_python_worktree_skips_venv_stubs_when_disk_space_insufficient() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let custom_cache = temp.path().join("shared-stubs-venv-tight");
+    unsafe {
+        std::env::set_var(PYTHON_STUB_CACHE_ENV, &custom_cache);
+    }
+
+    let from = temp.path().join("origin-project");
+    let to = temp.path().join("worktree-project");
+    fs::create_dir_all(&from).unwrap();
+    fs::write(from.join("pyproject.toml"), "[project]\nname=\"large\"\n").unwrap();
+
+    let venv_stubs = from
+        .join(".venv")
+        .join("lib")
+        .join("python3.11")
+        .join("site-packages")
+        .join("pandas-stubs");
+    fs::create_dir_all(&venv_stubs).unwrap();
+    fs::write(venv_stubs.join("core.pyi"), vec![b'D'; 100_000]).unwrap();
+
+    let restricted_space = Some(DiskSpace {
+        free: 100,
+        total: 1_000_000,
+    });
+
+    let result = seed_python_worktree_within(&from, &to, restricted_space).unwrap();
+    assert!(result.is_some());
+
+    // venv stubs must NOT be copied due to insufficient space
+    assert!(!custom_cache.join("pandas-stubs").exists());
+
+    // But symlink to typings still established
+    let to_typings = to.join("typings");
+    assert!(fs::symlink_metadata(&to_typings).unwrap().file_type().is_symlink());
+
+    unsafe {
+        std::env::remove_var(PYTHON_STUB_CACHE_ENV);
+    }
+}
+
+#[test]
+fn test_merge_stubs_atomic_publishing() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    let dst = temp.path().join("dst");
+    fs::create_dir_all(&src).unwrap();
+
+    // Initial version
+    fs::write(src.join("types.pyi"), b"x: int = 1\n").unwrap();
+    let written = merge_stubs(&src, &dst).unwrap();
+    assert!(written > 0);
+    assert_eq!(fs::read(dst.join("types.pyi")).unwrap(), b"x: int = 1\n");
+
+    // Updated version
+    std::thread::sleep(Duration::from_millis(50));
+    fs::write(src.join("types.pyi"), b"x: int = 2\n").unwrap();
+    let updated = merge_stubs(&src, &dst).unwrap();
+    assert!(updated > 0);
+    assert_eq!(fs::read(dst.join("types.pyi")).unwrap(), b"x: int = 2\n");
+
+    // No leftover temporary files
+    for entry in fs::read_dir(&dst).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        assert!(!name.starts_with(".tmp-stub-"), "leftover tmp file: {name}");
+    }
+}

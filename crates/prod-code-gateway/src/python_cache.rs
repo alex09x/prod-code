@@ -144,6 +144,45 @@ pub fn find_venv_stubs(venv_root: &Path) -> Vec<PathBuf> {
     stubs
 }
 
+static STUB_FILE_NONCE: AtomicU64 = AtomicU64::new(1);
+
+/// Copies a file to `dst` atomically by copying to a unique temporary file alongside `dst`
+/// and then atomically renaming it over `dst`. This ensures that concurrent readers or writers
+/// never observe a truncated or partially written stub file.
+fn atomic_copy_file(src: &Path, dst: &Path) -> io::Result<u64> {
+    let parent = dst.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination file has no parent directory")
+    })?;
+    ensure_cache_dir(parent)?;
+
+    let nonce = STUB_FILE_NONCE.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let ts = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_name = format!(".tmp-stub-{pid}-{nonce}-{ts:x}");
+    let tmp_path = parent.join(tmp_name);
+
+    let bytes = match fs::copy(src, &tmp_path) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    };
+
+    if let Err(e) = fs::rename(&tmp_path, dst) {
+        let _ = fs::remove_file(&tmp_path);
+        if dst.exists() {
+            return Ok(bytes);
+        }
+        return Err(e);
+    }
+
+    Ok(bytes)
+}
+
 /// Recursively copies/merges type stubs from `src_dir` into `dst_dir`.
 ///
 /// Only `.pyi`, `.typed`, and package directories containing them are indexed.
@@ -192,7 +231,7 @@ pub fn merge_stubs(src_dir: &Path, dst_dir: &Path) -> io::Result<u64> {
             };
 
             if should_copy {
-                let copied = fs::copy(&path, &target_path)?;
+                let copied = atomic_copy_file(&path, &target_path)?;
                 bytes_written += copied;
             }
         }
@@ -220,27 +259,36 @@ pub fn seed_python_worktree_within(
     let cache_dir = python_stub_cache_dir();
     let mut total_bytes = 0u64;
 
-    // 1. Index any project-level typings from `from/typings` into shared stub cache
+    // 1. Gather all candidate stub sources to calculate aggregate disk requirement
     let from_typings = from.join("typings");
-    if from_typings.is_dir() {
-        let size = tree_size(&from_typings);
-        if seed_fits("python typings cache", size, space) {
-            let merged = merge_stubs(&from_typings, &cache_dir)?;
-            total_bytes += merged;
-        }
-    }
+    let typings_size = if from_typings.is_dir() {
+        tree_size(&from_typings)
+    } else {
+        0
+    };
 
-    // 2. Discover and index any PEP 561 *-stubs from virtual environments in `from`
+    let mut venv_stubs = Vec::new();
     for venv_name in &[".venv", "venv"] {
         let venv_path = from.join(venv_name);
         if venv_path.is_dir() {
-            let stubs = find_venv_stubs(&venv_path);
-            for stub_dir in stubs {
-                let stub_name = stub_dir.file_name().unwrap_or_default();
-                let dst_stub = cache_dir.join(stub_name);
-                let merged = merge_stubs(&stub_dir, &dst_stub)?;
-                total_bytes += merged;
-            }
+            venv_stubs.extend(find_venv_stubs(&venv_path));
+        }
+    }
+    let venv_stubs_size: u64 = venv_stubs.iter().map(|s| tree_size(s)).sum();
+    let aggregate_stubs_size = typings_size + venv_stubs_size;
+
+    // Enforce aggregate disk budget across both project typings and virtual environment stubs
+    if aggregate_stubs_size > 0 && seed_fits("python type stubs cache", aggregate_stubs_size, space) {
+        if typings_size > 0 {
+            let merged = merge_stubs(&from_typings, &cache_dir)?;
+            total_bytes += merged;
+        }
+
+        for stub_dir in venv_stubs {
+            let stub_name = stub_dir.file_name().unwrap_or_default();
+            let dst_stub = cache_dir.join(stub_name);
+            let merged = merge_stubs(&stub_dir, &dst_stub)?;
+            total_bytes += merged;
         }
     }
 
