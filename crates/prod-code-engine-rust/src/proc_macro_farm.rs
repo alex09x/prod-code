@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -322,6 +323,16 @@ pub fn prepare_sandboxed_srv(
     sysroot_srv: &Path,
     memory_limit_mb: u64,
 ) -> Result<PathBuf> {
+    if memory_limit_mb < 64 {
+        anyhow::bail!("Invalid proc-macro memory limit {memory_limit_mb}MB: must be at least 64MB");
+    }
+    if memory_limit_mb > 16 * 1024 * 1024 {
+        anyhow::bail!("Invalid proc-macro memory limit {memory_limit_mb}MB: exceeds 16TB maximum");
+    }
+    let memory_limit_kb = memory_limit_mb
+        .checked_mul(1024)
+        .ok_or_else(|| anyhow::anyhow!("Memory limit {memory_limit_mb}MB overflows KB representation"))?;
+
     #[cfg(unix)]
     let uid = current_uid();
     #[cfg(not(unix))]
@@ -340,13 +351,26 @@ pub fn prepare_sandboxed_srv(
     memory_limit_mb.hash(&mut hasher);
     let hash = hasher.finish();
 
+    static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+    static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let _install_guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let wrapper_path = farm_dir.join(format!("sandboxed-proc-macro-srv-{hash:016x}.sh"));
+        if wrapper_path.exists()
+            && let Ok(meta) = std::fs::symlink_metadata(&wrapper_path)
+            && meta.is_file()
+            && !meta.file_type().is_symlink()
+            && meta.uid() == uid
+            && (meta.mode() & 0o777) == 0o700
+        {
+            return Ok(wrapper_path);
+        }
 
-        let memory_limit_kb = memory_limit_mb * 1024;
         let script = format!(
             r#"#!/bin/sh
 # prod-code isolated proc-macro worker farm sandbox
@@ -355,8 +379,11 @@ set -e
 # Disable core dumps
 ulimit -c 0 2>/dev/null || true
 
-# Limit virtual memory / address space in KB
-ulimit -v {memory_limit_kb} 2>/dev/null || true
+# Limit virtual memory / address space in KB (fail closed if limit cannot be enforced)
+if ! ulimit -v {memory_limit_kb} 2>/dev/null; then
+    echo "FATAL: prod-code sandbox failed to enforce virtual memory limit ({memory_limit_kb} KB)" >&2
+    exit 125
+fi
 
 # Limit open file descriptors
 ulimit -n 2048 2>/dev/null || true
@@ -399,9 +426,10 @@ fi
             sysroot_srv = sysroot_srv.display(),
         );
 
-        // Safe atomic launcher creation: write to a private temporary file and rename
+        // Safe atomic launcher creation: use unique attempt counter to avoid collisions between concurrent attempts
+        let attempt = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_wrapper = farm_dir.join(format!(
-            ".tmp-sandboxed-srv-{hash:016x}-{}.sh",
+            ".tmp-sandboxed-srv-{hash:016x}-{}-{attempt}.sh",
             std::process::id()
         ));
 
@@ -431,6 +459,10 @@ fi
     #[cfg(not(unix))]
     {
         let wrapper_path = farm_dir.join(format!("sandboxed-proc-macro-srv-{hash:016x}.cmd"));
+        if wrapper_path.exists() {
+            return Ok(wrapper_path);
+        }
+
         let script = format!(
             r#"@echo off
 set PROD_CODE_AUTH_TOKEN=
@@ -452,7 +484,8 @@ set RUST_ANALYZER_INTERNALS_DO_NOT_USE=this is unstable
             sysroot_srv = sysroot_srv.display(),
         );
 
-        let tmp_wrapper = farm_dir.join(format!(".tmp-{hash:016x}.cmd"));
+        let attempt = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_wrapper = farm_dir.join(format!(".tmp-{hash:016x}-{attempt}.cmd"));
         std::fs::write(&tmp_wrapper, script)?;
         std::fs::rename(&tmp_wrapper, &wrapper_path)?;
         Ok(wrapper_path)
@@ -588,5 +621,49 @@ echo "TMP='$TMPDIR'"
         assert!(stdout.contains("SECRET_TOKEN=''"), "Must scrub PROD_CODE_TOKEN: {stdout}");
         assert!(stdout.contains("INTERNAL='this is unstable'"), "Must export internal authorization: {stdout}");
         assert!(stdout.contains("/scratch"), "Must set isolated scratch TMPDIR: {stdout}");
+
+        // Test memory limit validation bounds
+        assert!(prepare_sandboxed_srv(&fake_srv, 32).is_err(), "Must reject < 64MB limit");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_proc_macro_concurrent_launcher_preparation() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_srv = temp.path().join("fake-concurrent-srv.sh");
+        std::fs::write(
+            &fake_srv,
+            r#"#!/bin/sh
+exit 0
+"#,
+        )
+        .unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&fake_srv).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_srv, perms).unwrap();
+
+        let srv_path = Arc::new(fake_srv);
+        let mut handles = vec![];
+
+        for _ in 0..10 {
+            let srv = Arc::clone(&srv_path);
+            handles.push(std::thread::spawn(move || {
+                prepare_sandboxed_srv(&srv, 1024).expect("Concurrent wrapper preparation must succeed")
+            }));
+        }
+
+        let mut results = vec![];
+        for h in handles {
+            results.push(h.join().unwrap());
+        }
+
+        assert_eq!(results.len(), 10);
+        let first = &results[0];
+        for path in &results {
+            assert_eq!(path, first, "All concurrent preparations must converge on identical validated launcher");
+            assert!(path.exists());
+        }
     }
 }
