@@ -53,6 +53,8 @@ pub struct SchemaRename {
     pub root: PathBuf,
     /// Every file this changes, as (path, whole new content).
     pub rewritten: Vec<(PathBuf, String)>,
+    /// Line count of each file before the rename was applied.
+    pub original_lines: BTreeMap<PathBuf, usize>,
     /// One line per language: how many occurrences, and how they were handled.
     pub summary: Vec<String>,
     /// Occurrences nothing rewrote: a comment, a language with no engine here, a rename the
@@ -66,7 +68,7 @@ pub struct SchemaRename {
 impl SchemaRename {
     /// Generates an atomic LSP `WorkspaceEdit` (`documentChanges`) for this schema rename.
     pub fn workspace_edit(&self) -> serde_json::Value {
-        make_workspace_edit(&self.rewritten)
+        make_workspace_edit_with_lines(&self.rewritten, &self.original_lines)
     }
 
     pub fn render(&self, diff_budget: usize) -> String {
@@ -772,6 +774,15 @@ pub async fn rename(
         }
     }
     rewritten.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut original_lines: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    for (path, _) in &rewritten {
+        let count = originals
+            .get(path)
+            .map(|t| t.lines().count())
+            .or_else(|| std::fs::read_to_string(path).ok().map(|t| t.lines().count()))
+            .unwrap_or(0);
+        original_lines.insert(path.clone(), count);
+    }
     left.extend(notes);
 
     // Per language: what the scan found, and what became of it.
@@ -851,7 +862,7 @@ pub async fn rename(
             diagnostics.len(),
             diagnostics.join("\n  ")
         );
-        write_rewritten(root, &rewritten)?;
+        write_rewritten(root, &rewritten, &original_lines)?;
         applied = true;
     }
 
@@ -860,6 +871,7 @@ pub async fn rename(
         to: to.to_string(),
         root: root.to_path_buf(),
         rewritten,
+        original_lines,
         summary,
         left,
         diagnostics,
@@ -872,12 +884,21 @@ const NOT_FOUND: &str = "does not appear under";
 
 /// Builds a standard LSP `WorkspaceEdit` (`documentChanges`) representing the rewritten files.
 pub fn make_workspace_edit(rewritten: &[(PathBuf, String)]) -> serde_json::Value {
+    make_workspace_edit_with_lines(rewritten, &BTreeMap::new())
+}
+
+/// Builds a standard LSP `WorkspaceEdit` (`documentChanges`) using known pre-apply line counts.
+pub fn make_workspace_edit_with_lines(
+    rewritten: &[(PathBuf, String)],
+    known_lines: &BTreeMap<PathBuf, usize>,
+) -> serde_json::Value {
     let changes: Vec<serde_json::Value> = rewritten
         .iter()
         .map(|(path, new_text)| {
-            let old_lines = std::fs::read_to_string(path)
-                .map(|t| t.lines().count())
-                .unwrap_or(0);
+            let old_lines = known_lines.get(path).copied().unwrap_or_else(|| {
+                let text = crate::refactor::text_before_apply(path);
+                text.lines().count()
+            });
             serde_json::json!({
                 "textDocument": { "uri": prod_code_protocol::path::file_uri(path), "version": null },
                 "edits": [ {
@@ -894,8 +915,12 @@ pub fn make_workspace_edit(rewritten: &[(PathBuf, String)]) -> serde_json::Value
 }
 
 /// Writes every rewritten file of the checkout at `root` in one edit.
-fn write_rewritten(root: &Path, rewritten: &[(PathBuf, String)]) -> Result<()> {
-    let edit = make_workspace_edit(rewritten);
+fn write_rewritten(
+    root: &Path,
+    rewritten: &[(PathBuf, String)],
+    lines: &BTreeMap<PathBuf, usize>,
+) -> Result<()> {
+    let edit = make_workspace_edit_with_lines(rewritten, lines);
     crate::refactor::apply_workspace_edit(root, &edit)?;
     Ok(())
 }
@@ -914,12 +939,13 @@ pub struct AcrossRepos {
 impl AcrossRepos {
     /// Generates an atomic multi-repository LSP `WorkspaceEdit` (`documentChanges`) across all repositories.
     pub fn workspace_edit(&self) -> serde_json::Value {
-        let all_rewritten: Vec<(PathBuf, String)> = self
-            .repos
-            .iter()
-            .flat_map(|r| r.rewritten.clone())
-            .collect();
-        make_workspace_edit(&all_rewritten)
+        let mut all_lines = BTreeMap::new();
+        let mut all_rewritten = Vec::new();
+        for repo in &self.repos {
+            all_lines.extend(repo.original_lines.clone());
+            all_rewritten.extend(repo.rewritten.clone());
+        }
+        make_workspace_edit_with_lines(&all_rewritten, &all_lines)
     }
 
     /// Every repository's analyzers accept its result.
@@ -1003,11 +1029,13 @@ pub async fn rename_across(
             errors.join("\n  ")
         );
         let repo_roots: Vec<&Path> = repos.iter().map(|r| r.root.as_path()).collect();
-        let all_rewritten: Vec<(PathBuf, String)> = repos
-            .iter()
-            .flat_map(|r| r.rewritten.clone())
-            .collect();
-        let multi_edit = make_workspace_edit(&all_rewritten);
+        let mut all_lines = BTreeMap::new();
+        let mut all_rewritten = Vec::new();
+        for r in &repos {
+            all_lines.extend(r.original_lines.clone());
+            all_rewritten.extend(r.rewritten.clone());
+        }
+        let multi_edit = make_workspace_edit_with_lines(&all_rewritten, &all_lines);
         crate::refactor::apply_multi_repository_workspace_edit(&repo_roots, &multi_edit)?;
         for repo in &mut repos {
             repo.applied = true;
@@ -1502,5 +1530,35 @@ let order_id = 1;
             std::fs::read_to_string(&ts).unwrap(),
             "export interface Order { tradeId: string; }\n"
         );
+    }
+
+    #[test]
+    fn workspace_edit_range_spans_pre_apply_document_when_shortened() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let proto = root.join("schema.proto");
+        // Original has 10 lines
+        let original_content = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\n";
+        std::fs::write(&proto, original_content).unwrap();
+
+        // Rewritten has only 3 lines
+        let shortened = "line 1\nshortened 2\nline 3\n";
+        let rewritten = vec![(proto.clone(), shortened.to_string())];
+        let mut lines = BTreeMap::new();
+        lines.insert(proto.clone(), 10);
+
+        let edit = make_workspace_edit_with_lines(&rewritten, &lines);
+        let changes = edit["documentChanges"].as_array().unwrap();
+        assert_eq!(changes[0]["edits"][0]["range"]["end"]["line"], 10);
+
+        // Apply edit via refactor
+        crate::refactor::apply_workspace_edit(&root, &edit).unwrap();
+        // File on disk now has 3 lines
+        assert_eq!(std::fs::read_to_string(&proto).unwrap().lines().count(), 3);
+
+        // Generating edit post-apply with make_workspace_edit still reports 10 lines because text_before_apply recalls original
+        let post_apply_edit = make_workspace_edit(&rewritten);
+        let post_changes = post_apply_edit["documentChanges"].as_array().unwrap();
+        assert_eq!(post_changes[0]["edits"][0]["range"]["end"]["line"], 10);
     }
 }
