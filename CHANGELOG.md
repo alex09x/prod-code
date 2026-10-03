@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- **Cross-Worktree Clangd Index Seeding & Shared PCH Compiler Cache (Phase 3.4)** (`crates/prod-code-gateway`):
+  Implemented cross-worktree clangd symbol index sharing and precompiled header (PCH) compiler caching. During worktree handshake seeding, existing clangd background index shards (`.cache/clangd/index/` and `.clangd/index/`) are relocated into the new worktree copy with RIFF `CdIx` chunk parsing, zlib string table decompression/recompression, and source path replacement that preserves symbol and reference interning string indices. Target shard filenames are recalculated with LLVM-compatible `xxh3_64` path digests. Automated `compile_commands.json` path relocation is applied to `build/compile_commands.json`. Shared ccache compiler environment incorporates `CCACHE_SLOPPINESS=pch_defines,time_macros` and `CCACHE_PCH_EXTERNAL_CHECKS=1` alongside `CCACHE_BASEDIR` to allow precompiled headers to hit cache across distinct worktrees (#833).
 - **Dedicated Editor Language Server Health Supervision & Stress Policy (Phase 3.3)** (`crates/prod-code-gateway`):
   Implemented periodic health probes for dedicated editor sessions (`run_with_options` in `editor_proxy.rs`). Probes run on configurable intervals (default 60s, timeout 30s) and are deferred under loaded-project stress (in-flight client requests, active language-server indexing/busy readiness progress, and recent ordinary traffic). Reserved probe IDs (`prod-code-editor-health:`) from clients are rejected immediately with JSON-RPC error -32600, private probe replies from the server are intercepted and withheld from the editor, and three consecutive idle probe timeouts retire the session and reap the child process group.
 

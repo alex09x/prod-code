@@ -6,6 +6,7 @@
 
 pub mod admission;
 pub mod backend;
+pub mod cpp_index;
 pub mod detect;
 pub mod editor_proxy;
 pub mod embed;
@@ -1342,11 +1343,26 @@ pub async fn apply_sync_probe(
                     tracing::warn!(error = %e, "seeding node_modules and virtual environments failed");
                     None
                 });
-                Ok::<_, std::io::Error>((files, cache, cache_took, packages, started.elapsed()))
+                let packages_took = started.elapsed();
+                let started = Instant::now();
+                let cpp_cache = cpp_index::seed_cpp_worktree(&from, &to).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "seeding C/C++ clangd index and compilation database failed");
+                    None
+                });
+                let cpp_took = started.elapsed();
+                Ok::<_, std::io::Error>((
+                    files,
+                    cache,
+                    cache_took,
+                    packages,
+                    packages_took,
+                    cpp_cache,
+                    cpp_took,
+                ))
             })
             .await
             {
-                Ok(Ok((files, cache, cache_took, packages, packages_took))) => {
+                Ok(Ok((files, cache, cache_took, packages, packages_took, cpp_cache, cpp_took))) => {
                     seeded = true;
                     tracing::info!(
                         workspace = %target.display(),
@@ -1356,6 +1372,8 @@ pub async fn apply_sync_probe(
                         build_cache_ms = cache_took.as_millis() as u64,
                         dependencies_mb = packages.map(|bytes| bytes / (1024 * 1024)),
                         dependencies_ms = packages_took.as_millis() as u64,
+                        cpp_cache_mb = cpp_cache.map(|bytes| bytes / (1024 * 1024)),
+                        cpp_cache_ms = cpp_took.as_millis() as u64,
                         "🌱 [SEED] new worktree workspace seeded from origin copy"
                     );
                 }
@@ -2655,6 +2673,11 @@ pub fn compiler_cache_env(workspace: &Path, ccache: bool) -> Vec<(String, String
             workspace.to_string_lossy().into_owned(),
         ),
         ("CCACHE_NOHASHDIR".to_string(), "1".to_string()),
+        (
+            "CCACHE_SLOPPINESS".to_string(),
+            "pch_defines,time_macros".to_string(),
+        ),
+        ("CCACHE_PCH_EXTERNAL_CHECKS".to_string(), "1".to_string()),
         (
             "CMAKE_C_COMPILER_LAUNCHER".to_string(),
             "ccache".to_string(),
@@ -9233,6 +9256,8 @@ mod tests {
         };
         assert_eq!(get("CCACHE_BASEDIR"), Some("/srv/workspaces/shop--wt-1a2b"));
         assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
+        assert_eq!(get("CCACHE_SLOPPINESS"), Some("pch_defines,time_macros"));
+        assert_eq!(get("CCACHE_PCH_EXTERNAL_CHECKS"), Some("1"));
         assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
         assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
         assert!(on_path("sh"), "sh is on PATH on every node");
