@@ -537,11 +537,14 @@ pub fn valid_dispatch_response(value: &serde_json::Value) -> bool {
 }
 
 fn record_liveness(
+    ordinary_epoch: &AtomicU64,
     last_activity: &std::sync::Mutex<Instant>,
     probe_state: &std::sync::Mutex<ProbeState>,
 ) {
+    ordinary_epoch.fetch_add(1, Ordering::AcqRel);
     *last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
     let mut state = probe_state.lock().unwrap_or_else(|e| e.into_inner());
+    state.valid_evidence_epoch = state.valid_evidence_epoch.wrapping_add(1);
     state.consecutive_timeouts = 0;
 }
 
@@ -712,6 +715,7 @@ where
         Arc::new(std::sync::Mutex::new(None));
     let next_probe_id = Arc::new(AtomicU64::new(1));
     let last_activity = Arc::new(std::sync::Mutex::new(Instant::now()));
+    let ordinary_epoch = Arc::new(AtomicU64::new(0));
     let readiness = Arc::new(Readiness::new(command.ready));
     let in_flight_requests = Arc::new(AtomicUsize::new(0));
     let (retire_tx, mut retire_rx) = tokio::sync::watch::channel(false);
@@ -723,6 +727,7 @@ where
         let next_probe_id = Arc::clone(&next_probe_id);
         let health_probe_id_prefix = Arc::clone(&health_probe_id_prefix);
         let last_activity = Arc::clone(&last_activity);
+        let probe_ordinary_epoch = Arc::clone(&ordinary_epoch);
         let readiness = Arc::clone(&readiness);
         let in_flight_requests = Arc::clone(&in_flight_requests);
         let retire_tx = retire_tx.clone();
@@ -754,6 +759,12 @@ where
                 if elapsed < interval {
                     continue;
                 }
+
+                let activity_before_wait = probe_ordinary_epoch.load(Ordering::Acquire);
+                let evidence_before_wait = probe_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .valid_evidence_epoch;
 
                 // 4. Issue health probe
                 let sequence = next_probe_id.fetch_add(1, Ordering::Relaxed);
@@ -788,20 +799,26 @@ where
                     Ok(Ok(_)) => {}
                     _ => {
                         *health_pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        let became_active =
+                            probe_ordinary_epoch.load(Ordering::Acquire) != activity_before_wait;
                         let mut state = probe_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.consecutive_timeouts += 1;
-                        tracing::warn!(
-                            session_id,
-                            consecutive_timeouts = state.consecutive_timeouts,
-                            "editor language server health probe timed out"
-                        );
-                        if state.consecutive_timeouts >= MAX_IDLE_PROBE_TIMEOUTS {
-                            tracing::error!(
+                        if became_active || state.valid_evidence_epoch != evidence_before_wait {
+                            state.consecutive_timeouts = 0;
+                        } else {
+                            state.consecutive_timeouts += 1;
+                            tracing::warn!(
                                 session_id,
-                                "editor language server exceeded max idle probe timeouts ({MAX_IDLE_PROBE_TIMEOUTS}); retiring session"
+                                consecutive_timeouts = state.consecutive_timeouts,
+                                "editor language server health probe timed out"
                             );
-                            let _ = retire_tx.send(true);
-                            break;
+                            if state.consecutive_timeouts >= MAX_IDLE_PROBE_TIMEOUTS {
+                                tracing::error!(
+                                    session_id,
+                                    "editor language server exceeded max idle probe timeouts ({MAX_IDLE_PROBE_TIMEOUTS}); retiring session"
+                                );
+                                let _ = retire_tx.send(true);
+                                break;
+                            }
                         }
                     }
                 }
@@ -816,6 +833,7 @@ where
     let reader_health_pending = Arc::clone(&health_pending);
     let reader_probe_state = Arc::clone(&probe_state);
     let reader_last_activity = Arc::clone(&last_activity);
+    let reader_ordinary_epoch = Arc::clone(&ordinary_epoch);
     let reader_readiness = Arc::clone(&readiness);
     let reader_in_flight_requests = Arc::clone(&in_flight_requests);
     let write_budget = options.write_budget;
@@ -867,7 +885,7 @@ where
                         }).ok();
                     }
                 }
-                record_liveness(&reader_last_activity, &reader_probe_state);
+                record_liveness(&reader_ordinary_epoch, &reader_last_activity, &reader_probe_state);
             }
 
             let editor = reader_translator.translate_lsp_to_client(&body);
@@ -919,7 +937,7 @@ where
                             }
                         }
                     }
-                    record_liveness(&last_activity, &probe_state);
+                    record_liveness(&ordinary_epoch, &last_activity, &probe_state);
                     let deadline = Instant::now() + options.write_budget;
                     if to_server_tx.try_send(PendingServerFrame {
                         body: to_server(&translator, &raw),
@@ -929,7 +947,7 @@ where
                     }
                 }
                 Some(Ok(WireMessage::Ping)) => {
-                    record_liveness(&last_activity, &probe_state);
+                    record_liveness(&ordinary_epoch, &last_activity, &probe_state);
                     let deadline = Instant::now() + options.write_budget;
                     if to_editor_tx.try_send(PendingEditorMessage {
                         message: WireMessage::Pong,

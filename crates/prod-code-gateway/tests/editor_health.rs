@@ -775,3 +775,80 @@ async fn real_gopls_editor_session_answers_probes_and_survives_idle_supervision(
 
     session.finish().await.expect("clean finish");
 }
+
+#[tokio::test]
+async fn probe_timeout_during_active_traffic_does_not_increment_timeout_streak() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let pid_file = root.join("server.pid");
+    let log_file = root.join("server.log");
+
+    let probe_state = Arc::new(std::sync::Mutex::new(ProbeState::default()));
+    let command = python_command(
+        root,
+        &pid_file,
+        &log_file,
+        true, // ignore_probes = true
+        ReadySignal::default(),
+    );
+    let servers = Arc::new(EditorServers::default());
+    let options = EditorProxyOptions {
+        write_budget: SHORT_WRITE,
+        teardown_budget: SHORT_TEARDOWN,
+        health_probe_interval: Some(Duration::from_millis(50)),
+        health_response_timeout: Duration::from_millis(150),
+        probe_state: Some(Arc::clone(&probe_state)),
+    };
+
+    let mut session = start_session_with_options(root, command, servers, options).await;
+    let pid = wait_for_pid(&pid_file).await.expect("pid");
+
+    // Wait until the server receives the first health probe (at ~50ms)
+    let probes = wait_for_log_count(&log_file, HEALTH_PROBE_METHOD, 1)
+        .await
+        .expect("probe reached server");
+    assert_eq!(probes.len(), 1);
+
+    // While probe response is pending (150ms timeout window), send ordinary ping request
+    let ping_req = json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "ping",
+        "params": {}
+    });
+    session
+        .editor
+        .as_mut()
+        .unwrap()
+        .send(WireMessage::LspPayload(ping_req.to_string()))
+        .await
+        .expect("send ping");
+
+    let msg = tokio::time::timeout(WAIT, session.editor.as_mut().unwrap().next())
+        .await
+        .expect("recv")
+        .expect("stream")
+        .expect("msg");
+    match msg {
+        WireMessage::LspPayload(raw) => {
+            let val: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(val["id"], 42);
+            assert_eq!(val["result"], "pong");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    // Wait for the probe timeout deadline (150ms from probe send) to elapse
+    tokio::time::sleep(Duration::from_millis(180)).await;
+
+    // Because ordinary activity was recorded during the probe wait, consecutive_timeouts must be 0
+    let timeouts = probe_state.lock().unwrap().consecutive_timeouts;
+    assert_eq!(
+        timeouts, 0,
+        "traffic during probe wait must reset consecutive_timeouts to 0 instead of counting as an idle timeout"
+    );
+
+    session.finish().await.expect("clean finish");
+    wait_for_exit(pid).await.expect("child exited");
+}
+
