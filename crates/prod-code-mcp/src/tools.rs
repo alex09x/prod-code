@@ -1768,12 +1768,14 @@ async fn handle_find_duplicates(
 ) -> Result<McpToolCallResult> {
     let min_lines = args.get("min_lines").and_then(|v| v.as_u64()).unwrap_or(6) as usize;
     let parameterized = args.get("parameterized").and_then(|v| v.as_bool()).unwrap_or(true);
+    let type3 = args.get("type3").and_then(|v| v.as_bool()).unwrap_or(false);
     let max_groups = args.get("max_groups").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     let target_path = args.get("path").and_then(|v| v.as_str()).map(Path::new);
 
     let options = crate::duplicates::DuplicateOptions {
         min_lines,
         parameterized,
+        type3,
         max_groups,
     };
 

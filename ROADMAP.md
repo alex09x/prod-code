@@ -606,7 +606,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Reduces hallucinated API invocations in agent-driven patches.
 
 - [x] **9.3. Code Clone & Duplication Harvester (`code_find_duplicates`)** — shipped 2026-09-29: `code_find_duplicates` / CLI `prod-code duplicates`:
-  - Whole-repository AST clone detection covering Type-1 (exact token sequence) and Type-2 (parameterized identifiers/literals) clones.
+  - Whole-repository AST clone detection covering Type-1 (exact token sequence), Type-2 (parameterized identifiers/literals), and Type-3 (gapped and reordered statements via multiset Jaccard similarity, `--type3`).
   - Fast token/AST sliding-window hasher with configurable line thresholds (`--min-lines`, default 6) and clone grouping.
   - Generates structural clone reports with parameterization suggestions, feeding directly into `code_extract_function` for automated deduplication passes.
 

@@ -1501,6 +1501,9 @@ enum Commands {
         /// Parameterized clone matching
         #[arg(long, default_value_t = true)]
         parameterized: bool,
+        /// Type-3 gapped/reordered statement clone matching
+        #[arg(long, default_value_t = false)]
+        type3: bool,
         /// Maximum number of clone groups to display
         #[arg(long, default_value_t = 20)]
         max_groups: usize,
@@ -3336,6 +3339,7 @@ async fn main() -> Result<()> {
         Commands::Duplicates {
             min_lines,
             parameterized,
+            type3,
             max_groups,
             path,
             json,
@@ -3345,6 +3349,7 @@ async fn main() -> Result<()> {
             let mut args = serde_json::json!({
                 "min_lines": min_lines,
                 "parameterized": parameterized,
+                "type3": type3,
                 "max_groups": max_groups,
             });
             if let Some(p) = path.as_ref() {
@@ -3354,6 +3359,7 @@ async fn main() -> Result<()> {
                 let options = prod_code_mcp::duplicates::DuplicateOptions {
                     min_lines,
                     parameterized,
+                    type3,
                     max_groups,
                 };
                 let report = prod_code_mcp::duplicates::find_duplicates(&root, path.as_deref(), options)?;
