@@ -1,9 +1,10 @@
 #![cfg(unix)]
 
-use prod_code_gateway::polyglot_compiler_cache_env;
+use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::swift_cache::{
     find_swift_packages, prune_stale_module_cache_in, relocate_swiftpm_workspace_state,
-    seed_swift_worktree, swift_module_cache_dir, swift_module_cache_env, SWIFT_MODULE_CACHE_ENV,
+    seed_swift_worktree, seed_swift_worktree_within, swift_module_cache_dir, swift_module_cache_env,
+    SWIFT_MODULE_CACHE_ENV,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -289,4 +290,67 @@ fn test_prune_stale_module_cache_lifecycle() {
     let evicted = prune_stale_module_cache_in(&cache_dir, Duration::from_secs(3600), 2500).unwrap();
     assert_eq!(evicted, 1);
     assert!(lock_file.is_file(), "lock files must never be pruned");
+}
+
+#[test]
+fn test_seed_swift_worktree_skips_heavy_dirs_when_disk_space_insufficient() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let custom_cache = temp.path().join("shared-module-cache-budget");
+
+    unsafe {
+        std::env::set_var(SWIFT_MODULE_CACHE_ENV, &custom_cache);
+    }
+
+    let origin = temp.path().join("origin-workspace");
+    let worktree = temp.path().join("worktree-workspace");
+
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(
+        origin.join("Package.swift"),
+        "// swift-tools-version: 5.10\nimport PackageDescription\nlet package = Package(name: \"App\");\n",
+    )
+    .unwrap();
+
+    let origin_build = origin.join(".build");
+    fs::create_dir_all(&origin_build).unwrap();
+
+    let checkout_dir = origin_build.join("checkouts").join("heavy-lib");
+    fs::create_dir_all(&checkout_dir).unwrap();
+    fs::write(checkout_dir.join("Heavy.swift"), vec![b'A'; 100_000]).unwrap();
+
+    let origin_str = origin.to_str().unwrap();
+    let state_content = format!(
+        r#"{{"object":{{"artifacts":[],"dependencies":[{{"state":{{"path":"{origin_str}/.build/checkouts/heavy-lib"}}}}]}}}}"#
+    );
+    fs::write(origin_build.join("workspace-state.json"), state_content).unwrap();
+
+    // Pass a DiskSpace budget where free space is too small to fit the heavy copy (100 bytes free, total 1_000_000)
+    let restricted_space = Some(DiskSpace {
+        free: 100,
+        total: 1_000_000,
+    });
+
+    let result = seed_swift_worktree_within(&origin, &worktree, restricted_space).unwrap();
+    assert!(result.is_some());
+
+    let wt_build = worktree.join(".build");
+    assert!(wt_build.is_dir());
+
+    // Heavy checkouts must NOT be copied because of disk space budget
+    assert!(!wt_build.join("checkouts").exists(), "heavy checkouts must be skipped when disk space is tight");
+
+    // But ModuleCache symlink MUST still be established
+    let wt_module_cache = wt_build.join("ModuleCache");
+    assert!(fs::symlink_metadata(&wt_module_cache).unwrap().file_type().is_symlink());
+    assert_eq!(fs::read_link(&wt_module_cache).unwrap(), custom_cache);
+
+    // And workspace-state.json must still be relocated
+    let wt_state = fs::read_to_string(wt_build.join("workspace-state.json")).unwrap();
+    let wt_str = worktree.to_str().unwrap();
+    assert!(wt_state.contains(&format!("{wt_str}/.build/checkouts/heavy-lib")));
+
+    unsafe {
+        std::env::remove_var(SWIFT_MODULE_CACHE_ENV);
+    }
 }

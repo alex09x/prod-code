@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::cpp_index::relocate_path_or_uri;
+use prod_code_protocol::transport::ScrubSecrets;
 
 /// The environment variable name used to explicitly configure the shared Swift module cache directory.
 pub const SWIFT_MODULE_CACHE_ENV: &str = "PROD_CODE_SWIFT_MODULE_CACHE";
@@ -219,6 +220,17 @@ pub fn tree_size(path: &Path) -> u64 {
 /// Returns `Ok(Some(bytes_seeded))` if any Swift packages were found and initialized,
 /// or `Ok(None)` if no Swift packages exist in `from`.
 pub fn seed_swift_worktree(from: &Path, to: &Path) -> io::Result<Option<u64>> {
+    seed_swift_worktree_within(from, to, crate::disk_space(to))
+}
+
+/// Seeds SwiftPM package checkouts, bare repositories, binary artifacts, workspace state,
+/// and links `.build/ModuleCache` to the node's shared Swift module cache directory (Roadmap 3.7),
+/// respecting the filesystem disk space budget `space`.
+pub fn seed_swift_worktree_within(
+    from: &Path,
+    to: &Path,
+    space: Option<crate::DiskSpace>,
+) -> io::Result<Option<u64>> {
     let packages = find_swift_packages(from);
     if packages.is_empty() {
         return Ok(None);
@@ -234,6 +246,33 @@ pub fn seed_swift_worktree(from: &Path, to: &Path) -> io::Result<Option<u64>> {
     let shared_module_cache = swift_module_cache_dir();
     let mut total_bytes = 0u64;
     let mut any_seeded = false;
+
+    let heavy_names = &["checkouts", "repositories", "artifacts"];
+    let mut heavy_size = 0u64;
+
+    for rel in &packages {
+        let from_pkg = from.join(rel);
+        let to_pkg = to.join(rel);
+
+        let from_build = from_pkg.join(".build");
+        let to_build = to_pkg.join(".build");
+
+        if from_build.is_dir() {
+            for &sub_name in heavy_names {
+                let from_sub = from_build.join(sub_name);
+                let to_sub = to_build.join(sub_name);
+                if from_sub.is_dir() && !to_sub.exists() {
+                    heavy_size += tree_size(&from_sub);
+                }
+            }
+        }
+    }
+
+    let heavy_fits = if heavy_size > 0 {
+        crate::seed_fits("SwiftPM checkouts and artifacts", heavy_size, space)
+    } else {
+        true
+    };
 
     for rel in packages {
         let from_pkg = from.join(&rel);
@@ -254,16 +293,26 @@ pub fn seed_swift_worktree(from: &Path, to: &Path) -> io::Result<Option<u64>> {
         // e.g. .build/arm64-apple-macosx/debug/ModuleCache or .build/x86_64-apple-macosx/debug/ModuleCache
         link_triple_module_caches(&from_build, &to_build, &shared_module_cache)?;
 
-        // 3. Seed package checkouts, bare repositories, and binary artifacts if from_build exists
+        // 3. Seed package checkouts, bare repositories, and binary artifacts if from_build exists and fits
         if from_build.is_dir() {
-            for sub_name in &["checkouts", "repositories", "artifacts"] {
-                let from_sub = from_build.join(sub_name);
-                let to_sub = to_build.join(sub_name);
+            if heavy_fits {
+                for &sub_name in heavy_names {
+                    let from_sub = from_build.join(sub_name);
+                    let to_sub = to_build.join(sub_name);
 
-                if from_sub.is_dir() && !to_sub.exists() {
-                    let sub_bytes = copy_dir_preserving(&from_sub, &to_sub)?;
-                    total_bytes += sub_bytes;
-                    any_seeded = true;
+                    if from_sub.is_dir() && !to_sub.exists() {
+                        let sub_bytes = match copy_dir_preserving(&from_sub, &to_sub) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                if to_sub.exists() {
+                                    let _ = fs::remove_dir_all(&to_sub);
+                                }
+                                return Err(e);
+                            }
+                        };
+                        total_bytes += sub_bytes;
+                        any_seeded = true;
+                    }
                 }
             }
 
@@ -287,7 +336,15 @@ pub fn seed_swift_worktree(from: &Path, to: &Path) -> io::Result<Option<u64>> {
         let from_swiftpm = from_pkg.join(".swiftpm");
         let to_swiftpm = to_pkg.join(".swiftpm");
         if from_swiftpm.is_dir() && !to_swiftpm.exists() {
-            let bytes = copy_dir_preserving(&from_swiftpm, &to_swiftpm)?;
+            let bytes = match copy_dir_preserving(&from_swiftpm, &to_swiftpm) {
+                Ok(b) => b,
+                Err(e) => {
+                    if to_swiftpm.exists() {
+                        let _ = fs::remove_dir_all(&to_swiftpm);
+                    }
+                    return Err(e);
+                }
+            };
             total_bytes += bytes;
             any_seeded = true;
         }
@@ -422,24 +479,45 @@ fn copy_dir_preserving(src: &Path, dst: &Path) -> io::Result<u64> {
 
     #[cfg(unix)]
     {
-        let status = std::process::Command::new("cp")
+        let mut cmd = std::process::Command::new("cp");
+        cmd.scrub_cluster_secrets();
+        let status = cmd
             .arg("-a")
             .arg(src)
             .arg(dst)
-            .status()?;
-        if !status.success() {
-            return Err(io::Error::other(format!(
-                "copying {} to {} failed: {status}",
-                src.display(),
-                dst.display()
-            )));
+            .status();
+        match status {
+            Ok(s) if s.success() => Ok(tree_size(dst)),
+            Ok(s) => {
+                if dst.exists() {
+                    let _ = fs::remove_dir_all(dst);
+                }
+                Err(io::Error::other(format!(
+                    "copying {} to {} failed: {s}",
+                    src.display(),
+                    dst.display()
+                )))
+            }
+            Err(e) => {
+                if dst.exists() {
+                    let _ = fs::remove_dir_all(dst);
+                }
+                Err(e)
+            }
         }
-        Ok(tree_size(dst))
     }
 
     #[cfg(not(unix))]
     {
-        copy_dir_fallback(src, dst)
+        match copy_dir_fallback(src, dst) {
+            Ok(size) => Ok(size),
+            Err(e) => {
+                if dst.exists() {
+                    let _ = fs::remove_dir_all(dst);
+                }
+                Err(e)
+            }
+        }
     }
 }
 
