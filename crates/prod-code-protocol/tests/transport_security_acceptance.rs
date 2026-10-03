@@ -41,7 +41,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::RootCertStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Encoder, Framed};
 
 static TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -769,6 +769,67 @@ async fn test_zero_downgrade_and_plaintext_refusal_when_tls_required() {
 
     plaintext_server.await.unwrap();
 
+    // 3. Plaintext client connecting to TLS-required server fails closed and receives 0 bytes response
+    {
+        let (server_ca_pem, server_ca_key) = pki::generate_ca("StrictServer CA").unwrap();
+        let (srv_pem, srv_key) = pki::generate_node_cert(
+            &server_ca_pem,
+            &server_ca_key,
+            &[DEFAULT_TLS_SERVER_NAME.to_string()],
+            &[],
+        )
+        .unwrap();
+
+        let srv_tls = ServerTlsConfig::new(parse_cert_pem(&srv_pem), parse_key_pem(&srv_key))
+            .build()
+            .unwrap();
+
+        let tls_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tls_server_addr = tls_listener.local_addr().unwrap();
+
+        let srv_task = tokio::spawn(async move {
+            let (sock, _) = tls_listener.accept().await.unwrap();
+            // Server TLS handshake MUST fail when the client sends plaintext data instead of ClientHello
+            let upgrade_res = upgrade_server_stream(sock, srv_tls).await;
+            assert!(
+                upgrade_res.is_err(),
+                "server TLS handshake must fail when client sends plaintext data"
+            );
+        });
+
+        // Plaintext client connects via raw TCP and sends plaintext WireMessage (e.g. Auth and Ping)
+        let mut plain_client = TcpStream::connect(tls_server_addr).await.unwrap();
+        let mut frame = bytes::BytesMut::new();
+        ProdCodeCodec::new()
+            .encode(
+                WireMessage::Auth(AuthToken("plaintext-leak-attempt".to_string())),
+                &mut frame,
+            )
+            .unwrap();
+        ProdCodeCodec::new()
+            .encode(WireMessage::Ping, &mut frame)
+            .unwrap();
+
+        let _ = plain_client.write_all(&frame).await;
+        let _ = plain_client.flush().await;
+
+        // Plaintext client framed reader must never receive a valid protocol message
+        let mut framed = Framed::new(plain_client, ProdCodeCodec::new());
+        match framed.next().await {
+            None => {} // Connection was closed immediately without response
+            Some(Err(e)) => {
+                // If the server sent a TLS alert record (ContentType 0x15), the codec rejects it
+                // as an invalid frame header because a TLS alert is not a WireMessage frame.
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+            }
+            Some(Ok(msg)) => {
+                panic!("TLS-required server must not return protocol response to plaintext client, got: {msg:?}");
+            }
+        }
+
+        srv_task.await.unwrap();
+    }
+
     unsafe {
         std::env::remove_var(TLS_MODE_ENV);
     }
@@ -935,7 +996,65 @@ async fn test_secrets_absent_from_logs_and_child_environments() {
     assert!(AUTH_TOKEN_VARS.contains(&"PROD_CODE_AUTH_TOKEN"));
     assert!(AUTH_TOKEN_VARS.contains(&"PROD_CODE_AUTH_TOKEN_FILE"));
 
-    // 2. Restrictive file permissions enforcement (0600)
+    // 2. Child process environment inspection: verify env_remove scrubs all secrets from child processes
+    {
+        let canary_token = "cluster-secret-token-canary-445566";
+        let canary_key_path = "/tmp/cluster_private_key_canary_secret.pem";
+        unsafe {
+            std::env::set_var("PROD_CODE_AUTH_TOKEN", canary_token);
+            std::env::set_var("PROD_CODE_AUTH_TOKEN_FILE", "/tmp/token.txt");
+            std::env::set_var(TLS_MODE_ENV, "strict");
+            std::env::set_var(TLS_CERT_ENV, "/tmp/cert.pem");
+            std::env::set_var(TLS_KEY_ENV, canary_key_path);
+            std::env::set_var(TLS_CA_ENV, "/tmp/ca.pem");
+            std::env::set_var(TLS_PIN_ENV, "abcdef0123456789");
+            std::env::set_var(TLS_SERVER_NAME_ENV, "node.internal");
+        }
+
+        let mut cmd = std::process::Command::new("env");
+        for var in AUTH_TOKEN_VARS {
+            cmd.env_remove(var);
+        }
+        for var in TLS_ENV_VARS {
+            cmd.env_remove(var);
+        }
+
+        let output = cmd.output().expect("execute env command in child process");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        for var in AUTH_TOKEN_VARS {
+            assert!(
+                !stdout.contains(&format!("{var}=")),
+                "child process environment must not contain {var}"
+            );
+        }
+        for var in TLS_ENV_VARS {
+            assert!(
+                !stdout.contains(&format!("{var}=")),
+                "child process environment must not contain {var}"
+            );
+        }
+        assert!(
+            !stdout.contains(canary_token),
+            "child environment must never leak auth token secret value"
+        );
+        assert!(
+            !stdout.contains(canary_key_path),
+            "child environment must never leak private key path"
+        );
+
+        unsafe {
+            for var in AUTH_TOKEN_VARS {
+                std::env::remove_var(var);
+            }
+            for var in TLS_ENV_VARS {
+                std::env::remove_var(var);
+            }
+        }
+    }
+
+    // 3. Restrictive file permissions enforcement (0600)
     let temp_dir = tempfile::tempdir().unwrap();
     let key_file = temp_dir.path().join("test_sec.key");
     std::fs::write(&key_file, "mock-private-key-bytes").unwrap();
@@ -970,7 +1089,7 @@ async fn test_secrets_absent_from_logs_and_child_environments() {
         );
     }
 
-    // 3. In-memory caching allows key environment scrubbing without connection failure
+    // 4. In-memory caching allows key environment scrubbing without connection failure
     clear_client_tls_cache();
     let (ca_pem, ca_key_pem) = pki::generate_ca("Scrub Test CA").unwrap();
     let (cert_pem, key_pem) = pki::generate_node_cert(
@@ -1027,6 +1146,122 @@ async fn test_secrets_absent_from_logs_and_child_environments() {
         std::env::remove_var(TLS_MODE_ENV);
         std::env::remove_var(TLS_CERT_ENV);
         std::env::remove_var(TLS_CA_ENV);
+    }
+
+    // 5. Secret hygiene in logging and Debug formatting:
+    // Verify that neither Debug representations nor tracing logs leak private keys or auth tokens.
+    {
+        struct TestLogSubscriber {
+            logs: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl tracing::Subscriber for TestLogSubscriber {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                struct Visitor<'a>(&'a mut String);
+                impl<'a> tracing::field::Visit for Visitor<'a> {
+                    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                        use std::fmt::Write;
+                        let _ = write!(self.0, " {}={:?}", field.name(), value);
+                    }
+                }
+                let mut msg = format!("{:?} {}", event.metadata().level(), event.metadata().target());
+                let mut visitor = Visitor(&mut msg);
+                event.record(&mut visitor);
+                if let Ok(mut logs) = self.logs.lock() {
+                    logs.push(msg);
+                }
+            }
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        let (ca_pem, ca_key_pem) = pki::generate_ca("Log Hygiene CA").unwrap();
+        let (server_pem, server_key_pem) = pki::generate_node_cert(
+            &ca_pem,
+            &ca_key_pem,
+            &[DEFAULT_TLS_SERVER_NAME.to_string()],
+            &[],
+        )
+        .unwrap();
+        let (client_pem, client_key_pem) = pki::generate_node_cert(
+            &ca_pem,
+            &ca_key_pem,
+            &["client.internal".to_string()],
+            &[],
+        )
+        .unwrap();
+
+        let secret_token_str = "super-secret-auth-token-canary-998877";
+        let auth_token = AuthToken(secret_token_str.to_string());
+        let wire_auth = WireMessage::Auth(auth_token.clone());
+
+        let server_tls = ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem));
+        let client_tls = ClientTlsConfig::new().with_client_cert(parse_cert_pem(&client_pem), parse_key_pem(&client_key_pem));
+
+        // A. Direct Debug representation checks:
+        let debug_auth = format!("{auth_token:?}");
+        assert!(!debug_auth.contains(secret_token_str), "AuthToken Debug must not contain secret string: {debug_auth}");
+        assert!(debug_auth.contains("<redacted>"), "AuthToken Debug must be redacted: {debug_auth}");
+
+        let debug_wire = format!("{wire_auth:?}");
+        assert!(!debug_wire.contains(secret_token_str), "WireMessage::Auth Debug must not contain secret string: {debug_wire}");
+        assert!(debug_wire.contains("<redacted>"), "WireMessage::Auth Debug must be redacted: {debug_wire}");
+
+        let debug_server = format!("{server_tls:?}");
+        assert!(!debug_server.contains(&server_key_pem), "ServerTlsConfig Debug must not leak private key PEM: {debug_server}");
+        assert!(debug_server.contains("[REDACTED]"), "ServerTlsConfig Debug must mark key as [REDACTED]: {debug_server}");
+
+        let debug_client = format!("{client_tls:?}");
+        assert!(!debug_client.contains(&client_key_pem), "ClientTlsConfig Debug must not leak private key PEM: {debug_client}");
+        assert!(debug_client.contains("[REDACTED]"), "ClientTlsConfig Debug must mark key as [REDACTED]: {debug_client}");
+
+        // B. In-memory tracing log capture check:
+        let captured_logs = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = TestLogSubscriber {
+            logs: Arc::clone(&captured_logs),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(server = ?server_tls, "configured server TLS");
+            tracing::info!(client = ?client_tls, "configured client TLS");
+            tracing::warn!(auth = ?auth_token, "received auth attempt");
+            tracing::debug!(wire = ?wire_auth, "dispatching wire message");
+        });
+
+        let logs = captured_logs.lock().unwrap();
+        assert_eq!(logs.len(), 4, "must capture exactly 4 log events");
+        for log_line in logs.iter() {
+            assert!(
+                !log_line.contains(secret_token_str),
+                "captured log must not leak secret auth token: {log_line}"
+            );
+            assert!(
+                !log_line.contains(&server_key_pem),
+                "captured log must not leak server private key PEM: {log_line}"
+            );
+            assert!(
+                !log_line.contains(&client_key_pem),
+                "captured log must not leak client private key PEM: {log_line}"
+            );
+            let server_key_lines: Vec<&str> = server_key_pem
+                .lines()
+                .filter(|l| !l.starts_with("---"))
+                .collect();
+            if let Some(first_key_line) = server_key_lines.first() {
+                assert!(
+                    !log_line.contains(first_key_line),
+                    "captured log must not leak raw private key bytes: {log_line}"
+                );
+            }
+        }
     }
 }
 
