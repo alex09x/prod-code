@@ -366,3 +366,32 @@ fn test_merge_stubs_atomic_publishing() {
         assert!(!name.starts_with(".tmp-stub-"), "leftover tmp file: {name}");
     }
 }
+
+#[test]
+fn test_merge_stubs_concurrent_newer_wins_preserved() {
+    let temp = tempfile::tempdir().unwrap();
+    let src_old = temp.path().join("src_old");
+    let src_new = temp.path().join("src_new");
+    let dst = temp.path().join("dst");
+    fs::create_dir_all(&src_old).unwrap();
+    fs::create_dir_all(&src_new).unwrap();
+
+    // Older version
+    fs::write(src_old.join("version.pyi"), b"VERSION = '1.0.0'\n").unwrap();
+
+    // Newer version with later mtime
+    std::thread::sleep(Duration::from_millis(50));
+    fs::write(src_new.join("version.pyi"), b"VERSION = '2.0.0'\n").unwrap();
+
+    // 1. Publish newer version first
+    let written = merge_stubs(&src_new, &dst).unwrap();
+    assert!(written > 0);
+    assert_eq!(fs::read(dst.join("version.pyi")).unwrap(), b"VERSION = '2.0.0'\n");
+
+    // 2. An older source merges later (e.g. slow worker racing)
+    let re_written = merge_stubs(&src_old, &dst).unwrap();
+    assert_eq!(re_written, 0);
+
+    // Newer version MUST NOT be overwritten by the older version
+    assert_eq!(fs::read(dst.join("version.pyi")).unwrap(), b"VERSION = '2.0.0'\n");
+}
