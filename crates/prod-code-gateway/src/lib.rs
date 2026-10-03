@@ -18,6 +18,7 @@ pub mod python_cache;
 pub mod search;
 pub mod shadow;
 pub mod swift_cache;
+pub mod ts_cache;
 pub mod workspace;
 
 pub use detect::detect_engine;
@@ -1364,6 +1365,12 @@ pub async fn apply_sync_probe(
                     None
                 });
                 let python_took = started.elapsed();
+                let started = Instant::now();
+                let ts_cache = ts_cache::seed_typescript_worktree(&from, &to).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "seeding TypeScript type declaration cache and configuration failed");
+                    None
+                });
+                let ts_took = started.elapsed();
                 Ok::<_, std::io::Error>((
                     files,
                     cache,
@@ -1376,6 +1383,8 @@ pub async fn apply_sync_probe(
                     swift_took,
                     python_cache,
                     python_took,
+                    ts_cache,
+                    ts_took,
                 ))
             })
             .await
@@ -1392,6 +1401,8 @@ pub async fn apply_sync_probe(
                     swift_took,
                     python_cache,
                     python_took,
+                    ts_cache,
+                    ts_took,
                 ))) => {
                     seeded = true;
                     tracing::info!(
@@ -1408,6 +1419,8 @@ pub async fn apply_sync_probe(
                         swift_cache_ms = swift_took.as_millis() as u64,
                         python_cache_kb = python_cache.map(|bytes| bytes / 1024),
                         python_cache_ms = python_took.as_millis() as u64,
+                        ts_cache_kb = ts_cache.map(|bytes| bytes / 1024),
+                        ts_cache_ms = ts_took.as_millis() as u64,
                         "🌱 [SEED] new worktree workspace seeded from origin copy"
                     );
                 }
@@ -2771,6 +2784,8 @@ pub fn polyglot_compiler_cache_env(
     env.extend(python_cache::python_stub_cache_env());
     // Swift shared module cache across worktrees (Roadmap 3.7)
     env.extend(swift_cache::swift_module_cache_env());
+    // TypeScript shared @types and declaration cache across worktrees (Roadmap 3.5)
+    env.extend(ts_cache::ts_types_cache_env());
     env
 }
 
@@ -7882,6 +7897,10 @@ async fn janitor(
                 std::time::Duration::from_secs(7 * 86400),
                 10 * 1024 * 1024 * 1024,
             );
+            let _ = ts_cache::prune_stale_types_cache(
+                std::time::Duration::from_secs(7 * 86400),
+                5 * 1024 * 1024 * 1024,
+            );
         })
         .await;
     }
@@ -7914,6 +7933,10 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         let _ = swift_cache::prune_stale_module_cache(
             std::time::Duration::from_secs(7 * 86400),
             10 * 1024 * 1024 * 1024,
+        );
+        let _ = ts_cache::prune_stale_types_cache(
+            std::time::Duration::from_secs(7 * 86400),
+            5 * 1024 * 1024 * 1024,
         );
     })
     .await;

@@ -117,7 +117,13 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
             }
             from(cfg)
         }
-        "typescript" => from(GenericLspConfig::for_typescript()),
+        "typescript" => {
+            let mut cfg = GenericLspConfig::for_typescript();
+            for (k, v) in crate::ts_cache::ts_types_cache_env() {
+                cfg.env.insert(k, v);
+            }
+            from(cfg)
+        }
         "swift" => {
             let mut cfg = GenericLspConfig::for_swift();
             for (k, v) in crate::swift_cache::swift_module_cache_env() {

@@ -342,47 +342,94 @@ impl GenericLspConfig {
         // TypeScript 7 (native) ships its own LSP: `tsc --lsp --stdio` from the platform
         // package. It needs no tsserver and no Node at all, so it wins when present.
         let native = native_typescript_lsp();
-        // The native server holds a question until its project is loaded; what the others do
-        // is not known.
-        let ready = if native.is_some() {
-            ReadySignal::HoldsQuestions
-        } else {
-            ReadySignal::Unknown
-        };
-        let (cmd, args) = if let Some(native) = native {
+        let (cmd, args) = if let Some(native) = native.as_ref() {
             (
                 native.to_string_lossy().into_owned(),
                 vec!["--lsp".to_string(), "--stdio".to_string()],
             )
+        } else if which_bin("vtsls").is_ok() {
+            ("vtsls".to_string(), vec!["--stdio".to_string()])
         } else if which_bin("typescript-language-server").is_ok() {
             (
                 "typescript-language-server".to_string(),
                 vec!["--stdio".to_string()],
             )
-        } else if which_bin("vtsls").is_ok() {
-            ("vtsls".to_string(), vec!["--stdio".to_string()])
         } else {
             (
                 "typescript-language-server".to_string(),
                 vec!["--stdio".to_string()],
             )
         };
-        // typescript-language-server does not bundle TypeScript: a workspace without
-        // node_modules/typescript needs the global install pointed at explicitly.
-        let initialization_options = npm_global_root()
-            .map(|root| root.join("typescript").join("lib"))
-            .filter(|lib| lib.join("tsserver.js").exists())
-            .map(|lib| {
-                serde_json::json!({
-                    "tsserver": { "path": lib.to_string_lossy() },
-                    "preferences": { "includeInlayParameterNameHints": "none" }
-                })
+        // The native server holds a question until its project is loaded; vtsls reports
+        // progress notifications ($/progress); typescript-language-server is unknown.
+        let ready = if native.is_some() {
+            ReadySignal::HoldsQuestions
+        } else if cmd.contains("vtsls") {
+            ReadySignal::Progress
+        } else {
+            ReadySignal::Unknown
+        };
+
+        let mut env = HashMap::new();
+        if let Some(val) = std::env::var_os("PROD_CODE_TS_TYPES_CACHE") {
+            let val_str = val.to_string_lossy().into_owned();
+            env.insert("PROD_CODE_TS_TYPES_CACHE".to_string(), val_str.clone());
+            if let Some(node_path) = std::env::var_os("NODE_PATH") {
+                let mut combined = node_path.to_string_lossy().into_owned();
+                combined.push(':');
+                combined.push_str(&val_str);
+                env.insert("NODE_PATH".to_string(), combined);
+            } else {
+                env.insert("NODE_PATH".to_string(), val_str);
+            }
+        }
+
+        let initialization_options = if cmd.contains("vtsls") {
+            let tsserver_path = npm_global_root()
+                .map(|root| root.join("typescript").join("lib"))
+                .filter(|lib| lib.join("tsserver.js").exists())
+                .map(|lib| lib.to_string_lossy().into_owned());
+
+            let mut vtsls_opts = serde_json::json!({
+                "vtsls": {
+                    "autoUseWorkspaceTsdk": true,
+                    "experimental": {
+                        "completion": {
+                            "enableServerSideFuzzyMatch": true
+                        }
+                    }
+                },
+                "typescript": {
+                    "preferences": {
+                        "includeInlayParameterNameHints": "none"
+                    },
+                    "tsserver": {
+                        "maxTsServerMemory": 4096
+                    }
+                }
             });
+            if let Some(p) = tsserver_path {
+                if let Some(ts) = vtsls_opts.get_mut("typescript").and_then(|t| t.get_mut("tsserver")).and_then(|ts| ts.as_object_mut()) {
+                    ts.insert("path".to_string(), serde_json::Value::String(p));
+                }
+            }
+            Some(vtsls_opts)
+        } else {
+            npm_global_root()
+                .map(|root| root.join("typescript").join("lib"))
+                .filter(|lib| lib.join("tsserver.js").exists())
+                .map(|lib| {
+                    serde_json::json!({
+                        "tsserver": { "path": lib.to_string_lossy() },
+                        "preferences": { "includeInlayParameterNameHints": "none" }
+                    })
+                })
+        };
 
         Self {
             command: cmd,
             args,
-            env: HashMap::new(),
+            env,
             working_dir: None,
             initialization_options,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
