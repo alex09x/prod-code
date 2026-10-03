@@ -1970,23 +1970,53 @@ impl RustEngine {
             _ if !build_scripts => (ProcMacroServerChoice::None, 0, None),
             ProcMacroServerKind::Sysroot => {
                 let (workers, permit) = farm.allocate_workers(workspace_root, desired_workers);
-                (ProcMacroServerChoice::Sysroot, workers, Some(permit))
+                if workers == 0 {
+                    tracing::warn!(
+                        workspace = %workspace_root.display(),
+                        capacity = farm.capacity(),
+                        "Proc-macro farm is at capacity; proc-macro server disabled for workspace"
+                    );
+                    (ProcMacroServerChoice::None, 0, None)
+                } else {
+                    (ProcMacroServerChoice::Sysroot, workers, Some(permit))
+                }
             }
             ProcMacroServerKind::Sandboxed => {
                 let (workers, permit) = farm.allocate_workers(workspace_root, desired_workers);
-                let memory_limit_mb = config.rust.proc_macro_memory_limit_mb.unwrap_or(2048);
-                let choice = if let Some(Ok(ref sysroot_srv)) = ws.find_sysroot_proc_macro_srv() {
-                    match proc_macro_farm::prepare_sandboxed_srv(sysroot_srv.as_ref(), memory_limit_mb) {
-                        Ok(wrapper) => ProcMacroServerChoice::Explicit(AbsPathBuf::assert_utf8(wrapper)),
-                        Err(err) => {
-                            tracing::warn!(?err, "Failed to prepare sandboxed proc-macro server, falling back to sysroot");
-                            ProcMacroServerChoice::Sysroot
-                        }
-                    }
+                if workers == 0 {
+                    tracing::warn!(
+                        workspace = %workspace_root.display(),
+                        capacity = farm.capacity(),
+                        "Proc-macro farm is at capacity; proc-macro server disabled for workspace"
+                    );
+                    (ProcMacroServerChoice::None, 0, None)
                 } else {
-                    ProcMacroServerChoice::Sysroot
-                };
-                (choice, workers, Some(permit))
+                    let memory_limit_mb = config.rust.proc_macro_memory_limit_mb.unwrap_or(2048);
+                    let sysroot_srv = ws
+                        .find_sysroot_proc_macro_srv()
+                        .and_then(|res| res.ok())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Sandboxed proc-macro server required but sysroot rust-analyzer-proc-macro-srv not found. \
+                                Configure [rust] proc_macro_srv = \"sysroot\" to explicitly opt out of sandboxing."
+                            )
+                        })?;
+                    let wrapper = proc_macro_farm::prepare_sandboxed_srv(
+                        sysroot_srv.as_ref(),
+                        memory_limit_mb,
+                    )
+                    .map_err(|err| {
+                        anyhow::anyhow!(
+                            "Failed to prepare sandboxed proc-macro server: {err}. \
+                            Refusing to fall back to unsandboxed execution in sandboxed mode."
+                        )
+                    })?;
+                    (
+                        ProcMacroServerChoice::Explicit(AbsPathBuf::assert_utf8(wrapper)),
+                        workers,
+                        Some(permit),
+                    )
+                }
             }
         };
 
