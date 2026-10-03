@@ -2,10 +2,11 @@
 
 use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::ts_cache::{
-    find_project_types, has_declaration_files, is_typescript_project, merge_types,
-    prune_stale_types_cache_in, prune_stale_types_cache_with_grace, ts_types_cache_dir,
-    ts_types_cache_env, seed_typescript_worktree, seed_typescript_worktree_within,
-    tree_size, TS_TYPES_CACHE_ENV,
+    approved_target, build_approved_roots, find_project_types, has_declaration_files,
+    is_typescript_project, merge_types, prune_stale_types_cache_in,
+    prune_stale_types_cache_with_grace, ts_types_cache_dir, ts_types_cache_env,
+    seed_typescript_worktree, seed_typescript_worktree_within, tree_size,
+    TS_TYPES_CACHE_ENV,
 };
 use std::fs;
 use std::time::Duration;
@@ -640,4 +641,34 @@ fn test_find_project_types_symlink_cycle_and_out_of_root_custom_types() {
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
     }
+}
+
+#[test]
+fn test_approved_target_and_canonical_dereferencing() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    fs::create_dir_all(&root).unwrap();
+
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("secret.d.ts"), "declare const secret: string;\n").unwrap();
+
+    let inside = root.join("valid_types");
+    fs::create_dir_all(&inside).unwrap();
+    fs::write(inside.join("index.d.ts"), "export declare const ok: boolean;\n").unwrap();
+
+    let approved = build_approved_roots(&[&root]);
+
+    // Symlink pointing to approved in-root directory
+    let sym_inside = root.join("link_inside");
+    let _ = std::os::unix::fs::symlink(&inside, &sym_inside);
+    let target = approved_target(&sym_inside, &approved);
+    assert!(target.is_some());
+    assert_eq!(target.unwrap(), inside.canonicalize().unwrap());
+
+    // Symlink pointing to outside directory
+    let sym_outside = root.join("link_outside");
+    let _ = std::os::unix::fs::symlink(&outside, &sym_outside);
+    let target_out = approved_target(&sym_outside, &approved);
+    assert!(target_out.is_none());
 }

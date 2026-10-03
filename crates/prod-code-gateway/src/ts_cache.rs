@@ -196,10 +196,7 @@ fn has_declaration_files_inner(
     approved_roots: &[PathBuf],
     visited: &mut VisitedDirs,
 ) -> bool {
-    if !is_target_approved(dir, approved_roots) {
-        return false;
-    }
-    let Ok(canonical_dir) = dir.canonicalize() else {
+    let Some(canonical_dir) = approved_target(dir, approved_roots) else {
         return false;
     };
     if !canonical_dir.is_dir() || !visited.insert(&canonical_dir) {
@@ -220,17 +217,18 @@ fn has_declaration_files_inner(
             continue;
         }
 
-        // Safely dereference symlinks within approved roots, rejecting out-of-root targets
-        let (is_dir, is_file) = if file_type.is_symlink() {
-            if !is_target_approved(&path, approved_roots) {
+        // Safely dereference symlinks within approved roots, using the validated canonical target
+        // for subsequent operations to prevent TOCTOU symlink swaps (#836).
+        let (effective_path, is_dir, is_file) = if file_type.is_symlink() {
+            let Some(canon) = approved_target(&path, approved_roots) else {
                 continue;
-            }
-            match fs::metadata(&path) {
-                Ok(meta) => (meta.is_dir(), meta.is_file()),
+            };
+            match fs::metadata(&canon) {
+                Ok(meta) => (canon, meta.is_dir(), meta.is_file()),
                 Err(_) => continue,
             }
         } else {
-            (file_type.is_dir(), file_type.is_file())
+            (path, file_type.is_dir(), file_type.is_file())
         };
 
         if is_file {
@@ -240,7 +238,7 @@ fn has_declaration_files_inner(
             {
                 return true;
             }
-        } else if is_dir && has_declaration_files_inner(&path, approved_roots, visited) {
+        } else if is_dir && has_declaration_files_inner(&effective_path, approved_roots, visited) {
             return true;
         }
     }
@@ -278,35 +276,34 @@ impl TargetLock {
 }
 
 #[cfg(unix)]
-fn sync_mtime(src: &Path, dst: &Path) {
+fn sync_mtime_from_meta(meta: &fs::Metadata, dst: &Path) {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
-    if let Ok(meta) = fs::metadata(src) {
-        let times = [
-            libc::timespec {
-                tv_sec: meta.atime() as libc::time_t,
-                tv_nsec: meta.atime_nsec() as libc::c_long,
-            },
-            libc::timespec {
-                tv_sec: meta.mtime() as libc::time_t,
-                tv_nsec: meta.mtime_nsec() as libc::c_long,
-            },
-        ];
-        if let Ok(c_path) = std::ffi::CString::new(dst.as_os_str().as_bytes()) {
-            unsafe {
-                libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
-            }
+    let times = [
+        libc::timespec {
+            tv_sec: meta.atime() as libc::time_t,
+            tv_nsec: meta.atime_nsec() as libc::c_long,
+        },
+        libc::timespec {
+            tv_sec: meta.mtime() as libc::time_t,
+            tv_nsec: meta.mtime_nsec() as libc::c_long,
+        },
+    ];
+    if let Ok(c_path) = std::ffi::CString::new(dst.as_os_str().as_bytes()) {
+        unsafe {
+            libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
         }
     }
 }
 
 #[cfg(not(unix))]
-fn sync_mtime(_src: &Path, _dst: &Path) {}
+fn sync_mtime_from_meta(_meta: &fs::Metadata, _dst: &Path) {}
 
 static TYPE_FILE_NONCE: AtomicU64 = AtomicU64::new(1);
 
 /// Copies a type declaration file to `dst` atomically under a per-target lock,
 /// ensuring concurrent seeders do not race and that older files never overwrite newer files.
+/// Operates on the open file handle directly to prevent symlink TOCTOU races (#836).
 fn copy_and_publish_type_file(src: &Path, dst: &Path) -> io::Result<u64> {
     let parent = dst.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "destination file has no parent directory")
@@ -319,8 +316,9 @@ fn copy_and_publish_type_file(src: &Path, dst: &Path) -> io::Result<u64> {
     let lock_path = parent.join(format!(".lock-{}", file_name.to_string_lossy()));
     let _lock = TargetLock::acquire(&lock_path)?;
 
-    // Recheck modification times under the lock to ensure newest-wins policy
-    let src_meta = fs::metadata(src)?;
+    // Open source file first; all subsequent metadata and copy operations use the open file handle (#836)
+    let mut src_file = fs::File::open(src)?;
+    let src_meta = src_file.metadata()?;
     let src_mod = src_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
     if let Ok(dst_meta) = fs::metadata(dst) {
@@ -339,7 +337,6 @@ fn copy_and_publish_type_file(src: &Path, dst: &Path) -> io::Result<u64> {
     let tmp_name = format!(".tmp-ts-{pid}-{nonce}-{ts:x}");
     let tmp_path = parent.join(tmp_name);
 
-    let mut src_file = fs::File::open(src)?;
     let mut tmp_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -376,7 +373,7 @@ fn copy_and_publish_type_file(src: &Path, dst: &Path) -> io::Result<u64> {
 
     drop(tmp_file);
 
-    sync_mtime(src, dst);
+    sync_mtime_from_meta(&src_meta, dst);
 
     Ok(bytes)
 }
@@ -473,12 +470,19 @@ pub fn find_enclosing_project_root(path: &Path) -> PathBuf {
     })
 }
 
+/// Resolves a path to its canonical target and returns it if it resides within an approved root (#836).
+pub fn approved_target(target: &Path, approved_roots: &[PathBuf]) -> Option<PathBuf> {
+    let canon = target.canonicalize().ok()?;
+    if approved_roots.iter().any(|root| canon.starts_with(root)) {
+        Some(canon)
+    } else {
+        None
+    }
+}
+
 /// Checks whether a symlink's target canonical path is inside an approved project or package root.
-fn is_target_approved(target: &Path, approved_roots: &[PathBuf]) -> bool {
-    let Ok(canon) = target.canonicalize() else {
-        return false;
-    };
-    approved_roots.iter().any(|root| canon.starts_with(root))
+pub fn is_target_approved(target: &Path, approved_roots: &[PathBuf]) -> bool {
+    approved_target(target, approved_roots).is_some()
 }
 
 /// Recursively copies and merges type declarations from `src_dir` into `dst_dir`.
@@ -523,11 +527,8 @@ fn merge_types_inner(
     approved_roots: &[PathBuf],
     visited: &mut VisitedDirs,
 ) -> io::Result<u64> {
-    if !is_target_approved(src_dir, approved_roots) {
+    let Some(canonical_src) = approved_target(src_dir, approved_roots) else {
         tracing::debug!(src_dir = %src_dir.display(), "skipping traversal root outside approved roots");
-        return Ok(0);
-    }
-    let Ok(canonical_src) = src_dir.canonicalize() else {
         return Ok(0);
     };
     if !canonical_src.is_dir() || !visited.insert(&canonical_src) {
@@ -554,28 +555,29 @@ fn merge_types_inner(
         }
 
         // Safely dereference symlinks (e.g. pnpm package symlinks into virtual stores).
-        // Only follow symlinks whose targets resolve inside approved project/package roots (#836).
-        // Out-of-root symlinks (e.g. pointing to host files/directories) are strictly rejected.
-        let (is_dir, is_file) = if file_type.is_symlink() {
-            if !is_target_approved(&path, approved_roots) {
+        // Resolves the canonical target once, verifies it is inside approved roots, and uses
+        // that validated canonical target for all subsequent metadata, traversal, and copy operations
+        // to prevent TOCTOU symlink swaps (#836).
+        let (effective_path, is_dir, is_file) = if file_type.is_symlink() {
+            let Some(canon) = approved_target(&path, approved_roots) else {
                 tracing::debug!(path = %path.display(), "skipping symlink pointing outside approved roots");
                 continue;
-            }
-            match fs::metadata(&path) {
-                Ok(meta) => (meta.is_dir(), meta.is_file()),
+            };
+            match fs::metadata(&canon) {
+                Ok(meta) => (canon, meta.is_dir(), meta.is_file()),
                 Err(_) => continue, // dangling symlink, skip safely
             }
         } else {
-            (file_type.is_dir(), file_type.is_file())
+            (path, file_type.is_dir(), file_type.is_file())
         };
 
         if is_dir {
             let sub_dst = dst_dir.join(&file_name);
-            let sub_bytes = merge_types_inner(&path, &sub_dst, approved_roots, visited)?;
+            let sub_bytes = merge_types_inner(&effective_path, &sub_dst, approved_roots, visited)?;
             bytes_written += sub_bytes;
         } else if is_file && is_type_declaration_file(&name_str) {
             let target_file = dst_dir.join(&file_name);
-            let written = copy_and_publish_type_file(&path, &target_file)?;
+            let written = copy_and_publish_type_file(&effective_path, &target_file)?;
             bytes_written += written;
         }
     }
@@ -602,10 +604,7 @@ fn tree_size_inner(
     approved_roots: &[PathBuf],
     visited: &mut VisitedDirs,
 ) -> u64 {
-    if !is_target_approved(dir, approved_roots) {
-        return 0;
-    }
-    let Ok(canonical_dir) = dir.canonicalize() else {
+    let Some(canonical_dir) = approved_target(dir, approved_roots) else {
         return 0;
     };
     if !canonical_dir.is_dir() || !visited.insert(&canonical_dir) {
@@ -625,13 +624,16 @@ fn tree_size_inner(
                 continue;
             }
 
-            // Safely dereference symlinks for sizing only if within approved roots (#836).
-            let (is_dir, is_file, file_len) = if file_type.is_symlink() {
-                if !is_target_approved(&path, approved_roots) {
+            // Safely dereference symlinks for sizing using validated canonical target (#836).
+            let (effective_path, is_dir, is_file, file_len) = if file_type.is_symlink() {
+                let Some(canon) = approved_target(&path, approved_roots) else {
                     continue;
-                }
-                match fs::metadata(&path) {
-                    Ok(meta) => (meta.is_dir(), meta.is_file(), meta.len()),
+                };
+                match fs::metadata(&canon) {
+                    Ok(meta) => {
+                        let len = if meta.is_file() { meta.len() } else { 0 };
+                        (canon, meta.is_dir(), meta.is_file(), len)
+                    }
                     Err(_) => continue,
                 }
             } else {
@@ -640,11 +642,11 @@ fn tree_size_inner(
                 } else {
                     0
                 };
-                (file_type.is_dir(), file_type.is_file(), len)
+                (path, file_type.is_dir(), file_type.is_file(), len)
             };
 
             if is_dir {
-                total += tree_size_inner(&path, approved_roots, visited);
+                total += tree_size_inner(&effective_path, approved_roots, visited);
             } else if is_file && is_type_declaration_file(&name_str) {
                 total += file_len;
             }
