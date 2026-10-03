@@ -1145,13 +1145,20 @@ pub async fn run_overlay(
     let upper = dir.join("upper");
     let work = dir.join("work");
     let delete_list = dir.join("delete.txt");
-    let control_dir = dir.join("control");
-    let mount_status = control_dir.join("mount_status");
+    let (control_dir, mount_status) = if job.fallback_shadow_root.is_some() {
+        let cd = dir.join("control");
+        let ms = cd.join("mount_status");
+        (Some(cd), Some(ms))
+    } else {
+        (None, None)
+    };
     let script = dir.join("run.sh");
     let staged = (|| -> Result<()> {
         std::fs::create_dir_all(&upper)?;
         std::fs::create_dir_all(&work)?;
-        std::fs::create_dir_all(&control_dir)?;
+        if let Some(cd) = &control_dir {
+            std::fs::create_dir_all(cd)?;
+        }
         let deleted = stage_upper(&upper, &job.files)?;
         let mut list = String::new();
         for path in deleted {
@@ -1200,16 +1207,27 @@ pub async fn run_overlay(
         .env("SHADOW_WORK", &work)
         .env("SHADOW_DELETE", &delete_list)
         .env("SHADOW_SUBDIR", &job.subdir)
-        .env("SHADOW_CONTROL_DIR", &control_dir)
-        .env("SHADOW_MOUNT_STATUS", &mount_status)
         .env("SHADOW_SETPRIV", setpriv)
         .current_dir(&job.workspace);
+    if let (Some(cd), Some(ms)) = (&control_dir, &mount_status) {
+        cmd.env("SHADOW_CONTROL_DIR", cd);
+        cmd.env("SHADOW_MOUNT_STATUS", ms);
+    }
     let result = run_child(cmd, &job, cancel.clone()).await;
     let fallback_root = job.fallback_shadow_root.clone();
-    let mount_succeeded = mount_status.is_file()
-        && std::fs::read_to_string(&mount_status)
-            .map(|s| s == "ok")
-            .unwrap_or(false);
+    let mount_succeeded = if fallback_root.is_some() {
+        mount_status
+            .as_ref()
+            .map(|p| {
+                p.is_file()
+                    && std::fs::read_to_string(p)
+                        .map(|s| s == "ok")
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    } else {
+        true
+    };
     // The upper directory can hold a whole incremental build; remove it off the response path.
     tokio::task::spawn_blocking(move || remove_shadow_dir(&dir));
     if !mount_succeeded {
