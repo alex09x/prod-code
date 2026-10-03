@@ -116,13 +116,21 @@ pub fn is_typescript_project(root: &Path) -> bool {
 /// 1. `root/node_modules/@types`
 /// 2. Monorepo subpackage `node_modules/@types` (e.g. `packages/*/node_modules/@types`)
 /// 3. Project-level custom `types/`, `@types/`, `typings/` containing declaration files.
+/// Constrains candidate discovery to approved roots and avoids symlink cycles (#836).
 pub fn find_project_types(root: &Path) -> Vec<PathBuf> {
-    let approved_roots = build_approved_roots(&[root]);
+    let project_root = find_enclosing_project_root(root);
+    find_project_types_within(root, &[&project_root])
+}
+
+/// Discovers candidate type declaration roots in a project constraining candidate paths
+/// and recursive declaration file checks to explicit approved roots (#836).
+pub fn find_project_types_within(root: &Path, approved_roots: &[&Path]) -> Vec<PathBuf> {
+    let approved = build_approved_roots(approved_roots);
     let mut type_dirs = Vec::new();
 
     // 1. Root node_modules/@types
     let root_types = root.join("node_modules").join("@types");
-    if root_types.is_dir() && is_target_approved(&root_types, &approved_roots) {
+    if root_types.is_dir() && is_target_approved(&root_types, &approved) {
         type_dirs.push(root_types);
     }
 
@@ -130,8 +138,8 @@ pub fn find_project_types(root: &Path) -> Vec<PathBuf> {
     for custom_name in &["types", "@types", "typings"] {
         let custom_dir = root.join(custom_name);
         if custom_dir.is_dir()
-            && has_declaration_files(&custom_dir)
-            && is_target_approved(&custom_dir, &approved_roots)
+            && is_target_approved(&custom_dir, &approved)
+            && has_declaration_files_inner(&custom_dir, &approved, &mut VisitedDirs::default())
         {
             type_dirs.push(custom_dir);
         }
@@ -143,16 +151,20 @@ pub fn find_project_types(root: &Path) -> Vec<PathBuf> {
         if let Ok(entries) = fs::read_dir(&parent_dir) {
             for entry in entries.flatten() {
                 let pkg_dir = entry.path();
-                if pkg_dir.is_dir() {
+                if pkg_dir.is_dir() && is_target_approved(&pkg_dir, &approved) {
                     let sub_at_types = pkg_dir.join("node_modules").join("@types");
-                    if sub_at_types.is_dir() && is_target_approved(&sub_at_types, &approved_roots) {
+                    if sub_at_types.is_dir() && is_target_approved(&sub_at_types, &approved) {
                         type_dirs.push(sub_at_types);
                     }
                     for custom_name in &["types", "@types", "typings"] {
                         let sub_custom = pkg_dir.join(custom_name);
                         if sub_custom.is_dir()
-                            && has_declaration_files(&sub_custom)
-                            && is_target_approved(&sub_custom, &approved_roots)
+                            && is_target_approved(&sub_custom, &approved)
+                            && has_declaration_files_inner(
+                                &sub_custom,
+                                &approved,
+                                &mut VisitedDirs::default(),
+                            )
                         {
                             type_dirs.push(sub_custom);
                         }
@@ -165,18 +177,70 @@ pub fn find_project_types(root: &Path) -> Vec<PathBuf> {
     type_dirs
 }
 
-/// Checks if a directory contains any `.d.ts`, `.d.mts`, or `.d.cts` files.
-fn has_declaration_files(dir: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
+/// Checks if a directory contains any `.d.ts`, `.d.mts`, or `.d.cts` files,
+/// safely dereferencing symlinks only within approved roots and tracking visited directory inodes to prevent cycles (#836).
+pub fn has_declaration_files(dir: &Path) -> bool {
+    let project_root = find_enclosing_project_root(dir);
+    has_declaration_files_within(dir, &[&project_root])
+}
+
+/// Checks if a directory contains declaration files, constraining symlinks to explicit approved roots.
+pub fn has_declaration_files_within(dir: &Path, approved_roots: &[&Path]) -> bool {
+    let approved = build_approved_roots(approved_roots);
+    let mut visited = VisitedDirs::default();
+    has_declaration_files_inner(dir, &approved, &mut visited)
+}
+
+fn has_declaration_files_inner(
+    dir: &Path,
+    approved_roots: &[PathBuf],
+    visited: &mut VisitedDirs,
+) -> bool {
+    if !is_target_approved(dir, approved_roots) {
+        return false;
+    }
+    let Ok(canonical_dir) = dir.canonicalize() else {
+        return false;
+    };
+    if !canonical_dir.is_dir() || !visited.insert(&canonical_dir) {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(&canonical_dir) else {
         return false;
     };
     for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+
         let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts") {
-            return true;
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
         }
-        if path.is_dir() && has_declaration_files(&path) {
+
+        // Safely dereference symlinks within approved roots, rejecting out-of-root targets
+        let (is_dir, is_file) = if file_type.is_symlink() {
+            if !is_target_approved(&path, approved_roots) {
+                continue;
+            }
+            match fs::metadata(&path) {
+                Ok(meta) => (meta.is_dir(), meta.is_file()),
+                Err(_) => continue,
+            }
+        } else {
+            (file_type.is_dir(), file_type.is_file())
+        };
+
+        if is_file {
+            if name_str.ends_with(".d.ts")
+                || name_str.ends_with(".d.mts")
+                || name_str.ends_with(".d.cts")
+            {
+                return true;
+            }
+        } else if is_dir && has_declaration_files_inner(&path, approved_roots, visited) {
             return true;
         }
     }
@@ -608,7 +672,7 @@ pub fn seed_typescript_worktree_within(
     let mut total_bytes = 0u64;
 
     // 1. Gather all candidate type declaration directories
-    let discovered_types = find_project_types(from);
+    let discovered_types = find_project_types_within(from, &[from, to]);
     let aggregate_size: u64 = discovered_types
         .iter()
         .map(|d| tree_size_within(d, &[from, to]))

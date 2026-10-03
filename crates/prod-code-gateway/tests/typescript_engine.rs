@@ -2,10 +2,10 @@
 
 use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::ts_cache::{
-    find_project_types, is_typescript_project, merge_types, prune_stale_types_cache_in,
-    prune_stale_types_cache_with_grace, ts_types_cache_dir, ts_types_cache_env,
-    seed_typescript_worktree, seed_typescript_worktree_within, tree_size,
-    TS_TYPES_CACHE_ENV,
+    find_project_types, has_declaration_files, is_typescript_project, merge_types,
+    prune_stale_types_cache_in, prune_stale_types_cache_with_grace, ts_types_cache_dir,
+    ts_types_cache_env, seed_typescript_worktree, seed_typescript_worktree_within,
+    tree_size, TS_TYPES_CACHE_ENV,
 };
 use std::fs;
 use std::time::Duration;
@@ -577,6 +577,65 @@ fn test_seed_typescript_worktree_rejects_out_of_root_traversal_root() {
     let _ = seed_typescript_worktree(&from_evil, &to_evil).unwrap();
     assert!(!cache_dir.join("config.json").exists());
     assert!(!cache_dir.join("types.d.ts").exists());
+
+    unsafe {
+        std::env::remove_var(TS_TYPES_CACHE_ENV);
+    }
+}
+
+#[test]
+fn test_find_project_types_symlink_cycle_and_out_of_root_custom_types() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("ts-cache-cycle-test");
+    unsafe {
+        std::env::set_var(TS_TYPES_CACHE_ENV, &cache_dir);
+    }
+
+    let root = temp.path().join("project");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("package.json"), "{}").unwrap();
+
+    // 1. External out-of-root directory with declaration files
+    let outside_dir = temp.path().join("outside_custom");
+    fs::create_dir_all(&outside_dir).unwrap();
+    fs::write(outside_dir.join("global.d.ts"), "declare const outside: string;\n").unwrap();
+
+    // A malicious custom "typings" directory symlink pointing to outside_dir
+    let evil_typings = root.join("typings");
+    let _ = std::os::unix::fs::symlink(&outside_dir, &evil_typings);
+
+    // 2. A custom "types" directory containing a self/ancestor symlink cycle
+    let custom_types = root.join("types");
+    let sub = custom_types.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    // Direct self-loop: types/loop -> types
+    let _ = std::os::unix::fs::symlink(&custom_types, custom_types.join("loop"));
+    // Ancestor cycle: types/sub/ancestor_loop -> types
+    let _ = std::os::unix::fs::symlink(&custom_types, sub.join("ancestor_loop"));
+
+    // Case A: types directory has cycles but NO declaration files.
+    // has_declaration_files must terminate without stack overflow and return false!
+    assert!(!has_declaration_files(&custom_types));
+
+    // Case B: Now add a valid declaration file inside types/
+    fs::write(custom_types.join("local.d.ts"), "export declare const local: boolean;\n").unwrap();
+    // has_declaration_files must terminate, not get trapped in cycle, and return true!
+    assert!(has_declaration_files(&custom_types));
+
+    // find_project_types must discover `types` (valid in-root with d.ts and cycle-safe),
+    // and must strictly reject `typings` (out-of-root symlink).
+    let discovered = find_project_types(&root);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0], custom_types);
+
+    // Seeding worktree must succeed without stack overflow and copy only local.d.ts
+    let dest = temp.path().join("dest");
+    fs::create_dir_all(&dest).unwrap();
+    let seeded = seed_typescript_worktree(&root, &dest).unwrap();
+    assert!(seeded.is_some());
+    assert!(cache_dir.join("types").join("local.d.ts").is_file());
+    assert!(!cache_dir.join("global.d.ts").exists());
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
