@@ -3404,6 +3404,88 @@ async fn code_validate_edit_stream_tombstones_capacity_bounded_and_evicted_sessi
 }
 
 #[tokio::test]
+async fn code_validate_edit_stream_session_private_permissions_and_expiry_disk_protection() {
+    let ws = workspace();
+    let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let mgr = prod_code_mcp::diagnostics::StreamSessionManager::new();
+    let root = ws.root();
+    let file = root.join("src/lib.rs");
+    let sid = "session-sec-test";
+
+    // 1. Feed chunk to write session to disk
+    let r1 = mgr
+        .feed_chunk(remote, &root, &file, sid, "pub struct Client;\n", false, true, false)
+        .await
+        .expect("feed initial chunk");
+    assert!(!r1.intercepted);
+
+    // 2. Verify private directory and file permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+            std::path::PathBuf::from(cache_home).join("prod-code/stream-sessions")
+        } else if let Some(home) = std::env::var_os("HOME") {
+            let home = std::path::PathBuf::from(home);
+            if cfg!(target_os = "macos") {
+                home.join("Library/Caches/prod-code/stream-sessions")
+            } else {
+                home.join(".cache/prod-code/stream-sessions")
+            }
+        } else {
+            let user = std::env::var("USER").unwrap_or_else(|_| "default".to_string());
+            std::env::temp_dir().join(format!("prod-code-{user}-stream-sessions"))
+        };
+
+        let dir_meta = std::fs::metadata(&dir).expect("session dir metadata");
+        let dir_mode = dir_meta.permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "session dir must have 0700 permissions");
+
+        let mut found_file = false;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("session") {
+                    let file_meta = std::fs::metadata(&path).expect("file metadata");
+                    let file_mode = file_meta.permissions().mode() & 0o777;
+                    assert_eq!(file_mode, 0o600, "session file must have 0600 permissions");
+                    found_file = true;
+                }
+            }
+        }
+        assert!(found_file, "must have found at least one session file");
+    }
+
+    // 3. Stale session pruning removes backing file from disk and inserts tombstone
+    mgr.prune_stale(std::time::Duration::from_millis(0));
+
+    // 4. Stale session cannot be resurrected without reset: true
+    let res_err = mgr
+        .feed_chunk(remote, &root, &file, sid, "impl Client {}\n", false, false, false)
+        .await;
+    assert!(res_err.is_err(), "expired session without reset: true must be rejected");
+    let err_text = format!("{:#}", res_err.unwrap_err());
+    assert!(
+        err_text.contains("has expired or was terminated"),
+        "error must report expiration: {err_text}"
+    );
+
+    // 5. Reset: true allows clean restart
+    let restarted = mgr
+        .feed_chunk(remote, &root, &file, sid, "pub struct Client;\n", true, true, false)
+        .await
+        .expect("reset: true allows starting clean");
+    assert!(!restarted.intercepted);
+}
+
+#[tokio::test]
 async fn code_validate_edit_stream_chunks_validates_clean() {
     let ws = workspace();
     let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
