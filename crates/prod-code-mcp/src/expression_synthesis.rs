@@ -228,7 +228,9 @@ fn extract_in_scope_variables(lines: &[&str], current_line_idx: usize) -> BTreeM
             if let Some(rest) = line.split('(').nth(1) {
                 param_text.push_str(rest);
                 if !rest.contains(')') {
-                    for next_line in &lines[(i + 1)..=current_line_idx.min(lines.len().saturating_sub(1))] {
+                    let end = current_line_idx.min(lines.len().saturating_sub(1));
+                    let next_slice = if i < end { &lines[(i + 1)..=end] } else { &[] };
+                    for next_line in next_slice {
                         let next_line = next_line.trim();
                         param_text.push(' ');
                         param_text.push_str(next_line);
@@ -338,5 +340,17 @@ fn test_handler(user_id: u64, name: &str, is_admin: bool) {
         let report_str = propose_expressions_in_scope(dir.path(), "main.rs", 5, "String").unwrap();
         let has_to_string = report_str.candidates.iter().any(|c| c.expression == "name.to_string()");
         assert!(has_to_string);
+    }
+
+    #[test]
+    fn test_expression_synthesis_multiline_header_at_target_line() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("main.rs");
+        let code = "fn test_multiline(\n    user_id: u64,\n    name: &str,\n) {\n}\n";
+        std::fs::write(&file, code).unwrap();
+
+        // Target line 1 is the function header itself, which lacks closing paren on line 1
+        let report = propose_expressions_in_scope(dir.path(), "main.rs", 1, "u64").unwrap();
+        assert!(report.candidates.is_empty());
     }
 }

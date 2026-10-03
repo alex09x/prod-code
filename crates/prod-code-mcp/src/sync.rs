@@ -1391,12 +1391,15 @@ pub async fn pull_remote_files(
         framed
             .send(WireMessage::ReadFileRequest(prod_code_protocol::ReadFileRequest {
                 path: remote_path.to_string_lossy().to_string(),
-                max_bytes: 0,
+                max_bytes: 64 * 1024 * 1024,
             }))
             .await?;
 
         let read_resp = loop {
-            match framed.next().await {
+            let next_msg = tokio::time::timeout(std::time::Duration::from_secs(30), framed.next())
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out reading remote file {rel_str} from gateway"))?;
+            match next_msg {
                 Some(Ok(WireMessage::ReadFileResponse(resp))) => break resp,
                 Some(Ok(WireMessage::Pong)) => continue,
                 Some(Ok(other)) => anyhow::bail!("unexpected message reading file: {other:?}"),
@@ -1406,14 +1409,24 @@ pub async fn pull_remote_files(
         };
 
         if let Some(err) = read_resp.error {
-            tracing::warn!(file = %rel_str, error = %err, "failed to read remote file");
-            continue;
+            anyhow::bail!("failed to pull remote file {rel_str}: {err}");
         }
+
+        if read_resp.truncated {
+            anyhow::bail!("remote file {rel_str} exceeded maximum pull size limit (truncated)");
+        }
+
+        let is_executable = read_resp.content.as_deref().is_some_and(|b| {
+            b.starts_with(b"\x7fELF")
+                || b.starts_with(b"#!")
+                || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+                || b.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
+        });
 
         pulled_deltas.push(FileDelta {
             relative_path: rel_str,
             content: read_resp.content,
-            is_executable: false,
+            is_executable,
         });
     }
 

@@ -1,7 +1,9 @@
 use futures_util::{SinkExt, StreamExt};
 use prod_code_gateway::workspace::{SharedWorkspace, WorkspaceManager};
 use prod_code_gateway::{ServerState, handle_client};
-use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{
+    HandshakeRequest, ReadFileRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage,
+};
 use std::future::Future;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -1177,3 +1179,114 @@ path = "src/lib.rs"
     drop(client_sock);
     let _ = server.join().await;
 }
+
+#[tokio::test]
+async fn read_file_request_in_active_session_pulls_large_artifact() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let server_root = storage.path().join("workspaces/large-artifact-test");
+    std::fs::create_dir_all(&server_root).unwrap();
+
+    let artifact_data = vec![0x42u8; 3 * 1024 * 1024]; // 3 MiB, exceeds default 2 MiB source limit
+    let artifact_path = server_root.join("target/release/large_tool");
+    std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+    std::fs::write(&artifact_path, &artifact_data).unwrap();
+
+    let workspace = Arc::new(SharedWorkspace::new(
+        server_root.clone(),
+        "text".to_string(),
+        None,
+        None,
+        None,
+        None,
+    ));
+
+    let manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+        prod_code_gateway::admission::Admission::unbounded(),
+    )));
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    let server_state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = OwnedTask::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+
+    let mut client_sock = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client_sock
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
+            client_name: "pull-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: temp.path().to_string_lossy().into_owned(),
+            preferred_engine: Some("text".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        }))
+        .await
+        .unwrap();
+
+    let resp = tokio::time::timeout(Duration::from_secs(5), client_sock.next())
+        .await
+        .expect("handshake response")
+        .expect("response frame")
+        .expect("wire message");
+
+    assert!(matches!(resp, WireMessage::HandshakeResponse(_)));
+
+    // Request the 3 MiB artifact inside an active session with max_bytes: 0 (defaults to 64 MiB in workspace)
+    client_sock
+        .send(WireMessage::ReadFileRequest(ReadFileRequest {
+            path: artifact_path.to_string_lossy().into_owned(),
+            max_bytes: 0,
+        }))
+        .await
+        .unwrap();
+
+    let file_resp = tokio::time::timeout(Duration::from_secs(5), client_sock.next())
+        .await
+        .expect("read file response")
+        .expect("response frame")
+        .expect("wire message");
+
+    match file_resp {
+        WireMessage::ReadFileResponse(read_resp) => {
+            assert!(
+                read_resp.error.is_none(),
+                "read file returned error: {:?}",
+                read_resp.error
+            );
+            assert!(
+                !read_resp.truncated,
+                "read file was truncated unexpectedly"
+            );
+            let bytes = read_resp.content.expect("artifact content");
+            assert_eq!(
+                bytes.len(),
+                3 * 1024 * 1024,
+                "must receive full 3 MiB artifact"
+            );
+            assert_eq!(bytes, artifact_data);
+        }
+        other => panic!("expected ReadFileResponse, got {other:?}"),
+    }
+
+    drop(client_sock);
+    let _ = server.join().await;
+}
+

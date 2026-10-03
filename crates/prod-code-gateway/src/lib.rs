@@ -305,6 +305,7 @@ pub struct SessionMeta {
     pub workspace: String,
     pub engine: String,
     pub engine_root: PathBuf,
+    pub storage_root: PathBuf,
     pub metrics: Arc<metrics::Metrics>,
     /// The session is an editor's ([`prod_code_protocol::PURPOSE_EDITOR`]): the Rust engine
     /// pushes the diagnostics of every document it opens or changes.
@@ -1348,13 +1349,9 @@ fn read_server_file(
     storage_root: &std::path::Path,
     req: &prod_code_protocol::ReadFileRequest,
 ) -> prod_code_protocol::ReadFileResponse {
-    const DEFAULT_MAX: u64 = 2 * 1024 * 1024;
+    const DEFAULT_MAX_SOURCE: u64 = 2 * 1024 * 1024;
+    const MAX_PULL_BYTES: u64 = 64 * 1024 * 1024;
     let path = PathBuf::from(&req.path);
-    let max = if req.max_bytes == 0 {
-        DEFAULT_MAX
-    } else {
-        req.max_bytes.min(DEFAULT_MAX)
-    };
     let mut resp = prod_code_protocol::ReadFileResponse {
         path: req.path.clone(),
         content: None,
@@ -1368,6 +1365,17 @@ fn read_server_file(
         ));
         return resp;
     }
+    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let in_workspace = canonical.starts_with(storage_root);
+    let max = if req.max_bytes == 0 {
+        if in_workspace {
+            MAX_PULL_BYTES
+        } else {
+            DEFAULT_MAX_SOURCE
+        }
+    } else {
+        req.max_bytes.min(MAX_PULL_BYTES)
+    };
     match std::fs::read(&path) {
         Ok(mut bytes) => {
             if bytes.len() as u64 > max {
@@ -4166,6 +4174,7 @@ pub async fn handle_client(
                         .unwrap_or_default(),
                     engine: engine.to_string(),
                     engine_root: engine_root.clone(),
+                    storage_root: state.storage_root.clone(),
                     metrics: Arc::clone(&state.metrics),
                     editor: req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR),
                     edits: Arc::default(),
@@ -5584,6 +5593,10 @@ async fn on_client_message(
                         .filter(|c| c != "unknown"),
                 }))
                 .await;
+        }
+        Some(Ok(WireMessage::ReadFileRequest(req))) => {
+            let resp = read_server_file(&meta.storage_root, &req);
+            let _ = out_tx.send(WireMessage::ReadFileResponse(resp)).await;
         }
         Some(Err(e)) => {
             tracing::error!(error = %e, "TCP frame decode error");
