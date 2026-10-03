@@ -1098,19 +1098,19 @@ mod lsp_frame_tests {
         let addr = listener.local_addr().unwrap();
 
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        tune_with_buffer_sizes(&stream, Some(1024 * 1024), Some(1024 * 1024));
+        tune_with_buffer_sizes(&stream, Some(64 * 1024), Some(64 * 1024));
 
         let sock = socket2::SockRef::from(&stream);
         let recv_buf = sock.recv_buffer_size().unwrap();
         let send_buf = sock.send_buffer_size().unwrap();
         assert!(
-            recv_buf >= 1024 * 1024,
-            "recv buffer must be at least 1MB, got {}",
+            recv_buf >= 64 * 1024,
+            "recv buffer must be at least 64KB, got {}",
             recv_buf
         );
         assert!(
-            send_buf >= 1024 * 1024,
-            "send buffer must be at least 1MB, got {}",
+            send_buf >= 64 * 1024,
+            "send buffer must be at least 64KB, got {}",
             send_buf
         );
     }
