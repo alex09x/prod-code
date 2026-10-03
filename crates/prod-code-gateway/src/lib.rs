@@ -14,6 +14,7 @@ pub mod exec_shim;
 pub mod memory;
 mod metrics;
 pub mod priming;
+pub mod python_cache;
 pub mod search;
 pub mod shadow;
 pub mod swift_cache;
@@ -1357,6 +1358,12 @@ pub async fn apply_sync_probe(
                     None
                 });
                 let swift_took = started.elapsed();
+                let started = Instant::now();
+                let python_cache = python_cache::seed_python_worktree(&from, &to).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "seeding Python virtual-environment stub cache failed");
+                    None
+                });
+                let python_took = started.elapsed();
                 Ok::<_, std::io::Error>((
                     files,
                     cache,
@@ -1367,6 +1374,8 @@ pub async fn apply_sync_probe(
                     cpp_took,
                     swift_cache,
                     swift_took,
+                    python_cache,
+                    python_took,
                 ))
             })
             .await
@@ -1381,6 +1390,8 @@ pub async fn apply_sync_probe(
                     cpp_took,
                     swift_cache,
                     swift_took,
+                    python_cache,
+                    python_took,
                 ))) => {
                     seeded = true;
                     tracing::info!(
@@ -1395,6 +1406,8 @@ pub async fn apply_sync_probe(
                         cpp_cache_ms = cpp_took.as_millis() as u64,
                         swift_cache_mb = swift_cache.map(|bytes| bytes / (1024 * 1024)),
                         swift_cache_ms = swift_took.as_millis() as u64,
+                        python_cache_kb = python_cache.map(|bytes| bytes / 1024),
+                        python_cache_ms = python_took.as_millis() as u64,
                         "🌱 [SEED] new worktree workspace seeded from origin copy"
                     );
                 }
@@ -2754,6 +2767,8 @@ pub fn polyglot_compiler_cache_env(
             env.push(("YARN_CACHE_FOLDER".to_string(), yarn_cache.to_string_lossy().into_owned()));
         }
     }
+    // Python shared virtual-environment stub cache across worktrees (Roadmap 3.6)
+    env.extend(python_cache::python_stub_cache_env());
     // Swift shared module cache across worktrees (Roadmap 3.7)
     env.extend(swift_cache::swift_module_cache_env());
     env
@@ -7859,6 +7874,10 @@ async fn janitor(
             let _ = tokio::task::spawn_blocking(move || sweep_ram_build_caches(&build_cache_base)).await;
         }
         let _ = tokio::task::spawn_blocking(|| {
+            let _ = python_cache::prune_stale_stub_cache(
+                std::time::Duration::from_secs(7 * 86400),
+                5 * 1024 * 1024 * 1024,
+            );
             let _ = swift_cache::prune_stale_module_cache(
                 std::time::Duration::from_secs(7 * 86400),
                 10 * 1024 * 1024 * 1024,
@@ -7888,6 +7907,10 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     tracing::info!(?engines, "engines detected");
 
     let _ = tokio::task::spawn_blocking(|| {
+        let _ = python_cache::prune_stale_stub_cache(
+            std::time::Duration::from_secs(7 * 86400),
+            5 * 1024 * 1024 * 1024,
+        );
         let _ = swift_cache::prune_stale_module_cache(
             std::time::Duration::from_secs(7 * 86400),
             10 * 1024 * 1024 * 1024,
