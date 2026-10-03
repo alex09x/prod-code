@@ -389,14 +389,23 @@ impl ServerState {
 
     /// The installed engines this node advertises, narrowed by `--engines`.
     fn advertised_engines(&self) -> Vec<String> {
-        cached_available_engines()
+        let available = cached_available_engines();
+        if self.engine_allowlist.is_empty() {
+            return available;
+        }
+        let filtered: Vec<String> = available
             .into_iter()
             .filter(|entry| {
                 let name = entry.split(' ').next().unwrap_or(entry.as_str());
                 let name = name.strip_suffix("-lsp").unwrap_or(name);
                 self.serves_engine(name)
             })
-            .collect()
+            .collect();
+        if !filtered.is_empty() {
+            filtered
+        } else {
+            self.engine_allowlist.clone()
+        }
     }
 
     /// This node's heartbeat.
@@ -597,23 +606,29 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
         n.alive && capable(n) && n.workspaces.iter().any(|w| w.name == req.workspace_name)
     });
     if let Some(h) = holder {
-        let idle = h
+        let (idle, sessions) = h
             .workspaces
             .iter()
             .find(|w| w.name == req.workspace_name)
-            .map(|w| w.sessions == 0)
-            .unwrap_or(true);
+            .map(|w| (w.sessions == 0, w.sessions))
+            .unwrap_or((true, 0));
+        let can_move = idle || req.rebalance_active;
         if let Some(q) = quietest
-            && idle
+            && can_move
             && q.addr != h.addr
         {
+            let state_str = if idle {
+                "idle".to_string()
+            } else {
+                format!("active, {sessions} sessions")
+            };
             if let Some(why) = pressure(h)
                 && roomy_exists
             {
                 return PlaceResponse {
                     node: Some(q.addr.clone()),
                     reason: format!(
-                        "moved from {} ({why}, idle) to {} (score {:.2}, load {:.2}/cpu)",
+                        "moved from {} ({why}, {state_str}) to {} (score {:.2}, load {:.2}/cpu)",
                         h.addr,
                         q.addr,
                         score(q),
@@ -625,7 +640,7 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
                 return PlaceResponse {
                     node: Some(q.addr.clone()),
                     reason: format!(
-                        "rebalanced from {} (score {:.2}, idle) to the quieter {} (score {:.2})",
+                        "rebalanced from {} (score {:.2}, {state_str}) to the quieter {} (score {:.2})",
                         h.addr,
                         score(h),
                         q.addr,
@@ -4351,40 +4366,50 @@ pub async fn handle_client(
                     .get_loaded(&server_workspace)
                     .await
                     .is_some();
-                if !is_loaded_locally && req.redirect_count == 0 {
+                if req.redirect_count < 3 {
                     let view = state.cluster_view().await;
                     let own_addr = state.advertise.read().await.clone();
                     let ws_name = req
                         .base_workspace_name
                         .as_deref()
                         .unwrap_or(&req.client_workspace_root);
-                    if let Some(holder) = view.nodes.iter().find(|n| {
-                        n.alive
-                            && n.addr != own_addr
-                            && cluster_supports_engine(&n.status, engine)
-                            && n.workspaces.iter().any(|w| w.name == ws_name)
-                    }) {
-                        tracing::info!(
-                            workspace = ws_name,
-                            target = %holder.addr,
-                            "transparently redirecting client to node with warm workspace engine"
-                        );
-                        let _ = framed
-                            .send(WireMessage::Redirect {
-                                target_addr: holder.addr.clone(),
-                                reason: Some(format!(
-                                    "workspace {ws_name} is already warm on {}",
-                                    holder.addr
-                                )),
-                            })
-                            .await;
-                        return Ok(());
+                    if !is_loaded_locally && req.redirect_count == 0 {
+                        if let Some(holder) = view.nodes.iter().find(|n| {
+                            n.alive
+                                && n.addr != own_addr
+                                && cluster_supports_engine(&n.status, engine)
+                                && n.workspaces.iter().any(|w| w.name == ws_name)
+                        }) {
+                            tracing::info!(
+                                workspace = ws_name,
+                                target = %holder.addr,
+                                "transparently redirecting client to node with warm workspace engine"
+                            );
+                            let _ = framed
+                                .send(WireMessage::Redirect {
+                                    target_addr: holder.addr.clone(),
+                                    reason: Some(format!(
+                                        "workspace {ws_name} is already warm on {}",
+                                        holder.addr
+                                    )),
+                                })
+                                .await;
+                            return Ok(());
+                        }
                     }
 
-                    // Also: If this gateway is under resource pressure or congested, and another live node is roomy,
-                    // redirect this fresh workspace connection to the quietest roomiest node!
+                    // Roadmap 5.3: Dynamic workload rebalancing and resource pressure load shedding.
+                    // If this gateway is under resource pressure or congested, and another live node is roomy,
+                    // redirect this workspace connection to the quietest roomiest node!
+                    // If already loaded locally, require severe congestion or hard pressure to avoid unnecessary churn.
                     let current_status = state.status().await;
-                    if current_status.host.pressure().is_some() || current_status.congestion_score() >= 1.2 {
+                    let under_pressure = current_status.host.pressure().is_some();
+                    let congested = if is_loaded_locally {
+                        under_pressure || current_status.congestion_score() >= 1.5
+                    } else {
+                        under_pressure || current_status.congestion_score() >= 1.2
+                    };
+                    if congested {
                         let own_score = current_status.congestion_score();
                         if let Some(roomy) = view
                             .nodes
@@ -4406,13 +4431,15 @@ pub async fn handle_client(
                             tracing::info!(
                                 workspace = ws_name,
                                 target = %roomy.addr,
+                                loaded = is_loaded_locally,
                                 "transparently redirecting client from congested gateway to roomier node"
                             );
                             let _ = framed
                                 .send(WireMessage::Redirect {
                                     target_addr: roomy.addr.clone(),
                                     reason: Some(format!(
-                                        "node {own_addr} is congested; redirected to roomier node {}",
+                                        "node {own_addr} is congested (score {:.2}); redirected to roomier node {}",
+                                        own_score,
                                         roomy.addr
                                     )),
                                 })
@@ -8430,6 +8457,7 @@ mod tests {
                     workspace_name: "subject".to_string(),
                     engine: Some("rust".to_string()),
                     os: None,
+                    rebalance_active: false,
                 },
                 view.clone(),
             )
@@ -8478,6 +8506,26 @@ mod tests {
             "a workspace in use is not moved"
         );
 
+        let rebalance_answer = place_in(
+            &PlaceRequest {
+                workspace_name: "subject".to_string(),
+                engine: Some("rust".to_string()),
+                os: None,
+                rebalance_active: true,
+            },
+            held.clone(),
+        );
+        assert_eq!(
+            rebalance_answer.node.as_deref(),
+            Some("busy:9400"),
+            "rebalance_active moves an active workspace off an overloaded node"
+        );
+        assert!(
+            rebalance_answer.reason.contains("active, 1 sessions"),
+            "reason explains session state: {}",
+            rebalance_answer.reason
+        );
+
         let mut all_short = view.clone();
         all_short.nodes[1].status.host = short_of_memory;
         let answer = place(&all_short);
@@ -8497,6 +8545,56 @@ mod tests {
         let mut old = view.clone();
         old.nodes[1].status.host = HostResources::default();
         assert_eq!(place(&old).node.as_deref(), Some("busy:9400"));
+    }
+
+    #[test]
+    fn congested_node_rebalances_active_workspace_when_requested() {
+        let gib = 1 << 30;
+        let roomy = HostResources {
+            memory_available_bytes: Some(50 * gib),
+            memory_total_bytes: Some(100 * gib),
+            storage_free_millis: Some(500),
+        };
+        let mut congested = peer("congested:9400", "linux x86_64", &["rust (ra_ap_ide)"], 1.5);
+        congested.status.host = roomy.clone();
+        congested.workspaces.push(LoadedWorkspaceInfo {
+            name: "repo".to_string(),
+            engine: "rust".to_string(),
+            sessions: 2,
+        });
+        let mut quiet = peer("quiet:9400", "linux x86_64", &["rust (ra_ap_ide)"], 0.2);
+        quiet.status.host = roomy;
+        let view = ClusterResponse {
+            this_node: "congested:9400".to_string(),
+            nodes: vec![congested, quiet],
+        };
+
+        // Without rebalance_active, active sessions are not moved:
+        let normal = place_in(
+            &PlaceRequest {
+                workspace_name: "repo".to_string(),
+                engine: Some("rust".to_string()),
+                os: None,
+                rebalance_active: false,
+            },
+            view.clone(),
+        );
+        assert_eq!(normal.node.as_deref(), Some("congested:9400"));
+        assert!(normal.reason.contains("already loaded"));
+
+        // With rebalance_active, active sessions are moved to the quieter node:
+        let rebalanced = place_in(
+            &PlaceRequest {
+                workspace_name: "repo".to_string(),
+                engine: Some("rust".to_string()),
+                os: None,
+                rebalance_active: true,
+            },
+            view,
+        );
+        assert_eq!(rebalanced.node.as_deref(), Some("quiet:9400"));
+        assert!(rebalanced.reason.contains("rebalanced from congested:9400"));
+        assert!(rebalanced.reason.contains("active, 2 sessions"));
     }
 
     /// Idle engines go after `--idle-evict-secs`, or after five minutes while memory is short,
@@ -8710,6 +8808,7 @@ mod tests {
                     workspace_name: "subject".to_string(),
                     engine: engine.map(str::to_string),
                     os: os.map(str::to_string),
+                    rebalance_active: false,
                 },
                 view.clone(),
             )

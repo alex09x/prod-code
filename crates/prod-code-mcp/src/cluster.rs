@@ -831,6 +831,17 @@ pub async fn ask_placement(
     engine: Option<&str>,
     os: Option<&str>,
 ) -> Result<PlaceResponse> {
+    ask_placement_opt(addr, workspace_name, engine, os, false).await
+}
+
+/// Asks one node where `workspace_name` should be placed, optionally rebalancing active workloads (Phase 5.3).
+pub async fn ask_placement_opt(
+    addr: SocketAddr,
+    workspace_name: &str,
+    engine: Option<&str>,
+    os: Option<&str>,
+    rebalance_active: bool,
+) -> Result<PlaceResponse> {
     let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
@@ -840,6 +851,7 @@ pub async fn ask_placement(
             workspace_name: workspace_name.to_string(),
             engine: engine.map(String::from),
             os: os.map(String::from),
+            rebalance_active,
         }))
         .await?;
     match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {

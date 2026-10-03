@@ -356,6 +356,14 @@ impl LspSession {
                 Ok(Some(Ok(WireMessage::Ping))) => {
                     let _ = self.framed.send(WireMessage::Pong).await;
                 }
+                Ok(Some(Ok(WireMessage::Redirect { target_addr, reason }))) => {
+                    tracing::info!(%target_addr, ?reason, "received dynamic redirect mid-session from gateway");
+                    let ws_identity = workspace_identity(&self.root);
+                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                        crate::cluster::remember_placement(&ws_identity.name, addr);
+                    }
+                    anyhow::bail!("session rebalanced to {target_addr}: {}", reason.unwrap_or_default());
+                }
                 Ok(Some(Ok(_))) => {}
                 Ok(Some(Err(e))) => anyhow::bail!("frame decode error: {e}"),
                 Ok(None) => anyhow::bail!("gateway closed the session"),
@@ -571,6 +579,7 @@ fn is_connection_error(err: &anyhow::Error) -> bool {
         || text.contains("reset")
         || text.contains("decode")
         || text.contains("connection")
+        || text.contains("rebalanced to")
         // The gateway's language server crashed: a new session gets a new one (#355).
         || text.contains("has exited")
 }
@@ -666,8 +675,13 @@ async fn pooled_query_with_budget(
     let mut session = stored.take();
     let result = tokio::time::timeout_at(deadline, async {
         for attempt in 0..2 {
+            let mut target_remote = remote;
+            let ws_identity = workspace_identity(&root);
+            if let Some(remembered) = crate::cluster::remembered_node(&ws_identity.name) {
+                target_remote = remembered;
+            }
             if session.is_none() {
-                session = Some(LspSession::open(remote, &root, Some(file)).await?);
+                session = Some(LspSession::open(target_remote, &root, Some(file)).await?);
                 crate::watch::mark_synced(&root, crate::watch::current_generation(&root));
             }
             let current = session.as_mut().expect("just inserted");
@@ -1005,5 +1019,11 @@ mod tests {
             2,
             "the next query reconnects"
         );
+    }
+
+    #[test]
+    fn rebalance_error_is_classified_as_connection_error() {
+        let err = anyhow::anyhow!("session rebalanced to 127.0.0.1:9400: congested gateway");
+        assert!(is_connection_error(&err));
     }
 }

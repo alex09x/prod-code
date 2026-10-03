@@ -1690,6 +1690,9 @@ pub struct PlaceRequest {
     /// A Go module whose cgo includes macOS headers compiles nowhere else.
     #[serde(default)]
     pub os: Option<String>,
+    /// Whether to rebalance workload even if the workspace has active sessions (Phase 5.3).
+    #[serde(default)]
+    pub rebalance_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
