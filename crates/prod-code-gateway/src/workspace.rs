@@ -3053,22 +3053,22 @@ async fn warm_cmake_compile_commands(workspace_root: &std::path::Path) {
         return;
     }
     let started = std::time::Instant::now();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(180),
-        tokio::process::Command::new("cmake")
-            .args([
-                "-S",
-                ".",
-                "-B",
-                "build",
-                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-            ])
-            .current_dir(workspace_root)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output(),
-    )
-    .await;
+    let mut cmd = tokio::process::Command::new("cmake");
+    cmd.args([
+        "-S",
+        ".",
+        "-B",
+        "build",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+    ])
+    .current_dir(workspace_root)
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped());
+    for (k, v) in crate::compiler_cache_env(workspace_root, crate::on_path("ccache")) {
+        cmd.env(k, v);
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(180), cmd.output())
+        .await;
     match result {
         Ok(Ok(out)) if out.status.success() => tracing::info!(
             workspace = ?workspace_root,
