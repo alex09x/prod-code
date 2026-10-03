@@ -237,6 +237,15 @@ pub struct ServerCli {
     /// primary interface when absent.
     #[arg(long, env = "PROD_CODE_ADVERTISE")]
     pub advertise: Option<String>,
+
+    /// Enable RAM-disk build cache (/dev/shm or tmpfs) for fast compilation (Roadmap 6.2).
+    #[arg(long, env = "PROD_CODE_BUILD_RAM", default_value_t = false)]
+    pub build_cache_ram: bool,
+
+    /// Directory for RAM-disk or fast build caches. Default: `/dev/shm/prod-code-build` on Linux,
+    /// or a tmpfs directory.
+    #[arg(long, env = "PROD_CODE_BUILD_CACHE_DIR")]
+    pub build_cache_dir: Option<PathBuf>,
 }
 
 impl ServerCli {
@@ -287,6 +296,10 @@ pub struct ServerState {
     pub auth_token: Option<String>,
     /// Outbound client TLS credentials / configuration when TLS is enabled.
     pub client_tls: Option<prod_code_protocol::transport::BuiltClientTls>,
+    /// Whether RAM-disk build caching in `/dev/shm` or tmpfs is enabled (Roadmap 6.2).
+    pub build_cache_ram: bool,
+    /// Custom path for RAM-disk or fast build caches (`--build-cache-dir`).
+    pub build_cache_dir: Option<PathBuf>,
 }
 
 /// How long a connection to a gateway that requires a token may take to send it.
@@ -360,6 +373,8 @@ impl ServerState {
             engine_allowlist: Vec::new(),
             auth_token: None,
             client_tls: None,
+            build_cache_ram: false,
+            build_cache_dir: None,
         }
     }
 
@@ -834,6 +849,7 @@ fn seed_dependency_trees_within(
         }
         if is_virtualenv(&dest) {
             relocate_virtualenv(&from.join(&rel), &dest)?;
+            let _ = prewarm_virtualenv_pycache(&dest);
         }
     }
     Ok(Some(size))
@@ -868,6 +884,51 @@ fn relocate_virtualenv(old: &std::path::Path, new: &std::path::Path) -> std::io:
         }
     }
     Ok(rewritten)
+}
+
+/// Pre-warms Python bytecode (`.pyc` pycache) inside a virtual environment (Roadmap 6.2).
+///
+/// Uses the virtualenv's Python interpreter to compile all `.py` files in `site-packages` into bytecode,
+/// eliminating cold import and parse latency when running pytest, basedpyright, or python scripts.
+/// If python cannot be executed or fails, logs and falls back gracefully without breaking workspace seeding.
+pub fn prewarm_virtualenv_pycache(venv: &std::path::Path) -> std::io::Result<usize> {
+    let python_bin = venv.join("bin/python");
+    let python3_bin = venv.join("bin/python3");
+    let interpreter = if python_bin.is_file() {
+        python_bin
+    } else if python3_bin.is_file() {
+        python3_bin
+    } else {
+        return Ok(0);
+    };
+
+    let lib_dir = venv.join("lib");
+    let target_dir = if lib_dir.is_dir() {
+        lib_dir
+    } else {
+        venv.to_path_buf()
+    };
+
+    match std::process::Command::new(&interpreter)
+        .args(["-m", "compileall", "-q", "-f"])
+        .arg(&target_dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => {
+            tracing::info!(venv = %venv.display(), "🐍 [PYCACHE] pre-warmed virtual environment bytecode");
+            Ok(1)
+        }
+        Ok(status) => {
+            tracing::debug!(venv = %venv.display(), ?status, "compileall completed with non-zero status");
+            Ok(0)
+        }
+        Err(err) => {
+            tracing::debug!(venv = %venv.display(), %err, "could not execute python for compileall; skipping pre-warming");
+            Ok(0)
+        }
+    }
 }
 
 /// Bytes of every regular file under `dir`.
@@ -2551,6 +2612,131 @@ pub fn compiler_cache_env(workspace: &Path, ccache: bool) -> Vec<(String, String
     ]
 }
 
+/// Polyglot compiler and build cache environment across Rust, Go, Python, Node, and C/C++ (Roadmap 6.2).
+pub fn polyglot_compiler_cache_env(
+    workspace: &Path,
+    ccache: bool,
+    ram_target_dir: Option<&Path>,
+) -> Vec<(String, String)> {
+    let mut env = compiler_cache_env(workspace, ccache);
+    if let Some(target) = ram_target_dir {
+        env.push((
+            "CARGO_TARGET_DIR".to_string(),
+            target.to_string_lossy().into_owned(),
+        ));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_path = PathBuf::from(home);
+        let gocache = home_path.join(".cache/go-build");
+        let gomodcache = home_path.join("go/pkg/mod");
+        if gocache.is_dir() {
+            env.push(("GOCACHE".to_string(), gocache.to_string_lossy().into_owned()));
+        }
+        if gomodcache.is_dir() {
+            env.push(("GOMODCACHE".to_string(), gomodcache.to_string_lossy().into_owned()));
+        }
+        let uv_cache = home_path.join(".cache/uv");
+        if uv_cache.is_dir() {
+            env.push(("UV_CACHE_DIR".to_string(), uv_cache.to_string_lossy().into_owned()));
+        }
+        let pip_cache = home_path.join(".cache/pip");
+        if pip_cache.is_dir() {
+            env.push(("PIP_CACHE_DIR".to_string(), pip_cache.to_string_lossy().into_owned()));
+        }
+        let pnpm_store = home_path.join(".local/share/pnpm/store");
+        if pnpm_store.is_dir() {
+            env.push(("npm_config_store_dir".to_string(), pnpm_store.to_string_lossy().into_owned()));
+        }
+        let npm_cache = home_path.join(".npm");
+        if npm_cache.is_dir() {
+            env.push(("npm_config_cache".to_string(), npm_cache.to_string_lossy().into_owned()));
+        }
+        let yarn_cache = home_path.join(".cache/yarn");
+        if yarn_cache.is_dir() {
+            env.push(("YARN_CACHE_FOLDER".to_string(), yarn_cache.to_string_lossy().into_owned()));
+        }
+    }
+    env
+}
+
+/// Resolves or initializes an isolated in-memory RAM-disk build cache for `workspace` (Roadmap 6.2).
+/// Returns `Some(PathBuf)` if enabled and headroom permits (>= 20% free and >= 256 MiB free); otherwise `None`.
+pub fn resolve_ram_build_cache(
+    workspace: &Path,
+    enabled: bool,
+    custom_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if !enabled && std::env::var_os("PROD_CODE_BUILD_RAM").is_none() {
+        return None;
+    }
+    let default_shm = Path::new("/dev/shm/prod-code-build");
+    let fallback_tmp = Path::new("/tmp/prod-code-build");
+    let base_dir = custom_dir.unwrap_or_else(|| {
+        if Path::new("/dev/shm").is_dir() {
+            default_shm
+        } else {
+            fallback_tmp
+        }
+    });
+
+    if let Some(space) = disk_space(base_dir.parent().unwrap_or(base_dir)) {
+        let free_share = space.free as f64 / space.total.max(1) as f64;
+        const MIN_FREE_RAM_SHARE: f64 = 0.20;
+        const MIN_FREE_BYTES: u64 = 256 * 1024 * 1024;
+        if free_share < MIN_FREE_RAM_SHARE || space.free < MIN_FREE_BYTES {
+            tracing::info!(
+                dir = %base_dir.display(),
+                free_mb = space.free / (1024 * 1024),
+                "🌱 [BUILD_RAM] insufficient RAM disk headroom; falling back to disk cache"
+            );
+            return None;
+        }
+    }
+
+    let workspace_name = workspace.file_name()?.to_str()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&workspace, &mut hasher);
+    let hash = std::hash::Hasher::finish(&hasher);
+    let target_dir = base_dir.join(format!("{workspace_name}-{hash:016x}")).join("target");
+    if let Err(e) = std::fs::create_dir_all(&target_dir) {
+        tracing::warn!(%e, dir = %target_dir.display(), "failed to create RAM build cache dir; falling back to disk");
+        return None;
+    }
+    Some(target_dir)
+}
+
+/// Sweeps stale or orphaned RAM-disk build caches on startup or periodic maintenance.
+pub fn sweep_ram_build_caches(base_dir: &Path) -> usize {
+    if !base_dir.is_dir() {
+        return 0;
+    }
+    let mut removed = 0;
+    if let Ok(entries) = std::fs::read_dir(base_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                let path = entry.path();
+                if let Ok(meta) = entry.metadata() {
+                    let is_old = meta
+                        .modified()
+                        .ok()
+                        .and_then(|m| m.elapsed().ok())
+                        .map(|age| age.as_secs() > 86400)
+                        .unwrap_or(false);
+                    if is_old {
+                        if let Ok(()) = std::fs::remove_dir_all(&path) {
+                            removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(dir = %base_dir.display(), removed, "swept old RAM-disk build caches");
+    }
+    removed
+}
+
 /// Whether `program` is an executable file in a directory of `PATH`.
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH")
@@ -2563,6 +2749,27 @@ pub async fn run_exec(
     workspace_manager: &WorkspaceManager,
     framed: &mut Framed<AnyStream, ProdCodeCodec>,
     req: ExecRequest,
+) -> Result<()> {
+    run_exec_with_ram(
+        storage_root,
+        metrics,
+        workspace_manager,
+        framed,
+        req,
+        false,
+        None,
+    )
+    .await
+}
+
+pub async fn run_exec_with_ram(
+    storage_root: &std::path::Path,
+    metrics: &metrics::Metrics,
+    workspace_manager: &WorkspaceManager,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    req: ExecRequest,
+    build_cache_ram: bool,
+    build_cache_dir: Option<&std::path::Path>,
 ) -> Result<()> {
     use tokio::io::AsyncReadExt;
 
@@ -2679,10 +2886,11 @@ pub async fn run_exec(
     // A std child, reaped here with `wait4` so its resource use comes back with the exit
     // status (#180); tokio only gets the pipes. The gateway binary starts it through its exec
     // shim, so that the peak memory reported is the command's and not the gateway's (#255).
+    let ram_target = resolve_ram_build_cache(&workspace, build_cache_ram, build_cache_dir);
     let (mut cmd, report) = exec_shim::command(program);
     cmd.args(args)
         .current_dir(&run_dir)
-        .envs(compiler_cache_env(&workspace, on_path("ccache")))
+        .envs(polyglot_compiler_cache_env(&workspace, on_path("ccache"), ram_target.as_deref()))
         .envs(req.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -2955,6 +3163,27 @@ pub async fn run_remote_exec(
     framed: &mut Framed<AnyStream, ProdCodeCodec>,
     req: RemoteExecRequest,
 ) -> Result<()> {
+    run_remote_exec_with_ram(
+        storage_root,
+        metrics,
+        workspace_manager,
+        framed,
+        req,
+        false,
+        None,
+    )
+    .await
+}
+
+pub async fn run_remote_exec_with_ram(
+    storage_root: &std::path::Path,
+    metrics: &metrics::Metrics,
+    workspace_manager: &WorkspaceManager,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    req: RemoteExecRequest,
+    build_cache_ram: bool,
+    build_cache_dir: Option<&std::path::Path>,
+) -> Result<()> {
     use tokio::io::AsyncReadExt;
 
     let start = Instant::now();
@@ -3078,10 +3307,11 @@ pub async fn run_remote_exec(
         _ => workspace.clone(),
     };
 
+    let ram_target = resolve_ram_build_cache(&workspace, build_cache_ram, build_cache_dir);
     let (mut cmd, report) = exec_shim::command(program);
     cmd.args(args)
         .current_dir(&run_dir)
-        .envs(compiler_cache_env(&workspace, on_path("ccache")))
+        .envs(polyglot_compiler_cache_env(&workspace, on_path("ccache"), ram_target.as_deref()))
         .envs(req.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -3797,22 +4027,26 @@ pub async fn handle_client(
                 framed.send(WireMessage::SyncProbeResponse(resp)).await?;
             }
             WireMessage::ExecRequest(req) => {
-                run_exec(
+                run_exec_with_ram(
                     &state.storage_root,
                     &state.metrics,
                     &state.workspace_manager,
                     &mut framed,
                     req,
+                    state.build_cache_ram,
+                    state.build_cache_dir.as_deref(),
                 )
                 .await?;
             }
             WireMessage::RemoteExecRequest(req) => {
-                run_remote_exec(
+                run_remote_exec_with_ram(
                     &state.storage_root,
                     &state.metrics,
                     &state.workspace_manager,
                     &mut framed,
                     req,
+                    state.build_cache_ram,
+                    state.build_cache_dir.as_deref(),
                 )
                 .await?;
             }
@@ -7190,6 +7424,16 @@ async fn janitor(
                 state.search_indexes.forget(&path);
             }
         }
+        if state.build_cache_ram {
+            let build_cache_base = state.build_cache_dir.clone().unwrap_or_else(|| {
+                if Path::new("/dev/shm").is_dir() {
+                    PathBuf::from("/dev/shm/prod-code-build")
+                } else {
+                    PathBuf::from("/tmp/prod-code-build")
+                }
+            });
+            let _ = tokio::task::spawn_blocking(move || sweep_ram_build_caches(&build_cache_base)).await;
+        }
     }
 }
 
@@ -7221,6 +7465,18 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     let prune_worktree_secs = cli.effective_prune_worktree_secs();
     let prune_workspace_secs = cli.effective_prune_workspace_secs();
     let mut state = ServerState::new(cli.storage);
+    state.build_cache_ram = cli.build_cache_ram;
+    state.build_cache_dir = cli.build_cache_dir;
+    if state.build_cache_ram {
+        let build_cache_base = state.build_cache_dir.clone().unwrap_or_else(|| {
+            if Path::new("/dev/shm").is_dir() {
+                PathBuf::from("/dev/shm/prod-code-build")
+            } else {
+                PathBuf::from("/tmp/prod-code-build")
+            }
+        });
+        sweep_ram_build_caches(&build_cache_base);
+    }
     state.workspace_manager = Arc::new(WorkspaceManager::with_admission_and_concurrency(
         Arc::new(admission::Admission::host(cli.engine_reserve_mib)),
         cli.max_concurrent_engine_loads,
@@ -9458,6 +9714,8 @@ mod exec_resilience_tests {
             shadow_dir: None,
             peers: String::new(),
             advertise: None,
+            build_cache_ram: false,
+            build_cache_dir: None,
         };
         // Defaults: 1 hour (3600s) for worktrees, 24 hours (86400s) for main workspaces
         assert_eq!(cli.effective_prune_worktree_secs(), 3600);
@@ -9477,5 +9735,79 @@ mod exec_resilience_tests {
         assert_eq!(cli_disabled.effective_prune_worktree_secs(), 0);
         assert_eq!(cli_disabled.effective_prune_workspace_secs(), 0);
     }
+
+    #[test]
+    fn test_prewarm_virtualenv_pycache_safe_on_missing_or_invalid() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty_venv = temp.path().join("empty_venv");
+        std::fs::create_dir_all(&empty_venv).unwrap();
+        // Missing python binary -> Ok(0)
+        let res = prewarm_virtualenv_pycache(&empty_venv);
+        assert_eq!(res.unwrap(), 0);
+
+        // Invalid non-executable python file -> Ok(0) without crashing
+        let bin_dir = empty_venv.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let py_file = bin_dir.join("python");
+        std::fs::write(&py_file, b"not executable").unwrap();
+        let res = prewarm_virtualenv_pycache(&empty_venv);
+        assert_eq!(res.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_polyglot_compiler_cache_env_composition() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path().join("my-project");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let ram_target = temp.path().join("ram-target");
+        let envs = polyglot_compiler_cache_env(&ws, false, Some(&ram_target));
+        assert!(envs.iter().any(|(k, v)| k == "CARGO_TARGET_DIR" && v == ram_target.to_str().unwrap()));
+
+        let ccache_envs = polyglot_compiler_cache_env(&ws, true, None);
+        assert!(ccache_envs.iter().any(|(k, v)| k == "CCACHE_BASEDIR" && v == ws.to_str().unwrap()));
+        assert!(ccache_envs.iter().any(|(k, v)| k == "CCACHE_NOHASHDIR" && v == "1"));
+    }
+
+    #[test]
+    fn test_resolve_ram_build_cache_workspace_isolation() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws1 = temp.path().join("repo-a");
+        let ws2 = temp.path().join("repo-b");
+        std::fs::create_dir_all(&ws1).unwrap();
+        std::fs::create_dir_all(&ws2).unwrap();
+
+        let custom_ram = temp.path().join("custom-shm");
+        // Disabled returns None
+        assert!(resolve_ram_build_cache(&ws1, false, Some(&custom_ram)).is_none());
+
+        // Enabled creates isolated target directories
+        let target1 = resolve_ram_build_cache(&ws1, true, Some(&custom_ram)).expect("target1");
+        let target2 = resolve_ram_build_cache(&ws2, true, Some(&custom_ram)).expect("target2");
+
+        assert!(target1.exists());
+        assert!(target2.exists());
+        assert_ne!(target1, target2, "workspaces must receive isolated RAM target directories");
+        assert!(target1.ends_with("target"));
+        assert!(target2.ends_with("target"));
+    }
+
+    #[test]
+    fn test_sweep_ram_build_caches_removes_old_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let ram_base = temp.path().join("shm");
+        let ws_dir = ram_base.join("ws-old");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        // Fresh dir is not swept (not older than 24h)
+        let swept = sweep_ram_build_caches(&ram_base);
+        assert_eq!(swept, 0);
+        assert!(ws_dir.exists());
+
+        // Non-existent base dir returns 0 safely
+        let swept_none = sweep_ram_build_caches(&temp.path().join("does_not_exist"));
+        assert_eq!(swept_none, 0);
+    }
 }
+
 
