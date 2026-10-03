@@ -212,7 +212,7 @@ fn relocate_string_table(
 
     for slice in slices {
         let orig = String::from_utf8_lossy(slice).into_owned();
-        let replaced = orig.replace(from_str, to_str);
+        let replaced = relocate_arg_token(&orig, from_str, to_str);
         orig_strings.push(orig);
         relocated_strings.push(replaced);
     }
@@ -241,6 +241,265 @@ fn relocate_string_table(
     Ok((out, orig_strings, relocated_strings))
 }
 
+/// Returns true if `path_str` is equal to `root_str` or is a path under `root_str`
+/// (separated by a component boundary `/` or `\`).
+pub fn is_under_root(path_str: &str, root_str: &str) -> bool {
+    let clean_root = root_str.trim_end_matches(['/', '\\']);
+    if path_str == clean_root {
+        return true;
+    }
+    if path_str.starts_with(clean_root) {
+        let remainder = &path_str[clean_root.len()..];
+        return remainder.starts_with('/') || remainder.starts_with('\\');
+    }
+    false
+}
+
+/// Relocates a standalone path or `file://` URI if and only if it matches `from_str`
+/// or has `from_str` as a path-component prefix.
+///
+/// External paths and sibling directories (e.g. `/work/repository-deps` when `from` is
+/// `/work/repo`) are left completely untouched.
+pub fn relocate_path_or_uri(s: &str, from_str: &str, to_str: &str) -> String {
+    let from_clean = from_str.trim_end_matches(['/', '\\']);
+    let to_clean = to_str.trim_end_matches(['/', '\\']);
+
+    // 1. Direct path check
+    if s == from_clean {
+        return to_clean.to_string();
+    }
+    if s == format!("{from_clean}/") {
+        return format!("{to_clean}/");
+    }
+    if s == format!("{from_clean}\\") {
+        return format!("{to_clean}\\");
+    }
+    if s.starts_with(from_clean) {
+        let remainder = &s[from_clean.len()..];
+        if remainder.starts_with('/') || remainder.starts_with('\\') {
+            return format!("{}{}", to_clean, remainder);
+        }
+    }
+
+    // 2. URI check: file:// or file:///
+    if let Some(uri_rest) = s.strip_prefix("file://") {
+        if uri_rest == from_clean {
+            return format!("file://{to_clean}");
+        }
+        if uri_rest == format!("{from_clean}/") {
+            return format!("file://{to_clean}/");
+        }
+        if uri_rest == format!("{from_clean}\\") {
+            return format!("file://{to_clean}\\");
+        }
+        if uri_rest.starts_with(from_clean) {
+            let remainder = &uri_rest[from_clean.len()..];
+            if remainder.starts_with('/') || remainder.starts_with('\\') {
+                return format!("file://{to_clean}{remainder}");
+            }
+        }
+    }
+
+    s.to_string()
+}
+
+/// Relocates an argument token which may be a path, a URI, a quoted string, a key=value pair,
+/// or a compiler flag with an attached path (e.g. `-I/path`, `-isystem/path`).
+pub fn relocate_arg_token(token: &str, from_str: &str, to_str: &str) -> String {
+    if token.is_empty() {
+        return String::new();
+    }
+
+    // Handle full surrounding quotes: "..." or '...'
+    if (token.starts_with('"') && token.ends_with('"') && token.len() >= 2)
+        || (token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2)
+    {
+        let quote = &token[0..1];
+        let inner = &token[1..token.len() - 1];
+        let relocated = relocate_arg_token(inner, from_str, to_str);
+        return format!("{quote}{relocated}{quote}");
+    }
+
+    // Handle key=value tokens, e.g. -DFOO="/path" or VAR=/path
+    if let Some((k, v)) = token.split_once('=') {
+        let relocated_v = relocate_arg_token(v, from_str, to_str);
+        if relocated_v != v {
+            return format!("{k}={relocated_v}");
+        }
+    }
+
+    // Handle compiler flags with attached path (quoted or unquoted)
+    const ATTACHED_FLAG_PREFIXES: &[&str] = &[
+        "-I",
+        "-isystem",
+        "-iquote",
+        "-idirafter",
+        "-iframework",
+        "-iprefix",
+        "-iwithprefix",
+        "-iwithprefixbefore",
+        "-isysroot",
+        "--sysroot=",
+        "-L",
+        "-B",
+        "-o",
+        "-Wl,-rpath,",
+        "-Wl,-rpath=",
+        "-Wl,-R,",
+        "-Wl,-L,",
+    ];
+
+    for &flag in ATTACHED_FLAG_PREFIXES {
+        if let Some(rest) = token.strip_prefix(flag) {
+            let relocated_rest = relocate_arg_token(rest, from_str, to_str);
+            if relocated_rest != rest {
+                return format!("{flag}{relocated_rest}");
+            }
+        }
+    }
+
+    // Handle prefix-mapping flags: -fdebug-prefix-map=old=new
+    const PREFIX_MAP_FLAGS: &[&str] = &[
+        "-fdebug-prefix-map=",
+        "-ffile-prefix-map=",
+        "-fmacro-prefix-map=",
+    ];
+
+    for &flag in PREFIX_MAP_FLAGS {
+        if let Some(rest) = token.strip_prefix(flag) {
+            if let Some((old_part, new_part)) = rest.split_once('=') {
+                let relocated_old = relocate_arg_token(old_part, from_str, to_str);
+                let relocated_new = relocate_arg_token(new_part, from_str, to_str);
+                return format!("{flag}{relocated_old}={relocated_new}");
+            }
+        }
+    }
+
+    // Base path or URI relocation
+    relocate_path_or_uri(token, from_str, to_str)
+}
+
+/// Relocates paths in a shell-style compilation command string, preserving exact whitespace,
+/// quotes, and delimiters while rewriting only tokens that match `from_str` with path-component boundaries.
+pub fn relocate_command_string(cmd: &str, from_str: &str, to_str: &str) -> String {
+    let mut result = String::with_capacity(cmd.len());
+    let chars: Vec<char> = cmd.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+
+    while i < n {
+        // Consume whitespace
+        if chars[i].is_whitespace() {
+            result.push(chars[i]);
+            i += 1;
+            continue;
+        }
+
+        // Consume a token (argument)
+        let start = i;
+        let mut in_single_quote = false;
+        let mut in_double_quote = false;
+        let mut escape_next = false;
+
+        while i < n {
+            let c = chars[i];
+            if escape_next {
+                escape_next = false;
+                i += 1;
+                continue;
+            }
+
+            if c == '\\' && !in_single_quote {
+                escape_next = true;
+                i += 1;
+                continue;
+            }
+
+            if c == '\'' && !in_double_quote {
+                in_single_quote = !in_single_quote;
+                i += 1;
+                continue;
+            }
+
+            if c == '"' && !in_single_quote {
+                in_double_quote = !in_double_quote;
+                i += 1;
+                continue;
+            }
+
+            if !in_single_quote && !in_double_quote && c.is_whitespace() {
+                break;
+            }
+
+            i += 1;
+        }
+
+        let token: String = chars[start..i].iter().collect();
+        let relocated_token = relocate_arg_token(&token, from_str, to_str);
+        result.push_str(&relocated_token);
+    }
+
+    result
+}
+
+/// Relocates compilation database content (`compile_commands.json`).
+///
+/// Parses JSON and updates `directory`, `file`, `output`, `arguments`, and `command`
+/// fields preserving component boundaries. Sibling paths sharing prefixes are left untouched.
+/// Falls back to line-by-line command relocation if JSON parsing fails.
+pub fn relocate_compile_commands_content(
+    content: &str,
+    from_str: &str,
+    to_str: &str,
+) -> io::Result<String> {
+    if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(content) {
+        if let Some(arr) = json_val.as_array_mut() {
+            for entry in arr {
+                if let Some(obj) = entry.as_object_mut() {
+                    if let Some(dir) = obj.get("directory").and_then(|v| v.as_str()) {
+                        let relocated_dir = relocate_arg_token(dir, from_str, to_str);
+                        obj.insert("directory".to_string(), serde_json::Value::String(relocated_dir));
+                    }
+                    if let Some(file) = obj.get("file").and_then(|v| v.as_str()) {
+                        let relocated_file = relocate_arg_token(file, from_str, to_str);
+                        obj.insert("file".to_string(), serde_json::Value::String(relocated_file));
+                    }
+                    if let Some(output) = obj.get("output").and_then(|v| v.as_str()) {
+                        let relocated_output = relocate_arg_token(output, from_str, to_str);
+                        obj.insert("output".to_string(), serde_json::Value::String(relocated_output));
+                    }
+                    if let Some(args) = obj.get_mut("arguments").and_then(|v| v.as_array_mut()) {
+                        for arg in args {
+                            if let Some(s) = arg.as_str() {
+                                let relocated_arg = relocate_arg_token(s, from_str, to_str);
+                                *arg = serde_json::Value::String(relocated_arg);
+                            }
+                        }
+                    }
+                    if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+                        let relocated_cmd = relocate_command_string(cmd, from_str, to_str);
+                        obj.insert("command".to_string(), serde_json::Value::String(relocated_cmd));
+                    }
+                }
+            }
+            return serde_json::to_string_pretty(&json_val).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to serialize compile_commands.json: {e}"),
+                )
+            });
+        }
+    }
+
+    let mut out = String::with_capacity(content.len());
+    for line in content.lines() {
+        out.push_str(&relocate_command_string(line, from_str, to_str));
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+
 /// Identifies the primary translation unit path for a shard.
 ///
 /// In clangd, background index shards contain strings for the primary translation unit,
@@ -268,7 +527,7 @@ fn identify_primary_source(
         // Priority 1: Exact digest match on an origin path.
         for (orig, relocated) in orig_strings.iter().zip(relocated_strings.iter()) {
             let orig_path = orig.strip_prefix("file://").unwrap_or(orig);
-            if orig_path.starts_with(from_str) {
+            if is_under_root(orig_path, from_str) {
                 let digest = clangd_path_digest(orig_path);
                 if digest == id.digest_hex {
                     let p = Path::new(orig_path);
@@ -284,7 +543,7 @@ fn identify_primary_source(
         let mut candidates = Vec::new();
         for (orig, relocated) in orig_strings.iter().zip(relocated_strings.iter()) {
             let orig_path = orig.strip_prefix("file://").unwrap_or(orig);
-            if orig_path.starts_with(from_str) {
+            if is_under_root(orig_path, from_str) {
                 let p = Path::new(orig_path);
                 if p.file_name().and_then(|f| f.to_str()) == Some(id.file_name.as_str()) {
                     let rel_path = relocated.strip_prefix("file://").unwrap_or(relocated);
@@ -309,7 +568,7 @@ fn identify_primary_source(
 
     for (orig, relocated) in orig_strings.iter().zip(relocated_strings.iter()) {
         let orig_path = orig.strip_prefix("file://").unwrap_or(orig);
-        if orig_path.starts_with(from_str) {
+        if is_under_root(orig_path, from_str) {
             let p = Path::new(orig_path);
             if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                 let rel_path = PathBuf::from(relocated.strip_prefix("file://").unwrap_or(relocated));
@@ -452,7 +711,7 @@ pub fn seed_compile_commands(from: &Path, to: &Path) -> io::Result<Option<u64>> 
     })?;
 
     let content = std::fs::read_to_string(source_cdb)?;
-    let relocated = content.replace(from_str, to_str);
+    let relocated = relocate_compile_commands_content(&content, from_str, to_str)?;
 
     let target_dir = to.join("build");
     std::fs::create_dir_all(&target_dir)?;
@@ -516,6 +775,9 @@ mod tests {
             "/srv/workspaces/repo".to_string(),
             "/srv/workspaces/repo/src/main.cpp".to_string(),
             "file:///srv/workspaces/repo/src/main.cpp".to_string(),
+            "/srv/workspaces/repository-deps/include".to_string(),
+            "file:///srv/workspaces/repo-deps/include".to_string(),
+            "-I/srv/workspaces/repo-deps/include".to_string(),
             "compute_magic".to_string(),
         ];
         let mut uncompressed = Vec::new();
@@ -578,7 +840,10 @@ mod tests {
         assert_eq!(decomp_strings[1], "/srv/workspaces/repo--wt-1234");
         assert_eq!(decomp_strings[2], "/srv/workspaces/repo--wt-1234/src/main.cpp");
         assert_eq!(decomp_strings[3], "file:///srv/workspaces/repo--wt-1234/src/main.cpp");
-        assert_eq!(decomp_strings[4], "compute_magic");
+        assert_eq!(decomp_strings[4], "/srv/workspaces/repository-deps/include");
+        assert_eq!(decomp_strings[5], "file:///srv/workspaces/repo-deps/include");
+        assert_eq!(decomp_strings[6], "-I/srv/workspaces/repo-deps/include");
+        assert_eq!(decomp_strings[7], "compute_magic");
     }
 
     #[test]
@@ -795,4 +1060,142 @@ mod tests {
         let to_gitignore = to_root.join(".cache").join("clangd").join("index").join(".gitignore");
         assert!(to_gitignore.is_file());
     }
+
+    #[test]
+    fn test_path_and_uri_component_boundary_relocation() {
+        let from = "/srv/workspaces/repo";
+        let to = "/srv/workspaces/repo--wt-1234";
+
+        // Exact match
+        assert_eq!(relocate_path_or_uri("/srv/workspaces/repo", from, to), "/srv/workspaces/repo--wt-1234");
+        assert_eq!(relocate_path_or_uri("/srv/workspaces/repo/", from, to), "/srv/workspaces/repo--wt-1234/");
+
+        // Child path
+        assert_eq!(
+            relocate_path_or_uri("/srv/workspaces/repo/src/main.cpp", from, to),
+            "/srv/workspaces/repo--wt-1234/src/main.cpp"
+        );
+
+        // Sibling directories sharing prefix: MUST NOT BE TOUCHED
+        assert_eq!(
+            relocate_path_or_uri("/srv/workspaces/repository-deps/include", from, to),
+            "/srv/workspaces/repository-deps/include"
+        );
+        assert_eq!(
+            relocate_path_or_uri("/srv/workspaces/repo-deps/include", from, to),
+            "/srv/workspaces/repo-deps/include"
+        );
+        assert_eq!(
+            relocate_path_or_uri("/srv/workspaces/repo.bak/src", from, to),
+            "/srv/workspaces/repo.bak/src"
+        );
+        assert_eq!(
+            relocate_path_or_uri("/srv/workspaces/repo_old", from, to),
+            "/srv/workspaces/repo_old"
+        );
+
+        // URIs
+        assert_eq!(
+            relocate_path_or_uri("file:///srv/workspaces/repo", from, to),
+            "file:///srv/workspaces/repo--wt-1234"
+        );
+        assert_eq!(
+            relocate_path_or_uri("file:///srv/workspaces/repo/src/main.cpp", from, to),
+            "file:///srv/workspaces/repo--wt-1234/src/main.cpp"
+        );
+        assert_eq!(
+            relocate_path_or_uri("file:///srv/workspaces/repository-deps/include", from, to),
+            "file:///srv/workspaces/repository-deps/include"
+        );
+        assert_eq!(
+            relocate_path_or_uri("file:///srv/workspaces/repo-deps/include", from, to),
+            "file:///srv/workspaces/repo-deps/include"
+        );
+
+        // Compiler flags in relocate_arg_token
+        assert_eq!(
+            relocate_arg_token("-I/srv/workspaces/repo/include", from, to),
+            "-I/srv/workspaces/repo--wt-1234/include"
+        );
+        assert_eq!(
+            relocate_arg_token("-I/srv/workspaces/repo-deps/include", from, to),
+            "-I/srv/workspaces/repo-deps/include"
+        );
+        assert_eq!(
+            relocate_arg_token("-I\"/srv/workspaces/repo/include\"", from, to),
+            "-I\"/srv/workspaces/repo--wt-1234/include\""
+        );
+        assert_eq!(
+            relocate_arg_token("-I\"/srv/workspaces/repository-deps/include\"", from, to),
+            "-I\"/srv/workspaces/repository-deps/include\""
+        );
+        assert_eq!(
+            relocate_arg_token("-fdebug-prefix-map=/srv/workspaces/repo=/work/build", from, to),
+            "-fdebug-prefix-map=/srv/workspaces/repo--wt-1234=/work/build"
+        );
+
+        // Sentinels and non-matching tokens
+        assert_eq!(relocate_arg_token("", from, to), "");
+        assert_eq!(relocate_arg_token("repo", from, to), "repo");
+        assert_eq!(relocate_arg_token("compute_magic", from, to), "compute_magic");
+    }
+
+    #[test]
+    fn test_command_string_relocation_respects_component_boundaries() {
+        let from = "/srv/workspaces/repo";
+        let to = "/srv/workspaces/repo--wt-1234";
+
+        let cmd = "clang++ -c /srv/workspaces/repo/src/main.cpp -I/srv/workspaces/repo/include -I/srv/workspaces/repo-deps/include -I\"/srv/workspaces/repository-deps/include\" -o /srv/workspaces/repo/build/main.o";
+        let relocated = relocate_command_string(cmd, from, to);
+
+        assert_eq!(
+            relocated,
+            "clang++ -c /srv/workspaces/repo--wt-1234/src/main.cpp -I/srv/workspaces/repo--wt-1234/include -I/srv/workspaces/repo-deps/include -I\"/srv/workspaces/repository-deps/include\" -o /srv/workspaces/repo--wt-1234/build/main.o"
+        );
+    }
+
+    #[test]
+    fn test_compile_commands_json_relocation_respects_component_boundaries() {
+        let from = "/srv/workspaces/repo";
+        let to = "/srv/workspaces/repo--wt-1234";
+
+        let json_input = r#"[
+  {
+    "directory": "/srv/workspaces/repo/build",
+    "file": "/srv/workspaces/repo/src/main.cpp",
+    "command": "clang++ -I/srv/workspaces/repo/include -I/srv/workspaces/repo-deps/include -c /srv/workspaces/repo/src/main.cpp -o /srv/workspaces/repo/build/main.o",
+    "output": "/srv/workspaces/repo/build/main.o"
+  },
+  {
+    "directory": "/srv/workspaces/repository-deps/build",
+    "file": "/srv/workspaces/repository-deps/src/dep.cpp",
+    "arguments": [
+      "clang++",
+      "-I/srv/workspaces/repository-deps/include",
+      "-c",
+      "/srv/workspaces/repository-deps/src/dep.cpp"
+    ]
+  }
+]"#;
+
+        let relocated = relocate_compile_commands_content(json_input, from, to).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&relocated).unwrap();
+        let arr = val.as_array().unwrap();
+
+        // Entry 1 (workspace unit)
+        let e1 = &arr[0];
+        assert_eq!(e1["directory"], "/srv/workspaces/repo--wt-1234/build");
+        assert_eq!(e1["file"], "/srv/workspaces/repo--wt-1234/src/main.cpp");
+        assert_eq!(e1["output"], "/srv/workspaces/repo--wt-1234/build/main.o");
+        assert!(e1["command"].as_str().unwrap().contains("-I/srv/workspaces/repo--wt-1234/include"));
+        assert!(e1["command"].as_str().unwrap().contains("-I/srv/workspaces/repo-deps/include"));
+
+        // Entry 2 (sibling dependency unit): MUST BE COMPLETELY UNTOUCHED
+        let e2 = &arr[1];
+        assert_eq!(e2["directory"], "/srv/workspaces/repository-deps/build");
+        assert_eq!(e2["file"], "/srv/workspaces/repository-deps/src/dep.cpp");
+        assert_eq!(e2["arguments"][1], "-I/srv/workspaces/repository-deps/include");
+        assert_eq!(e2["arguments"][3], "/srv/workspaces/repository-deps/src/dep.cpp");
+    }
+
 }
