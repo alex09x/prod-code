@@ -5308,7 +5308,55 @@ impl LspStateTracker {
     }
 }
 
-type PendingRequests = std::sync::Arc<tokio::sync::Mutex<Vec<(serde_json::Value, String)>>>;
+fn is_idempotent_lsp_request(method: &str) -> bool {
+    matches!(
+        method,
+        "textDocument/hover"
+            | "textDocument/definition"
+            | "textDocument/declaration"
+            | "textDocument/typeDefinition"
+            | "textDocument/implementation"
+            | "textDocument/references"
+            | "textDocument/documentHighlight"
+            | "textDocument/documentSymbol"
+            | "textDocument/codeAction"
+            | "textDocument/codeLens"
+            | "codeLens/resolve"
+            | "textDocument/documentLink"
+            | "documentLink/resolve"
+            | "textDocument/documentColor"
+            | "textDocument/colorPresentation"
+            | "textDocument/formatting"
+            | "textDocument/rangeFormatting"
+            | "textDocument/onTypeFormatting"
+            | "textDocument/prepareRename"
+            | "textDocument/foldingRange"
+            | "textDocument/selectionRange"
+            | "textDocument/signatureHelp"
+            | "textDocument/completion"
+            | "completionItem/resolve"
+            | "textDocument/semanticTokens"
+            | "textDocument/semanticTokens/full"
+            | "textDocument/semanticTokens/full/delta"
+            | "textDocument/semanticTokens/range"
+            | "textDocument/inlayHint"
+            | "inlayHint/resolve"
+            | "textDocument/inlineValue"
+            | "textDocument/moniker"
+            | "textDocument/prepareCallHierarchy"
+            | "callHierarchy/incomingCalls"
+            | "callHierarchy/outgoingCalls"
+            | "textDocument/prepareTypeHierarchy"
+            | "typeHierarchy/supertypes"
+            | "typeHierarchy/subtypes"
+            | "workspace/symbol"
+            | "workspace/symbol/resolve"
+            | "workspace/diagnostic"
+            | "textDocument/diagnostic"
+    )
+}
+
+type PendingRequests = std::sync::Arc<tokio::sync::Mutex<Vec<(serde_json::Value, String, String)>>>;
 
 fn spawn_editor_stdout_task(
     mut socket_rx: SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
@@ -5336,7 +5384,7 @@ fn spawn_editor_stdout_task(
                                 if val.get("id").is_some() && val.get("method").is_none() {
                                     if let Some(id) = val.get("id") {
                                         let mut pending = pending_requests.lock().await;
-                                        pending.retain(|(p_id, _)| p_id != id);
+                                        pending.retain(|(p_id, _, _)| p_id != id);
                                     }
                                 }
                             }
@@ -5462,6 +5510,7 @@ async fn reconnect_editor_session(
     tracker: &LspStateTracker,
     files: &prod_code_client::editor_files::RemoteFiles,
     pending_requests: &PendingRequests,
+    editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
 ) -> Result<(
     SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
     SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
@@ -5495,19 +5544,43 @@ async fn reconnect_editor_session(
                             lock.clone()
                         };
                         let mut replay_err = None;
-                        for (_id, req) in pending {
-                            if let Err(err) = new_tx
-                                .send(WireMessage::LspPayload(files.to_node(&req)))
-                                .await
-                            {
-                                replay_err = Some(err);
-                                break;
+                        let mut non_idempotent = Vec::new();
+                        for (id, method, req) in &pending {
+                            if is_idempotent_lsp_request(method) {
+                                if let Err(err) = new_tx
+                                    .send(WireMessage::LspPayload(files.to_node(req)))
+                                    .await
+                                {
+                                    replay_err = Some(err);
+                                    break;
+                                }
+                            } else {
+                                non_idempotent.push((id.clone(), method.clone()));
                             }
                         }
                         if let Some(err) = replay_err {
                             tracing::warn!(%err, "failed to replay in-flight requests during reconnect");
                             last_err = Some(err.into());
                             continue;
+                        }
+
+                        if !non_idempotent.is_empty() {
+                            let mut lock = pending_requests.lock().await;
+                            lock.retain(|(p_id, _, _)| !non_idempotent.iter().any(|(n_id, _)| n_id == p_id));
+                            drop(lock);
+
+                            let mut stdout = editor_out.lock().await;
+                            for (id, method) in non_idempotent {
+                                let err_resp = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32097,
+                                        "message": format!("prod-code lsp: request '{method}' interrupted by disconnect; non-idempotent operation was not retried to prevent duplicate side effects"),
+                                    }
+                                });
+                                let _ = prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
+                            }
                         }
 
                         tracing::info!("successfully reconnected to gateway and replayed LSP state");
@@ -5542,7 +5615,7 @@ async fn fail_pending_requests(
         return;
     }
     let mut stdout = editor_out.lock().await;
-    for (id, _) in pending {
+    for (id, _method, _) in pending {
         let err_resp = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -5648,7 +5721,7 @@ async fn run_lsp_bridge(
                 Ok(why) => {
                     if reconnect {
                         eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
                             Ok((new_tx, new_rx)) => {
                                 socket_tx = new_tx;
                                 outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -5693,7 +5766,7 @@ async fn run_lsp_bridge(
                     if reconnect {
                         stdout_task.abort();
                         eprintln!("prod-code lsp: the gateway at {remote} {err_msg}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
                             Ok((new_tx, new_rx)) => {
                                 socket_tx = new_tx;
                                 outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -5730,7 +5803,7 @@ async fn run_lsp_bridge(
                     if reconnect {
                         stdout_task.abort();
                         eprintln!("prod-code lsp: the gateway at {remote} broke the connection during watchdog ping: {err}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
+                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
                             Ok((new_tx, new_rx)) => {
                                 socket_tx = new_tx;
                                 outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -5778,11 +5851,11 @@ async fn run_lsp_bridge(
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_payload) {
             if let (Some(id), Some(method)) = (val.get("id"), val.get("method").and_then(|m| m.as_str())) {
                 if method != "initialize" && !method.starts_with("prod-code/") {
-                    pending_requests.lock().await.push((id.clone(), json_payload.clone()));
+                    pending_requests.lock().await.push((id.clone(), method.to_string(), json_payload.clone()));
                 }
             } else if val.get("method").and_then(|m| m.as_str()) == Some("$/cancelRequest") {
                 if let Some(cancel_id) = val.pointer("/params/id") {
-                    pending_requests.lock().await.retain(|(p_id, _)| p_id != cancel_id);
+                    pending_requests.lock().await.retain(|(p_id, _, _)| p_id != cancel_id);
                 }
             }
         }
@@ -5820,7 +5893,7 @@ async fn run_lsp_bridge(
             if reconnect {
                 stdout_task.abort();
                 eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}; reconnecting...");
-                match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests).await {
+                match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
                     Ok((new_tx, new_rx)) => {
                         socket_tx = new_tx;
                         outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
