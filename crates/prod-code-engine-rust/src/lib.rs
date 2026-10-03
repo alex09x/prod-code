@@ -1940,9 +1940,7 @@ impl RustEngine {
             .push(format!("--jobs={num_threads}"));
         let build_scripts = config.rust.build_scripts;
         let farm = proc_macro_farm::shared();
-        let desired_workers = config.rust.proc_macro_workers.unwrap_or_else(|| {
-            (farm.capacity() / 2).clamp(1, 4)
-        });
+        let desired_workers = config.rust.proc_macro_workers.unwrap_or(1);
 
         tracing::info!(
             ?workspace_root,
