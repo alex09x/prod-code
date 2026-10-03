@@ -625,16 +625,39 @@ mod unix_pruner {
             Ok(c) => c,
             Err(_) => return Ok(0),
         };
+        let expected_meta = match fs::symlink_metadata(&canonical_root) {
+            Ok(m) => m,
+            Err(_) => return Ok(0),
+        };
+        if !expected_meta.file_type().is_dir() {
+            return Ok(0);
+        }
+
         let c_root = std::ffi::CString::new(canonical_root.as_os_str().as_bytes())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
         let root_fd = unsafe {
             libc::open(
                 c_root.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
         };
         if root_fd < 0 {
+            return Ok(0);
+        }
+
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(root_fd, &mut st) } != 0 {
+            unsafe { libc::close(root_fd); }
+            return Ok(0);
+        }
+
+        use std::os::unix::fs::MetadataExt;
+        if (st.st_mode & libc::S_IFMT) != libc::S_IFDIR
+            || (st.st_dev as u64) != expected_meta.dev()
+            || (st.st_ino as u64) != expected_meta.ino()
+        {
+            unsafe { libc::close(root_fd); }
             return Ok(0);
         }
 

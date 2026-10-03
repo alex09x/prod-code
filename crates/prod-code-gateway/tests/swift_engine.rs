@@ -384,3 +384,15 @@ fn test_prune_stale_module_cache_ignores_symlink_directories_and_external_target
     assert!(external_file.is_file(), "external file outside cache root must never be deleted by pruner");
     assert!(symlinked_dir.exists(), "directory symlink itself must not be deleted");
 }
+
+#[test]
+fn test_prune_stale_module_cache_rejects_root_file_or_symlink_swap() {
+    let temp = tempfile::tempdir().unwrap();
+    let regular_file = temp.path().join("regular_file.pcm");
+    fs::write(&regular_file, b"content").unwrap();
+
+    // Passing a non-directory file as cache_dir returns Ok(0) without panic or error
+    let evicted = prune_stale_module_cache_in(&regular_file, Duration::from_secs(3600), 100).unwrap();
+    assert_eq!(evicted, 0);
+    assert!(regular_file.is_file());
+}
