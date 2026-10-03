@@ -1318,7 +1318,20 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             ".local/lib",
             ".npm-global/lib",
             ".bun/install",
+            ".pnpm-store",
+            ".local/share/pnpm",
+            ".yarn/cache",
+            ".cache/yarn",
             ".local/share/uv",
+            ".cache/uv",
+            ".cache/pypoetry",
+            ".virtualenvs",
+            ".pyenv",
+            ".local/share/virtualenvs",
+            ".local/pipx",
+            ".conda",
+            ".nvm",
+            ".fnm",
             "Library/Developer",
             "prod-code-storage",
         ];
@@ -1329,10 +1342,23 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             return true;
         }
     }
-    const SYSTEM_ROOTS: [&str; 10] = [
+    if let Some(gopath) = std::env::var_os("GOPATH") {
+        let gopath = PathBuf::from(gopath);
+        if canonical.starts_with(gopath.join("pkg/mod")) || canonical.starts_with(gopath.join("src")) {
+            return true;
+        }
+    }
+    if let Some(goroot) = std::env::var_os("GOROOT") {
+        let goroot = PathBuf::from(goroot);
+        if canonical.starts_with(&goroot) {
+            return true;
+        }
+    }
+    const SYSTEM_ROOTS: [&str; 15] = [
         "/snap",
         "/usr/include",
         "/usr/local/include",
+        "/usr/local/Cellar",
         "/usr/lib",
         "/usr/local/lib",
         "/usr/local/go",
@@ -1340,8 +1366,15 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
         "/opt/homebrew",
         "/Applications/Xcode.app",
         "/Library/Developer",
+        "/Library/Frameworks",
+        "/System/Library/Frameworks",
+        "/opt/conda",
+        "/node_modules",
     ];
-    SYSTEM_ROOTS.iter().any(|root| canonical.starts_with(root))
+    if SYSTEM_ROOTS.iter().any(|root| canonical.starts_with(root)) {
+        return true;
+    }
+    canonical.components().any(|c| c.as_os_str() == "node_modules")
 }
 
 /// Serves a `ReadFileRequest` under the readable-path policy, capped in size.
@@ -7537,6 +7570,49 @@ mod tests {
         assert!(resp.error.is_none(), "read_server_file failed: {:?}", resp.error);
         assert!(!resp.truncated, "workspace artifact must not be truncated under 64 MiB");
         assert_eq!(resp.content.expect("content").len(), 3 * 1024 * 1024);
+    }
+
+    #[test]
+    fn is_readable_source_path_allows_polyglot_dependencies_and_rejects_arbitrary_files() {
+        let storage = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("HOME", home.path());
+        }
+
+        // 1. Rust cargo registry
+        let cargo_file = home.path().join(".cargo/registry/src/github.com/lib.rs");
+        std::fs::create_dir_all(cargo_file.parent().unwrap()).unwrap();
+        std::fs::write(&cargo_file, "pub fn foo() {}").unwrap();
+        assert!(is_readable_source_path(storage.path(), &cargo_file));
+
+        // 2. Python virtualenv / uv cache
+        let py_file = home.path().join(".cache/uv/wheels/pkg/module.py");
+        std::fs::create_dir_all(py_file.parent().unwrap()).unwrap();
+        std::fs::write(&py_file, "def bar(): pass").unwrap();
+        assert!(is_readable_source_path(storage.path(), &py_file));
+
+        // 3. Node pnpm store
+        let pnpm_file = home.path().join(".local/share/pnpm/store/pkg/index.d.ts");
+        std::fs::create_dir_all(pnpm_file.parent().unwrap()).unwrap();
+        std::fs::write(&pnpm_file, "export declare const x: number;").unwrap();
+        assert!(is_readable_source_path(storage.path(), &pnpm_file));
+
+        // 4. Any node_modules
+        let nm_file = home.path().join("projects/foo/node_modules/bar/index.js");
+        std::fs::create_dir_all(nm_file.parent().unwrap()).unwrap();
+        std::fs::write(&nm_file, "module.exports = {};").unwrap();
+        assert!(is_readable_source_path(storage.path(), &nm_file));
+
+        // 5. Arbitrary sensitive files rejected
+        let ssh_key = home.path().join(".ssh/id_rsa");
+        std::fs::create_dir_all(ssh_key.parent().unwrap()).unwrap();
+        std::fs::write(&ssh_key, "private-key-material").unwrap();
+        assert!(!is_readable_source_path(storage.path(), &ssh_key));
+
+        let bashrc = home.path().join(".bashrc");
+        std::fs::write(&bashrc, "export SECRET=1").unwrap();
+        assert!(!is_readable_source_path(storage.path(), &bashrc));
     }
 
     #[tokio::test]
