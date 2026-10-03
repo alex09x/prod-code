@@ -54,7 +54,11 @@ if [ -n "$SHADOW_MOUNT_STATUS" ]; then
   control_dir="$SHADOW_CONTROL_DIR"
   printf "ok" > "$status_file"
   if [ -n "$control_dir" ] && [ -d "$control_dir" ]; then
-    mount -t tmpfs -o size=1m,mode=000 tmpfs "$control_dir" || true
+    if ! mount -t tmpfs -o size=1m,mode=000 tmpfs "$control_dir"; then
+      rm -f "$status_file"
+      echo "prod-code: cannot isolate mount control directory" >&2
+      exit 1
+    fi
   fi
 fi
 if [ -s "$SHADOW_DELETE" ]; then
