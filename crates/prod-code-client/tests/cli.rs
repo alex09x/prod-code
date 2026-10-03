@@ -4096,6 +4096,157 @@ async fn lsp_in_flight_requests_are_replayed_and_resolved_after_reconnect() {
 }
 
 #[tokio::test]
+async fn lsp_non_idempotent_requests_are_not_replayed_on_reconnect_and_return_error() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let dropped_once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dropped_once_clone = std::sync::Arc::clone(&dropped_once);
+
+    let (addr, seen) = recording_gateway_with(
+        move |val| {
+            if val["method"] == "workspace/executeCommand" {
+                if !dropped_once_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    Some(serde_json::json!("__close__"))
+                } else {
+                    Some(serde_json::json!({ "result": "command executed" }))
+                }
+            } else if val["method"] == "textDocument/hover" {
+                Some(serde_json::json!({ "contents": "hover ok" }))
+            } else {
+                None
+            }
+        },
+        HashMap::new(),
+        true,
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr.to_string(), "--reconnect"])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+
+    // 1. Initialize
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialize");
+    let init_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(init_resp["id"], 1);
+
+    // 2. Open document
+    let test_uri = format!("file://{}/src/lib.rs", ws.root().display());
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": test_uri,
+                        "languageId": "rust",
+                        "version": 1,
+                        "text": "pub fn hello_world() {}\n"
+                    }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("didOpen");
+
+    // 3. Send non-idempotent request (workspace/executeCommand) with id 77. Conn 1 will drop without replying!
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 77,
+                "method": "workspace/executeCommand",
+                "params": {
+                    "command": "custom.mutate",
+                    "arguments": []
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("executeCommand");
+
+    // Editor should receive an explicit error response for id 77 instead of duplicating the side-effecting command!
+    let cmd_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(cmd_resp["id"], 77);
+    assert_eq!(cmd_resp["error"]["code"], -32097);
+    let msg = cmd_resp["error"]["message"].as_str().expect("message");
+    assert!(
+        msg.contains("non-idempotent operation was not retried"),
+        "error message should indicate non-idempotent operation was not retried, got: {msg}"
+    );
+
+    // Verify conn2 never received workspace/executeCommand
+    let events = seen.lock().expect("seen").clone();
+    let conn2_events: Vec<String> = events
+        .iter()
+        .filter(|(c, _)| *c == 2)
+        .map(|(_, ev)| ev.clone())
+        .collect();
+    assert!(
+        !conn2_events.contains(&"lsp workspace/executeCommand".to_string()),
+        "conn2 should NOT receive non-idempotent workspace/executeCommand replay: {conn2_events:?}"
+    );
+
+    // Verify session remains fully operational by sending a subsequent hover
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 78,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": test_uri },
+                    "position": { "line": 0, "character": 7 }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("hover");
+
+    let hover_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(hover_resp["id"], 78);
+    assert_eq!(hover_resp["result"]["contents"], "hover ok");
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("child exits")
+        .expect("status");
+    assert!(status.success());
+}
+
+#[tokio::test]
 async fn lsp_did_change_is_not_duplicated_on_reconnect_replay() {
     use tokio::io::AsyncWriteExt;
     let ws = make_workspace();
