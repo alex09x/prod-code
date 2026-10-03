@@ -85,9 +85,7 @@ impl ProcMacroWorkerFarm {
 
     /// Allocates worker processes for a workspace from the shared farm immediately.
     ///
-    /// The allocated count is bounded by the global farm capacity and remaining
-    /// available slots. If the farm is at full capacity, 0 workers are allocated
-    /// to strictly uphold the node-level capacity guarantee without overcommitting.
+    /// The allocated count is bounded by the global farm capacity and fair-share limits.
     pub fn allocate_workers(
         self: &Arc<Self>,
         workspace_root: &Path,
@@ -116,6 +114,7 @@ impl ProcMacroWorkerFarm {
         }
 
         let mut active = self.active_workers.lock().unwrap_or_else(|e| e.into_inner());
+
         if *active >= self.capacity && !timeout.is_zero() {
             match self.cvar.wait_timeout_while(active, timeout, |act| *act >= self.capacity) {
                 Ok((new_active, _)) => {
@@ -541,6 +540,48 @@ mod tests {
         drop(permit3_retry);
         assert_eq!(farm.active_workers(), 0);
         assert_eq!(farm.active_workspaces(), 0);
+    }
+
+    #[test]
+    fn test_farm_timeout_queued_allocation() {
+        let farm = Arc::new(ProcMacroWorkerFarm::new(4));
+        let ws1 = PathBuf::from("/tmp/ws_queue_1");
+        let (w1, permit1) = farm.allocate_workers(&ws1, 4);
+        assert_eq!(w1, 4);
+        assert_eq!(farm.active_workers(), 4);
+
+        let farm_clone = Arc::clone(&farm);
+        let handle = std::thread::spawn(move || {
+            let ws2 = PathBuf::from("/tmp/ws_queue_2");
+            farm_clone.allocate_workers_timeout(&ws2, 2, Duration::from_millis(500))
+        });
+
+        // Small delay to ensure ws2 is waiting on the condvar
+        std::thread::sleep(Duration::from_millis(50));
+        drop(permit1);
+
+        let (w2, permit2) = handle.join().expect("thread join failed");
+        assert_eq!(w2, 2, "Queued allocation must succeed after permits released");
+        assert_eq!(permit2.worker_count(), 2);
+        assert_eq!(farm.active_workers(), 2);
+        drop(permit2);
+        assert_eq!(farm.active_workers(), 0);
+    }
+
+    #[test]
+    fn test_farm_timeout_queued_allocation_expiry() {
+        let farm = Arc::new(ProcMacroWorkerFarm::new(2));
+        let ws1 = PathBuf::from("/tmp/ws_exp_1");
+        let (_w1, permit1) = farm.allocate_workers(&ws1, 2);
+
+        let ws2 = PathBuf::from("/tmp/ws_exp_2");
+        let (w2, permit2) = farm.allocate_workers_timeout(&ws2, 1, Duration::from_millis(50));
+        assert_eq!(w2, 0, "Must return 0 workers when wait timeout expires");
+        assert_eq!(permit2.worker_count(), 0);
+
+        drop(permit1);
+        drop(permit2);
+        assert_eq!(farm.active_workers(), 0);
     }
 
     #[test]

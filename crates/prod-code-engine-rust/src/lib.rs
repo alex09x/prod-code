@@ -1941,7 +1941,7 @@ impl RustEngine {
         let build_scripts = config.rust.build_scripts;
         let farm = proc_macro_farm::shared();
         let desired_workers = config.rust.proc_macro_workers.unwrap_or_else(|| {
-            num_threads.min(8)
+            (farm.capacity() / 2).clamp(1, 4)
         });
 
         tracing::info!(
@@ -1969,7 +1969,11 @@ impl RustEngine {
             ProcMacroServerKind::Disabled => (ProcMacroServerChoice::None, 0, None),
             _ if !build_scripts => (ProcMacroServerChoice::None, 0, None),
             ProcMacroServerKind::Sysroot => {
-                let (workers, permit) = farm.allocate_workers(workspace_root, desired_workers);
+                let (workers, permit) = farm.allocate_workers_timeout(
+                    workspace_root,
+                    desired_workers,
+                    std::time::Duration::from_millis(500),
+                );
                 if workers == 0 {
                     tracing::warn!(
                         workspace = %workspace_root.display(),
@@ -1982,7 +1986,11 @@ impl RustEngine {
                 }
             }
             ProcMacroServerKind::Sandboxed => {
-                let (workers, permit) = farm.allocate_workers(workspace_root, desired_workers);
+                let (workers, permit) = farm.allocate_workers_timeout(
+                    workspace_root,
+                    desired_workers,
+                    std::time::Duration::from_millis(500),
+                );
                 if workers == 0 {
                     tracing::warn!(
                         workspace = %workspace_root.display(),
