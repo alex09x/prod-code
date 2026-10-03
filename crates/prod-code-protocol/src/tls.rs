@@ -360,12 +360,22 @@ impl ServerCertVerifier for CaOrPinnedVerifier {
 }
 
 /// Server TLS configuration builder.
-#[derive(Debug)]
 pub struct ServerTlsConfig {
     pub certs: Vec<CertificateDer<'static>>,
     pub key: PrivateKeyDer<'static>,
     pub client_ca_roots: Option<RootCertStore>,
     pub require_client_auth: bool,
+}
+
+impl std::fmt::Debug for ServerTlsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerTlsConfig")
+            .field("certs_count", &self.certs.len())
+            .field("key", &"[REDACTED]")
+            .field("client_ca_roots", &self.client_ca_roots)
+            .field("require_client_auth", &self.require_client_auth)
+            .finish()
+    }
 }
 
 impl Clone for ServerTlsConfig {
@@ -491,12 +501,28 @@ impl ServerTlsConfig {
 }
 
 /// Client TLS configuration builder.
-#[derive(Debug)]
 pub struct ClientTlsConfig {
     pub ca_roots: Option<RootCertStore>,
     pub pins: Vec<String>,
     pub client_cert: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
     pub server_name: String,
+}
+
+impl std::fmt::Debug for ClientTlsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientTlsConfig")
+            .field("ca_roots", &self.ca_roots)
+            .field("pins", &self.pins)
+            .field(
+                "client_cert",
+                &self
+                    .client_cert
+                    .as_ref()
+                    .map(|(certs, _)| format!("[{} certificate(s), key: [REDACTED]]", certs.len())),
+            )
+            .field("server_name", &self.server_name)
+            .finish()
+    }
 }
 
 impl Clone for ClientTlsConfig {

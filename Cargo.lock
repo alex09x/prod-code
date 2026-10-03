@@ -2134,6 +2134,7 @@ version = "0.3.23"
 dependencies = [
  "anyhow",
  "bytes",
+ "futures-util",
  "hmac",
  "lsp-types",
  "rcgen",
