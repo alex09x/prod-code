@@ -874,13 +874,15 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_diagnose_failure".to_string(),
-            description: "Run the tests (optionally one filter) on the gateway and, for every failure, return a dossier: the failure output, the source around each location it mentions, the enclosing function and its callers, and the working-tree diff of that file. Includes structured printed operands for Rust assert_eq/assert_ne and supported Node assert.strictEqual/deepStrictEqual output from Node, Jest and Vitest. Rust keeps left/right names; actual/expected roles are used only when the runner establishes them. Missing, truncated or unsupported evidence remains raw output. Values are extracted from this failure only, never evaluated or captured by a debugger. One call instead of test → grep → read → blame."
+            description: "Run the tests (optionally one filter) on the gateway and, for every failure, return a dossier: the failing test, panic line, expression, runtime values, suspects from recent changes, failure output, the source around each location it mentions, the enclosing function and its callers, and the working-tree diff of that file. Supports polyglot assertion evidence across Rust, Node/TS, Python (pytest, unittest), Go (testify, got/want), Swift (XCTest, swift-testing), and C++ (GoogleTest, Catch2). Returns human-readable text by default, or structured JSON when `json: true`. One call instead of test → grep → read → blame."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "filter": { "type": "string", "description": "Test name filter, as for code_test" },
-                    "timeout_secs": { "type": "integer", "description": "Kill the run after this many seconds (default 3600)" }
+                    "timeout_secs": { "type": "integer", "description": "Kill the run after this many seconds (default 3600)" },
+                    "path": { "type": "string", "description": "Optional file path to hint language or narrow scope" },
+                    "json": { "type": "boolean", "description": "Return structured JSON failure dossier instead of human-readable text" }
                 }
             }),
         },
@@ -5961,8 +5963,13 @@ async fn handle_diagnose_failure(
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let as_json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
     let report = crate::dossier::diagnose(remote, workspace_root, hint_path, filter, timeout_secs).await?;
-    let text = report.render();
+    let text = if as_json {
+        serde_json::to_string_pretty(&report)?
+    } else {
+        report.render()
+    };
     Ok(
         if report.tests_failed == 0 && report.build_errors.is_empty() {
             McpToolCallResult::text(text)
