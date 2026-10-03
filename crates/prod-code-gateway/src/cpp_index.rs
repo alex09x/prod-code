@@ -21,6 +21,27 @@ pub fn clangd_path_digest(path: &str) -> String {
     hex
 }
 
+/// Parsed identity of a clangd index shard filename `<filename>.<16-HEX-DIGEST>.idx`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardIdentity {
+    pub file_name: String,
+    pub digest_hex: String,
+}
+
+/// Parses `<filename>.<16-HEX-DIGEST>.idx` into its file basename and uppercase hex digest.
+pub fn parse_shard_filename(shard_filename: &str) -> Option<ShardIdentity> {
+    let name = shard_filename.strip_suffix(".idx")?;
+    let (base, digest) = name.rsplit_once('.')?;
+    if digest.len() == 16 && digest.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(ShardIdentity {
+            file_name: base.to_string(),
+            digest_hex: digest.to_ascii_uppercase(),
+        })
+    } else {
+        None
+    }
+}
+
 /// Computes the clangd shard filename for a source or header file on disk.
 ///
 /// Format: `<filename>.<16-HEX-DIGEST>.idx`
@@ -46,12 +67,18 @@ struct RiffChunk {
 /// the RIFF container with updated chunk and header lengths.
 ///
 /// Because all symbols, references, relations, and include-graph nodes address strings
-/// by positional index in the string table, preserving the number and order of null-delimited
-/// strings guarantees that all index references remain valid and unbroken.
+/// by ordinal index in the string table, preserving the number and order of null-delimited
+/// strings — including the index 0 empty-string sentinel — guarantees that all index references
+/// remain valid and unbroken.
+///
+/// When `orig_shard_name` is provided, the primary translation unit is derived from the shard's
+/// original basename and LLVM path digest, ensuring shards containing included headers
+/// are never written under the wrong filename. Ambiguous shards are rejected.
 pub fn relocate_shard(
     shard_data: &[u8],
     from_workspace: &Path,
     to_workspace: &Path,
+    orig_shard_name: Option<&str>,
 ) -> io::Result<(Vec<u8>, Option<PathBuf>)> {
     if shard_data.len() < 12 || &shard_data[0..4] != b"RIFF" || &shard_data[8..12] != b"CdIx" {
         return Err(io::Error::new(
@@ -69,7 +96,8 @@ pub fn relocate_shard(
 
     let mut chunks = Vec::new();
     let mut offset = 12;
-    let mut primary_source_path: Option<PathBuf> = None;
+    let mut orig_strings_table = Vec::new();
+    let mut relocated_strings_table = Vec::new();
 
     while offset + 8 <= shard_data.len() {
         let mut tag = [0u8; 4];
@@ -91,14 +119,13 @@ pub fn relocate_shard(
         }
 
         if &tag == b"stri" {
-            let (relocated_chunk, found_source) = relocate_string_table(
+            let (relocated_chunk, orig_strings, relocated_strings) = relocate_string_table(
                 chunk_bytes,
                 from_str,
                 to_str,
             )?;
-            if primary_source_path.is_none() {
-                primary_source_path = found_source;
-            }
+            orig_strings_table = orig_strings;
+            relocated_strings_table = relocated_strings;
             chunks.push(RiffChunk {
                 tag,
                 data: relocated_chunk,
@@ -110,6 +137,13 @@ pub fn relocate_shard(
             });
         }
     }
+
+    let primary_source_path = identify_primary_source(
+        &orig_strings_table,
+        &relocated_strings_table,
+        from_str,
+        orig_shard_name,
+    );
 
     // Rebuild RIFF container
     let mut out = Vec::new();
@@ -135,11 +169,15 @@ pub fn relocate_shard(
 }
 
 /// Relocates paths in the string table (`stri`) chunk.
+///
+/// Clangd string table serialization begins with an empty string (`""`) at index 0 (sentinel)
+/// and emits strings terminated by null bytes (`\0`). Other RIFF chunks address strings by
+/// ordinal index. We MUST preserve every single slot in exact ordinal position, including index 0.
 fn relocate_string_table(
     data: &[u8],
     from_str: &str,
     to_str: &str,
-) -> io::Result<(Vec<u8>, Option<PathBuf>)> {
+) -> io::Result<(Vec<u8>, Vec<String>, Vec<String>)> {
     if data.len() < 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -159,36 +197,29 @@ fn relocate_string_table(
         buf
     };
 
-    // The string table contains null-terminated strings
-    let mut relocated_strings = Vec::new();
-    let mut primary_source = None;
+    // The string table contains null-terminated strings: s0 \0 s1 \0 s2 \0 ...
+    // If the buffer ends with a trailing \0, strip it before splitting so we don't
+    // produce an extra empty element beyond the last terminated string.
+    let bytes = decompressed.strip_suffix(&[0]).unwrap_or(&decompressed);
+    let slices: Vec<&[u8]> = if bytes.is_empty() && decompressed.is_empty() {
+        Vec::new()
+    } else {
+        bytes.split(|&b| b == 0).collect()
+    };
 
-    for slice in decompressed.split(|&b| b == 0) {
-        if slice.is_empty() {
-            continue;
-        }
-        let s = String::from_utf8_lossy(slice);
-        let replaced = s.replace(from_str, to_str);
+    let mut orig_strings = Vec::with_capacity(slices.len());
+    let mut relocated_strings = Vec::with_capacity(slices.len());
 
-        // Identify any source or header file belonging to the new workspace
-        if primary_source.is_none() && replaced.starts_with(to_str) {
-            let p = PathBuf::from(&replaced);
-            if p.extension().is_some_and(|ext| {
-                matches!(
-                    ext.to_str().unwrap_or(""),
-                    "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx"
-                )
-            }) {
-                primary_source = Some(p);
-            }
-        }
-
+    for slice in slices {
+        let orig = String::from_utf8_lossy(slice).into_owned();
+        let replaced = orig.replace(from_str, to_str);
+        orig_strings.push(orig);
         relocated_strings.push(replaced);
     }
 
     // Join back into null-terminated string table
     let mut new_uncompressed = Vec::new();
-    for s in relocated_strings {
+    for s in &relocated_strings {
         new_uncompressed.extend_from_slice(s.as_bytes());
         new_uncompressed.push(0);
     }
@@ -201,13 +232,108 @@ fn relocate_string_table(
         let new_uncomp_size = new_uncompressed.len() as u32;
         out.extend_from_slice(&new_uncomp_size.to_le_bytes());
         let mut encoder =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            flate2::write::ZlibEncoder::new(Vec::<u8>::new(), flate2::Compression::default());
         encoder.write_all(&new_uncompressed)?;
         let compressed = encoder.finish()?;
         out.extend_from_slice(&compressed);
     }
 
-    Ok((out, primary_source))
+    Ok((out, orig_strings, relocated_strings))
+}
+
+/// Identifies the primary translation unit path for a shard.
+///
+/// In clangd, background index shards contain strings for the primary translation unit,
+/// but also for all directly and transitively included headers. Because the string table
+/// is sorted alphabetically, the first source/header path is often an included header
+/// (e.g. `include/a.h`) rather than the primary file (e.g. `src/z_main.cpp`).
+///
+/// To prevent writing the relocated shard under the wrong filename:
+/// 1. If `orig_shard_name` is provided, we parse its `<filename>.<16-HEX-DIGEST>.idx` identity.
+///    We compute `clangd_path_digest(orig_path)` for all workspace paths in the string table
+///    and match the exact 16-hex digest.
+/// 2. If no exact digest matched (e.g. symlinks/canonicalization), we match candidates by `file_name`.
+///    If exactly one matches, we use it; if ambiguous or 0, we reject the shard.
+/// 3. If no `orig_shard_name` is provided, we look for unique source implementation files (`.cpp`, `.cc`, etc.),
+///    then unique header files, rejecting ambiguous candidates.
+fn identify_primary_source(
+    orig_strings: &[String],
+    relocated_strings: &[String],
+    from_str: &str,
+    orig_shard_name: Option<&str>,
+) -> Option<PathBuf> {
+    let shard_id = orig_shard_name.and_then(parse_shard_filename);
+
+    if let Some(id) = shard_id {
+        // Priority 1: Exact digest match on an origin path.
+        for (orig, relocated) in orig_strings.iter().zip(relocated_strings.iter()) {
+            let orig_path = orig.strip_prefix("file://").unwrap_or(orig);
+            if orig_path.starts_with(from_str) {
+                let digest = clangd_path_digest(orig_path);
+                if digest == id.digest_hex {
+                    let p = Path::new(orig_path);
+                    if p.file_name().and_then(|f| f.to_str()) == Some(id.file_name.as_str()) {
+                        let rel_path = relocated.strip_prefix("file://").unwrap_or(relocated);
+                        return Some(PathBuf::from(rel_path));
+                    }
+                }
+            }
+        }
+
+        // Priority 2: Candidates matching id.file_name exactly.
+        let mut candidates = Vec::new();
+        for (orig, relocated) in orig_strings.iter().zip(relocated_strings.iter()) {
+            let orig_path = orig.strip_prefix("file://").unwrap_or(orig);
+            if orig_path.starts_with(from_str) {
+                let p = Path::new(orig_path);
+                if p.file_name().and_then(|f| f.to_str()) == Some(id.file_name.as_str()) {
+                    let rel_path = relocated.strip_prefix("file://").unwrap_or(relocated);
+                    candidates.push(PathBuf::from(rel_path));
+                }
+            }
+        }
+
+        candidates.sort();
+        candidates.dedup();
+        if candidates.len() == 1 {
+            return Some(candidates.remove(0));
+        }
+
+        // Multiple different paths match id.file_name or 0 match: reject ambiguous shard.
+        return None;
+    }
+
+    // Fallback when no shard name was supplied (e.g. synthetic test calls without filename):
+    let mut source_candidates = Vec::new();
+    let mut header_candidates = Vec::new();
+
+    for (orig, relocated) in orig_strings.iter().zip(relocated_strings.iter()) {
+        let orig_path = orig.strip_prefix("file://").unwrap_or(orig);
+        if orig_path.starts_with(from_str) {
+            let p = Path::new(orig_path);
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                let rel_path = PathBuf::from(relocated.strip_prefix("file://").unwrap_or(relocated));
+                match ext {
+                    "c" | "cc" | "cpp" | "cxx" => source_candidates.push(rel_path),
+                    "h" | "hh" | "hpp" | "hxx" => header_candidates.push(rel_path),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    source_candidates.sort();
+    source_candidates.dedup();
+    header_candidates.sort();
+    header_candidates.dedup();
+
+    if source_candidates.len() == 1 {
+        Some(source_candidates.remove(0))
+    } else if source_candidates.is_empty() && header_candidates.len() == 1 {
+        Some(header_candidates.remove(0))
+    } else {
+        None
+    }
 }
 
 /// Seeds and relocates clangd background index shards from `from` to `to`.
@@ -253,19 +379,12 @@ pub fn seed_clangd_index(from: &Path, to: &Path) -> io::Result<Option<u64>> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.ends_with(".idx") {
+        if parse_shard_filename(name).is_none() {
             continue;
         }
-
-        // Base name before the .<digest>.idx suffix
-        let parts: Vec<&str> = name.split('.').collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let base_filename = parts[..parts.len() - 2].join(".");
 
         let shard_bytes = std::fs::read(&path)?;
-        let (relocated, primary_source) = match relocate_shard(&shard_bytes, from, to) {
+        let (relocated, primary_source) = match relocate_shard(&shard_bytes, from, to, Some(name)) {
             Ok(res) => res,
             Err(e) => {
                 tracing::debug!(error = %e, shard = %name, "skipping non-RIFF or invalid clangd shard");
@@ -273,14 +392,19 @@ pub fn seed_clangd_index(from: &Path, to: &Path) -> io::Result<Option<u64>> {
             }
         };
 
-        // Determine target shard filename
-        let new_shard_name = if let Some(source_path) = primary_source {
-            shard_filename_for_path(&source_path)
-                .unwrap_or_else(|| name.to_string())
-        } else {
-            // Fallback: estimate from relative path if possible
-            let digest = clangd_path_digest(&to.join(&base_filename).to_string_lossy());
-            format!("{base_filename}.{digest}.idx")
+        // Determine target shard filename from the resolved primary TU.
+        // Reject ambiguous shards that cannot be mapped to a known source file.
+        let Some(source_path) = primary_source else {
+            tracing::warn!(shard = %name, "skipping ambiguous clangd shard whose primary TU cannot be determined");
+            continue;
+        };
+
+        let new_shard_name = match shard_filename_for_path(&source_path) {
+            Some(n) => n,
+            None => {
+                tracing::warn!(shard = %name, source = ?source_path, "failed to derive target shard filename");
+                continue;
+            }
         };
 
         let target_shard_path = target_index_dir.join(new_shard_name);
@@ -402,7 +526,7 @@ mod tests {
 
         // Compress string table
         let mut encoder =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            flate2::write::ZlibEncoder::new(Vec::<u8>::new(), flate2::Compression::default());
         encoder.write_all(&uncompressed).unwrap();
         let compressed = encoder.finish().unwrap();
 
@@ -431,22 +555,169 @@ mod tests {
             riff.push(0);
         }
 
-        // Relocate shard
-        let (relocated, source_path) = relocate_shard(&riff, from, to).unwrap();
+        // Relocate shard without explicit shard name
+        let (relocated, source_path) = relocate_shard(&riff, from, to, None).unwrap();
         assert_eq!(
             source_path,
             Some(PathBuf::from("/srv/workspaces/repo--wt-1234/src/main.cpp"))
         );
 
-        // Verify the relocated shard can be re-parsed
+        // Verify the relocated shard can be re-parsed and preserves all slots including index 0
         let mut decoder = flate2::read::ZlibDecoder::new(&relocated[36..]);
         let mut decomp = Vec::new();
         decoder.read_to_end(&mut decomp).unwrap();
 
-        let decomp_str = String::from_utf8_lossy(&decomp);
-        assert!(decomp_str.contains("/srv/workspaces/repo--wt-1234/src/main.cpp"));
-        assert!(decomp_str.contains("file:///srv/workspaces/repo--wt-1234/src/main.cpp"));
-        assert!(!decomp_str.contains("/srv/workspaces/repo/src"));
+        let bytes = decomp.strip_suffix(&[0]).unwrap_or(&decomp);
+        let decomp_strings: Vec<String> = bytes
+            .split(|&b| b == 0)
+            .map(|s| String::from_utf8_lossy(s).to_string())
+            .collect();
+
+        assert_eq!(decomp_strings.len(), strings.len());
+        assert_eq!(decomp_strings[0], "");
+        assert_eq!(decomp_strings[1], "/srv/workspaces/repo--wt-1234");
+        assert_eq!(decomp_strings[2], "/srv/workspaces/repo--wt-1234/src/main.cpp");
+        assert_eq!(decomp_strings[3], "file:///srv/workspaces/repo--wt-1234/src/main.cpp");
+        assert_eq!(decomp_strings[4], "compute_magic");
+    }
+
+    #[test]
+    fn test_clangd_relocation_resolves_primary_tu_not_included_header() {
+        let from = Path::new("/srv/workspaces/project");
+        let to = Path::new("/srv/workspaces/project--wt-1");
+
+        let header_path = "/srv/workspaces/project/include/a.h";
+        let source_path = "/srv/workspaces/project/src/z_main.cpp";
+
+        // a.h is alphabetically before z_main.cpp and appears first in the sorted table
+        let strings = vec![
+            "".to_string(),
+            header_path.to_string(),
+            format!("file://{header_path}"),
+            source_path.to_string(),
+            format!("file://{source_path}"),
+            "z_main_func".to_string(),
+        ];
+        let mut uncompressed = Vec::new();
+        for s in &strings {
+            uncompressed.extend_from_slice(s.as_bytes());
+            uncompressed.push(0);
+        }
+
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::<u8>::new(), flate2::Compression::default());
+        encoder.write_all(&uncompressed).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut stri_data = Vec::new();
+        stri_data.extend_from_slice(&(uncompressed.len() as u32).to_le_bytes());
+        stri_data.extend_from_slice(&compressed);
+
+        let mut riff = Vec::new();
+        riff.extend_from_slice(b"RIFF");
+        let total_len = 4 + 8 + 4 + (8 + stri_data.len());
+        riff.extend_from_slice(&(total_len as u32).to_le_bytes());
+        riff.extend_from_slice(b"CdIx");
+        riff.extend_from_slice(b"meta");
+        riff.extend_from_slice(&4u32.to_le_bytes());
+        riff.extend_from_slice(&21u32.to_le_bytes());
+        riff.extend_from_slice(b"stri");
+        let stri_len = stri_data.len() as u32;
+        riff.extend_from_slice(&stri_len.to_le_bytes());
+        riff.extend_from_slice(&stri_data);
+        if stri_len % 2 != 0 {
+            riff.push(0);
+        }
+
+        // Shard filename created by clangd for z_main.cpp
+        let source_digest = clangd_path_digest(source_path);
+        let shard_name = format!("z_main.cpp.{source_digest}.idx");
+
+        let (relocated, resolved_source) =
+            relocate_shard(&riff, from, to, Some(&shard_name)).unwrap();
+
+        // Must resolve to z_main.cpp in the new worktree, NOT a.h!
+        assert_eq!(
+            resolved_source,
+            Some(PathBuf::from("/srv/workspaces/project--wt-1/src/z_main.cpp"))
+        );
+
+        // Derive target shard filename
+        let target_shard = shard_filename_for_path(&resolved_source.unwrap()).unwrap();
+        let expected_target_digest =
+            clangd_path_digest("/srv/workspaces/project--wt-1/src/z_main.cpp");
+        assert_eq!(
+            target_shard,
+            format!("z_main.cpp.{expected_target_digest}.idx")
+        );
+        assert!(!target_shard.starts_with("a.h"));
+
+        // Verify string table contents and index 0 sentinel
+        let mut decoder = flate2::read::ZlibDecoder::new(&relocated[36..]);
+        let mut decomp = Vec::new();
+        decoder.read_to_end(&mut decomp).unwrap();
+        let bytes = decomp.strip_suffix(&[0]).unwrap();
+        let decomp_strings: Vec<String> = bytes
+            .split(|&b| b == 0)
+            .map(|s| String::from_utf8_lossy(s).to_string())
+            .collect();
+
+        assert_eq!(decomp_strings.len(), strings.len());
+        assert_eq!(decomp_strings[0], "");
+        assert_eq!(decomp_strings[1], "/srv/workspaces/project--wt-1/include/a.h");
+        assert_eq!(decomp_strings[3], "/srv/workspaces/project--wt-1/src/z_main.cpp");
+    }
+
+    #[test]
+    fn test_clangd_relocation_rejects_ambiguous_shard() {
+        let from = Path::new("/srv/workspaces/project");
+        let to = Path::new("/srv/workspaces/project--wt-1");
+
+        // Two source files without shard name identity -> ambiguous
+        let strings = vec![
+            "".to_string(),
+            "/srv/workspaces/project/src/first.cpp".to_string(),
+            "/srv/workspaces/project/src/second.cpp".to_string(),
+        ];
+        let mut uncompressed = Vec::new();
+        for s in &strings {
+            uncompressed.extend_from_slice(s.as_bytes());
+            uncompressed.push(0);
+        }
+
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::<u8>::new(), flate2::Compression::default());
+        encoder.write_all(&uncompressed).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut stri_data = Vec::new();
+        stri_data.extend_from_slice(&(uncompressed.len() as u32).to_le_bytes());
+        stri_data.extend_from_slice(&compressed);
+
+        let mut riff = Vec::new();
+        riff.extend_from_slice(b"RIFF");
+        let total_len = 4 + 8 + 4 + (8 + stri_data.len());
+        riff.extend_from_slice(&(total_len as u32).to_le_bytes());
+        riff.extend_from_slice(b"CdIx");
+        riff.extend_from_slice(b"meta");
+        riff.extend_from_slice(&4u32.to_le_bytes());
+        riff.extend_from_slice(&21u32.to_le_bytes());
+        riff.extend_from_slice(b"stri");
+        let stri_len = stri_data.len() as u32;
+        riff.extend_from_slice(&stri_len.to_le_bytes());
+        riff.extend_from_slice(&stri_data);
+        if stri_len % 2 != 0 {
+            riff.push(0);
+        }
+
+        // Without shard name, 2 sources are ambiguous
+        let (_relocated, resolved_source) = relocate_shard(&riff, from, to, None).unwrap();
+        assert_eq!(resolved_source, None);
+
+        // With invalid shard name matching neither, also rejected
+        let (_relocated, resolved_source) =
+            relocate_shard(&riff, from, to, Some("other.cpp.0123456789ABCDEF.idx")).unwrap();
+        assert_eq!(resolved_source, None);
     }
 
     #[test]
@@ -475,10 +746,10 @@ mod tests {
         let source_file = from_root.join("src").join("lib.cpp");
         let shard_name = shard_filename_for_path(&source_file).unwrap();
 
-        // Create a minimal synthetic shard for lib.cpp
+        // Create a minimal synthetic shard for lib.cpp with index 0 sentinel
         let uncompressed = format!("\0{}\0file://{}\0", source_file.display(), source_file.display());
         let mut encoder =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            flate2::write::ZlibEncoder::new(Vec::<u8>::new(), flate2::Compression::default());
         encoder.write_all(uncompressed.as_bytes()).unwrap();
         let compressed = encoder.finish().unwrap();
 
