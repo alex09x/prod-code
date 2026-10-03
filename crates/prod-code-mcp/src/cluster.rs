@@ -375,8 +375,8 @@ pub async fn pick_node_with(
                     tries += 1;
                     still_fits = node_fits(remembered, engine, os).await;
                 }
-                if still_fits {
-                    if let Ok(status) = node_status(remembered).await {
+                if still_fits
+                    && let Ok(status) = node_status(remembered).await {
                         if status.host.pressure().is_some() {
                             still_fits = false;
                         } else if status.congestion_score() >= 0.80 && nodes.len() > 1 {
@@ -395,7 +395,6 @@ pub async fn pick_node_with(
                             }
                         }
                     }
-                }
                 if still_fits {
                     return Ok(remembered);
                 }
@@ -622,15 +621,14 @@ pub async fn evaluate_cluster_rebalance_with(
                 if *node == current_node {
                     continue;
                 }
-                if let Ok(st) = node_status(*node).await {
-                    if status_fits(&st, engine, os) && st.host.pressure().is_none() {
+                if let Ok(st) = node_status(*node).await
+                    && status_fits(&st, engine, os) && st.host.pressure().is_none() {
                         if os.is_none() && runs_os(&st, "macos") {
                             macos_fallback.push((*node, st.congestion_score()));
                         } else {
                             candidates.push((*node, st.congestion_score()));
                         }
                     }
-                }
             }
             let chosen = choose_best_node(&candidates).or_else(|| choose_best_node(&macos_fallback));
             if let Some(best) = chosen {
@@ -681,14 +679,13 @@ pub async fn evaluate_cluster_rebalance_with(
             if *node == current_node {
                 continue;
             }
-            if let Ok(st) = node_status(*node).await {
-                if status_fits(&st, engine, os) {
+            if let Ok(st) = node_status(*node).await
+                && status_fits(&st, engine, os) {
                     if os.is_none() && runs_os(&st, "macos") {
                         continue;
                     }
                     candidate_scores.push((*node, st.congestion_score(), st.host.describe()));
                 }
-            }
         }
     }
 

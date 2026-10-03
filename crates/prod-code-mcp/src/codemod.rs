@@ -94,11 +94,10 @@ impl CompiledPattern {
         let pattern_tokens = tokenize_pattern(pattern_raw)?;
         let mut required_literals = Vec::new();
         for tok in &pattern_tokens {
-            if let PatternToken::Literal(TokenKind::Ident(name)) = tok {
-                if name.len() >= 2 && !name.starts_with('$') {
+            if let PatternToken::Literal(TokenKind::Ident(name)) = tok
+                && name.len() >= 2 && !name.starts_with('$') {
                     required_literals.push(name.clone());
                 }
-            }
         }
         required_literals.sort();
         required_literals.dedup();
@@ -519,6 +518,9 @@ fn is_boundary_token(kind: &TokenKind, next_expected: &TokenKind) -> bool {
     }
 }
 
+type MatchBindings = BTreeMap<String, (usize, usize)>;
+type PatternMatch = (usize, usize, usize, MatchBindings);
+
 /// Attempt to match pattern tokens starting at `start_idx` in `tokens`.
 /// Returns `(start_byte, end_byte, end_token_idx, bindings)` on success.
 fn match_pattern_tokens(
@@ -527,10 +529,10 @@ fn match_pattern_tokens(
     matching_delims: &[Option<usize>],
     pattern_tokens: &[PatternToken],
     source: &str,
-) -> Option<(usize, usize, usize, BTreeMap<String, (usize, usize)>)> {
+) -> Option<PatternMatch> {
     let mut code_idx = start_idx;
     let mut pat_idx = 0;
-    let mut bindings: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut bindings: MatchBindings = BTreeMap::new();
 
     while pat_idx < pattern_tokens.len() {
         let pat_tok = &pattern_tokens[pat_idx];

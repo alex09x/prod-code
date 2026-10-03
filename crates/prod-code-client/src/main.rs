@@ -4195,15 +4195,13 @@ async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -> Re
     let mut result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args.clone()).await;
     if let Err(ref e) = result
         && prod_code_mcp::is_retryable_connection_error(tool, e)
-    {
-        if let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await {
+        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await {
             remote = new_addr;
             let identity = prod_code_mcp::sync::workspace_identity(&root);
             let name = identity.base.unwrap_or(identity.name);
             prod_code_mcp::cluster::remember_placement(&name, new_addr);
             result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args).await;
         }
-    }
     let result = result?;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
@@ -4223,15 +4221,13 @@ async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()> {
     let mut result = prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args.clone()).await;
     if let Err(ref e) = result
         && prod_code_mcp::is_retryable_connection_error("code_references", e)
-    {
-        if let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await {
+        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await {
             remote = new_addr;
             let identity = prod_code_mcp::sync::workspace_identity(&root);
             let name = identity.base.unwrap_or(identity.name);
             prod_code_mcp::cluster::remember_placement(&name, new_addr);
             result = prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args).await;
         }
-    }
     let result = result?;
     let mut has_refs = false;
     for content in &result.content {
@@ -4651,11 +4647,10 @@ async fn run_status_probe(
         match msg? {
             WireMessage::StatusResponse(resp) if json => {
                 let mut snapshot = status_snapshot(remote, rtt, &resp);
-                if let Some(note) = &fallback_note {
-                    if let Some(obj) = snapshot.as_object_mut() {
+                if let Some(note) = &fallback_note
+                    && let Some(obj) = snapshot.as_object_mut() {
                         obj.insert("fallback_transport".to_string(), serde_json::json!(note));
                     }
-                }
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             }
             WireMessage::StatusResponse(resp) => {

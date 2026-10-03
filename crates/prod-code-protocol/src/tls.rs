@@ -704,10 +704,10 @@ pub mod pki {
             rcgen::KeyUsagePurpose::DigitalSignature,
         ];
         let ca_key = rcgen::KeyPair::generate()
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed generating CA keypair: {e}")))?;
+            .map_err(|e| Error::other(format!("failed generating CA keypair: {e}")))?;
         let ca_cert = ca_params
             .self_signed(&ca_key)
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed signing CA cert: {e}")))?;
+            .map_err(|e| Error::other(format!("failed signing CA cert: {e}")))?;
         let cert_pem = ca_cert.pem();
         let key_pem = ca_key.serialize_pem();
         Ok((cert_pem, key_pem))
@@ -726,7 +726,7 @@ pub mod pki {
             .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("invalid CA cert PEM: {e}")))?;
         let ca_cert = ca_params
             .self_signed(&ca_key)
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed parsing CA cert: {e}")))?;
+            .map_err(|e| Error::other(format!("failed parsing CA cert: {e}")))?;
 
         let mut san_entries: Vec<rcgen::SanType> = Vec::new();
         for name in san_names {
@@ -755,10 +755,10 @@ pub mod pki {
         ];
 
         let server_key = rcgen::KeyPair::generate()
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed generating node key: {e}")))?;
+            .map_err(|e| Error::other(format!("failed generating node key: {e}")))?;
         let server_cert = server_params
             .signed_by(&server_key, &ca_cert, &ca_key)
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed signing node cert: {e}")))?;
+            .map_err(|e| Error::other(format!("failed signing node cert: {e}")))?;
 
         let cert_pem = server_cert.pem();
         let key_pem = server_key.serialize_pem();
@@ -794,8 +794,7 @@ pub mod pki {
             let mut opts = OpenOptions::new();
             opts.write(true).create_new(true).mode(0o600);
             let mut f = opts.open(&tmp_key_path).map_err(|e| {
-                Error::new(
-                    ErrorKind::Other,
+                Error::other(
                     format!("Failed to create private temporary key file '{tmp_key_path:?}': {e}"),
                 )
             })?;

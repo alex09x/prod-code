@@ -420,9 +420,9 @@ impl<'a> XmlParser<'a> {
                     stack.push((name, tag_line, tag_col));
                 }
             } else {
-                if stack.is_empty() {
-                    if let Some(b) = self.peek() {
-                        if !b.is_ascii_whitespace() && root_count >= 1 {
+                if stack.is_empty()
+                    && let Some(b) = self.peek()
+                        && !b.is_ascii_whitespace() && root_count >= 1 {
                             self.error(
                                 self.line,
                                 self.col,
@@ -431,8 +431,6 @@ impl<'a> XmlParser<'a> {
                             self.advance();
                             continue;
                         }
-                    }
-                }
 
                 if self.starts_with(b"&") {
                     let ent_line = self.line;

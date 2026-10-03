@@ -121,11 +121,10 @@ pub fn ensure_blocking_stdio() {}
 #[cfg(unix)]
 fn get_hostname() -> String {
     let mut buf = [0u8; 256];
-    if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } == 0 {
-        if let Some(pos) = buf.iter().position(|&b| b == 0) {
+    if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } == 0
+        && let Some(pos) = buf.iter().position(|&b| b == 0) {
             return String::from_utf8_lossy(&buf[..pos]).to_string();
         }
-    }
     std::env::var("HOSTNAME").unwrap_or_else(|_| "node".to_string())
 }
 
@@ -1977,11 +1976,10 @@ where
 
         let snapshot = match tokio::time::timeout(remaining, engine_lock.lock()).await {
             Ok(mut engine) => {
-                if !is_single_owner && engine.has_session_overlays() {
-                    if let Err(e) = engine.activate_session(session_id) {
+                if !is_single_owner && engine.has_session_overlays()
+                    && let Err(e) = engine.activate_session(session_id) {
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
-                }
                 if file_path.is_dir() {
                     engine.snapshot_for(file_path)
                 } else {
@@ -3164,9 +3162,9 @@ pub async fn run_remote_exec(
                     let chunk_data = chunk.data.clone();
                     if framed.send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(chunk))).await.is_err() {
                         client_left = true;
-                    } else if (req.format == RemoteExecFormat::Json || matches!(req.command, RemoteExecCommand::Test | RemoteExecCommand::Bench)) && !is_stderr {
-                        if let Some(bytes) = chunk_data {
-                            if let Ok(text) = std::str::from_utf8(&bytes) {
+                    } else if (req.format == RemoteExecFormat::Json || matches!(req.command, RemoteExecCommand::Test | RemoteExecCommand::Bench)) && !is_stderr
+                        && let Some(bytes) = chunk_data
+                            && let Ok(text) = std::str::from_utf8(&bytes) {
                                 stdout_line_buf.push_str(text);
                                 while let Some(pos) = stdout_line_buf.find('\n') {
                                     if pos > MAX_JSON_LINE_BUFFER_BYTES {
@@ -3218,8 +3216,6 @@ pub async fn run_remote_exec(
                                     stdout_line_buf.clear();
                                 }
                             }
-                        }
-                    }
                 }
                 Err(_) => chunks_open = false,
             },
@@ -5743,11 +5739,10 @@ fn lsp_safe_delete(
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays() {
-                    if let Err(e) = engine.activate_session(session_id) {
+                if !is_single_owner && engine.has_session_overlays()
+                    && let Err(e) = engine.activate_session(session_id) {
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
-                }
                 engine.safe_delete(&fp_clone, line, col)
             })
             .await
@@ -5843,11 +5838,10 @@ fn lsp_structural_replace(
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays() {
-                    if let Err(e) = engine.activate_session(session_id) {
+                if !is_single_owner && engine.has_session_overlays()
+                    && let Err(e) = engine.activate_session(session_id) {
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
-                }
                 engine.structural_replace(&rule, &fp_clone, line, col, scope.as_deref())
             })
             .await
@@ -5932,11 +5926,10 @@ fn lsp_rename(
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays() {
-                    if let Err(e) = engine.activate_session(session_id) {
+                if !is_single_owner && engine.has_session_overlays()
+                    && let Err(e) = engine.activate_session(session_id) {
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
-                }
                 engine.rename(&fp_clone, line, col, &new_name)
             })
             .await
@@ -6026,11 +6019,10 @@ fn lsp_assists(
         let result = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays() {
-                    if let Err(e) = engine.activate_session(session_id) {
+                if !is_single_owner && engine.has_session_overlays()
+                    && let Err(e) = engine.activate_session(session_id) {
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
-                }
                 if apply {
                     engine
                         .apply_assist(&fp_clone, line, col, end, &assist_id, subtype)
@@ -6595,11 +6587,10 @@ fn lsp_editor_request(
             let mut engine = engine_arc.lock_owned().await;
             let m = method.clone();
             tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays() {
-                    if let Err(e) = engine.activate_session(session_id) {
+                if !is_single_owner && engine.has_session_overlays()
+                    && let Err(e) = engine.activate_session(session_id) {
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
-                }
                 engine
                     .editor_request(&m, &params)
                     .unwrap_or_else(|| Err(anyhow::anyhow!("{m} is not an editor request")))
@@ -6669,11 +6660,10 @@ fn publish_rust_diagnostics(
         let outcome = {
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays() {
-                    if let Err(e) = engine.activate_session(session_id) {
+                if !is_single_owner && engine.has_session_overlays()
+                    && let Err(e) = engine.activate_session(session_id) {
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
-                }
                 engine.editor_diagnostics(&file)
             })
             .await
@@ -7351,7 +7341,6 @@ pub async fn run(cli: ServerCli) -> Result<()> {
                 prod_code_protocol::transport::tune(&socket);
                 let state_clone = Arc::clone(&state);
                 let tls_acceptor = tls_acceptor.clone();
-                let tls_mode = tls_mode;
                 let addr_str = addr.to_string();
 
                 tokio::spawn(async move {

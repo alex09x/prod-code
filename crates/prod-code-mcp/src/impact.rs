@@ -3381,28 +3381,28 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path();
         std::process::Command::new("git")
-            .args(&["init", "-b", "main"])
+            .args(["init", "-b", "main"])
             .current_dir(path)
             .output()
             .unwrap();
         std::process::Command::new("git")
-            .args(&["config", "user.name", "Test User"])
+            .args(["config", "user.name", "Test User"])
             .current_dir(path)
             .output()
             .unwrap();
         std::process::Command::new("git")
-            .args(&["config", "user.email", "test@example.com"])
+            .args(["config", "user.email", "test@example.com"])
             .current_dir(path)
             .output()
             .unwrap();
         std::fs::write(path.join("tracked.txt"), "hello\n").unwrap();
         std::process::Command::new("git")
-            .args(&["add", "tracked.txt"])
+            .args(["add", "tracked.txt"])
             .current_dir(path)
             .output()
             .unwrap();
         std::process::Command::new("git")
-            .args(&["commit", "-m", "initial"])
+            .args(["commit", "-m", "initial"])
             .current_dir(path)
             .output()
             .unwrap();
@@ -3411,7 +3411,7 @@ mod tests {
         let empty_excludes = path.join(".empty_excludes");
         std::fs::write(&empty_excludes, "").unwrap();
         std::process::Command::new("git")
-            .args(&["config", "core.excludesFile", empty_excludes.to_str().unwrap()])
+            .args(["config", "core.excludesFile", empty_excludes.to_str().unwrap()])
             .current_dir(path)
             .output()
             .unwrap();
@@ -3429,7 +3429,7 @@ mod tests {
 
         // Ensure git status reports the scratch paths as untracked before diff_hunks filters them
         let status = std::process::Command::new("git")
-            .args(&["status", "--porcelain=v1", "-uall"])
+            .args(["status", "--porcelain=v1", "-uall"])
             .current_dir(path)
             .output()
             .unwrap();

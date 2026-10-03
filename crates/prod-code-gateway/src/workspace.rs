@@ -607,11 +607,10 @@ impl Drop for WorktreeOwner {
         let mut owners = self.owners.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = owners.get_mut(&self.root) {
             entry.count = entry.count.saturating_sub(1);
-            if let Some(lease) = &entry.direct_edit_lease {
-                if lease.session_id == self.session_id {
+            if let Some(lease) = &entry.direct_edit_lease
+                && lease.session_id == self.session_id {
                     entry.direct_edit_lease = None;
                 }
-            }
             if entry.count == 0 {
                 owners.remove(&self.root);
             }

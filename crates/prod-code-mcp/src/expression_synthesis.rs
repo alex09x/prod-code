@@ -155,7 +155,7 @@ pub fn propose_expressions_in_scope(
 
     // 6. 1-hop accessor chains based on naming heuristics
     let target_lower = clean_target.to_lowercase();
-    for (var_name, _var_type) in &in_scope_vars {
+    for var_name in in_scope_vars.keys() {
         if target_lower.contains("id") || clean_target == "u64" || clean_target == "usize" || clean_target == "String" {
             candidates.push(ProposedExpression {
                 expression: format!("{var_name}.id"),
@@ -187,7 +187,7 @@ pub fn propose_expressions_in_scope(
     }
 
     // Deduplicate and rank candidates by confidence
-    candidates.sort_by(|a, b| b.confidence.cmp(&a.confidence));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.confidence));
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|c| seen.insert(c.expression.clone()));
 
@@ -228,8 +228,8 @@ fn extract_in_scope_variables(lines: &[&str], current_line_idx: usize) -> BTreeM
             if let Some(rest) = line.split('(').nth(1) {
                 param_text.push_str(rest);
                 if !rest.contains(')') {
-                    for j in (i + 1)..=current_line_idx.min(lines.len().saturating_sub(1)) {
-                        let next_line = lines[j].trim();
+                    for next_line in &lines[(i + 1)..=current_line_idx.min(lines.len().saturating_sub(1))] {
+                        let next_line = next_line.trim();
                         param_text.push(' ');
                         param_text.push_str(next_line);
                         if next_line.contains(')') {
@@ -256,8 +256,8 @@ fn extract_in_scope_variables(lines: &[&str], current_line_idx: usize) -> BTreeM
     }
 
     // Parse local bindings in the scope up to current_line_idx
-    for i in scan_start..current_line_idx.min(lines.len()) {
-        let line = lines[i].trim();
+    for line in &lines[scan_start..current_line_idx.min(lines.len())] {
+        let line = line.trim();
         if line.starts_with("let ") {
             let rest = line.trim_start_matches("let ").trim_start_matches("mut ");
             if let Some(name_part) = rest.split(['=', ':']).next() {

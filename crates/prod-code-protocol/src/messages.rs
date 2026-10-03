@@ -602,10 +602,7 @@ impl StatusResponse {
         }
 
         // Unknown load is penalized conservatively (0.50) so an unmonitored node is not mistaken for completely idle.
-        let mut score = match self.load_per_cpu() {
-            Some(l) => l,
-            None => 0.50,
-        };
+        let mut score = self.load_per_cpu().unwrap_or(0.50);
 
         // Memory usage penalty (above 70% used) or uncertainty penalty when telemetry is absent
         match self.host.memory_used_share() {
@@ -1400,11 +1397,11 @@ pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
     let trimmed = line.trim();
 
     // 1. Try parsing JSON format (compiler messages or unstable/custom json test records)
-    if trimmed.starts_with('{') {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if let Some(reason) = value.get("reason").and_then(|r| r.as_str()) {
-                if reason == "compiler-message" {
-                    if let Some(msg) = value.get("message") {
+    if trimmed.starts_with('{')
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(reason) = value.get("reason").and_then(|r| r.as_str())
+                && reason == "compiler-message"
+                    && let Some(msg) = value.get("message") {
                         let level = msg.get("level").and_then(|l| l.as_str()).unwrap_or("error").to_string();
                         let message_text = msg.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
                         let code = msg
@@ -1446,11 +1443,9 @@ pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
                             suggestion: None,
                         }));
                     }
-                }
-            }
 
-            if let Some(t) = value.get("type").and_then(|t| t.as_str()) {
-                if t == "test" {
+            if let Some(t) = value.get("type").and_then(|t| t.as_str())
+                && t == "test" {
                     let event = value.get("event").and_then(|e| e.as_str()).unwrap_or("");
                     let name = value.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
                     let duration_ms = value.get("exec_time").and_then(|t| t.as_f64()).map(|s| (s * 1000.0) as u64);
@@ -1480,15 +1475,13 @@ pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
                         _ => {}
                     }
                 }
-            }
         }
-    }
 
     // 2. Parse standard Cargo/libtest text output lines (emitted by the test runner during `cargo test`)
     // Format: `test <name> ... ok` / `test <name> ... FAILED` / `test <name> ... ignored` / `test <name> ... bench: <est>`
-    if let Some(rest) = trimmed.strip_prefix("test ") {
-        if !rest.starts_with("result:") {
-            if let Some((name, outcome_part)) = rest.rsplit_once(" ... ") {
+    if let Some(rest) = trimmed.strip_prefix("test ")
+        && !rest.starts_with("result:")
+            && let Some((name, outcome_part)) = rest.rsplit_once(" ... ") {
                 let test_name = name.trim().to_string();
                 let outcome = outcome_part.trim();
                 if outcome == "ok" || outcome.starts_with("ok ") {
@@ -1523,8 +1516,6 @@ pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
                     }));
                 }
             }
-        }
-    }
 
     None
 }
@@ -1536,8 +1527,8 @@ pub fn parse_go_test_json_event(line: &str) -> Option<RemoteExecStream> {
         return None;
     }
 
-    if trimmed.starts_with('{') {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+    if trimmed.starts_with('{')
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
             let action = value.get("Action").and_then(|a| a.as_str())?;
             let test = value.get("Test").and_then(|t| t.as_str())?;
             let pkg = value.get("Package").and_then(|p| p.as_str()).unwrap_or("");
@@ -1563,7 +1554,6 @@ pub fn parse_go_test_json_event(line: &str) -> Option<RemoteExecStream> {
                 _ => None,
             };
         }
-    }
 
     // Standard human-readable `go test` text lines:
     // "=== RUN   TestFoo"

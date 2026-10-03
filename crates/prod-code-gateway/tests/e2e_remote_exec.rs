@@ -90,11 +90,10 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     )))
                                     .await;
 
-                                if req.format == RemoteExecFormat::Json {
-                                    if let Some(stream_ev) = prod_code_protocol::parse_cargo_json_event(diag_json) {
+                                if req.format == RemoteExecFormat::Json
+                                    && let Some(stream_ev) = prod_code_protocol::parse_cargo_json_event(diag_json) {
                                         let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
                                     }
-                                }
 
                                 let _ = framed
                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {

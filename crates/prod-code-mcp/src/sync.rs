@@ -2418,6 +2418,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn json_config_size_limit_allows_tracked_build_metadata() {
         assert!(3_176_495 <= MAX_JSON_CONFIG_SIZE); // download-metadata.json in uv-python (#738)
         assert!(MAX_JSON_CONFIG_SIZE <= MAX_FILE_SIZE);

@@ -261,12 +261,11 @@ pub fn parse_node_line_with_auth_and_nonce(
     let nonce = parts.next().map(|s| s.to_string());
 
     // If a specific challenge nonce is required, reject replies without or with mismatched nonce.
-    if let Some(exp_n) = expected_nonce {
-        if nonce.as_deref() != Some(exp_n) {
+    if let Some(exp_n) = expected_nonce
+        && nonce.as_deref() != Some(exp_n) {
             tracing::warn!(addr = %addr, expected = %exp_n, got = ?nonce, "rejecting replayed or mismatched discovery reply");
             return None;
         }
-    }
 
     // Auth verification: if an auth token is configured, reject announcements with invalid MAC tag.
     // The MAC covers all routing and metadata fields on the wire plus the nonce if present.
@@ -463,8 +462,7 @@ pub fn generate_nonce() -> std::io::Result<String> {
         .secure_random
         .fill(&mut buf)
         .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
+            std::io::Error::other(
                 "cryptographically secure random number generator (ring) failed to generate nonce",
             )
         })?;

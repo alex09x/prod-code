@@ -36,16 +36,13 @@ pub struct DependencyGraphReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum DependencyScope {
+    #[default]
     Crates,
     Modules,
 }
 
-impl Default for DependencyScope {
-    fn default() -> Self {
-        Self::Crates
-    }
-}
 
 /// Discovers and builds the dependency graph for a workspace.
 pub fn analyze_dependencies(
@@ -117,9 +114,9 @@ fn analyze_crate_dependencies(
         let mut crate_map = HashMap::new();
         for dir in &crate_paths {
             let manifest = dir.join("Cargo.toml");
-            if let Ok(content) = std::fs::read_to_string(&manifest) {
-                if let Ok(parsed_toml) = toml::from_str::<toml::Value>(&content) {
-                    if let Some(name) = parsed_toml
+            if let Ok(content) = std::fs::read_to_string(&manifest)
+                && let Ok(parsed_toml) = toml::from_str::<toml::Value>(&content)
+                    && let Some(name) = parsed_toml
                         .get("package")
                         .and_then(|p| p.get("name"))
                         .and_then(|n| n.as_str())
@@ -127,8 +124,6 @@ fn analyze_crate_dependencies(
                         crate_names.insert(name.to_string());
                         crate_map.insert(name.to_string(), (dir.clone(), parsed_toml));
                     }
-                }
-            }
         }
 
         for (name, (dir, toml_val)) in crate_map {
@@ -143,11 +138,10 @@ fn analyze_crate_dependencies(
                             let resolved_path = dir.join(path_dep);
                             if let Ok(canon) = std::fs::canonicalize(&resolved_path) {
                                 for (other_name, (other_dir, _)) in adj.iter() {
-                                    if let Ok(other_canon) = std::fs::canonicalize(other_dir) {
-                                        if canon == other_canon {
+                                    if let Ok(other_canon) = std::fs::canonicalize(other_dir)
+                                        && canon == other_canon {
                                             deps.insert(other_name.clone());
                                         }
-                                    }
                                 }
                             }
                         }
@@ -160,8 +154,8 @@ fn analyze_crate_dependencies(
 
     // 2. Maven Multi-Module Workspace (Java)
     let root_pom = workspace_root.join("pom.xml");
-    if root_pom.exists() {
-        if let Ok(pom_content) = std::fs::read_to_string(&root_pom) {
+    if root_pom.exists()
+        && let Ok(pom_content) = std::fs::read_to_string(&root_pom) {
             let mut modules = Vec::new();
             let mut in_modules = false;
             for line in pom_content.lines() {
@@ -203,7 +197,6 @@ fn analyze_crate_dependencies(
                 adj.insert(mod_name.clone(), (dir.clone(), deps));
             }
         }
-    }
 
     // 3. Gradle Multi-Project Workspace (Java / Kotlin / Android)
     let root_gradle = workspace_root.join("settings.gradle");
@@ -216,8 +209,8 @@ fn analyze_crate_dependencies(
         None
     };
 
-    if let Some(settings_file) = gradle_settings_path {
-        if let Ok(settings_content) = std::fs::read_to_string(&settings_file) {
+    if let Some(settings_file) = gradle_settings_path
+        && let Ok(settings_content) = std::fs::read_to_string(&settings_file) {
             let mut projects = Vec::new();
             let mut in_include = false;
             for line in settings_content.lines() {
@@ -245,9 +238,7 @@ fn analyze_crate_dependencies(
                             break;
                         }
                     }
-                    if !trimmed.ends_with(',') && !trimmed.starts_with("include") {
-                        in_include = false;
-                    } else if trimmed.ends_with(')') {
+                    if (!trimmed.ends_with(',') && !trimmed.starts_with("include")) || trimmed.ends_with(')') {
                         in_include = false;
                     }
                 }
@@ -263,7 +254,7 @@ fn analyze_crate_dependencies(
                         let quote = rest.chars().next().unwrap();
                         if let Some(end_idx) = rest[1..].find(quote) {
                             let path_str = &rest[1..1 + end_idx];
-                            let mod_name = path_str.split('/').last().unwrap_or(path_str).trim_matches(':');
+                            let mod_name = path_str.split('/').next_back().unwrap_or(path_str).trim_matches(':');
                             if !mod_name.is_empty() && !projects.contains(&mod_name.to_string()) {
                                 projects.push(mod_name.to_string());
                             }
@@ -295,8 +286,8 @@ fn analyze_crate_dependencies(
                 let path = entry.path();
                 if path.is_file() {
                     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if file_name == "build.gradle" || file_name == "build.gradle.kts" {
-                        if let Some(parent) = path.parent() {
+                    if (file_name == "build.gradle" || file_name == "build.gradle.kts")
+                        && let Some(parent) = path.parent() {
                             let rel_dir = parent.strip_prefix(workspace_root).unwrap_or(parent);
                             let rel_str = rel_dir.to_string_lossy().to_string();
                             if !rel_str.is_empty()
@@ -304,8 +295,7 @@ fn analyze_crate_dependencies(
                                 && !rel_str.starts_with(".gradle")
                                 && !rel_str.starts_with("build/")
                                 && !rel_str.starts_with("buildSrc")
-                            {
-                                if let Some(folder_name) = parent.file_name().and_then(|n| n.to_str()) {
+                                && let Some(folder_name) = parent.file_name().and_then(|n| n.to_str()) {
                                     dir_by_name.insert(folder_name.to_string(), parent.to_path_buf());
                                     dir_by_name.insert(rel_str.replace('/', ":"), parent.to_path_buf());
                                     dir_by_name.insert(rel_str.clone(), parent.to_path_buf());
@@ -313,9 +303,7 @@ fn analyze_crate_dependencies(
                                         projects.push(folder_name.to_string());
                                     }
                                 }
-                            }
                         }
-                    }
                 }
             }
 
@@ -330,7 +318,7 @@ fn analyze_crate_dependencies(
                     workspace_root.join(&sub_rel)
                 } else if let Some(d) = dir_by_name.get(p) {
                     d.clone()
-                } else if let Some(last) = p.split(':').last() {
+                } else if let Some(last) = p.split(':').next_back() {
                     if let Some(d) = dir_by_name.get(last) {
                         d.clone()
                     } else {
@@ -384,7 +372,6 @@ fn analyze_crate_dependencies(
                 adj.insert(proj_name.clone(), (dir.clone(), deps));
             }
         }
-    }
 
     // 4. .NET Multi-Project Workspace (.sln / *.csproj / global.json)
     if adj.is_empty() {
@@ -473,9 +460,9 @@ fn analyze_module_dependencies(
     // Phase 1: Index files
     for entry in walker.flatten() {
         let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "java" | "kt" | "cs" | "swift") {
+        if path.is_file()
+            && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "java" | "kt" | "cs" | "swift") {
                     let rel = path
                         .strip_prefix(workspace_root)
                         .unwrap_or(path)
@@ -486,8 +473,6 @@ fn analyze_module_dependencies(
                     adj.entry(module_name)
                         .or_insert_with(|| (path.to_path_buf(), BTreeSet::new()));
                 }
-            }
-        }
     }
 
     let go_module_name: Option<String> = std::fs::read_to_string(workspace_root.join("go.mod"))
@@ -546,7 +531,7 @@ fn extract_maven_artifact_id(pom_content: &str) -> Option<String> {
 
 fn extract_gradle_project_block(root_content: &str, project_name: &str) -> Option<String> {
     let alt_name = project_name.replace(':', "-");
-    let last_name = project_name.split(':').last().unwrap_or(project_name);
+    let last_name = project_name.split(':').next_back().unwrap_or(project_name);
     let patterns = [
         format!("project(':{project_name}')"),
         format!("project(\":{project_name}\")"),
@@ -726,24 +711,16 @@ fn parse_go_imports(
             continue;
         }
 
-        if in_import_block || trimmed.starts_with("import ") {
-            if let Some(pkg) = extract_quoted_string(trimmed) {
+        if (in_import_block || trimmed.starts_with("import "))
+            && let Some(pkg) = extract_quoted_string(trimmed) {
                 // Only resolve internal workspace packages
                 let target_pkg = if let Some(prefix) = go_module_prefix {
                     if pkg == prefix {
                         Some("")
-                    } else if let Some(rel) = pkg.strip_prefix(&format!("{prefix}/")) {
-                        Some(rel)
-                    } else {
-                        None
-                    }
+                    } else { pkg.strip_prefix(&format!("{prefix}/")) }
                 } else if let Some(rel) = pkg.strip_prefix("./") {
                     Some(rel)
-                } else if let Some(rel) = pkg.strip_prefix("../") {
-                    Some(rel)
-                } else {
-                    None
-                };
+                } else { pkg.strip_prefix("../") };
 
                 if let Some(target_dir) = target_pkg {
                     let target_colon = target_dir.replace('/', "::");
@@ -758,7 +735,6 @@ fn parse_go_imports(
                     }
                 }
             }
-        }
     }
 }
 
@@ -795,11 +771,11 @@ fn parse_ts_imports(
 ) {
     for line in content.lines() {
         let trimmed = line.trim();
-        if (trimmed.starts_with("import ") || trimmed.starts_with("export ")) && trimmed.contains("from ") {
-            if let Some(path) = extract_quoted_string(trimmed) {
+        if (trimmed.starts_with("import ") || trimmed.starts_with("export ")) && trimmed.contains("from ")
+            && let Some(path) = extract_quoted_string(trimmed) {
                 // Only local relative imports: ./ or ../
                 if path.starts_with('.') {
-                    let base = path.split('/').last().unwrap_or(path);
+                    let base = path.split('/').next_back().unwrap_or(path);
                     for m in known_modules.keys() {
                         if m.ends_with(base) {
                             deps.insert(m.clone());
@@ -807,7 +783,6 @@ fn parse_ts_imports(
                     }
                 }
             }
-        }
     }
 }
 
@@ -820,7 +795,7 @@ fn build_graph_report(
     let mut afferent_counts: HashMap<String, usize> = HashMap::new();
     let mut total_edges = 0;
 
-    for (_node, (_, deps)) in &adj {
+    for (_, deps) in adj.values() {
         total_edges += deps.len();
         for dep in deps {
             *afferent_counts.entry(dep.clone()).or_insert(0) += 1;
@@ -862,7 +837,7 @@ fn build_graph_report(
     }
 
     // Sort nodes by coupling (most depended-on first)
-    nodes.sort_by(|a, b| b.afferent_coupling.cmp(&a.afferent_coupling));
+    nodes.sort_by_key(|n| std::cmp::Reverse(n.afferent_coupling));
 
     Ok(DependencyGraphReport {
         scope: scope.to_string(),

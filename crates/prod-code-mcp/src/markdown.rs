@@ -188,8 +188,8 @@ fn validate_yaml_frontmatter(lines: &[&str], diagnostics: &mut Vec<DocDiagnostic
         if !line.starts_with(' ') && !trimmed.starts_with('-') {
             if let Some((key, _)) = trimmed.split_once(':') {
                 let k = key.trim();
-                if !k.is_empty() {
-                    if !seen_top_keys.insert(k.to_string()) {
+                if !k.is_empty()
+                    && !seen_top_keys.insert(k.to_string()) {
                         diagnostics.push(DocDiagnostic {
                             severity: "error".to_string(),
                             message: format!("duplicate frontmatter key `{k}`"),
@@ -201,7 +201,6 @@ fn validate_yaml_frontmatter(lines: &[&str], diagnostics: &mut Vec<DocDiagnostic
                             note: None,
                         });
                     }
-                }
             } else {
                 diagnostics.push(DocDiagnostic {
                     severity: "error".to_string(),

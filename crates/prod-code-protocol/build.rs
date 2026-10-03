@@ -40,32 +40,28 @@ fn main() {
         );
     }
 
-    if let Ok(output) = std::process::Command::new("git")
+    if let Some(ref_rel) = std::process::Command::new("git")
         .args(["symbolic-ref", "-q", "HEAD"])
         .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|ref_name| ref_name.trim().to_string())
+        .filter(|ref_rel| !ref_rel.is_empty())
     {
-        if output.status.success() {
-            if let Ok(ref_name) = String::from_utf8(output.stdout) {
-                let ref_rel = ref_name.trim();
-                if !ref_rel.is_empty() {
-                    if let Some(ref common) = common_dir {
-                        let common_path = std::path::Path::new(common);
-                        println!(
-                            "cargo:rerun-if-changed={}",
-                            common_path.join(ref_rel).display()
-                        );
-                    }
-                    if let Some(ref dir) = git_dir {
-                        if common_dir.as_deref() != Some(dir.as_str()) {
-                            let dir_path = std::path::Path::new(dir);
-                            println!(
-                                "cargo:rerun-if-changed={}",
-                                dir_path.join(ref_rel).display()
-                            );
-                        }
-                    }
-                }
-            }
+        if let Some(ref common) = common_dir {
+            let common_path = std::path::Path::new(common);
+            println!(
+                "cargo:rerun-if-changed={}",
+                common_path.join(&ref_rel).display()
+            );
+        }
+        if let Some(ref dir) = git_dir.filter(|dir| common_dir.as_deref() != Some(dir.as_str())) {
+            let dir_path = std::path::Path::new(dir);
+            println!(
+                "cargo:rerun-if-changed={}",
+                dir_path.join(&ref_rel).display()
+            );
         }
     }
     let commit = std::env::var("PROD_CODE_GIT_COMMIT").ok().or_else(|| {

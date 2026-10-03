@@ -76,10 +76,10 @@ pub fn find_duplicates(
 
     for entry in walker.flatten() {
         let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "cpp" | "c" | "swift" | "java" | "kt" | "kts" | "cs" | "scala" | "zig" | "nim" | "d" | "php" | "rb" | "dart" | "lua" | "ex" | "exs") {
-                    if let Ok(raw_content) = std::fs::read_to_string(path) {
+        if path.is_file()
+            && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "cpp" | "c" | "swift" | "java" | "kt" | "kts" | "cs" | "scala" | "zig" | "nim" | "d" | "php" | "rb" | "dart" | "lua" | "ex" | "exs")
+                    && let Ok(raw_content) = std::fs::read_to_string(path) {
                         files_scanned += 1;
                         let rel_path = path
                             .strip_prefix(workspace_root)
@@ -106,7 +106,7 @@ pub fn find_duplicates(
                                 // Filter out windows with too many empty/trivial lines
                                 let window = &norm_ref[i..i + options.min_lines];
                                 let non_empty = window.iter().filter(|l| !l.is_empty()).count();
-                                if non_empty >= options.min_lines / 2 + 1 {
+                                if non_empty > options.min_lines / 2 {
                                     let mut hasher = DefaultHasher::new();
                                     for line in window {
                                         line.hash(&mut hasher);
@@ -121,9 +121,6 @@ pub fn find_duplicates(
                             }
                         }
                     }
-                }
-            }
-        }
     }
 
     // Filter windows with >= 2 occurrences from distinct locations
@@ -178,7 +175,7 @@ pub fn find_duplicates(
     }
 
     // Merge and rank groups
-    raw_groups.sort_by(|a, b| b.occurrences.len().cmp(&a.occurrences.len()));
+    raw_groups.sort_by_key(|g| std::cmp::Reverse(g.occurrences.len()));
     let groups: Vec<CloneGroup> = raw_groups.into_iter().take(options.max_groups).collect();
 
     let duplicated_lines: usize = groups.iter().map(|g| g.line_count * g.occurrences.len()).sum();
@@ -225,9 +222,9 @@ fn normalize_line(line: &str, parameterized: bool) -> String {
 
     // Parameterized normalization: normalize variable names to $id and literals to $lit
     let mut result = String::with_capacity(code_part.len());
-    let mut words = code_part.split_whitespace().peekable();
+    let words = code_part.split_whitespace();
 
-    while let Some(word) = words.next() {
+    for word in words {
         if is_numeric_literal(word) {
             result.push_str("$lit ");
         } else if word.starts_with('"') && word.ends_with('"') {

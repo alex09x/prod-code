@@ -2635,8 +2635,8 @@ async fn handle_references(
 
     let name_opt = line_text.as_deref().and_then(|t| name_at(t, character));
 
-    if let Some(ref name) = name_opt {
-        if let Some(note) = collect_multi_target_references(
+    if let Some(ref name) = name_opt
+        && let Some(note) = collect_multi_target_references(
             remote,
             workspace_root,
             &file_path,
@@ -2654,7 +2654,6 @@ async fn handle_references(
         {
             out.push_str(&note);
         }
-    }
 
     if all_locs.is_empty()
         && let Some((built, note)) = build_swift_index(remote, workspace_root, &file_path).await
@@ -2912,6 +2911,7 @@ fn add_locations(
 /// to the target declaration via `textDocument/definition`, queries references from that target's context
 /// to capture all call sites in live adapters and secondary targets. Also collects unindexed call sites
 /// for warning reporting.
+#[allow(clippy::too_many_arguments)]
 async fn collect_multi_target_references(
     remote: SocketAddr,
     workspace_root: &Path,
@@ -3052,13 +3052,12 @@ async fn collect_multi_target_references(
                 }
                 break;
             } else {
-                if let Some(ref found) = found_def {
-                    if found.as_array().is_some_and(|a| !a.is_empty()) || found.is_object() {
+                if let Some(ref found) = found_def
+                    && (found.as_array().is_some_and(|a| !a.is_empty()) || found.is_object()) {
                         // The name means another item in this file.
                         break;
                     }
-                }
-                let has_no_def = found_def.as_ref().map_or(true, |f| {
+                let has_no_def = found_def.as_ref().is_none_or(|f| {
                     f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object()
                 });
                 if !is_declaration_file && has_no_def && writes_call(&text, name) {
