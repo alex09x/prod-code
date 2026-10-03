@@ -91,14 +91,15 @@ impl AssertionEvidence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FailureDossier {
+    #[serde(alias = "failing_test")]
     pub test: String,
     pub output: String,
     pub sites: Vec<FailureSite>,
     /// Changed functions whose callers reach this test, nearest first, with the hops and the
     /// diff of their file when no site above already shows it.
-    #[serde(default)]
+    #[serde(default, alias = "suspect_recent_changes")]
     pub suspects: Vec<Suspect>,
     /// Optional backward-compatible structured runtime assertion evidence.
     #[serde(
@@ -108,6 +109,53 @@ pub struct FailureDossier {
         alias = "structured_assertion"
     )]
     pub assertion: Option<AssertionEvidence>,
+    /// Exact line of the failure/panic from the stack trace or failure site (Roadmap 8.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panic_line: Option<u32>,
+    /// Extracted assertion expression or condition under test (Roadmap 8.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+}
+
+impl Serialize for FailureDossier {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("FailureDossier", 11)?;
+        state.serialize_field("test", &self.test)?;
+        state.serialize_field("failing_test", &self.test)?;
+        state.serialize_field("output", &self.output)?;
+        state.serialize_field("sites", &self.sites)?;
+        state.serialize_field("suspects", &self.suspects)?;
+        state.serialize_field("suspect_recent_changes", &self.suspects)?;
+        if let Some(ref a) = self.assertion {
+            state.serialize_field("assertion", a)?;
+            state.serialize_field("runtime_values", a)?;
+        }
+        if let Some(p) = self.panic_line {
+            state.serialize_field("panic_line", &p)?;
+        }
+        if let Some(ref e) = self.expression {
+            state.serialize_field("expression", e)?;
+        }
+        state.end()
+    }
+}
+
+impl FailureDossier {
+    pub fn failing_test(&self) -> &str {
+        &self.test
+    }
+
+    pub fn runtime_values(&self) -> Option<&AssertionEvidence> {
+        self.assertion.as_ref()
+    }
+
+    pub fn suspect_recent_changes(&self) -> &[Suspect] {
+        &self.suspects
+    }
 }
 
 /// A changed function on the path to a failing test.
@@ -497,12 +545,19 @@ pub async fn diagnose(
             }
             // Only this failure's own output: the run's tail holds other tests' assertions.
             let assertion = parse_assertion_evidence(&failure.output);
+            let panic_line = sites
+                .first()
+                .map(|s| s.line)
+                .or_else(|| locations_in_with_hint(root, &failure.output, &failure.name).first().map(|(_, l)| *l));
+            let expression = assertion.as_ref().and_then(|a| a.expression.clone());
             dossiers.push(FailureDossier {
                 test: failure.name.clone(),
                 output: failure.output.clone(),
                 sites,
                 suspects: Vec::new(),
                 assertion,
+                panic_line,
+                expression,
             });
         }
         if let Some(session) = session {
@@ -653,11 +708,12 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Parses structured assertion evidence from one test's failure output: Rust `assert_eq!` /
-/// `assert_ne!` panics, and Node `assert.strictEqual` / `assert.deepStrictEqual` failures as
-/// Node prints the error's own fields, as jest reprints them, or as Node's short `a !== b`
-/// message. A value is taken only where the printed layout shows where it starts and ends; an
-/// incomplete block or a value the printer elided yields `None`. Nothing is evaluated.
+/// Parses structured assertion evidence from one test's failure output across polyglot runners:
+/// Rust `assert_eq!` / `assert_ne!` panics, Node/TS `assert.strictEqual` / `assert.deepStrictEqual`
+/// (Node, Jest, Vitest), Python pytest and unittest assertions, Go testify and got/want conventions,
+/// Swift XCTest and swift-testing, and C++ GoogleTest and Catch2. A value is taken only where
+/// the printed layout shows where it starts and ends; an incomplete block or an elided value
+/// yields `None`. Nothing is evaluated.
 pub fn parse_assertion_evidence(output: &str) -> Option<AssertionEvidence> {
     if output.trim().is_empty() {
         return None;
@@ -670,6 +726,14 @@ pub fn parse_assertion_evidence(output: &str) -> Option<AssertionEvidence> {
         .or_else(|| parse_node_error_fields(&raw, &stripped))
         .or_else(|| parse_jest_node_assert(&raw, &stripped))
         .or_else(|| parse_node_short_message(&raw, &stripped))
+        .or_else(|| parse_pytest_assertion(&raw, &stripped))
+        .or_else(|| parse_python_unittest_assertion(&raw, &stripped))
+        .or_else(|| parse_go_testify_assertion(&raw, &stripped))
+        .or_else(|| parse_go_got_want_assertion(&raw, &stripped))
+        .or_else(|| parse_swift_xctest_assertion(&raw, &stripped))
+        .or_else(|| parse_swift_testing_assertion(&raw, &stripped))
+        .or_else(|| parse_gtest_assertion(&raw, &stripped))
+        .or_else(|| parse_catch2_assertion(&raw, &stripped))
         .flatten()
 }
 
@@ -1068,6 +1132,422 @@ fn closes(value: &str, rust_chars: bool) -> bool {
     !in_string && open.is_empty()
 }
 
+/// Python pytest assertion parser.
+/// Format: `E   AssertionError: assert left == right` or `E   assert left == right`
+fn parse_pytest_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let (header, rest) = stripped.iter().enumerate().find_map(|(i, line)| {
+        let trimmed = line.trim();
+        let after_e = trimmed.strip_prefix('E')?;
+        if !after_e.starts_with(' ') && !after_e.starts_with('\t') {
+            return None;
+        }
+        let after_e = after_e.trim();
+        let content = if let Some(after) = after_e.strip_prefix("AssertionError: assert ") {
+            after
+        } else if let Some(after) = after_e.strip_prefix("AssertionError:") {
+            after
+        } else if let Some(after) = after_e.strip_prefix("assert ") {
+            after
+        } else {
+            return None;
+        };
+        let content = content.trim();
+        let content = content.strip_prefix("assert ").unwrap_or(content).trim();
+        if content.is_empty() {
+            return None;
+        }
+        Some((i, content))
+    })?;
+
+    let mut end = header;
+    for i in header + 1..stripped.len() {
+        let t = stripped[i].trim();
+        if t.starts_with('E') {
+            end = i;
+        } else {
+            break;
+        }
+    }
+
+    let (left, right, format) = if let Some((l, r)) = rest.split_once(" == ") {
+        (Some(l.trim().to_string()), Some(r.trim().to_string()), "pytest/assert_eq")
+    } else if let Some((l, r)) = rest.split_once(" != ") {
+        (Some(l.trim().to_string()), Some(r.trim().to_string()), "pytest/assert_ne")
+    } else if let Some((l, r)) = rest.split_once(" in ") {
+        (Some(l.trim().to_string()), Some(r.trim().to_string()), "pytest/assert_in")
+    } else if let Some((l, r)) = rest.split_once(" > ") {
+        (Some(l.trim().to_string()), Some(r.trim().to_string()), "pytest/assert_gt")
+    } else if let Some((l, r)) = rest.split_once(" < ") {
+        (Some(l.trim().to_string()), Some(r.trim().to_string()), "pytest/assert_lt")
+    } else {
+        (None, None, "pytest/assert")
+    };
+
+    let operands = match (&left, &right) {
+        (Some(l), Some(r)) => vec![l.clone(), r.clone()],
+        (Some(l), None) => vec![l.clone()],
+        _ => vec![rest.to_string()],
+    };
+
+    Some(Some(AssertionEvidence {
+        format: format.to_string(),
+        expression: Some(format!("assert {rest}")),
+        actual: None,
+        expected: None,
+        left,
+        right,
+        operands,
+        excerpt: raw_excerpt(raw, header, end),
+    }))
+}
+
+/// Python standard unittest assertion parser.
+/// Format: `AssertionError: 1 != 2` (assertEqual) or `AssertionError: False is not true`
+fn parse_python_unittest_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let (header, rest) = stripped.iter().enumerate().find_map(|(i, line)| {
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix("AssertionError: ")?;
+        if rest.starts_with("assert ") {
+            return None;
+        }
+        Some((i, rest.trim()))
+    })?;
+
+    let mut end = header;
+    for i in header + 1..stripped.len() {
+        let t = stripped[i].trim();
+        if t.starts_with('-') || t.starts_with('+') || t.starts_with('?') || (!t.is_empty() && !t.starts_with("Traceback") && !t.starts_with("FAIL:")) {
+            end = i;
+        } else {
+            break;
+        }
+    }
+
+    if let Some((left, right)) = rest.split_once(" != ") {
+        Some(Some(AssertionEvidence {
+            format: "unittest/assertEqual".to_string(),
+            expression: Some(format!("{} == {}", left.trim(), right.trim())),
+            actual: None,
+            expected: None,
+            left: Some(left.trim().to_string()),
+            right: Some(right.trim().to_string()),
+            operands: vec![left.trim().to_string(), right.trim().to_string()],
+            excerpt: raw_excerpt(raw, header, end),
+        }))
+    } else if let Some((left, right)) = rest.split_once(" == ") {
+        Some(Some(AssertionEvidence {
+            format: "unittest/assertNotEqual".to_string(),
+            expression: Some(format!("{} != {}", left.trim(), right.trim())),
+            actual: None,
+            expected: None,
+            left: Some(left.trim().to_string()),
+            right: Some(right.trim().to_string()),
+            operands: vec![left.trim().to_string(), right.trim().to_string()],
+            excerpt: raw_excerpt(raw, header, end),
+        }))
+    } else if rest == "False is not true" {
+        Some(Some(AssertionEvidence {
+            format: "unittest/assertTrue".to_string(),
+            expression: Some("assertTrue".to_string()),
+            actual: Some("False".to_string()),
+            expected: Some("True".to_string()),
+            left: Some("False".to_string()),
+            right: Some("True".to_string()),
+            operands: vec!["False".to_string(), "True".to_string()],
+            excerpt: raw_excerpt(raw, header, end),
+        }))
+    } else if rest == "True is not false" {
+        Some(Some(AssertionEvidence {
+            format: "unittest/assertFalse".to_string(),
+            expression: Some("assertFalse".to_string()),
+            actual: Some("True".to_string()),
+            expected: Some("False".to_string()),
+            left: Some("True".to_string()),
+            right: Some("False".to_string()),
+            operands: vec!["True".to_string(), "False".to_string()],
+            excerpt: raw_excerpt(raw, header, end),
+        }))
+    } else {
+        Some(Some(AssertionEvidence {
+            format: "unittest/AssertionError".to_string(),
+            expression: Some(rest.to_string()),
+            actual: None,
+            expected: None,
+            left: None,
+            right: None,
+            operands: vec![rest.to_string()],
+            excerpt: raw_excerpt(raw, header, end),
+        }))
+    }
+}
+
+/// Go testify assertion parser.
+/// Format: `Error: Not equal:\n expected: 1\n actual : 2`
+fn parse_go_testify_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let header = stripped.iter().position(|l| {
+        let t = l.trim();
+        (t.contains("Error:") && (t.contains("Not equal") || t.contains("Equal values expected")))
+            || (t.contains("expected:") && stripped.iter().any(|s| s.contains("actual")))
+    })?;
+
+    let mut expected = None;
+    let mut actual = None;
+    let mut end = header;
+    for i in header..stripped.len().min(header + 12) {
+        let trimmed = stripped[i].trim();
+        if let Some((_, val)) = trimmed.split_once("expected:") {
+            expected = Some(val.trim().to_string());
+            end = end.max(i);
+        } else if let Some((_, val)) = trimmed.split_once("actual") {
+            let val = val.trim_start();
+            if let Some(val) = val.strip_prefix(':') {
+                actual = Some(val.trim().to_string());
+                end = end.max(i);
+            }
+        }
+    }
+
+    let (exp, act) = (expected?, actual?);
+    Some(Some(AssertionEvidence {
+        format: "testify/assert".to_string(),
+        expression: Some("expected == actual".to_string()),
+        actual: Some(act.clone()),
+        expected: Some(exp.clone()),
+        left: Some(act.clone()),
+        right: Some(exp.clone()),
+        operands: vec![act, exp],
+        excerpt: raw_excerpt(raw, header, end),
+    }))
+}
+
+/// Standard Go test assertion parser.
+/// Format: `got 1, want 2` or `got: 1, expected: 2`
+fn parse_go_got_want_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let (header, got, want) = stripped.iter().enumerate().find_map(|(i, line)| {
+        let t = line.trim();
+        if !t.contains("got") || (!t.contains("want") && !t.contains("expected")) {
+            return None;
+        }
+        let got_idx = t.find("got")?;
+        let want_idx = t.find("want").or_else(|| t.find("expected"))?;
+        if got_idx >= want_idx {
+            return None;
+        }
+
+        let got_part = &t[got_idx..want_idx];
+        let want_part = &t[want_idx..];
+
+        let got_val = got_part
+            .strip_prefix("got:")
+            .or_else(|| got_part.strip_prefix("got"))?
+            .trim()
+            .trim_end_matches([',', ';', ':'])
+            .trim();
+
+        let want_val = want_part
+            .strip_prefix("want:")
+            .or_else(|| want_part.strip_prefix("want"))
+            .or_else(|| want_part.strip_prefix("expected:"))
+            .or_else(|| want_part.strip_prefix("expected"))?
+            .trim()
+            .trim_end_matches([',', ';', '.'])
+            .trim();
+
+        if got_val.is_empty() || want_val.is_empty() {
+            return None;
+        }
+
+        Some((i, got_val.to_string(), want_val.to_string()))
+    })?;
+
+    Some(Some(AssertionEvidence {
+        format: "go/got_want".to_string(),
+        expression: Some("got == want".to_string()),
+        actual: Some(got.clone()),
+        expected: Some(want.clone()),
+        left: Some(got.clone()),
+        right: Some(want.clone()),
+        operands: vec![got, want],
+        excerpt: raw[header].to_string(),
+    }))
+}
+
+/// Swift XCTest assertion parser.
+/// Format: `XCTAssertEqual failed: ("1") is not equal to ("2")`
+fn parse_swift_xctest_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let (header, is_eq, left, right) = stripped.iter().enumerate().find_map(|(i, line)| {
+        let t = line.trim();
+        if let Some((_, rest)) = t.split_once("XCTAssertEqual failed: (\"") {
+            let (l, r_rest) = rest.split_once("\") is not equal to (\"")?;
+            let r = r_rest.split_once("\")")?.0;
+            Some((i, true, l.to_string(), r.to_string()))
+        } else if let Some((_, rest)) = t.split_once("XCTAssertNotEqual failed: (\"") {
+            let (l, r_rest) = rest.split_once("\") is equal to (\"")?;
+            let r = r_rest.split_once("\")")?.0;
+            Some((i, false, l.to_string(), r.to_string()))
+        } else {
+            None
+        }
+    })?;
+
+    Some(Some(AssertionEvidence {
+        format: if is_eq { "XCTAssertEqual" } else { "XCTAssertNotEqual" }.to_string(),
+        expression: Some(if is_eq { "left == right" } else { "left != right" }.to_string()),
+        actual: None,
+        expected: None,
+        left: Some(left.clone()),
+        right: Some(right.clone()),
+        operands: vec![left, right],
+        excerpt: raw[header].to_string(),
+    }))
+}
+
+/// Swift Testing framework assertion parser (Swift 6+).
+/// Format: `Expectation failed: (left → 1) == (right → 2)`
+fn parse_swift_testing_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let (header, rest) = stripped.iter().enumerate().find_map(|(i, line)| {
+        let t = line.trim();
+        let rest = t.split_once("Expectation failed: ")?.1.trim();
+        Some((i, rest))
+    })?;
+
+    fn clean_op(s: &str) -> String {
+        let s = s.trim().trim_start_matches('(').trim_end_matches(')');
+        if let Some((_, val)) = s.split_once('→') {
+            val.trim().to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    let (left, right) = if let Some((l, r)) = rest.split_once(" == ") {
+        (Some(clean_op(l)), Some(clean_op(r)))
+    } else if let Some((l, r)) = rest.split_once(" != ") {
+        (Some(clean_op(l)), Some(clean_op(r)))
+    } else {
+        (None, None)
+    };
+
+    let operands = match (&left, &right) {
+        (Some(l), Some(r)) => vec![l.clone(), r.clone()],
+        _ => vec![rest.to_string()],
+    };
+
+    Some(Some(AssertionEvidence {
+        format: "swift-testing".to_string(),
+        expression: Some(rest.to_string()),
+        actual: None,
+        expected: None,
+        left,
+        right,
+        operands,
+        excerpt: raw[header].to_string(),
+    }))
+}
+
+/// C++ GoogleTest (gtest) assertion parser.
+fn parse_gtest_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    if let Some(header) = stripped.iter().position(|l| l.trim() == "Expected equality of these values:") {
+        let mut which = Vec::new();
+        let mut end = header;
+        for i in header + 1..stripped.len().min(header + 8) {
+            let line = stripped[i].trim();
+            if let Some((_, val)) = line.split_once("Which is:") {
+                which.push(val.trim().to_string());
+                end = i;
+            }
+        }
+        if which.len() >= 2 {
+            let left = which[0].clone();
+            let right = which[1].clone();
+            return Some(Some(AssertionEvidence {
+                format: "gtest/EXPECT_EQ".to_string(),
+                expression: Some("left == right".to_string()),
+                actual: None,
+                expected: None,
+                left: Some(left.clone()),
+                right: Some(right.clone()),
+                operands: vec![left, right],
+                excerpt: raw_excerpt(raw, header, end),
+            }));
+        }
+    }
+
+    if let Some((header, expr)) = stripped.iter().enumerate().find_map(|(i, l)| {
+        let t = l.trim();
+        let expr = t.strip_prefix("Value of: ")?;
+        Some((i, expr.trim()))
+    }) {
+        let mut actual = None;
+        let mut expected = None;
+        let mut end = header;
+        for i in header + 1..stripped.len().min(header + 6) {
+            let line = stripped[i].trim();
+            if let Some((_, val)) = line.split_once("Actual:") {
+                actual = Some(val.trim().to_string());
+                end = end.max(i);
+            } else if let Some((_, val)) = line.split_once("Expected:") {
+                expected = Some(val.trim().to_string());
+                end = end.max(i);
+            }
+        }
+        if let (Some(act), Some(exp)) = (actual, expected) {
+            return Some(Some(AssertionEvidence {
+                format: "gtest".to_string(),
+                expression: Some(expr.to_string()),
+                actual: Some(act.clone()),
+                expected: Some(exp.clone()),
+                left: Some(act.clone()),
+                right: Some(exp.clone()),
+                operands: vec![act, exp],
+                excerpt: raw_excerpt(raw, header, end),
+            }));
+        }
+    }
+
+    None
+}
+
+/// C++ Catch2 assertion parser.
+fn parse_catch2_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let (header, expr) = stripped.iter().enumerate().find_map(|(i, l)| {
+        let t = l.trim();
+        let expr = if let Some(e) = t.strip_prefix("CHECK(").or_else(|| t.strip_prefix("REQUIRE(")) {
+            e.strip_suffix(')')?
+        } else {
+            return None;
+        };
+        Some((i, expr.trim()))
+    })?;
+
+    if header + 2 < stripped.len() && stripped[header + 1].trim().contains("with expansion:") {
+        let expansion = stripped[header + 2].trim();
+        let (left, right) = if let Some((l, r)) = expansion.split_once(" == ") {
+            (Some(l.trim().to_string()), Some(r.trim().to_string()))
+        } else if let Some((l, r)) = expansion.split_once(" != ") {
+            (Some(l.trim().to_string()), Some(r.trim().to_string()))
+        } else {
+            (None, None)
+        };
+        let operands = match (&left, &right) {
+            (Some(l), Some(r)) => vec![l.clone(), r.clone()],
+            _ => vec![expansion.to_string()],
+        };
+        return Some(Some(AssertionEvidence {
+            format: "catch2".to_string(),
+            expression: Some(expr.to_string()),
+            actual: None,
+            expected: None,
+            left,
+            right,
+            operands,
+            excerpt: raw_excerpt(raw, header, header + 2),
+        }));
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1411,11 +1891,115 @@ mod tests {
     }
 
     #[test]
-    fn pytest_and_testify_output_is_not_parsed() {
-        let pytest = "def test_f():\n>       assert result == expected\nE       assert result == expected\n\ntest_f.py:2: AssertionError\n";
-        assert_eq!(parse_assertion_evidence(pytest), None);
+    fn parses_pytest_assertions() {
+        let pytest = "def test_f():\n>       assert result == expected\nE       assert 1 == 2\n\ntest_f.py:2: AssertionError\n";
+        let ev = parse_assertion_evidence(pytest).expect("parsed pytest");
+        assert_eq!(ev.format, "pytest/assert_eq");
+        assert_eq!(ev.left.as_deref(), Some("1"));
+        assert_eq!(ev.right.as_deref(), Some("2"));
+        assert_eq!(ev.expression.as_deref(), Some("assert 1 == 2"));
+
+        let pytest_in = "def test_f():\n>       assert 'a' in 'xyz'\nE       assert 'a' in 'xyz'\n\ntest_f.py:2: AssertionError\n";
+        let ev_in = parse_assertion_evidence(pytest_in).expect("parsed pytest in");
+        assert_eq!(ev_in.format, "pytest/assert_in");
+        assert_eq!(ev_in.left.as_deref(), Some("'a'"));
+        assert_eq!(ev_in.right.as_deref(), Some("'xyz'"));
+    }
+
+    #[test]
+    fn parses_unittest_assertions() {
+        let unittest = "Traceback (most recent call last):\n  File \"test_x.py\", line 5, in test_foo\n    self.assertEqual(a, b)\nAssertionError: 1 != 2\n";
+        let ev = parse_assertion_evidence(unittest).expect("parsed unittest");
+        assert_eq!(ev.format, "unittest/assertEqual");
+        assert_eq!(ev.left.as_deref(), Some("1"));
+        assert_eq!(ev.right.as_deref(), Some("2"));
+
+        let unittest_bool = "Traceback (most recent call last):\n  File \"test_x.py\", line 5, in test_bar\n    self.assertTrue(False)\nAssertionError: False is not true\n";
+        let ev_bool = parse_assertion_evidence(unittest_bool).expect("parsed unittest assertTrue");
+        assert_eq!(ev_bool.format, "unittest/assertTrue");
+        assert_eq!(ev_bool.actual.as_deref(), Some("False"));
+        assert_eq!(ev_bool.expected.as_deref(), Some("True"));
+    }
+
+    #[test]
+    fn parses_go_assertions() {
         let testify = "    foo_test.go:12:\n        \tError:      \tNot equal:\n        \t            \texpected: 1\n        \t            \tactual  : 2\n        \tTest:       \tTestFoo\n";
-        assert_eq!(parse_assertion_evidence(testify), None);
+        let ev = parse_assertion_evidence(testify).expect("parsed testify");
+        assert_eq!(ev.format, "testify/assert");
+        assert_eq!(ev.actual.as_deref(), Some("2"));
+        assert_eq!(ev.expected.as_deref(), Some("1"));
+
+        let got_want = "    bar_test.go:20: got: 42, want: 100\n";
+        let ev2 = parse_assertion_evidence(got_want).expect("parsed go got/want");
+        assert_eq!(ev2.format, "go/got_want");
+        assert_eq!(ev2.actual.as_deref(), Some("42"));
+        assert_eq!(ev2.expected.as_deref(), Some("100"));
+    }
+
+    #[test]
+    fn parses_swift_assertions() {
+        let xctest = "Test Case '-[FooTests testBar]' started.\n/path/FooTests.swift:15: error: -[FooTests testBar] : XCTAssertEqual failed: (\"hello\") is not equal to (\"world\")\n";
+        let ev = parse_assertion_evidence(xctest).expect("parsed XCTest");
+        assert_eq!(ev.format, "XCTAssertEqual");
+        assert_eq!(ev.left.as_deref(), Some("hello"));
+        assert_eq!(ev.right.as_deref(), Some("world"));
+
+        let swift_testing = "Expectation failed: (count → 0) == (expected → 5)\n";
+        let ev2 = parse_assertion_evidence(swift_testing).expect("parsed swift-testing");
+        assert_eq!(ev2.format, "swift-testing");
+        assert_eq!(ev2.left.as_deref(), Some("0"));
+        assert_eq!(ev2.right.as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn parses_cpp_assertions() {
+        let gtest = "foo_test.cc:10: Failure\nExpected equality of these values:\n  x\n    Which is: 10\n  y\n    Which is: 20\n";
+        let ev = parse_assertion_evidence(gtest).expect("parsed gtest");
+        assert_eq!(ev.format, "gtest/EXPECT_EQ");
+        assert_eq!(ev.left.as_deref(), Some("10"));
+        assert_eq!(ev.right.as_deref(), Some("20"));
+
+        let catch2 = "CHECK( result == 42 )\nwith expansion:\n  0 == 42\n";
+        let ev2 = parse_assertion_evidence(catch2).expect("parsed catch2");
+        assert_eq!(ev2.format, "catch2");
+        assert_eq!(ev2.left.as_deref(), Some("0"));
+        assert_eq!(ev2.right.as_deref(), Some("42"));
+        assert_eq!(ev2.expression.as_deref(), Some("result == 42"));
+    }
+
+    #[test]
+    fn failure_dossier_serializes_roadmap_fields() {
+        let dossier = FailureDossier {
+            test: "test_failure".to_string(),
+            panic_line: Some(42),
+            expression: Some("left == right".to_string()),
+            output: "test failed".to_string(),
+            sites: vec![],
+            assertion: Some(AssertionEvidence {
+                format: "assert_eq".to_string(),
+                expression: Some("left == right".to_string()),
+                actual: None,
+                expected: None,
+                left: Some("1".to_string()),
+                right: Some("2".to_string()),
+                operands: vec!["1".to_string(), "2".to_string()],
+                excerpt: "assertion `left == right` failed".to_string(),
+            }),
+            suspects: vec![Suspect {
+                function: "do_something".to_string(),
+                file: "src/lib.rs".to_string(),
+                line: 10,
+                hops: 1,
+                diff: None,
+            }],
+        };
+        let json = serde_json::to_value(&dossier).expect("serialize dossier");
+        assert_eq!(json.get("failing_test").and_then(|v| v.as_str()), Some("test_failure"));
+        assert_eq!(json.get("test").and_then(|v| v.as_str()), Some("test_failure"));
+        assert_eq!(json.get("panic_line").and_then(|v| v.as_u64()), Some(42));
+        assert_eq!(json.get("expression").and_then(|v| v.as_str()), Some("left == right"));
+        assert!(json.get("runtime_values").is_some());
+        assert!(json.get("suspect_recent_changes").is_some());
     }
 
     #[test]

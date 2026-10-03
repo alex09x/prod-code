@@ -2316,6 +2316,8 @@ async fn dossier_report_render_includes_the_caller_list_and_the_diff() {
                 diff: Some("@@ -2 +2 @@\n-    a + b\n+    a + b + 1\n".to_string()),
             }],
             assertion: None,
+            panic_line: Some(3),
+            expression: None,
         }],
         build_errors: vec![],
         suggested_fixes: vec![],
