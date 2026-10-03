@@ -731,9 +731,9 @@ const SEEDED_BUILD_DIRS: &[&str] = &["deps", "build", ".fingerprint"];
 
 /// Free and total bytes of a filesystem.
 #[derive(Debug, Clone, Copy)]
-struct DiskSpace {
-    free: u64,
-    total: u64,
+pub struct DiskSpace {
+    pub free: u64,
+    pub total: u64,
 }
 
 /// The share of its filesystem a seed must leave free (#419): above the janitor's 15% prune
@@ -744,7 +744,7 @@ const SEED_MIN_FREE_SHARE: f64 = 0.20;
 /// Whether copying `size` bytes of `what` fits in `space`: twice the size free, and a fifth of
 /// the filesystem still free afterwards. A copy that does not fit is logged as skipped: the
 /// worktree's first build or install is then slower, not broken (#419).
-fn seed_fits(what: &str, size: u64, space: Option<DiskSpace>) -> bool {
+pub fn seed_fits(what: &str, size: u64, space: Option<DiskSpace>) -> bool {
     let Some(space) = space else {
         return false;
     };
@@ -1003,7 +1003,7 @@ fn tree_size(dir: &std::path::Path) -> u64 {
 }
 
 /// Free and total bytes of the filesystem that holds `path` (or its nearest existing parent).
-fn disk_space(path: &std::path::Path) -> Option<DiskSpace> {
+pub fn disk_space(path: &std::path::Path) -> Option<DiskSpace> {
     use std::os::unix::ffi::OsStrExt;
     let existing = path.ancestors().find(|p| p.exists())?;
     let c_path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
@@ -7858,6 +7858,13 @@ async fn janitor(
             });
             let _ = tokio::task::spawn_blocking(move || sweep_ram_build_caches(&build_cache_base)).await;
         }
+        let _ = tokio::task::spawn_blocking(|| {
+            let _ = swift_cache::prune_stale_module_cache(
+                std::time::Duration::from_secs(7 * 86400),
+                10 * 1024 * 1024 * 1024,
+            );
+        })
+        .await;
     }
 }
 
@@ -7879,6 +7886,14 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     // Probe once here, while nothing is waiting on us, rather than on the first request.
     let engines = refresh_available_engines();
     tracing::info!(?engines, "engines detected");
+
+    let _ = tokio::task::spawn_blocking(|| {
+        let _ = swift_cache::prune_stale_module_cache(
+            std::time::Duration::from_secs(7 * 86400),
+            10 * 1024 * 1024 * 1024,
+        );
+    })
+    .await;
 
     tracing::info!(
         "prod-code gateway daemon starting on {} (storage: {:?})",
