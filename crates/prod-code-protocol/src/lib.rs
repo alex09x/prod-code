@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod discovery;
+pub mod dns;
 pub mod messages;
 pub mod negotiation;
 pub mod path;

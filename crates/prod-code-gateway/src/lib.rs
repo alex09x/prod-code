@@ -7428,6 +7428,8 @@ async fn discovery_loop(state: Arc<ServerState>) {
                             drop(cluster);
                             let payload = discovery::build_reply(&own_line, &peer_lines);
                             let _ = tok_sock.send_to(&payload, from).await;
+                        } else if let Some(dns_resp) = handle_gateway_dns_query(&buf[..n], &state).await {
+                            let _ = tok_sock.send_to(&dns_resp, from).await;
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -7447,6 +7449,83 @@ async fn discovery_loop(state: Arc<ServerState>) {
             }
         }
     }
+}
+
+/// Handles incoming DNS queries (*.code.internal, _prod-code._tcp) over UDP on port 9401 (Phase 5.2).
+async fn handle_gateway_dns_query(buf: &[u8], state: &ServerState) -> Option<Vec<u8>> {
+    use prod_code_protocol::dns::handle_dns_packet;
+    use prod_code_protocol::discovery::{DiscoveredNode, LoadedWorkspace};
+
+    let own_advertise = state.advertise.read().await.clone();
+    let own_addr: SocketAddr = own_advertise.parse().ok()?;
+    let own_engines: Vec<String> = state
+        .advertised_engines()
+        .iter()
+        .map(|e| e.split(' ').next().unwrap_or(e).to_string())
+        .collect();
+    let status = state.status().await;
+    let ws_summary = state.workspace_manager.loaded_summary().await;
+    let own_workspaces: Vec<LoadedWorkspace> = ws_summary
+        .into_iter()
+        .map(|(name, engine, sessions)| LoadedWorkspace {
+            name,
+            engine,
+            sessions: sessions as u32,
+        })
+        .collect();
+
+    let mut nodes = vec![DiscoveredNode {
+        addr: own_addr,
+        engines: own_engines,
+        rss_mb: status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
+        load_per_cpu: status.load_per_cpu().unwrap_or(0.0),
+        cpus: status.cpu_count.unwrap_or(0) as u32,
+        mem_total_mb: status.host.memory_total_bytes.unwrap_or(0) / (1024 * 1024),
+        mem_avail_mb: status.host.memory_available_bytes.unwrap_or(0) / (1024 * 1024),
+        sessions: state.active_sessions.load(std::sync::atomic::Ordering::Relaxed) as u32,
+        workspaces: own_workspaces,
+        nonce: None,
+    }];
+
+    let cluster = state.cluster.read().await;
+    for entry in cluster.values() {
+        if entry.last_seen.elapsed() < std::time::Duration::from_secs(30) {
+            if let Ok(addr) = entry.gossip.addr.parse::<SocketAddr>() {
+                let eng: Vec<String> = entry
+                    .gossip
+                    .status
+                    .detected_engines
+                    .iter()
+                    .map(|en| en.split(' ').next().unwrap_or(en).to_string())
+                    .collect();
+                let peer_workspaces: Vec<LoadedWorkspace> = entry
+                    .gossip
+                    .workspaces
+                    .iter()
+                    .map(|w| LoadedWorkspace {
+                        name: w.name.clone(),
+                        engine: w.engine.clone(),
+                        sessions: w.sessions as u32,
+                    })
+                    .collect();
+                nodes.push(DiscoveredNode {
+                    addr,
+                    engines: eng,
+                    rss_mb: entry.gossip.status.memory_rss_bytes.unwrap_or(0) / (1024 * 1024),
+                    load_per_cpu: entry.gossip.status.load_per_cpu().unwrap_or(0.0),
+                    cpus: entry.gossip.status.cpu_count.unwrap_or(0) as u32,
+                    mem_total_mb: entry.gossip.status.host.memory_total_bytes.unwrap_or(0) / (1024 * 1024),
+                    mem_avail_mb: entry.gossip.status.host.memory_available_bytes.unwrap_or(0) / (1024 * 1024),
+                    sessions: entry.gossip.workspaces.iter().map(|w| w.sessions as u32).sum(),
+                    workspaces: peer_workspaces,
+                    nonce: None,
+                });
+            }
+        }
+    }
+    drop(cluster);
+
+    handle_dns_packet(buf, &nodes)
 }
 
 /// Build this node's minimal discovery announce line for privacy (endpoint + engines only).
