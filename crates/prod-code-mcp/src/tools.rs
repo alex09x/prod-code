@@ -1111,7 +1111,7 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_source".to_string(),
-            description: "Read a source file that exists only on the gateway host: standard library sources, dependency registries (cargo, go mod cache, node_modules, site-packages) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
+            description: "Read a source file that exists only on the gateway host: standard library sources (Rust std, Go GOROOT, Swift frameworks, system C++ headers), dependency registries and caches (Cargo registry/git, Go pkg/mod, node_modules, npm/bun/pnpm/yarn, Python uv/poetry/pipx/virtualenv wheels) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -6367,6 +6367,20 @@ async fn handle_definition(
                     Err(e) => out.push_str(&format!(
                         "\n   (the definition's code could not be read: {e:#})"
                     )),
+                }
+            } else {
+                let path = crate::remote_fs::uri_to_path(uri);
+                if crate::remote_fs::is_external(workspace_root, &path) {
+                    match crate::remote_fs::read_remote_file(remote, &path, 0).await {
+                        Ok((bytes, _)) => {
+                            let text = String::from_utf8_lossy(&bytes);
+                            out.push('\n');
+                            out.push_str(&crate::remote_fs::snippet(&text, start_line as u32, 8));
+                        }
+                        Err(e) => {
+                            out.push_str(&format!("\n   (external source not readable: {e})"))
+                        }
+                    }
                 }
             }
         }
