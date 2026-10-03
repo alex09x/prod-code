@@ -572,3 +572,126 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
     drop(wt_stdin);
     let _ = wt_child.kill().await;
 }
+
+#[test]
+fn test_seed_cpp_worktree_preserves_sibling_dependency_paths() {
+    let temp_from = tempfile::tempdir().unwrap();
+    let temp_to = tempfile::tempdir().unwrap();
+
+    let from_root = temp_from.path();
+    let to_root = temp_to.path();
+
+    let sibling_dep = format!("{}-deps", from_root.display());
+    let sibling_other = format!("{}other", from_root.display());
+
+    // 1. Setup mock compile_commands.json with sibling paths
+    let from_build = from_root.join("build");
+    std::fs::create_dir_all(&from_build).unwrap();
+    let cdb_content = format!(
+        r#"[
+  {{
+    "directory": "{}/build",
+    "command": "clang++ -I{}/include -I{}/include -I\"{}\" -c {}/src/feed.cpp",
+    "file": "{}/src/feed.cpp"
+  }}
+]"#,
+        from_root.display(),
+        from_root.display(),
+        sibling_dep,
+        sibling_other,
+        from_root.display(),
+        from_root.display()
+    );
+    std::fs::write(from_build.join("compile_commands.json"), cdb_content).unwrap();
+
+    // 2. Setup mock .cache/clangd/index with sibling paths
+    let from_index = from_root.join(".cache").join("clangd").join("index");
+    std::fs::create_dir_all(&from_index).unwrap();
+
+    let source_file = from_root.join("src").join("feed.cpp");
+    let shard_name = shard_filename_for_path(&source_file).unwrap();
+
+    let uncompressed = format!(
+        "\0{}\0file://{}\0{}\0file://{}\0-I{}\0",
+        source_file.display(),
+        source_file.display(),
+        sibling_dep,
+        sibling_dep,
+        sibling_dep
+    );
+    let mut encoder =
+        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(uncompressed.as_bytes()).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let mut stri_data = Vec::new();
+    stri_data.extend_from_slice(&(uncompressed.len() as u32).to_le_bytes());
+    stri_data.extend_from_slice(&compressed);
+
+    let mut riff = Vec::new();
+    riff.extend_from_slice(b"RIFF");
+    let total_len = 4 + 8 + 4 + (8 + stri_data.len());
+    riff.extend_from_slice(&(total_len as u32).to_le_bytes());
+    riff.extend_from_slice(b"CdIx");
+    riff.extend_from_slice(b"meta");
+    riff.extend_from_slice(&4u32.to_le_bytes());
+    riff.extend_from_slice(&21u32.to_le_bytes());
+    riff.extend_from_slice(b"stri");
+    let stri_len = stri_data.len() as u32;
+    riff.extend_from_slice(&stri_len.to_le_bytes());
+    riff.extend_from_slice(&stri_data);
+    if stri_len % 2 != 0 {
+        riff.push(0);
+    }
+
+    std::fs::write(from_index.join(&shard_name), &riff).unwrap();
+
+    // 3. Seed to new worktree
+    let seeded = seed_cpp_worktree(from_root, to_root).unwrap();
+    assert!(seeded.is_some());
+
+    // Verify compile_commands.json in worktree
+    let to_cdb_path = to_root.join("build").join("compile_commands.json");
+    let to_cdb = std::fs::read_to_string(to_cdb_path).unwrap();
+
+    // Worktree paths are relocated
+    assert!(to_cdb.contains(&to_root.display().to_string()));
+    assert!(!to_cdb.contains(&format!("{}/include", from_root.display())));
+
+    // Sibling paths are completely untouched!
+    assert!(to_cdb.contains(&sibling_dep));
+    assert!(to_cdb.contains(&sibling_other));
+
+    // Verify index shard in worktree
+    let to_source_file = to_root.join("src").join("feed.cpp");
+    let expected_to_shard = shard_filename_for_path(&to_source_file).unwrap();
+    let to_shard_path = to_root
+        .join(".cache")
+        .join("clangd")
+        .join("index")
+        .join(&expected_to_shard);
+    let relocated_bytes = std::fs::read(to_shard_path).unwrap();
+
+    let stri_offset = 24;
+    let uncomp_size = u32::from_le_bytes(
+        relocated_bytes[stri_offset + 8..stri_offset + 12]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let mut decoder = flate2::read::ZlibDecoder::new(&relocated_bytes[stri_offset + 12..]);
+    let mut decomp = Vec::with_capacity(uncomp_size);
+    decoder.read_to_end(&mut decomp).unwrap();
+
+    let bytes = decomp.strip_suffix(&[0]).unwrap();
+    let decomp_strings: Vec<String> = bytes
+        .split(|&b| b == 0)
+        .map(|s| String::from_utf8_lossy(s).to_string())
+        .collect();
+
+    assert_eq!(decomp_strings[0], "");
+    assert_eq!(decomp_strings[1], to_source_file.display().to_string());
+    assert_eq!(decomp_strings[2], format!("file://{}", to_source_file.display()));
+    assert_eq!(decomp_strings[3], sibling_dep);
+    assert_eq!(decomp_strings[4], format!("file://{sibling_dep}"));
+    assert_eq!(decomp_strings[5], format!("-I{sibling_dep}"));
+}
