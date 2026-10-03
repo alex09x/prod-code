@@ -7,7 +7,7 @@
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     ClusterResponse, ExecChunk, ExecExit, ExecMetric, HandshakeResponse, MetricsResponse,
-    PROTOCOL_VERSION, PeerInfo, ProdCodeCodec, QueryMetric, ReadFileResponse, SearchHit,
+    PROTOCOL_VERSION, PeerInfo, PlaceResponse, ProdCodeCodec, QueryMetric, ReadFileResponse, SearchHit,
     SearchResponse, ShadowHypothesisResult, ShadowRunResponse, StatusResponse, SyncProbeResponse,
     SyncResponse, WireMessage,
 };
@@ -167,6 +167,18 @@ async fn handle_client(
                             workspaces: vec![],
                             alive: true,
                         }],
+                    }))
+                    .await?;
+            }
+            WireMessage::PlaceRequest(req) => {
+                framed
+                    .send(WireMessage::PlaceResponse(PlaceResponse {
+                        node: Some(local_addr.to_string()),
+                        reason: if req.rebalance_active {
+                            "rebalanced to local mock".to_string()
+                        } else {
+                            "placed on local mock".to_string()
+                        },
                     }))
                     .await?;
             }
@@ -537,6 +549,26 @@ async fn cli_reports_cluster_as_json() {
     assert_eq!(node["detected_engines"][1], "go");
     assert!(snapshot["workspace"].is_string(), "{snapshot}");
     assert_eq!(snapshot["home"], gw.addr.to_string());
+}
+
+#[tokio::test]
+async fn cli_rebalances_cluster_workload_and_reports_as_json() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&stdout_of(&out)).expect("cluster --rebalance --json is one JSON object");
+    assert!(snapshot["rebalanced"].is_object(), "{snapshot}");
+    assert_eq!(snapshot["rebalanced"]["target"], gw.addr.to_string());
+    assert!(snapshot["rebalanced"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("rebalanced to local mock"));
+
+    let out_text = run_cli(&ws, gw.addr, &["cluster", "--rebalance"]).await;
+    assert!(out_text.status.success(), "{}", stderr_of(&out_text));
+    assert!(stdout_of(&out_text).contains("Active workload rebalanced to"));
 }
 
 #[tokio::test]

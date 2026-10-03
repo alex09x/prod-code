@@ -69,6 +69,9 @@ enum Commands {
         /// One JSON object: the gossip view, each node's status or error, and the placement
         #[arg(long)]
         json: bool,
+        /// Force rebalancing of the active workspace to the quietest roomiest node across the cluster.
+        #[arg(long, default_value_t = false)]
+        rebalance: bool,
     },
     /// Inspect DNS and SRV service discovery resolution for *.code.internal or cluster nodes.
     Resolve {
@@ -1858,9 +1861,9 @@ async fn main() -> Result<()> {
     let cwd_engine = lsp_engine.or(cwd_engine);
     startup.mark("engine_project");
 
-    if let Some(Commands::Cluster { json }) = cli.command {
+    if let Some(Commands::Cluster { json, rebalance }) = cli.command {
         startup.report();
-        return run_cluster(&remotes, &placement_key, cwd_engine, json).await;
+        return run_cluster(&remotes, &placement_key, cwd_engine, json, rebalance).await;
     }
     if let Some(Commands::Resolve { domain, json }) = cli.command {
         startup.report();
@@ -1972,7 +1975,9 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Commands::Lsp { language: None }) {
         Commands::Lsp { .. } => run_lsp_bridge(remote, lsp_engine).await,
         Commands::Status { .. } => unreachable!("handled before placement"),
-        Commands::Cluster { json } => run_cluster(&remotes, &placement_key, cwd_engine, json).await,
+        Commands::Cluster { json, rebalance } => {
+            run_cluster(&remotes, &placement_key, cwd_engine, json, rebalance).await
+        }
         Commands::Resolve { domain, json } => run_resolve(&domain, json).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::ReportIssue { .. } => unreachable!("handled before placement"),
@@ -5134,7 +5139,7 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
     let (framed, handshake_resp) =
-        match open_editor_session(remote, engine, &cwd, cwd_str, identity).await {
+        match open_editor_session(remote, engine, &cwd, cwd_str, identity.clone()).await {
             Ok(session) => session,
             Err(err) => return refuse_lsp(&err).await,
         };
@@ -5170,6 +5175,7 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
     // Spawn background task to read responses from server and write LSP to stdout
     let stdout_files = std::sync::Arc::clone(&files);
     let stdout_trace = trace.clone();
+    let stdout_identity = identity.clone();
     // The server's messages and the bridge's own warnings share the editor's stdout.
     let editor_out = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
     let stdout_out = std::sync::Arc::clone(&editor_out);
@@ -5188,6 +5194,13 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
                     {
                         return;
                     }
+                }
+                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                    tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
+                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                        prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
+                    }
+                    break format!("rebalanced to {target_addr}: {}", reason.unwrap_or_default());
                 }
                 Some(Ok(WireMessage::Disconnect { reason })) => {
                     break format!("closed the session: {reason}");
@@ -5273,7 +5286,7 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
 
 /// Connects to the node, pushes the checkout and asks for an editor's session.
 async fn open_editor_session(
-    remote: SocketAddr,
+    mut remote: SocketAddr,
     engine: Option<&str>,
     cwd: &Path,
     cwd_str: String,
@@ -5282,46 +5295,63 @@ async fn open_editor_session(
     Framed<prod_code_protocol::AnyStream, ProdCodeCodec>,
     prod_code_protocol::HandshakeResponse,
 )> {
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
-    let generation = prod_code_mcp::watch::current_generation(cwd);
-    prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
-        .await
-        .context("workspace sync before the language server session failed")?;
-    prod_code_mcp::watch::mark_synced(cwd, generation);
     let supported_versions = supported_protocol_versions();
-    framed
-        .send(WireMessage::HandshakeRequest(HandshakeRequest {
-            protocol_version: PROTOCOL_VERSION,
-            supported_versions: Some(supported_versions.clone()),
-            capabilities: None,
-            client_name: "prod-code-client".to_string(),
-            client_pid: std::process::id(),
-            auth_token: None,
-            client_workspace_root: cwd_str,
-            preferred_engine: engine.map(str::to_string),
-            base_workspace_name: Some(identity.name.clone()),
-            engine_subpath: None,
-            client_agent: Some(prod_code_protocol::detect_client_agent()),
-            client_host: Some(prod_code_protocol::client_host()),
-            purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
-            redirect_count: 0,
-        }))
-        .await?;
-    let handshake_resp = match framed.next().await {
-        Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
-        Some(Ok(WireMessage::Disconnect { reason })) => {
-            anyhow::bail!("the gateway refused the session: {reason}")
-        }
-        Some(Ok(other)) => anyhow::bail!("Expected HandshakeResponse, got {:?}", other),
-        Some(Err(err)) => return Err(err.into()),
-        None => anyhow::bail!("Server closed connection during handshake"),
-    };
-    validate_selected_protocol_version(handshake_resp.protocol_version, &supported_versions)
-        .context("gateway returned an incompatible editor handshake response")?;
-    Ok((framed, handshake_resp))
+    let mut redirect_count = 0;
+    loop {
+        let stream = prod_code_protocol::transport::connect(remote)
+            .await
+            .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        let generation = prod_code_mcp::watch::current_generation(cwd);
+        prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
+            .await
+            .context("workspace sync before the language server session failed")?;
+        prod_code_mcp::watch::mark_synced(cwd, generation);
+        framed
+            .send(WireMessage::HandshakeRequest(HandshakeRequest {
+                protocol_version: PROTOCOL_VERSION,
+                supported_versions: Some(supported_versions.clone()),
+                capabilities: None,
+                client_name: "prod-code-client".to_string(),
+                client_pid: std::process::id(),
+                auth_token: None,
+                client_workspace_root: cwd_str.clone(),
+                preferred_engine: engine.map(str::to_string),
+                base_workspace_name: Some(identity.name.clone()),
+                engine_subpath: None,
+                client_agent: Some(prod_code_protocol::detect_client_agent()),
+                client_host: Some(prod_code_protocol::client_host()),
+                purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+                redirect_count,
+            }))
+            .await?;
+        let handshake_resp = match framed.next().await {
+            Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+            Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                redirect_count += 1;
+                if redirect_count > 3 {
+                    anyhow::bail!("too many gateway redirects: {reason:?}");
+                }
+                tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
+                if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                    remote = addr;
+                    prod_code_mcp::cluster::remember_placement(&identity.name, remote);
+                    continue;
+                } else {
+                    anyhow::bail!("invalid redirect target address: {target_addr}");
+                }
+            }
+            Some(Ok(WireMessage::Disconnect { reason })) => {
+                anyhow::bail!("the gateway refused the session: {reason}")
+            }
+            Some(Ok(other)) => anyhow::bail!("Expected HandshakeResponse, got {:?}", other),
+            Some(Err(err)) => return Err(err.into()),
+            None => anyhow::bail!("Server closed connection during handshake"),
+        };
+        validate_selected_protocol_version(handshake_resp.protocol_version, &supported_versions)
+            .context("gateway returned an incompatible editor handshake response")?;
+        return Ok((framed, handshake_resp));
+    }
 }
 
 async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
@@ -5577,6 +5607,7 @@ async fn cluster_snapshot(
     nodes: &[SocketAddr],
     workspace_name: &str,
     engine: Option<&str>,
+    rebalance: bool,
 ) -> serde_json::Value {
     let mut gossip = serde_json::Value::Null;
     for node in nodes {
@@ -5601,6 +5632,23 @@ async fn cluster_snapshot(
             }),
         });
     }
+    let mut rebalance_info = None;
+    if rebalance {
+        for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
+            if let Ok(resp) =
+                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true).await
+            {
+                if let Some(target) = resp.node.as_deref().and_then(|a| a.parse::<SocketAddr>().ok()) {
+                    prod_code_mcp::cluster::remember_placement(workspace_name, target);
+                    rebalance_info = Some(serde_json::json!({
+                        "target": target.to_string(),
+                        "reason": resp.reason,
+                    }));
+                    break;
+                }
+            }
+        }
+    }
     let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
         .first()
         .map(|n| n.to_string());
@@ -5614,6 +5662,7 @@ async fn cluster_snapshot(
         "home": home,
         "placed_on": remembered.map(|n| n.to_string()),
         "placed_on_is_cached": placed_on_is_cached,
+        "rebalanced": rebalance_info,
     })
 }
 
@@ -5623,11 +5672,26 @@ async fn run_cluster(
     workspace_name: &str,
     engine: Option<&str>,
     json: bool,
+    rebalance: bool,
 ) -> Result<()> {
     if json {
-        let snapshot = cluster_snapshot(nodes, workspace_name, engine).await;
+        let snapshot = cluster_snapshot(nodes, workspace_name, engine, rebalance).await;
         println!("{}", serde_json::to_string_pretty(&snapshot)?);
         return Ok(());
+    }
+    let mut rebalanced_target = None;
+    if rebalance {
+        for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
+            if let Ok(resp) =
+                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true).await
+            {
+                if let Some(target) = resp.node.as_deref().and_then(|a| a.parse::<SocketAddr>().ok()) {
+                    prod_code_mcp::cluster::remember_placement(workspace_name, target);
+                    rebalanced_target = Some((target, resp.reason));
+                    break;
+                }
+            }
+        }
     }
     println!("⚡ prod-code cluster ({} node(s))", nodes.len());
     println!("────────────────────────────────────────────────────");
@@ -5665,7 +5729,6 @@ async fn run_cluster(
     let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
         .first()
         .copied();
-    let remembered = prod_code_mcp::cluster::remembered_node(workspace_name);
     for node in nodes {
         let started = std::time::Instant::now();
         match prod_code_mcp::cluster::node_status(*node).await {
@@ -5714,6 +5777,10 @@ async fn run_cluster(
     println!("Engine needed:       {}", engine.unwrap_or("(any)"));
     if let Some(home) = home {
         println!("Home node (hash):    {home}");
+    }
+    let remembered = prod_code_mcp::cluster::remembered_node(workspace_name);
+    if let Some((target, ref reason)) = rebalanced_target {
+        println!("Rebalance:           Active workload rebalanced to {target} ({reason})");
     }
     match remembered {
         Some(node) if nodes.contains(&node) => println!("Placed on:           {node}"),

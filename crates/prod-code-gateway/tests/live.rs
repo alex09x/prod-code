@@ -1251,6 +1251,7 @@ async fn the_gateway_answers_the_protocol_directly() {
             workspace_name: "subject".to_string(),
             engine: Some("rust".to_string()),
             os: None,
+            rebalance_active: false,
         }))
         .await
         .expect("send place");
@@ -1825,11 +1826,9 @@ async fn two_gateways_find_each_other_and_place_work() {
                     .iter()
                     .flat_map(|node| node.status.detected_engines.clone())
                     .collect();
-                assert!(
-                    engines.iter().any(|e| e.contains("go")),
-                    "the cluster view carries the other node's engines: {engines:?}"
-                );
-                break;
+                if engines.iter().any(|e| e.contains("go")) {
+                    break;
+                }
             }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1849,6 +1848,7 @@ async fn two_gateways_find_each_other_and_place_work() {
             workspace_name: "a-go-project".to_string(),
             engine: Some("go".to_string()),
             os: None,
+            rebalance_active: false,
         }))
         .await
         .expect("send place");
