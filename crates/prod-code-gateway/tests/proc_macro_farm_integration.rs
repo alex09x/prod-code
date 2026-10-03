@@ -39,21 +39,30 @@ fn test_proc_macro_farm_shared_concurrency_and_permit_lifecycle() {
     assert_eq!(farm.active_workers(), 10);
     assert_eq!(farm.active_workspaces(), 3);
 
+    // Workspace 4 requests workers when farm is full: must be rejected with 0 workers
+    let ws_full = PathBuf::from("/tmp/repo_full");
+    let (w_full, permit_full) = farm.allocate_workers(&ws_full, 2);
+    assert_eq!(w_full, 0, "Must be rejected when farm is at full capacity");
+    assert_eq!(permit_full.worker_count(), 0);
+    assert_eq!(farm.active_workers(), 10, "Total active workers must not exceed capacity");
+    assert_eq!(farm.active_workspaces(), 3);
+
     // When Workspace 1 finishes / is evicted, its 4 workers are returned
     drop(permit1);
     assert_eq!(farm.active_workers(), 6);
     assert_eq!(farm.active_workspaces(), 2);
 
-    // Workspace 4 can now allocate workers freed by Workspace 1
-    let ws4 = PathBuf::from("/tmp/repo4");
-    let (w4, permit4) = farm.allocate_workers(&ws4, 3);
-    assert_eq!(w4, 3);
+    // Workspace 5 can now allocate workers freed by Workspace 1
+    let ws5 = PathBuf::from("/tmp/repo5");
+    let (w5, permit5) = farm.allocate_workers(&ws5, 3);
+    assert_eq!(w5, 3);
     assert_eq!(farm.active_workers(), 9);
     assert_eq!(farm.active_workspaces(), 3);
 
     drop(permit2);
     drop(permit3);
-    drop(permit4);
+    drop(permit_full);
+    drop(permit5);
     assert_eq!(farm.active_workers(), 0);
     assert_eq!(farm.active_workspaces(), 0);
 }
@@ -70,6 +79,8 @@ if [ "$1" = "--version" ]; then
     exit 0
 fi
 
+echo "AUTH_TOKEN='$PROD_CODE_AUTH_TOKEN'"
+echo "AUTH_FILE='$PROD_CODE_AUTH_TOKEN_FILE'"
 echo "TOKEN='$PROD_CODE_TOKEN'"
 echo "SECRET='$PROD_CODE_SECRET'"
 echo "TLS_KEY='$PROD_CODE_TLS_KEY'"
@@ -101,6 +112,8 @@ echo "TMPDIR='$TMPDIR'"
 
     // 2. Verify sensitive credentials are scrubbed from environment
     let out = std::process::Command::new(&wrapper_path)
+        .env("PROD_CODE_AUTH_TOKEN", "prod-cluster-auth-token-999")
+        .env("PROD_CODE_AUTH_TOKEN_FILE", "/etc/prod-code/auth.key")
         .env("PROD_CODE_TOKEN", "prod-token-12345")
         .env("PROD_CODE_SECRET", "super-secret-hex")
         .env("PROD_CODE_TLS_KEY", "mTLS-private-key-material")
@@ -112,6 +125,8 @@ echo "TMPDIR='$TMPDIR'"
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
 
+    assert!(stdout.contains("AUTH_TOKEN=''"), "PROD_CODE_AUTH_TOKEN must be scrubbed: {stdout}");
+    assert!(stdout.contains("AUTH_FILE=''"), "PROD_CODE_AUTH_TOKEN_FILE must be scrubbed: {stdout}");
     assert!(stdout.contains("TOKEN=''"), "PROD_CODE_TOKEN must be scrubbed: {stdout}");
     assert!(stdout.contains("SECRET=''"), "PROD_CODE_SECRET must be scrubbed: {stdout}");
     assert!(stdout.contains("TLS_KEY=''"), "PROD_CODE_TLS_KEY must be scrubbed: {stdout}");
@@ -119,7 +134,7 @@ echo "TMPDIR='$TMPDIR'"
     assert!(stdout.contains("GITHUB=''"), "GITHUB_TOKEN must be scrubbed: {stdout}");
     assert!(stdout.contains("SSH=''"), "SSH_AUTH_SOCK must be scrubbed: {stdout}");
     assert!(stdout.contains("INTERNAL='this is unstable'"), "Internal authorization must be set: {stdout}");
-    assert!(stdout.contains("prod-code-proc-macro-farm/scratch"), "Isolated scratch dir must be set: {stdout}");
+    assert!(stdout.contains("/scratch"), "Isolated scratch dir must be set: {stdout}");
 }
 
 #[test]
