@@ -4,7 +4,7 @@ use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::python_cache::{
     find_venv_stubs, is_python_project, merge_stubs, prune_stale_stub_cache_in,
     python_stub_cache_dir, python_stub_cache_env, seed_python_worktree,
-    seed_python_worktree_within, PYTHON_STUB_CACHE_ENV,
+    seed_python_worktree_within, tree_size, PYTHON_STUB_CACHE_ENV,
 };
 use std::fs;
 use std::time::Duration;
@@ -394,4 +394,34 @@ fn test_merge_stubs_concurrent_newer_wins_preserved() {
 
     // Newer version MUST NOT be overwritten by the older version
     assert_eq!(fs::read(dst.join("version.pyi")).unwrap(), b"VERSION = '2.0.0'\n");
+}
+
+#[test]
+fn test_tree_size_and_merge_stubs_handle_symlink_cycle() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    let dst = temp.path().join("dst");
+    fs::create_dir_all(&src).unwrap();
+
+    let sub = src.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join("types.pyi"), b"x: int = 10\n").unwrap();
+
+    // Create circular directory symlinks pointing to parent and self
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&src, sub.join("cycle_to_parent")).unwrap();
+        std::os::unix::fs::symlink(&sub, sub.join("cycle_to_self")).unwrap();
+    }
+
+    // tree_size must terminate safely without stack overflow and report correct file size
+    let size = tree_size(&src);
+    assert_eq!(size, b"x: int = 10\n".len() as u64);
+
+    // merge_stubs must terminate safely without stack overflow, copying only real stubs
+    let merged = merge_stubs(&src, &dst).unwrap();
+    assert!(merged > 0);
+    assert_eq!(fs::read(dst.join("sub").join("types.pyi")).unwrap(), b"x: int = 10\n");
+    assert!(!dst.join("sub").join("cycle_to_parent").exists());
+    assert!(!dst.join("sub").join("cycle_to_self").exists());
 }
