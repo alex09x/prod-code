@@ -323,8 +323,8 @@ impl VisitedDirs {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            if let Ok(meta) = fs::symlink_metadata(path) {
-                if meta.file_type().is_symlink() {
+            if let Ok(meta) = fs::metadata(path) {
+                if !meta.is_dir() {
                     return false;
                 }
                 return self.dev_ino.insert((meta.dev(), meta.ino()));
@@ -333,13 +333,10 @@ impl VisitedDirs {
         }
         #[cfg(not(unix))]
         {
-            if let Ok(meta) = fs::symlink_metadata(path) {
-                if meta.file_type().is_symlink() {
-                    return false;
-                }
-            }
             if let Ok(canon) = path.canonicalize() {
-                return self.canonical.insert(canon);
+                if canon.is_dir() {
+                    return self.canonical.insert(canon);
+                }
             }
             false
         }
@@ -350,7 +347,8 @@ impl VisitedDirs {
 ///
 /// Only declaration files (`.d.ts`, `.d.mts`, `.d.cts`, `.d.ts.map`, `.json`, etc.)
 /// and subdirectories containing them are indexed.
-/// Strictly skips directory symlinks and tracks visited directory inodes to prevent recursion cycles (#835).
+/// Safely dereferences valid package symlinks (such as pnpm package symlinks into virtual stores)
+/// and tracks visited directory inodes to prevent recursion cycles (#835, #836).
 /// Returns total bytes written or updated.
 pub fn merge_types(src_dir: &Path, dst_dir: &Path) -> io::Result<u64> {
     let mut visited = VisitedDirs::default();
@@ -389,11 +387,6 @@ fn merge_types_inner(
             continue;
         };
 
-        // Strictly skip symlinks to prevent traversal outside cache or cyclic recursion
-        if file_type.is_symlink() {
-            continue;
-        }
-
         let path = entry.path();
         let file_name = entry.file_name();
         let name_str = file_name.to_string_lossy();
@@ -402,11 +395,22 @@ fn merge_types_inner(
             continue;
         }
 
-        if file_type.is_dir() {
+        // Safely dereference symlinks (e.g. pnpm package symlinks into virtual stores).
+        // Cyclic or repeated directory targets are safely handled by VisitedDirs tracking (dev, ino).
+        let (is_dir, is_file) = if file_type.is_symlink() {
+            match fs::metadata(&path) {
+                Ok(meta) => (meta.is_dir(), meta.is_file()),
+                Err(_) => continue, // dangling symlink, skip safely
+            }
+        } else {
+            (file_type.is_dir(), file_type.is_file())
+        };
+
+        if is_dir {
             let sub_dst = dst_dir.join(&file_name);
             let sub_bytes = merge_types_inner(&path, &sub_dst, visited)?;
             bytes_written += sub_bytes;
-        } else if file_type.is_file() && is_type_declaration_file(&name_str) {
+        } else if is_file && is_type_declaration_file(&name_str) {
             let target_file = dst_dir.join(&file_name);
             let written = copy_and_publish_type_file(&path, &target_file)?;
             bytes_written += written;
@@ -416,8 +420,8 @@ fn merge_types_inner(
     Ok(bytes_written)
 }
 
-/// Recursively computes total size of all regular files in a directory,
-/// skipping symlinks and tracking visited inodes to prevent cycles.
+/// Recursively computes total size of all regular declaration files in a directory,
+/// safely dereferencing valid symlinks (e.g. pnpm package symlinks) and tracking visited inodes to prevent cycles.
 pub fn tree_size(dir: &Path) -> u64 {
     let mut visited = VisitedDirs::default();
     tree_size_inner(dir, &mut visited)
@@ -433,15 +437,33 @@ fn tree_size_inner(dir: &Path, visited: &mut VisitedDirs) -> u64 {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if file_type.is_symlink() {
+
+            let path = entry.path();
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+            if name_str.starts_with('.') {
                 continue;
             }
-            if file_type.is_dir() {
-                total += tree_size_inner(&entry.path(), visited);
-            } else if file_type.is_file() {
-                if let Ok(meta) = entry.metadata() {
-                    total += meta.len();
+
+            // Safely dereference symlinks for sizing (e.g. pnpm package symlinks into virtual stores).
+            let (is_dir, is_file, file_len) = if file_type.is_symlink() {
+                match fs::metadata(&path) {
+                    Ok(meta) => (meta.is_dir(), meta.is_file(), meta.len()),
+                    Err(_) => continue,
                 }
+            } else {
+                let len = if file_type.is_file() {
+                    entry.metadata().map(|m| m.len()).unwrap_or(0)
+                } else {
+                    0
+                };
+                (file_type.is_dir(), file_type.is_file(), len)
+            };
+
+            if is_dir {
+                total += tree_size_inner(&path, visited);
+            } else if is_file && is_type_declaration_file(&name_str) {
+                total += file_len;
             }
         }
     }
@@ -491,39 +513,61 @@ pub fn seed_typescript_worktree_within(
     }
 
     let to_at_types = to_node_modules.join("@types");
-    if !to_at_types.exists() {
-        #[cfg(unix)]
-        {
-            if std::os::unix::fs::symlink(&cache_dir, &to_at_types).is_ok() {
-                total_bytes += 1;
+    let symlink_meta = fs::symlink_metadata(&to_at_types);
+    match symlink_meta {
+        Err(_) => {
+            #[cfg(unix)]
+            {
+                if std::os::unix::fs::symlink(&cache_dir, &to_at_types).is_ok() {
+                    total_bytes += 1;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = merge_types(&cache_dir, &to_at_types);
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = merge_types(&cache_dir, &to_at_types);
-        }
-    } else if fs::symlink_metadata(&to_at_types)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        // Symlink already exists
-    } else if to_at_types.is_dir() {
-        // If it's a real directory (e.g. copied by dependency trees), merge into shared cache
-        let merged = merge_types(&to_at_types, &cache_dir)?;
-        total_bytes += merged;
-
-        // Deduplicate: replace real directory with symlink to shared cache to eliminate duplicate gigabytes
-        #[cfg(unix)]
-        {
-            let backup = to_node_modules.join(".old-at-types");
-            if fs::rename(&to_at_types, &backup).is_ok() {
-                if std::os::unix::fs::symlink(&cache_dir, &to_at_types).is_ok() {
-                    let _ = fs::remove_dir_all(&backup);
-                } else {
-                    let _ = fs::rename(&backup, &to_at_types);
+        Ok(m) if m.file_type().is_symlink() => {
+            // Already a symlink. If dangling, replace with shared cache symlink.
+            if !to_at_types.exists() {
+                let _ = fs::remove_file(&to_at_types);
+                #[cfg(unix)]
+                {
+                    if std::os::unix::fs::symlink(&cache_dir, &to_at_types).is_ok() {
+                        total_bytes += 1;
+                    }
                 }
             }
         }
+        Ok(m) if m.is_dir() => {
+            // If it's a real directory (e.g. copied by dependency trees or created by pnpm),
+            // safely dereference valid package links and merge into shared cache before deduplicating.
+            let to_size = tree_size(&to_at_types);
+            if to_size == 0 || seed_fits("typescript types cache", to_size, space) {
+                let merged = merge_types(&to_at_types, &cache_dir)?;
+                total_bytes += merged;
+
+                // Deduplicate: replace real directory with symlink to shared cache to eliminate duplicate gigabytes
+                #[cfg(unix)]
+                {
+                    let backup = to_node_modules.join(".old-at-types");
+                    if fs::rename(&to_at_types, &backup).is_ok() {
+                        let to_had_types = tree_size(&backup) > 0;
+                        let cache_has_types = tree_size(&cache_dir) > 0;
+                        // If backup had valid types, ensure cache has types before committing to symlink
+                        if (!to_had_types || cache_has_types)
+                            && std::os::unix::fs::symlink(&cache_dir, &to_at_types).is_ok()
+                        {
+                            let _ = fs::remove_dir_all(&backup);
+                        } else {
+                            let _ = fs::remove_file(&to_at_types);
+                            let _ = fs::rename(&backup, &to_at_types);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 
     // 4. Coordinate tsconfig.json / jsconfig.json in `to`
