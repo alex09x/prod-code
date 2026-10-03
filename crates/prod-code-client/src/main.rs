@@ -5740,7 +5740,7 @@ async fn run_resolve(domain: &str, json: bool) -> Result<()> {
     let clean_domain = domain.trim();
     let is_internal = prod_code_protocol::dns::is_code_internal_domain(clean_domain);
     let discovered = prod_code_mcp::cluster::discover_auto_nodes_sync();
-    let project = prod_code_protocol::dns::extract_project_name(clean_domain).map(|s| s.to_string());
+    let project = prod_code_protocol::dns::extract_project_name(clean_domain);
     let designated_node = project.as_deref().and_then(|p| {
         prod_code_protocol::dns::resolve_project_node(p, &discovered).map(|n| n.addr.to_string())
     });

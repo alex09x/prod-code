@@ -7525,6 +7525,7 @@ async fn handle_gateway_dns_query(buf: &[u8], state: &ServerState) -> Option<Vec
     }
     drop(cluster);
 
+    nodes.sort_by_key(|n| n.addr);
     handle_dns_packet(buf, &nodes)
 }
 
