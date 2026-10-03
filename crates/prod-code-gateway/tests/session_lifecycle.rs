@@ -1290,3 +1290,88 @@ async fn read_file_request_in_active_session_pulls_large_artifact() {
     let _ = server.join().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn editor_session_ignores_rebalance_redirect() {
+    let storage = tempfile::tempdir().unwrap();
+    let client_dir = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client_dir.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        None,
+    );
+    std::fs::create_dir_all(&server_root).unwrap();
+    let workspace = fake_generic_workspace(&server_root).await;
+
+    let manager = Arc::new(WorkspaceManager::new());
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    *state.advertise.write().await = "127.0.0.1:9400".to_string();
+    let state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = Arc::clone(&state);
+    let server = OwnedTask::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+
+    let mut client = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
+            client_name: "editor-redirect-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("generic".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+            redirect_count: 0,
+        }))
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(Duration::from_secs(5), client.next())
+        .await
+        .expect("editor handshake completes")
+        .expect("response frame")
+        .expect("wire message");
+
+    assert!(matches!(response, WireMessage::HandshakeResponse(_)));
+
+    // Trigger workspace rebalance redirect while the editor session is active
+    let ws_name = server_root.file_name().unwrap().to_string_lossy();
+    let notified = state
+        .workspace_manager
+        .trigger_rebalance_by_name(
+            &ws_name,
+            "192.168.2.168:9400".to_string(),
+            Some("test".to_string()),
+        )
+        .await;
+    assert_eq!(notified, 1, "trigger_rebalance sent to broadcast channel");
+
+    // Editor session must NOT receive WireMessage::Redirect, connection remains open
+    let timeout_res = tokio::time::timeout(Duration::from_millis(200), client.next()).await;
+    assert!(
+        timeout_res.is_err(),
+        "editor session must NOT receive Redirect frame and must remain open"
+    );
+
+    drop(client);
+    let _ = server.join().await;
+}
+
+

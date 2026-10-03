@@ -5200,7 +5200,7 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
                     if let Ok(addr) = target_addr.parse::<SocketAddr>() {
                         prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
                     }
-                    break format!("rebalanced to {target_addr}: {}", reason.unwrap_or_default());
+                    continue;
                 }
                 Some(Ok(WireMessage::Disconnect { reason })) => {
                     break format!("closed the session: {reason}");
