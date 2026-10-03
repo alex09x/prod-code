@@ -759,6 +759,98 @@ async fn code_symbols_lists_hits_and_reports_when_there_are_none() {
     assert!(text.contains("[Function] record"), "{text}");
 }
 
+/// Issue #829: `code_symbols` with a prefix query like `run_lsp` returns prefix matches from the
+/// root workspace directly without scanning unrelated nested projects when `projects_naming` is empty.
+#[tokio::test]
+async fn code_symbols_returns_prefix_matches_without_scanning_unrelated_nested_projects() {
+    let ws = workspace();
+    let lib = write(&ws, "src/lib.rs", "pub fn run_lsp_bridge() {}\n");
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    // Create an unrelated nested project
+    write(&ws, "nested_go/go.mod", "module nested_go\n\ngo 1.22\n");
+    write(&ws, "nested_go/helper.go", "package nested_go\n\nfunc helper() {}\n");
+    commit(&ws);
+
+    let path = lib.clone();
+    let query_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let q_clone = Arc::clone(&query_count);
+
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "workspace/symbol" => {
+            q_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            serde_json::Value::Array(vec![answers::symbol("run_lsp_bridge", 12, &path, 1, 8)])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_symbols",
+        serde_json::json!({ "query": "run_lsp" }),
+    )
+    .await
+    .expect("the search runs");
+
+    assert!(!result.is_error);
+    let text = text_of(&result);
+    assert!(text.contains("1 symbol(s) matching `run_lsp`"), "{text}");
+    assert!(text.contains("[Function] run_lsp_bridge"), "{text}");
+    // Crucial: workspace/symbol was queried exactly once for the root workspace, not for nested_go
+    assert_eq!(query_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// Issue #829: MCP `tools/call` aborts early with a typed error when tool call exceeds timeout budget.
+#[tokio::test]
+async fn tools_call_times_out_with_typed_error_under_budget() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub fn a() {}\n");
+    commit(&ws);
+
+    // Gateway that sleeps past the requested timeout
+    let remote = scripted_gateway(Arc::new(|_, _| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        serde_json::Value::Null
+    }))
+    .await;
+
+    let mut remote_addr = remote;
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "code_definition",
+            "arguments": {
+                "path": "src/lib.rs",
+                "line": 1,
+                "character": 8,
+                "timeout_secs": 1
+            }
+        }
+    });
+
+    let resp = prod_code_mcp::handle_mcp_request(&mut remote_addr, &ws.root(), req)
+        .await
+        .expect("handle request");
+
+    let resp_val = resp.expect("response present");
+    let is_error = resp_val.pointer("/result/isError").and_then(|v| v.as_bool()).unwrap_or(false);
+    assert!(is_error, "response must be an error: {resp_val}");
+    let text = resp_val.pointer("/result/content/0/text").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(text.contains("timed out after"), "{text}");
+}
+
 #[tokio::test]
 async fn code_definition_reports_locations_or_says_there_are_none() {
     let ws = workspace();

@@ -84,6 +84,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// Default upper bound for MCP tool call execution to prevent client context deadline exceeded (180s).
+pub const MCP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(150);
+
 /// Process a single incoming MCP JSON-RPC message.
 /// Returns Ok(Some(response)) for requests that require a response, or Ok(None) for notifications.
 pub async fn handle_mcp_request(
@@ -149,7 +152,27 @@ pub async fn handle_mcp_request(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
-            match execute_tool(*remote, workspace_root, tool_name, arguments.clone()).await {
+            let call_timeout = arguments
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .map(|s| std::time::Duration::from_secs(s.max(1).saturating_add(1)))
+                .unwrap_or(MCP_TOOL_CALL_TIMEOUT);
+
+            let tool_fut = execute_tool(*remote, workspace_root, tool_name, arguments.clone());
+            let executed = match tokio::time::timeout(call_timeout, tool_fut).await {
+                Ok(res) => res,
+                Err(_) => {
+                    let secs = call_timeout.as_secs();
+                    tracing::warn!(tool = tool_name, secs, "tool call exceeded MCP timeout budget");
+                    let call_result = protocol::McpToolCallResult::error(format!(
+                        "Tool call '{tool_name}' timed out after {secs}s"
+                    ));
+                    let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
+                    return Ok(Some(serde_json::to_value(resp)?));
+                }
+            };
+
+            match executed {
                 Ok(call_result) => {
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
                     Ok(Some(serde_json::to_value(resp)?))

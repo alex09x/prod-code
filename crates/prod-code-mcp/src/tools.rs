@@ -7843,6 +7843,7 @@ pub async fn workspace_symbol_search(
     let gated = crate::session::pooled_index_gated(remote, root, &anchor).await;
     let retries = match age {
         _ if gated => 0,
+        _ if hint.is_some() => 0,
         Some(age) if age >= crate::session::INDEXING_GRACE => 0,
         Some(_) => 3,
         None => 1,
@@ -8498,6 +8499,9 @@ fn collect_unqualified_members(
 /// The most declarations of a name the index lacks that an answer names.
 const MAX_UNINDEXED_DECLARATIONS: usize = 3;
 
+/// How long unindexed declaration scanning can spend before returning.
+const UNINDEXED_DECLARATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Where the checkout's own source files declare `name` when the index has no symbol by that
 /// name, and why the analyzer has nothing there: a file no target includes (it has no hover at
 /// the declaration), or an item the index does not list (#379). Empty when no file declares it.
@@ -8505,12 +8509,16 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return String::new();
     }
+    let deadline = std::time::Instant::now() + UNINDEXED_DECLARATION_BUDGET;
     let mut out = String::new();
     let mut listed = 0usize;
     let files = source_files(root)
         .filter(|path| crate::sync::engine_for_file(path).is_some())
         .take(MAX_SCANNED_FILES);
     for path in files {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -8518,6 +8526,9 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
             continue;
         }
         for (index, line) in text.lines().enumerate() {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
             let Some(col) = declared_at(line, name) else {
                 continue;
             };
@@ -8953,6 +8964,9 @@ const SKIPPED_DIRS: &[&str] = &[
 /// The most nested projects a name search asks besides the checkout's own.
 const MAX_NESTED_PROJECTS: usize = 6;
 
+/// The most time allowed for cross-project symbol search before returning accumulated hits (#829).
+const SYMBOL_SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `workspace/symbol` in the checkout's project and, when that knows no symbol of the name and
 /// no hint names a project, in the checkout's nested projects of other languages too (#318):
 /// a Swift file in a Go module is in no index gopls keeps.
@@ -8993,8 +9007,15 @@ async fn symbol_search_across_projects(
         return Ok(hits);
     }
     // The projects whose sources name the symbol first, then the others a walk meets (#358).
+    // If the root project already returned relevant matches (prefix, word-boundary, substring),
+    // and no nested project's sources explicitly name the query, avoid falling back to
+    // arbitrary nested project anchors which can cause runaway timeouts (#829).
+    let has_relevant_hits = hits.iter().any(|hit| match_rank(&hit.name, query) < 4);
     let mut anchors = projects_naming(root, name);
     if anchors.is_empty() {
+        if has_relevant_hits {
+            return Ok(hits);
+        }
         for anchor in nested_project_anchors(root) {
             if anchors.len() >= MAX_NESTED_PROJECTS {
                 break;
@@ -9007,7 +9028,15 @@ async fn symbol_search_across_projects(
             }
         }
     }
+    let deadline = std::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
     for (anchor, subpath, engine) in anchors {
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(
+                query,
+                "symbol search across projects reached query budget; returning accumulated hits"
+            );
+            break;
+        }
         // Its own node: the checkout's may not serve its language (a Swift file needs a macOS
         // node, a Go module is placed on Linux).
         let node = crate::cluster::route_for_path(remote, root, anchor.to_str())
@@ -9031,11 +9060,13 @@ async fn symbol_search_across_projects(
             .iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         hits.extend(found);
-        if !named_here {
+        if !named_here && std::time::Instant::now() < deadline {
             // sourcekit-lsp has no index for Swift files a package does not build, and answers
             // `workspace/symbol` with nothing: their outlines still name what they declare.
             let files = files_naming(&root.join(&subpath), engine, name);
-            hits.extend(declarations_in(node, root, &files, name).await?);
+            if !files.is_empty() {
+                hits.extend(declarations_in(node, root, &files, name).await?);
+            }
         }
         if named(&hits) {
             break;
