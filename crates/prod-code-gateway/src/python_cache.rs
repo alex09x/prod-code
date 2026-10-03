@@ -236,7 +236,28 @@ fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
     let tmp_name = format!(".tmp-stub-{pid}-{nonce}-{ts:x}");
     let tmp_path = parent.join(tmp_name);
 
-    let bytes = match fs::copy(src, &tmp_path) {
+    let mut src_file = fs::File::open(src)?;
+    let mut tmp_file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)
+    {
+        Ok(f) => f,
+        Err(e) => return Err(e),
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let ret = unsafe { libc::flock(tmp_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if ret != 0 {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    let bytes = match io::copy(&mut src_file, &mut tmp_file) {
         Ok(b) => b,
         Err(e) => {
             let _ = fs::remove_file(&tmp_path);
@@ -244,10 +265,17 @@ fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
         }
     };
 
+    if let Err(e) = tmp_file.sync_all() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
     if let Err(e) = fs::rename(&tmp_path, dst) {
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
     }
+
+    drop(tmp_file);
 
     sync_mtime(src, dst);
 
@@ -836,13 +864,16 @@ mod unix_pruner {
                             None => now.duration_since(modified).unwrap_or(Duration::ZERO),
                         };
 
-                        if age > tmp_grace_period {
+                        // Check whether an active publisher holds an OS lock/lease on this temporary file
+                        let is_locked = is_temp_file_locked(current_fd, name.as_ptr());
+
+                        if !is_locked && age > tmp_grace_period {
                             // Abandoned temporary file: unlink immediately
                             if libc::unlinkat(current_fd, name.as_ptr(), 0) == 0 {
                                 *removed += 1;
                             }
                         } else {
-                            // Active or recent temporary file: account for disk space in cache budget,
+                            // Active publisher holding lock or recent temporary file: account for disk space in cache budget,
                             // but DO NOT add to eviction candidate list `files` to protect active publishers.
                             *total_size += file_size;
                         }
@@ -932,6 +963,32 @@ mod unix_pruner {
 
         removed
     }
+
+    unsafe fn is_temp_file_locked(dir_fd: libc::c_int, name: *const libc::c_char) -> bool {
+        unsafe {
+            let fd = libc::openat(
+                dir_fd,
+                name,
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            );
+            if fd < 0 {
+                // Cannot open descriptor (e.g. concurrency or permissions) - err on side of caution
+                return true;
+            }
+
+            let ret = libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB);
+            if ret == 0 {
+                // Successfully acquired lock: no other process holds an exclusive lock
+                libc::flock(fd, libc::LOCK_UN);
+                libc::close(fd);
+                false
+            } else {
+                // Lock attempt failed: an active publisher holds an exclusive lock on this file!
+                libc::close(fd);
+                true
+            }
+        }
+    }
 }
 
 #[cfg(not(unix))]
@@ -983,7 +1040,13 @@ fn prune_fallback(
                 };
 
                 if is_tmp_stub {
-                    if age > tmp_grace_period {
+                    // On non-Unix, check if file is exclusively locked by testing write access
+                    let is_locked = fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)
+                        .is_err();
+
+                    if !is_locked && age > tmp_grace_period {
                         if fs::remove_file(&path).is_ok() {
                             *removed += 1;
                         }
