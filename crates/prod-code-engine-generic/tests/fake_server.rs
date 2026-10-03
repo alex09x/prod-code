@@ -263,7 +263,12 @@ while True:
         else:
             send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "unknown method"}})
     elif method == "prodCode/die":
-        sys.exit(0)
+        code = message.get("params", {}).get("code", 0) if isinstance(message.get("params"), dict) else 0
+        err = message.get("params", {}).get("stderr") if isinstance(message.get("params"), dict) else None
+        if err:
+            sys.stderr.write(err + "\n")
+            sys.stderr.flush()
+        sys.exit(code)
     elif method == "shutdown":
         send({"jsonrpc": "2.0", "id": message["id"], "result": None})
     elif method == "exit":
@@ -3059,4 +3064,34 @@ async fn malformed_frames_retire_the_generic_server_and_wake_pending_requests() 
         assert!(!engine.is_alive());
         assert_process_exits(&pid_file).await;
     }
+}
+
+#[tokio::test]
+async fn server_exit_reports_status_and_stderr() {
+    let (dir, script) = workspace();
+    let pid_file = dir.path().join("pid");
+    let mut settings = config(&script);
+    settings.request_timeout = Duration::from_secs(5);
+    settings.env.insert(
+        "FAKE_PID_FILE".into(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    // Ask server to write to stderr and exit with code 42
+    let _ = engine
+        .send_notification(
+            "prodCode/die",
+            serde_json::json!({ "code": 42, "stderr": "fatal crash in python server" }),
+        )
+        .await;
+    assert_process_exits(&pid_file).await;
+    assert!(!engine.is_alive());
+    let err = engine
+        .send_request("textDocument/hover", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("Language server process has exited"), "{msg}");
+    assert!(msg.contains("42"), "{msg}");
+    assert!(msg.contains("fatal crash in python server"), "{msg}");
 }

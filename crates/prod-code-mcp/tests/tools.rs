@@ -2244,6 +2244,101 @@ async fn an_outline_of_a_file_no_server_serves_says_so() {
         text.contains("no language server serves `.sh` files"),
         "{text}"
     );
+    assert!(text.contains("language not supported"), "{text}");
+}
+
+/// A Markdown file with CRLF line endings and TOML front-matter parses headings correctly.
+#[tokio::test]
+async fn a_markdown_outline_supports_crlf_and_toml_front_matter() {
+    let ws = Workspace::new(&[(
+        "docs/toml.md",
+        "+++\r\ntitle = \"Test\"\r\n# not heading\r\n+++\r\n# Intro\r\n\r\n## Details\r\n",
+    )]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let root = ws.root();
+    let text = text_of(&execute_tool(
+        remote,
+        &root,
+        "code_outline",
+        serde_json::json!({ "path": "docs/toml.md" }),
+    ).await.expect("outline"));
+    assert!(text.contains("[Heading 1] Intro"), "{text}");
+    assert!(text.contains("[Heading 2] Details"), "{text}");
+    assert!(!text.contains("not heading"), "{text}");
+}
+
+/// A Protobuf file outlines its package, services, methods, messages, fields, and enum members.
+#[tokio::test]
+async fn a_protobuf_outline_lists_declarations_with_depth_and_kinds() {
+    let proto_src = r#"syntax = "proto3";
+
+// Service package
+package acme.greeter.v1;
+
+/* Multi-line
+   service comment */
+service GreeterService {
+    rpc SayHello (HelloRequest) returns (HelloResponse);
+    rpc StreamHello (stream HelloRequest) returns (stream HelloResponse) {}
+}
+
+message HelloRequest {
+    string name = 1;
+    int32 count = 2;
+
+    enum Mood {
+        MOOD_UNSPECIFIED = 0;
+        MOOD_HAPPY = 1;
+    }
+
+    Mood mood = 3;
+}
+"#;
+    let ws = Workspace::new(&[("proto/greeter.proto", proto_src)]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let root = ws.root();
+
+    let full = text_of(&execute_tool(
+        remote,
+        &root,
+        "code_outline",
+        serde_json::json!({ "path": "proto/greeter.proto", "max_depth": 3 }),
+    ).await.expect("full proto outline"));
+
+    assert!(full.contains("[Package] acme.greeter.v1 (line 4)"), "{full}");
+    assert!(full.contains("[Service] GreeterService (line 8)"), "{full}");
+    assert!(full.contains("[Method] SayHello (line 9)"), "{full}");
+    assert!(full.contains("[Method] StreamHello (line 10)"), "{full}");
+    assert!(full.contains("[Message] HelloRequest (line 13)"), "{full}");
+    assert!(full.contains("[Field] name (line 14)"), "{full}");
+    assert!(full.contains("[Field] count (line 15)"), "{full}");
+    assert!(full.contains("[Enum] Mood (line 17)"), "{full}");
+    assert!(full.contains("[EnumMember] MOOD_UNSPECIFIED (line 18)"), "{full}");
+    assert!(full.contains("[EnumMember] MOOD_HAPPY (line 19)"), "{full}");
+    assert!(full.contains("[Field] mood (line 22)"), "{full}");
+
+    // Shallow depth (max_depth: 1) only lists top-level items
+    let shallow = text_of(&execute_tool(
+        remote,
+        &root,
+        "code_outline",
+        serde_json::json!({ "path": "proto/greeter.proto", "max_depth": 1 }),
+    ).await.expect("shallow proto outline"));
+    assert!(shallow.contains("[Package] acme.greeter.v1"), "{shallow}");
+    assert!(shallow.contains("[Service] GreeterService"), "{shallow}");
+    assert!(shallow.contains("[Message] HelloRequest"), "{shallow}");
+    assert!(!shallow.contains("[Method]"), "{shallow}");
+    assert!(!shallow.contains("[Field]"), "{shallow}");
+
+    // Kinds filter
+    let services_only = text_of(&execute_tool(
+        remote,
+        &root,
+        "code_outline",
+        serde_json::json!({ "path": "proto/greeter.proto", "kinds": ["service"] }),
+    ).await.expect("service only proto outline"));
+    assert!(services_only.contains("[Service] GreeterService"), "{services_only}");
+    assert!(!services_only.contains("[Message]"), "{services_only}");
 }
 
 /// A position on no name is an error that shows the line, not "No references found" (#373).

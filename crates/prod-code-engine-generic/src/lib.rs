@@ -1338,17 +1338,17 @@ pub fn settings_for_section(root: &Path, section: &str) -> serde_json::Value {
     }
 }
 
-/// `<root>/.venv/bin/python` (or `venv/`) when the checkout carries a virtual environment.
+/// `<root>/.venv/bin/python` (or `venv/`, or in an ancestor checkout) when the project carries a virtual environment.
 pub fn venv_python(root: &Path) -> Option<String> {
-    ["\x2evenv", "venv"]
-        .iter()
-        .map(|dir| {
-            root.join(dir.replace("\\x2e", "."))
-                .join("bin")
-                .join("python")
-        })
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
+    for ancestor in root.ancestors() {
+        for dir in [".venv", "venv"] {
+            let candidate = ancestor.join(dir).join("bin").join("python");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 /// Helper to check if an executable binary is present in PATH.
@@ -1405,6 +1405,8 @@ pub struct GenericLspEngine {
     health_probe_pending: Arc<StdMutex<Option<HealthProbePending>>>,
     _health_probe: Option<HealthProbeTask>,
     _child: Arc<StdMutex<Child>>,
+    exit_details: Arc<StdMutex<Option<String>>>,
+    stderr_tail: Arc<StdMutex<std::collections::VecDeque<String>>>,
 }
 
 struct HealthProbeTask(tokio::task::JoinHandle<()>);
@@ -1693,7 +1695,7 @@ impl GenericLspEngine {
             .current_dir(&work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
 
         for (k, v) in &config.env {
             cmd.env(k, v);
@@ -1726,6 +1728,25 @@ impl GenericLspEngine {
             .stdout
             .take()
             .context("Failed to open child stdout for generic LSP")?;
+        let stderr = child.stderr.take();
+        let stderr_tail = Arc::new(StdMutex::new(std::collections::VecDeque::<String>::with_capacity(32)));
+        let stderr_tail_writer = Arc::clone(&stderr_tail);
+        if let Some(stderr) = stderr {
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let mut tail = lock_unpoisoned(&stderr_tail_writer);
+                    if tail.len() >= 30 {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                }
+            });
+        }
+        let exit_details = Arc::new(StdMutex::new(None::<String>));
+        let exit_details_writer = Arc::clone(&exit_details);
+        let stderr_tail_reader = Arc::clone(&stderr_tail);
 
         let (bcast_tx, _) = broadcast::channel(1024);
         let bcast_tx_clone = bcast_tx.clone();
@@ -1896,10 +1917,20 @@ impl GenericLspEngine {
                                     })
                                 }
                                 "workspace/workspaceFolders" => {
+                                    let ws_str = config_root.to_string_lossy().to_string();
+                                    let ws_name = config_root
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("generic-workspace");
                                     serde_json::json!({
                                         "jsonrpc": "2.0",
                                         "id": id_val,
-                                        "result": null
+                                        "result": [
+                                            {
+                                                "name": ws_name,
+                                                "uri": format!("file://{}", ws_str)
+                                            }
+                                        ]
                                     })
                                 }
                                 other => {
@@ -2002,6 +2033,7 @@ impl GenericLspEngine {
             lock_unpoisoned(&health_probe_pending_reader).take();
             accepts_documents_reader.store(false, Ordering::Release);
             *capabilities_reader.write().await = None;
+            let mut exit_status = None;
             if let Some(child) = child_writer.upgrade() {
                 let _ = lock_unpoisoned(&child).start_kill();
                 for _ in 0..200 {
@@ -2010,11 +2042,43 @@ impl GenericLspEngine {
                         child.try_wait()
                     };
                     match status {
-                        Ok(Some(_)) | Err(_) => break,
+                        Ok(Some(status)) => {
+                            exit_status = Some(status);
+                            break;
+                        }
+                        Err(_) => break,
                         Ok(None) => tokio::time::sleep(Duration::from_millis(5)).await,
                     }
                 }
             }
+            let status_msg = match exit_status {
+                Some(status) => match status.code() {
+                    Some(code) => format!("exit code {code}"),
+                    None => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::process::ExitStatusExt;
+                            status.signal().map_or_else(
+                                || "process terminated".to_string(),
+                                |sig| format!("signal {sig}"),
+                            )
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            "process terminated".to_string()
+                        }
+                    }
+                },
+                None => "process terminated".to_string(),
+            };
+            let tail = lock_unpoisoned(&stderr_tail_reader);
+            let details = if tail.is_empty() {
+                status_msg
+            } else {
+                let lines: Vec<&str> = tail.iter().map(|s| s.as_str()).collect();
+                format!("{status_msg} (stderr: {})", lines.join("\n"))
+            };
+            *lock_unpoisoned(&exit_details_writer) = Some(details);
             tracing::info!("Generic LSP reader loop finished");
         });
 
@@ -2043,6 +2107,8 @@ impl GenericLspEngine {
             health_probe_pending,
             _health_probe: None,
             _child: child,
+            exit_details,
+            stderr_tail,
         };
 
         // Initialize LSP server
@@ -2052,6 +2118,47 @@ impl GenericLspEngine {
         }
 
         Ok(engine)
+    }
+
+    /// Diagnostic explanation of why the language server exited, including exit status and stderr.
+    pub fn exit_details(&self) -> Option<String> {
+        let current = lock_unpoisoned(&self.exit_details).clone();
+        if current.is_some() {
+            return current;
+        }
+        if !self.is_alive.load(Ordering::Acquire) {
+            let mut child = lock_unpoisoned(&self._child);
+            if let Ok(Some(status)) = child.try_wait() {
+                let status_msg = match status.code() {
+                    Some(code) => format!("exit code {code}"),
+                    None => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::process::ExitStatusExt;
+                            status.signal().map_or_else(
+                                || "process terminated".to_string(),
+                                |sig| format!("signal {sig}"),
+                            )
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            "process terminated".to_string()
+                        }
+                    }
+                };
+                let tail = lock_unpoisoned(&self.stderr_tail);
+                let details = if tail.is_empty() {
+                    status_msg
+                } else {
+                    let lines: Vec<&str> = tail.iter().map(|s| s.as_str()).collect();
+                    format!("{status_msg} (stderr: {})", lines.join("\n"))
+                };
+                drop(child);
+                *lock_unpoisoned(&self.exit_details) = Some(details.clone());
+                return Some(details);
+            }
+        }
+        None
     }
 
     /// Helper to write an LSP Content-Length frame.
@@ -2619,7 +2726,8 @@ impl GenericLspEngine {
         timeout: Duration,
     ) -> Result<serde_json::Value> {
         if !self.is_alive.load(Ordering::Acquire) {
-            anyhow::bail!("Language server process has exited before request '{method}'");
+            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            anyhow::bail!("Language server process has exited before request '{method}'{details}");
         }
         let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
         // A question answered from the index waits until the server has built it; one still
@@ -2645,7 +2753,8 @@ impl GenericLspEngine {
             .await
             .with_context(|| format!("Timeout waiting to send LSP request '{method}'"))?;
         if !self.is_alive.load(Ordering::Acquire) {
-            anyhow::bail!("Language server process has exited before request '{method}'");
+            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            anyhow::bail!("Language server process has exited before request '{method}'{details}");
         }
         let (tx, rx) = oneshot::channel();
         lock_unpoisoned(&self.pending_requests).insert(req_id, tx);
@@ -2672,7 +2781,8 @@ impl GenericLspEngine {
         match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(mut val)) => {
                 if !self.is_alive.load(Ordering::Acquire) {
-                    anyhow::bail!("Language server process has exited while answering '{method}'");
+                    let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+                    anyhow::bail!("Language server process has exited while answering '{method}'{details}");
                 }
                 if let Some(busy) = busy {
                     val[BUSY_MEMBER] = serde_json::to_value(busy)?;
@@ -2680,7 +2790,8 @@ impl GenericLspEngine {
                 Ok(val)
             }
             Ok(Err(_)) => {
-                anyhow::bail!("Language server process has exited while answering '{method}'")
+                let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+                anyhow::bail!("Language server process has exited while answering '{method}'{details}")
             }
             Err(_) => {
                 anyhow::bail!("Timeout waiting for response to '{method}'");
@@ -2747,7 +2858,8 @@ impl GenericLspEngine {
         deadline: tokio::time::Instant,
     ) -> Result<()> {
         if !self.is_alive.load(Ordering::Acquire) {
-            anyhow::bail!("Language server process has exited before notification '{method}'");
+            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            anyhow::bail!("Language server process has exited before notification '{method}'{details}");
         }
         let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
         let uri = params
@@ -2767,7 +2879,8 @@ impl GenericLspEngine {
                 format!("Timeout waiting to update document state for notification '{method}'")
             })?;
         if !self.is_alive.load(Ordering::Acquire) {
-            anyhow::bail!("Language server process has exited before notification '{method}'");
+            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            anyhow::bail!("Language server process has exited before notification '{method}'{details}");
         }
         let mut mutation = DocumentMutation {
             engine: self,
@@ -3116,7 +3229,8 @@ impl GenericLspEngine {
         deadline: tokio::time::Instant,
     ) -> Result<()> {
         if !self.is_alive.load(Ordering::Acquire) {
-            anyhow::bail!("Language server process has exited before notification '{method}'");
+            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            anyhow::bail!("Language server process has exited before notification '{method}'{details}");
         }
         let payload = serde_json::json!({
             "jsonrpc": "2.0",

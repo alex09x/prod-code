@@ -3983,16 +3983,37 @@ async fn run_hover(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Resu
 
     if let Some(contents) = result.get("contents") {
         if let Some(value) = contents.get("value").and_then(|v| v.as_str()) {
-            println!("{value}");
-            return Ok(());
+            if !value.trim().is_empty() {
+                println!("{value}");
+                return Ok(());
+            }
         } else if let Some(arr) = contents.as_array() {
+            let mut found = false;
             for item in arr {
                 if let Some(v) = item.get("value").and_then(|v| v.as_str()) {
-                    println!("{v}");
+                    if !v.trim().is_empty() {
+                        println!("{v}");
+                        found = true;
+                    }
                 }
             }
-            return Ok(());
+            if found {
+                return Ok(());
+            }
+        } else if let Some(s) = contents.as_str() {
+            if !s.trim().is_empty() {
+                println!("{s}");
+                return Ok(());
+            }
         }
+    }
+
+    if result.is_null()
+        || result
+            .as_object()
+            .map_or(false, |obj| obj.is_empty() || obj.values().all(|v| v.is_null()))
+    {
+        anyhow::bail!("no hover information found at {}:{}:{}", file.display(), line, col);
     }
 
     println!("{:#}", result);
@@ -4059,6 +4080,9 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
             }
         }
     } else if let Some(obj) = result.as_object() {
+        if obj.is_empty() {
+            anyhow::bail!("no definition found at {}:{}:{}", file.display(), line, col);
+        }
         let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
         let start_line = obj
             .get("range")
@@ -4075,6 +4099,8 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
             .unwrap_or(0)
             + 1;
         println!("📍 Definition: {uri}:{start_line}:{start_col}");
+    } else if result.is_null() {
+        anyhow::bail!("no definition found at {}:{}:{}", file.display(), line, col);
     } else {
         println!("{:#}", result);
     }
