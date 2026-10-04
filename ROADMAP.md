@@ -35,13 +35,13 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 **Objective**: Establish the core client-server wire protocol over 10G TCP/QUIC with transparent path translation and zero-overhead client bridging.
 
-- [~] **1.1. Protocol Specification (`crates/prod-code-protocol`)**
+- [x] **1.1. Protocol Specification (`crates/prod-code-protocol`)**
   - Binary framing layer with length-prefixed messages and NUL completion markers.
   - Session handshake with protocol version negotiation, client capabilities, and authentication tokens.
   - Streaming transport support: 10 GbE TCP stream with TCP_NODELAY and socket buffer tuning.
   - Fallback local transport: Unix domain socket / Windows named pipe for local execution.
   - Status (audited 2026-10-03):
-    - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). Direct buffer streaming via `serde_json::to_writer` with `BoundedWriter` eliminates intermediate heap allocations on the hot path (#830), aborts early on oversized frames, and restores buffer capacity on failure. Length-delimited framing ends with the declared length, so NUL completion markers remain omitted.
+    - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). Direct buffer streaming via `serde_json::to_writer` with `BoundedWriter` eliminates intermediate heap allocations on the hot path (#830), aborts early on oversized frames, and restores buffer capacity on failure. NUL completion marker support delivered in #841: `with_nul_marker(true)` enables trailing `0x00` emission and enforces completion markers, while default framing transparently consumes trailing and embedded NUL markers for backwards compatibility.
     - Since #537, clients offer their implemented versions and the gateway selects the highest common version before creating a session. An absent offer means the legacy `protocol_version`; empty or incompatible offers refuse. Every client validates the selection before LSP initialization. Version 1 remains the only implemented version. Negotiated capability sets (`ClientCapabilities` / `ServerCapabilities`) implemented in #659.
     - Authentication tokens followed on 2026-09-26 (#402): an optional cluster token (`PROD_CODE_AUTH_TOKEN` or `PROD_CODE_AUTH_TOKEN_FILE`) is every connection's first frame. Full TLS 1.3 encryption, mTLS peer authentication, certificate pinning, and dual-CA rolling trust bootstrap delivered in Phase 5.6 (#828).
     - TCP_NODELAY and keepalive (30 s idle, 10 s probes, 3 retries, #256) are set on both ends. Socket buffers configurable via `PROD_CODE_TCP_BUFFER_SIZE`, `PROD_CODE_TCP_RECV_BUFFER`, and `PROD_CODE_TCP_SEND_BUFFER`.
@@ -613,8 +613,8 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Tarjan DFS cycle detection identifying circular dependencies (`A -> B -> C -> A`) across crates and modules.
   - Architectural layering verification and structural dependency reports.
 
-- [x] **9.5. Unified Packaging, Fleet Parity & Editor Bridges (`prod-code package` / `prod-code lsp`)** — shipped 2026-09-29 in v0.3.19:
-  - Native installer packages (.pkg for macOS, .deb for Debian/Ubuntu arm64/amd64), mountable macOS disk images (.dmg), and universal POSIX curl installer (`https://prod.codes/install.sh`).
+- [x] **9.5. Unified Packaging, Fleet Parity & Editor Bridges (`prod-code package` / `prod-code lsp`)** — shipped 2026-09-29 in v0.3.19 and completed in #843:
+  - Native installer packages (.pkg for macOS, .deb for Debian/Ubuntu arm64/amd64, .rpm for RHEL/Fedora/CentOS/AlmaLinux aarch64/x86_64, .pkg.tar.gz and PKGBUILD for Arch Linux), mountable macOS disk images (.dmg), and universal POSIX curl installer (`https://prod.codes/install.sh`).
   - Cryptographic SHA-256 integrity verification (`prod-code package verify`) against official GitHub release manifests.
   - Cluster fleet parity inspection (`prod-code package sync`) and atomic self-update (`prod-code update`).
   - Official code signing under `Apple Development: Alexander Panasenko (alex@prod.codes)`.
