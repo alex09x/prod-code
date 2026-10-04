@@ -711,6 +711,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources identifying 2,378 explicit action and filter hook dispatch sites (`apply_filters`, `do_action`), 997 `wp_die` and `WP_Error` guard boundaries, and 2,779 explicit exception points. Evaluated event-driven hook execution core in `wp-includes/class-wp-hook.php`, where nested callback iteration arrays and priority queues drive global extensibility. AST refactoring evaluated `prod-code extract-function` on `wp-includes/formatting.php`, extracting sanitize token helpers, verified with 0 analyzer errors on cluster nodes.
     - **Full Deep-Dive Report**: [WordPress Under the Microscope: What 67 Remote AST Tools Found Inside the Web Publishing Engine (prod.codes)](https://prod.codes/blog/wordpress-under-the-microscope-67-ast-tools/)
 
+57. **[rails/rails](https://github.com/rails/rails)** (Ruby)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 573,455 lines of Ruby across 3,478 source files (`activerecord`: 216.4K LOC / 1,176 files, `actionpack`: 82.0K LOC / 352 files, `activesupport`: 80.0K LOC / 531 files, `railties`: 61.1K LOC / 352 files, `actionview`: 53.4K LOC / 209 files), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Web application framework analyzed with `prod-code dependencies` across 57 module nodes. Discovered zero circular dependencies (clean directed acyclic graph) isolating core active record relational queries, action dispatch pipelines, and view rendering. Clone analysis (`prod-code duplicates`) scanned 3,532 files (586,243 lines) identifying 5 clone groups with 1.2% duplication at 6 lines, dominated by standardized frozen string literal headers and test suite initialization blocks.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources identifying 60,253 test assertions across Minitest suites and 1,365 explicit `raise` exception egress points guarding connection states, validations, and routing dispatchers. Evaluated Active Record Relation query engine in `activerecord/lib/active_record/relation.rb`, where lazy query compilation, Arel AST builders, and future result threads decouple query construction from execution. AST refactoring evaluated `prod-code extract-function` on `activesupport/lib/active_support/core_ext/string/inflections.rb`, extracting camelize token normalization helpers, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [Rails Under the Microscope: What 67 Remote AST Tools Found Inside the Ruby Web Framework (prod.codes)](https://prod.codes/blog/rails-under-the-microscope-67-ast-tools/)
+
+
 
 
 
