@@ -1,5 +1,5 @@
 use prod_code_mcp::pull_push::{find_matching_brace, pull_up_impl, push_down_impl};
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -7,6 +7,29 @@ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition 
 async fn fake_gateway() -> ScriptedGateway {
     ScriptedGateway::start(|method, _params| match method {
         "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await
+}
+
+async fn gateway_with_overlay_error() -> ScriptedGateway {
+    let diagnostics = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = diagnostics.clone();
+    ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/diagnostic" => {
+            if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                answers::no_diagnostics()
+            } else {
+                serde_json::json!({
+                    "kind": "full",
+                    "items": [{
+                        "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+                        "severity": 1,
+                        "message": "synthetic analyzer error"
+                    }]
+                })
+            }
+        }
         _ => serde_json::Value::Null,
     })
     .await
@@ -168,7 +191,8 @@ export class Car extends Vehicle {
     assert_eq!(res.target_classes, vec!["Vehicle"]);
 
     let content = fs::read_to_string(&file).unwrap();
-    let vehicle_part = &content[content.find("class Vehicle").unwrap()..content.find("class Car").unwrap()];
+    let vehicle_part =
+        &content[content.find("class Vehicle").unwrap()..content.find("class Car").unwrap()];
     // In Vehicle, override should be stripped
     assert!(vehicle_part.contains("honk(): void"));
     assert!(!vehicle_part.contains("override honk"));
@@ -216,7 +240,8 @@ export class ScientificCalculator extends BaseCalculator {
     assert_eq!(res.target_classes, vec!["ScientificCalculator"]);
 
     let content = fs::read_to_string(&file).unwrap();
-    let base_part = &content[content.find("class BaseCalculator").unwrap()..content.find("class ScientificCalculator").unwrap()];
+    let base_part = &content[content.find("class BaseCalculator").unwrap()
+        ..content.find("class ScientificCalculator").unwrap()];
     assert!(!base_part.contains("compute(): number"));
 
     let sub_part = &content[content.find("class ScientificCalculator").unwrap()..];
@@ -265,7 +290,8 @@ public:
     assert_eq!(res.target_classes, vec!["BaseWidget"]);
 
     let content = fs::read_to_string(&file).unwrap();
-    let base_part = &content[content.find("class BaseWidget").unwrap()..content.find("class Button").unwrap()];
+    let base_part =
+        &content[content.find("class BaseWidget").unwrap()..content.find("class Button").unwrap()];
     assert!(base_part.contains("void click()"));
     assert!(!base_part.contains("override"));
 
@@ -311,7 +337,8 @@ class LeafNode: BaseNode {
     .unwrap();
 
     let content = fs::read_to_string(&file).unwrap();
-    let base_part = &content[content.find("class BaseNode").unwrap()..content.find("class LeafNode").unwrap()];
+    let base_part =
+        &content[content.find("class BaseNode").unwrap()..content.find("class LeafNode").unwrap()];
     assert!(base_part.contains("func render()"));
     assert!(!base_part.contains("override func render"));
 
@@ -355,7 +382,8 @@ pub trait AdvancedService: BaseService {
     .unwrap();
 
     let content = fs::read_to_string(&file).unwrap();
-    let base_part = &content[content.find("trait BaseService").unwrap()..content.find("trait AdvancedService").unwrap()];
+    let base_part = &content[content.find("trait BaseService").unwrap()
+        ..content.find("trait AdvancedService").unwrap()];
     assert!(base_part.contains("fn metrics(&self) -> u64;"));
 
     let adv_part = &content[content.find("trait AdvancedService").unwrap()..];
@@ -397,7 +425,8 @@ pub trait AdvancedService: BaseService {
     .unwrap();
 
     let content = fs::read_to_string(&file).unwrap();
-    let base_part = &content[content.find("trait BaseService").unwrap()..content.find("trait AdvancedService").unwrap()];
+    let base_part = &content[content.find("trait BaseService").unwrap()
+        ..content.find("trait AdvancedService").unwrap()];
     assert!(!base_part.contains("legacy_ping"));
 
     let adv_part = &content[content.find("trait AdvancedService").unwrap()..];
@@ -447,7 +476,7 @@ class User(Entity):
     assert_eq!(res.files_modified.len(), 2);
 
     let base_content = fs::read_to_string(&base_file).unwrap();
-    assert!(base_content.contains("def get_id(self):"));
+    assert!(base_content.contains("class Entity:\n    def get_id(self):"));
 
     let user_content = fs::read_to_string(&user_file).unwrap();
     assert!(!user_content.contains("def get_id(self):"));
@@ -533,7 +562,8 @@ class Cat(Pet):
 
     let content = fs::read_to_string(&file).unwrap();
     // Pet has sleep
-    let pet_part = &content[content.find("class Pet:").unwrap()..content.find("class Dog").unwrap()];
+    let pet_part =
+        &content[content.find("class Pet:").unwrap()..content.find("class Dog").unwrap()];
     assert!(pet_part.contains("def sleep(self):"));
 
     // Both Dog and Cat had sleep removed and pass inserted
@@ -544,4 +574,105 @@ class Cat(Pet):
     let cat_part = &content[content.find("class Cat").unwrap()..];
     assert!(!cat_part.contains("def sleep(self):"));
     assert!(cat_part.contains("pass"));
+}
+
+#[tokio::test]
+async fn pull_up_removes_only_semantically_identical_sibling_overrides() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "pets.py",
+            r#"class Pet:
+    pass
+
+class Dog(Pet):
+    def speak(self):
+        return "woof"
+
+class Cat(Pet):
+    def speak(self):
+        return "meow"
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("pets.py");
+    let gw = fake_gateway().await;
+
+    pull_up_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "Dog",
+        Some("Pet"),
+        &["speak".to_string()],
+        true,
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let content = fs::read_to_string(file).unwrap();
+    let cat = &content[content.find("class Cat").unwrap()..];
+    assert!(cat.contains("def speak(self):"), "{cat}");
+    assert!(cat.contains("return \"meow\""), "{cat}");
+    let pet = &content[content.find("class Pet:").unwrap()..content.find("class Dog").unwrap()];
+    assert!(pet.contains("return \"woof\""), "{pet}");
+}
+
+#[tokio::test]
+async fn pull_up_rejects_analyzer_errors_before_writing() {
+    let source =
+        "class Base {}\nclass Derived extends Base { foo(): string { return \"derived\"; } }\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.ts", source)]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("service.ts");
+    let gw = gateway_with_overlay_error().await;
+
+    let err = pull_up_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "Derived",
+        Some("Base"),
+        &["foo".to_string()],
+        false,
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("analyzer errors"), "{err:#}");
+    assert_eq!(fs::read_to_string(file).unwrap(), source);
+}
+
+#[tokio::test]
+async fn push_down_rejects_analyzer_errors_before_writing() {
+    let source =
+        "class Base { foo(): string { return \"base\"; } }\nclass Derived extends Base {}\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.ts", source)]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("service.ts");
+    let gw = gateway_with_overlay_error().await;
+
+    let err = push_down_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "Base",
+        Some(&["Derived".to_string()]),
+        &["foo".to_string()],
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("analyzer errors"), "{err:#}");
+    assert_eq!(fs::read_to_string(file).unwrap(), source);
 }

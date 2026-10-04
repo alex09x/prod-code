@@ -10,7 +10,7 @@
 //! Provides AST-aware member relocation, sibling deduplication, override modifier adjustment,
 //! conflict detection, analyzer overlay verification, and transactional WorkspaceEdit application.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -42,8 +42,16 @@ impl HierarchyRefactorResult {
             "{op_name} — source: `{}` -> targets: {:?}\n",
             self.source_class, self.target_classes
         );
-        out.push_str(&format!("- members ({}): {}\n", self.members.len(), self.members.join(", ")));
-        out.push_str(&format!("- files modified ({}): {}\n", self.files_modified.len(), self.files_modified.join(", ")));
+        out.push_str(&format!(
+            "- members ({}): {}\n",
+            self.members.len(),
+            self.members.join(", ")
+        ));
+        out.push_str(&format!(
+            "- files modified ({}): {}\n",
+            self.files_modified.len(),
+            self.files_modified.join(", ")
+        ));
         out.push_str(&format!("- applied: {}\n", self.applied));
         out.push_str(&format!("- verified: {}\n", self.verified));
         if !self.diagnostics.is_empty() {
@@ -392,9 +400,7 @@ fn parse_python_classes(text: &str, file_path: &Path) -> Vec<ClassDecl> {
                             .unwrap_or("")
                             .trim();
                         if !first_ident.is_empty()
-                            && first_ident
-                                .chars()
-                                .all(|c| c.is_alphanumeric() || c == '_')
+                            && first_ident.chars().all(|c| c.is_alphanumeric() || c == '_')
                         {
                             let member_start = line_starts[k];
                             let member_end = line_starts[k] + lines[k].len();
@@ -485,10 +491,11 @@ fn parse_ts_classes(text: &str, file_path: &Path, language: &str) -> Vec<ClassDe
                 .to_string();
             let mut super_names = Vec::new();
             if let Some(ext_pos) = tokens.iter().position(|&t| t == "extends")
-                && let Some(base) = tokens.get(ext_pos + 1) {
-                    let base_clean = base.split('<').next().unwrap_or(base).trim();
-                    super_names.push(base_clean.to_string());
-                }
+                && let Some(base) = tokens.get(ext_pos + 1)
+            {
+                let base_clean = base.split('<').next().unwrap_or(base).trim();
+                super_names.push(base_clean.to_string());
+            }
 
             // Find decl_start (handle optional `export `, `abstract `)
             let mut line_start = class_kw_pos;
@@ -568,8 +575,8 @@ fn parse_ts_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                     if let Some(global_close) = find_matching_brace(body, global_open - body_offset)
                     {
                         let member_end = body_offset + global_close + 1;
-                        let full_text = body[member_start - body_offset..member_end - body_offset]
-                            .to_string();
+                        let full_text =
+                            body[member_start - body_offset..member_end - body_offset].to_string();
                         members.push(MemberDecl {
                             name: ident.to_string(),
                             kind: MemberKind::Method,
@@ -605,7 +612,8 @@ fn parse_ts_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
             {
                 let member_start = line_offsets[i];
                 let member_end = line_offsets[i] + line.len();
-                let full_text = body[member_start - body_offset..member_end - body_offset].to_string();
+                let full_text =
+                    body[member_start - body_offset..member_end - body_offset].to_string();
                 members.push(MemberDecl {
                     name: ident.to_string(),
                     kind: MemberKind::Field,
@@ -686,7 +694,10 @@ fn parse_cpp_classes(text: &str, file_path: &Path) -> Vec<ClassDecl> {
                 .collect();
             (name, bases)
         } else {
-            (header.split_whitespace().next().unwrap_or("").to_string(), Vec::new())
+            (
+                header.split_whitespace().next().unwrap_or("").to_string(),
+                Vec::new(),
+            )
         };
 
         if class_name.is_empty() {
@@ -763,8 +774,8 @@ fn parse_cpp_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                     if let Some(global_close) = find_matching_brace(body, global_open - body_offset)
                     {
                         let member_end = body_offset + global_close + 1;
-                        let full_text = body[member_start - body_offset..member_end - body_offset]
-                            .to_string();
+                        let full_text =
+                            body[member_start - body_offset..member_end - body_offset].to_string();
                         members.push(MemberDecl {
                             name: ident.to_string(),
                             kind: MemberKind::Method,
@@ -781,7 +792,8 @@ fn parse_cpp_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                 } else if trimmed.ends_with(';') {
                     // Method declaration
                     let member_end = line_offsets[i] + line.len();
-                    let full_text = body[member_start - body_offset..member_end - body_offset].to_string();
+                    let full_text =
+                        body[member_start - body_offset..member_end - body_offset].to_string();
                     members.push(MemberDecl {
                         name: ident.to_string(),
                         kind: MemberKind::Method,
@@ -800,7 +812,8 @@ fn parse_cpp_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
             if !ident.is_empty() && ident.chars().all(|c| c.is_alphanumeric() || c == '_') {
                 let member_start = line_offsets[i];
                 let member_end = line_offsets[i] + line.len();
-                let full_text = body[member_start - body_offset..member_end - body_offset].to_string();
+                let full_text =
+                    body[member_start - body_offset..member_end - body_offset].to_string();
                 members.push(MemberDecl {
                     name: ident.to_string(),
                     kind: MemberKind::Field,
@@ -863,7 +876,10 @@ fn parse_swift_classes(text: &str, file_path: &Path) -> Vec<ClassDecl> {
                     .collect();
                 (name, bases)
             } else {
-                (header.split_whitespace().next().unwrap_or("").to_string(), Vec::new())
+                (
+                    header.split_whitespace().next().unwrap_or("").to_string(),
+                    Vec::new(),
+                )
             };
 
             let decl_start = class_kw_pos;
@@ -928,8 +944,8 @@ fn parse_swift_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                     if let Some(global_close) = find_matching_brace(body, global_open - body_offset)
                     {
                         let member_end = body_offset + global_close + 1;
-                        let full_text = body[member_start - body_offset..member_end - body_offset]
-                            .to_string();
+                        let full_text =
+                            body[member_start - body_offset..member_end - body_offset].to_string();
                         members.push(MemberDecl {
                             name: ident.to_string(),
                             kind: MemberKind::Method,
@@ -953,20 +969,22 @@ fn parse_swift_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
             // property
             let words: Vec<&str> = trimmed.split_whitespace().collect();
             if let Some(kw_pos) = words.iter().position(|&w| w == "var" || w == "let")
-                && let Some(ident_raw) = words.get(kw_pos + 1) {
-                    let ident = ident_raw.trim_end_matches(':').trim();
-                    let member_start = line_offsets[i];
-                    let member_end = line_offsets[i] + line.len();
-                    let full_text = body[member_start - body_offset..member_end - body_offset].to_string();
-                    members.push(MemberDecl {
-                        name: ident.to_string(),
-                        kind: MemberKind::Field,
-                        is_override,
-                        start_offset: member_start,
-                        end_offset: member_end,
-                        full_text,
-                    });
-                }
+                && let Some(ident_raw) = words.get(kw_pos + 1)
+            {
+                let ident = ident_raw.trim_end_matches(':').trim();
+                let member_start = line_offsets[i];
+                let member_end = line_offsets[i] + line.len();
+                let full_text =
+                    body[member_start - body_offset..member_end - body_offset].to_string();
+                members.push(MemberDecl {
+                    name: ident.to_string(),
+                    kind: MemberKind::Field,
+                    is_override,
+                    start_offset: member_start,
+                    end_offset: member_end,
+                    full_text,
+                });
+            }
         }
 
         i += 1;
@@ -1108,8 +1126,8 @@ fn parse_rust_trait_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                     if let Some(global_close) = find_matching_brace(body, global_open - body_offset)
                     {
                         let member_end = body_offset + global_close + 1;
-                        let full_text = body[member_start - body_offset..member_end - body_offset]
-                            .to_string();
+                        let full_text =
+                            body[member_start - body_offset..member_end - body_offset].to_string();
                         members.push(MemberDecl {
                             name: ident.to_string(),
                             kind: MemberKind::Method,
@@ -1125,7 +1143,8 @@ fn parse_rust_trait_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                     }
                 } else if trimmed.ends_with(';') {
                     let member_end = line_offsets[i] + line.len();
-                    let full_text = body[member_start - body_offset..member_end - body_offset].to_string();
+                    let full_text =
+                        body[member_start - body_offset..member_end - body_offset].to_string();
                     members.push(MemberDecl {
                         name: ident.to_string(),
                         kind: MemberKind::Method,
@@ -1146,7 +1165,8 @@ fn parse_rust_trait_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
             if !ident.is_empty() {
                 let member_start = line_offsets[i];
                 let member_end = line_offsets[i] + line.len();
-                let full_text = body[member_start - body_offset..member_end - body_offset].to_string();
+                let full_text =
+                    body[member_start - body_offset..member_end - body_offset].to_string();
                 members.push(MemberDecl {
                     name: ident.to_string(),
                     kind: MemberKind::AssociatedType,
@@ -1166,7 +1186,8 @@ fn parse_rust_trait_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
             if !ident.is_empty() {
                 let member_start = line_offsets[i];
                 let member_end = line_offsets[i] + line.len();
-                let full_text = body[member_start - body_offset..member_end - body_offset].to_string();
+                let full_text =
+                    body[member_start - body_offset..member_end - body_offset].to_string();
                 members.push(MemberDecl {
                     name: ident.to_string(),
                     kind: MemberKind::Constant,
@@ -1243,9 +1264,57 @@ pub fn adjust_indentation(text: &str, target_indent: &str) -> String {
         let cur_indent_len = line.len() - line.trim_start().len();
         let rel_indent_len = cur_indent_len.saturating_sub(source_base_indent_len);
         let extra_spaces = " ".repeat(rel_indent_len);
-        result.push(format!("{target_indent}{extra_spaces}{}", line.trim_start()));
+        result.push(format!(
+            "{target_indent}{extra_spaces}{}",
+            line.trim_start()
+        ));
     }
     result.join("\n")
+}
+
+fn normalized_member_text(member: &MemberDecl, language: &str) -> String {
+    let text = strip_override_modifiers(&member.full_text, language).replace("\r\n", "\n");
+    let lines = text.lines().collect::<Vec<_>>();
+    let common_indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|line| {
+            let cut = if line.trim().is_empty() || common_indent == 0 {
+                0
+            } else {
+                line.char_indices()
+                    .take_while(|(_, c)| *c == ' ' || *c == '\t')
+                    .nth(common_indent - 1)
+                    .map_or(0, |(byte, c)| byte + c.len_utf8())
+            };
+            line[cut..].trim_end()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn replace_python_pass(text: &mut String, class: &ClassDecl, replacement: &str) -> bool {
+    let body = &text[class.body_start..class.body_end];
+    let Some(pass_at) = body.find("pass") else {
+        return false;
+    };
+    let line_start = body[..pass_at].rfind('\n').map_or(0, |i| i + 1);
+    if !body[line_start..pass_at].trim().is_empty() {
+        return false;
+    }
+    let line_end = body[pass_at..]
+        .find('\n')
+        .map_or(body.len(), |offset| pass_at + offset);
+    text.replace_range(
+        class.body_start + line_start..class.body_start + line_end,
+        replacement,
+    );
+    true
 }
 
 /// Search workspace for a class by name and language.
@@ -1369,16 +1438,15 @@ pub async fn pull_up_impl(
     };
 
     // Locate superclass declaration
-    let (super_file, super_file_text, super_class) =
-        if let Some(c) = classes_in_sub_file.iter().find(|c| c.name == super_name) {
-            (file.to_path_buf(), sub_file_text.clone(), c.clone())
-        } else {
-            find_class_in_workspace(root, &super_name, &language).with_context(|| {
-                format!(
-                    "superclass '{super_name}' not found in workspace for language '{language}'"
-                )
-            })?
-        };
+    let (super_file, super_file_text, super_class) = if let Some(c) =
+        classes_in_sub_file.iter().find(|c| c.name == super_name)
+    {
+        (file.to_path_buf(), sub_file_text.clone(), c.clone())
+    } else {
+        find_class_in_workspace(root, &super_name, &language).with_context(|| {
+            format!("superclass '{super_name}' not found in workspace for language '{language}'")
+        })?
+    };
 
     // Validate members exist in subclass and do NOT collide in superclass
     let mut member_decls_to_move = Vec::new();
@@ -1391,12 +1459,13 @@ pub async fn pull_up_impl(
             .with_context(|| format!("member '{name}' not found in class '{class_name}'"))?;
 
         if let Some(existing) = super_class.members.iter().find(|m| m.name == *name)
-            && !force {
-                bail!(
-                    "superclass '{super_name}' already defines member '{name}' (start at offset {})",
-                    existing.start_offset
-                );
-            }
+            && !force
+        {
+            bail!(
+                "superclass '{super_name}' already defines member '{name}' (start at offset {})",
+                existing.start_offset
+            );
+        }
         member_decls_to_move.push(member);
     }
 
@@ -1459,11 +1528,7 @@ pub async fn pull_up_impl(
         if language == "python" {
             let body_slice = &modified[updated_super.body_start..updated_super.body_end];
             if body_slice.trim() == "pass" {
-                // Replace pass with the pulled-up members
-                let pass_start = updated_super.body_start
-                    + body_slice.find("pass").unwrap_or(0);
-                let pass_end = pass_start + 4;
-                modified.replace_range(pass_start..pass_end, &insert_block);
+                replace_python_pass(&mut modified, &updated_super, &insert_block);
             } else {
                 let insert_pos = updated_super.body_end;
                 let formatted = format!("\n\n{insert_block}");
@@ -1499,13 +1564,13 @@ pub async fn pull_up_impl(
             && let Some(updated_sub) = parse_classes_in_text(&modified_sub, &language, file)
                 .into_iter()
                 .find(|c| c.name == class_name)
-            {
-                let body_slice = &modified_sub[updated_sub.body_start..updated_sub.body_end];
-                if body_slice.trim().is_empty() {
-                    let pass_stmt = format!("{}pass\n", updated_sub.indent);
-                    modified_sub.insert_str(updated_sub.body_start, &pass_stmt);
-                }
+        {
+            let body_slice = &modified_sub[updated_sub.body_start..updated_sub.body_end];
+            if body_slice.trim().is_empty() {
+                let pass_stmt = format!("{}pass\n", updated_sub.indent);
+                modified_sub.insert_str(updated_sub.body_start, &pass_stmt);
             }
+        }
         file_contents.insert(file.to_path_buf(), modified_sub);
 
         // 2. Edit super_file
@@ -1513,9 +1578,7 @@ pub async fn pull_up_impl(
         if language == "python" {
             let body_slice = &modified_super[super_class.body_start..super_class.body_end];
             if body_slice.trim() == "pass" {
-                let pass_start = super_class.body_start + body_slice.find("pass").unwrap_or(0);
-                let pass_end = pass_start + 4;
-                modified_super.replace_range(pass_start..pass_end, &insert_block);
+                replace_python_pass(&mut modified_super, &super_class, &insert_block);
             } else {
                 let insert_pos = super_class.body_end;
                 let formatted = format!("\n\n{insert_block}");
@@ -1531,10 +1594,11 @@ pub async fn pull_up_impl(
 
     // 3. Sibling cleanup if requested
     if clean_siblings {
-        let candidate_paths: BTreeSet<PathBuf> = find_subclasses_in_workspace(root, &super_name, &language)
-            .into_iter()
-            .map(|(p, _, _)| p)
-            .collect();
+        let candidate_paths: BTreeSet<PathBuf> =
+            find_subclasses_in_workspace(root, &super_name, &language)
+                .into_iter()
+                .map(|(p, _, _)| p)
+                .collect();
 
         for sib_path in candidate_paths {
             let mut modified_text = file_contents
@@ -1548,7 +1612,13 @@ pub async fn pull_up_impl(
                 let sibling_with_target_member = current_classes.into_iter().find(|c| {
                     c.name != class_name
                         && c.super_names.contains(&super_name)
-                        && c.members.iter().any(|m| members_to_pull.contains(&m.name))
+                        && c.members.iter().any(|sibling_member| {
+                            member_decls_to_move.iter().any(|pulled_member| {
+                                sibling_member.name == pulled_member.name
+                                    && normalized_member_text(sibling_member, &language)
+                                        == normalized_member_text(pulled_member, &language)
+                            })
+                        })
                 });
 
                 let Some(sib_class) = sibling_with_target_member else {
@@ -1558,7 +1628,13 @@ pub async fn pull_up_impl(
                 let matching_members: Vec<MemberDecl> = sib_class
                     .members
                     .into_iter()
-                    .filter(|m| members_to_pull.contains(&m.name))
+                    .filter(|sibling_member| {
+                        member_decls_to_move.iter().any(|pulled_member| {
+                            sibling_member.name == pulled_member.name
+                                && normalized_member_text(sibling_member, &language)
+                                    == normalized_member_text(pulled_member, &language)
+                        })
+                    })
                     .collect();
 
                 let mut sorted = matching_members;
@@ -1581,8 +1657,7 @@ pub async fn pull_up_impl(
                             .into_iter()
                             .find(|c| c.name == sib_class.name)
                 {
-                    let body_slice =
-                        &modified_text[updated_sib.body_start..updated_sib.body_end];
+                    let body_slice = &modified_text[updated_sib.body_start..updated_sib.body_end];
                     if body_slice.trim().is_empty() {
                         let pass_stmt = format!("{}pass\n", updated_sib.indent);
                         modified_text.insert_str(updated_sib.body_start, &pass_stmt);
@@ -1604,7 +1679,11 @@ pub async fn pull_up_impl(
 
     for (p, new_text) in &file_contents {
         let old_text = std::fs::read_to_string(p).unwrap_or_default();
-        let rel_path = p.strip_prefix(root).unwrap_or(p).to_string_lossy().to_string();
+        let rel_path = p
+            .strip_prefix(root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .to_string();
         files_modified.push(rel_path.clone());
         overlays.push((p.clone(), new_text.clone()));
 
@@ -1617,9 +1696,7 @@ pub async fn pull_up_impl(
     }
 
     // In-memory analyzer validation
-    let reports = crate::diagnostics::validate_texts(remote, root, &overlays, &[])
-        .await
-        .unwrap_or_default();
+    let reports = crate::diagnostics::validate_texts(remote, root, &overlays, &[]).await?;
     let mut diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -1649,10 +1726,7 @@ pub async fn pull_up_impl(
         verified = check.passed;
         if !check.passed {
             if !force {
-                bail!(
-                    "compiler verification failed:\n{}",
-                    check.errors.join("\n")
-                );
+                bail!("compiler verification failed:\n{}", check.errors.join("\n"));
             }
             diagnostics.push(format!("compiler errors: {}", check.errors.join("; ")));
         }
@@ -1660,6 +1734,11 @@ pub async fn pull_up_impl(
 
     // Apply if requested
     if apply {
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the refactoring produces analyzer errors; nothing was written:\n  {}",
+            diagnostics.join("\n  ")
+        );
         let edit = crate::signature::whole_file_edit(&file_contents);
         crate::refactor::apply_workspace_edit(root, &edit)?;
     }
@@ -1727,7 +1806,10 @@ pub async fn push_down_impl(
         Some(targets) if !targets.is_empty() => {
             let mut matched = Vec::new();
             for t in targets {
-                if let Some(c) = candidate_subclasses.iter().find(|(_, _, cls)| cls.name == *t) {
+                if let Some(c) = candidate_subclasses
+                    .iter()
+                    .find(|(_, _, cls)| cls.name == *t)
+                {
                     matched.push(c.clone());
                 } else if !force {
                     bail!(
@@ -1754,13 +1836,14 @@ pub async fn push_down_impl(
     for (_, _, sub) in &target_subclasses {
         for m in members_to_push {
             if let Some(existing) = sub.members.iter().find(|mem| mem.name == *m)
-                && !force {
-                    bail!(
-                        "target subclass '{}' already defines member '{}'",
-                        sub.name,
-                        existing.name
-                    );
-                }
+                && !force
+            {
+                bail!(
+                    "target subclass '{}' already defines member '{}'",
+                    sub.name,
+                    existing.name
+                );
+            }
         }
     }
 
@@ -1787,21 +1870,18 @@ pub async fn push_down_impl(
         && let Some(updated_super) = parse_classes_in_text(&modified_super, &language, file)
             .into_iter()
             .find(|c| c.name == class_name)
-        {
-            let body_slice = &modified_super[updated_super.body_start..updated_super.body_end];
-            if body_slice.trim().is_empty() {
-                let pass_stmt = format!("{}pass\n", updated_super.indent);
-                modified_super.insert_str(updated_super.body_start, &pass_stmt);
-            }
+    {
+        let body_slice = &modified_super[updated_super.body_start..updated_super.body_end];
+        if body_slice.trim().is_empty() {
+            let pass_stmt = format!("{}pass\n", updated_super.indent);
+            modified_super.insert_str(updated_super.body_start, &pass_stmt);
         }
+    }
     file_contents.insert(file.to_path_buf(), modified_super);
 
     // 2. Insert members into each target subclass
     for (sub_path, sub_content, sub_class) in target_subclasses {
-        let current_text = file_contents
-            .get(&sub_path)
-            .cloned()
-            .unwrap_or(sub_content);
+        let current_text = file_contents.get(&sub_path).cloned().unwrap_or(sub_content);
 
         // Adjust member indentation for this subclass
         let mut prepared = Vec::new();
@@ -1814,13 +1894,14 @@ pub async fn push_down_impl(
         let mut modified_sub = current_text;
         // Re-parse subclass in current text to get latest offsets
         let current_classes = parse_classes_in_text(&modified_sub, &language, &sub_path);
-        if let Some(cur_sub) = current_classes.into_iter().find(|c| c.name == sub_class.name) {
+        if let Some(cur_sub) = current_classes
+            .into_iter()
+            .find(|c| c.name == sub_class.name)
+        {
             if language == "python" {
                 let body_slice = &modified_sub[cur_sub.body_start..cur_sub.body_end];
                 if body_slice.trim() == "pass" {
-                    let pass_start = cur_sub.body_start + body_slice.find("pass").unwrap_or(0);
-                    let pass_end = pass_start + 4;
-                    modified_sub.replace_range(pass_start..pass_end, &insert_block);
+                    replace_python_pass(&mut modified_sub, &cur_sub, &insert_block);
                 } else {
                     let insert_pos = cur_sub.body_end;
                     let formatted = format!("\n\n{insert_block}");
@@ -1842,7 +1923,11 @@ pub async fn push_down_impl(
 
     for (p, new_text) in &file_contents {
         let old_text = std::fs::read_to_string(p).unwrap_or_default();
-        let rel_path = p.strip_prefix(root).unwrap_or(p).to_string_lossy().to_string();
+        let rel_path = p
+            .strip_prefix(root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .to_string();
         files_modified.push(rel_path.clone());
         overlays.push((p.clone(), new_text.clone()));
 
@@ -1855,9 +1940,7 @@ pub async fn push_down_impl(
     }
 
     // In-memory analyzer validation
-    let reports = crate::diagnostics::validate_texts(remote, root, &overlays, &[])
-        .await
-        .unwrap_or_default();
+    let reports = crate::diagnostics::validate_texts(remote, root, &overlays, &[]).await?;
     let mut diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -1895,6 +1978,11 @@ pub async fn push_down_impl(
 
     // Apply if requested
     if apply {
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the refactoring produces analyzer errors; nothing was written:\n  {}",
+            diagnostics.join("\n  ")
+        );
         let edit = crate::signature::whole_file_edit(&file_contents);
         crate::refactor::apply_workspace_edit(root, &edit)?;
     }
