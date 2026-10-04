@@ -380,6 +380,8 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`nim-lang/Nim`](https://github.com/nim-lang/Nim) | Nim (32-core node) | 67 / 67 tools (461K lines, clean DAG, allocator test clones, 1.8K asserts, 94% AST slice reduction) | 461K lines (3,923 files) | 0.68 ms RTT | [Nim Under the Microscope →](https://prod.codes/blog/nim-under-the-microscope-67-ast-tools/) |
 | [`status-im/nimbus-eth2`](https://github.com/status-im/nimbus-eth2) | Nim (32-core node) | 67 / 67 tools (180K lines, clean DAG, hard-fork clones, 585 Result types, zero-exception safety) | 180K lines (379 files) | 0.63 ms RTT | [Nimbus Under the Microscope →](https://prod.codes/blog/nimbus-under-the-microscope-67-ast-tools/) |
 | [`nim-lang/nimble`](https://github.com/nim-lang/nimble) | Nim (32-core node) | 67 / 67 tools (39K lines, clean DAG, SAT solver & PubGrub, 136 test fixtures, compiler AST parser) | 38.9K lines (135 files) | 0.58 ms RTT | [Nimble Under the Microscope →](https://prod.codes/blog/nimble-under-the-microscope-67-ast-tools/) |
+| [`dlang/dmd`](https://github.com/dlang/dmd) | D (32-core node) | 67 / 67 tools (976K lines, clean DAG, ImportC C11 AST parser, 12K invariants, CTFE interpreter) | 976K lines (5,579 files) | 0.58 ms RTT | [DMD Under the Microscope →](https://prod.codes/blog/dmd-under-the-microscope-67-ast-tools/) |
+
 
 
 
