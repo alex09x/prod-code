@@ -319,6 +319,9 @@ pub struct ClientCapabilities {
     pub sync_chunking: bool,
     #[serde(default)]
     pub unix_socket_local: bool,
+    /// The client can decode transparent gateway redirect frames during handshakes.
+    #[serde(default)]
+    pub redirects: bool,
 }
 
 /// Server capabilities granted during handshake.

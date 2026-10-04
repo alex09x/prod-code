@@ -4433,8 +4433,12 @@ pub async fn handle_client(
                 let engine_kind =
                     detect::resolve_engine(&engine_root, req.preferred_engine.as_deref());
                 let engine = engine_kind.as_str();
+                let supports_redirects = req
+                    .capabilities
+                    .as_ref()
+                    .is_some_and(|capabilities| capabilities.redirects);
                 if !state.serves_engine(engine) {
-                    if req.redirect_count < 2 {
+                    if supports_redirects && req.redirect_count < 2 {
                         let view = state.cluster_view().await;
                         if let Some(target) = view.nodes.iter().find(|n| {
                             n.alive && cluster_supports_engine(&n.status, engine)
@@ -4473,7 +4477,7 @@ pub async fn handle_client(
                     .get_loaded(&server_workspace)
                     .await
                     .is_some();
-                if req.redirect_count < 3 {
+                if supports_redirects && req.redirect_count < 3 {
                     let view = state.cluster_view().await;
                     let own_addr = state.advertise.read().await.clone();
                     let ws_name = req
