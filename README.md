@@ -394,6 +394,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`flutter/flutter`](https://github.com/flutter/flutter) | Dart (32-core node) | 67 / 67 tool calls attempted; Dart dependency graph and extract-function unsupported (2.60M lines, 10-phase render pipeline, 112.7K test asserts, 3.8K errors) | 2.60M lines (6,554 files) | 0.30 ms RTT | [Flutter Under the Microscope →](https://prod.codes/blog/flutter-under-the-microscope-67-ast-tools/) |
 | [`felangel/bloc`](https://github.com/felangel/bloc) | Dart (32-core node) | 67 / 67 tool calls attempted; Dart dependency graph and extract-function unsupported (46K lines, reactive event transformers, 1.6K test asserts, 72 errors) | 45.7K lines (616 files) | 0.35 ms RTT | [Bloc Under the Microscope →](https://prod.codes/blog/bloc-under-the-microscope-67-ast-tools/) |
 | [`cfug/dio`](https://github.com/cfug/dio) | Dart (32-core node) | 67 / 67 tools (23K lines, clean DAG, FIFO interceptor chain, 845 test asserts, 138 exceptions) | 22.8K lines (156 files) | 0.32 ms RTT | [Dio Under the Microscope →](https://prod.codes/blog/dio-under-the-microscope-67-ast-tools/) |
+| [`dart-lang/sdk`](https://github.com/dart-lang/sdk) | Dart (32-core node) | 67 / 67 tool calls attempted; Dart dependency graph and extract-function unsupported (5.74M lines, Kernel AST CFE compiler, 33.0K test asserts, 8.7K invariants) | 5.74M lines (25,732 files) | 0.35 ms RTT | [Dart SDK Under the Microscope →](https://prod.codes/blog/dart-sdk-under-the-microscope-67-ast-tools/) |
 
 
 
