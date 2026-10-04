@@ -687,6 +687,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 34,633 test assertions and 670 typed exception egress points across Illuminate components. Evaluated recursive autowiring and contextual dependency resolution in `Illuminate\Container\Container`, resolving constructor reflection parameter graphs with zero memory leakage. AST refactoring evaluated `prod-code extract-function` on `src/Illuminate/Support/Str.php` (`replaceFirst`), extracting substring offset calculations, verified with 0 analyzer errors on cluster nodes.
     - **Full Deep-Dive Report**: [Laravel Under the Microscope: What 67 Remote AST Tools Found Inside the PHP Web Artisan Framework (prod.codes)](https://prod.codes/blog/laravel-under-the-microscope-67-ast-tools/)
 
+54. **[symfony/symfony](https://github.com/symfony/symfony)** (PHP)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 2,201,262 lines of PHP across 11,999 source files (modular components `src/Symfony/Component/`: 1.45M LOC, integration bridges `src/Symfony/Bridge/`: 312K LOC, framework bundles: 439K LOC), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Enterprise PHP component monorepo analyzed with `prod-code dependencies` across root `composer.json` and 60+ component subtrees. Discovered zero circular dependencies (clean directed acyclic graph) isolating compilation pipelines, HTTP kernels, event dispatchers, serialization systems, and messenger buses. Clone analysis (`prod-code duplicates`) scanned 11,999 files (2,201,262 lines) and isolated 5 clone groups with 0.4% duplication at 6 lines, dominated by generated container boilerplate in `src/Symfony/Component/DependencyInjection/Dumper/PhpDumper.php:1298-1303` and fixture models.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 47,912 test assertions and 6,251 explicit exception egress points across component boundaries. Evaluated ahead-of-time compiled dependency injection in `ContainerBuilder::compile()`, where compiler passes optimize, inline, and dump service graphs into high-speed static PHP caches. AST refactoring evaluated `prod-code extract-function` on `src/Symfony/Component/String/ByteString.php`, extracting byte slice indexing helpers, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [Symfony Under the Microscope: What 67 Remote AST Tools Found Inside the Enterprise PHP Component Monorepo (prod.codes)](https://prod.codes/blog/symfony-under-the-microscope-67-ast-tools/)
+
+
 
 
 
