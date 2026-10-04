@@ -162,13 +162,15 @@ impl Decoder for ProdCodeCodec {
         let mut frame_data = src.split_to(frame_len);
 
         // Consume trailing NUL completion marker if present
-        if !src.is_empty() && src[0] == 0 {
-            src.advance(1);
-        } else if self.nul_marker {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Missing expected NUL completion marker after frame",
-            ));
+        if self.nul_marker {
+            if src.first() == Some(&0) {
+                src.advance(1);
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Missing expected NUL completion marker after frame",
+                ));
+            }
         }
 
         // Also tolerate NUL byte included within frame_len
@@ -231,6 +233,18 @@ mod tests {
             .expect("should decode message");
         assert_eq!(decoded, original);
         assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_codec_does_not_consume_next_frame_header_as_a_marker() {
+        let mut codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+        codec.encode(WireMessage::Ping, &mut buf).unwrap();
+        codec.encode(WireMessage::Pong, &mut buf).unwrap();
+
+        assert_eq!(codec.decode(&mut buf).unwrap(), Some(WireMessage::Ping));
+        assert_eq!(codec.decode(&mut buf).unwrap(), Some(WireMessage::Pong));
+        assert!(buf.is_empty());
     }
 
     #[test]
