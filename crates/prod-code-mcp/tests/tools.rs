@@ -4647,7 +4647,44 @@ async fn code_change_signature_rejects_cargo_compile_verification_for_typescript
     .await
     .unwrap_err();
 
-    assert!(format!("{error:#}").contains("supported only for Rust"));
+    assert!(
+        format!("{error:#}").contains("supported only for Rust"),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), source);
+}
+
+#[tokio::test]
+async fn code_inline_parameter_rejects_cargo_compile_verification_for_typescript() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "export function clamp(value: number, max: number) { return Math.min(value, max); }\n";
+    let file = write(&ws, "src/math.ts", source);
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_inline_parameter",
+        serde_json::json!({
+            "path": "src/math.ts",
+            "line": 1,
+            "character": 32,
+            "function": "clamp",
+            "parameter": "max",
+            "verify": "compile",
+            "apply": true
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("only supported for Rust"));
     assert_eq!(std::fs::read_to_string(file).unwrap(), source);
 }
 
