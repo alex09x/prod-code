@@ -22,21 +22,43 @@ pub const SWIFT_MODULE_CACHE_ENV: &str = "PROD_CODE_SWIFT_MODULE_CACHE";
 /// 1. `PROD_CODE_SWIFT_MODULE_CACHE` environment variable if set.
 /// 2. `SWIFTPM_MODULECACHE_OVERRIDE` environment variable if already configured.
 /// 3. `$HOME/.cache/prod-code/swift-module-cache`.
-/// 4. `/var/tmp/prod-code/swift-module-cache` (or `/tmp/prod-code/swift-module-cache`).
-/// 5. Temporary directory fallback (`std::env::temp_dir().join("prod-code-swift-module-cache")`).
+/// 4. A UID-specific cache directory under `/var/tmp`.
+/// 5. A process-specific fallback under the system temporary directory.
 ///
 /// Ensures the directory exists with mode `0700` on Unix systems.
+fn resolve_cache_dir(path: PathBuf) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    if path.file_name().is_none() || std::env::current_dir().ok().as_deref() == Some(path.as_path())
+    {
+        return None;
+    }
+    match ensure_cache_dir(&path) {
+        Ok(()) => Some(path),
+        Err(error) => {
+            tracing::warn!(cache = %path.display(), %error, "rejecting insecure Swift module cache directory");
+            None
+        }
+    }
+}
+
 pub fn swift_module_cache_dir() -> PathBuf {
     if let Some(custom) = std::env::var_os(SWIFT_MODULE_CACHE_ENV) {
-        let p = PathBuf::from(custom);
-        let _ = ensure_cache_dir(&p);
-        return p;
+        if let Some(dir) = resolve_cache_dir(PathBuf::from(custom)) {
+            return dir;
+        }
     }
 
     if let Some(override_path) = std::env::var_os("SWIFTPM_MODULECACHE_OVERRIDE") {
-        let p = PathBuf::from(override_path);
-        let _ = ensure_cache_dir(&p);
-        return p;
+        if let Some(dir) = resolve_cache_dir(PathBuf::from(override_path)) {
+            return dir;
+        }
     }
 
     if let Some(home) = std::env::var_os("HOME") {
@@ -44,28 +66,97 @@ pub fn swift_module_cache_dir() -> PathBuf {
             .join(".cache")
             .join("prod-code")
             .join("swift-module-cache");
-        if ensure_cache_dir(&p).is_ok() {
-            return p;
+        if let Some(dir) = resolve_cache_dir(p) {
+            return dir;
         }
     }
 
-    let var_tmp = PathBuf::from("/var/tmp/prod-code/swift-module-cache");
-    if ensure_cache_dir(&var_tmp).is_ok() {
-        return var_tmp;
+    let user = cache_user_suffix();
+    let var_tmp = PathBuf::from("/var/tmp").join(format!("prod-code-swift-module-cache-{user}"));
+    if let Some(dir) = resolve_cache_dir(var_tmp) {
+        return dir;
     }
 
-    let temp = std::env::temp_dir().join("prod-code-swift-module-cache");
-    let _ = ensure_cache_dir(&temp);
-    temp
+    let temp = std::env::temp_dir().join(format!(
+        "prod-code-swift-module-cache-{user}-{}",
+        std::process::id()
+    ));
+    resolve_cache_dir(temp).expect("no private Swift module cache directory could be created")
+}
+
+fn cache_user_suffix() -> String {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() }.to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "default".to_string())
+    }
 }
 
 /// Ensures `dir` exists and has secure permissions (`0700` on Unix).
 pub fn ensure_cache_dir(dir: &Path) -> io::Result<()> {
+    if dir.as_os_str().is_empty() || dir.file_name().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid cache directory path",
+        ));
+    }
     fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+        let c_path = std::ffi::CString::new(dir.as_os_str().as_bytes())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let fd = unsafe {
+            libc::open(
+                c_path.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fd was returned by open and ownership is transferred to File.
+        let directory = unsafe { std::fs::File::from_raw_fd(fd) };
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Swift module cache directory is not owned by the current user",
+            ));
+        }
+        if metadata.mode() & 0o077 != 0
+            && unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let secured = directory.metadata()?;
+        if !secured.is_dir()
+            || secured.uid() != unsafe { libc::geteuid() }
+            || secured.mode() & 0o077 != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Swift module cache directory could not be secured to mode 0700",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let metadata = fs::symlink_metadata(dir)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Swift module cache path is not a real directory",
+            ));
+        }
     }
     Ok(())
 }
@@ -100,7 +191,8 @@ pub fn relocate_swiftpm_workspace_state(
 ) -> io::Result<String> {
     if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(content) {
         relocate_json_value(&mut val, from_str, to_str);
-        serde_json::to_string_pretty(&val).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        serde_json::to_string_pretty(&val)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     } else {
         // Fallback: line-by-line token relocation if json is not strictly standard
         let mut lines = Vec::new();
@@ -158,7 +250,8 @@ fn walk_for_packages(root: &Path, dir: &Path, packages: &mut Vec<PathBuf>) {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        if name_str == "Package.swift" && entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+        if name_str == "Package.swift" && entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+        {
             has_package = true;
         } else if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
             if is_cache_or_ignored_dir(&name_str) {
@@ -217,6 +310,34 @@ pub fn tree_size(path: &Path) -> u64 {
     total
 }
 
+fn real_module_cache_size(path: &Path) -> u64 {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        .map(|_| tree_size(path))
+        .unwrap_or(0)
+}
+
+fn module_cache_size_in_build(build: &Path) -> u64 {
+    let mut total = real_module_cache_size(&build.join("ModuleCache"));
+    let Ok(entries) = fs::read_dir(build) else {
+        return total;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        for profile in ["debug", "release"] {
+            total += real_module_cache_size(&path.join(profile).join("ModuleCache"));
+        }
+    }
+    total
+}
+
 /// Seeds SwiftPM package checkouts, bare repositories, binary artifacts, workspace state,
 /// and links `.build/ModuleCache` to the node's shared Swift module cache directory (Roadmap 3.7).
 ///
@@ -239,12 +360,12 @@ pub fn seed_swift_worktree_within(
         return Ok(None);
     }
 
-    let from_str = from.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "from is not valid UTF-8")
-    })?;
-    let to_str = to.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "to is not valid UTF-8")
-    })?;
+    let from_str = from
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "from is not valid UTF-8"))?;
+    let to_str = to
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "to is not valid UTF-8"))?;
 
     let shared_module_cache = swift_module_cache_dir();
     let mut total_bytes = 0u64;
@@ -271,11 +392,28 @@ pub fn seed_swift_worktree_within(
         }
     }
 
-    let heavy_fits = if heavy_size > 0 {
-        crate::seed_fits("SwiftPM checkouts and artifacts", heavy_size, space)
-    } else {
-        true
-    };
+    let module_cache_size: u64 = packages
+        .iter()
+        .map(|rel| {
+            module_cache_size_in_build(&from.join(rel).join(".build"))
+                + module_cache_size_in_build(&to.join(rel).join(".build"))
+        })
+        .sum();
+    let total_seed_size = heavy_size.saturating_add(module_cache_size);
+    let cache_seed_fits = total_seed_size == 0
+        || crate::seed_fits(
+            "SwiftPM dependency and module caches",
+            total_seed_size,
+            space,
+        );
+    let shared_cache_fits = module_cache_size == 0
+        || crate::seed_fits(
+            "shared Swift module cache",
+            module_cache_size,
+            crate::disk_space(&shared_module_cache),
+        );
+    let heavy_fits = cache_seed_fits;
+    let module_cache_fits = cache_seed_fits && shared_cache_fits;
 
     for rel in packages {
         let from_pkg = from.join(&rel);
@@ -287,14 +425,21 @@ pub fn seed_swift_worktree_within(
         // Ensure target .build directory exists
         fs::create_dir_all(&to_build)?;
 
-        // 1. Establish shared ModuleCache symlink: .build/ModuleCache -> shared_module_cache
-        let to_module_cache = to_build.join("ModuleCache");
-        link_shared_module_cache(&from_build, &to_module_cache, &shared_module_cache)?;
-        any_seeded = true;
+        // 1. Link module caches only when the complete source/target cache set fits the budget.
+        if module_cache_fits {
+            let to_module_cache = to_build.join("ModuleCache");
+            link_shared_module_cache(&from_build, &to_module_cache, &shared_module_cache)?;
+            any_seeded = true;
 
-        // 2. Also ensure any architecture-specific ModuleCache links to the shared cache
-        // e.g. .build/arm64-apple-macosx/debug/ModuleCache or .build/x86_64-apple-macosx/debug/ModuleCache
-        link_triple_module_caches(&from_build, &to_build, &shared_module_cache)?;
+            // Also link triple-specific caches such as debug/ModuleCache.
+            link_triple_module_caches(&from_build, &to_build, &shared_module_cache)?;
+        } else {
+            tracing::info!(
+                workspace = %to_pkg.display(),
+                cache_bytes = module_cache_size,
+                "Swift module cache exceeds disk budget; leaving local module caches in place"
+            );
+        }
 
         // 3. Seed package checkouts, bare repositories, and binary artifacts if from_build exists and fits
         if from_build.is_dir() {
@@ -359,7 +504,7 @@ fn link_shared_module_cache(
         // If from has a real directory with cached modules, merge them into shared_module_cache
         if let Ok(meta) = fs::symlink_metadata(&from_module_cache) {
             if !meta.file_type().is_symlink() {
-                let _ = merge_cache_files(&from_module_cache, shared_module_cache);
+                merge_cache_files(&from_module_cache, shared_module_cache)?;
             }
         }
     }
@@ -374,7 +519,7 @@ fn link_shared_module_cache(
             }
             let _ = fs::remove_file(to_module_cache);
         } else if meta.is_dir() {
-            let _ = merge_cache_files(to_module_cache, shared_module_cache);
+            merge_cache_files(to_module_cache, shared_module_cache)?;
             let _ = fs::remove_dir_all(to_module_cache);
         }
     }
@@ -412,7 +557,12 @@ fn link_triple_module_caches(
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') || matches!(name_str.as_ref(), "checkouts" | "repositories" | "artifacts" | "ModuleCache") {
+        if name_str.starts_with('.')
+            || matches!(
+                name_str.as_ref(),
+                "checkouts" | "repositories" | "artifacts" | "ModuleCache"
+            )
+        {
             continue;
         }
         let from_triple = entry.path();
@@ -441,16 +591,28 @@ fn merge_cache_files(src_dir: &Path, dst_dir: &Path) -> io::Result<u64> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
         let name = entry.file_name();
         if name.to_string_lossy().starts_with('.') {
             continue;
         }
         let target = dst_dir.join(&name);
-        if path.is_file() && !target.exists() {
-            if let Ok(bytes) = fs::copy(&path, &target) {
-                copied += bytes;
-            }
-        } else if path.is_dir() {
+        let target_metadata = fs::symlink_metadata(&target).ok();
+        if target_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.file_type().is_symlink())
+        {
+            continue;
+        }
+        if metadata.is_file() && target_metadata.is_none() {
+            copied += fs::copy(&path, &target)?;
+        } else if metadata.is_dir() {
             fs::create_dir_all(&target)?;
             copied += merge_cache_files(&path, &target)?;
         }
@@ -467,15 +629,12 @@ fn copy_dir_preserving(src: &Path, dst: &Path) -> io::Result<u64> {
         return Ok(tree_size(dst));
     }
 
-    let parent = dst.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent")
-    })?;
+    let parent = dst
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
     fs::create_dir_all(parent)?;
 
-    let dst_name = dst
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("dir");
+    let dst_name = dst.file_name().and_then(|n| n.to_str()).unwrap_or("dir");
 
     // Exclusively create a unique staging holder directory.
     // If the directory already exists (e.g. from an earlier crashed process),
@@ -510,11 +669,7 @@ fn copy_dir_preserving(src: &Path, dst: &Path) -> io::Result<u64> {
     let copy_result = {
         let mut cmd = std::process::Command::new("cp");
         cmd.scrub_cluster_secrets();
-        let status = cmd
-            .arg("-a")
-            .arg(src)
-            .arg(&staging_dst)
-            .status();
+        let status = cmd.arg("-a").arg(src).arg(&staging_dst).status();
         match status {
             Ok(s) if s.success() => Ok(()),
             Ok(s) => Err(io::Error::other(format!(
@@ -621,19 +776,27 @@ mod unix_pruner {
         max_age: Duration,
         max_size_bytes: u64,
     ) -> io::Result<usize> {
-        let canonical_root = match fs::canonicalize(cache_dir) {
-            Ok(c) => c,
+        let parent = cache_dir
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let Some(name) = cache_dir.file_name() else {
+            return Ok(0);
+        };
+        let canonical_parent = match fs::canonicalize(parent) {
+            Ok(parent) => parent,
             Err(_) => return Ok(0),
         };
-        let expected_meta = match fs::symlink_metadata(&canonical_root) {
+        let root_path = canonical_parent.join(name);
+        let expected_meta = match fs::symlink_metadata(&root_path) {
             Ok(m) => m,
             Err(_) => return Ok(0),
         };
-        if !expected_meta.file_type().is_dir() {
+        if expected_meta.file_type().is_symlink() || !expected_meta.file_type().is_dir() {
             return Ok(0);
         }
 
-        let c_root = std::ffi::CString::new(canonical_root.as_os_str().as_bytes())
+        let c_root = std::ffi::CString::new(root_path.as_os_str().as_bytes())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
         let root_fd = unsafe {
@@ -648,7 +811,9 @@ mod unix_pruner {
 
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(root_fd, &mut st) } != 0 {
-            unsafe { libc::close(root_fd); }
+            unsafe {
+                libc::close(root_fd);
+            }
             return Ok(0);
         }
 
@@ -657,7 +822,9 @@ mod unix_pruner {
             || (st.st_dev as u64) != expected_meta.dev()
             || (st.st_ino as u64) != expected_meta.ino()
         {
-            unsafe { libc::close(root_fd); }
+            unsafe {
+                libc::close(root_fd);
+            }
             return Ok(0);
         }
 
@@ -666,12 +833,7 @@ mod unix_pruner {
         let mut rel_components = Vec::new();
 
         unsafe {
-            collect_dir(
-                root_fd,
-                &mut rel_components,
-                &mut files,
-                &mut total_size,
-            );
+            collect_dir(root_fd, &mut rel_components, &mut files, &mut total_size);
         }
 
         let now = SystemTime::now();
@@ -772,7 +934,8 @@ mod unix_pruner {
                         libc::close(child_fd);
                     }
                 } else if mode == libc::S_IFREG {
-                    let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                    let modified =
+                        SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
                     let size = st.st_size as u64;
                     *total_size += size;
                     files.push(CacheEntry {
@@ -802,7 +965,9 @@ mod unix_pruner {
             };
             if next_fd < 0 {
                 for fd in fds_to_close {
-                    unsafe { libc::close(fd); }
+                    unsafe {
+                        libc::close(fd);
+                    }
                 }
                 return false;
             }
@@ -828,7 +993,9 @@ mod unix_pruner {
         };
 
         for fd in fds_to_close {
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
         }
 
         removed
@@ -836,7 +1003,11 @@ mod unix_pruner {
 }
 
 #[cfg(not(unix))]
-fn prune_fallback(_cache_dir: &Path, _max_age: Duration, _max_size_bytes: u64) -> io::Result<usize> {
+fn prune_fallback(
+    _cache_dir: &Path,
+    _max_age: Duration,
+    _max_size_bytes: u64,
+) -> io::Result<usize> {
     Ok(0)
 }
 
@@ -845,6 +1016,76 @@ mod tests {
     use super::*;
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[cfg(unix)]
+    #[test]
+    fn prune_rejects_a_symlink_root_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let keep = outside.join("keep.module");
+        fs::write(&keep, b"module cache").unwrap();
+        let cache_link = temp.path().join("cache-link");
+        symlink(&outside, &cache_link).unwrap();
+
+        assert_eq!(
+            prune_stale_module_cache_in(&cache_link, Duration::ZERO, 0).unwrap(),
+            0
+        );
+        assert!(keep.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_directory_rejects_symlinks_and_secures_owned_directories() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let temp = tempfile::tempdir().unwrap();
+        let owned = temp.path().join("owned-cache");
+        fs::create_dir(&owned).unwrap();
+        fs::set_permissions(&owned, fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_cache_dir(&owned).unwrap();
+        assert_eq!(
+            fs::metadata(&owned).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let target = temp.path().join("external");
+        fs::create_dir(&target).unwrap();
+        let target_mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        let link = temp.path().join("cache-link");
+        symlink(&target, &link).unwrap();
+        assert!(ensure_cache_dir(&link).is_err());
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            target_mode
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merging_module_cache_skips_symlink_files_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dst = temp.path().join("dst");
+        let external = temp.path().join("external");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(external.join("private.pcm"), b"private").unwrap();
+        symlink(&external, src.join("linked-dir")).unwrap();
+        symlink(external.join("private.pcm"), src.join("linked-file.pcm")).unwrap();
+
+        merge_cache_files(&src, &dst).unwrap();
+
+        assert!(!dst.join("linked-dir").exists());
+        assert!(!dst.join("linked-file.pcm").exists());
+        assert!(external.join("private.pcm").exists());
+    }
+
     #[test]
     fn test_swift_module_cache_env_and_path() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
@@ -852,15 +1093,17 @@ mod tests {
         let custom_cache = temp.path().join("my-custom-swift-cache");
 
         // Use custom env
-        unsafe { std::env::set_var(SWIFT_MODULE_CACHE_ENV, &custom_cache); }
+        unsafe {
+            std::env::set_var(SWIFT_MODULE_CACHE_ENV, &custom_cache);
+        }
         let dir = swift_module_cache_dir();
         assert_eq!(dir, custom_cache);
         assert!(dir.is_dir());
 
         let envs = swift_module_cache_env();
-        assert!(envs
-            .iter()
-            .any(|(k, v)| k == "SWIFTPM_MODULECACHE_OVERRIDE" && v == custom_cache.to_str().unwrap()));
+        assert!(envs.iter().any(
+            |(k, v)| k == "SWIFTPM_MODULECACHE_OVERRIDE" && v == custom_cache.to_str().unwrap()
+        ));
         assert!(envs
             .iter()
             .any(|(k, v)| k == "SWIFT_MODULE_CACHE_PATH" && v == custom_cache.to_str().unwrap()));
@@ -868,7 +1111,9 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "CLANG_MODULE_CACHE_PATH" && v == custom_cache.to_str().unwrap()));
 
-        unsafe { std::env::remove_var(SWIFT_MODULE_CACHE_ENV); }
+        unsafe {
+            std::env::remove_var(SWIFT_MODULE_CACHE_ENV);
+        }
     }
 
     #[test]
@@ -911,12 +1156,13 @@ mod tests {
   "version": 1
 }"#;
 
-        let relocated =
-            relocate_swiftpm_workspace_state(sample_json, from_root, to_root).unwrap();
+        let relocated = relocate_swiftpm_workspace_state(sample_json, from_root, to_root).unwrap();
 
         // Target path under from_root should be relocated
         assert!(relocated.contains("/tmp/ram-disk/prod-code-worktree-1/packages/myswiftpkg"));
-        assert!(relocated.contains("/tmp/ram-disk/prod-code-worktree-1/.build/checkouts/myswiftpkg"));
+        assert!(
+            relocated.contains("/tmp/ram-disk/prod-code-worktree-1/.build/checkouts/myswiftpkg")
+        );
 
         // Sibling paths starting with prefix substrings MUST NOT be changed
         assert!(relocated.contains("/Users/developer/prod-code-external-deps/external-dep"));
@@ -936,12 +1182,20 @@ mod tests {
         // Nested package in clients/macos/ProdUI
         let macos_pkg = root.join("clients").join("macos").join("ProdUI");
         fs::create_dir_all(&macos_pkg).unwrap();
-        fs::write(macos_pkg.join("Package.swift"), "// swift-tools-version:5.9\n").unwrap();
+        fs::write(
+            macos_pkg.join("Package.swift"),
+            "// swift-tools-version:5.9\n",
+        )
+        .unwrap();
 
         // Ignored package inside .build or target
         let ignored_pkg = root.join(".build").join("checkouts").join("ignored");
         fs::create_dir_all(&ignored_pkg).unwrap();
-        fs::write(ignored_pkg.join("Package.swift"), "// swift-tools-version:5.9\n").unwrap();
+        fs::write(
+            ignored_pkg.join("Package.swift"),
+            "// swift-tools-version:5.9\n",
+        )
+        .unwrap();
 
         let found = find_swift_packages(root);
         assert_eq!(found.len(), 2);
@@ -988,12 +1242,19 @@ mod tests {
 
         // Verify checkouts copied
         assert_eq!(
-            fs::read_to_string(to_build.join("checkouts").join("MyLib").join("MyLib.swift")).unwrap(),
+            fs::read_to_string(to_build.join("checkouts").join("MyLib").join("MyLib.swift"))
+                .unwrap(),
             "public let x = 42;\n"
         );
 
         // Verify repositories copied
-        assert!(to_build.join("repositories").join("MyLib-hash").join("config").is_file());
+        assert!(
+            to_build
+                .join("repositories")
+                .join("MyLib-hash")
+                .join("config")
+                .is_file()
+        );
 
         // Verify workspace-state.json relocated
         let to_state = fs::read_to_string(to_build.join("workspace-state.json")).unwrap();
@@ -1003,7 +1264,12 @@ mod tests {
 
         // Verify ModuleCache symlink
         let to_module_cache = to_build.join("ModuleCache");
-        assert!(fs::symlink_metadata(&to_module_cache).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(&to_module_cache)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         let link_target = fs::read_link(&to_module_cache).unwrap();
         assert_eq!(link_target, swift_module_cache_dir());
     }
@@ -1028,7 +1294,9 @@ mod tests {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let custom_cache = temp.path().join("prune-cache");
-        unsafe { std::env::set_var(SWIFT_MODULE_CACHE_ENV, &custom_cache); }
+        unsafe {
+            std::env::set_var(SWIFT_MODULE_CACHE_ENV, &custom_cache);
+        }
 
         ensure_cache_dir(&custom_cache).unwrap();
 
@@ -1044,9 +1312,12 @@ mod tests {
 
         // Direct directory pruning
         fs::write(&old_file, vec![0u8; 1024]).unwrap();
-        let pruned_in = prune_stale_module_cache_in(&custom_cache, Duration::from_secs(3600), 1500).unwrap();
+        let pruned_in =
+            prune_stale_module_cache_in(&custom_cache, Duration::from_secs(3600), 1500).unwrap();
         assert_eq!(pruned_in, 1);
 
-        unsafe { std::env::remove_var(SWIFT_MODULE_CACHE_ENV); }
+        unsafe {
+            std::env::remove_var(SWIFT_MODULE_CACHE_ENV);
+        }
     }
 }
