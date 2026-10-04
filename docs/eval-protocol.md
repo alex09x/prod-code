@@ -719,6 +719,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources identifying 60,253 test assertions across Minitest suites and 1,365 explicit `raise` exception egress points guarding connection states, validations, and routing dispatchers. Evaluated Active Record Relation query engine in `activerecord/lib/active_record/relation.rb`, where lazy query compilation, Arel AST builders, and future result threads decouple query construction from execution. AST refactoring evaluated `prod-code extract-function` on `activesupport/lib/active_support/core_ext/string/inflections.rb`, extracting camelize token normalization helpers, verified with 0 analyzer errors on cluster nodes.
     - **Full Deep-Dive Report**: [Rails Under the Microscope: What 67 Remote AST Tools Found Inside the Ruby Web Framework (prod.codes)](https://prod.codes/blog/rails-under-the-microscope-67-ast-tools/)
 
+58. **[jekyll/jekyll](https://github.com/jekyll/jekyll)** (Ruby)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 22,830 lines of Ruby across 162 source files (`lib/`: 10.8K LOC / 89 files, `test/`: 10.4K LOC / 55 files), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Canonical static site generator analyzed with `prod-code dependencies`. Discovered zero circular dependencies (clean directed acyclic graph) isolating readers, converters, generators, and Liquid template renderers. Clone analysis (`prod-code duplicates`) scanned 167 files (24,014 lines) identifying 5 clone groups with 0.9% duplication at 6 lines, dominated by fixture site collection setups in `test/test_document.rb`.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,270 test assertions and 53 explicit `raise` exception boundaries guarding front matter parsing, layout resolution, and destination directory safety. Evaluated 6-stage site compilation pipeline in `lib/jekyll/site.rb` (`reset -> read -> generate -> render -> cleanup -> write`). AST refactoring evaluated `prod-code extract-function` on `lib/jekyll/utils.rb`, extracting slug sanitization logic, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [Jekyll Under the Microscope: What 67 Remote AST Tools Found Inside the Classic Ruby Static Site Generator (prod.codes)](https://prod.codes/blog/jekyll-under-the-microscope-67-ast-tools/)
+
+
 
 
 
