@@ -4481,6 +4481,17 @@ async fn lsp_did_change_is_not_duplicated_on_reconnect_replay() {
         .await
         .expect("initialize");
     let _ = read_lsp_message(&mut stdout).await;
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialized");
 
     // 2. Open document with "ab"
     let test_uri = format!("file://{}/src/lib.rs", ws.root().display());
