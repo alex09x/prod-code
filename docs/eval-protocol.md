@@ -765,6 +765,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 18,377 test expectations (`eq`, `neq`, `matches`, `assert.*`), 1,319 runtime assertions, and 600 explicit `error()` boundaries guarding buffer invalidation, RPC timeout cancellations, and capability mismatches. Evaluated built-in asynchronous LSP client core in `runtime/lua/vim/lsp/` (`vim.lsp.rpc -> vim.lsp.Client -> _changetracking -> handlers`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
     - **Full Deep-Dive Report**: [Neovim Under the Microscope: What 67 Remote AST Tools Found Inside the Lua Subsystem and Built-in LSP Client (prod.codes)](https://prod.codes/blog/neovim-under-the-microscope-67-ast-tools/)
 
+66. **[openresty/lua-nginx-module](https://github.com/openresty/lua-nginx-module)** (Lua)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 tool calls attempted; Lua dependency graph and code_extract_function unsupported
+    - **Key Metrics**: 224,317 lines across 430 source files (`t/`: 139.2K LOC / 274 files, `src/`: 64.2K LOC / 129 files, `doc/`: 8.8K LOC / 2 files, `util/`: 687 LOC / 14 files), 0.35 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Lua dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 430 files (224,317 lines) identifying clone patterns in NGINX directive registration tables and repetitive Test::Nginx test blocks.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 6,770 test assertions (3,129 response body checks, 3,065 error log checks, 576 status/header validations across 3,425 `=== TEST` blocks), 676 `NGX_ERROR` exit boundaries, 315 `luaL_error` runtime exception points, 89 C assertions, and 63 `luaL_check*` type validations. Evaluated non-blocking cosocket yielding (`lua_yield(L, 0)`) and resume loop (`ngx_http_lua_socket_tcp_read_resume` -> `ngx_http_lua_run_thread`) across 11 NGINX execution phases. AST refactoring was attempted but unsupported; no successful extraction is claimed.
+    - **Full Deep-Dive Report**: [OpenResty Lua NGINX Module Under the Microscope: What 67 Remote AST Tools Found Inside Non-Blocking Cosockets and 11 Execution Phases (prod.codes)](https://prod.codes/blog/lua-nginx-module-under-the-microscope-67-ast-tools/)
+
 
 
 
