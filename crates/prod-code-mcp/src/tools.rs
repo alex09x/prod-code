@@ -2400,6 +2400,25 @@ fn protobuf_outline(text: &str, path: &str, options: &OutlineOptions) -> String 
         let tok = &tokens[idx];
         let current_depth = stack.len() + 1;
 
+        if matches!(tok.text.as_str(), "option" | "reserved" | "extensions" | "syntax" | "import") {
+            idx += 1;
+            let mut nested = 0usize;
+            while idx < n {
+                match tokens[idx].text.as_str() {
+                    "{" | "(" => nested += 1,
+                    "}" | ")" if nested > 0 => nested -= 1,
+                    "}" => break,
+                    ";" if nested == 0 => {
+                        idx += 1;
+                        break;
+                    }
+                    _ => {}
+                }
+                idx += 1;
+            }
+            continue;
+        }
+
         if tok.text == "{" {
             stack.push(Container::Other);
             idx += 1;
@@ -9853,6 +9872,36 @@ fn identifier_at(path: &Path, remote: &RemoteSources, line: u32, col: u32, name:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn protobuf_outline_skips_complete_option_and_reserved_statements() {
+        let proto = r#"
+            syntax = "proto3";
+            package example;
+            option deprecated = true;
+            message Request {
+                option deprecated = true;
+                reserved 2, 4 to 6;
+                extensions 100 to max;
+                string name = 1;
+            }
+            enum State {
+                option deprecated = true;
+                reserved "OLD";
+                READY = 0;
+            }
+        "#;
+        let outline = super::protobuf_outline(
+            proto,
+            "api.proto",
+            &super::OutlineOptions::all(10, false, ""),
+        );
+        assert!(outline.contains("[Field] name"), "{outline}");
+        assert!(outline.contains("[EnumMember] READY"), "{outline}");
+        assert!(!outline.contains("deprecated"), "{outline}");
+        assert!(!outline.contains("extensions"), "{outline}");
+        assert!(!outline.contains("reserved"), "{outline}");
+    }
+
     /// A declaration is the name right after a declaring keyword or a Go receiver; a use, a
     /// path or a local binding is not (#379).
     #[test]

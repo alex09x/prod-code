@@ -1407,6 +1407,7 @@ pub struct GenericLspEngine {
     _child: Arc<StdMutex<Child>>,
     exit_details: Arc<StdMutex<Option<String>>>,
     stderr_tail: Arc<StdMutex<std::collections::VecDeque<String>>>,
+    stderr_done: tokio::sync::watch::Receiver<bool>,
 }
 
 struct HealthProbeTask(tokio::task::JoinHandle<()>);
@@ -1731,6 +1732,7 @@ impl GenericLspEngine {
         let stderr = child.stderr.take();
         let stderr_tail = Arc::new(StdMutex::new(std::collections::VecDeque::<String>::with_capacity(32)));
         let stderr_tail_writer = Arc::clone(&stderr_tail);
+        let (stderr_done_tx, stderr_done) = tokio::sync::watch::channel(false);
         if let Some(mut stderr) = stderr {
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
@@ -1768,7 +1770,10 @@ impl GenericLspEngine {
                     }
                     tail.push_back(current_line);
                 }
+                let _ = stderr_done_tx.send(true);
             });
+        } else {
+            let _ = stderr_done_tx.send(true);
         }
         let exit_details = Arc::new(StdMutex::new(None::<String>));
         let exit_details_writer = Arc::clone(&exit_details);
@@ -2143,6 +2148,7 @@ impl GenericLspEngine {
             _child: child,
             exit_details,
             stderr_tail,
+            stderr_done,
         };
 
         // Initialize LSP server
@@ -2155,44 +2161,54 @@ impl GenericLspEngine {
     }
 
     /// Diagnostic explanation of why the language server exited, including exit status and stderr.
-    pub fn exit_details(&self) -> Option<String> {
+    pub async fn exit_details(&self) -> Option<String> {
         let current = lock_unpoisoned(&self.exit_details).clone();
         if current.is_some() {
             return current;
         }
-        if !self.is_alive.load(Ordering::Acquire) {
-            let mut child = lock_unpoisoned(&self._child);
-            if let Ok(Some(status)) = child.try_wait() {
-                let status_msg = match status.code() {
-                    Some(code) => format!("exit code {code}"),
-                    None => {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::process::ExitStatusExt;
-                            status.signal().map_or_else(
-                                || "process terminated".to_string(),
-                                |sig| format!("signal {sig}"),
-                            )
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            "process terminated".to_string()
-                        }
-                    }
-                };
-                let tail = lock_unpoisoned(&self.stderr_tail);
-                let details = if tail.is_empty() {
-                    status_msg
-                } else {
-                    let lines: Vec<&str> = tail.iter().map(|s| s.as_str()).collect();
-                    format!("{status_msg} (stderr: {})", lines.join("\n"))
-                };
-                drop(child);
-                *lock_unpoisoned(&self.exit_details) = Some(details.clone());
-                return Some(details);
-            }
+        if self.is_alive.load(Ordering::Acquire) {
+            return None;
         }
-        None
+        let status_msg = {
+            let mut child = lock_unpoisoned(&self._child);
+            let Ok(Some(status)) = child.try_wait() else {
+                return None;
+            };
+            match status.code() {
+                Some(code) => format!("exit code {code}"),
+                None => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        status.signal().map_or_else(
+                            || "process terminated".to_string(),
+                            |sig| format!("signal {sig}"),
+                        )
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        "process terminated".to_string()
+                    }
+                }
+            }
+        };
+        let mut stderr_done = self.stderr_done.clone();
+        if !*stderr_done.borrow() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done.changed()).await;
+        }
+        if !*stderr_done.borrow() {
+            // Do not cache a snapshot while the bounded stderr reader is still draining.
+            return Some(status_msg);
+        }
+        let tail = lock_unpoisoned(&self.stderr_tail);
+        let details = if tail.is_empty() {
+            status_msg
+        } else {
+            let lines: Vec<&str> = tail.iter().map(|s| s.as_str()).collect();
+            format!("{status_msg} (stderr: {})", lines.join("\n"))
+        };
+        *lock_unpoisoned(&self.exit_details) = Some(details.clone());
+        Some(details)
     }
 
     /// Helper to write an LSP Content-Length frame.
@@ -2760,7 +2776,11 @@ impl GenericLspEngine {
         timeout: Duration,
     ) -> Result<serde_json::Value> {
         if !self.is_alive.load(Ordering::Acquire) {
-            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            let details = self
+                .exit_details()
+                .await
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
             anyhow::bail!("Language server process has exited before request '{method}'{details}");
         }
         let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
@@ -2787,7 +2807,11 @@ impl GenericLspEngine {
             .await
             .with_context(|| format!("Timeout waiting to send LSP request '{method}'"))?;
         if !self.is_alive.load(Ordering::Acquire) {
-            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            let details = self
+                .exit_details()
+                .await
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
             anyhow::bail!("Language server process has exited before request '{method}'{details}");
         }
         let (tx, rx) = oneshot::channel();
@@ -2815,7 +2839,11 @@ impl GenericLspEngine {
         match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(mut val)) => {
                 if !self.is_alive.load(Ordering::Acquire) {
-                    let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+                    let details = self
+                        .exit_details()
+                        .await
+                        .map(|d| format!(": {d}"))
+                        .unwrap_or_default();
                     anyhow::bail!("Language server process has exited while answering '{method}'{details}");
                 }
                 if let Some(busy) = busy {
@@ -2824,7 +2852,11 @@ impl GenericLspEngine {
                 Ok(val)
             }
             Ok(Err(_)) => {
-                let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+                let details = self
+                    .exit_details()
+                    .await
+                    .map(|d| format!(": {d}"))
+                    .unwrap_or_default();
                 anyhow::bail!("Language server process has exited while answering '{method}'{details}")
             }
             Err(_) => {
@@ -2892,7 +2924,11 @@ impl GenericLspEngine {
         deadline: tokio::time::Instant,
     ) -> Result<()> {
         if !self.is_alive.load(Ordering::Acquire) {
-            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            let details = self
+                .exit_details()
+                .await
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
             anyhow::bail!("Language server process has exited before notification '{method}'{details}");
         }
         let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
@@ -2913,7 +2949,11 @@ impl GenericLspEngine {
                 format!("Timeout waiting to update document state for notification '{method}'")
             })?;
         if !self.is_alive.load(Ordering::Acquire) {
-            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            let details = self
+                .exit_details()
+                .await
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
             anyhow::bail!("Language server process has exited before notification '{method}'{details}");
         }
         let mut mutation = DocumentMutation {
@@ -3263,7 +3303,11 @@ impl GenericLspEngine {
         deadline: tokio::time::Instant,
     ) -> Result<()> {
         if !self.is_alive.load(Ordering::Acquire) {
-            let details = self.exit_details().map(|d| format!(": {d}")).unwrap_or_default();
+            let details = self
+                .exit_details()
+                .await
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
             anyhow::bail!("Language server process has exited before notification '{method}'{details}");
         }
         let payload = serde_json::json!({
@@ -3746,6 +3790,59 @@ mod tests {
 
         let ts_config = GenericLspConfig::for_typescript();
         assert!(!ts_config.command.is_empty());
+    }
+
+    #[tokio::test]
+    async fn exit_details_waits_for_final_stderr_drain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("exiting-server.py");
+        std::fs::write(
+            &script,
+            r#"import json, sys
+length = 0
+while True:
+    line = sys.stdin.buffer.readline()
+    if not line:
+        sys.exit(2)
+    if not line.strip():
+        break
+    if line.lower().startswith(b"content-length:"):
+        length = int(line.split(b":")[1])
+request = json.loads(sys.stdin.buffer.read(length))
+response = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"capabilities": {}}}).encode()
+sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(response) + response)
+sys.stdout.buffer.flush()
+sys.stderr.write("final diagnostic from startup\n")
+sys.stderr.flush()
+sys.exit(7)
+"#,
+        )
+        .expect("fake server");
+
+        let engine = GenericLspEngine::spawn(
+            dir.path(),
+            GenericLspConfig {
+                command: "python3".to_string(),
+                args: vec![script.to_string_lossy().into_owned()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("initialize before the fake server exits");
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.is_alive() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the fake server exits");
+        let details = engine.exit_details().await.expect("exit details");
+        assert!(details.contains("exit code 7"), "{details}");
+        assert!(
+            details.contains("final diagnostic from startup"),
+            "{details}"
+        );
     }
 
     #[tokio::test]
