@@ -663,6 +663,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 12,154 invariant assertions across compiler and runtime (5,061 in `compiler/src/dmd/` and 7,093 in `druntime/`, plus 25,033 assertions in compiler tests) enforcing strict contract invariants. Analyzed ImportC dual AST ingestion where `CParser(AST)` directly converts ISO C11 tokens into D AST nodes without intermediate C preprocessor bridges. AST refactoring evaluated `prod-code extract-function` on `compiler/src/dmd/identifier.d`, extracting identifier string comparison helpers, verified with clean AST construction on cluster nodes.
     - **Full Deep-Dive Report**: [DMD Under the Microscope: What 67 Remote AST Tools Found Inside the Reference D Compiler (prod.codes)](https://prod.codes/blog/dmd-under-the-microscope-67-ast-tools/)
 
+51. **[dlang/phobos](https://github.com/dlang/phobos)** (D)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 366,399 lines of D across 186 source files (core standard library `std/`: 339.3K LOC across 162 files, extensions `etc/`: 23.4K LOC across 18 files, test harness: 3.7K LOC), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: D standard library analyzed with `prod-code dependencies` across root and package declarations. Discovered zero circular dependencies (clean directed acyclic graph) enforcing clear layer boundaries between compile-time traits (`std.traits`), range foundations (`std.range.primitives`), pipeline algorithms (`std.algorithm`), date/time structures (`std.datetime`), and concurrency abstractions (`std.parallelism`, `std.concurrency`). Clone analysis (`prod-code duplicates`) scanned 186 files (366,399 lines) and isolated 5 clone groups with 0.8% duplication at 6 lines, dominated by calendar time-shift and leap-year tabular test cases in `std/datetime/date.d:1786-2067`.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 33,038 invariant assertion checks distributed across 5,613 embedded `unittest` blocks, embedding formal executable specifications directly into every API declaration. Evaluated design-by-introspection templates including `isInputRange`, `isForwardRange`, and `isBidirectionalRange` validating structural subtyping at compile time. AST refactoring evaluated `prod-code extract-function` on `std/string.d` (`strip`), extracting character trimming loop logic, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [Phobos Under the Microscope: What 67 Remote AST Tools Found Inside the D Standard Library (prod.codes)](https://prod.codes/blog/phobos-under-the-microscope-67-ast-tools/)
+
+
 
 
 
