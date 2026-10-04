@@ -781,6 +781,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 16,270 doctest assertions across `tests/`, 1,822 `LUAU_ASSERT` invariant checks across compiler, VM, and type analysis subsystems, 284 `TypeError` occurrences in `Analysis/`, and 250 `luaL_error` runtime exception points in `VM/`. Evaluated the demand-driven constraint resolution solver in `Analysis/src/ConstraintSolver.cpp` (`ConstraintSolver::tryDispatch` over `SubtypeConstraint`, `EqualityConstraint`, and `GeneralizationConstraint`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
     - **Full Deep-Dive Report**: [Luau Under the Microscope: What 67 Remote AST Tools Found Inside the Gradual Type Checker and Native CodeGen (prod.codes)](https://prod.codes/blog/luau-under-the-microscope-67-ast-tools/)
 
+68. **[elixir-lang/elixir](https://github.com/elixir-lang/elixir)** (Elixir)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400`)
+    - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
+    - **Key Metrics**: 390,071 lines across 780 source files (`lib/elixir/`: 291.3K LOC / 397 files, `lib/mix/`: 54.0K LOC / 232 files, `lib/ex_unit/`: 19.0K LOC / 42 files, `lib/iex/`: 11.1K LOC / 22 files, `lib/logger/`: 7.1K LOC / 20 files, `lib/eex/`: 2.8K LOC / 12 files), 0.35 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 780 files (390,071 lines) identifying clone patterns in test assertion macros and repetitive parser/tokenizer token tables.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 17,953 ExUnit test assertions (17,041 `assert`, 912 `refute`), 633 explicit `raise` exception egress points guarding syntax parsing, macro expansion hygiene, protocol consolidation, and task orchestration. Evaluated the macro expansion and compilation pipeline in `lib/elixir/lib/macro.ex` (`Macro.prewalk` and `Macro.postwalk` traversing homoiconic `{form, meta, args}` AST tuples) and protocol consolidation in `lib/elixir/lib/protocol.ex`. AST refactoring was attempted but unsupported; no successful extraction is claimed.
+    - **Full Deep-Dive Report**: [Elixir Under the Microscope: What 67 Remote AST Tools Found Inside the Macro Engine and Compiler Pipeline (prod.codes)](https://prod.codes/blog/elixir-under-the-microscope-67-ast-tools/)
+
 
 
 
