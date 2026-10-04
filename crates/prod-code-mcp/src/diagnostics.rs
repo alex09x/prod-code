@@ -2527,22 +2527,46 @@ fn public_reexport_token(text: &str, diagnostic: &DocDiagnostic) -> Option<u32> 
         .split(';')
         .next()?
         .trim();
-    if statement.chars().any(|ch| matches!(ch, '{' | '}' | '*')) {
-        return None;
-    }
-    let local_name = statement
-        .rsplit_once(" as ")
-        .map(|(_, alias)| alias.trim())
-        .unwrap_or_else(|| statement.rsplit("::").next().unwrap_or(statement).trim());
-    let name = local_name.strip_prefix("r#").unwrap_or(local_name);
-    let token = rust_code_identifiers(text)
+    let local_names: Vec<&str> = if let Some(open) = statement.find('{') {
+        let close = statement.rfind('}')?;
+        if close < open || !statement[close + 1..].trim().is_empty() {
+            return None;
+        }
+        statement[open + 1..close]
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                item.rsplit_once(" as ")
+                    .map(|(_, alias)| alias.trim())
+                    .unwrap_or_else(|| item.rsplit("::").next().unwrap_or(item).trim())
+            })
+            .collect()
+    } else {
+        if statement.chars().any(|ch| matches!(ch, '}' | '*')) {
+            return None;
+        }
+        vec![statement
+            .rsplit_once(" as ")
+            .map(|(_, alias)| alias.trim())
+            .unwrap_or_else(|| statement.rsplit("::").next().unwrap_or(statement).trim())]
+    };
+    let names: BTreeSet<&str> = local_names
         .into_iter()
-        .filter(|token| token.line == line_number && token.name == name)
-        .max_by_key(|token| token.col)?;
-    let token_position = (token.line, token.col);
+        .map(|name| name.strip_prefix("r#").unwrap_or(name))
+        .collect();
     let diagnostic_start = (diagnostic.line, diagnostic.col);
     let diagnostic_end = diagnostic.end?;
-    (diagnostic_start <= token_position && token_position < diagnostic_end).then_some(token.col)
+    let token = rust_code_identifiers(text)
+        .into_iter()
+        .filter(|token| {
+            token.line == line_number
+                && names.contains(token.name.as_str())
+                && diagnostic_start <= (token.line, token.col)
+                && (token.line, token.col) < diagnostic_end
+        })
+        .max_by_key(|token| token.col)?;
+    Some(token.col)
 }
 
 /// A declaration removed from one file may still resolve in the complete proposal: a move,

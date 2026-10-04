@@ -813,7 +813,9 @@ pub fn recognise_ts(text: &str, at: usize) -> Result<PolyglotLoop> {
             format!("const {acc} = {source}.find({pattern} => {cond}) ?? null;")
         }
         Shape::Find { cond, value } => {
-            format!("const {acc} = {source}.filter({pattern} => {cond}).map({pattern} => {value})[0] ?? null;")
+            format!(
+                "const {acc} = (() => {{ let matched = false; const found = {source}.find({pattern} => {{ const yes = {cond}; if (yes) matched = true; return yes; }}); return matched ? [found].map({pattern} => {value})[0] ?? null : null; }})();"
+            )
         }
         Shape::Any { cond } => {
             format!("const {acc} = {source}.some({pattern} => {cond});")
@@ -1969,6 +1971,11 @@ mod tests {
         let find_src = "function findItem(items: string[]): string | null {\n    let found = null;\n    for (const item of items) {\n        if (item.length > 3) {\n            found = item;\n            break;\n        }\n    }\n    return found;\n}";
         let poly = recognise_ts(find_src, find_src.find("for ").unwrap()).unwrap();
         assert_eq!(poly.replacement, "    const found = items.find(item => item.length > 3) ?? null;");
+
+        let projected_find_src = "function findPrice(prices: number[]): number | null {\n    let found = null;\n    for (const p of prices) {\n        if (p > 0) {\n            found = p * 2;\n            break;\n        }\n    }\n    return found;\n}";
+        let poly = recognise_ts(projected_find_src, projected_find_src.find("for ").unwrap()).unwrap();
+        assert!(poly.replacement.contains("prices.find(p =>"));
+        assert!(!poly.replacement.contains(".filter("));
     }
 
     #[test]

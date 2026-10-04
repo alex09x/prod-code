@@ -203,10 +203,15 @@ impl ImpactReport {
                 self.unattributed_files.join(", ")
             ));
         }
-        if self.tests.len() > 25 {
+        let rust_filter_count = self
+            .tests
+            .iter()
+            .map(|test| test.name.rsplit("::").next().unwrap_or(&test.name))
+            .collect::<BTreeSet<_>>()
+            .len();
+        if self.language == "rust" && rust_filter_count > 25 {
             return Some(format!(
-                "{} affected tests exceed the selective threshold; the whole suite is faster",
-                self.tests.len()
+                "{rust_filter_count} distinct Rust test filters exceed the selective threshold; the whole suite is faster"
             ));
         }
         None
@@ -1638,16 +1643,60 @@ pub fn test_command_for_tests(
     if tests.is_empty() {
         return None;
     }
-    let test_langs: HashSet<&str> = tests
-        .iter()
-        .map(|t| file_language(root, &t.file).unwrap_or(default_language))
-        .collect();
-    if test_langs.len() == 1 {
-        let lang = test_langs.into_iter().next().unwrap();
-        test_command(lang, tools, tests)
-    } else {
-        test_command(default_language, tools, tests)
+    let root_language = crate::sync::expected_engine(root);
+    let mut groups: BTreeMap<(String, String), Vec<Symbol>> = BTreeMap::new();
+    for test in tests {
+        let abs = root.join(&test.file);
+        let (subpath, mut language) = crate::sync::engine_project(root, &abs);
+        if let Some(own) = crate::sync::engine_for_file(&abs)
+            && language.as_deref() == root_language.as_deref()
+            && Some(own) != language.as_deref()
+        {
+            language = Some(own);
+        }
+        let language = language.unwrap_or(default_language).to_string();
+        let subpath = subpath.unwrap_or_default();
+        let mut test = test.clone();
+        if !subpath.is_empty() {
+            let project = Path::new(&subpath);
+            if let Ok(relative) = Path::new(&test.file).strip_prefix(project) {
+                test.file = relative.to_string_lossy().into_owned();
+            }
+        }
+        groups.entry((subpath, language)).or_default().push(test);
     }
+
+    let single_root_project = groups.len() == 1
+        && groups
+            .keys()
+            .next()
+            .is_some_and(|(subpath, _)| subpath.is_empty());
+    let mut commands = Vec::with_capacity(groups.len());
+    for ((subpath, language), project_tests) in groups {
+        let project_tools = if subpath.is_empty() {
+            None
+        } else {
+            Some(crate::verify::detect_tools(&root.join(&subpath)))
+        };
+        let project_tools = project_tools.as_ref().unwrap_or(tools);
+        let command = test_command(&language, project_tools, &project_tests)?;
+        if single_root_project {
+            return Some(command);
+        }
+        let run = shell_words(&command);
+        let dir = if subpath.is_empty() {
+            ".".to_string()
+        } else {
+            subpath.clone()
+        };
+        commands.push(format!("(cd {} && {run})", shell_words(&[dir])));
+    }
+    Some(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        commands.join(" && "),
+        "prod-code-impact".to_string(),
+    ])
 }
 
 struct SessionPool<'a> {
@@ -1935,12 +1984,12 @@ pub async fn analyze(
     // has read the project, and "no callers" would then read as "no test is affected" (#202).
     // For the managed servers, an empty answer for the first changed function is asked again a
     // few times before it is believed; rust-analyzer answers from a database already loaded.
-    if language != "rust"
-        && let Some(first) = changed.first()
-    {
+    if let Some(first) = changed.first() {
         let first_abs = root.join(&first.file);
         let first_lang = file_language(root, &first.file).unwrap_or(&language);
-        if let Ok(first_session) = session_pool.session_for_file(&first_abs).await {
+        if first_lang != "rust"
+            && let Ok(first_session) = session_pool.session_for_file(&first_abs).await
+        {
             let mut answer = incoming_calls(first_session, root, first_lang, first).await;
             for _ in 0..COLD_RETRIES {
                 if matches!(&answer, Incoming::Callers(found) if !found.is_empty()) {

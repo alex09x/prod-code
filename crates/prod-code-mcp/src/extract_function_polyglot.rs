@@ -490,6 +490,18 @@ fn is_balanced(text: &str) -> bool {
     stack.is_empty() && in_str.is_none()
 }
 
+fn has_complete_expression_boundaries(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].trim_end();
+    let left = before.chars().next_back();
+    let left_ok = left.is_none_or(|c| matches!(c, '(' | '[' | '{' | ',' | ':' | '=' | ';'))
+        || before.ends_with("return")
+        || before.ends_with("=>");
+    let after = text[end..].trim_start();
+    let right = after.chars().next();
+    let right_ok = right.is_none_or(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | ':'));
+    left_ok && right_ok
+}
+
 fn find_enclosing_scope(
     text: &str,
     lang: Language,
@@ -960,7 +972,11 @@ fn analyze_outputs(
             {
                 assigned.push(next.text.clone());
             }
-        } else if matches!(t.text.as_str(), ":=" | "=") && i > 0 {
+        } else if matches!(
+            t.text.as_str(),
+            ":=" | "=" | "+=" | "-=" | "*=" | "/="
+        ) && i > 0
+        {
             let prev = &tokens[i - 1];
             if prev.kind == PolyTokenKind::Word
                 && !is_keyword(&prev.text, lang)
@@ -1402,7 +1418,7 @@ fn find_duplicates_in_text(
         let (from, to) = (window[0].start, window.last().unwrap().end);
         let overlaps = exclude.is_some_and(|(s, e)| from < e && s < to);
 
-        if matches && !overlaps {
+        if matches && !overlaps && has_complete_expression_boundaries(text, from, to) {
             out.push(PolyOccurrence {
                 start: from,
                 end: to,
@@ -1660,6 +1676,18 @@ pub async fn extract_function_polyglot(
             let copies =
                 find_duplicates_in_text(&selection, &other_text, None, parameterize, lang);
             if !copies.is_empty() {
+                let uncovered_literal = copies.iter().find_map(|copy| {
+                    copy.differs.iter().find_map(|(token_idx, _)| {
+                        (!param_indices.iter().any(|(known_idx, _, _)| known_idx == token_idx))
+                            .then_some(*token_idx)
+                    })
+                });
+                anyhow::ensure!(
+                    uncovered_literal.is_none(),
+                    "{} has a differing literal at token {}, but no parameter was created for it; nothing was rewritten",
+                    display(root, &other),
+                    uncovered_literal.unwrap_or_default()
+                );
                 let mut other_edits: Vec<(usize, usize, String)> = Vec::new();
                 for copy in &copies {
                     let (dup_line, _) = crate::signature::position_at(&other_text, copy.start)?;

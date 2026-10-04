@@ -462,7 +462,7 @@ fn analyze_module_dependencies(
         let path = entry.path();
         if path.is_file()
             && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                && matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "java" | "kt" | "cs" | "swift") {
+                && matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "java" | "kt" | "cs") {
                     let rel = path
                         .strip_prefix(workspace_root)
                         .unwrap_or(path)
@@ -473,6 +473,12 @@ fn analyze_module_dependencies(
                     adj.entry(module_name)
                         .or_insert_with(|| (path.to_path_buf(), BTreeSet::new()));
                 }
+    }
+
+    if file_modules.is_empty() {
+        return Err(anyhow::anyhow!(
+            "dependency graph analysis found no supported source modules; supported languages are Rust, Go, Python, TypeScript/JavaScript, Java/Kotlin, and C#"
+        ));
     }
 
     let go_module_name: Option<String> = std::fs::read_to_string(workspace_root.join("go.mod"))

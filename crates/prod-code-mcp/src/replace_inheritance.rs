@@ -316,26 +316,26 @@ fn transform_python(
         && let Some(close_paren) = class_header.find(')')
     {
         let inside_bases = &class_header[open_paren + 1..close_paren];
-            let remaining_bases: Vec<&str> = inside_bases
-                .split(',')
-                .map(str::trim)
-                .filter(|b| *b != base_name && !b.is_empty())
-                .collect();
+        let remaining_bases: Vec<&str> = inside_bases
+            .split(',')
+            .map(str::trim)
+            .filter(|b| *b != base_name && !b.is_empty())
+            .collect();
 
-            let new_header = if remaining_bases.is_empty() {
-                format!("{}:", class_header[..open_paren].trim_end())
-            } else {
-                format!(
-                    "{}({}):",
-                    class_header[..open_paren].trim_end(),
-                    remaining_bases.join(", ")
-                )
-            };
+        let new_header = if remaining_bases.is_empty() {
+            format!("{}:", class_header[..open_paren].trim_end())
+        } else {
+            format!(
+                "{}({}):",
+                class_header[..open_paren].trim_end(),
+                remaining_bases.join(", ")
+            )
+        };
 
-            let header_start = sub.decl_start;
-            let header_end = sub.decl_start + class_line_end;
-            out.replace_range(header_start..header_end, &new_header);
-        }
+        let header_start = sub.decl_start;
+        let header_end = sub.decl_start + class_line_end;
+        out.replace_range(header_start..header_end, &new_header);
+    }
 
     // Re-parse to get fresh sub offsets
     let updated_classes = parse_classes_in_text(&out, "python", &sub.file_path);
@@ -359,10 +359,8 @@ fn transform_python(
             );
             out.replace_range(init_decl.start_offset..init_decl.end_offset, &replaced_init);
         } else if init_slice.contains(&format!("{base_name}.__init__(self")) {
-            let replaced_init = init_slice.replace(
-                &format!("{base_name}.__init__(self"),
-                &format!("self.{field_name} = {base_name}("),
-            );
+            let replaced_init =
+                rewrite_python_explicit_base_init(init_slice, base_name, field_name)?;
             out.replace_range(init_decl.start_offset..init_decl.end_offset, &replaced_init);
         } else {
             // Prepend `self.{field_name} = {base_name}()` inside __init__
@@ -420,6 +418,51 @@ fn transform_python(
     }
 
     Ok(out)
+}
+
+fn rewrite_python_explicit_base_init(
+    body: &str,
+    base_name: &str,
+    field_name: &str,
+) -> Result<String> {
+    let needle = format!("{base_name}.__init__");
+    let mut rewritten = body.to_string();
+    let mut search_from = 0usize;
+    while let Some(relative) = rewritten[search_from..].find(&needle) {
+        let start = search_from + relative;
+        if crate::extract_field::is_in_literal_or_comment(
+            &rewritten,
+            start,
+            crate::parameter_object::Language::Python,
+        ) {
+            search_from = start + needle.len();
+            continue;
+        }
+        let open = start + needle.len();
+        if rewritten.as_bytes().get(open) != Some(&b'(') {
+            search_from = open;
+            continue;
+        }
+        let close = crate::parameter_object::matching_bracket(&rewritten, open)
+            .context("malformed explicit Python base initializer")?;
+        let args = &rewritten[open + 1..close];
+        let mut parts = crate::replace_constructor::split_balanced_commas(args);
+        if parts.first().map(|first| first.trim()) != Some("self") {
+            anyhow::bail!(
+                "explicit base initializer does not start with `self`; nothing was rewritten"
+            );
+        }
+        parts.remove(0);
+        let forwarded = parts.join(", ").trim().to_string();
+        let replacement = if forwarded.is_empty() {
+            format!("self.{field_name} = {base_name}()")
+        } else {
+            format!("self.{field_name} = {base_name}({forwarded})")
+        };
+        rewritten.replace_range(start..close + 1, &replacement);
+        search_from = start + replacement.len();
+    }
+    Ok(rewritten)
 }
 
 // ---------------------------------------------------------------------------

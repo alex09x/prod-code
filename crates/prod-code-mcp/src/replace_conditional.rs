@@ -203,16 +203,36 @@ pub fn line_indentation(text: &str, offset: usize) -> String {
 }
 
 /// Convert 1-based (line, col) to byte offset in text.
-pub fn line_col_to_offset(text: &str, line: u32, col: u32) -> usize {
-    let mut offset = 0;
-    for (i, line_str) in text.split_inclusive('\n').enumerate() {
-        if (i as u32 + 1) == line {
-            let col_offset = (col.saturating_sub(1) as usize).min(line_str.len());
-            return offset + col_offset;
-        }
-        offset += line_str.len();
+pub fn line_col_to_offset(text: &str, line: u32, col: u32) -> Option<usize> {
+    if line == 0 || col == 0 {
+        return None;
     }
-    offset
+    let mut line_offset = 0usize;
+    for (index, raw_line) in text.split_inclusive('\n').enumerate() {
+        if index as u32 + 1 != line {
+            line_offset += raw_line.len();
+            continue;
+        }
+        let line_text = raw_line
+            .strip_suffix('\n')
+            .unwrap_or(raw_line)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| raw_line.strip_suffix('\n').unwrap_or(raw_line));
+        let target_units = (col - 1) as usize;
+        let mut units = 0usize;
+        for (byte_offset, ch) in line_text.char_indices() {
+            if units == target_units {
+                return Some(line_offset + byte_offset);
+            }
+            let next_units = units + ch.len_utf16();
+            if target_units < next_units {
+                return None; // The requested column splits a UTF-16 surrogate pair.
+            }
+            units = next_units;
+        }
+        return (units == target_units).then_some(line_offset + line_text.len());
+    }
+    None
 }
 
 fn find_default_label(s: &str) -> Option<(usize, usize)> {
@@ -608,7 +628,7 @@ pub fn parse_rust_match(text: &str, search_offset: usize) -> Option<ConditionalB
             }
             (b, end_rel)
         } else {
-            let next_comma = after_arrow.find(',');
+            let next_comma = find_rust_arm_comma(after_arrow);
             let end_rel = if let Some(c) = next_comma {
                 arrow_idx + 2 + c + 1
             } else {
@@ -649,6 +669,45 @@ pub fn parse_rust_match(text: &str, search_offset: usize) -> Option<ConditionalB
         branches,
         indent,
     })
+}
+
+fn find_rust_arm_comma(expression: &str) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut angle = 0usize;
+    let mut previous = String::new();
+    for (i, ch) in expression.char_indices() {
+        if crate::extract_field::is_in_literal_or_comment(
+            expression,
+            i,
+            crate::parameter_object::Language::Rust,
+        ) {
+            continue;
+        }
+        match ch {
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '<' if angle > 0 || previous.trim_end().ends_with("::") => angle += 1,
+            '>' if angle > 0 => angle -= 1,
+            ',' if paren == 0 && bracket == 0 && brace == 0 && angle == 0 => return Some(i),
+            _ => {}
+        }
+        if ch.is_whitespace() {
+            previous.push(ch);
+        } else {
+            previous.push(ch);
+            if previous.len() > 4 {
+                let drain_to = previous.len() - 4;
+                previous.drain(..drain_to);
+            }
+        }
+    }
+    None
 }
 
 /// Core transformation for Python.
@@ -695,11 +754,7 @@ pub fn transform_python(
         let indented_body = if b.body.trim().is_empty() {
             "        pass".to_string()
         } else {
-            b.body
-                .lines()
-                .map(|l| format!("        {}", l.trim()))
-                .collect::<Vec<_>>()
-                .join("\n")
+            indent_python_branch_body(&b.body)
         };
         let cls = format!(
             "class {v_name}({base_name}):\n    def {method_name}({params_str}):\n{indented_body}\n"
@@ -717,6 +772,33 @@ pub fn transform_python(
     out.insert_str(0, &class_definitions);
 
     Ok(out)
+}
+
+fn indent_python_branch_body(body: &str) -> String {
+    let common_indent = body
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+        .min()
+        .unwrap_or(0);
+    body.lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                "        ".to_string()
+            } else {
+                let cut = if common_indent == 0 {
+                    0
+                } else {
+                    line.char_indices()
+                        .take_while(|(_, c)| *c == ' ' || *c == '\t')
+                        .nth(common_indent - 1)
+                        .map_or(0, |(byte, c)| byte + c.len_utf8())
+                };
+                format!("        {}", &line[cut..])
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Core transformation for TypeScript / JavaScript.
@@ -1016,7 +1098,8 @@ pub async fn replace_conditional_impl(
         .with_context(|| format!("cannot read file {}", file.display()))?;
     let language = crate::lang::language_id_for_path(file).to_string();
 
-    let offset = line_col_to_offset(&file_text, line, col);
+    let offset = line_col_to_offset(&file_text, line, col)
+        .context("requested position is outside the document or splits a UTF-16 surrogate pair")?;
 
     // Locate the conditional block
     let block = parse_switch_block(&file_text, offset)

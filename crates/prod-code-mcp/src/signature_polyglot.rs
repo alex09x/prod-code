@@ -1035,6 +1035,13 @@ pub async fn change_with(
                         file_edits.push((at, at, "await ".to_string()));
                     }
                 }
+            } else if modifiers.asyncness == Some(false) {
+                let before_call = content[..at].trim_end();
+                if let Some(await_start) = before_call.strip_suffix("await").map(str::len)
+                    && !content[..await_start].chars().next_back().is_some_and(is_ident)
+                {
+                    file_edits.push((await_start, at, String::new()));
+                }
             }
         }
 

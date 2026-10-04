@@ -856,12 +856,11 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
     match decl.language.as_str() {
         "rust" => {
             let vis = if decl.is_pub { "pub " } else { "" };
-            let generics_header = decl
+            let (generics_header, generics_name) = decl
                 .generics
                 .as_deref()
-                .map(|g| format!("{g} "))
+                .map(rust_impl_generics)
                 .unwrap_or_default();
-            let generics_name = decl.generics.as_deref().unwrap_or_default();
             let params = decl
                 .fields
                 .iter()
@@ -977,6 +976,69 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// Split a Rust generic declaration into impl parameters and type arguments.
+/// Defaults belong on the type declaration, not on an `impl` parameter list.
+fn rust_impl_generics(generics: &str) -> (String, String) {
+    let inner = generics
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or(generics);
+    let params = split_balanced_commas(inner);
+    let mut impl_params = Vec::new();
+    let mut args = Vec::new();
+    for param in params {
+        let param = param.trim();
+        if param.is_empty() {
+            continue;
+        }
+        let without_default = strip_rust_generic_default(param).trim();
+        let name = without_default
+            .strip_prefix("const ")
+            .unwrap_or(without_default)
+            .split(|c: char| c == ':' || c.is_whitespace())
+            .next()
+            .unwrap_or("")
+            .trim();
+        if name.is_empty() {
+            continue;
+        }
+        impl_params.push(without_default.to_string());
+        args.push(name.to_string());
+    }
+    if impl_params.is_empty() {
+        (String::new(), String::new())
+    } else {
+        (
+            format!("<{}> ", impl_params.join(", ")),
+            format!("<{}>", args.join(", ")),
+        )
+    }
+}
+
+fn strip_rust_generic_default(param: &str) -> &str {
+    let mut angle = 0usize;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    for (i, ch) in param.char_indices() {
+        match ch {
+            '<' => angle += 1,
+            '>' => angle = angle.saturating_sub(1),
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '=' if angle == 0 && paren == 0 && bracket == 0 && brace == 0 => {
+                return &param[..i];
+            }
+            _ => {}
+        }
+    }
+    param
 }
 
 /// Generates the fluent builder code to add to the target file.

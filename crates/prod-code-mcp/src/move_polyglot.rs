@@ -780,6 +780,89 @@ pub(crate) fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str
     (out, true)
 }
 
+fn go_import_package(spec: &str) -> Option<String> {
+    let spec = spec.split_once("//").map_or(spec, |(before, _)| before).trim();
+    let words: Vec<&str> = spec.split_whitespace().collect();
+    let (alias, path) = match words.as_slice() {
+        [path] => (None, *path),
+        [alias, path] if is_ident(alias.chars().next()?) && alias.chars().all(is_ident) => {
+            (Some(*alias), *path)
+        }
+        _ => return None,
+    };
+    if matches!(alias, Some("." | "_")) || !path.starts_with('"') || !path.ends_with('"') {
+        return None;
+    }
+    let import_path = &path[1..path.len() - 1];
+    if import_path == "C" {
+        return None;
+    }
+    let package = match alias {
+        Some(alias) => alias.to_string(),
+        None if !import_path.contains('/') => import_path.to_string(),
+        // Without an explicit alias, a path's last component need not be its package name.
+        None => return None,
+    };
+    package.chars().all(is_ident).then_some(package)
+}
+
+fn go_package_is_used(content: &str, package: &str) -> bool {
+    content.match_indices(package).any(|(at, _)| {
+        let end = at + package.len();
+        !(at > 0 && content[..at].chars().next_back().is_some_and(is_ident))
+            && !content[end..].chars().next().is_some_and(is_ident)
+            && !crate::inline_parameter::is_in_comment(content, at, Language::Go)
+            && !crate::inline_parameter::is_in_string(content, at, Language::Go)
+            && content[end..].trim_start().starts_with('.')
+    })
+}
+
+fn remove_unused_go_imports(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut output = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "import (" {
+            let Some(close) = (i + 1..lines.len()).find(|&at| lines[at].trim() == ")") else {
+                output.push(lines[i].to_string());
+                i += 1;
+                continue;
+            };
+            let specs: Option<Vec<(&str, String)>> = lines[i + 1..close]
+                .iter()
+                .map(|line| go_import_package(line).map(|package| (*line, package)))
+                .collect();
+            if let Some(specs) = specs {
+                let retained: Vec<_> = specs
+                    .into_iter()
+                    .filter(|(_, package)| go_package_is_used(source, package))
+                    .collect();
+                if !retained.is_empty() {
+                    output.push(lines[i].to_string());
+                    output.extend(retained.into_iter().map(|(line, _)| line.to_string()));
+                    output.push(lines[close].to_string());
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        if let Some(spec) = lines[i].trim().strip_prefix("import ")
+            && let Some(package) = go_import_package(spec)
+            && !go_package_is_used(source, &package)
+        {
+            i += 1;
+            continue;
+        }
+        output.push(lines[i].to_string());
+        i += 1;
+    }
+    let mut result = output.join("\n");
+    if source.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
 fn get_go_package(file: &Path) -> String {
     if let Ok(content) = std::fs::read_to_string(file) {
         for line in content.lines() {
@@ -1173,6 +1256,25 @@ pub fn rewrite_caller_imports(
         Language::TypeScript | Language::JavaScript => {
             let rel_to_source = relative_import_specifier(caller_file, source_file);
             let rel_to_target = relative_import_specifier(caller_file, target_file);
+            let moved_default_export = std::fs::read_to_string(source_file)
+                .ok()
+                .is_some_and(|source| {
+                    source.lines().any(|line| {
+                        let line = line.trim();
+                        let Some(decl) = line.strip_prefix("export default ") else {
+                            return false;
+                        };
+                        let decl = decl.strip_prefix("async ").unwrap_or(decl);
+                        let Some(name) = decl
+                            .strip_prefix("function ")
+                            .or_else(|| decl.strip_prefix("class "))
+                        else {
+                            return false;
+                        };
+                        let name = name.chars().take_while(|c| is_ident(*c)).collect::<String>();
+                        name == decl_name
+                    })
+                });
 
             let mut found = false;
             let mut lines = Vec::new();
@@ -1185,6 +1287,18 @@ pub fn rewrite_caller_imports(
                         || trimmed.contains(&rel_to_source.replace("./", "")));
                 if matches_source && is_symbol_used(line, decl_name) {
                     found = true;
+                    let default_binding = trimmed
+                        .strip_prefix("import ")
+                        .and_then(|clause| clause.split_once(" from "))
+                        .map(|(bindings, _)| bindings.trim());
+                    if moved_default_export && default_binding == Some(decl_name) {
+                        let rewritten_import = line
+                            .replace(&rel_to_source, &rel_to_target)
+                            .replace(&rel_to_source.replace("./", ""), &rel_to_target);
+                        lines.push(rewritten_import);
+                        notes.push(format!("rewrote default import to `{rel_to_target}`"));
+                        continue;
+                    }
                     let (shrunk, _) = remove_from_braced_ts_import(line, decl_name);
                     if shrunk.is_empty() {
                         let rewritten_import = line
@@ -1408,6 +1522,11 @@ pub async fn move_item(
 
     let start = with_doc_comment_polyglot(&source_text, decl_start, lang);
     let (source_new_cut, item_raw) = crate::move_item::cut(&source_text, start, decl_end);
+    let source_new_cut = if lang == Language::Go {
+        remove_unused_go_imports(&source_new_cut)
+    } else {
+        source_new_cut
+    };
     let item = format_item_for_target(&item_raw, lang);
 
     let (target_with_carried, carried_notes) =
@@ -1536,6 +1655,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unused_go_imports_are_removed_without_dropping_used_group_members() {
+        let source = "package p\nimport \"fmt\"\nimport (\n\t\"os\"\n\t\"strings\"\n)\nfunc keep() { fmt.Println(strings.TrimSpace(\" x \")) }\n";
+        let result = remove_unused_go_imports(source);
+
+        assert!(!result.contains("import \"os\""));
+        assert!(result.contains("\"fmt\""));
+        assert!(result.contains("\"strings\""));
+    }
+
+    #[test]
+    fn fully_unused_go_import_group_is_removed() {
+        let source = "package p\nimport (\n\t\"fmt\"\n\t\"os\"\n)\nfunc keep() {}\n";
+        let result = remove_unused_go_imports(source);
+
+        assert!(!result.contains("import ("));
+        assert!(!result.contains("\"fmt\""));
+        assert!(!result.contains("\"os\""));
+    }
+
+    #[test]
     fn relative_import_specifiers_compute_accurately() {
         assert_eq!(
             relative_import_specifier(Path::new("src/features/foo.ts"), Path::new("src/common/utils.ts")),
@@ -1549,6 +1688,31 @@ mod tests {
             relative_import_specifier(Path::new("index.ts"), Path::new("utils.ts")),
             "./utils"
         );
+    }
+
+    #[test]
+    fn default_import_follows_a_moved_default_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("src/source.ts");
+        let target = temp.path().join("src/helpers.ts");
+        let caller = temp.path().join("src/caller.ts");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "export default function Foo() {}\n").unwrap();
+
+        let (rewritten, note) = rewrite_caller_imports(
+            "import Foo from \"./source\";\nFoo();\n",
+            "Foo",
+            &caller,
+            &source,
+            &target,
+            temp.path(),
+            Language::TypeScript,
+        )
+        .unwrap();
+
+        assert!(rewritten.contains("import Foo from \"./helpers\";"));
+        assert!(!rewritten.contains("import { Foo }"));
+        assert!(note.contains("default import"));
     }
 
     #[test]

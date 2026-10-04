@@ -7258,5 +7258,3 @@ async fn code_definition_concurrent_body_calls_succeed_without_transport_closed(
     assert!(t1.contains("pub fn one"), "{t1}");
     assert!(t2.contains("pub fn two"), "{t2}");
 }
-
-

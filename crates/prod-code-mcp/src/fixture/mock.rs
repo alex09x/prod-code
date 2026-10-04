@@ -2,6 +2,7 @@
 //! implementing interface/trait/protocol contracts with call tracking and configurable stubs.
 
 use crate::parameter_object::Language;
+use super::polyglot::split_comma_top_level;
 
 /// One method signature in an interface, trait, or protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,18 +135,24 @@ fn generate_go_mock(
 
 fn go_default_returns(ret: &str) -> String {
     let clean = ret.trim().trim_start_matches('(').trim_end_matches(')');
-    let parts: Vec<&str> = clean.split(',').map(str::trim).collect();
+    let parts = split_comma_top_level(clean);
     parts
         .iter()
-        .map(|&p| match p {
-            "error" => "nil",
-            "bool" => "false",
-            "string" => "\"\"",
+        .map(|p| match p.trim() {
+            "error" => "nil".to_string(),
+            "bool" => "false".to_string(),
+            "string" => "\"\"".to_string(),
             "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
-            | "uint32" | "uint64" | "byte" | "rune" | "uintptr" => "0",
-            "float32" | "float64" => "0.0",
-            p if p.starts_with('*') || p.starts_with("[]") || p.starts_with("map[") => "nil",
-            _ => "nil",
+            | "uint32" | "uint64" | "byte" | "rune" | "uintptr" => "0".to_string(),
+            "float32" | "float64" => "0.0".to_string(),
+            p if p.starts_with('*')
+                || p.starts_with("[]")
+                || p.starts_with("map[")
+                || p.starts_with("chan")
+                || p.starts_with("<-chan")
+                || p.starts_with("func")
+                || p.starts_with("interface {") => "nil".to_string(),
+            p => format!("*new({p})"),
         })
         .collect::<Vec<_>>()
         .join(", ")

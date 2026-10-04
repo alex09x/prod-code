@@ -51,6 +51,9 @@ pub struct SharedWorkspace {
     /// A generic server has one process-wide document state. Validation sessions use it one
     /// at a time so parallel proposals cannot replace each other's overlays.
     pub generic_validation_session: Arc<tokio::sync::Mutex<()>>,
+    /// Shared with the manager's primary loads so private validation servers use the same
+    /// node-wide concurrency budget.
+    engine_load_semaphore: Arc<tokio::sync::Semaphore>,
     /// If this workspace is an attached worktree overlay of a base workspace, keeps the base
     /// alive so its engine is not evicted while this worktree is active.
     pub base_workspace: Option<Arc<SharedWorkspace>>,
@@ -96,6 +99,12 @@ impl SharedWorkspace {
             .as_ref()
             .map(|b| b.rebalance_tx.clone())
             .unwrap_or(rebalance_tx);
+        let engine_load_semaphore = base_workspace
+            .as_ref()
+            .map(|base| Arc::clone(&base.engine_load_semaphore))
+            .unwrap_or_else(|| {
+                Arc::new(tokio::sync::Semaphore::new(default_max_concurrent_engine_loads()))
+            });
         Self {
             key: WorkspaceKey(root.clone()),
             root,
@@ -113,6 +122,7 @@ impl SharedWorkspace {
             generic_validation: Mutex::new(None),
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::default(),
+            engine_load_semaphore,
             base_workspace,
             attached_worktrees: AtomicUsize::new(0),
             detached: AtomicBool::new(false),
@@ -199,6 +209,7 @@ impl SharedWorkspace {
                 generic_validation: Mutex::new(None),
                 generic_validation_loaded: AtomicBool::new(false),
                 generic_validation_session: Arc::clone(&self.generic_validation_session),
+                engine_load_semaphore: Arc::clone(&self.engine_load_semaphore),
                 base_workspace: Some(Arc::clone(base)),
                 attached_worktrees: AtomicUsize::new(0),
                 detached: AtomicBool::new(false),
@@ -235,6 +246,7 @@ impl SharedWorkspace {
             generic_validation: Mutex::new(None),
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::clone(&self.generic_validation_session),
+            engine_load_semaphore: Arc::clone(&self.engine_load_semaphore),
             base_workspace: None,
             attached_worktrees: AtomicUsize::new(0),
             detached: AtomicBool::new(false),
@@ -257,6 +269,7 @@ impl SharedWorkspace {
     ) -> Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>> {
         let this = Arc::clone(self);
         let admission = Arc::clone(admission);
+        let load_semaphore = Arc::clone(&this.engine_load_semaphore);
         let loading = tokio::spawn(async move {
             let engines = Arc::clone(&this.rust_engines);
             let root = this.root.clone();
@@ -269,6 +282,7 @@ impl SharedWorkspace {
                         };
                         tracing::warn!(workspace = ?root, %refused, "validation engine not loaded; validating on the main engine");
                     })?;
+                    let _load_permit = load_semaphore.acquire_owned().await.map_err(|_| ())?;
                     let load_root = root.clone();
                     let loaded = tokio::task::spawn_blocking(move || load(&load_root)).await;
                     reservation.release_after_settling();
@@ -328,6 +342,7 @@ impl SharedWorkspace {
         // waiting leaves the start, and its reservation, to finish for the next one.
         let this = Arc::clone(self);
         let admission = Arc::clone(admission);
+        let load_semaphore = Arc::clone(&this.engine_load_semaphore);
         let starting = tokio::spawn(async move {
             let root = this.root.clone();
             let engine = this.engine.clone();
@@ -357,6 +372,10 @@ impl SharedWorkspace {
                     reclaimed: 0,
                 }
             })?;
+            let _load_permit = load_semaphore
+                .acquire_owned()
+                .await
+                .context("engine load semaphore closed")?;
             let started = prod_code_engine_generic::GenericLspEngine::spawn(&root, config).await;
             reservation.release_after_settling();
             let started =
@@ -392,6 +411,7 @@ impl SharedWorkspace {
             generic_validation: Mutex::new(None),
             generic_validation_loaded: AtomicBool::new(false),
             generic_validation_session: Arc::clone(&self.generic_validation_session),
+            engine_load_semaphore: Arc::clone(&self.engine_load_semaphore),
             base_workspace: None,
             attached_worktrees: AtomicUsize::new(0),
             detached: AtomicBool::new(false),
@@ -2371,14 +2391,16 @@ impl WorkspaceManager {
             }
         }
 
-        let ws = Arc::new(SharedWorkspace::new(
+        let mut workspace = SharedWorkspace::new(
             workspace_root.to_path_buf(),
             engine.to_string(),
             rust_engine,
             go_engine,
             generic_engine,
             backend,
-        ));
+        );
+        workspace.engine_load_semaphore = Arc::clone(&self.load_semaphore);
+        let ws = Arc::new(workspace);
         Ok((ws, reservation))
     }
 

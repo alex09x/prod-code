@@ -335,7 +335,7 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
             indexing_status: true,
             shadow_runs: true,
             multi_root: true,
-            sync_chunking: true,
+            sync_chunking: false,
             unix_socket_local: true,
             redirects: false,
         };

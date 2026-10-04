@@ -1317,6 +1317,21 @@ fn replace_python_pass(text: &mut String, class: &ClassDecl, replacement: &str) 
     true
 }
 
+fn cpp_member_access(class_text: &str, class: &ClassDecl, member: &MemberDecl) -> &'static str {
+    let is_struct = class_text[class.decl_start..].starts_with("struct ");
+    let mut access = if is_struct { "public" } else { "private" };
+    let body_before = &class_text[class.body_start..member.start_offset.min(class.body_end)];
+    for line in body_before.lines() {
+        match line.trim() {
+            "public:" => access = "public",
+            "protected:" => access = "protected",
+            "private:" => access = "private",
+            _ => {}
+        }
+    }
+    access
+}
+
 /// Search workspace for a class by name and language.
 pub fn find_class_in_workspace(
     root: &Path,
@@ -1473,7 +1488,15 @@ pub async fn pull_up_impl(
     let mut prepared_members = Vec::new();
     for m in &member_decls_to_move {
         let stripped = strip_override_modifiers(&m.full_text, &language);
-        let adjusted = adjust_indentation(&stripped, &super_class.indent);
+        let source = if language == "cpp" {
+            format!(
+                "{}:\n{stripped}",
+                cpp_member_access(&sub_file_text, &sub_class, m)
+            )
+        } else {
+            stripped
+        };
+        let adjusted = adjust_indentation(&source, &super_class.indent);
         prepared_members.push(adjusted);
     }
 
@@ -1886,7 +1909,16 @@ pub async fn push_down_impl(
         // Adjust member indentation for this subclass
         let mut prepared = Vec::new();
         for m in &members_to_move {
-            let adjusted = adjust_indentation(&m.full_text, &sub_class.indent);
+            let source = if language == "cpp" {
+                format!(
+                    "{}:\n{}",
+                    cpp_member_access(&super_file_text, &super_class, m),
+                    m.full_text
+                )
+            } else {
+                m.full_text.clone()
+            };
+            let adjusted = adjust_indentation(&source, &sub_class.indent);
             prepared.push(adjusted);
         }
         let insert_block = prepared.join("\n\n");

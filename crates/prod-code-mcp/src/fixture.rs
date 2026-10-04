@@ -663,6 +663,7 @@ pub async fn shape_of(
         PolyglotShape::Unit => Shape::Unit,
         PolyglotShape::Enum(v) => Shape::Enum(v),
         PolyglotShape::Interface { .. } => Shape::Unit,
+        PolyglotShape::InterfaceWithFields { .. } => Shape::Unit,
     };
     Ok((shape, file))
 }
@@ -708,7 +709,11 @@ pub async fn generate_with_options(
     )
     .await?;
 
-    let is_mock = options.mock || matches!(shape, PolyglotShape::Interface { .. });
+    let is_mock = options.mock
+        || matches!(
+            shape,
+            PolyglotShape::Interface { .. } | PolyglotShape::InterfaceWithFields { .. }
+        );
     let mut fallbacks = Vec::new();
 
     let (value, snippet) = if lang == Language::Rust && !options.randomized && !is_mock {
@@ -718,6 +723,7 @@ pub async fn generate_with_options(
             PolyglotShape::Unit => Shape::Unit,
             PolyglotShape::Enum(v) => Shape::Enum(v.clone()),
             PolyglotShape::Interface { .. } => Shape::Unit,
+            PolyglotShape::InterfaceWithFields { .. } => Shape::Unit,
         };
         let mut seen = vec![symbol.to_string()];
         let val = match &rust_shape {

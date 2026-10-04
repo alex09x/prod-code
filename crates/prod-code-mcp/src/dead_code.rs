@@ -558,28 +558,74 @@ pub async fn find_dead_code_opts(
             match refs {
                 Ok(serde_json::Value::Array(found)) => {
                     let mut ref_locs = Vec::with_capacity(found.len());
+                    let mut malformed_reference = None;
                     for r in &found {
-                        let uri_opt = r.get("uri").and_then(|u| u.as_str());
-                        let (r_line, r_col) = r
-                            .get("range")
-                            .and_then(|range| range.get("start"))
-                            .and_then(|s| {
-                                crate::impact::one_based(s, "line")
-                                    .zip(crate::impact::one_based(s, "character"))
-                            })
-                            .unwrap_or((0, 0));
-                        if let Some(uri) = uri_opt {
-                            let path_str = crate::remote_fs::uri_to_path(uri);
-                            let rel = Path::new(&path_str)
-                                .strip_prefix(root)
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or(path_str);
-                            ref_locs.push((rel, r_line, r_col));
+                        let Some(uri) = r.get("uri").and_then(|u| u.as_str()) else {
+                            malformed_reference = Some("a reference location has no URI".to_string());
+                            break;
+                        };
+                        if url::Url::parse(uri).is_err() {
+                            malformed_reference = Some(format!("a reference location has an invalid URI `{uri}`"));
+                            break;
                         }
+                        let Some(range) = r.get("range") else {
+                            malformed_reference = Some(format!("a reference location for `{uri}` has no range"));
+                            break;
+                        };
+                        let Some(start) = range.get("start") else {
+                            malformed_reference = Some(format!("a reference location for `{uri}` has no range start"));
+                            break;
+                        };
+                        let Some(end) = range.get("end") else {
+                            malformed_reference = Some(format!("a reference location for `{uri}` has no range end"));
+                            break;
+                        };
+                        let start_pos = crate::impact::one_based(start, "line")
+                            .zip(crate::impact::one_based(start, "character"));
+                        let end_pos = crate::impact::one_based(end, "line")
+                            .zip(crate::impact::one_based(end, "character"));
+                        let (Some((r_line, r_col)), Some((end_line, end_col))) = (start_pos, end_pos) else {
+                            malformed_reference = Some(format!("a reference location for `{uri}` has malformed coordinates"));
+                            break;
+                        };
+                        if (end_line, end_col) < (r_line, r_col) {
+                            malformed_reference = Some(format!("a reference location for `{uri}` has a reversed range"));
+                            break;
+                        }
+                        let path_str = crate::remote_fs::uri_to_path(uri);
+                        let rel = Path::new(&path_str)
+                            .strip_prefix(root)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or(path_str);
+                        ref_locs.push((rel, r_line, r_col));
                     }
-                    graph.record_references(cand.graph_idx, &ref_locs, |ref_file, _line| {
-                        is_test_path(&language, ref_file)
-                    });
+                    if let Some(reason) = malformed_reference {
+                        graph.mark_unverified(cand.graph_idx);
+                        report.unverified.push(Unverified {
+                            file: cand.rel.clone(),
+                            name: Some(cand.name.clone()),
+                            line: cand.line,
+                            col: cand.col,
+                            reason,
+                        });
+                        continue;
+                    }
+                    let unattributed = graph.record_references(
+                        cand.graph_idx,
+                        &ref_locs,
+                        |ref_file, _line| is_test_path(&language, ref_file),
+                    );
+                    for (ref_file, ref_line, ref_col) in unattributed {
+                        report.unverified.push(Unverified {
+                            file: cand.rel.clone(),
+                            name: Some(cand.name.clone()),
+                            line: cand.line,
+                            col: cand.col,
+                            reason: format!(
+                                "reference at {ref_file}:{ref_line}:{ref_col} cannot be attributed to a scanned caller; the symbol is treated as a possible root"
+                            ),
+                        });
+                    }
                 }
                 Ok(serde_json::Value::Null) => {
                     report.unverified.push(Unverified {

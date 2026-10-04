@@ -450,6 +450,47 @@ export function load() {
 }
 
 #[tokio::test]
+async fn test_change_signature_python_removes_await_when_async_disabled() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "api.py",
+            "async def fetch(id):\n    return id\n\nasync def load():\n    return await fetch(\"123\")\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let api_file = root.join("api.py");
+    let api_text = fs::read_to_string(&api_file).unwrap();
+    let gw = fake_gateway_with_references(vec![reference_at(&api_file, &api_text, "fetch", 1)]).await;
+    let params = vec![Param::Keep("id".to_string())];
+    let modifiers = Modifiers {
+        returns: None,
+        visibility: None,
+        asyncness: Some(false),
+    };
+
+    let change = change_with(
+        gw.addr(),
+        &root,
+        &api_file,
+        1,
+        11,
+        &params,
+        &modifiers,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(change.applied);
+    let content = fs::read_to_string(&api_file).unwrap();
+    assert!(content.contains("def fetch(id):"));
+    assert!(content.contains("return fetch(\"123\")"));
+    assert!(!content.contains("await fetch"));
+}
+
+#[tokio::test]
 async fn test_change_signature_refuses_dropped_param_used_in_body() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),

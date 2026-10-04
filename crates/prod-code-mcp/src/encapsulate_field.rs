@@ -2543,6 +2543,7 @@ pub async fn encapsulate_polyglot(
         })
         .collect();
 
+    let mut applied = false;
     if apply && unmatched.is_empty() && (diagnostics.is_empty() || force) {
         let rewritten_map: BTreeMap<PathBuf, String> = rewritten
             .iter()
@@ -2550,6 +2551,7 @@ pub async fn encapsulate_polyglot(
             .collect();
         let edit = crate::signature::whole_file_edit(&rewritten_map);
         crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+        applied = true;
     }
 
     let rel_file = display(workspace_root, file_path);
@@ -2568,7 +2570,7 @@ pub async fn encapsulate_polyglot(
         unmatched,
         rewritten,
         diagnostics,
-        applied: apply,
+        applied,
     })
 }
 

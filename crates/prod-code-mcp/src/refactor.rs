@@ -522,10 +522,77 @@ enum Undo {
     Write(PathBuf, Vec<u8>),
     /// The edit created this file.
     RemoveFile(PathBuf),
+    /// The edit created a file, directory or symlink tree.
+    RemovePath(PathBuf),
     /// The edit created this directory.
     RemoveDir(PathBuf),
     /// The edit moved the first path from the second.
     Move(PathBuf, PathBuf),
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+fn copy_path_without_following_links(from: &Path, to: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(from)
+        .with_context(|| format!("cannot inspect {} for cross-volume rename", from.display()))?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(from)
+            .with_context(|| format!("cannot read symlink {}", from.display()))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, to)?;
+        #[cfg(windows)]
+        {
+            if std::fs::metadata(from).is_ok_and(|target_metadata| target_metadata.is_dir()) {
+                std::os::windows::fs::symlink_dir(target, to)?;
+            } else {
+                std::os::windows::fs::symlink_file(target, to)?;
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        anyhow::bail!("cross-volume rename of symlinks is unsupported on this platform");
+    } else if metadata.is_dir() {
+        std::fs::create_dir(to)
+            .with_context(|| format!("cannot create directory {}", to.display()))?;
+        for entry in std::fs::read_dir(from)
+            .with_context(|| format!("cannot read directory {}", from.display()))?
+        {
+            let entry = entry?;
+            copy_path_without_following_links(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(to, metadata.permissions())?;
+    } else if metadata.is_file() {
+        std::fs::copy(from, to)
+            .with_context(|| format!("cannot copy {} to {}", from.display(), to.display()))?;
+    } else {
+        anyhow::bail!("cross-volume rename cannot copy special file {}", from.display());
+    }
+    Ok(())
+}
+
+fn unique_transfer_path(destination: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = destination.file_name().unwrap_or_default().to_string_lossy();
+    loop {
+        let sequence = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = destination.with_file_name(format!(
+            ".{name}.prod-code-transfer-{}-{sequence}",
+            std::process::id()
+        ));
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
+        }
+    }
 }
 
 /// How to take back what an edit did so far, and what it set aside to remove once it lands.
@@ -625,6 +692,7 @@ impl Journal {
                     }
                     (abs.clone(), std::fs::remove_file(abs))
                 }
+                Undo::RemovePath(abs) => (abs.clone(), remove_path(abs)),
                 Undo::RemoveDir(abs) => (abs.clone(), std::fs::remove_dir(abs)),
                 Undo::Move(from, to) => (to.clone(), std::fs::rename(from, to)),
             };
@@ -687,8 +755,9 @@ impl MultiRun {
                         self.original(&abs, None);
                     }
                     self.journal.create_parents(&abs)?;
+                    self.journal.undo.push(Undo::RemoveFile(abs.clone()));
+                    self.touched.push(abs.clone());
                     std::fs::write(&abs, b"").with_context(|| format!("create {rel}"))?;
-                    self.journal.undo.push(Undo::RemoveFile(abs));
                     self.also_forget.push((root.clone(), rel.clone()));
                 }
                 MultiOp::Rename {
@@ -721,16 +790,54 @@ impl MultiRun {
                             );
                         }
                     }
+                    self.touched.push(from_abs.clone());
+                    self.touched.push(to_abs.clone());
                     self.original(&from_abs, read_existing(&from_abs).ok().flatten());
                     self.original(&to_abs, None);
                     self.journal.create_parents(&to_abs)?;
-                    std::fs::rename(&from_abs, &to_abs)
-                        .with_context(|| format!("rename {from_rel} -> {to_rel}"))?;
-                    self.journal
-                        .undo
-                        .push(Undo::Move(to_abs.clone(), from_abs.clone()));
-                    self.journal.moved(&from_abs, &to_abs);
-                    if to_abs.is_dir() {
+                    let mut copied_across_volumes = false;
+                    match std::fs::rename(&from_abs, &to_abs) {
+                        Ok(()) => {
+                            self.journal
+                                .undo
+                                .push(Undo::Move(to_abs.clone(), from_abs.clone()));
+                            self.journal.moved(&from_abs, &to_abs);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                            let staging = unique_transfer_path(&to_abs);
+                            self.journal.undo.push(Undo::RemovePath(staging.clone()));
+                            copy_path_without_following_links(&from_abs, &staging)
+                                .with_context(|| format!("copy {from_rel} for cross-volume rename"))?;
+                            std::fs::rename(&staging, &to_abs).with_context(|| {
+                                format!("publish {to_rel} for cross-volume rename")
+                            })?;
+                            self.journal.undo.push(Undo::RemovePath(to_abs.clone()));
+                            // Carry aside paths from the source tree to the published copy before
+                            // moving the original tree to its same-volume undo location.
+                            self.journal.moved(&from_abs, &to_abs);
+                            if to_abs.is_dir() {
+                                for inner in files_under(&to_abs) {
+                                    self.also_forget
+                                        .push((from_root.clone(), format!("{from_rel}/{inner}")));
+                                    self.also_forget
+                                        .push((to_root.clone(), format!("{to_rel}/{inner}")));
+                                }
+                                for (path, _) in &mut self.originals {
+                                    if let Ok(rest) = path.strip_prefix(&from_abs) {
+                                        *path = to_abs.join(rest);
+                                    }
+                                }
+                            }
+                            self.journal
+                                .set_aside(&from_abs)
+                                .with_context(|| format!("retire {from_rel} after cross-volume copy"))?;
+                            copied_across_volumes = true;
+                        }
+                        Err(error) => {
+                            return Err(error).with_context(|| format!("rename {from_rel} -> {to_rel}"));
+                        }
+                    }
+                    if !copied_across_volumes && to_abs.is_dir() {
                         for inner in files_under(&to_abs) {
                             self.also_forget
                                 .push((from_root.clone(), format!("{from_rel}/{inner}")));
@@ -745,9 +852,7 @@ impl MultiRun {
                             }
                         }
                     }
-                    self.vacated.push(from_abs.clone());
-                    self.touched.push(from_abs);
-                    self.touched.push(to_abs);
+                    self.vacated.push(from_abs);
                 }
                 MultiOp::Delete {
                     root,
@@ -795,20 +900,22 @@ impl MultiRun {
             );
         }
         let new_text = apply_text_edits(&current, edits).with_context(|| format!("edit {rel}"))?;
+        self.touched.push(abs.clone());
         match bytes {
             Some(bytes) => {
+                self.journal
+                    .undo
+                    .push(Undo::Write(abs.clone(), bytes.clone()));
                 std::fs::write(&abs, new_text).with_context(|| format!("write {rel}"))?;
-                self.journal.undo.push(Undo::Write(abs.clone(), bytes.clone()));
                 self.original(&abs, Some(bytes));
             }
             None => {
                 self.journal.create_parents(&abs)?;
-                std::fs::write(&abs, new_text).with_context(|| format!("write {rel}"))?;
                 self.journal.undo.push(Undo::RemoveFile(abs.clone()));
+                std::fs::write(&abs, new_text).with_context(|| format!("write {rel}"))?;
                 self.original(&abs, None);
             }
         }
-        self.touched.push(abs);
         Ok(())
     }
 }
@@ -1815,5 +1922,3 @@ mod required_location_tests {
         }
     }
 }
-
-

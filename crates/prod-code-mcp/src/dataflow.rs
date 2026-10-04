@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
 
 /// Completeness contract for intra-function data-flow slicing (Roadmap 7.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,9 +424,13 @@ pub fn slice_intra_function(
 
     // Step 1: Parse function lines and build block/control structure.
     let mut parsed_lines: Vec<ParsedLine> = Vec::new();
-    let is_braced_language = all_lines[fn_start_idx..fn_end_idx]
-        .iter()
-        .any(|l| l.contains('{'));
+    let is_braced_language = matches!(
+        Path::new(file_rel).extension().and_then(|extension| extension.to_str()),
+        Some(
+            "rs" | "go" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "c" | "h" | "cc"
+                | "cpp" | "hpp" | "cxx" | "java" | "kt" | "kts" | "cs" | "scala" | "swift"
+        )
+    );
 
     // Control stacks:
     // (line_number, block_indent_or_brace_depth, is_if_statement)

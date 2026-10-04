@@ -248,7 +248,18 @@ pub fn other_checkout(root: &Path, file: &Path) -> Option<PathBuf> {
 
 /// The engine a source file's extension names, when it names one.
 pub fn engine_for_file(path: &Path) -> Option<&'static str> {
+    let filename = path.file_name()?.to_str()?.to_ascii_lowercase();
+    if filename.starts_with("dockerfile") || filename.starts_with("containerfile") {
+        return Some("dockerfile");
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if ext == "v"
+        && path
+            .ancestors()
+            .any(|directory| directory.join("v.mod").is_file())
+    {
+        return Some("v");
+    }
     Some(match ext.as_str() {
         "rs" => "rust",
         "go" => "go",
@@ -261,6 +272,53 @@ pub fn engine_for_file(path: &Path) -> Option<&'static str> {
         "cs" => "csharp",
         "scala" | "sc" => "scala",
         "zig" => "zig",
+        "php" => "php",
+        "rb" => "ruby",
+        "dart" => "dart",
+        "ex" | "exs" => "elixir",
+        "lua" => "lua",
+        "hs" | "lhs" => "haskell",
+        "ml" | "mli" => "ocaml",
+        "clj" | "cljs" | "cljc" => "clojure",
+        "jl" => "julia",
+        "sh" | "bash" | "zsh" => "shell",
+        "r" => "r",
+        "erl" => "erlang",
+        "fs" | "fsi" | "fsx" | "fsproj" => "fsharp",
+        "pl" | "pm" => "perl",
+        "sol" => "solidity",
+        "nim" | "nimble" => "nim",
+        "d" => "d",
+        "f" | "for" | "f77" | "f90" | "f95" | "f03" | "f08" => "fortran",
+        "sql" => "sql",
+        "graphql" | "gql" => "graphql",
+        "proto" => "protobuf",
+        "cr" => "crystal",
+        "groovy" | "gvy" => "groovy",
+        "gpr" | "adb" | "ads" => "ada",
+        "vsh" => "v",
+        "rkt" => "racket",
+        "tf" | "tofu" => "terraform",
+        "nix" => "nix",
+        "md" | "markdown" => "markdown",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "json" | "jsonc" => "json",
+        "html" | "htm" => "html",
+        "css" | "scss" | "less" => "css",
+        "svelte" => "svelte",
+        "vue" => "vue",
+        "asm" | "nasm" | "s" => "assembly",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "bzl" | "star" => "starlark",
+        "hcl" => "hcl",
+        "typ" => "typst",
+        "wat" | "wast" => "wat",
+        "sv" | "svh" => "systemverilog",
+        "vhd" | "vhdl" => "vhdl",
+        "bal" => "ballerina",
+        "jsonnet" | "libsonnet" => "jsonnet",
+        "cue" => "cue",
         _ => return None,
     })
 }
@@ -628,6 +686,44 @@ fn has_c_sources(dir: &Path) -> bool {
     })
 }
 
+fn mcp_directory_has_kotlin_source(dir: &Path, depth: usize) -> bool {
+    if depth > 6 {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || matches!(name.as_str(), "build" | "target" | "node_modules" | ".gradle") {
+            return false;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            mcp_directory_has_kotlin_source(&path, depth + 1)
+        } else {
+            path.extension().and_then(|extension| extension.to_str()) == Some("kt")
+        }
+    })
+}
+
+fn mcp_has_kotlin_project(root: &Path) -> bool {
+    if ["src", "app/src", "common/src", "shared/src"]
+        .iter()
+        .any(|relative| mcp_directory_has_kotlin_source(&root.join(relative), 0))
+    {
+        return true;
+    }
+    ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]
+        .iter()
+        .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
+        .any(|text| {
+            ["org.jetbrains.kotlin", "kotlin(\"jvm\")", "kotlin(\"android\")", "kotlin(\"multiplatform\")"]
+                .iter()
+                .any(|marker| text.contains(marker))
+        })
+}
+
 /// The engine a directory's own manifests ask for. A Makefile next to C or C++ sources, at the
 /// root or in `src/`, is a C/C++ project built with Make, below every other manifest: Go,
 /// Python and JavaScript repositories keep a Makefile of tasks too. A `project.yml` with
@@ -635,6 +731,24 @@ fn has_c_sources(dir: &Path) -> bool {
 /// (#404). The gateway's `detect_engine` decides the same way.
 fn engine_at(root: &Path) -> Option<&'static str> {
     let has = |name: &str| root.join(name).exists();
+    let has_ext = |extensions: &[&str]| {
+        std::fs::read_dir(root).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extensions.contains(&extension.to_ascii_lowercase().as_str()))
+            })
+        })
+    };
+    let has_prefix = |prefix: &str| {
+        std::fs::read_dir(root).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_name().to_string_lossy().starts_with(prefix)
+            })
+        })
+    };
     let has_xcode = std::fs::read_dir(root)
         .map(|entries| {
             entries.flatten().any(|e| {
@@ -662,22 +776,17 @@ fn engine_at(root: &Path) -> Option<&'static str> {
                 })
             })
             .unwrap_or(false);
-    let has_kotlin = has("build.gradle.kts") || has("settings.gradle.kts");
+    let has_kotlin = mcp_has_kotlin_project(root);
     let has_scala = has("build.sbt")
         || has("build.sc")
         || has(".scala-build")
         || root.join("project/build.properties").exists()
         || root.join("project/plugins.sbt").exists();
+    let has_groovy_gradle_sources = has("build.gradle") && root.join("src/main/groovy").is_dir();
     if has("Cargo.toml") {
         Some("rust")
     } else if has("go.mod") || has("go.work") {
         Some("go")
-    } else if has_csharp {
-        Some("csharp")
-    } else if has_kotlin {
-        Some("kotlin")
-    } else if has_scala {
-        Some("scala")
     } else if has("Package.swift") || has_xcode || xcodegen {
         Some("swift")
     } else if has("compile_commands.json")
@@ -693,6 +802,25 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         || has("Pipfile")
     {
         Some("python")
+    } else if has_csharp {
+        Some("csharp")
+    } else if has_kotlin {
+        Some("kotlin")
+    } else if has_scala {
+        Some("scala")
+    } else if has_groovy_gradle_sources {
+        Some("groovy")
+    } else if has("pom.xml")
+        || has("build.gradle")
+        || has("build.gradle.kts")
+        || has("settings.gradle")
+        || has("settings.gradle.kts")
+    {
+        Some("java")
+    } else if has("svelte.config.js") || has("svelte.config.ts") || has_ext(&["svelte"]) {
+        Some("svelte")
+    } else if has("vue.config.js") || has("vue.config.ts") || has_ext(&["vue"]) {
+        Some("vue")
     } else if has("tsconfig.json")
         || has("package.json")
         || has("jsconfig.json")
@@ -702,25 +830,158 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         Some("typescript")
     } else if make_cpp {
         Some("cpp")
-    } else if has("pom.xml")
-        || has("build.gradle")
-        || has("build.gradle.kts")
-        || has("settings.gradle")
-        || has("settings.gradle.kts")
-    {
-        Some("java")
+    } else if has("composer.json") {
+        Some("php")
+    } else if has("Gemfile") {
+        Some("ruby")
+    } else if has("pubspec.yaml") {
+        Some("dart")
     } else if has("build.zig") || has("build.zig.zon") {
         Some("zig")
     } else if has("mix.exs") {
         Some("elixir")
-    } else if has(".luarc.json") || has(".luacheckrc") {
+    } else if has(".luarc.json") || has(".luacheckrc") || has_ext(&["lua"]) {
         Some("lua")
-    } else if has("cabal.project") || has("stack.yaml") || has("package.yaml") {
+    } else if has("cabal.project") || has("stack.yaml") || has("package.yaml") || has_ext(&["hs", "lhs", "cabal"]) {
         Some("haskell")
-    } else if has("nim.cfg") {
+    } else if has("dune-project") || has("dune") || has_ext(&["ml", "mli"]) {
+        Some("ocaml")
+    } else if has("project.clj") || has("deps.edn") || has_ext(&["clj", "cljs", "cljc"]) {
+        Some("clojure")
+    } else if has("JuliaProject.toml") || has_ext(&["jl"]) {
+        Some("julia")
+    } else if has("DESCRIPTION") || has("NAMESPACE") || has_ext(&["r"]) {
+        Some("r")
+    } else if has("rebar.config") || has("rebar.lock") || has("erlang.mk") || has_ext(&["erl"]) {
+        Some("erlang")
+    } else if has_ext(&["fs", "fsi", "fsx", "fsproj"]) {
+        Some("fsharp")
+    } else if has("cpanfile") || has("Makefile.PL") || has("Build.PL") || has("dist.ini") || has_ext(&["pl", "pm"]) {
+        Some("perl")
+    } else if has("foundry.toml")
+        || has("hardhat.config.js")
+        || has("hardhat.config.ts")
+        || has("hardhat.config.cjs")
+        || has("truffle-config.js")
+        || has_ext(&["sol"])
+    {
+        Some("solidity")
+    } else if has("nim.cfg") || has_ext(&["nimble"]) {
         Some("nim")
     } else if has("dub.json") || has("dub.sdl") {
         Some("d")
+    } else if has("fpm.toml") || has_ext(&["f", "for", "f90", "f95", "f03", "f08"]) {
+        Some("fortran")
+    } else if has(".sqlfluff") || has("sqlfluff.cfg") || has(".sqls.json") || has("sqls.json") || has("schema.sql") || has_ext(&["sql"]) {
+        Some("sql")
+    } else if has("codegen.yml")
+        || has("codegen.ts")
+        || has("codegen.json")
+        || has(".graphqlrc")
+        || has(".graphqlrc.yml")
+        || has(".graphqlrc.json")
+        || has("schema.graphql")
+        || has_ext(&["graphql", "gql"])
+    {
+        Some("graphql")
+    } else if has("buf.yaml")
+        || has("buf.work.yaml")
+        || has("buf.gen.yaml")
+        || has("buf.lock")
+        || has(".protolint.yaml")
+        || has_ext(&["proto"])
+    {
+        Some("protobuf")
+    } else if has("shard.yml") || has("shard.lock") || has_ext(&["cr"]) {
+        Some("crystal")
+    } else if has("Jenkinsfile") || has_ext(&["groovy", "gvy"]) {
+        Some("groovy")
+    } else if has("default.gpr") || has_ext(&["gpr", "adb", "ads"]) {
+        Some("ada")
+    } else if has("v.mod") || has_ext(&["vsh"]) {
+        Some("v")
+    } else if has("info.rkt") || has_ext(&["rkt"]) {
+        Some("racket")
+    } else if has("main.tf")
+        || has("versions.tf")
+        || has("terraform.tf")
+        || has(".terraform.lock.hcl")
+        || has_ext(&["tf", "tofu"])
+    {
+        Some("terraform")
+    } else if has("flake.nix")
+        || has("default.nix")
+        || has("shell.nix")
+        || has("configuration.nix")
+        || has_ext(&["nix"])
+    {
+        Some("nix")
+    } else if has(".asm-lsp.toml") || has_ext(&["asm", "nasm", "s"]) {
+        Some("assembly")
+    } else if has_prefix("Dockerfile")
+        || has_prefix("Containerfile")
+        || has(".hadolint.yaml")
+        || has(".hadolint.yml")
+        || has_ext(&["dockerfile"])
+    {
+        Some("dockerfile")
+    } else if has("PSScriptAnalyzerSettings.psd1") || has("profile.ps1") || has_ext(&["ps1", "psm1", "psd1"]) {
+        Some("powershell")
+    } else if has("BUILD.bazel")
+        || has("WORKSPACE.bazel")
+        || has("MODULE.bazel")
+        || has("BUILD")
+        || has("WORKSPACE")
+        || has("Tiltfile")
+        || has_ext(&["bzl", "star"])
+    {
+        Some("starlark")
+    } else if has("terragrunt.hcl") || has(".tflint.hcl") || has_ext(&["hcl"]) {
+        Some("hcl")
+    } else if has("typst.toml") || has_ext(&["typ"]) {
+        Some("typst")
+    } else if has("wat.json") || has_ext(&["wat", "wast"]) {
+        Some("wat")
+    } else if has("verilator.f") || has_ext(&["sv", "svh"]) {
+        Some("systemverilog")
+    } else if has("vunit.py") || has_ext(&["vhd", "vhdl"]) {
+        Some("vhdl")
+    } else if has("Ballerina.toml") || has_ext(&["bal"]) {
+        Some("ballerina")
+    } else if has("jsonnetfile.json") || has_ext(&["jsonnet", "libsonnet"]) {
+        Some("jsonnet")
+    } else if has("cue.mod") || has_ext(&["cue"]) {
+        Some("cue")
+    } else if has(".yamllint")
+        || has(".yamllint.yml")
+        || has(".yamllint.yaml")
+        || has(".gitlab-ci.yml")
+        || has("docker-compose.yml")
+        || has("docker-compose.yaml")
+        || has("compose.yaml")
+        || has("compose.yml")
+    {
+        Some("yaml")
+    } else if has("taplo.toml") || has(".taplo.toml") {
+        Some("toml")
+    } else if has(".jsonlintrc") || has(".jsonlintrc.json") || has(".jsonlint") {
+        Some("json")
+    } else if has("index.html") || has("htmlhint.json") || has(".htmlhintrc") || has_ext(&["html", "htm"]) {
+        Some("html")
+    } else if has("stylelint.config.js")
+        || has("stylelint.config.cjs")
+        || has("stylelint.config.mjs")
+        || has(".stylelintrc")
+        || has(".stylelintrc.json")
+        || has(".stylelintrc.yml")
+        || has("styles.css")
+        || has_ext(&["css", "scss", "less"])
+    {
+        Some("css")
+    } else if has(".shellcheckrc") || has_ext(&["sh", "bash", "zsh"]) {
+        Some("shell")
+    } else if has("README.md") || has(".marksman.toml") || has_ext(&["md", "markdown"]) {
+        Some("markdown")
     } else {
         None
     }
@@ -1163,7 +1424,17 @@ pub fn prepare_workspace_sync_for(
         state.filter_version = RELEVANCE_VERSION;
     }
     let initial = state.base_commit_sha.is_none() && subpath.is_none();
-    let current_base = git_head(&canonical_root)?;
+    let current_base = match git_head(&canonical_root) {
+        Ok(base) => base,
+        Err(_) => {
+            return prepare_non_git_workspace_sync(
+                &canonical_root,
+                node,
+                subpath,
+                state,
+            );
+        }
+    };
     let (mut changes, current_dirty) = changed_paths(
         &canonical_root,
         state.base_commit_sha.as_deref(),
@@ -1277,6 +1548,79 @@ pub fn prepare_workspace_sync_for(
     })
 }
 
+/// A manifest-based checkout has no Git baseline for a diff. Walk its relevant source tree and
+/// compare file stamps with the acknowledged watermark instead, retaining deletions from the
+/// previous scan and honoring explicit resend requests.
+fn prepare_non_git_workspace_sync(
+    root: &Path,
+    node: &str,
+    subpath: Option<&Path>,
+    mut state: SyncCache,
+) -> Result<SyncPlan> {
+    if state.filter_version != RELEVANCE_VERSION {
+        state.files.clear();
+        state.filter_version = RELEVANCE_VERSION;
+    }
+    let filter = SyncPathFilter::new(root, subpath)?;
+    let previous: HashSet<String> = state
+        .files
+        .keys()
+        .filter(|path| filter.includes(path))
+        .cloned()
+        .collect();
+    let mut resend = HashSet::new();
+    for path in std::mem::take(&mut state.resend) {
+        if filter.includes(&path) {
+            state.files.remove(&path);
+            resend.insert(path);
+        } else {
+            state.resend.insert(path);
+        }
+    }
+
+    let scanned = scan_workspace_files(root, subpath)?;
+    let mut files = Vec::new();
+    let mut present = HashSet::new();
+    for mut delta in scanned {
+        let Some(content) = delta.content.as_deref() else {
+            continue;
+        };
+        let relative_path = delta.relative_path.clone();
+        let full_path = root.join(&relative_path);
+        let metadata = std::fs::metadata(&full_path)
+            .with_context(|| format!("cannot stat synced file {}", full_path.display()))?;
+        let entry = sync_file_entry(&metadata, content);
+        present.insert(delta.relative_path.clone());
+        if state.files.get(&relative_path) != Some(&entry) {
+            delta.is_executable = is_executable(&metadata);
+            files.push(delta);
+        }
+        state.files.insert(relative_path, entry);
+    }
+
+    for path in previous.union(&resend) {
+        if !present.contains(path) && !files.iter().any(|delta| delta.relative_path == *path) {
+            files.push(FileDelta {
+                relative_path: path.clone(),
+                content: None,
+                is_executable: false,
+            });
+            state.files.remove(path);
+        }
+    }
+
+    // No Git commit represents this workspace. Keeping the base absent makes a later sync
+    // continue to use the manifest probe instead of failing on `git rev-parse HEAD`.
+    state.base_commit_sha = None;
+    state.dirty_paths.clear();
+    Ok(SyncPlan {
+        files,
+        state,
+        node: node.to_string(),
+        initial: subpath.is_none(),
+    })
+}
+
 /// Writes files a remote command changed into the checkout and records them in the watermark,
 /// so the next sync does not push them straight back. Returns the relative paths written or
 /// deleted.
@@ -1352,25 +1696,27 @@ pub async fn pull_remote_files(
             .with_context(|| format!("failed to connect to remote gateway at {current_remote}"))?;
         let mut framed = Framed::new(stream, ProdCodeCodec::new());
         framed
-            .send(WireMessage::HandshakeRequest(prod_code_protocol::HandshakeRequest {
-                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
-                capabilities: Some(prod_code_protocol::ClientCapabilities {
-                    redirects: true,
-                    ..Default::default()
-                }),
-                client_name: "prod-code-pull".to_string(),
-                client_pid: std::process::id(),
-                auth_token: None,
-                client_workspace_root: canonical_root.to_string_lossy().to_string(),
-                preferred_engine: None,
-                base_workspace_name: Some(identity.name.clone()),
-                engine_subpath: None,
-                client_agent: Some(prod_code_protocol::detect_client_agent()),
-                client_host: Some(prod_code_protocol::client_host()),
-                purpose: None,
-                redirect_count,
-            }))
+            .send(WireMessage::HandshakeRequest(
+                prod_code_protocol::HandshakeRequest {
+                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                    supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
+                    capabilities: Some(prod_code_protocol::ClientCapabilities {
+                        redirects: true,
+                        ..Default::default()
+                    }),
+                    client_name: "prod-code-pull".to_string(),
+                    client_pid: std::process::id(),
+                    auth_token: None,
+                    client_workspace_root: canonical_root.to_string_lossy().to_string(),
+                    preferred_engine: None,
+                    base_workspace_name: Some(identity.name.clone()),
+                    engine_subpath: None,
+                    client_agent: Some(prod_code_protocol::detect_client_agent()),
+                    client_host: Some(prod_code_protocol::client_host()),
+                    purpose: None,
+                    redirect_count,
+                },
+            ))
             .await?;
 
         let response = loop {
@@ -1384,7 +1730,9 @@ pub async fn pull_remote_files(
                     current_remote = crate::cluster::parse_remotes(&target_addr)?
                         .into_iter()
                         .next()
-                        .with_context(|| format!("redirect target resolved to no addresses: {target_addr}"))?;
+                        .with_context(|| {
+                            format!("redirect target resolved to no addresses: {target_addr}")
+                        })?;
                     tracing::info!(%current_remote, ?reason, "following gateway redirect during pull");
                     break None;
                 }
@@ -1441,12 +1789,13 @@ pub async fn pull_remote_files(
             anyhow::bail!("remote file {rel_str} exceeded maximum pull size limit (truncated)");
         }
 
-        let is_executable = read_resp.is_executable || read_resp.content.as_deref().is_some_and(|b| {
+        let executable_by_signature = read_resp.content.as_deref().is_some_and(|b| {
             b.starts_with(b"\x7fELF")
                 || b.starts_with(b"#!")
                 || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
                 || b.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
         });
+        let is_executable = read_resp.is_executable || executable_by_signature;
 
         pulled_deltas.push(FileDelta {
             relative_path: rel_str,
@@ -1704,11 +2053,17 @@ impl SyncPathFilter {
                 };
                 let path = std::fs::canonicalize(&path).unwrap_or(path);
                 let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-                Some(
-                    path.strip_prefix(&canon_root)
-                        .or_else(|_| path.strip_prefix(root))?
-                        .to_path_buf(),
-                )
+                let relative = path
+                    .strip_prefix(&canon_root)
+                    .or_else(|_| path.strip_prefix(root))?
+                    .to_path_buf();
+                if !path.exists()
+                    && !git_listed_files(&canon_root, &path)
+                        .is_some_and(|listed| !listed.is_empty())
+                {
+                    anyhow::bail!("sync path {:?} does not exist and is not a tracked deletion", path);
+                }
+                Some(relative)
             }
             None => None,
         };
@@ -1750,6 +2105,24 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
             | "Pipfile"
             | "BUILD"
             | "WORKSPACE"
+            | "cabal.project"
+            | "stack.yaml"
+            | "package.yaml"
+            | "dune-project"
+            | "dune"
+            | "deps.edn"
+            | "DESCRIPTION"
+            | "NAMESPACE"
+            | "rebar.config"
+            | "rebar.lock"
+            | "erlang.mk"
+            | "cpanfile"
+            | "Makefile.PL"
+            | "Build.PL"
+            | "dist.ini"
+            | "nim.cfg"
+            | "dub.json"
+            | "dub.sdl"
             | "rustc-wrapper"
             | "rustc_wrapper"
             | "cargo-wrapper"
@@ -1881,6 +2254,9 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "java"
                 | "kt"
                 | "kts"
+                | "fsproj"
+                | "cabal"
+                | "nimble"
                 | "scala"
                 | "sc"
                 | "cs"

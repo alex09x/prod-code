@@ -1129,21 +1129,21 @@ mod lsp_frame_tests {
         let addr = listener.local_addr().unwrap();
 
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        tune_with_buffer_sizes(&stream, Some(64 * 1024), Some(64 * 1024));
-
         let sock = socket2::SockRef::from(&stream);
+        let recv_before = sock.recv_buffer_size().unwrap();
+        let send_before = sock.send_buffer_size().unwrap();
+        // Request a size above ordinary defaults. The OS may clamp it, so assert that each
+        // resulting buffer increased rather than expecting the exact requested size.
+        tune_with_buffer_sizes(&stream, Some(16 * 1024 * 1024), Some(16 * 1024 * 1024));
         let recv_buf = sock.recv_buffer_size().unwrap();
         let send_buf = sock.send_buffer_size().unwrap();
         assert!(
-            recv_buf >= 64 * 1024,
-            "recv buffer must be at least 64KB, got {}",
-            recv_buf
+            recv_buf > recv_before,
+            "recv buffer should increase from {recv_before} after tuning, got {recv_buf}"
         );
         assert!(
-            send_buf >= 64 * 1024,
-            "send buffer must be at least 64KB, got {}",
-            send_buf
+            send_buf > send_before,
+            "send buffer should increase from {send_before} after tuning, got {send_buf}"
         );
     }
 }
-

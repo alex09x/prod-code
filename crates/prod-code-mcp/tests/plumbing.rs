@@ -371,17 +371,19 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
             other => panic!("expected HandshakeRequest: {other:?}"),
         };
         framed
-            .send(WireMessage::HandshakeResponse(prod_code_protocol::HandshakeResponse {
-                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                server_pid: 1234,
-                session_id: 1,
-                server_workspace_root: "/server/ws/fixture".to_string(),
-                detected_engine: "rust".to_string(),
-                stale_paths: Vec::new(),
-                engine_age_ms: Some(100),
-                index_gated: false,
-                capabilities: None,
-            }))
+            .send(WireMessage::HandshakeResponse(
+                prod_code_protocol::HandshakeResponse {
+                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                    server_pid: 1234,
+                    session_id: 1,
+                    server_workspace_root: "/server/ws/fixture".to_string(),
+                    detected_engine: "rust".to_string(),
+                    stale_paths: Vec::new(),
+                    engine_age_ms: Some(100),
+                    index_gated: false,
+                    capabilities: None,
+                },
+            ))
             .await
             .unwrap();
 
@@ -421,13 +423,16 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
     {
         use std::os::unix::fs::PermissionsExt;
         assert_ne!(
-            std::fs::metadata(root.join("src/lib.rs")).unwrap().permissions().mode() & 0o111,
+            std::fs::metadata(root.join("src/lib.rs"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
             0,
             "remote executable mode must be preserved by pull"
         );
     }
 }
-
 
 #[tokio::test]
 async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
@@ -443,17 +448,19 @@ async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
             other => panic!("expected HandshakeRequest: {other:?}"),
         };
         framed
-            .send(WireMessage::HandshakeResponse(prod_code_protocol::HandshakeResponse {
-                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                server_pid: 1234,
-                session_id: 1,
-                server_workspace_root: "/server/ws/truncated".to_string(),
-                detected_engine: "rust".to_string(),
-                stale_paths: Vec::new(),
-                engine_age_ms: Some(100),
-                index_gated: false,
-                capabilities: None,
-            }))
+            .send(WireMessage::HandshakeResponse(
+                prod_code_protocol::HandshakeResponse {
+                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                    server_pid: 1234,
+                    session_id: 1,
+                    server_workspace_root: "/server/ws/truncated".to_string(),
+                    detected_engine: "rust".to_string(),
+                    stale_paths: Vec::new(),
+                    engine_age_ms: Some(100),
+                    index_gated: false,
+                    capabilities: None,
+                },
+            ))
             .await
             .unwrap();
         let request = match framed.next().await.unwrap().unwrap() {
@@ -480,7 +487,10 @@ async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
     .await
     .expect_err("truncated source must never replace the local file");
     assert!(format!("{error:#}").contains("truncated"), "{error:#}");
-    assert_eq!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), original);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        original
+    );
 }
 
 #[tokio::test]
@@ -516,17 +526,19 @@ async fn pull_remote_files_follows_a_redirected_handshake() {
         };
         assert_eq!(request.redirect_count, 1);
         framed
-            .send(WireMessage::HandshakeResponse(prod_code_protocol::HandshakeResponse {
-                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                server_pid: 5678,
-                session_id: 2,
-                server_workspace_root: "/server/ws/redirected".to_string(),
-                detected_engine: "rust".to_string(),
-                stale_paths: Vec::new(),
-                engine_age_ms: Some(100),
-                index_gated: false,
-                capabilities: None,
-            }))
+            .send(WireMessage::HandshakeResponse(
+                prod_code_protocol::HandshakeResponse {
+                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                    server_pid: 5678,
+                    session_id: 2,
+                    server_workspace_root: "/server/ws/redirected".to_string(),
+                    detected_engine: "rust".to_string(),
+                    stale_paths: Vec::new(),
+                    engine_age_ms: Some(100),
+                    index_gated: false,
+                    capabilities: None,
+                },
+            ))
             .await
             .unwrap();
         let file_request = match framed.next().await.unwrap().unwrap() {

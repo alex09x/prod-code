@@ -2607,4 +2607,3 @@ mod wire_tests {
         );
     }
 }
-

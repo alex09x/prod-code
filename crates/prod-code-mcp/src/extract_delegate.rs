@@ -558,16 +558,40 @@ fn extract_param_names_ts(params: &str) -> Vec<String> {
 
 fn extract_param_names_py(params: &str) -> Vec<String> {
     let mut names = Vec::new();
+    let mut keyword_only = false;
     for piece in split_top(params, ',') {
         let p = params[piece.0..piece.1].trim();
-        if p.is_empty() || p == "self" || p.starts_with("self:") {
+        if p.is_empty() || p == "/" {
             continue;
         }
-        let before_equal = p.split('=').next().unwrap_or(p).trim();
+        if p == "*" {
+            keyword_only = true;
+            continue;
+        }
+        if p == "self" || p.starts_with("self:") {
+            continue;
+        }
+        let (marker, parameter) = if let Some(rest) = p.strip_prefix("**") {
+            ("**", rest)
+        } else if let Some(rest) = p.strip_prefix('*') {
+            keyword_only = true;
+            ("*", rest)
+        } else {
+            ("", p)
+        };
+        let before_equal = parameter.split('=').next().unwrap_or(parameter).trim();
         let before_colon = before_equal.split(':').next().unwrap_or(before_equal).trim();
-        let name = before_colon.trim_start_matches('*');
+        let name = before_colon;
         if is_ident_str(name) {
-            names.push(name.to_string());
+            if marker == "**" {
+                names.push(format!("**{name}"));
+            } else if marker == "*" {
+                names.push(format!("*{name}"));
+            } else if keyword_only {
+                names.push(format!("{name}={name}"));
+            } else {
+                names.push(name.to_string());
+            }
         }
     }
     names
@@ -2804,6 +2828,18 @@ mod tests {
 
     fn strings(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn python_delegate_forwarding_preserves_keyword_and_variadic_arguments() {
+        assert_eq!(
+            extract_param_names_py("self, required, *args, limit=10, flag: bool, **kwargs"),
+            ["required", "*args", "limit=limit", "flag=flag", "**kwargs"]
+        );
+        assert_eq!(
+            extract_param_names_py("self, *, limit=10, enabled: bool"),
+            ["limit=limit", "enabled=enabled"]
+        );
     }
 
     #[test]

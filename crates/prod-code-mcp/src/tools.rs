@@ -259,7 +259,7 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_encapsulate_field".to_string(),
-            description: "Make a public field private and turn every access to it outside its declaring file into a method call: reads become `x.field()` (or `x.getField()`), plain writes become `x.set_field(v)` (or `x.setField(v)`). Supports Rust, TypeScript/JavaScript, Python, C++, Swift, and Go. Generates idiomatic getters and setters, updates internal references, rewrites external reads and writes across the workspace, and validates in-memory analyzer overlays before writing."
+            description: "Encapsulate a field with idiomatic getters and setters, rewriting analyzer-resolved references across the workspace. Supports Rust, TypeScript/JavaScript, Python, C++, Swift, and unexported, untagged Go fields. Plain reads become getter calls and writes become setter calls. Apply is refused when a same-named access cannot be proven to reference the selected field; `force` does not bypass unresolved references. Validates in-memory analyzer overlays before writing."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -1111,12 +1111,12 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_source".to_string(),
-            description: "Read a source file that exists only on the gateway host: standard library sources (Rust std, Go GOROOT, Swift frameworks, system C++ headers), dependency registries and caches (Cargo registry/git, Go pkg/mod, node_modules, npm/bun/pnpm/yarn, Python uv/poetry/pipx/virtualenv wheels) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
+            description: "Read a source file from the local workspace or from the gateway host. Accepts a workspace-relative path or an absolute path/file URI inside the local checkout; external absolute paths such as standard library sources (Rust std, Go GOROOT, Swift frameworks, system C++ headers), dependency registries and caches (Cargo registry/git, Go pkg/mod, node_modules, npm/bun/pnpm/yarn, Python uv/poetry/pipx/virtualenv wheels), and SDK headers are read from the gateway. Optionally a window of lines around one line."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Absolute path (or file:// URI) on the gateway, as returned by code_definition" },
+                    "path": { "type": "string", "description": "Workspace-relative path, absolute path or file:// URI inside the local checkout, or an external absolute path/file URI on the gateway (as returned by code_definition)" },
                     "line": { "type": "integer", "description": "1-based line to centre on; omitted: the whole file (up to 2 MiB)" },
                     "context": { "type": "integer", "description": "Lines of context around `line` (default 30)" }
                 },
@@ -3930,7 +3930,9 @@ async fn handle_introduce_parameter_object(
     if gate.as_ref().is_some_and(|g| g.applied) {
         done.applied = true;
     }
-    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let clean = done.unmatched.is_empty()
+        && done.diagnostics.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
     let mut text = done.render(6000);
     if let Some(gate) = &gate {
         text.push_str(&gate.text);
@@ -4035,7 +4037,9 @@ async fn handle_extract_delegate(
     if gate.as_ref().is_some_and(|g| g.applied) {
         done.applied = true;
     }
-    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let clean = done.unmatched.is_empty()
+        && done.diagnostics.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
     let mut out = done.render();
     if let Some(gate) = &gate {
         out.push_str(&gate.text);
@@ -4222,7 +4226,7 @@ async fn handle_extract_field(
         .await?
     };
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && (done.blocked.is_empty() || force) {
+    let gate = if verify && done.blocked.is_empty() {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -4292,22 +4296,50 @@ async fn handle_generify(
         .unwrap_or("T");
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut declaration_line = line;
 
     let file_path = if let Some(p) = path_str {
         resolve_file_path(workspace_root, p)
     } else if let Some(sym) = symbol {
-        let mut found = None;
-        for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
-            let p = entry.path();
-            if p.is_file()
-                && let Ok(content) = std::fs::read_to_string(p)
-                && content.contains(sym)
-            {
-                found = Some(p.to_path_buf());
-                break;
+        let wanted = sym
+            .rsplit_once("::")
+            .map(|(_, name)| name)
+            .or_else(|| sym.rsplit_once('.').map(|(_, name)| name))
+            .unwrap_or(sym);
+        let supported_source = |path: &Path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "c" | "swift" | "go" | "java")
+            )
+        };
+        let candidates: std::collections::BTreeSet<(PathBuf, u32, u32)> =
+            crate::tools::workspace_symbol_search(remote, workspace_root, sym, None, 100)
+                .await?
+                .into_iter()
+                .filter(|hit| {
+                    let name = hit
+                        .name
+                        .rsplit_once("::")
+                        .map(|(_, name)| name)
+                        .or_else(|| hit.name.rsplit_once('.').map(|(_, name)| name))
+                        .unwrap_or(&hit.name);
+                    name.eq_ignore_ascii_case(wanted) && supported_source(&hit.path)
+                })
+                .map(|hit| (
+                    std::fs::canonicalize(&hit.path).unwrap_or(hit.path),
+                    hit.line,
+                    hit.col,
+                ))
+                .collect();
+        match candidates.len() {
+            0 => anyhow::bail!("no supported declaration for symbol {sym} was found"),
+            1 => {
+                let (path, found_line, _) = candidates.into_iter().next().unwrap();
+                declaration_line = Some(found_line);
+                path
             }
+            _ => anyhow::bail!("multiple declarations for symbol {sym} were found; pass a path to select one"),
         }
-        found.with_context(|| format!("could not find file declaring symbol `{sym}`"))?
     } else {
         anyhow::bail!("Missing 'path' or 'symbol' argument");
     };
@@ -4317,7 +4349,7 @@ async fn handle_generify(
         workspace_root,
         &file_path,
         symbol,
-        line,
+        declaration_line,
         character,
         param,
         bound,
@@ -4362,7 +4394,6 @@ async fn handle_invert_boolean(
     let file_path = resolve_file_path(workspace_root, path_str);
     let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_rust = ext == "rs";
-
     let mut done = if is_rust {
         let l = line.context("Missing 'line' argument for Rust invert_boolean")?;
         let c = character.context("Missing 'character' argument for Rust invert_boolean")?;
@@ -4392,7 +4423,7 @@ async fn handle_invert_boolean(
         .await?
     };
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && (done.blocked.is_empty() || force) {
+    let gate = if verify && (done.unmatched.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -4602,7 +4633,7 @@ async fn handle_convert_to_method(
     };
 
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && force {
+    let gate = if verify && (done.unmatched.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -5081,6 +5112,12 @@ async fn handle_extract_interface(
         .unwrap_or_default();
     let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let col = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    if file_path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        anyhow::ensure!(
+            line > 0 && col > 0,
+            "Rust extract_interface requires one-based line and character positions"
+        );
+    }
     let migrate_callers = args
         .get("migrate_callers")
         .and_then(|v| v.as_bool())
@@ -5846,10 +5883,10 @@ async fn handle_slice(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    let (file_path, line, character) = if let Some(sym) = args.get("symbol").and_then(|v| v.as_str()) {
+    let (file_path, line, character, symbol_based) = if let Some(sym) = args.get("symbol").and_then(|v| v.as_str()) {
         let hint = args.get("path").and_then(|v| v.as_str()).map(Path::new);
         let hit = resolve_symbol(remote, workspace_root, sym, hint).await?;
-        (hit.path, hit.line, hit.col)
+        (hit.path, hit.line, hit.col, true)
     } else {
         let path_str = args
             .get("path")
@@ -5860,7 +5897,7 @@ async fn handle_slice(
             .and_then(|v| v.as_u64())
             .context("Missing 'line' argument (or pass 'symbol')")? as u32;
         let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-        (resolve_file_path(workspace_root, path_str), line, character)
+        (resolve_file_path(workspace_root, path_str), line, character, false)
     };
 
     let depth = args
@@ -5878,7 +5915,8 @@ async fn handle_slice(
     let target_line = args
         .get("target_line")
         .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
+        .map(|v| v as u32)
+        .or_else(|| (dataflow && !symbol_based).then_some(line));
     let target_var = args
         .get("target_var")
         .and_then(|v| v.as_str())
@@ -5938,8 +5976,8 @@ async fn handle_shadow_run(
     let in_memory = args
         .get("in_memory")
         .and_then(|v| v.as_bool())
-        .or_else(|| args.get("ram").and_then(|v| v.as_bool()))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || args.get("ram").and_then(|v| v.as_bool()).unwrap_or(false);
     let subdir = args
         .get("cwd")
         .and_then(|v| v.as_str())
@@ -6069,11 +6107,11 @@ async fn handle_diagnostics(
 
     if tool_name == "code_validate_edit" {
         if let Some(chunk) = args.get("chunk").and_then(|v| v.as_str()) {
-            let session_id = match args.get("session_id").and_then(|v| v.as_str()) {
-                Some(id) if !id.trim().is_empty() => id.to_string(),
+            let (session_id, implicit_session) = match args.get("session_id").and_then(|v| v.as_str()) {
+                Some(id) if !id.trim().is_empty() => (id.to_string(), false),
                 _ => {
                     let counter = crate::diagnostics::next_batch_counter();
-                    format!("stream-{}-{}", std::process::id(), counter)
+                    (format!("stream-{}-{}", std::process::id(), counter), true)
                 }
             };
             let close = args
@@ -6083,7 +6121,8 @@ async fn handle_diagnostics(
             let reset = args
                 .get("reset")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || implicit_session;
             let borrow_check = args
                 .get("borrow_check")
                 .and_then(|v| v.as_bool())

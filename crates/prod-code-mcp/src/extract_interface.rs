@@ -5,7 +5,7 @@
 //! edits with in-memory overlays and optional compiler verification. For Rust, dispatches directly
 //! to `crate::extract_trait::extract_trait`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -119,7 +119,8 @@ pub fn extract_interface_ts(
 
                 if !method_name.is_empty()
                     && method_name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                    && (target_methods.is_empty() || target_methods.iter().any(|m| m == method_name))
+                    && (target_methods.is_empty()
+                        || target_methods.iter().any(|m| m == method_name))
                 {
                     // Find closing paren and return type
                     if let Some(close_paren) = trimmed.find(')') {
@@ -231,13 +232,12 @@ pub fn extract_interface_go(
             continue;
         }
 
-        if !target_methods.is_empty()
-            && !target_methods.iter().any(|m| m == method_name)
-        {
+        if !target_methods.is_empty() && !target_methods.iter().any(|m| m == method_name) {
             continue;
         }
 
-        let sig = after_recv.split('{').next().unwrap_or(after_recv).trim();
+        let sig_end = go_method_body_start(after_recv).unwrap_or(after_recv.len());
+        let sig = after_recv[..sig_end].trim();
         interface_sigs.push(format!("\t{sig}"));
         extracted_methods.push(method_name.to_string());
     }
@@ -256,6 +256,42 @@ pub fn extract_interface_go(
     out.insert_str(type_line_start, &interface_def);
 
     Ok((out, extracted_methods))
+}
+
+fn go_method_body_start(signature: &str) -> Option<usize> {
+    let bytes = signature.as_bytes();
+    let mut i = 0;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => {
+                let prefix = signature[..i].trim_end();
+                let word_start = prefix
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .map_or(0, |pos| pos + 1);
+                let preceding_word = &prefix[word_start..];
+                if matches!(preceding_word, "interface" | "struct") {
+                    let close = crate::parameter_object::matching_bracket(signature, i)?;
+                    i = close + 1;
+                    continue;
+                }
+                if paren_depth == 0 && bracket_depth == 0 {
+                    return Some(i);
+                }
+                let close = crate::parameter_object::matching_bracket(signature, i)?;
+                i = close + 1;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 // ============================================================================
@@ -283,10 +319,15 @@ pub fn extract_interface_python(
 
     // Iterate through lines following class definition
     let after_class = &text[header_end + 1..];
-    let class_indent = text[..class_pos]
+    let class_indent = text[..class_pos].lines().last().map_or(0, |l| {
+        l.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+    });
+    let member_indent = after_class
         .lines()
-        .last()
-        .map_or("", |l| &l[..l.chars().take_while(|c| *c == ' ' || *c == '\t').count()]);
+        .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
+        .map(|line| line.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+        .find(|indent| *indent > class_indent)
+        .context("class body has no indented members")?;
 
     for line in after_class.lines() {
         let trimmed = line.trim();
@@ -295,12 +336,12 @@ pub fn extract_interface_python(
         }
 
         let line_indent = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
-        if line_indent <= class_indent.len() && !trimmed.starts_with('#') {
+        if line_indent <= class_indent && !trimmed.starts_with('#') {
             // Reached next top-level or sibling declaration
             break;
         }
 
-        if trimmed.starts_with("def ") {
+        if line_indent == member_indent && trimmed.starts_with("def ") {
             let Some(open_paren) = trimmed.find('(') else {
                 continue;
             };
@@ -311,9 +352,7 @@ pub fn extract_interface_python(
                 continue;
             }
 
-            if !target_methods.is_empty()
-                && !target_methods.iter().any(|m| m == method_name)
-            {
+            if !target_methods.is_empty() && !target_methods.iter().any(|m| m == method_name) {
                 continue;
             }
 
@@ -404,9 +443,7 @@ pub fn extract_interface_cpp(
             }
 
             let method_name = words.last().unwrap();
-            if !target_methods.is_empty()
-                && !target_methods.iter().any(|m| m == method_name)
-            {
+            if !target_methods.is_empty() && !target_methods.iter().any(|m| m == method_name) {
                 continue;
             }
 
@@ -419,7 +456,11 @@ pub fn extract_interface_cpp(
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            let after_paren = trimmed[close_paren + 1..].split('{').next().unwrap_or("").trim();
+            let after_paren = trimmed[close_paren + 1..]
+                .split('{')
+                .next()
+                .unwrap_or("")
+                .trim();
             let const_qual = if after_paren.contains("const") {
                 " const"
             } else {
@@ -444,8 +485,19 @@ pub fn extract_interface_cpp(
     let mut out = text.to_string();
     let header = &text[class_pos..open_brace];
     let header_trimmed = header.trim_end();
-    let new_header = if header_trimmed.contains(':') {
-        header_trimmed.replace(':', &format!(": public {interface_name}, "))
+    let new_header = if let Some(separator) = cpp_inheritance_separator(header_trimmed) {
+        let existing_bases = header_trimmed[separator + 1..].trim();
+        if existing_bases.is_empty() {
+            format!(
+                "{}: public {interface_name} ",
+                header_trimmed[..separator].trim_end()
+            )
+        } else {
+            format!(
+                "{}: public {interface_name}, {existing_bases} ",
+                header_trimmed[..separator].trim_end()
+            )
+        }
     } else {
         format!("{header_trimmed} : public {interface_name} ")
     };
@@ -455,6 +507,25 @@ pub fn extract_interface_cpp(
     out.insert_str(class_line_start, &interface_def);
 
     Ok((out, extracted_methods))
+}
+
+fn cpp_inheritance_separator(header: &str) -> Option<usize> {
+    let mut angle_depth = 0usize;
+    let bytes = header.as_bytes();
+    for (i, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'<' => angle_depth += 1,
+            b'>' => angle_depth = angle_depth.saturating_sub(1),
+            b':' if angle_depth == 0
+                && bytes.get(i.wrapping_sub(1)) != Some(&b':')
+                && bytes.get(i + 1) != Some(&b':') =>
+            {
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -505,9 +576,7 @@ pub fn extract_interface_swift(
         };
         let method_name = after_func[..open_paren].trim();
 
-        if !target_methods.is_empty()
-            && !target_methods.iter().any(|m| m == method_name)
-        {
+        if !target_methods.is_empty() && !target_methods.iter().any(|m| m == method_name) {
             continue;
         }
 
@@ -528,10 +597,37 @@ pub fn extract_interface_swift(
     let mut out = text.to_string();
     let header = &text[type_pos..open_brace];
     let header_trimmed = header.trim_end();
-    let new_header = if header_trimmed.contains(':') {
-        header_trimmed.replace(':', &format!(": {interface_name}, "))
+    let where_at = swift_where_clause_start(header_trimmed);
+    let (inheritance_header, where_clause) = where_at.map_or((header_trimmed, ""), |at| {
+        (header_trimmed[..at].trim_end(), &header_trimmed[at..])
+    });
+    let new_header = if let Some(separator) = swift_inheritance_separator(inheritance_header) {
+        let existing = split_swift_inheritance(&inheritance_header[separator + 1..]);
+        let mut bases = Vec::new();
+        let is_class = inheritance_header
+            .split_whitespace()
+            .any(|token| token == "class");
+        if is_class && !existing.is_empty() {
+            bases.push(existing[0].clone());
+            bases.push(interface_name.to_string());
+            bases.extend(existing.into_iter().skip(1));
+        } else {
+            bases.extend(existing);
+            bases.push(interface_name.to_string());
+        }
+        format!(
+            "{}: {}{}{} ",
+            inheritance_header[..separator].trim_end(),
+            bases.join(", "),
+            if where_clause.is_empty() { "" } else { " " },
+            where_clause
+        )
     } else {
-        format!("{header_trimmed}: {interface_name} ")
+        format!(
+            "{inheritance_header}: {interface_name}{}{} ",
+            if where_clause.is_empty() { "" } else { " " },
+            where_clause
+        )
     };
     out.replace_range(type_pos..open_brace, &new_header);
 
@@ -539,6 +635,66 @@ pub fn extract_interface_swift(
     out.insert_str(type_line_start, &protocol_def);
 
     Ok((out, extracted_methods))
+}
+
+fn swift_inheritance_separator(header: &str) -> Option<usize> {
+    let mut angle_depth = 0usize;
+    for (i, ch) in header.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ':' if angle_depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn swift_where_clause_start(header: &str) -> Option<usize> {
+    let mut angle_depth = 0usize;
+    for (i, ch) in header.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            'w' if angle_depth == 0 && header[i..].starts_with("where ") => {
+                let before_is_boundary = i == 0
+                    || header[..i]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_whitespace());
+                if before_is_boundary {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_swift_inheritance(inheritance: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut angle_depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in inheritance.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if angle_depth == 0 => {
+                let part = inheritance[start..i].trim();
+                if !part.is_empty() {
+                    parts.push(part.to_string());
+                }
+                start = i + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let part = inheritance[start..].trim();
+    if !part.is_empty() {
+        parts.push(part.to_string());
+    }
+    parts
 }
 
 // ============================================================================
@@ -760,7 +916,9 @@ func (s *UserService) DeleteUser(id string) error {
     return nil
 }
 "#;
-        let (res, methods) = extract_interface_go(go, "UserService", "UserReader", &["GetUser".to_string()]).unwrap();
+        let (res, methods) =
+            extract_interface_go(go, "UserService", "UserReader", &["GetUser".to_string()])
+                .unwrap();
         assert_eq!(methods, vec!["GetUser"]);
         assert!(res.contains("type UserReader interface {"));
         assert!(res.contains("GetUser(id string) (*User, error)"));
@@ -778,7 +936,8 @@ func (s *UserService) DeleteUser(id string) error {
     def withdraw(self, amount: float) -> bool:
         return True
 "#;
-        let (res, methods) = extract_interface_python(py, "AccountService", "AccountProtocol", &[]).unwrap();
+        let (res, methods) =
+            extract_interface_python(py, "AccountService", "AccountProtocol", &[]).unwrap();
         assert_eq!(methods, vec!["deposit", "withdraw"]);
         assert!(res.contains("from typing import Protocol"));
         assert!(res.contains("class AccountProtocol(Protocol):"));
@@ -818,7 +977,8 @@ public:
     }
 }
 "#;
-        let (res, methods) = extract_interface_swift(swift, "PaymentService", "PaymentProtocol", &[]).unwrap();
+        let (res, methods) =
+            extract_interface_swift(swift, "PaymentService", "PaymentProtocol", &[]).unwrap();
         assert_eq!(methods, vec!["pay", "refund"]);
         assert!(res.contains("protocol PaymentProtocol {"));
         assert!(res.contains("func pay(amount: Double) -> Bool"));
