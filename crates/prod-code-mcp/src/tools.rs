@@ -4185,6 +4185,10 @@ async fn handle_extract_field(
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_rust = ext == "rs";
+    anyhow::ensure!(
+        !verify || is_rust,
+        "verify: compile is only supported for Rust code_extract_field; no files were written"
+    );
 
     let mut done = if is_rust {
         crate::extract_field::extract(
