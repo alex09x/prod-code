@@ -378,6 +378,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`tigerbeetle/tigerbeetle`](https://github.com/tigerbeetle/tigerbeetle) | Zig (32-core node) | 67 / 67 tools (157K lines, 22 VSR frames, 8,251 asserts, 0 runtime allocs, cluster ZLS 0 errors) | 157K lines (244 files) | 0.25 ms RTT | [TigerBeetle Under the Microscope →](https://prod.codes/blog/tigerbeetle-under-the-microscope-67-ast-tools/) |
 | [`zigtools/zls`](https://github.com/zigtools/zls) | Zig (32-core node) | 67 / 67 tools (56K lines, clean DAG, 5 completion clones, 86 errdefers, in-memory ZLS pre-flight) | 56K lines (90 files) | 0.46 ms RTT | [ZLS Under the Microscope →](https://prod.codes/blog/zls-under-the-microscope-67-ast-tools/) |
 | [`nim-lang/Nim`](https://github.com/nim-lang/Nim) | Nim (32-core node) | 67 / 67 tools (461K lines, clean DAG, allocator test clones, 1.8K asserts, 94% AST slice reduction) | 461K lines (3,923 files) | 0.68 ms RTT | [Nim Under the Microscope →](https://prod.codes/blog/nim-under-the-microscope-67-ast-tools/) |
+| [`status-im/nimbus-eth2`](https://github.com/status-im/nimbus-eth2) | Nim (32-core node) | 67 / 67 tools (180K lines, clean DAG, hard-fork clones, 585 Result types, zero-exception safety) | 180K lines (379 files) | 0.63 ms RTT | [Nimbus Under the Microscope →](https://prod.codes/blog/nimbus-under-the-microscope-67-ast-tools/) |
 
 
 
