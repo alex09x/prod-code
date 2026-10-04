@@ -4708,30 +4708,19 @@ pub async fn handle_client(
                                 }
                             }
 
-                            if is_capacity
-                                && engine != "cpp"
-                                && session_view.accounted.generic_engine.is_some()
-                            {
-                                tracing::warn!(
-                                    session_id,
-                                    engine,
-                                    "private validation engine unavailable under memory pressure; validating on the main engine"
-                                );
-                            } else {
-                                let reason = format!("private validation engine unavailable: {err:#}");
-                                tracing::warn!(
-                                    session_id,
-                                    engine,
-                                    reason,
-                                    "refusing validation handshake"
-                                );
-                                state
-                                    .workspace_manager
-                                    .unregister_session_view(session_view)
-                                    .await;
-                                framed.send(WireMessage::Disconnect { reason }).await?;
-                                return Ok(());
-                            }
+                            let reason = format!("private validation engine unavailable: {err:#}");
+                            tracing::warn!(
+                                session_id,
+                                engine,
+                                reason,
+                                "refusing validation handshake"
+                            );
+                            state
+                                .workspace_manager
+                                .unregister_session_view(session_view)
+                                .await;
+                            framed.send(WireMessage::Disconnect { reason }).await?;
+                            return Ok(());
                         }
                     }
                 }

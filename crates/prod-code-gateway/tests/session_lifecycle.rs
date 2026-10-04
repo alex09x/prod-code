@@ -695,7 +695,7 @@ async fn dropping_a_public_cold_acquisition_releases_its_workspace_count() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn validation_under_memory_pressure_falls_back_to_main_generic_engine() {
+async fn validation_under_memory_pressure_refuses_shared_generic_engine_fallback() {
     let storage = tempfile::tempdir().unwrap();
     let client = tempfile::tempdir().unwrap();
     let client_root = std::fs::canonicalize(client.path()).unwrap();
@@ -759,8 +759,8 @@ async fn validation_under_memory_pressure_falls_back_to_main_generic_engine() {
         .expect("wire message");
 
     assert!(
-        matches!(response, WireMessage::HandshakeResponse(_)),
-        "validation under memory pressure must fall back to the main generic engine, got: {response:?}"
+        matches!(response, WireMessage::Disconnect { .. }),
+        "validation under memory pressure must refuse the handshake instead of sharing the main generic engine, got: {response:?}"
     );
 
     drop(client);
