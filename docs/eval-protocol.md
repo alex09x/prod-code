@@ -703,6 +703,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 2,536 test assertions and 620 explicit exception egress points guarding solver problem spaces, lock transactions, and configuration schemas. Evaluated Boolean Satisfiability (SAT) dependency resolver in `src/Composer/DependencyResolver/Solver.php`, where Conflict-Driven Clause Learning (CDCL) and 2-watched literal graphs (`RuleWatchGraph`) resolve NP-complete version constraints. AST refactoring evaluated `prod-code extract-function` on `src/Composer/Util/Filesystem.php`, extracting path normalization logic, verified with 0 analyzer errors on cluster nodes.
     - **Full Deep-Dive Report**: [Composer Under the Microscope: What 67 Remote AST Tools Found Inside the PHP Dependency Manager (prod.codes)](https://prod.codes/blog/composer-under-the-microscope-67-ast-tools/)
 
+56. **[WordPress/WordPress](https://github.com/WordPress/WordPress)** (PHP)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 673,853 lines of PHP across 1,899 source files (`wp-includes/`: 483.4K LOC, `wp-admin/`: 131.8K LOC, `wp-content/`: 53.7K LOC), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Web publishing CMS analyzed with `prod-code dependencies`. Discovered zero circular dependencies (clean directed acyclic graph) isolating core runtime libraries from administrative interfaces and default presentation themes. Clone analysis (`prod-code duplicates`) scanned 2,592 files (1,745,090 lines) revealing 5 clone groups with 0.9% duplication at 6 lines, dominated by timezone manual offset tables in `wp-includes/functions.php` and Gutenberg block schema definitions.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources identifying 2,378 explicit action and filter hook dispatch sites (`apply_filters`, `do_action`), 997 `wp_die` and `WP_Error` guard boundaries, and 2,779 explicit exception points. Evaluated event-driven hook execution core in `wp-includes/class-wp-hook.php`, where nested callback iteration arrays and priority queues drive global extensibility. AST refactoring evaluated `prod-code extract-function` on `wp-includes/formatting.php`, extracting sanitize token helpers, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [WordPress Under the Microscope: What 67 Remote AST Tools Found Inside the Web Publishing Engine (prod.codes)](https://prod.codes/blog/wordpress-under-the-microscope-67-ast-tools/)
+
+
 
 
 
