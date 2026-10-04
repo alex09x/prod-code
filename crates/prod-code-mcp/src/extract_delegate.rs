@@ -2739,6 +2739,7 @@ pub async fn extract_delegate_polyglot(
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
             .collect(),
         accesses,
+        unmatched,
         diagnostics,
         applied,
     })
@@ -2862,5 +2863,24 @@ mod tests {
         );
         let err = restructure(&by_value, at, &fields, &methods, "Address", "address").unwrap_err();
         assert!(format!("{err}").contains("does not take `&self`"), "{err}");
+    }
+
+    #[test]
+    fn cpp_delegate_helper_is_inserted_after_existing_includes() {
+        let source = "#include <string>\n\nclass Account {\npublic:\n    std::string city;\n};\n";
+        let (rewritten, _) = restructure_cpp(
+            source,
+            Some("Account"),
+            None,
+            &strings(&["city"]),
+            &[],
+            "Location",
+            "location",
+        )
+        .unwrap();
+        let include = rewritten.find("#include <string>").unwrap();
+        let helper = rewritten.find("class Location").unwrap();
+        let owner = rewritten.find("class Account").unwrap();
+        assert!(include < helper && helper < owner, "{rewritten}");
     }
 }
