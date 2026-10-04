@@ -671,6 +671,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 33,038 invariant assertion checks distributed across 5,613 embedded `unittest` blocks, embedding formal executable specifications directly into every API declaration. Evaluated design-by-introspection templates including `isInputRange`, `isForwardRange`, and `isBidirectionalRange` validating structural subtyping at compile time. AST refactoring evaluated `prod-code extract-function` on `std/string.d` (`strip`), extracting character trimming loop logic, verified with 0 analyzer errors on cluster nodes.
     - **Full Deep-Dive Report**: [Phobos Under the Microscope: What 67 Remote AST Tools Found Inside the D Standard Library (prod.codes)](https://prod.codes/blog/phobos-under-the-microscope-67-ast-tools/)
 
+52. **[vibe-d/vibe.d](https://github.com/vibe-d/vibe.d)** (D)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 30,151 lines of D across 108 source files (web/REST engine `web/`: 8.8K LOC across 16 files, database drivers `mongodb/` & `redis/`: 11.2K LOC across 28 files, core utils & streams: 10.1K LOC across 64 files), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Asynchronous I/O and web framework analyzed with `prod-code dependencies` across root `dub.sdl` and module imports. Discovered zero circular dependencies (clean directed acyclic graph) isolating fiber-based concurrency, asynchronous streams, HTTP protocol parsing, REST interface synthesis, and database driver layers. Clone analysis (`prod-code duplicates`) scanned 108 files (30,151 lines) and isolated 5 clone groups with 1.2% duplication at 6 lines, led by Clone Group #556 with 7 occurrences of HTTP router setup boilerplate across `web/vibe/web/web.d:292-638`.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,390 invariant assertions enforcing stream buffer boundaries, protocol state validity, and serialization invariants. Evaluated compile-time declarative REST code generation in `web/vibe/web/rest.d`, where template metaprogramming inspects D `interface` signatures to synthesize both HTTP server routes and type-safe client proxies without runtime reflection. AST refactoring evaluated `prod-code extract-function` on `utils/vibe/utils/string.d`, extracting string sanitize helpers, verified with clean AST construction on cluster nodes.
+    - **Full Deep-Dive Report**: [Vibe.d Under the Microscope: What 67 Remote AST Tools Found Inside the D Asynchronous Web Framework (prod.codes)](https://prod.codes/blog/vibed-under-the-microscope-67-ast-tools/)
+
+
 
 
 
