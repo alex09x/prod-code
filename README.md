@@ -376,6 +376,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`ziglang/zig`](https://github.com/ziglang/zig) | Zig (32-core node) | 67 / 67 tools (1.36M lines, 2,052 codegen clones, 480 compiler errdefers, 4.2K asserts, cluster ZLS 0 errors) | 1.36M lines (2,950 files) | 0.44 ms RTT | [Zig Under the Microscope →](https://prod.codes/blog/zig-under-the-microscope-67-ast-tools/) |
 | [`ghostty-org/ghostty`](https://github.com/ghostty-org/ghostty) | Zig (32-core node) | 67 / 67 tools (363K lines, 107 VT clones, 8.8K defers, 766 asserts, cluster ZLS 0 errors) | 363K lines (807 files) | 0.44 ms RTT | [Ghostty Under the Microscope →](https://prod.codes/blog/ghostty-under-the-microscope-67-ast-tools/) |
 | [`tigerbeetle/tigerbeetle`](https://github.com/tigerbeetle/tigerbeetle) | Zig (32-core node) | 67 / 67 tools (157K lines, 22 VSR frames, 8,251 asserts, 0 runtime allocs, cluster ZLS 0 errors) | 157K lines (244 files) | 0.25 ms RTT | [TigerBeetle Under the Microscope →](https://prod.codes/blog/tigerbeetle-under-the-microscope-67-ast-tools/) |
+| [`zigtools/zls`](https://github.com/zigtools/zls) | Zig (32-core node) | 67 / 67 tools (56K lines, clean DAG, 5 completion clones, 86 errdefers, in-memory ZLS pre-flight) | 56K lines (90 files) | 0.46 ms RTT | [ZLS Under the Microscope →](https://prod.codes/blog/zls-under-the-microscope-67-ast-tools/) |
 
 
 
