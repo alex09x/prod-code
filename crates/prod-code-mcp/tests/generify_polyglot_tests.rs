@@ -295,9 +295,11 @@ void send_item(const std::string& item) {
     let root = ws.root().to_path_buf();
     let cpp_file = root.join("service.cpp");
     let hpp_file = root.join("service.hpp");
+    let cpp_before = fs::read_to_string(&cpp_file).unwrap();
+    let hpp_before = fs::read_to_string(&hpp_file).unwrap();
     let gw = fake_gateway().await;
 
-    let res = generify_polyglot(
+    let error = generify_polyglot(
         gw.addr(),
         &root,
         &cpp_file,
@@ -311,16 +313,11 @@ void send_item(const std::string& item) {
         false,
     )
     .await
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(res.function, "send_item");
-    assert!(res.applied);
-
-    let cpp_content = fs::read_to_string(&cpp_file).unwrap();
-    assert!(cpp_content.contains("template<Printable T>\nvoid send_item(const T& item) {"));
-
-    let hpp_content = fs::read_to_string(&hpp_file).unwrap();
-    assert!(hpp_content.contains("template<Printable T>\nvoid send_item(const T& item);"));
+    assert!(format!("{error:#}").contains("cannot safely synchronize"));
+    assert_eq!(fs::read_to_string(cpp_file).unwrap(), cpp_before);
+    assert_eq!(fs::read_to_string(hpp_file).unwrap(), hpp_before);
 }
 
 #[tokio::test]
@@ -548,6 +545,115 @@ func OutputSlice(items []string) {
 }
 
 #[tokio::test]
+async fn test_generify_splits_grouped_go_parameter_before_rewriting() {
+    for (parameter, expected) in [
+        ("a", "func Convert[T any](a T, b string) string"),
+        ("b", "func Convert[T any](a string, b T) string"),
+    ] {
+        let ws = Workspace::new(&[
+            ("Cargo.toml", CARGO_TOML),
+            (
+                "service.go",
+                "package service\nfunc Convert(a, b string) string { return a + b }\n",
+            ),
+        ]);
+        let root = ws.root().to_path_buf();
+        let file = root.join("service.go");
+        let gw = fake_gateway().await;
+
+        let result = generify_polyglot(
+            gw.addr(),
+            &root,
+            &file,
+            Some("Convert"),
+            None,
+            None,
+            parameter,
+            "",
+            "T",
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.applied);
+        assert!(fs::read_to_string(file).unwrap().contains(expected));
+    }
+}
+
+#[tokio::test]
+async fn test_generify_checks_discovered_caller_files_before_apply() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "api.ts",
+            "export function normalize(value: string) { return value.toUpperCase(); }\n",
+        ),
+        (
+            "main.ts",
+            "import { normalize } from './api';\nexport function run() { return normalize('x'); }\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("api.ts");
+    let original = fs::read_to_string(&file).unwrap();
+    let caller_diagnostic_requests =
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let caller_seen = std::sync::Arc::clone(&caller_diagnostic_requests);
+    let remote = ScriptedGateway::start(move |method, params| {
+        if method == "textDocument/diagnostic"
+            && params
+                .pointer("/textDocument/uri")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|uri| uri.ends_with("/main.ts"))
+            && caller_seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+        {
+            serde_json::json!({
+                "items": [{
+                    "severity": 1,
+                    "message": "caller type error",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 1 }
+                    }
+                }]
+            })
+        } else if method == "textDocument/diagnostic" {
+            answers::no_diagnostics()
+        } else {
+            serde_json::Value::Null
+        }
+    })
+    .await;
+
+    let result = generify_polyglot(
+        remote.addr(),
+        &root,
+        &file,
+        Some("normalize"),
+        None,
+        None,
+        "value",
+        "string",
+        "T",
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.callers_checked, 1);
+    assert!(
+        result.diagnostics.iter().any(|d| d.contains("caller type error")),
+        "diagnostics: {:?}; requests: {:?}",
+        result.diagnostics,
+        caller_diagnostic_requests.load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert_eq!(fs::read_to_string(file).unwrap(), original);
+}
+
+#[tokio::test]
 async fn test_generify_go_existing_type_params() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
@@ -698,4 +804,3 @@ async fn test_generify_rust_basic() {
     let content = fs::read_to_string(&file).unwrap();
     assert!(content.contains("pub fn display_item<T: AsRef<str>>(item: &T) {"));
 }
-

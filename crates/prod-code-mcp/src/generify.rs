@@ -215,6 +215,12 @@ fn find_polyglot_func_decl(
         }
 
         let line_start = text[..name_idx].rfind('\n').map_or(0, |p| p + 1);
+        if let Some(target_line) = line {
+            let candidate_line = text[..line_start].bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+            if candidate_line != target_line {
+                continue;
+            }
+        }
         let before_on_line = &text[line_start..name_idx];
         if crate::inline_parameter::is_in_comment(text, name_idx, lang) {
             continue;
@@ -562,10 +568,11 @@ pub async fn generify_polyglot(
 
     let list = &text[decl.open_paren + 1..decl.close_paren];
     let (_, params) = crate::parameter_object::parse_params(list, lang);
-    let target_param = params
+    let target_idx = params
         .iter()
-        .find(|p| p.name == param)
+        .position(|p| p.name == param)
         .with_context(|| format!("`{}` has no parameter `{param}`", decl.name))?;
+    let target_param = &params[target_idx];
 
     let entries = crate::parameter_object::entries(list, lang);
     let entry_match = entries
@@ -575,10 +582,56 @@ pub async fn generify_polyglot(
         .copied()
         .with_context(|| format!("could not locate parameter `{param}` in parameter list"))?;
 
-    let new_entry_text = rewrite_param_entry(entry_text, target_param, type_param, lang);
-
     let mut new_list = list.to_string();
-    new_list.replace_range(entry_at..entry_at + entry_text.len(), &new_entry_text);
+    let mut parameter_edits = Vec::new();
+    if lang == Language::Go {
+        let mut group_start = target_idx;
+        while group_start > 0 && params[group_start - 1].shares_type {
+            group_start -= 1;
+        }
+        let grouped = group_start < target_idx || target_param.shares_type;
+        if grouped {
+            let old_type = target_param
+                .ty
+                .as_deref()
+                .context("cannot determine the shared Go parameter type")?;
+            for index in group_start..=target_idx {
+                let p = &params[index];
+                let (at, raw) = entries
+                    .iter()
+                    .find(|(at, entry)| *at <= p.name_at && p.name_at <= *at + entry.len())
+                    .copied()
+                    .with_context(|| format!("could not locate Go parameter `{}`", p.name))?;
+                let replacement = if index == target_idx {
+                    let synthetic = if p.shares_type {
+                        format!("{} {old_type}", p.name)
+                    } else {
+                        raw.to_string()
+                    };
+                    rewrite_param_entry(&synthetic, p, type_param, lang)
+                } else {
+                    format!("{} {old_type}", p.name)
+                };
+                parameter_edits.push((at, raw.len(), replacement));
+            }
+        } else {
+            parameter_edits.push((
+                entry_at,
+                entry_text.len(),
+                rewrite_param_entry(entry_text, target_param, type_param, lang),
+            ));
+        }
+    } else {
+        parameter_edits.push((
+            entry_at,
+            entry_text.len(),
+            rewrite_param_entry(entry_text, target_param, type_param, lang),
+        ));
+    }
+    parameter_edits.sort_by_key(|(at, _, _)| std::cmp::Reverse(*at));
+    for (at, len, replacement) in parameter_edits {
+        new_list.replace_range(at..at + len, &replacement);
+    }
 
     let was = text[decl.decl_start..decl.close_paren + 1].trim().to_string();
 
@@ -685,6 +738,7 @@ pub async fn generify_polyglot(
 
     let mut rewritten = vec![(file.to_string_lossy().into_owned(), new_text.clone())];
 
+    let mut separate_cpp_header = false;
     if matches!(lang, Language::Cpp | Language::C) {
         let concept_spec = if bound.is_empty() || bound == "typename" || bound == "class" {
             "typename"
@@ -711,6 +765,7 @@ pub async fn generify_polyglot(
                 let proto_list = &proto_content[proto_decl.open_paren + 1..proto_decl.close_paren];
                 let (_, proto_params) = crate::parameter_object::parse_params(proto_list, lang);
                 if let Some(target_proto_param) = proto_params.iter().find(|pr| pr.name == param) {
+                    separate_cpp_header = true;
                     let proto_entries = crate::parameter_object::entries(proto_list, lang);
                     if let Some((pr_at, pr_text)) = proto_entries
                         .iter()
@@ -739,8 +794,18 @@ pub async fn generify_polyglot(
             }
         }
     }
+    anyhow::ensure!(
+        !separate_cpp_header,
+        "cannot safely synchronize this C/C++ signature with another header declaration; semantic declaration identity is not available"
+    );
 
     let mut callers_checked = 0usize;
+    let mut caller_files = Vec::new();
+    let selected_is_header = matches!(
+        file.extension().and_then(|ext| ext.to_str()),
+        Some("h" | "hpp" | "hh" | "hxx")
+    );
+    let mut out_of_line_cpp_definition = false;
     for entry in ignore::WalkBuilder::new(root).build().flatten() {
         let p = entry.path();
         if !p.is_file() || p == file || !crate::inline_parameter::language_matches(lang, p) {
@@ -750,14 +815,27 @@ pub async fn generify_polyglot(
             && other_text.contains(&decl.name)
         {
             callers_checked += 1;
+            caller_files.push(p.to_path_buf());
+            if selected_is_header
+                && matches!(lang, Language::Cpp | Language::C)
+                && p.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| matches!(ext, "cpp" | "cc" | "cxx" | "c"))
+            {
+                out_of_line_cpp_definition = true;
+            }
         }
     }
+    anyhow::ensure!(
+        !out_of_line_cpp_definition,
+        "cannot safely generify a C/C++ declaration whose definition is in another source file; move the definition into the header first"
+    );
 
     let files_to_validate: Vec<(PathBuf, String)> = rewritten
         .iter()
         .map(|(p, t)| (PathBuf::from(p), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, root, &files_to_validate, &[]).await?;
+    let reports = crate::diagnostics::validate_texts(remote, root, &files_to_validate, &caller_files).await?;
     let diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -981,6 +1059,20 @@ pub async fn generify_rust(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbol_selection_respects_the_resolved_declaration_line() {
+        let text = "function convert(value: string): string { return value; }\n\
+function convert(value: number): number { return value; }";
+        let declaration = find_polyglot_func_decl(
+            text,
+            crate::parameter_object::Language::TypeScript,
+            Some("convert"),
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(&text[declaration.open_paren + 1..declaration.close_paren], "value: number");
+    }
 
     #[test]
     fn a_reference_is_kept_in_front_of_the_type_parameter() {
