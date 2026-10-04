@@ -1651,4 +1651,33 @@ mod tests {
             Path::new("helpers.cpp")
         ));
     }
+
+    #[tokio::test]
+    async fn cpp_move_to_implementation_file_refuses_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.cpp");
+        let target = temp.path().join("helpers.cpp");
+        let original = "double area(Shape s) { return s.area(); }\n";
+        std::fs::write(&source, original).unwrap();
+
+        let error = move_item(
+            "127.0.0.1:9400".parse().unwrap(),
+            temp.path(),
+            &source,
+            1,
+            0,
+            &target,
+            true,
+            true,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}")
+                .contains("cannot move a C/C++ declaration into an implementation file")
+        );
+        assert_eq!(std::fs::read_to_string(source).unwrap(), original);
+        assert!(!target.exists());
+    }
 }
