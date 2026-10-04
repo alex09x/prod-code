@@ -727,6 +727,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,270 test assertions and 53 explicit `raise` exception boundaries guarding front matter parsing, layout resolution, and destination directory safety. Evaluated 6-stage site compilation pipeline in `lib/jekyll/site.rb` (`reset -> read -> generate -> render -> cleanup -> write`). AST refactoring evaluated `prod-code extract-function` on `lib/jekyll/utils.rb`, extracting slug sanitization logic, verified with 0 analyzer errors on cluster nodes.
     - **Full Deep-Dive Report**: [Jekyll Under the Microscope: What 67 Remote AST Tools Found Inside the Classic Ruby Static Site Generator (prod.codes)](https://prod.codes/blog/jekyll-under-the-microscope-67-ast-tools/)
 
+59. **[mastodon/mastodon](https://github.com/mastodon/mastodon)** (Ruby)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 189,749 lines of Ruby across 3,278 source files (`app/`: 65.1K LOC / 1,259 files, `spec/`: 100.8K LOC / 1,245 files, `lib/`: 7.6K LOC / 74 files), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Federated ActivityPub social platform analyzed with `prod-code dependencies` across 372 module nodes. Discovered zero circular dependencies (clean directed acyclic graph) isolating federation services, Sidekiq background ingestion workers, and web API controllers. Clone analysis (`prod-code duplicates`) scanned 3,650 files (224,427 lines) identifying 5 clone groups with 0.8% duplication at 6 lines, dominated by HTTP status assertion sequences in admin API request specs.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 8,191 RSpec expectations and 344 explicit `raise` exception egress points guarding cryptographic signatures, signature validation, domain blocks, and Sidekiq retries. Evaluated ActivityPub federation processing pipeline in `app/services/activitypub/process_activity_service.rb`, handling JSON-LD compaction, Linked Data Signatures, and cryptographic actor verification. AST refactoring evaluated `prod-code extract-function` on `app/models/account.rb`, extracting normalized acct address parsing, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [Mastodon Under the Microscope: What 67 Remote AST Tools Found Inside the Federated ActivityPub Engine (prod.codes)](https://prod.codes/blog/mastodon-under-the-microscope-67-ast-tools/)
+
+
 
 
 
