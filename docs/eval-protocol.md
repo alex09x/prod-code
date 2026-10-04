@@ -789,6 +789,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 17,953 ExUnit test assertions (17,041 `assert`, 912 `refute`), 633 explicit `raise` exception egress points guarding syntax parsing, macro expansion hygiene, protocol consolidation, and task orchestration. Evaluated the macro expansion and compilation pipeline in `lib/elixir/lib/macro.ex` (`Macro.prewalk` and `Macro.postwalk` traversing homoiconic `{form, meta, args}` AST tuples) and protocol consolidation in `lib/elixir/lib/protocol.ex`. AST refactoring was attempted but unsupported; no successful extraction is claimed.
     - **Full Deep-Dive Report**: [Elixir Under the Microscope: What 67 Remote AST Tools Found Inside the Macro Engine and Compiler Pipeline (prod.codes)](https://prod.codes/blog/elixir-under-the-microscope-67-ast-tools/)
 
+69. **[phoenixframework/phoenix](https://github.com/phoenixframework/phoenix)** (Elixir)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400`)
+    - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
+    - **Key Metrics**: 100,976 lines across 508 source files (`lib/phoenix/`: 26.6K LOC / 89 files, `test/`: 20.9K LOC / 98 files, `installer/`: 9.5K LOC / 161 files, `guides/`: 11.7K LOC / 60 files, `assets/`: 10.7K LOC / 26 files), 0.35 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 508 files (100,976 lines) identifying clone patterns in test support pipelines, controller action test harnesses, and channel test helpers.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 3,181 test assertions across `test/` (2,639 `assert`, 140 `refute`, 150 `assert_receive`, 15 `refute_receive`, 237 `assert_raise`), 198 explicit `raise` exception egress points guarding route compilation, endpoint socket dispatch, socket connection termination, and param casting. Evaluated compile-time route generation in `lib/phoenix/router.ex` (expanding DSL scopes into pattern-matched `match/5` and `dispatch/2` clauses) and WebSocket transport multiplexing in `lib/phoenix/channel.ex`. AST refactoring was attempted but unsupported; no successful extraction is claimed.
+    - **Full Deep-Dive Report**: [Phoenix Under the Microscope: What 67 Remote AST Tools Found Inside the Web Framework and Real-Time Engine (prod.codes)](https://prod.codes/blog/phoenix-under-the-microscope-67-ast-tools/)
+
 
 
 
