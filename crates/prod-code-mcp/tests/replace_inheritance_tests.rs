@@ -1,5 +1,5 @@
 use prod_code_mcp::replace_inheritance::replace_inheritance_impl;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -232,6 +232,67 @@ public:
 }
 
 #[tokio::test]
+async fn replace_inheritance_cpp_forwards_arguments_and_preserves_other_bases() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "base.hpp",
+            r#"class Base {
+public:
+    explicit Base(int seed) {}
+    virtual int find(int id) { return id; }
+};
+
+class Interface {
+public:
+    virtual void reset() {}
+};
+
+class Derived : public Base, public Interface {
+public:
+    explicit Derived(int seed) : Base(seed) {}
+};
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("base.hpp");
+    let gw = fake_gateway().await;
+
+    let result = replace_inheritance_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "Derived",
+        Some("Base"),
+        Some("base_"),
+        Some(&["find".to_string()]),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.applied);
+    let content = fs::read_to_string(file).unwrap();
+    assert!(
+        content.contains("class Derived : public Interface"),
+        "{content}"
+    );
+    assert!(
+        !content.contains("class Derived : public Base"),
+        "{content}"
+    );
+    assert!(
+        content.contains("Derived(int seed): base_(seed)"),
+        "{content}"
+    );
+    assert!(content.contains("int find(int id)"), "{content}");
+    assert!(content.contains("return base_.find(id);"), "{content}");
+}
+
+#[tokio::test]
 async fn test_replace_inheritance_swift() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
@@ -259,7 +320,7 @@ class Car: Vehicle {
         &root,
         &file,
         "Car",
-        None, // auto-detect Vehicle
+        None,
         Some("vehicle"),
         Some(&["stop".to_string()]),
         true,
@@ -281,12 +342,57 @@ class Car: Vehicle {
     assert!(content.contains("self.vehicle = Vehicle()"));
     assert!(content.contains("func stop() {"));
     assert!(content.contains("vehicle.stop()"));
-    // override stripped from start
     assert!(!content.contains("override func start()"));
     assert!(content.contains("func start()"));
-    // super.start() rewritten to self.vehicle.start()
     assert!(!content.contains("super.start()"));
     assert!(content.contains("self.vehicle.start()"));
+}
+
+#[tokio::test]
+async fn replace_inheritance_swift_forwards_parameter_and_return_signature() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "vehicle.swift",
+            r#"class Vehicle {
+    func fetch(id: Int) -> String {
+        return "item-\(id)"
+    }
+}
+
+class Car: Vehicle {}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("vehicle.swift");
+    let gw = fake_gateway().await;
+
+    let result = replace_inheritance_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "Car",
+        Some("Vehicle"),
+        Some("vehicle"),
+        Some(&["fetch".to_string()]),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.applied);
+    let content = fs::read_to_string(file).unwrap();
+    assert!(
+        content.contains("func fetch(id: Int) -> String"),
+        "{content}"
+    );
+    assert!(
+        content.contains("return self.vehicle.fetch(id: id)"),
+        "{content}"
+    );
 }
 
 #[tokio::test]
@@ -333,11 +439,54 @@ class Stack(Container):
 }
 
 #[tokio::test]
+async fn replace_inheritance_does_not_apply_analyzer_rejected_edits_without_force() {
+    let source = "class Base { foo(): string { return \"base\"; } }\nclass Derived extends Base { bar(): string { return \"derived\"; } }\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.ts", source)]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("service.ts");
+    let diagnostic_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = diagnostic_count.clone();
+    let gw = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/diagnostic" => {
+            if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                answers::no_diagnostics()
+            } else {
+                serde_json::json!({
+                    "kind": "full",
+                    "items": [{
+                        "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+                        "severity": 1,
+                        "message": "synthetic analyzer error"
+                    }]
+                })
+            }
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let err = replace_inheritance_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "Derived",
+        Some("Base"),
+        Some("base"),
+        Some(&["foo".to_string()]),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("analyzer errors"), "{err:#}");
+    assert_eq!(fs::read_to_string(file).unwrap(), source);
+}
+
+#[tokio::test]
 async fn test_replace_inheritance_unknown_class_fails() {
-    let ws = Workspace::new(&[
-        ("Cargo.toml", CARGO_TOML),
-        ("empty.py", "x = 1\n"),
-    ]);
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("empty.py", "x = 1\n")]);
     let root = ws.root().to_path_buf();
     let file = root.join("empty.py");
     let gw = fake_gateway().await;
