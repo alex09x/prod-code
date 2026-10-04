@@ -114,22 +114,36 @@ fn test_seed_typescript_worktree_at_types_and_symlink() {
     let result = seed_typescript_worktree(&from, &to).unwrap();
     assert!(result.is_some());
 
-    // Verify types are copied into shared cache
-    let cached_react = custom_cache.join("react").join("index.d.ts");
-    assert!(cached_react.is_file());
-    assert!(fs::read_to_string(&cached_react).unwrap().contains("useState"));
-
-    // Verify to/node_modules/@types is a symlink pointing to custom_cache
+    // Verify each worktree gets a version-isolated view under the configured shared-cache root.
     let to_at_types = to.join("node_modules").join("@types");
     let meta = fs::symlink_metadata(&to_at_types).unwrap();
     assert!(meta.file_type().is_symlink());
     let target = fs::read_link(&to_at_types).unwrap();
-    assert_eq!(target, custom_cache);
+    assert!(target.starts_with(&custom_cache));
+
+    let cached_react = target.join("react").join("index.d.ts");
+    assert!(cached_react.is_file());
+    assert!(fs::read_to_string(&cached_react).unwrap().contains("useState"));
 
     // Verify to sees the cached declaration
     let to_react_dts = to_at_types.join("react").join("index.d.ts");
     assert!(to_react_dts.is_file());
     assert!(fs::read_to_string(&to_react_dts).unwrap().contains("useState"));
+
+    // A changed resolver lock must select a new cache namespace and retarget this worktree.
+    fs::write(from.join("package-lock.json"), "{\"lockfileVersion\": 3, \"version\": 1}\n")
+        .unwrap();
+    fs::write(
+        react_types.join("index.d.ts"),
+        "export declare function useStateV2<T>(init: T): [T, (v: T) => void];\n",
+    )
+    .unwrap();
+    assert!(seed_typescript_worktree(&from, &to).unwrap().is_some());
+    let next_target = fs::read_link(&to_at_types).unwrap();
+    assert_ne!(next_target, target, "the new lock must not reuse the old cache view");
+    let next_content =
+        fs::read_to_string(next_target.join("react").join("index.d.ts")).unwrap();
+    assert!(next_content.contains("useStateV2"), "{next_content}");
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -198,10 +212,12 @@ fn test_seed_typescript_worktree_deduplicates_existing_dir() {
     let result = seed_typescript_worktree(&from, &to).unwrap();
     assert!(result.is_some());
 
-    // Verify it was merged into custom_cache and replaced with a symlink to deduplicate!
+    // Verify it was merged into a version-isolated view and replaced with a symlink.
     let meta = fs::symlink_metadata(&to_at_types).unwrap();
     assert!(meta.file_type().is_symlink());
-    assert!(custom_cache.join("express").join("index.d.ts").is_file());
+    let cache_view = fs::read_link(&to_at_types).unwrap();
+    assert!(cache_view.starts_with(&custom_cache));
+    assert!(cache_view.join("express").join("index.d.ts").is_file());
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -409,8 +425,10 @@ fn test_seed_typescript_worktree_pnpm_symlink_package() {
     let content = fs::read_to_string(&to_index).unwrap();
     assert!(content.contains("pnpmProcess"));
 
-    // Cache must have concrete files
-    let cache_index = cache_dir.join("node").join("index.d.ts");
+    // Cache must have concrete files beneath this worktree's isolated view.
+    let cache_view = fs::read_link(&to_at_types).unwrap();
+    assert!(cache_view.starts_with(&cache_dir));
+    let cache_index = cache_view.join("node").join("index.d.ts");
     assert!(cache_index.is_file());
 
     unsafe {
@@ -462,8 +480,10 @@ fn test_seed_typescript_worktree_deduplicates_pnpm_concrete_at_types_dir() {
     let content = fs::read_to_string(&to_react_index).unwrap();
     assert!(content.contains("useState"));
 
-    // Cache must have react/index.d.ts as a concrete file
-    let cache_react_index = cache_dir.join("react").join("index.d.ts");
+    // Cache view must contain react/index.d.ts as a concrete file.
+    let cache_view = fs::read_link(&to_at_types).unwrap();
+    assert!(cache_view.starts_with(&cache_dir));
+    let cache_react_index = cache_view.join("react").join("index.d.ts");
     assert!(cache_react_index.is_file());
 
     unsafe {
