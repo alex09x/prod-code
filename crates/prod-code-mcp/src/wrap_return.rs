@@ -203,6 +203,38 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn one_based_lsp_position(text: &str, byte_offset: usize) -> (u32, u32) {
+    let before = &text[..byte_offset];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+    let column_text = before.rsplit('\n').next().unwrap_or_default();
+    let character = column_text.encode_utf16().count() as u32 + 1;
+    (line, character)
+}
+
+fn is_import_export_call_context(text: &str, at: usize, lang: Language) -> bool {
+    if !matches!(lang, Language::TypeScript | Language::JavaScript) {
+        return crate::inline_parameter::is_import_or_export_context(text, at, lang);
+    }
+    let line_start = text[..at].rfind('\n').map_or(0, |position| position + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |offset| at + offset);
+    let line = text[line_start..line_end].trim_start();
+    if line.starts_with("import ")
+        || line.starts_with("import{")
+        || line.starts_with("export {")
+        || line.starts_with("export{")
+        || line.starts_with("export *")
+        || line.starts_with("from ")
+        || line.contains("require(")
+    {
+        return true;
+    }
+    let before = &text[..at];
+    before
+        .rfind("import {")
+        .or_else(|| before.rfind("export {"))
+        .is_some_and(|start| !before[start..].contains('}'))
+}
+
 /// The return type a function header declares between its parameter list's `)` at `close` and
 /// its body's `{`, or `None` for a function that returns `()` implicitly.
 pub fn declared_return(text: &str, close: usize) -> Option<(usize, usize)> {
@@ -217,6 +249,60 @@ pub fn declared_return(text: &str, close: usize) -> Option<(usize, usize)> {
     let lead = text[start..end].len() - text[start..end].trim_start().len();
     let trail = text[start..end].len() - text[start..end].trim_end().len();
     Some((start + lead, end - trail))
+}
+
+fn cpp_return_type_span(
+    text: &str,
+    decl_start: usize,
+    name_start: usize,
+) -> (String, Option<(usize, usize)>) {
+    let prefix = &text[decl_start..name_start];
+    let leading = prefix.len() - prefix.trim_start().len();
+    let mut start = decl_start + leading;
+    let mut end = decl_start + prefix.trim_end().len();
+
+    // In an out-of-class definition, remove the trailing class scope qualifier from the
+    // return-type region while preserving it in the declaration.
+    if text[start..end].ends_with("::") {
+        let before_scope = &text[start..end - 2];
+        let Some(split) = before_scope.rfind(char::is_whitespace) else {
+            return (String::new(), None);
+        };
+        end = start + split;
+        while end > start && text[end - 1..end].chars().next().is_some_and(char::is_whitespace) {
+            end -= 1;
+        }
+    }
+
+    const SPECIFIERS: &[&str] = &[
+        "static", "inline", "virtual", "constexpr", "consteval", "friend", "extern",
+        "explicit", "register",
+    ];
+    loop {
+        let remaining = &text[start..end];
+        let token_end = remaining
+            .find(char::is_whitespace)
+            .unwrap_or(remaining.len());
+        let token = &remaining[..token_end];
+        if !SPECIFIERS.contains(&token) {
+            break;
+        }
+        start += token_end;
+        while start < end {
+            let ch = text[start..].chars().next().unwrap();
+            if !ch.is_whitespace() {
+                break;
+            }
+            start += ch.len_utf8();
+        }
+    }
+    let type_region = &text[start..end];
+    let type_start = start + type_region.len() - type_region.trim_start().len();
+    let type_end = end - (type_region.len() - type_region.trim_end().len());
+    if type_start >= type_end {
+        return (String::new(), None);
+    }
+    (text[type_start..type_end].to_string(), Some((type_start, type_end)))
 }
 
 /// The innermost function whose body contains `at`, and the return type its header declares
@@ -865,6 +951,20 @@ pub fn find_polyglot_decl(
         })
         .context("could not determine function name to wrap return value for")?;
 
+    let target_line_start = line.and_then(|wanted| {
+        if wanted == 0 {
+            return None;
+        }
+        let mut offset = 0usize;
+        for (index, source_line) in text.lines().enumerate() {
+            if index + 1 == wanted as usize {
+                return Some(offset);
+            }
+            offset += source_line.len() + 1;
+        }
+        None
+    });
+
     for (name_idx, _) in text.match_indices(&clean_name) {
         if name_idx > 0 && text[..name_idx].chars().next_back().is_some_and(is_ident) {
             continue;
@@ -876,7 +976,9 @@ pub fn find_polyglot_decl(
 
         let line_start = text[..name_idx].rfind('\n').map_or(0, |p| p + 1);
         let before_on_line = text[line_start..name_idx].trim_start();
-        if crate::inline_parameter::is_in_comment(text, name_idx, lang) {
+        if crate::inline_parameter::is_in_comment(text, name_idx, lang)
+            || crate::inline_parameter::is_in_string(text, name_idx, lang)
+        {
             continue;
         }
 
@@ -973,6 +1075,9 @@ pub fn find_polyglot_decl(
             };
             let body_open = colon;
             let body_close = crate::inline_parameter::find_python_body_close(text, decl_start, colon);
+            if target_line_start.is_some_and(|selected| selected < decl_start || selected > body_close) {
+                continue;
+            }
             return Ok(PolyglotFuncDecl {
                 name: clean_name,
                 decl_start,
@@ -992,6 +1097,9 @@ pub fn find_polyglot_decl(
         let Some(open_brace_rel) = text[close_paren..].find('{') else { continue };
         let open_brace = close_paren + open_brace_rel;
         let Some(body_close) = crate::parameter_object::matching_bracket(text, open_brace) else { continue };
+        if target_line_start.is_some_and(|selected| selected < decl_start || selected > body_close) {
+            continue;
+        }
 
         let header_slice = &text[close_paren + 1..open_brace];
         if header_slice.contains(';') {
@@ -1040,12 +1148,8 @@ pub fn find_polyglot_decl(
                 }
             }
             Language::Cpp | Language::C | Language::Java => {
-                let before_name = text[decl_start..name_idx].trim();
-                let words: Vec<&str> = before_name.split_whitespace().collect();
-                let ret_raw = words.join(" ");
-                let s_start = decl_start + (text[decl_start..name_idx].len() - before_name.len());
-                let s_end = name_idx - (text[decl_start..name_idx].len() - text[decl_start..name_idx].trim_end().len());
-                (ret_raw, Some((s_start, s_end)), true)
+                let (ret_raw, ret_span) = cpp_return_type_span(text, decl_start, name_idx);
+                (ret_raw, ret_span, ret_span.is_some())
             }
             Language::Python | Language::Rust => unreachable!(),
         };
@@ -1068,6 +1172,45 @@ pub fn find_polyglot_decl(
     anyhow::bail!("function declaration `{clean_name}` not found")
 }
 
+fn python_owned_return_offsets(body: &str) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut nested_def_indent = None;
+    let mut byte_offset = 0usize;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if let Some(def_indent) = nested_def_indent {
+            if trimmed.is_empty() || trimmed.starts_with('#') || indent > def_indent {
+                byte_offset += line.len();
+                continue;
+            }
+            nested_def_indent = None;
+        }
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            nested_def_indent = Some(indent);
+            byte_offset += line.len();
+            continue;
+        }
+        let mut cursor = 0usize;
+        while let Some(relative) = line[cursor..].find("return") {
+            let at = cursor + relative;
+            let before_ok = at == 0 || !is_ident(line[..at].chars().next_back().unwrap());
+            let after = at + "return".len();
+            let after_ok = after == line.len() || !is_ident(line[after..].chars().next().unwrap());
+            let absolute = byte_offset + at;
+            if before_ok
+                && after_ok
+                && !crate::inline_parameter::is_in_string(body, absolute, Language::Python)
+            {
+                offsets.push(absolute);
+            }
+            cursor = after;
+        }
+        byte_offset += line.len();
+    }
+    offsets
+}
+
 /// Rewrites return statements in function body.
 fn rewrite_body_returns(
     body: &str,
@@ -1078,13 +1221,22 @@ fn rewrite_body_returns(
 ) -> String {
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let bytes = body.as_bytes();
+    let owned_returns = if lang == Language::Python {
+        python_owned_return_offsets(body)
+    } else {
+        crate::invert_boolean::own_returns(body)
+    };
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'r' if body[i..].starts_with("return") => {
                 let before = if i > 0 { body.as_bytes()[i - 1] as char } else { ' ' };
                 let after = if i + 6 < bytes.len() { body.as_bytes()[i + 6] as char } else { ' ' };
-                if !is_ident(before) && !is_ident(after) {
+                if !is_ident(before)
+                    && !is_ident(after)
+                    && owned_returns.contains(&i)
+                    && !crate::inline_parameter::is_in_string(body, i, lang)
+                {
                     let end_stmt = body[i..].find([';', '\n']).map_or(body.len(), |e| i + e);
                     let ret_stmt = &body[i..end_stmt];
                     let expr = ret_stmt.strip_prefix("return").unwrap().trim();
@@ -1174,15 +1326,19 @@ pub fn restructure_declaring_file(
             match wrapper {
                 Wrapper::Promise => {
                     let now = if was.is_empty() || was == "void" {
-                        if is_ts { "Promise<void>".to_string() } else { "Promise".to_string() }
+                        if is_ts && !decl.has_return_type {
+                            "Promise<inferred>".to_string()
+                        } else if is_ts {
+                            "Promise<void>".to_string()
+                        } else {
+                            "Promise".to_string()
+                        }
                     } else {
                         format!("Promise<{was}>")
                     };
                     if is_ts {
                         if decl.has_return_type && let Some((s, e)) = decl.ret_span {
                             out.replace_range(s..e, &format!("Promise<{was}>"));
-                        } else {
-                            out.insert_str(decl.close_paren + 1, ": Promise<void>");
                         }
                     }
                     if !decl.is_async {
@@ -1620,6 +1776,21 @@ pub async fn wrap_polyglot_ext(
 
     let decl = find_polyglot_decl(&text, lang, symbol, line)?;
     let name = decl.name.clone();
+    let (selected_line, selected_col) = one_based_lsp_position(&text, decl.name_start);
+    let mut semantic_references = crate::signature::references(
+        remote,
+        root,
+        file,
+        selected_line,
+        selected_col,
+    )
+    .await?
+    .into_iter()
+    .map(|(path, ref_line, ref_col)| {
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        (path, ref_line, ref_col)
+    })
+    .collect::<std::collections::HashSet<_>>();
     let was = decl.was.clone();
 
     // Check already wrapped
@@ -1711,26 +1882,33 @@ pub async fn wrap_polyglot_ext(
             if after.starts_with(is_ident) {
                 continue;
             }
+            if crate::inline_parameter::is_in_comment(&other_content, at, lang)
+                || crate::inline_parameter::is_in_string(&other_content, at, lang)
+            {
+                continue;
+            }
 
-            let line_num = other_content[..at].lines().count();
-            let col_num = at - other_content[..at].rfind('\n').map_or(0, |p| p + 1) + 1;
+            let source_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let (line_num, col_num) = one_based_lsp_position(&other_content, at);
+            let reference_key = (source_path, line_num, col_num);
+            if is_import_export_call_context(&other_content, at, lang) {
+                semantic_references.remove(&reference_key);
+                continue;
+            }
             let site = format!("{rel_path}:{line_num}:{col_num}");
 
             // In declaring file, skip the declaration itself
             if is_decl_file && at >= decl.decl_start && at <= decl.close_paren {
+                semantic_references.remove(&reference_key);
                 continue;
             }
 
             // Self-call inside function's own body
             if is_decl_file && at > decl.body_open && at < decl.body_close {
+                if !semantic_references.remove(&reference_key) {
+                    continue;
+                }
                 unmatched.push(format!("{site} (a call inside `{name}` itself)"));
-                continue;
-            }
-
-            if crate::inline_parameter::is_in_comment(&other_content, at, lang) {
-                continue;
-            }
-            if crate::inline_parameter::is_import_or_export_context(&other_content, at, lang) {
                 continue;
             }
 
@@ -1745,6 +1923,10 @@ pub async fn wrap_polyglot_ext(
                 if let Some(ret_start) = other_content[..at].rfind(&was) {
                     file_edits.push((ret_start, was.len(), now.clone()));
                 }
+                continue;
+            }
+
+            if !semantic_references.remove(&reference_key) {
                 continue;
             }
 
@@ -1765,7 +1947,12 @@ pub async fn wrap_polyglot_ext(
                             propagated += 1;
                         } else {
                             let after_call = other_content[args_end + 1..].trim_start();
-                            if after_call.starts_with('.') {
+                            let has_postfix = after_call.starts_with('.')
+                                || after_call.starts_with("?.")
+                                || after_call.starts_with('[')
+                                || after_call.starts_with('(')
+                                || after_call.starts_with('!');
+                            if has_postfix {
                                 file_edits.push((at, 0, "(await ".to_string()));
                                 file_edits.push((args_end + 1, 0, ")".to_string()));
                             } else {
@@ -1867,17 +2054,38 @@ pub async fn wrap_polyglot_ext(
         }
 
         if !file_edits.is_empty() {
-            let mut body = if is_decl_file {
-                new_decl_file.clone()
-            } else {
-                other_content
-            };
+            let mut body = other_content;
             file_edits.sort_by_key(|(at, len, _)| (*at, *len != 0));
             for (at, len, replacement) in file_edits.into_iter().rev() {
                 body.replace_range(at..at + len, &replacement);
             }
+            if is_decl_file {
+                let declaration_line = text[..decl.decl_start].lines().count() as u32 + 1;
+                let updated_decl = find_polyglot_decl(
+                    &body,
+                    lang,
+                    Some(&name),
+                    Some(declaration_line),
+                )?;
+                body = restructure_declaring_file(
+                    &body,
+                    lang,
+                    &updated_decl,
+                    &wrapper,
+                    constructor,
+                    error,
+                )?
+                .0;
+            }
             rewritten.insert(path.to_path_buf(), body);
         }
+    }
+
+    for (path, ref_line, ref_col) in semantic_references {
+        unmatched.push(format!(
+            "{}:{ref_line}:{ref_col}: analyzer reference to `{name}` could not be rewritten safely",
+            display(root, &path)
+        ));
     }
 
     rewritten.retain(|p, t| std::fs::read_to_string(p).map(|o| o != *t).unwrap_or(true));
@@ -1994,6 +2202,34 @@ mod tests {
     }
 
     #[test]
+    fn polyglot_declaration_selection_uses_the_requested_overload_line() {
+        let source = "function pick(value: string): string { return value; }\n\nfunction pick(value: number): number { return value; }\n";
+        let decl = find_polyglot_decl(source, Language::TypeScript, Some("pick"), Some(3)).unwrap();
+
+        assert_eq!(decl.was, "number");
+        let open_paren = decl.name_start
+            + source[decl.name_start..decl.close_paren]
+                .find('(')
+                .unwrap();
+        assert_eq!(&source[open_paren + 1..decl.close_paren], "value: number");
+    }
+
+    #[test]
+    fn polyglot_declaration_body_ends_before_next_function_after_nested_closure() {
+        let source = "export function calculate() {\n    const inner = () => { return 2; };\n    return [1];\n}\n\nexport async function run() {\n    return calculate()[0].toString();\n}\n";
+        let decl = find_polyglot_decl(source, Language::TypeScript, Some("calculate"), None).unwrap();
+        let next_function = source.find("export async function run").unwrap();
+        let call_at = source.rfind("calculate").unwrap();
+
+        assert!(decl.body_close < next_function);
+        assert!(call_at > decl.body_close);
+        assert!(!crate::inline_parameter::is_in_comment(source, call_at, Language::TypeScript));
+        assert!(!crate::inline_parameter::is_in_string(source, call_at, Language::TypeScript));
+        assert!(!crate::inline_parameter::is_import_or_export_context(source, call_at, Language::TypeScript));
+        assert!(crate::parameter_object::call_args_span(source, call_at + "calculate".len()).is_some());
+    }
+
+    #[test]
     fn the_declared_return_type_is_found_between_the_arrow_and_the_body() {
         let text = "pub fn plain(a: u32) -> Vec<u32> where u32: Copy {\n    vec![a]\n}\n";
         let close = text.find(')').unwrap();
@@ -2001,6 +2237,37 @@ mod tests {
         assert_eq!(&text[s..e], "Vec<u32>");
         let unit = "fn f() {}\n";
         assert!(declared_return(unit, unit.find(')').unwrap()).is_none());
+    }
+
+    #[test]
+    fn cpp_return_wrapping_keeps_method_qualifiers_outside_the_wrapped_type() {
+        let out_of_class = "inline int Widget::load() { return 1; }\n";
+        let decl = find_polyglot_decl(out_of_class, Language::Cpp, Some("load"), None).unwrap();
+        assert_eq!(decl.was, "int");
+        let (wrapped, _) = restructure_declaring_file(
+            out_of_class,
+            Language::Cpp,
+            &decl,
+            &Wrapper::Option,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(wrapped.contains("inline std::optional<int> Widget::load()"), "{wrapped}");
+
+        let member = "struct Widget { static inline int load() { return 1; } };\n";
+        let decl = find_polyglot_decl(member, Language::Cpp, Some("load"), None).unwrap();
+        assert_eq!(decl.was, "int");
+        let (wrapped, _) = restructure_declaring_file(
+            member,
+            Language::Cpp,
+            &decl,
+            &Wrapper::Option,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(wrapped.contains("static inline std::optional<int> load()"), "{wrapped}");
     }
 
     #[test]
