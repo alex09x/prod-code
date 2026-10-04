@@ -157,6 +157,18 @@ impl GenericLspConfig {
             "ada" => Self::for_ada(),
             "v" => Self::for_v(),
             "racket" => Self::for_racket(),
+            "terraform" => Self::for_terraform(),
+            "nix" => Self::for_nix(),
+            "markdown" => Self::for_markdown(),
+            "yaml" => Self::for_yaml(),
+            "toml" => Self::for_toml(),
+            "json" => Self::for_json(),
+            "html" => Self::for_html(),
+            "css" => Self::for_css(),
+            "dockerfile" => Self::for_dockerfile(),
+            "svelte" => Self::for_svelte(),
+            "vue" => Self::for_vue(),
+            "assembly" => Self::for_assembly(),
             _ => return None,
         };
         let command = Path::new(&config.command);
