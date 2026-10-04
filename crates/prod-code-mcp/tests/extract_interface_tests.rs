@@ -1,5 +1,5 @@
 use prod_code_mcp::extract_interface::extract_interface_impl;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -162,7 +162,10 @@ async fn test_extract_interface_python() {
     let content = fs::read_to_string(&file).unwrap();
     assert!(content.contains("from typing import Protocol"));
     assert!(content.contains("class OrderProtocol(Protocol):"));
-    assert!(content.contains("def create_order(self, item_id: str, quantity: int) -> str:\n        ..."));
+    assert!(
+        content
+            .contains("def create_order(self, item_id: str, quantity: int) -> str:\n        ...")
+    );
     assert!(content.contains("class OrderService(OrderProtocol):"));
 }
 
@@ -339,4 +342,96 @@ async fn test_extract_interface_not_found_error() {
     .unwrap_err();
 
     assert!(err.to_string().contains("not found"));
+}
+
+#[tokio::test]
+async fn extract_interface_rejects_javascript_without_writing_typescript_syntax() {
+    let source = "export class UserService {\n    getUser() { return {}; }\n}\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.js", source)]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("service.js");
+    let gw = fake_gateway().await;
+
+    let err = extract_interface_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "UserService",
+        "IUserService",
+        &[],
+        1,
+        1,
+        false,
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("does not support JavaScript"));
+    assert_eq!(fs::read_to_string(file).unwrap(), source);
+}
+
+#[tokio::test]
+async fn extract_interface_rejects_compile_verification_for_typescript() {
+    let source = "export class UserService {\n    getUser(): string { return \"user\"; }\n}\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.ts", source)]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("service.ts");
+    let gw = fake_gateway().await;
+
+    let err = extract_interface_impl(
+        gw.addr(),
+        &root,
+        &file,
+        "UserService",
+        "IUserService",
+        &[],
+        1,
+        1,
+        false,
+        true,
+        false,
+        Some("compile"),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("only supported for Rust"));
+    assert_eq!(fs::read_to_string(file).unwrap(), source);
+}
+
+#[tokio::test]
+async fn extract_interface_propagates_validation_transport_failure_before_apply() {
+    let source = "export class UserService {\n    getUser(): string { return \"user\"; }\n}\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.ts", source)]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("service.ts");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let remote = listener.local_addr().unwrap();
+    drop(listener);
+
+    let err = extract_interface_impl(
+        remote,
+        &root,
+        &file,
+        "UserService",
+        "IUserService",
+        &[],
+        1,
+        1,
+        false,
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.to_string().to_lowercase().contains("connect"),
+        "{err:#}"
+    );
+    assert_eq!(fs::read_to_string(file).unwrap(), source);
 }

@@ -598,14 +598,20 @@ pub async fn extract_interface_impl(
             diagnostics: res.diagnostics,
         });
     }
+    if verify == Some("compile") {
+        anyhow::bail!(
+            "verify: compile is only supported for Rust extract_interface; no files were written"
+        );
+    }
 
     let file_text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read file {}", file.display()))?;
 
     let (mut transformed_text, extracted_methods) = match language.as_str() {
-        "typescript" | "javascript" => {
-            extract_interface_ts(&file_text, symbol, interface_name, methods)?
-        }
+        "typescript" => extract_interface_ts(&file_text, symbol, interface_name, methods)?,
+        "javascript" => bail!(
+            "extract_interface does not support JavaScript; TypeScript interface syntax cannot be emitted into JavaScript"
+        ),
         "go" => extract_interface_go(&file_text, symbol, interface_name, methods)?,
         "python" => extract_interface_python(&file_text, symbol, interface_name, methods)?,
         "cpp" | "c" => extract_interface_cpp(&file_text, symbol, interface_name, methods)?,
@@ -660,9 +666,7 @@ pub async fn extract_interface_impl(
     }
 
     // Overlay validation
-    let reports = crate::diagnostics::validate_texts(remote, root, &overlays, &[])
-        .await
-        .unwrap_or_default();
+    let reports = crate::diagnostics::validate_texts(remote, root, &overlays, &[]).await?;
     let mut diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -681,21 +685,7 @@ pub async fn extract_interface_impl(
         })
         .collect();
 
-    let mut verified = false;
-    if verify == Some("compile") {
-        let files_to_compile: Vec<(String, String)> = overlays
-            .iter()
-            .map(|(p, t)| (p.to_string_lossy().into_owned(), t.clone()))
-            .collect();
-        let check = crate::compile_check::check(remote, root, &files_to_compile).await?;
-        verified = check.passed;
-        if !check.passed {
-            if !force {
-                bail!("compiler verification failed:\n{}", check.errors.join("\n"));
-            }
-            diagnostics.push(format!("compiler errors: {}", check.errors.join("; ")));
-        }
-    }
+    let verified = false;
 
     let has_fatal = !diagnostics.is_empty();
     if has_fatal && !force && apply {
