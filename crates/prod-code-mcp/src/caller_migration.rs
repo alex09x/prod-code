@@ -564,6 +564,9 @@ pub(crate) fn find_caller_migrations(
                 {
                     continue;
                 }
+                if !has_ref && !has_ptr {
+                    continue; // Changing a by-value parameter into a reference changes copy/move behavior.
+                }
 
                 // End of type annotation span
                 let end_idx = pos + type_name.len()
@@ -990,6 +993,9 @@ func AuditUser(svc *UserService) {
     double b = other.id;
     return a;
 }
+double calculate_copy(Shape s) {
+    return s.area();
+}
 "#;
         let methods = vec!["area".to_string()];
         let (out, migrations) =
@@ -998,6 +1004,7 @@ func AuditUser(svc *UserService) {
         assert_eq!(migrations.len(), 1);
         assert_eq!(migrations[0].var_name, "s");
         assert!(out.contains("double calculate(const IShape& s, const Shape& other) {"));
+        assert!(out.contains("double calculate_copy(Shape s) {"));
     }
 
     #[test]
