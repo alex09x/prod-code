@@ -181,12 +181,13 @@ const IMMUTABLE: &[&str] = &[
 
 /// The node's files for one editor session, mirrored under a local directory.
 pub struct RemoteFiles {
-    remote: SocketAddr,
+    remote: std::sync::RwLock<SocketAddr>,
     /// The node's absolute paths live under this directory.
-    mirror: PathBuf,
-    mirror_paths: prod_code_protocol::path::PathTranslator,
+    mirror: std::sync::RwLock<PathBuf>,
+    mirror_paths: std::sync::RwLock<prod_code_protocol::path::PathTranslator>,
+    cache: PathBuf,
     client_root: PathBuf,
-    server_root: PathBuf,
+    server_root: std::sync::RwLock<PathBuf>,
 }
 
 /// Where the node's files are mirrored by default: the user's cache directory.
@@ -210,39 +211,58 @@ impl RemoteFiles {
     pub fn new(remote: SocketAddr, client_root: &Path, server_root: &Path, cache: &Path) -> Self {
         let mirror = cache.join(remote.to_string().replace(':', "_"));
         Self {
-            remote,
-            mirror_paths: prod_code_protocol::path::PathTranslator::new(
+            remote: std::sync::RwLock::new(remote),
+            mirror_paths: std::sync::RwLock::new(prod_code_protocol::path::PathTranslator::new(
                 &mirror.to_string_lossy(),
                 "/",
-            ),
-            mirror,
+            )),
+            mirror: std::sync::RwLock::new(mirror),
+            cache: cache.to_path_buf(),
             client_root: client_root.to_path_buf(),
-            server_root: server_root.to_path_buf(),
+            server_root: std::sync::RwLock::new(server_root.to_path_buf()),
         }
+    }
+
+    /// Changes the remote node after a gateway redirect, including the server root used to
+    /// translate workspace paths and the per-node external-file cache directory.
+    pub fn set_node(&self, remote: SocketAddr, server_root: &Path) {
+        let mirror = self.cache.join(remote.to_string().replace(':', "_"));
+        *self.remote.write().unwrap_or_else(|p| p.into_inner()) = remote;
+        *self.server_root.write().unwrap_or_else(|p| p.into_inner()) = server_root.to_path_buf();
+        *self.mirror_paths.write().unwrap_or_else(|p| p.into_inner()) =
+            prod_code_protocol::path::PathTranslator::new(&mirror.to_string_lossy(), "/");
+        *self.mirror.write().unwrap_or_else(|p| p.into_inner()) = mirror;
     }
 
     /// The editor's message with every path of a mirrored copy turned back into the node's.
     pub fn to_node(&self, raw: &str) -> String {
-        self.mirror_paths.translate_lsp_to_server(raw)
+        self.mirror_paths
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .translate_lsp_to_server(raw)
     }
 
     /// The node path a `file://` URI of a server's message names, when the editor cannot open
     /// it: a path outside the checkout, or one inside it that only the node's copy has.
     pub fn node_path(&self, uri: &str) -> Option<PathBuf> {
         let path = PathBuf::from(prod_code_mcp::remote_fs::uri_to_path(uri));
-        if path.starts_with(&self.mirror) {
+        if path.starts_with(&*self.mirror.read().unwrap_or_else(|p| p.into_inner())) {
             return None;
         }
+        let server_root = self.server_root.read().unwrap_or_else(|p| p.into_inner());
         match path.strip_prefix(&self.client_root) {
             Ok(_) if path.exists() => None,
-            Ok(rel) => Some(self.server_root.join(rel)),
+            Ok(rel) => Some(server_root.join(rel)),
             Err(_) => Some(path),
         }
     }
 
     /// Where the copy of the node's `node` path lives.
     pub fn mirror_path(&self, node: &Path) -> PathBuf {
-        self.mirror.join(node.strip_prefix("/").unwrap_or(node))
+        self.mirror
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .join(node.strip_prefix("/").unwrap_or(node))
     }
 
     /// The local copy of the file a URI names, fetched from the node unless an unchanging copy
@@ -254,8 +274,9 @@ impl RemoteFiles {
         let node_text = node.to_string_lossy();
         let immutable = IMMUTABLE.iter().any(|part| node_text.contains(part));
         if !(immutable && local.is_file()) {
+            let remote = *self.remote.read().unwrap_or_else(|p| p.into_inner());
             let (bytes, _truncated) =
-                prod_code_mcp::remote_fs::read_remote_file(self.remote, &node_text, 0)
+                prod_code_mcp::remote_fs::read_remote_file(remote, &node_text, 0)
                     .await
                     .ok()?;
             write_read_only(&local, &bytes).ok()?;
@@ -346,6 +367,7 @@ mod tests {
                                 path: req.path,
                                 content,
                                 truncated: false,
+                                is_executable: false,
                                 error,
                             }))
                             .await;

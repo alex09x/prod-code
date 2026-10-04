@@ -37,6 +37,7 @@ impl Node {
                             path: request.path,
                             content,
                             truncated: false,
+                            is_executable: false,
                             error,
                         }))
                         .await
@@ -156,6 +157,38 @@ async fn incoming_text_fields_are_neither_fetched_nor_rewritten() {
         "source/documentation caused a remote file read"
     );
     assert!(!files.mirror_path(Path::new("/node/source.rs")).exists());
+}
+
+#[tokio::test]
+async fn rebalance_retargets_external_file_reads_to_the_new_node() {
+    let old_node = Node::start(HashMap::new()).await;
+    let new_root = Path::new("/server/new-workspace");
+    let new_node_path = new_root.join("src/only-node.rs");
+    let new_node = Node::start(HashMap::from([(
+        new_node_path.to_string_lossy().into_owned(),
+        "new node bytes".to_string(),
+    )]))
+    .await;
+    let checkout = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let files = RemoteFiles::new(
+        old_node.addr,
+        checkout.path(),
+        Path::new("/server/old-workspace"),
+        cache.path(),
+    );
+    files.set_node(new_node.addr, new_root);
+
+    let client_path = checkout.path().join("src/only-node.rs");
+    let message = json!({"result":{"location":{"uri":file_uri(&client_path)}}});
+    let shown: Value = serde_json::from_str(&files.to_editor(message.to_string()).await).unwrap();
+    let local_copy = files.mirror_path(&new_node_path);
+    let expected_uri = file_uri(&local_copy);
+
+    assert_eq!(shown["result"]["location"]["uri"], expected_uri);
+    assert_eq!(std::fs::read(&local_copy).unwrap(), b"new node bytes");
+    assert_eq!(old_node.reads.load(Ordering::Relaxed), 0);
+    assert_eq!(new_node.reads.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
