@@ -655,5 +655,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 273 invariant assertion checks (`assert` and `doAssert`) across package parsing and solver verification routines, and static AST declarative parsing powered by `compiler/[ast, idents, options]` directly invoking Nim compiler frontends without VM overhead. AST refactoring evaluated `prod-code extract-function` on `src/nimblepkg/version.nim` (`newVersion`), extracting version string normalization logic, verified with clean AST construction and 0 compiler warnings on remote cluster nodes.
     - **Full Deep-Dive Report**: [Nimble Under the Microscope: What 67 Remote AST Tools Found Inside the Nim Package Manager (prod.codes)](https://prod.codes/blog/nimble-under-the-microscope-67-ast-tools/)
 
+50. **[dlang/dmd](https://github.com/dlang/dmd)** (D)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 975,673 lines of D across 5,579 source files (self-hosted compiler `compiler/src/dmd/`: 389.8K LOC across 264 files, runtime `druntime/`: 298.1K LOC across 778 files, test suite `compiler/test/`: 287.7K LOC across 4,537 files), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Reference D compiler and runtime system analyzed with `prod-code dependencies` across root and package definitions. Discovered zero circular dependencies (clean directed acyclic graph) between frontend scanning/parsing (`dmd.lexer`, `dmd.parse`), ImportC ISO C11 frontend (`dmd.cparse`), semantic resolution passes (`dmd.dsymbolsem`, `dmd.typesem`, `dmd.expressionsem`), compile-time function execution interpreter (`dmd.dinterpret`), and backend code generation. Clone analysis (`prod-code duplicates`) scanned 5,579 files (975,673 lines) and isolated clone groups concentrated primarily in compiler runnable test fixtures (`compiler/test/runnable/link13350.d:136-141`, `test4.d`, `interpret.d`), while the compiler frontend AST remains rigorously factored.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 12,154 invariant assertions across compiler and runtime (5,061 in `compiler/src/dmd/` and 7,093 in `druntime/`, plus 25,033 assertions in compiler tests) enforcing strict contract invariants. Analyzed ImportC dual AST ingestion where `CParser(AST)` directly converts ISO C11 tokens into D AST nodes without intermediate C preprocessor bridges. AST refactoring evaluated `prod-code extract-function` on `compiler/src/dmd/identifier.d`, extracting identifier string comparison helpers, verified with clean AST construction on cluster nodes.
+    - **Full Deep-Dive Report**: [DMD Under the Microscope: What 67 Remote AST Tools Found Inside the Reference D Compiler (prod.codes)](https://prod.codes/blog/dmd-under-the-microscope-67-ast-tools/)
+
+
 
 
