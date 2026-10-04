@@ -749,6 +749,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 845 `expect()` test assertions, 29 runtime assertions, and 138 explicit `throw` exception boundaries guarding connection timeouts, bad certificate validations, and request cancellations. Evaluated FIFO interceptor pipeline in `dio/lib/src/dio_mixin.dart` (`requestInterceptors -> _dispatchRequest -> responseInterceptors -> errorInterceptors`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
     - **Full Deep-Dive Report**: [Dio Under the Microscope: What 67 Remote AST Tools Found Inside the Dart HTTP Client (prod.codes)](https://prod.codes/blog/dio-under-the-microscope-67-ast-tools/)
 
+64. **[dart-lang/sdk](https://github.com/dart-lang/sdk)** (Dart)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 tool calls attempted; Dart dependency graph and code_extract_function unsupported
+    - **Key Metrics**: 5,741,847 lines of Dart across 25,732 source files (`pkg/analyzer/`: 1.35M LOC / 1,612 files, `tests/`: 1.08M LOC / 8,291 files, `pkg/analysis_server/`: 631.7K LOC / 2,008 files, `pkg/front_end/`: 502.0K LOC / 5,848 files, `runtime/`: 382.8K LOC / 814 files, `pkg/compiler/`: 283.5K LOC / 1,476 files, `sdk/`: 265.6K LOC / 479 files, `pkg/_fe_analyzer_shared/`: 148.9K LOC / 468 files, `pkg/linter/`: 111.2K LOC / 579 files, `pkg/kernel/`: 99.7K LOC / 142 files), 0.35 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Dart dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 25,732 files (5,741,847 lines) identifying clone groups dominated by synthetic language feature compiler tests (`tests/language/`) and analyzer AST visitor traversal dispatch boilerplate.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 32,965 `expect()` test assertions, 8,678 runtime assertions, and 24,799 explicit `throw` exception boundaries guarding type inference unsoundness, Kernel AST invariants, syntax errors, and analyzer Element model lookups. Evaluated Common Front End (CFE) compilation pipeline in `pkg/front_end/lib/src/kernel_generator_impl.dart` (`loadSdkSummary -> buildOutlines -> performOutlineTransformations -> buildComponent -> kernel serialization`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
+    - **Full Deep-Dive Report**: [Dart SDK Under the Microscope: What 67 Remote AST Tools Found Inside the Language Compiler and Analyzer Engine (prod.codes)](https://prod.codes/blog/dart-sdk-under-the-microscope-67-ast-tools/)
+
 
 
 
