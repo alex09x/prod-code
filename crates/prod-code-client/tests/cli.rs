@@ -7,9 +7,9 @@
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     ClusterResponse, ExecChunk, ExecExit, ExecMetric, HandshakeResponse, MetricsResponse,
-    PROTOCOL_VERSION, PeerInfo, PlaceResponse, ProdCodeCodec, QueryMetric, ReadFileResponse, SearchHit,
-    SearchResponse, ShadowHypothesisResult, ShadowRunResponse, StatusResponse, SyncProbeResponse,
-    SyncResponse, WireMessage,
+    PROTOCOL_VERSION, PeerInfo, PlaceResponse, ProdCodeCodec, QueryMetric, ReadFileResponse,
+    SearchHit, SearchResponse, ShadowHypothesisResult, ShadowRunResponse, StatusResponse,
+    SyncProbeResponse, SyncResponse, WireMessage,
 };
 use prod_code_testkit::{Answer, ScriptedGateway, Workspace, answers};
 use std::collections::HashMap;
@@ -249,6 +249,7 @@ async fn handle_client(
                         path: req.path,
                         content: Some(b"pub fn mocked_remote_source() {}\n".to_vec()),
                         truncated: false,
+                        is_executable: false,
                         error: None,
                     }))
                     .await?;
@@ -557,14 +558,16 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
     let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
     assert!(out.status.success(), "{}", stderr_of(&out));
-    let snapshot: serde_json::Value =
-        serde_json::from_str(&stdout_of(&out)).expect("cluster --rebalance --json is one JSON object");
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out))
+        .expect("cluster --rebalance --json is one JSON object");
     assert!(snapshot["rebalanced"].is_object(), "{snapshot}");
     assert_eq!(snapshot["rebalanced"]["target"], gw.addr.to_string());
-    assert!(snapshot["rebalanced"]["reason"]
-        .as_str()
-        .unwrap()
-        .contains("rebalanced to local mock"));
+    assert!(
+        snapshot["rebalanced"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("rebalanced to local mock")
+    );
 
     let out_text = run_cli(&ws, gw.addr, &["cluster", "--rebalance"]).await;
     assert!(out_text.status.success(), "{}", stderr_of(&out_text));
@@ -620,7 +623,6 @@ async fn cli_pulls_files_from_gateway() {
     assert!(out_sync_pull.status.success());
     assert!(stdout_of(&out_sync_pull).contains("Successfully pulled 1 file(s) from gateway"));
 }
-
 
 #[tokio::test]
 async fn cli_resolves_definition_location_and_reports_when_none_found() {
@@ -681,7 +683,9 @@ async fn scripted_gateway_answers_hover_query() {
 async fn cli_hover_blank_contents_returns_typed_error() {
     let ws = make_workspace();
     let gw = MockGateway::start(|method, _| match method {
-        "textDocument/hover" => serde_json::json!({ "contents": { "kind": "markdown", "value": "   \n  " } }),
+        "textDocument/hover" => {
+            serde_json::json!({ "contents": { "kind": "markdown", "value": "   \n  " } })
+        }
         _ => serde_json::Value::Null,
     })
     .await;
@@ -714,7 +718,10 @@ async fn cli_hover_null_returns_typed_error_not_null() {
     assert!(!out.status.success());
     let stdout = stdout_of(&out);
     let stderr = stderr_of(&out);
-    assert!(!stdout.contains("null"), "stdout must not print null: {stdout}");
+    assert!(
+        !stdout.contains("null"),
+        "stdout must not print null: {stdout}"
+    );
     assert!(stderr.contains("no hover information found"), "{stderr}");
 }
 
@@ -727,7 +734,10 @@ async fn cli_definition_null_returns_typed_error_not_null() {
     assert!(!out.status.success());
     let stdout = stdout_of(&out);
     let stderr = stderr_of(&out);
-    assert!(!stdout.contains("null"), "stdout must not print null: {stdout}");
+    assert!(
+        !stdout.contains("null"),
+        "stdout must not print null: {stdout}"
+    );
     assert!(stderr.contains("no definition found"), "{stderr}");
 }
 
@@ -1409,7 +1419,11 @@ async fn cli_nested_swift_exec_retains_discovered_macos_gateway_with_external_to
     let ws = make_workspace();
     let nested_swift = ws.root().join("nested_swift");
     std::fs::create_dir_all(&nested_swift).unwrap();
-    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+    std::fs::write(
+        nested_swift.join("Package.swift"),
+        "// swift-tools-version: 5.9\n",
+    )
+    .unwrap();
     std::fs::write(nested_swift.join("main.swift"), "print(\"hello swift\")\n").unwrap();
 
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
@@ -1461,7 +1475,11 @@ async fn cli_exec_env_value_naming_nested_manifest_does_not_change_engine() {
     let ws = make_workspace();
     let nested_swift = ws.root().join("nested_swift");
     std::fs::create_dir_all(&nested_swift).unwrap();
-    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+    std::fs::write(
+        nested_swift.join("Package.swift"),
+        "// swift-tools-version: 5.9\n",
+    )
+    .unwrap();
 
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
     let home = tempfile::tempdir().expect("home");
@@ -1498,7 +1516,11 @@ async fn cli_nested_swift_file_position_command_selects_nested_engine() {
     let ws = make_workspace();
     let nested_swift = ws.root().join("nested_swift");
     std::fs::create_dir_all(&nested_swift).unwrap();
-    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+    std::fs::write(
+        nested_swift.join("Package.swift"),
+        "// swift-tools-version: 5.9\n",
+    )
+    .unwrap();
     let main_swift = nested_swift.join("main.swift");
     std::fs::write(&main_swift, "func foo() {}\n").unwrap();
 
@@ -1532,12 +1554,7 @@ async fn cli_nested_swift_file_position_command_selects_nested_engine() {
     // From the Rust checkout root, run `callers nested_swift/main.swift 1 6`.
     // The positional file argument must be recognized as a project hint, routing to gw.addr (swift).
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
-        .args([
-            "callers",
-            "nested_swift/main.swift",
-            "1",
-            "6",
-        ])
+        .args(["callers", "nested_swift/main.swift", "1", "6"])
         .env_remove("PROD_CODE_REMOTE")
         .env("HOME", home.path())
         .current_dir(ws.root())
@@ -1558,7 +1575,11 @@ async fn cli_nested_swift_migrate_type_with_path_selects_nested_engine() {
     let ws = make_workspace();
     let nested_swift = ws.root().join("nested_swift");
     std::fs::create_dir_all(&nested_swift).unwrap();
-    std::fs::write(nested_swift.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
+    std::fs::write(
+        nested_swift.join("Package.swift"),
+        "// swift-tools-version: 5.9\n",
+    )
+    .unwrap();
     let main_swift = nested_swift.join("main.swift");
     std::fs::write(&main_swift, "struct Foo {\n    var x: Int\n}\n").unwrap();
 
@@ -2399,6 +2420,36 @@ async fn cli_encapsulates_a_field_and_rewrites_the_accesses_outside_its_file() {
 }
 
 #[tokio::test]
+async fn cli_encapsulate_field_resolves_class_name_without_path() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/user.ts", "export class User {\n    name: string;\n}\n"),
+    ]);
+    let user_file = ws.path("src/user.ts");
+    let symbol_file = user_file.clone();
+    let gw = MockGateway::start(move |method, _| match method {
+        "workspace/symbol" => {
+            serde_json::Value::Array(vec![answers::symbol("User", 5, &symbol_file, 1, 13)])
+        }
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &["encapsulate-field", "User", "--field", "name", "--apply"],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert!(ws.read("src/user.ts").contains("private _name: string;"));
+}
+
+#[tokio::test]
 async fn cli_extracts_a_field_and_initialises_it_where_the_struct_is_built() {
     let ws = Workspace::new(&[
         (
@@ -2543,7 +2594,13 @@ async fn cli_validate_borrow_check_verifies_clean() {
     let out = run_cli(
         &ws,
         gw.addr,
-        &["validate", "src/lib.rs", "--from", &proposal, "--borrow-check"],
+        &[
+            "validate",
+            "src/lib.rs",
+            "--from",
+            &proposal,
+            "--borrow-check",
+        ],
     )
     .await;
     assert!(
@@ -3500,6 +3557,7 @@ where
                                     path: req.path,
                                     content,
                                     truncated: false,
+                                    is_executable: false,
                                     error,
                                 })),
                             )
@@ -3509,7 +3567,8 @@ where
                                 serde_json::from_str(&json).unwrap_or_default();
                             let method = val["method"].as_str().unwrap_or_default().to_string();
                             let result = if method == "initialize" {
-                                Some(serde_json::json!({ "capabilities": {} }))
+                                answer(&val)
+                                    .or_else(|| Some(serde_json::json!({ "capabilities": {} })))
                             } else if val.get("id").is_none() {
                                 None
                             } else {
@@ -3531,8 +3590,9 @@ where
                             (format!("lsp {method}"), reply)
                         }
                         WireMessage::Ping => {
-                            let ignore_ping = answer(&serde_json::json!({"method": "test/checkPing"}))
-                                == Some(serde_json::json!("__ignore_ping__"));
+                            let ignore_ping =
+                                answer(&serde_json::json!({"method": "test/checkPing"}))
+                                    == Some(serde_json::json!("__ignore_ping__"));
                             if ignore_ping {
                                 ("ping_ignored".to_string(), None)
                             } else {
@@ -3969,12 +4029,8 @@ async fn lsp_watchdog_pings_idle_session_periodically() {
     use tokio::io::AsyncWriteExt;
     let ws = make_workspace();
     let home = tempfile::tempdir().expect("home");
-    let (addr, seen) = recording_gateway_with(
-        |_| Some(serde_json::json!({})),
-        HashMap::new(),
-        true,
-    )
-    .await;
+    let (addr, seen) =
+        recording_gateway_with(|_| Some(serde_json::json!({})), HashMap::new(), true).await;
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
         .args(["lsp", "--remote", &addr.to_string(), "--watchdog-secs", "1"])
@@ -4013,10 +4069,7 @@ async fn lsp_watchdog_pings_idle_session_periodically() {
     tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
 
     let events = seen.lock().expect("seen").clone();
-    let pings = events
-        .into_iter()
-        .filter(|(_, ev)| ev == "ping")
-        .count();
+    let pings = events.into_iter().filter(|(_, ev)| ev == "ping").count();
     assert!(pings >= 1, "expected at least 1 watchdog ping, saw {pings}");
 
     drop(stdin);
@@ -4301,6 +4354,74 @@ async fn lsp_non_idempotent_requests_are_not_replayed_on_reconnect_and_return_er
 }
 
 #[tokio::test]
+async fn lsp_initialize_response_is_forwarded_after_reconnect() {
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dropped_clone = std::sync::Arc::clone(&dropped);
+    let (addr, seen) = recording_gateway_with(
+        move |val| {
+            if val["method"] == "initialize"
+                && !dropped_clone.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                Some(serde_json::json!("__close__"))
+            } else {
+                None
+            }
+        },
+        HashMap::new(),
+        true,
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr.to_string(), "--reconnect"])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn lsp");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 41,
+        "method": "initialize",
+        "params": { "capabilities": {} }
+    });
+    let body = request.to_string();
+    let frame = format!("Content-Length: {}\r\n\r\n{body}", body.len());
+    tokio::io::AsyncWriteExt::write_all(&mut stdin, frame.as_bytes())
+        .await
+        .expect("initialize");
+
+    let response = read_lsp_message(&mut stdout).await;
+    assert_eq!(response["id"], 41);
+    assert_eq!(response["result"]["capabilities"], serde_json::json!({}));
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("child exits on stdin close")
+        .expect("status");
+    assert!(status.success());
+    let events = seen.lock().expect("seen").clone();
+    assert!(
+        events
+            .iter()
+            .any(|(connection, event)| *connection == 1 && event == "close after initialize")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|(connection, event)| *connection == 2 && event == "lsp initialize")
+    );
+}
+
+#[tokio::test]
 async fn lsp_did_change_is_not_duplicated_on_reconnect_replay() {
     use tokio::io::AsyncWriteExt;
     let ws = make_workspace();
@@ -4493,7 +4614,14 @@ async fn lsp_watchdog_reconnects_when_pong_deadline_expires() {
     .await;
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
-        .args(["lsp", "--remote", &addr.to_string(), "--reconnect", "--watchdog-secs", "1"])
+        .args([
+            "lsp",
+            "--remote",
+            &addr.to_string(),
+            "--reconnect",
+            "--watchdog-secs",
+            "1",
+        ])
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
         .current_dir(ws.root())
@@ -4555,7 +4683,10 @@ async fn lsp_watchdog_reconnects_when_pong_deadline_expires() {
 
     let hover_resp = read_lsp_message(&mut stdout).await;
     assert_eq!(hover_resp["id"], 2);
-    assert_eq!(hover_resp["result"]["contents"], "hover after pong recovery");
+    assert_eq!(
+        hover_resp["result"]["contents"],
+        "hover after pong recovery"
+    );
 
     let events = seen.lock().expect("seen").clone();
     let connections: std::collections::HashSet<usize> = events.iter().map(|(c, _)| *c).collect();

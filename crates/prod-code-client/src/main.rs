@@ -5,13 +5,13 @@ use clap::{Parser, Subcommand};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig, WorkspaceMode};
-use std::collections::HashMap;
 use prod_code_mcp::report::ReportRequest;
 use prod_code_mcp::verify::VerifyKind;
 use prod_code_protocol::{
     HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
     validate_selected_protocol_version,
 };
+use std::collections::HashMap;
 use std::env;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -19,9 +19,9 @@ use tokio::io::BufReader;
 use tokio_util::codec::Framed;
 use url::Url;
 
-mod update;
-mod package;
 mod cert;
+mod package;
+mod update;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -1107,10 +1107,10 @@ enum Commands {
         /// File that holds the conditional statement
         file: PathBuf,
         /// 1-based line of the switch/match/if statement
-        #[arg(long, default_value_t = 0)]
+        #[arg(long)]
         line: u32,
         /// 1-based column of the switch/match/if statement
-        #[arg(long, default_value_t = 0)]
+        #[arg(long)]
         character: u32,
         /// Name of the base class, interface, protocol, or trait
         #[arg(long = "base-name", visible_alias = "base")]
@@ -1151,11 +1151,11 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         methods: Vec<String>,
         /// 1-based line of the type declaration
-        #[arg(long, default_value_t = 0)]
-        line: u32,
+        #[arg(long)]
+        line: Option<u32>,
         /// 1-based column of the type declaration
-        #[arg(long, default_value_t = 0)]
-        character: u32,
+        #[arg(long)]
+        character: Option<u32>,
         /// Do not migrate caller type annotations across the workspace to the extracted interface
         #[arg(long = "no-migrate-callers", default_value_t = false)]
         no_migrate_callers: bool,
@@ -1764,7 +1764,10 @@ async fn main() -> Result<()> {
 
     let pinned = env::args().any(|a| a == "-r" || a == "--remote" || a.starts_with("--remote="));
     let mut remote_spec = cli.remote.clone();
-    if !pinned && env::var_os("PROD_CODE_REMOTE").is_none() && env::var_os("PROD_CODE_CLUSTER").is_some() {
+    if !pinned
+        && env::var_os("PROD_CODE_REMOTE").is_none()
+        && env::var_os("PROD_CODE_CLUSTER").is_some()
+    {
         remote_spec = "auto".to_string();
     }
     let seeds = prod_code_mcp::cluster::parse_remotes(&remote_spec)?;
@@ -1824,7 +1827,8 @@ async fn main() -> Result<()> {
                         };
                         if candidate.is_dir() && candidate != *root {
                             let canonical = std::fs::canonicalize(&candidate).ok()?;
-                            if canonical.starts_with(&canonical_root) && canonical != canonical_root {
+                            if canonical.starts_with(&canonical_root) && canonical != canonical_root
+                            {
                                 return Some(canonical);
                             }
                         }
@@ -1941,7 +1945,9 @@ async fn main() -> Result<()> {
     if let Some(Commands::Package { subcommand }) = cli.command {
         startup.report();
         match subcommand {
-            package::PackageSubcommands::Status { json } => return package::run_package_status(json).await,
+            package::PackageSubcommands::Status { json } => {
+                return package::run_package_status(json).await;
+            }
             package::PackageSubcommands::Verify => return package::run_package_verify().await,
             package::PackageSubcommands::Install { force, tag, system } => {
                 return package::run_package_install(force, tag, system).await;
@@ -2007,12 +2013,20 @@ async fn main() -> Result<()> {
                         "--pull requires at least one file or path to pull (e.g. `prod-code sync --pull path/to/file.rs` or `prod-code pull <files...>`); to push current changes omit --pull"
                     ),
                 };
-                run_pull(remote, files).await
+                let root = cwd_root
+                    .as_deref()
+                    .context("Failed to resolve workspace root")?;
+                run_pull(remote, root, files).await
             } else {
                 run_sync(remote, path).await
             }
         }
-        Commands::Pull { files } => run_pull(remote, files).await,
+        Commands::Pull { files } => {
+            let root = cwd_root
+                .as_deref()
+                .context("Failed to resolve workspace root")?;
+            run_pull(remote, root, files).await
+        }
         Commands::Def {
             file,
             line,
@@ -2210,7 +2224,19 @@ async fn main() -> Result<()> {
             patch,
             commit,
             json,
-        } => run_prune(remote, max_files, reachability, apply, force, patch, commit, json).await,
+        } => {
+            run_prune(
+                remote,
+                max_files,
+                reachability,
+                apply,
+                force,
+                patch,
+                commit,
+                json,
+            )
+            .await
+        }
         Commands::Diagnostics { file, json } => run_diagnostics(remote, &file, None, json).await,
         Commands::Diagnose {
             filter,
@@ -2257,7 +2283,15 @@ async fn main() -> Result<()> {
             }
             if stream {
                 let file = file.context("give the file to validate with --stream")?;
-                return run_validate_stream(remote, &file, from, session, borrow_check || compile, json).await;
+                return run_validate_stream(
+                    remote,
+                    &file,
+                    from,
+                    session,
+                    borrow_check || compile,
+                    json,
+                )
+                .await;
             }
             if let Some(diff) = diff {
                 let patch = if diff.as_os_str() == "-" {
@@ -2268,6 +2302,15 @@ async fn main() -> Result<()> {
                     std::fs::read_to_string(&diff)
                         .with_context(|| format!("failed to read {}", diff.display()))?
                 };
+                if compile || borrow_check {
+                    if borrow_check {
+                        eprintln!(
+                            "Running the remote compiler check for the proposed diff (with borrow-checker proof)..."
+                        );
+                    } else {
+                        eprintln!("Running the remote compiler check for the proposed diff...");
+                    }
+                }
                 return run_tool(
                     remote,
                     "code_validate_edits",
@@ -2553,7 +2596,8 @@ async fn main() -> Result<()> {
         } => {
             let mut args =
                 serde_json::json!({ "new_name": new_name, "apply": apply, "force": force });
-            let is_file_path = std::path::Path::new(&symbol).extension().is_some() || std::path::Path::new(&symbol).exists();
+            let is_file_path = std::path::Path::new(&symbol).extension().is_some()
+                || std::path::Path::new(&symbol).exists();
             if let Some(line) = line {
                 args["path"] = serde_json::Value::String(symbol);
                 args["line"] = serde_json::Value::from(line);
@@ -2586,7 +2630,8 @@ async fn main() -> Result<()> {
             force,
         } => {
             let mut args = serde_json::json!({ "apply": apply, "force": force });
-            let is_file_path = std::path::Path::new(&symbol).extension().is_some() || std::path::Path::new(&symbol).exists();
+            let is_file_path = std::path::Path::new(&symbol).extension().is_some()
+                || std::path::Path::new(&symbol).exists();
             if let Some(line) = line {
                 args["path"] = serde_json::Value::String(symbol);
                 args["line"] = serde_json::Value::from(line);
@@ -2816,7 +2861,8 @@ async fn main() -> Result<()> {
             force,
         } => {
             let mut args = serde_json::json!({ "apply": apply, "force": force });
-            let is_file_path = std::path::Path::new(&symbol).extension().is_some() || std::path::Path::new(&symbol).exists();
+            let is_file_path = std::path::Path::new(&symbol).extension().is_some()
+                || std::path::Path::new(&symbol).exists();
             if let Some(line) = line {
                 args["path"] = serde_json::Value::String(symbol);
                 args["line"] = serde_json::Value::from(line);
@@ -2932,9 +2978,13 @@ async fn main() -> Result<()> {
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            let result =
-                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_constructor_with_factory", args)
-                    .await?;
+            let result = prod_code_mcp::tools::execute_tool(
+                remote,
+                &root,
+                "code_replace_constructor_with_factory",
+                args,
+            )
+            .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                 println!("{text}");
@@ -2966,9 +3016,13 @@ async fn main() -> Result<()> {
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            let result =
-                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_constructor_with_builder", args)
-                    .await?;
+            let result = prod_code_mcp::tools::execute_tool(
+                remote,
+                &root,
+                "code_replace_constructor_with_builder",
+                args,
+            )
+            .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                 println!("{text}");
@@ -3005,8 +3059,7 @@ async fn main() -> Result<()> {
                 args["verify"] = serde_json::Value::String(v);
             }
             let result =
-                prod_code_mcp::tools::execute_tool(remote, &root, "code_pull_up", args)
-                    .await?;
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_pull_up", args).await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                 println!("{text}");
@@ -3036,15 +3089,17 @@ async fn main() -> Result<()> {
             });
             if !target_classes.is_empty() {
                 args["target_classes"] = serde_json::Value::Array(
-                    target_classes.into_iter().map(serde_json::Value::String).collect(),
+                    target_classes
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
                 );
             }
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
             let result =
-                prod_code_mcp::tools::execute_tool(remote, &root, "code_push_down", args)
-                    .await?;
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_push_down", args).await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                 println!("{text}");
@@ -3086,9 +3141,13 @@ async fn main() -> Result<()> {
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            let result =
-                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_inheritance_with_delegation", args)
-                    .await?;
+            let result = prod_code_mcp::tools::execute_tool(
+                remote,
+                &root,
+                "code_replace_inheritance_with_delegation",
+                args,
+            )
+            .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                 println!("{text}");
@@ -3111,6 +3170,10 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => {
+            anyhow::ensure!(
+                line > 0 && character > 0,
+                "line and character must be one-based coordinates"
+            );
             let cwd = env::current_dir().context("Failed to get current working directory")?;
             let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
             let mut args = serde_json::json!({
@@ -3136,9 +3199,13 @@ async fn main() -> Result<()> {
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            let result =
-                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_conditional_with_polymorphism", args)
-                    .await?;
+            let result = prod_code_mcp::tools::execute_tool(
+                remote,
+                &root,
+                "code_replace_conditional_with_polymorphism",
+                args,
+            )
+            .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                 println!("{text}");
@@ -3160,18 +3227,30 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => {
+            if file.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                anyhow::ensure!(
+                    line.is_some_and(|value| value > 0) && character.is_some_and(|value| value > 0),
+                    "Rust extract-interface requires one-based --line and --character positions"
+                );
+            }
             let cwd = env::current_dir().context("Failed to get current working directory")?;
             let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
             let mut args = serde_json::json!({
                 "path": file.to_string_lossy(),
                 "symbol": symbol,
                 "interface_name": name,
-                "line": line,
-                "character": character,
                 "migrate_callers": !no_migrate_callers,
                 "apply": apply,
                 "force": force,
             });
+            if let Some(line) = line {
+                anyhow::ensure!(line > 0, "line must be a one-based coordinate");
+                args["line"] = serde_json::json!(line);
+            }
+            if let Some(character) = character {
+                anyhow::ensure!(character > 0, "character must be a one-based coordinate");
+                args["character"] = serde_json::json!(character);
+            }
             if !methods.is_empty() {
                 args["methods"] = serde_json::Value::Array(
                     methods.into_iter().map(serde_json::Value::String).collect(),
@@ -3447,11 +3526,17 @@ async fn main() -> Result<()> {
                     "modules" => prod_code_mcp::dependencies::DependencyScope::Modules,
                     _ => prod_code_mcp::dependencies::DependencyScope::Crates,
                 };
-                let report = prod_code_mcp::dependencies::analyze_dependencies(&root, dep_scope, path.as_deref())?;
+                let report = prod_code_mcp::dependencies::analyze_dependencies(
+                    &root,
+                    dep_scope,
+                    path.as_deref(),
+                )?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 Ok(())
             } else {
-                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_dependencies", args).await?;
+                let result =
+                    prod_code_mcp::tools::execute_tool(remote, &root, "code_dependencies", args)
+                        .await?;
                 for content in &result.content {
                     let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                     println!("{text}");
@@ -3488,11 +3573,14 @@ async fn main() -> Result<()> {
                     type3,
                     max_groups,
                 };
-                let report = prod_code_mcp::duplicates::find_duplicates(&root, path.as_deref(), options)?;
+                let report =
+                    prod_code_mcp::duplicates::find_duplicates(&root, path.as_deref(), options)?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 Ok(())
             } else {
-                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_find_duplicates", args).await?;
+                let result =
+                    prod_code_mcp::tools::execute_tool(remote, &root, "code_find_duplicates", args)
+                        .await?;
                 for content in &result.content {
                     let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                     println!("{text}");
@@ -3517,11 +3605,21 @@ async fn main() -> Result<()> {
                 args["path"] = serde_json::Value::String(p.to_string_lossy().into_owned());
             }
             if json {
-                let report = prod_code_mcp::codemod::run_structural_search(&root, &pattern, path.as_deref())?;
+                let report = prod_code_mcp::codemod::run_structural_search(
+                    &root,
+                    &pattern,
+                    path.as_deref(),
+                )?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 Ok(())
             } else {
-                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_structural_search", args).await?;
+                let result = prod_code_mcp::tools::execute_tool(
+                    remote,
+                    &root,
+                    "code_structural_search",
+                    args,
+                )
+                .await?;
                 for content in &result.content {
                     let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                     println!("{text}");
@@ -3560,7 +3658,13 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 Ok(())
             } else {
-                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_propose_expression", args).await?;
+                let result = prod_code_mcp::tools::execute_tool(
+                    remote,
+                    &root,
+                    "code_propose_expression",
+                    args,
+                )
+                .await?;
                 for content in &result.content {
                     let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                     println!("{text}");
@@ -3733,7 +3837,10 @@ async fn execute_lsp_query(
                 .send(WireMessage::HandshakeRequest(HandshakeRequest {
                     protocol_version: PROTOCOL_VERSION,
                     supported_versions: Some(supported_versions.clone()),
-                    capabilities: None,
+                    capabilities: Some(prod_code_protocol::ClientCapabilities {
+                        redirects: true,
+                        ..Default::default()
+                    }),
                     client_name: "prod-code-cli".to_string(),
                     client_pid: std::process::id(),
                     auth_token: None,
@@ -3753,18 +3860,19 @@ async fn execute_lsp_query(
 
             let handshake = match framed.next().await {
                 Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
-                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                Some(Ok(WireMessage::Redirect {
+                    target_addr,
+                    reason,
+                })) => {
                     if attempt > 3 {
                         anyhow::bail!("too many gateway redirects: {reason:?}");
                     }
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
-                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
-                        remote = addr;
-                        prod_code_mcp::cluster::remember_placement(&identity.name, remote);
-                        continue;
-                    } else {
-                        anyhow::bail!("invalid redirect target address: {target_addr}");
-                    }
+                    remote = resolve_redirect_target(&target_addr).with_context(|| {
+                        format!("invalid redirect target address: {target_addr}")
+                    })?;
+                    prod_code_mcp::cluster::remember_placement(&identity.name, remote);
+                    continue;
                 }
                 other => anyhow::bail!("Unexpected handshake response: {:?}", other),
             };
@@ -4012,7 +4120,12 @@ async fn run_hover(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Resu
         }
     }
 
-    anyhow::bail!("no hover information found at {}:{}:{}", file.display(), line, col);
+    anyhow::bail!(
+        "no hover information found at {}:{}:{}",
+        file.display(),
+        line,
+        col
+    );
 }
 
 async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
@@ -4310,8 +4423,13 @@ async fn run_diagnose(
 ) -> Result<()> {
     let cwd = env::current_dir()?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let hint = if cwd != root { Some(cwd.as_path()) } else { None };
-    let report = prod_code_mcp::dossier::diagnose(remote, &root, hint, filter, timeout_secs).await?;
+    let hint = if cwd != root {
+        Some(cwd.as_path())
+    } else {
+        None
+    };
+    let report =
+        prod_code_mcp::dossier::diagnose(remote, &root, hint, filter, timeout_secs).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -4345,13 +4463,14 @@ async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -> Re
     let mut result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args.clone()).await;
     if let Err(ref e) = result
         && prod_code_mcp::is_retryable_connection_error(tool, e)
-        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await {
-            remote = new_addr;
-            let identity = prod_code_mcp::sync::workspace_identity(&root);
-            let name = identity.base.unwrap_or(identity.name);
-            prod_code_mcp::cluster::remember_placement(&name, new_addr);
-            result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args).await;
-        }
+        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
+    {
+        remote = new_addr;
+        let identity = prod_code_mcp::sync::workspace_identity(&root);
+        let name = identity.base.unwrap_or(identity.name);
+        prod_code_mcp::cluster::remember_placement(&name, new_addr);
+        result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args).await;
+    }
     let result = result?;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
@@ -4368,16 +4487,18 @@ async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let mut remote = remote;
-    let mut result = prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args.clone()).await;
+    let mut result =
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args.clone()).await;
     if let Err(ref e) = result
         && prod_code_mcp::is_retryable_connection_error("code_references", e)
-        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await {
-            remote = new_addr;
-            let identity = prod_code_mcp::sync::workspace_identity(&root);
-            let name = identity.base.unwrap_or(identity.name);
-            prod_code_mcp::cluster::remember_placement(&name, new_addr);
-            result = prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args).await;
-        }
+        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
+    {
+        remote = new_addr;
+        let identity = prod_code_mcp::sync::workspace_identity(&root);
+        let name = identity.base.unwrap_or(identity.name);
+        prod_code_mcp::cluster::remember_placement(&name, new_addr);
+        result = prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args).await;
+    }
     let result = result?;
     let mut has_refs = false;
     for content in &result.content {
@@ -4477,7 +4598,9 @@ async fn run_validate_compiled(
         }));
     }
     if borrow_check {
-        eprintln!("Running the remote compiler check for the proposed changes (with borrow-checker proof)...");
+        eprintln!(
+            "Running the remote compiler check for the proposed changes (with borrow-checker proof)..."
+        );
     } else {
         eprintln!("Running the remote compiler check for the proposed changes...");
     }
@@ -4493,6 +4616,174 @@ async fn run_validate_compiled(
     .await
 }
 
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+struct CliStreamSessionState {
+    version: u32,
+    chunks: Vec<String>,
+    borrow_check: bool,
+    closed: bool,
+    updated_at_secs: u64,
+}
+
+const CLI_STREAM_SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+const MAX_CLI_STREAM_SESSION_FILES: usize = 1024;
+
+fn cli_stream_session_dir() -> Result<PathBuf> {
+    let base = env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(env::temp_dir);
+    let dir = base.join("prod-code").join("stream-sessions");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("cannot create CLI stream-session cache {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
+fn cli_stream_session_path(
+    dir: &Path,
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    session: &str,
+) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    remote.hash(&mut hasher);
+    root.hash(&mut hasher);
+    file.hash(&mut hasher);
+    session.hash(&mut hasher);
+    dir.join(format!("{:016x}.json", hasher.finish()))
+}
+
+fn prune_expired_cli_stream_sessions(dir: &Path, active: &Path) -> Result<()> {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(CLI_STREAM_SESSION_TTL)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    for entry in std::fs::read_dir(dir)? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path == active || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file()
+            || metadata.modified().is_ok_and(|modified| modified >= cutoff)
+        {
+            continue;
+        }
+        let Ok(lock_file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        else {
+            continue;
+        };
+        if lock_file.try_lock().is_err() {
+            continue;
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let stale = dir.join(format!(".expired-{}-{stamp}", std::process::id()));
+        if std::fs::rename(&path, &stale).is_ok() {
+            drop(lock_file);
+            let _ = std::fs::remove_file(stale);
+        }
+    }
+    let count = std::fs::read_dir(dir)?
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .count();
+    if count >= MAX_CLI_STREAM_SESSION_FILES && !active.exists() {
+        anyhow::bail!(
+            "maximum persisted CLI stream sessions limit ({MAX_CLI_STREAM_SESSION_FILES}) reached; close or expire an old session"
+        );
+    }
+    Ok(())
+}
+
+fn load_cli_stream_session(
+    file: &mut std::fs::File,
+    reset: bool,
+    borrow_check: bool,
+) -> Result<CliStreamSessionState> {
+    use std::io::{Read, Seek};
+    if reset {
+        return Ok(CliStreamSessionState {
+            version: 1,
+            borrow_check,
+            ..Default::default()
+        });
+    }
+    let metadata = file.metadata()?;
+    if metadata.len() == 0 {
+        anyhow::bail!("CLI stream session not found; start it with --reset");
+    }
+    if metadata.len()
+        > (prod_code_mcp::diagnostics::MAX_STREAM_SESSION_BYTES as u64) * 6 + 64 * 1024
+    {
+        anyhow::bail!(
+            "persisted CLI stream session exceeds its storage limit; start a new session with --reset"
+        );
+    }
+    if metadata
+        .modified()
+        .ok()
+        .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age > CLI_STREAM_SESSION_TTL)
+    {
+        anyhow::bail!("CLI stream session expired; start a new session with --reset");
+    }
+    file.seek(std::io::SeekFrom::Start(0))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut bytes)?;
+    let state: CliStreamSessionState = serde_json::from_slice(&bytes)
+        .context("persisted CLI stream session is invalid; start a new session with --reset")?;
+    if state.version != 1 {
+        anyhow::bail!(
+            "persisted CLI stream session version is unsupported; start a new session with --reset"
+        );
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if state.updated_at_secs > 0
+        && now.saturating_sub(state.updated_at_secs) > CLI_STREAM_SESSION_TTL.as_secs()
+    {
+        anyhow::bail!("CLI stream session expired; start a new session with --reset");
+    }
+    if state.closed {
+        anyhow::bail!("CLI stream session is already closed; start a new session with --reset");
+    }
+    if state.borrow_check != borrow_check {
+        anyhow::bail!("borrow-check mode cannot change during a CLI stream session");
+    }
+    Ok(state)
+}
+
+fn write_cli_stream_session(file: &mut std::fs::File, state: &CliStreamSessionState) -> Result<()> {
+    use std::io::{Seek, Write};
+    let bytes = serde_json::to_vec(state)?;
+    if bytes.len() > (prod_code_mcp::diagnostics::MAX_STREAM_SESSION_BYTES as usize) * 6 + 64 * 1024
+    {
+        anyhow::bail!("serialized CLI stream session exceeds its storage limit");
+    }
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    file.write_all(&bytes)?;
+    file.sync_data()?;
+    Ok(())
+}
+
 /// Validate an individual chunk fed into a stateful streaming session (Roadmap 7.7).
 async fn run_validate_chunk(
     remote: SocketAddr,
@@ -4504,13 +4795,97 @@ async fn run_validate_chunk(
     borrow_check: bool,
     json: bool,
 ) -> Result<()> {
+    if chunk.len() > prod_code_mcp::diagnostics::MAX_STREAM_CHUNK_BYTES {
+        anyhow::bail!("CLI stream chunk exceeds the 1 MiB limit");
+    }
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let cwd = env::current_dir()?;
     let root = find_workspace_root(&abs_path).unwrap_or(cwd);
-    let mgr = prod_code_mcp::diagnostics::stream_manager();
-    let res = mgr
-        .feed_chunk(remote, &root, &abs_path, session, chunk, close, reset, borrow_check)
+    let dir = cli_stream_session_dir()?;
+    let state_path = cli_stream_session_path(&dir, remote, &root, &abs_path, session);
+    prune_expired_cli_stream_sessions(&dir, &state_path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut state_file = options.open(&state_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        state_file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    match state_file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            anyhow::bail!(
+                "CLI stream session is already being updated by another process; retry this chunk"
+            );
+        }
+        Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+    }
+    let mut state = load_cli_stream_session(&mut state_file, reset, borrow_check)?;
+    let previous_chunks = state.chunks.clone();
+    let previous_bytes: usize = previous_chunks.iter().map(String::len).sum();
+    if previous_bytes.saturating_add(chunk.len())
+        > prod_code_mcp::diagnostics::MAX_STREAM_SESSION_BYTES
+    {
+        anyhow::bail!("accumulated CLI stream session exceeds the 16 MiB limit");
+    }
+    let manager = prod_code_mcp::diagnostics::stream_manager();
+    for (index, previous) in previous_chunks.iter().enumerate() {
+        let replay = manager
+            .feed_chunk(
+                remote,
+                &root,
+                &abs_path,
+                session,
+                previous,
+                false,
+                index == 0,
+                borrow_check,
+            )
+            .await?;
+        if replay.intercepted {
+            state.closed = true;
+            state.chunks.clear();
+            state.updated_at_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            write_cli_stream_session(&mut state_file, &state)?;
+            drop(state_file);
+            anyhow::bail!(
+                "persisted CLI stream session is intercepted; start a new session with --reset"
+            );
+        }
+    }
+    let res = manager
+        .feed_chunk(
+            remote,
+            &root,
+            &abs_path,
+            session,
+            chunk,
+            close,
+            previous_chunks.is_empty(),
+            borrow_check,
+        )
         .await?;
+    state.updated_at_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    state.closed = close || res.intercepted;
+    if state.closed {
+        state.chunks.clear();
+    } else {
+        state.chunks.push(chunk.to_string());
+    }
+    write_cli_stream_session(&mut state_file, &state)?;
+    drop(state_file);
     if json {
         println!("{}", serde_json::to_string_pretty(&res)?);
     } else {
@@ -4555,7 +4930,16 @@ async fn run_validate_stream(
             let is_last = i + 1 == total;
             let is_first = i == 0;
             let res = mgr
-                .feed_chunk(remote, &root, &abs_path, &session, line, is_last, is_first, borrow_check)
+                .feed_chunk(
+                    remote,
+                    &root,
+                    &abs_path,
+                    &session,
+                    line,
+                    is_last,
+                    is_first,
+                    borrow_check,
+                )
                 .await?;
             if res.intercepted {
                 if json {
@@ -4592,7 +4976,16 @@ async fn run_validate_stream(
             chunk_idx += 1;
             let is_first = chunk_idx == 1;
             let res = mgr
-                .feed_chunk(remote, &root, &abs_path, &session, &line, false, is_first, borrow_check)
+                .feed_chunk(
+                    remote,
+                    &root,
+                    &abs_path,
+                    &session,
+                    &line,
+                    false,
+                    is_first,
+                    borrow_check,
+                )
                 .await?;
             line.clear();
             if res.intercepted {
@@ -4612,7 +5005,16 @@ async fn run_validate_stream(
         // End of stream from stdin: close the session and run final validation & borrow checking
         let is_first = chunk_idx == 0;
         let final_res = mgr
-            .feed_chunk(remote, &root, &abs_path, &session, "", true, is_first, borrow_check)
+            .feed_chunk(
+                remote,
+                &root,
+                &abs_path,
+                &session,
+                "",
+                true,
+                is_first,
+                borrow_check,
+            )
             .await?;
         if json {
             println!("{}", serde_json::to_string_pretty(&final_res)?);
@@ -4970,7 +5372,10 @@ fn status_snapshot(
         );
         object.insert("healthy".into(), serde_json::json!(pressure.is_none()));
         object.insert("pressure".into(), serde_json::json!(pressure));
-        object.insert("congestion_score".into(), serde_json::json!(status.congestion_score()));
+        object.insert(
+            "congestion_score".into(),
+            serde_json::json!(status.congestion_score()),
+        );
     }
     snapshot
 }
@@ -4995,9 +5400,10 @@ async fn run_status_probe(
             WireMessage::StatusResponse(resp) if json => {
                 let mut snapshot = status_snapshot(remote, rtt, &resp);
                 if let Some(note) = &fallback_note
-                    && let Some(obj) = snapshot.as_object_mut() {
-                        obj.insert("fallback_transport".to_string(), serde_json::json!(note));
-                    }
+                    && let Some(obj) = snapshot.as_object_mut()
+                {
+                    obj.insert("fallback_transport".to_string(), serde_json::json!(note));
+                }
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             }
             WireMessage::StatusResponse(resp) => {
@@ -5175,7 +5581,23 @@ struct LspStateTracker {
     open_documents: HashMap<String, TrackedDocument>,
 }
 
-fn lsp_offset(text: &str, target_line: usize, target_col: usize) -> usize {
+const POSITION_ENCODING_UTF16: u8 = 0;
+const POSITION_ENCODING_UTF8: u8 = 1;
+const POSITION_ENCODING_UTF32: u8 = 2;
+
+fn lsp_position_encoding(message: &serde_json::Value) -> Option<u8> {
+    match message
+        .pointer("/result/capabilities/positionEncoding")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("utf-8") => Some(POSITION_ENCODING_UTF8),
+        Some("utf-16") => Some(POSITION_ENCODING_UTF16),
+        Some("utf-32") => Some(POSITION_ENCODING_UTF32),
+        _ => None,
+    }
+}
+
+fn lsp_offset(text: &str, target_line: usize, target_col: usize, position_encoding: u8) -> usize {
     let mut current_line = 0;
     let mut current_col = 0;
     for (offset, ch) in text.char_indices() {
@@ -5186,14 +5608,18 @@ fn lsp_offset(text: &str, target_line: usize, target_col: usize) -> usize {
             current_line += 1;
             current_col = 0;
         } else {
-            current_col += ch.len_utf16();
+            current_col += match position_encoding {
+                POSITION_ENCODING_UTF8 => ch.len_utf8(),
+                POSITION_ENCODING_UTF32 => 1,
+                _ => ch.len_utf16(),
+            };
         }
     }
     text.len()
 }
 
 impl LspStateTracker {
-    fn record_client_message(&mut self, raw: &str) {
+    fn record_client_message(&mut self, raw: &str, position_encoding: u8) {
         let method = prod_code_client::editor_files::method_of(raw);
         let Some(method_str) = method.as_deref() else {
             return;
@@ -5244,8 +5670,9 @@ impl LspStateTracker {
             }
             "textDocument/didClose" => {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
-                    if let Some(uri) =
-                        val.pointer("/params/textDocument/uri").and_then(|u| u.as_str())
+                    if let Some(uri) = val
+                        .pointer("/params/textDocument/uri")
+                        .and_then(|u| u.as_str())
                     {
                         self.open_documents.remove(uri);
                     }
@@ -5295,11 +5722,13 @@ impl LspStateTracker {
                                                         &doc.text,
                                                         start_line as usize,
                                                         start_col as usize,
+                                                        position_encoding,
                                                     );
                                                     let end_off = lsp_offset(
                                                         &doc.text,
                                                         end_line as usize,
                                                         end_col as usize,
+                                                        position_encoding,
                                                     );
                                                     if start_off <= end_off
                                                         && end_off <= doc.text.len()
@@ -5375,6 +5804,10 @@ fn is_idempotent_lsp_request(method: &str) -> bool {
 }
 
 type PendingRequests = std::sync::Arc<tokio::sync::Mutex<Vec<(serde_json::Value, String, String)>>>;
+type EditorFrameReceiver = std::sync::Arc<
+    tokio::sync::Mutex<tokio::sync::mpsc::Receiver<std::result::Result<Option<String>, String>>>,
+>;
+const MAX_DEFERRED_EDITOR_FRAMES: usize = 128;
 
 fn spawn_editor_stdout_task(
     mut socket_rx: SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
@@ -5384,6 +5817,7 @@ fn spawn_editor_stdout_task(
     editor_out: std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     pending_requests: PendingRequests,
     outstanding_ping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    position_encoding: std::sync::Arc<std::sync::atomic::AtomicU8>,
 ) -> (
     tokio::task::JoinHandle<()>,
     tokio::sync::oneshot::Receiver<String>,
@@ -5393,12 +5827,14 @@ fn spawn_editor_stdout_task(
         let why = loop {
             match socket_rx.next().await {
                 Some(Ok(msg)) => {
-                    // Any valid incoming message from gateway acknowledges responsiveness
-                    outstanding_ping.store(false, std::sync::atomic::Ordering::Release);
                     match msg {
                         WireMessage::LspPayload(json) => {
                             // Check if this is a response to an editor request
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                                if let Some(encoding) = lsp_position_encoding(&val) {
+                                    position_encoding
+                                        .store(encoding, std::sync::atomic::Ordering::Release);
+                                }
                                 if val.get("id").is_some() && val.get("method").is_none() {
                                     if let Some(id) = val.get("id") {
                                         let mut pending = pending_requests.lock().await;
@@ -5416,14 +5852,21 @@ fn spawn_editor_stdout_task(
                                 return;
                             }
                         }
-                        WireMessage::Redirect { target_addr, reason } => {
+                        WireMessage::Redirect {
+                            target_addr,
+                            reason,
+                        } => {
                             tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
-                            if let Ok(addr) = target_addr.parse::<SocketAddr>() {
-                                prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
+                            if let Ok(addr) = resolve_redirect_target(&target_addr) {
+                                prod_code_mcp::cluster::remember_placement(
+                                    &stdout_identity.name,
+                                    addr,
+                                );
                             }
                             continue;
                         }
                         WireMessage::Pong => {
+                            outstanding_ping.store(false, std::sync::atomic::Ordering::Release);
                             tracing::trace!("received watchdog pong from gateway");
                             continue;
                         }
@@ -5447,35 +5890,97 @@ async fn replay_lsp_state(
     socket_rx: &mut SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
     tracker: &LspStateTracker,
     files: &prod_code_client::editor_files::RemoteFiles,
-) -> Result<()> {
+    position_encoding: &std::sync::atomic::AtomicU8,
+    editor_frames: &EditorFrameReceiver,
+    deferred_editor_frames: &mut std::collections::VecDeque<String>,
+    editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
+    trace: &LspTrace,
+) -> Result<Option<String>> {
+    let mut replayed_initialize = None;
     if let Some(ref init_req) = tracker.initialize_req {
+        let initialize_id = serde_json::from_str::<serde_json::Value>(init_req)
+            .ok()
+            .and_then(|value| value.get("id").cloned())
+            .context("recorded initialize request has no JSON-RPC id")?;
         socket_tx
             .send(WireMessage::LspPayload(files.to_node(init_req)))
             .await
             .context("failed to send replayed initialize request")?;
 
         let init_timeout = tokio::time::Duration::from_secs(10);
-        let _ = tokio::time::timeout(init_timeout, async {
-            while let Some(msg) = socket_rx.next().await {
-                match msg {
-                    Ok(WireMessage::LspPayload(json)) => {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                            if val.get("id").is_some() {
-                                return Ok(());
+        let mut initialize_response = None;
+        tokio::time::timeout(init_timeout, async {
+            let mut server_request_ids: Vec<serde_json::Value> = Vec::new();
+            loop {
+                tokio::select! {
+                    message = socket_rx.next() => match message {
+                        Some(Ok(WireMessage::LspPayload(json))) => {
+                            let parsed = serde_json::from_str::<serde_json::Value>(&json).ok();
+                            if let Some(value) = &parsed {
+                                if value.get("id") == Some(&initialize_id) && value.get("method").is_none() {
+                                    if let Some(encoding) = lsp_position_encoding(value) {
+                                        position_encoding.store(encoding, std::sync::atomic::Ordering::Release);
+                                    }
+                                    initialize_response = Some(json);
+                                    if server_request_ids.is_empty() {
+                                        return Ok(());
+                                    }
+                                    continue;
+                                }
+                                if value.get("method").is_some() {
+                                    if let Some(id) = value.get("id") {
+                                        server_request_ids.push(id.clone());
+                                    }
+                                }
                             }
+                            let editor_json = files.to_editor(json).await;
+                            trace_message(trace, "<-", &editor_json);
+                            let mut stdout = editor_out.lock().await;
+                            prod_code_client::editor_files::write_frame(&mut *stdout, &editor_json)
+                                .await
+                                .context("forwarding server initialization message to the editor")?;
                         }
+                        Some(Ok(WireMessage::Pong)) => {}
+                        Some(Ok(other)) => anyhow::bail!("unexpected message during initialize replay: {other:?}"),
+                        Some(Err(err)) => anyhow::bail!("error during initialize replay: {err}"),
+                        None => anyhow::bail!("connection closed while awaiting initialize replay response"),
+                    },
+                    frame = async { editor_frames.lock().await.recv().await } => match frame {
+                        Some(Ok(Some(json))) => {
+                            let id = serde_json::from_str::<serde_json::Value>(&json)
+                                .ok()
+                                .and_then(|value| {
+                                    (value.get("method").is_none()).then(|| value.get("id").cloned()).flatten()
+                                });
+                            if let Some(id) = id {
+                                if let Some(index) = server_request_ids.iter().position(|pending| *pending == id) {
+                                    server_request_ids.remove(index);
+                                    socket_tx.send(WireMessage::LspPayload(files.to_node(&json)))
+                                        .await
+                                        .context("forwarding editor response to server initialization request")?;
+                                    if initialize_response.is_some() && server_request_ids.is_empty() {
+                                        return Ok(());
+                                    }
+                                    continue;
+                                }
+                            }
+                            if deferred_editor_frames.len() >= MAX_DEFERRED_EDITOR_FRAMES {
+                                anyhow::bail!("too many editor messages queued during language-server reconnect");
+                            }
+                            deferred_editor_frames.push_back(json);
+                        }
+                        Some(Ok(None)) | None => anyhow::bail!("editor closed during language-server reconnect"),
+                        Some(Err(err)) => anyhow::bail!("reading editor message during reconnect: {err}"),
                     }
-                    Ok(WireMessage::Pong) => continue,
-                    Ok(other) => {
-                        anyhow::bail!("unexpected message during initialize replay: {:?}", other)
-                    }
-                    Err(err) => anyhow::bail!("error during initialize replay: {err}"),
                 }
             }
-            anyhow::bail!("connection closed while awaiting initialize replay response")
         })
         .await
         .context("timed out waiting for initialize replay response")??;
+        replayed_initialize = Some(
+            initialize_response
+                .context("initialize replay completed without a matching response")?,
+        );
     }
 
     if tracker.initialized_sent {
@@ -5488,15 +5993,23 @@ async fn replay_lsp_state(
             .send(WireMessage::LspPayload(initialized.to_string()))
             .await
             .context("failed to send replayed initialized notification")?;
+        replay_lsp_workspace_state(socket_tx, tracker, files).await?;
     }
 
+    Ok(replayed_initialize)
+}
+
+async fn replay_lsp_workspace_state(
+    socket_tx: &mut SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
+    tracker: &LspStateTracker,
+    files: &prod_code_client::editor_files::RemoteFiles,
+) -> Result<()> {
     for config in &tracker.configuration_notifications {
         socket_tx
             .send(WireMessage::LspPayload(files.to_node(config)))
             .await
             .context("failed to send replayed configuration notification")?;
     }
-
     for doc in tracker.open_documents.values() {
         let did_open = serde_json::json!({
             "jsonrpc": "2.0",
@@ -5511,11 +6024,12 @@ async fn replay_lsp_state(
             }
         });
         socket_tx
-            .send(WireMessage::LspPayload(files.to_node(&did_open.to_string())))
+            .send(WireMessage::LspPayload(
+                files.to_node(&did_open.to_string()),
+            ))
             .await
             .context("failed to send replayed didOpen notification")?;
     }
-
     Ok(())
 }
 
@@ -5529,9 +6043,15 @@ async fn reconnect_editor_session(
     files: &prod_code_client::editor_files::RemoteFiles,
     pending_requests: &PendingRequests,
     editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
+    position_encoding: &std::sync::atomic::AtomicU8,
+    editor_frames: &EditorFrameReceiver,
+    deferred_editor_frames: &mut std::collections::VecDeque<String>,
+    trace: &LspTrace,
 ) -> Result<(
     SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
     SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
+    bool,
+    SocketAddr,
 )> {
     let backoffs = [
         tokio::time::Duration::from_millis(50),
@@ -5544,19 +6064,56 @@ async fn reconnect_editor_session(
         if attempt > 0 {
             tokio::time::sleep(backoff).await;
         }
-        match open_editor_session(
-            remote,
-            engine,
-            cwd,
-            cwd_str.to_string(),
-            identity.clone(),
-        )
-        .await
+        match open_editor_session(remote, engine, cwd, cwd_str.to_string(), identity.clone()).await
         {
-            Ok((framed, _handshake_resp)) => {
+            Ok((framed, handshake_resp, effective_remote)) => {
+                files.set_node(
+                    effective_remote,
+                    Path::new(&handshake_resp.server_workspace_root),
+                );
                 let (mut new_tx, mut new_rx) = framed.split();
-                match replay_lsp_state(&mut new_tx, &mut new_rx, tracker, files).await {
-                    Ok(()) => {
+                let pending_initialize_id = {
+                    let pending = pending_requests.lock().await;
+                    pending
+                        .iter()
+                        .find(|(_, method, _)| method == "initialize")
+                        .map(|(id, _, _)| id.clone())
+                };
+                match replay_lsp_state(
+                    &mut new_tx,
+                    &mut new_rx,
+                    tracker,
+                    files,
+                    position_encoding,
+                    editor_frames,
+                    deferred_editor_frames,
+                    editor_out,
+                    trace,
+                )
+                .await
+                {
+                    Ok(replayed_initialize) => {
+                        if let Some(initialize_id) = pending_initialize_id {
+                            let Some(response) = replayed_initialize else {
+                                last_err = Some(anyhow::anyhow!(
+                                    "replayed initialize produced no response for the editor's pending request"
+                                ));
+                                continue;
+                            };
+                            let response = files.to_editor(response).await;
+                            let mut stdout = editor_out.lock().await;
+                            if let Err(err) =
+                                prod_code_client::editor_files::write_frame(&mut *stdout, &response)
+                                    .await
+                            {
+                                last_err = Some(err.into());
+                                continue;
+                            }
+                            drop(stdout);
+                            pending_requests.lock().await.retain(|(id, method, _)| {
+                                id != &initialize_id || method != "initialize"
+                            });
+                        }
                         let pending = {
                             let lock = pending_requests.lock().await;
                             lock.clone()
@@ -5584,7 +6141,9 @@ async fn reconnect_editor_session(
 
                         if !non_idempotent.is_empty() {
                             let mut lock = pending_requests.lock().await;
-                            lock.retain(|(p_id, _, _)| !non_idempotent.iter().any(|(n_id, _)| n_id == p_id));
+                            lock.retain(|(p_id, _, _)| {
+                                !non_idempotent.iter().any(|(n_id, _)| n_id == p_id)
+                            });
                             drop(lock);
 
                             let mut stdout = editor_out.lock().await;
@@ -5597,12 +6156,18 @@ async fn reconnect_editor_session(
                                         "message": format!("prod-code lsp: request '{method}' interrupted by disconnect; non-idempotent operation was not retried to prevent duplicate side effects"),
                                     }
                                 });
-                                let _ = prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
+                                let _ = prod_code_client::editor_files::write_frame(
+                                    &mut *stdout,
+                                    &err_resp.to_string(),
+                                )
+                                .await;
                             }
                         }
 
-                        tracing::info!("successfully reconnected to gateway and replayed LSP state");
-                        return Ok((new_tx, new_rx));
+                        tracing::info!(
+                            "successfully reconnected to gateway and replayed LSP state"
+                        );
+                        return Ok((new_tx, new_rx, !tracker.initialized_sent, effective_remote));
                     }
                     Err(err) => {
                         tracing::warn!(%err, "LSP state replay failed during reconnect attempt");
@@ -5642,7 +6207,8 @@ async fn fail_pending_requests(
                 "message": format!("prod-code lsp: gateway connection lost ({error_msg})"),
             }
         });
-        let _ = prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
+        let _ =
+            prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
     }
 }
 
@@ -5654,8 +6220,25 @@ async fn fail_pending_requests(
 /// an editor's, so the node runs the language's own server for it (#332); `engine` names the
 /// language when it is not the checkout root's. Files the server points at that exist only on
 /// the node are mirrored locally (#333).
+fn spawn_editor_frame_reader() -> (tokio::task::JoinHandle<()>, EditorFrameReceiver) {
+    let (tx, rx) = tokio::sync::mpsc::channel(32);
+    let task = tokio::spawn(async move {
+        let mut reader = BufReader::new(tokio::io::stdin());
+        loop {
+            let frame = prod_code_client::editor_files::read_frame(&mut reader)
+                .await
+                .map_err(|error| error.to_string());
+            let eof = matches!(frame, Ok(None));
+            if tx.send(frame).await.is_err() || eof {
+                break;
+            }
+        }
+    });
+    (task, std::sync::Arc::new(tokio::sync::Mutex::new(rx)))
+}
+
 async fn run_lsp_bridge(
-    remote: SocketAddr,
+    mut remote: SocketAddr,
     engine: Option<&'static str>,
     reconnect: bool,
     watchdog_secs: u64,
@@ -5665,11 +6248,12 @@ async fn run_lsp_bridge(
     let cwd_str = cwd.to_string_lossy().to_string();
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
-    let (framed, handshake_resp) =
+    let (framed, handshake_resp, effective_remote) =
         match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone()).await {
             Ok(session) => session,
             Err(err) => return refuse_lsp(&err).await,
         };
+    remote = effective_remote;
 
     tracing::debug!(
         session_id = handshake_resp.session_id,
@@ -5693,7 +6277,7 @@ async fn run_lsp_bridge(
     let trace = lsp_trace();
     let pushing = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let (mut socket_tx, socket_rx) = framed.split();
-    let keeper = tokio::spawn(keep_checkout_synced(
+    let mut keeper = tokio::spawn(keep_checkout_synced(
         remote,
         cwd.clone(),
         std::sync::Arc::clone(&pushing),
@@ -5702,6 +6286,8 @@ async fn run_lsp_bridge(
     let pending_requests: PendingRequests =
         std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let mut outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let position_encoding =
+        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(POSITION_ENCODING_UTF16));
 
     // Spawn background task to read responses from server and write LSP to stdout
     let editor_out = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
@@ -5713,10 +6299,13 @@ async fn run_lsp_bridge(
         std::sync::Arc::clone(&editor_out),
         std::sync::Arc::clone(&pending_requests),
         std::sync::Arc::clone(&outstanding_ping),
+        std::sync::Arc::clone(&position_encoding),
     );
 
     let mut tracker = LspStateTracker::default();
-    let mut stdin_reader = BufReader::new(tokio::io::stdin());
+    let mut replay_state_after_initialize = false;
+    let (editor_frame_reader, editor_frames) = spawn_editor_frame_reader();
+    let mut deferred_editor_frames = std::collections::VecDeque::new();
 
     let mut watchdog_interval = if watchdog_secs > 0 {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(watchdog_secs));
@@ -5728,132 +6317,173 @@ async fn run_lsp_bridge(
     };
 
     loop {
-        let frame = tokio::select! {
-            frame = prod_code_client::editor_files::read_frame(&mut stdin_reader) => {
-                frame.context("reading the editor's message")?
-            }
-            closed = &mut closed_rx => match closed {
-                // The gateway went away while the editor still talks to it: say so and exit
-                // with a failure, which an editor answers by starting the server again. Left
-                // to the editor's next message, this hung and then exited 0 (#394).
-                Ok(why) => {
-                    if reconnect {
-                        eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
-                            Ok((new_tx, new_rx)) => {
-                                socket_tx = new_tx;
-                                outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                                let (new_task, new_closed_rx) = spawn_editor_stdout_task(
-                                    new_rx,
-                                    std::sync::Arc::clone(&files),
-                                    trace.clone(),
-                                    identity.clone(),
-                                    std::sync::Arc::clone(&editor_out),
-                                    std::sync::Arc::clone(&pending_requests),
-                                    std::sync::Arc::clone(&outstanding_ping),
-                                );
-                                stdout_task = new_task;
-                                closed_rx = new_closed_rx;
-                                continue;
-                            }
-                            Err(rec_err) => {
-                                fail_pending_requests(&pending_requests, &editor_out, &format!("{why} (reconnect failed: {rec_err})")).await;
-                                keeper.abort();
-                                eprintln!("prod-code lsp: the gateway at {remote} {why} (reconnect failed: {rec_err})");
-                                std::process::exit(1);
-                            }
-                        }
-                    } else {
-                        fail_pending_requests(&pending_requests, &editor_out, &why).await;
-                        keeper.abort();
-                        eprintln!("prod-code lsp: the gateway at {remote} {why}");
-                        std::process::exit(1);
+        let frame = if let Some(frame) = deferred_editor_frames.pop_front() {
+            Some(frame)
+        } else {
+            tokio::select! {
+                frame = async { editor_frames.lock().await.recv().await } => {
+                    match frame {
+                        Some(Ok(frame)) => frame,
+                        Some(Err(error)) => return Err(anyhow::anyhow!("reading the editor's message: {error}")),
+                        None => None,
                     }
                 }
-                // The editor stopped reading its answers.
-                Err(_) => break,
-            },
-            _ = async {
-                match &mut watchdog_interval {
-                    Some(interval) => interval.tick().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                if outstanding_ping.load(std::sync::atomic::Ordering::Acquire) {
-                    let err_msg = format!("did not respond to watchdog ping within {watchdog_secs}s");
-                    if reconnect {
-                        stdout_task.abort();
-                        eprintln!("prod-code lsp: the gateway at {remote} {err_msg}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
-                            Ok((new_tx, new_rx)) => {
-                                socket_tx = new_tx;
-                                outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                                let (new_task, new_closed_rx) = spawn_editor_stdout_task(
-                                    new_rx,
-                                    std::sync::Arc::clone(&files),
-                                    trace.clone(),
-                                    identity.clone(),
-                                    std::sync::Arc::clone(&editor_out),
-                                    std::sync::Arc::clone(&pending_requests),
-                                    std::sync::Arc::clone(&outstanding_ping),
-                                );
-                                stdout_task = new_task;
-                                closed_rx = new_closed_rx;
-                                continue;
+                closed = &mut closed_rx => match closed {
+                    // The gateway went away while the editor still talks to it: say so and exit
+                    // with a failure, which an editor answers by starting the server again. Left
+                    // to the editor's next message, this hung and then exited 0 (#394).
+                    Ok(why) => {
+                        if reconnect {
+                            eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
+                            match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
+                                Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
+                                    if remote != new_remote {
+                                        remote = new_remote;
+                                        keeper.abort();
+                                        keeper = tokio::spawn(keep_checkout_synced(
+                                            remote,
+                                            cwd.clone(),
+                                            std::sync::Arc::clone(&pushing),
+                                        ));
+                                    }
+                                    socket_tx = new_tx;
+                                    replay_state_after_initialize = replay_after_init;
+                                    outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                    let (new_task, new_closed_rx) = spawn_editor_stdout_task(
+                                        new_rx,
+                                        std::sync::Arc::clone(&files),
+                                        trace.clone(),
+                                        identity.clone(),
+                                        std::sync::Arc::clone(&editor_out),
+                                        std::sync::Arc::clone(&pending_requests),
+                                        std::sync::Arc::clone(&outstanding_ping),
+            std::sync::Arc::clone(&position_encoding),
+                                    );
+                                    stdout_task = new_task;
+                                    closed_rx = new_closed_rx;
+                                    continue;
+                                }
+                                Err(rec_err) => {
+                                    fail_pending_requests(&pending_requests, &editor_out, &format!("{why} (reconnect failed: {rec_err})")).await;
+                                    keeper.abort();
+                                    eprintln!("prod-code lsp: the gateway at {remote} {why} (reconnect failed: {rec_err})");
+                                    std::process::exit(1);
+                                }
                             }
-                            Err(rec_err) => {
-                                fail_pending_requests(&pending_requests, &editor_out, &format!("{err_msg} (reconnect failed: {rec_err})")).await;
-                                keeper.abort();
-                                eprintln!("prod-code lsp: the gateway at {remote} {err_msg} (reconnect failed: {rec_err})");
-                                std::process::exit(1);
-                            }
+                        } else {
+                            fail_pending_requests(&pending_requests, &editor_out, &why).await;
+                            keeper.abort();
+                            eprintln!("prod-code lsp: the gateway at {remote} {why}");
+                            std::process::exit(1);
                         }
-                    } else {
-                        fail_pending_requests(&pending_requests, &editor_out, &err_msg).await;
-                        keeper.abort();
-                        eprintln!("prod-code lsp: the gateway at {remote} {err_msg}");
-                        std::process::exit(1);
                     }
-                }
+                    // The editor stopped reading its answers.
+                    Err(_) => break,
+                },
+                _ = async {
+                    match &mut watchdog_interval {
+                        Some(interval) => interval.tick().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if outstanding_ping.load(std::sync::atomic::Ordering::Acquire) {
+                        let err_msg = format!("did not respond to watchdog ping within {watchdog_secs}s");
+                        if reconnect {
+                            stdout_task.abort();
+                            eprintln!("prod-code lsp: the gateway at {remote} {err_msg}; reconnecting...");
+                            match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
+                                Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
+                                    if remote != new_remote {
+                                        remote = new_remote;
+                                        keeper.abort();
+                                        keeper = tokio::spawn(keep_checkout_synced(
+                                            remote,
+                                            cwd.clone(),
+                                            std::sync::Arc::clone(&pushing),
+                                        ));
+                                    }
+                                    socket_tx = new_tx;
+                                    replay_state_after_initialize = replay_after_init;
+                                    outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                    let (new_task, new_closed_rx) = spawn_editor_stdout_task(
+                                        new_rx,
+                                        std::sync::Arc::clone(&files),
+                                        trace.clone(),
+                                        identity.clone(),
+                                        std::sync::Arc::clone(&editor_out),
+                                        std::sync::Arc::clone(&pending_requests),
+                                        std::sync::Arc::clone(&outstanding_ping),
+            std::sync::Arc::clone(&position_encoding),
+                                    );
+                                    stdout_task = new_task;
+                                    closed_rx = new_closed_rx;
+                                    continue;
+                                }
+                                Err(rec_err) => {
+                                    fail_pending_requests(&pending_requests, &editor_out, &format!("{err_msg} (reconnect failed: {rec_err})")).await;
+                                    keeper.abort();
+                                    eprintln!("prod-code lsp: the gateway at {remote} {err_msg} (reconnect failed: {rec_err})");
+                                    std::process::exit(1);
+                                }
+                            }
+                        } else {
+                            fail_pending_requests(&pending_requests, &editor_out, &err_msg).await;
+                            keeper.abort();
+                            eprintln!("prod-code lsp: the gateway at {remote} {err_msg}");
+                            std::process::exit(1);
+                        }
+                    }
 
-                outstanding_ping.store(true, std::sync::atomic::Ordering::Release);
-                if let Err(err) = socket_tx.send(WireMessage::Ping).await {
-                    if reconnect {
-                        stdout_task.abort();
-                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection during watchdog ping: {err}; reconnecting...");
-                        match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
-                            Ok((new_tx, new_rx)) => {
-                                socket_tx = new_tx;
-                                outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                                let (new_task, new_closed_rx) = spawn_editor_stdout_task(
-                                    new_rx,
-                                    std::sync::Arc::clone(&files),
-                                    trace.clone(),
-                                    identity.clone(),
-                                    std::sync::Arc::clone(&editor_out),
-                                    std::sync::Arc::clone(&pending_requests),
-                                    std::sync::Arc::clone(&outstanding_ping),
-                                );
-                                stdout_task = new_task;
-                                closed_rx = new_closed_rx;
-                                continue;
+                    outstanding_ping.store(true, std::sync::atomic::Ordering::Release);
+                    if let Err(err) = socket_tx.send(WireMessage::Ping).await {
+                        if reconnect {
+                            stdout_task.abort();
+                            eprintln!("prod-code lsp: the gateway at {remote} broke the connection during watchdog ping: {err}; reconnecting...");
+                            match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
+                                Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
+                                    if remote != new_remote {
+                                        remote = new_remote;
+                                        keeper.abort();
+                                        keeper = tokio::spawn(keep_checkout_synced(
+                                            remote,
+                                            cwd.clone(),
+                                            std::sync::Arc::clone(&pushing),
+                                        ));
+                                    }
+                                    socket_tx = new_tx;
+                                    replay_state_after_initialize = replay_after_init;
+                                    outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                    let (new_task, new_closed_rx) = spawn_editor_stdout_task(
+                                        new_rx,
+                                        std::sync::Arc::clone(&files),
+                                        trace.clone(),
+                                        identity.clone(),
+                                        std::sync::Arc::clone(&editor_out),
+                                        std::sync::Arc::clone(&pending_requests),
+                                        std::sync::Arc::clone(&outstanding_ping),
+            std::sync::Arc::clone(&position_encoding),
+                                    );
+                                    stdout_task = new_task;
+                                    closed_rx = new_closed_rx;
+                                    continue;
+                                }
+                                Err(rec_err) => {
+                                    fail_pending_requests(&pending_requests, &editor_out, &format!("{err} (reconnect failed: {rec_err})")).await;
+                                    keeper.abort();
+                                    eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})");
+                                    std::process::exit(1);
+                                }
                             }
-                            Err(rec_err) => {
-                                fail_pending_requests(&pending_requests, &editor_out, &format!("{err} (reconnect failed: {rec_err})")).await;
-                                keeper.abort();
-                                eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})");
-                                std::process::exit(1);
-                            }
+                        } else {
+                            fail_pending_requests(&pending_requests, &editor_out, &err.to_string()).await;
+                            keeper.abort();
+                            eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
+                            std::process::exit(1);
                         }
-                    } else {
-                        fail_pending_requests(&pending_requests, &editor_out, &err.to_string()).await;
-                        keeper.abort();
-                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
-                        std::process::exit(1);
                     }
+                    continue;
                 }
-                continue;
-            }
+                }
         };
         let Some(json_payload) = frame else {
             // Stdin EOF (editor exited)
@@ -5865,15 +6495,28 @@ async fn run_lsp_bridge(
             break;
         };
 
-        tracker.record_client_message(&json_payload);
+        let client_method = prod_code_client::editor_files::method_of(&json_payload);
+        tracker.record_client_message(
+            &json_payload,
+            position_encoding.load(std::sync::atomic::Ordering::Acquire),
+        );
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_payload) {
-            if let (Some(id), Some(method)) = (val.get("id"), val.get("method").and_then(|m| m.as_str())) {
-                if method != "initialize" && !method.starts_with("prod-code/") {
-                    pending_requests.lock().await.push((id.clone(), method.to_string(), json_payload.clone()));
+            if let (Some(id), Some(method)) =
+                (val.get("id"), val.get("method").and_then(|m| m.as_str()))
+            {
+                if !method.starts_with("prod-code/") {
+                    pending_requests.lock().await.push((
+                        id.clone(),
+                        method.to_string(),
+                        json_payload.clone(),
+                    ));
                 }
             } else if val.get("method").and_then(|m| m.as_str()) == Some("$/cancelRequest") {
                 if let Some(cancel_id) = val.pointer("/params/id") {
-                    pending_requests.lock().await.retain(|(p_id, _, _)| p_id != cancel_id);
+                    pending_requests
+                        .lock()
+                        .await
+                        .retain(|(p_id, _, _)| p_id != cancel_id);
                 }
             }
         }
@@ -5881,7 +6524,7 @@ async fn run_lsp_bridge(
         // What the editor saved, or saw change, reaches the node before the server hears of it:
         // rust-analyzer checks the crate on save, and must check what was saved (#332).
         if matches!(
-            prod_code_client::editor_files::method_of(&json_payload).as_deref(),
+            client_method.as_deref(),
             Some("textDocument/didSave" | "workspace/didChangeWatchedFiles")
         ) {
             let generation = prod_code_mcp::watch::current_generation(&cwd);
@@ -5910,11 +6553,40 @@ async fn run_lsp_bridge(
         {
             if reconnect {
                 stdout_task.abort();
-                eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}; reconnecting...");
-                match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out).await {
-                    Ok((new_tx, new_rx)) => {
+                eprintln!(
+                    "prod-code lsp: the gateway at {remote} broke the connection: {err}; reconnecting..."
+                );
+                match reconnect_editor_session(
+                    remote,
+                    engine,
+                    &cwd,
+                    &cwd_str,
+                    &identity,
+                    &tracker,
+                    &files,
+                    &pending_requests,
+                    &editor_out,
+                    &position_encoding,
+                    &editor_frames,
+                    &mut deferred_editor_frames,
+                    &trace,
+                )
+                .await
+                {
+                    Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
+                        if remote != new_remote {
+                            remote = new_remote;
+                            keeper.abort();
+                            keeper = tokio::spawn(keep_checkout_synced(
+                                remote,
+                                cwd.clone(),
+                                std::sync::Arc::clone(&pushing),
+                            ));
+                        }
                         socket_tx = new_tx;
-                        outstanding_ping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        replay_state_after_initialize = replay_after_init;
+                        outstanding_ping =
+                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                         let (new_task, new_closed_rx) = spawn_editor_stdout_task(
                             new_rx,
                             std::sync::Arc::clone(&files),
@@ -5923,14 +6595,33 @@ async fn run_lsp_bridge(
                             std::sync::Arc::clone(&editor_out),
                             std::sync::Arc::clone(&pending_requests),
                             std::sync::Arc::clone(&outstanding_ping),
+                            std::sync::Arc::clone(&position_encoding),
                         );
                         stdout_task = new_task;
                         closed_rx = new_closed_rx;
+                        if matches!(
+                            client_method.as_deref(),
+                            Some("textDocument/didSave" | "workspace/didChangeWatchedFiles")
+                        ) {
+                            socket_tx
+                                .send(WireMessage::LspPayload(files.to_node(&json_payload)))
+                                .await
+                                .context(
+                                    "failed to replay save/watch notification after reconnect",
+                                )?;
+                        }
                     }
                     Err(rec_err) => {
-                        fail_pending_requests(&pending_requests, &editor_out, &format!("{err} (reconnect failed: {rec_err})")).await;
+                        fail_pending_requests(
+                            &pending_requests,
+                            &editor_out,
+                            &format!("{err} (reconnect failed: {rec_err})"),
+                        )
+                        .await;
                         keeper.abort();
-                        eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})");
+                        eprintln!(
+                            "prod-code lsp: the gateway at {remote} broke the connection: {err} (reconnect failed: {rec_err})"
+                        );
                         std::process::exit(1);
                     }
                 }
@@ -5941,8 +6632,13 @@ async fn run_lsp_bridge(
                 std::process::exit(1);
             }
         }
+        if client_method.as_deref() == Some("initialized") && replay_state_after_initialize {
+            replay_lsp_workspace_state(&mut socket_tx, &tracker, &files).await?;
+            replay_state_after_initialize = false;
+        }
     }
 
+    editor_frame_reader.abort();
     keeper.abort();
     let _ = stdout_task.await;
     Ok(())
@@ -5958,6 +6654,7 @@ async fn open_editor_session(
 ) -> Result<(
     Framed<prod_code_protocol::AnyStream, ProdCodeCodec>,
     prod_code_protocol::HandshakeResponse,
+    SocketAddr,
 )> {
     let supported_versions = supported_protocol_versions();
     let mut redirect_count = 0;
@@ -5975,7 +6672,10 @@ async fn open_editor_session(
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(supported_versions.clone()),
-                capabilities: None,
+                capabilities: Some(prod_code_protocol::ClientCapabilities {
+                    redirects: true,
+                    ..Default::default()
+                }),
                 client_name: "prod-code-client".to_string(),
                 client_pid: std::process::id(),
                 auth_token: None,
@@ -5991,19 +6691,19 @@ async fn open_editor_session(
             .await?;
         let handshake_resp = match framed.next().await {
             Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
-            Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+            Some(Ok(WireMessage::Redirect {
+                target_addr,
+                reason,
+            })) => {
                 redirect_count += 1;
                 if redirect_count > 3 {
                     anyhow::bail!("too many gateway redirects: {reason:?}");
                 }
                 tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
-                if let Ok(addr) = target_addr.parse::<SocketAddr>() {
-                    remote = addr;
-                    prod_code_mcp::cluster::remember_placement(&identity.name, remote);
-                    continue;
-                } else {
-                    anyhow::bail!("invalid redirect target address: {target_addr}");
-                }
+                remote = resolve_redirect_target(&target_addr)
+                    .with_context(|| format!("invalid redirect target address: {target_addr}"))?;
+                prod_code_mcp::cluster::remember_placement(&identity.name, remote);
+                continue;
             }
             Some(Ok(WireMessage::Disconnect { reason })) => {
                 anyhow::bail!("the gateway refused the session: {reason}")
@@ -6014,8 +6714,15 @@ async fn open_editor_session(
         };
         validate_selected_protocol_version(handshake_resp.protocol_version, &supported_versions)
             .context("gateway returned an incompatible editor handshake response")?;
-        return Ok((framed, handshake_resp));
+        return Ok((framed, handshake_resp, remote));
     }
+}
+
+fn resolve_redirect_target(target: &str) -> Result<SocketAddr> {
+    prod_code_mcp::cluster::parse_remotes(target)?
+        .into_iter()
+        .next()
+        .context("redirect address resolved to no socket addresses")
 }
 
 async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
@@ -6070,9 +6777,8 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn run_pull(remote: SocketAddr, files: Vec<PathBuf>) -> Result<()> {
-    let cwd = env::current_dir().context("Failed to get current working directory")?;
-    let touched = prod_code_mcp::sync::pull_remote_files(remote, &cwd, &files).await?;
+async fn run_pull(remote: SocketAddr, root: &Path, files: Vec<PathBuf>) -> Result<()> {
+    let touched = prod_code_mcp::sync::pull_remote_files(remote, root, &files).await?;
     if !touched.is_empty() {
         println!(
             "📥 Successfully pulled {} file(s) from gateway:\n  {}",
@@ -6084,7 +6790,6 @@ async fn run_pull(remote: SocketAddr, files: Vec<PathBuf>) -> Result<()> {
     }
     Ok(())
 }
-
 
 fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
     let mut builder = ignore::WalkBuilder::new(dir);
@@ -6300,9 +7005,14 @@ async fn cluster_snapshot(
     if rebalance {
         for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
             if let Ok(resp) =
-                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true).await
+                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true)
+                    .await
             {
-                if let Some(target) = resp.node.as_deref().and_then(|a| a.parse::<SocketAddr>().ok()) {
+                if let Some(target) = resp
+                    .node
+                    .as_deref()
+                    .and_then(|a| a.parse::<SocketAddr>().ok())
+                {
                     prod_code_mcp::cluster::remember_placement(workspace_name, target);
                     rebalance_info = Some(serde_json::json!({
                         "target": target.to_string(),
@@ -6347,9 +7057,14 @@ async fn run_cluster(
     if rebalance {
         for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
             if let Ok(resp) =
-                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true).await
+                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true)
+                    .await
             {
-                if let Some(target) = resp.node.as_deref().and_then(|a| a.parse::<SocketAddr>().ok()) {
+                if let Some(target) = resp
+                    .node
+                    .as_deref()
+                    .and_then(|a| a.parse::<SocketAddr>().ok())
+                {
                     prod_code_mcp::cluster::remember_placement(workspace_name, target);
                     rebalanced_target = Some((target, resp.reason));
                     break;
@@ -6528,7 +7243,10 @@ async fn run_resolve(domain: &str, json: bool) -> Result<()> {
         }
     }
     if !srv_records.is_empty() {
-        println!("Dynamic SRV records ({}):", prod_code_protocol::dns::SRV_SERVICE_NAME);
+        println!(
+            "Dynamic SRV records ({}):",
+            prod_code_protocol::dns::SRV_SERVICE_NAME
+        );
         for srv in &srv_records {
             println!(
                 "  - {} (priority: {}, weight: {}, port: {})",
@@ -6673,17 +7391,19 @@ async fn run_fixture_cli(
         );
         return Ok(());
     }
-    let parsed_lang = language.as_deref().and_then(|l| match l.to_ascii_lowercase().as_str() {
-        "rust" | "rs" => Some(prod_code_mcp::parameter_object::Language::Rust),
-        "go" | "golang" => Some(prod_code_mcp::parameter_object::Language::Go),
-        "typescript" | "ts" => Some(prod_code_mcp::parameter_object::Language::TypeScript),
-        "javascript" | "js" => Some(prod_code_mcp::parameter_object::Language::JavaScript),
-        "python" | "py" => Some(prod_code_mcp::parameter_object::Language::Python),
-        "c" => Some(prod_code_mcp::parameter_object::Language::C),
-        "cpp" | "c++" => Some(prod_code_mcp::parameter_object::Language::Cpp),
-        "swift" => Some(prod_code_mcp::parameter_object::Language::Swift),
-        _ => None,
-    });
+    let parsed_lang = language
+        .as_deref()
+        .and_then(|l| match l.to_ascii_lowercase().as_str() {
+            "rust" | "rs" => Some(prod_code_mcp::parameter_object::Language::Rust),
+            "go" | "golang" => Some(prod_code_mcp::parameter_object::Language::Go),
+            "typescript" | "ts" => Some(prod_code_mcp::parameter_object::Language::TypeScript),
+            "javascript" | "js" => Some(prod_code_mcp::parameter_object::Language::JavaScript),
+            "python" | "py" => Some(prod_code_mcp::parameter_object::Language::Python),
+            "c" => Some(prod_code_mcp::parameter_object::Language::C),
+            "cpp" | "c++" => Some(prod_code_mcp::parameter_object::Language::Cpp),
+            "swift" => Some(prod_code_mcp::parameter_object::Language::Swift),
+            _ => None,
+        });
     let fixture = prod_code_mcp::fixture::generate_with_options(
         remote,
         &root,
@@ -6767,8 +7487,7 @@ async fn run_migrate_type_cli(
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let mut args =
-        serde_json::json!({ "to": to, "convert": convert, "transitive": transitive, "apply": apply, "force": force });
+    let mut args = serde_json::json!({ "to": to, "convert": convert, "transitive": transitive, "apply": apply, "force": force });
     match line {
         // A position: the first argument is the file, not a name to resolve.
         Some(line) => {
@@ -6810,7 +7529,8 @@ async fn run_encapsulate_field_cli(
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let mut args = serde_json::json!({ "apply": apply, "force": force });
-    let is_file_path = std::path::Path::new(&symbol).extension().is_some() || cwd.join(&symbol).exists();
+    let is_file_path =
+        std::path::Path::new(&symbol).extension().is_some() || cwd.join(&symbol).exists();
     if let Some(line) = line {
         // A position: the first argument is the file, not a name to resolve.
         args["path"] = serde_json::Value::String(symbol);
@@ -6822,7 +7542,24 @@ async fn run_encapsulate_field_cli(
         if path.is_some() {
             args["class_name"] = serde_json::Value::String(symbol);
         } else {
-            args["path"] = serde_json::Value::String(symbol);
+            let matches =
+                prod_code_mcp::tools::workspace_symbol_search(remote, &root, &symbol, None, 100)
+                    .await?
+                    .into_iter()
+                    .filter(|hit| hit.name.eq_ignore_ascii_case(&symbol))
+                    .map(|hit| hit.path)
+                    .collect::<std::collections::BTreeSet<_>>();
+            let file = match matches.len() {
+                0 => anyhow::bail!(
+                    "no class or struct named {symbol} was found; pass --path to the declaring file"
+                ),
+                1 => matches.into_iter().next().unwrap(),
+                _ => anyhow::bail!(
+                    "more than one class or struct named {symbol} was found; pass --path to select the declaring file"
+                ),
+            };
+            args["path"] = serde_json::Value::String(file.to_string_lossy().into_owned());
+            args["class_name"] = serde_json::Value::String(symbol);
         }
     } else {
         args["symbol"] = serde_json::Value::String(symbol);
@@ -7063,10 +7800,11 @@ async fn run_slice(
     target: String,
     line: Option<u32>,
     character: u32,
-    options: prod_code_mcp::slice::SliceOptions,
+    mut options: prod_code_mcp::slice::SliceOptions,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let cursor_line = line;
     let (file, line, col) = match line {
         Some(line) => {
             let path = PathBuf::from(&target);
@@ -7093,6 +7831,12 @@ async fn run_slice(
             (hit.path, hit.line, hit.col)
         }
     };
+    if options.dataflow
+        && options.target_line.is_none()
+        && let Some(explicit_line) = cursor_line
+    {
+        options.target_line = Some(explicit_line);
+    }
     let report =
         prod_code_mcp::slice::slice_with_options(remote, &root, &file, line, col, options).await?;
     let rendered = report.render();
@@ -7121,7 +7865,10 @@ async fn run_shadow_cli(
     let json: serde_json::Value =
         serde_json::from_str(&text).with_context(|| format!("{} is not JSON", spec.display()))?;
     let ram = ram
-        || json.get("in_memory").and_then(|v| v.as_bool()).unwrap_or(false)
+        || json
+            .get("in_memory")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
         || json.get("ram").and_then(|v| v.as_bool()).unwrap_or(false);
     let specs = prod_code_mcp::shadow::parse_specs(&root, &json, spec.parent())?;
     let outcome = prod_code_mcp::shadow::run_shadow(
