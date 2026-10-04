@@ -1355,12 +1355,16 @@ pub fn restructure_cpp(
 
     let mut field_decls: BTreeMap<String, String> = BTreeMap::new();
     let mut field_types: BTreeMap<String, String> = BTreeMap::new();
-    for line in body.lines() {
+    let mut brace_depth = 0i32;
+    let mut body_offset = 0usize;
+    for line in body.split_inclusive('\n') {
         let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
-            continue;
-        }
-        if let Some(semi) = trimmed.strip_suffix(';') {
+        if brace_depth == 0
+            && !trimmed.starts_with("//")
+            && !trimmed.starts_with("/*")
+            && !trimmed.starts_with('*')
+            && let Some(semi) = trimmed.strip_suffix(';')
+        {
             let decl = semi.trim();
             if !decl.contains('(') {
                 let parts: Vec<&str> = decl.split_whitespace().collect();
@@ -1374,6 +1378,20 @@ pub fn restructure_cpp(
                 }
             }
         }
+        for (offset, ch) in line.char_indices() {
+            let absolute = body_offset + offset;
+            if crate::inline_parameter::is_in_comment(body, absolute, Language::Cpp)
+                || crate::inline_parameter::is_in_string(body, absolute, Language::Cpp)
+            {
+                continue;
+            }
+            match ch {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
+        }
+        body_offset += line.len();
     }
 
     for f in fields {
@@ -2882,5 +2900,27 @@ mod tests {
         let helper = rewritten.find("class Location").unwrap();
         let owner = rewritten.find("class Account").unwrap();
         assert!(include < helper && helper < owner, "{rewritten}");
+    }
+
+    #[test]
+    fn cpp_restructure_removes_moved_method_from_owner_body() {
+        let source = "#include <string>\n\nclass Account {\npublic:\n    std::string street;\n    std::string city;\n    int balance;\n    std::string address() {\n        return street + \", \" + city;\n    }\n    void deposit(int amt) { balance += amt; }\n};\n";
+        let (rewritten, owner) = restructure_cpp(
+            source,
+            Some("Account"),
+            None,
+            &strings(&["street", "city"]),
+            &strings(&["address"]),
+            "Location",
+            "location",
+        )
+        .unwrap();
+        let owner_body = owner_region(&rewritten, Language::Cpp, &owner).unwrap();
+        let helper_body = owner_region(&rewritten, Language::Cpp, "Location").unwrap();
+
+        assert!(helper_body.contains("return street + \", \" + city;"), "{rewritten}");
+        assert!(owner_body.contains("return location.address();"), "{rewritten}");
+        assert!(!owner_body.contains("return street + \", \" + city;"), "{rewritten}");
+        assert!(owner_body.contains("deposit(int amt)"), "{rewritten}");
     }
 }

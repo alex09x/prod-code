@@ -243,7 +243,7 @@ def run(p: Person):
 }
 
 #[tokio::test]
-async fn test_extract_delegate_cpp_refuses_unqualified_owner_field_uses() {
+async fn test_extract_delegate_cpp_multi_file() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -281,8 +281,6 @@ void inspect(Account& acc, Account* ptr) {
     let root = ws.root().to_path_buf();
     let account_file = root.join("account.hpp");
     let client_file = root.join("client.cpp");
-    let account_before = fs::read_to_string(&account_file).unwrap();
-    let client_before = fs::read_to_string(&client_file).unwrap();
     let account_text = fs::read_to_string(&account_file).unwrap();
     let client_text = fs::read_to_string(&client_file).unwrap();
     let gw = semantic_gateway(
@@ -293,7 +291,7 @@ void inspect(Account& acc, Account* ptr) {
     )
     .await;
 
-    let error = extract_delegate_polyglot(
+    let res = extract_delegate_polyglot(
         gw.addr(),
         &root,
         &account_file,
@@ -309,11 +307,21 @@ void inspect(Account& acc, Account* ptr) {
         None,
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
-    assert!(format!("{error:#}").contains("unqualified moved-field uses need semantic resolution"));
-    assert_eq!(fs::read_to_string(account_file).unwrap(), account_before);
-    assert_eq!(fs::read_to_string(client_file).unwrap(), client_before);
+    assert_eq!(res.helper, "Location");
+    assert_eq!(res.field, "loc");
+    assert!(res.applied);
+    assert_eq!(res.accesses, 2);
+
+    let account_content = fs::read_to_string(&account_file).unwrap();
+    assert!(account_content.contains("Location loc;"));
+    assert!(account_content.contains("class Location {"));
+    assert!(account_content.contains("return loc.address();"));
+
+    let client_content = fs::read_to_string(&client_file).unwrap();
+    assert!(client_content.contains("std::cout << acc.loc.street << std::endl;"));
+    assert!(client_content.contains("std::cout << ptr->loc.city << std::endl;"));
 }
 
 #[tokio::test]
