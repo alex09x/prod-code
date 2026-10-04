@@ -5820,10 +5820,11 @@ fn spawn_editor_stdout_task(
     position_encoding: std::sync::Arc<std::sync::atomic::AtomicU8>,
 ) -> (
     tokio::task::JoinHandle<()>,
-    tokio::sync::oneshot::Receiver<String>,
+    tokio::sync::oneshot::Receiver<(String, Option<SocketAddr>)>,
 ) {
-    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<String>();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<(String, Option<SocketAddr>)>();
     let handle = tokio::spawn(async move {
+        let mut redirect_target = None;
         let why = loop {
             match socket_rx.next().await {
                 Some(Ok(msg)) => {
@@ -5858,6 +5859,7 @@ fn spawn_editor_stdout_task(
                         } => {
                             tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
                             if let Ok(addr) = resolve_redirect_target(&target_addr) {
+                                redirect_target = Some(addr);
                                 prod_code_mcp::cluster::remember_placement(
                                     &stdout_identity.name,
                                     addr,
@@ -5880,7 +5882,7 @@ fn spawn_editor_stdout_task(
                 None => break "closed the connection".to_string(),
             }
         };
-        let _ = closed_tx.send(why);
+        let _ = closed_tx.send((why, redirect_target));
     });
     (handle, closed_rx)
 }
@@ -6332,10 +6334,11 @@ async fn run_lsp_bridge(
                     // The gateway went away while the editor still talks to it: say so and exit
                     // with a failure, which an editor answers by starting the server again. Left
                     // to the editor's next message, this hung and then exited 0 (#394).
-                    Ok(why) => {
+                    Ok((why, redirect_target)) => {
                         if reconnect {
                             eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
-                            match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
+                            let reconnect_remote = redirect_target.unwrap_or(remote);
+                            match reconnect_editor_session(reconnect_remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
                                 Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
                                     if remote != new_remote {
                                         remote = new_remote;

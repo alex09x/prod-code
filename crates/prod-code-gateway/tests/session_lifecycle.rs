@@ -1291,7 +1291,7 @@ async fn read_file_request_in_active_session_pulls_large_artifact() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn editor_session_ignores_rebalance_redirect() {
+async fn editor_session_receives_rebalance_redirect() {
     let storage = tempfile::tempdir().unwrap();
     let client_dir = tempfile::tempdir().unwrap();
     let client_root = std::fs::canonicalize(client_dir.path()).unwrap();
@@ -1363,15 +1363,20 @@ async fn editor_session_ignores_rebalance_redirect() {
         .await;
     assert_eq!(notified, 1, "trigger_rebalance sent to broadcast channel");
 
-    // Editor session must NOT receive WireMessage::Redirect, connection remains open
-    let timeout_res = tokio::time::timeout(Duration::from_millis(200), client.next()).await;
+    let redirect = tokio::time::timeout(Duration::from_secs(5), client.next())
+        .await
+        .expect("editor session receives rebalance redirect")
+        .expect("redirect frame")
+        .expect("wire message");
     assert!(
-        timeout_res.is_err(),
-        "editor session must NOT receive Redirect frame and must remain open"
+        matches!(
+            &redirect,
+            WireMessage::Redirect { target_addr, .. } if target_addr == "192.168.2.168:9400"
+        ),
+        "editor session must receive the destination redirect, got: {redirect:?}"
     );
 
     drop(client);
     let _ = server.join().await;
 }
-
 

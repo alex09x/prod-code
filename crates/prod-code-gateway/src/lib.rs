@@ -4917,9 +4917,6 @@ async fn run_session_loop(
             rebalance_msg = rebalance_rx.recv() => {
                 match rebalance_msg {
                     Ok((target_addr, reason)) => {
-                        if meta.editor {
-                            continue;
-                        }
                         tracing::info!(
                             session_id = meta.session_id,
                             target = %target_addr,
