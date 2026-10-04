@@ -31,8 +31,13 @@ const TYPESCRIPT_MARKERS: &[&str] = &[
     "deno.json",
     "deno.jsonc",
 ];
-const JAVA_MARKERS: &[&str] = &["pom.xml", "build.gradle"];
-const KOTLIN_MARKERS: &[&str] = &["build.gradle.kts", "settings.gradle.kts"];
+const JAVA_MARKERS: &[&str] = &[
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+];
 const CSHARP_MARKERS: &[&str] = &[
     "global.json",
     "Directory.Build.props",
@@ -205,6 +210,103 @@ pub fn has_swift_project(root: &Path) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+fn directory_has_kotlin_source(dir: &Path, depth: usize) -> bool {
+    if depth > 6 {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.')
+            || matches!(
+                name.as_str(),
+                "build" | "target" | "node_modules" | ".gradle"
+            )
+        {
+            return false;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            directory_has_kotlin_source(&path, depth + 1)
+        } else {
+            path.extension().and_then(|extension| extension.to_str()) == Some("kt")
+        }
+    })
+}
+
+/// A Gradle Kotlin DSL script is not evidence that the compiled source language is Kotlin.
+/// Prefer actual Kotlin sources or an applied Kotlin plugin before selecting kotlin-language-server.
+pub fn has_kotlin_project(root: &Path) -> bool {
+    let source_roots = [
+        "src",
+        "app/src",
+        "common/src",
+        "shared/src",
+        "src/main/kotlin",
+        "src/test/kotlin",
+    ];
+    if source_roots
+        .iter()
+        .any(|relative| directory_has_kotlin_source(&root.join(relative), 0))
+    {
+        return true;
+    }
+    const KOTLIN_PLUGIN_MARKERS: &[&str] = &[
+        "kotlin(\"jvm\")",
+        "kotlin(\"android\")",
+        "kotlin(\"multiplatform\")",
+        "id(\"org.jetbrains.kotlin.jvm\")",
+        "id(\"org.jetbrains.kotlin.android\")",
+        "id(\"org.jetbrains.kotlin.multiplatform\")",
+        "id 'org.jetbrains.kotlin.jvm'",
+        "id 'org.jetbrains.kotlin.android'",
+        "id 'org.jetbrains.kotlin.multiplatform'",
+        "apply plugin: 'org.jetbrains.kotlin.jvm'",
+        "apply plugin: 'org.jetbrains.kotlin.android'",
+        "apply plugin: 'org.jetbrains.kotlin.multiplatform'",
+        "apply plugin: 'kotlin'",
+    ];
+    [
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+    ]
+        .iter()
+        .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
+        .any(|text| {
+            text.lines()
+                .filter(|line| {
+                    let line = line.trim_start();
+                    !line.starts_with("//") && !line.starts_with('*')
+                })
+                .any(|line| {
+                    KOTLIN_PLUGIN_MARKERS
+                        .iter()
+                        .any(|marker| line.contains(marker))
+                })
+        })
+}
+
+fn has_java_project(root: &Path) -> bool {
+    JAVA_MARKERS.iter().any(|marker| {
+        if !root.join(marker).exists() {
+            return false;
+        }
+        !matches!(*marker, "build.gradle.kts" | "settings.gradle.kts")
+            || !has_kotlin_project(root)
+            || [
+                "src/main/java",
+                "src/test/java",
+                "app/src/main/java",
+            ]
+                .iter()
+                .any(|relative| root.join(relative).is_dir())
+    })
 }
 
 /// A C# project (.csproj, .sln) or global.json configuration at the root.
@@ -434,6 +536,12 @@ pub fn has_groovy_project(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A Groovy Gradle project can have only `build.gradle` and sources under the conventional
+/// Groovy source roots, so it must be distinguished from Java Gradle projects before Java wins.
+pub fn has_groovy_gradle_sources(root: &Path) -> bool {
+    root.join("build.gradle").is_file() && root.join("src/main/groovy").is_dir()
+}
+
 /// An Ada project (*.gpr, *.adb, *.ads) at the root.
 pub fn has_ada_project(root: &Path) -> bool {
     if ADA_MARKERS.iter().any(|m| root.join(m).exists()) {
@@ -458,7 +566,7 @@ pub fn has_v_project(root: &Path) -> bool {
         .map(|entries| {
             entries.flatten().any(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                name.ends_with(".v") || name.ends_with(".vsh")
+                name.ends_with(".vsh")
             })
         })
         .unwrap_or(false)
@@ -784,14 +892,7 @@ pub fn has_cue_project(root: &Path) -> bool {
 /// 3. Swift (`Package.swift`, an XcodeGen `project.yml`, an Xcode bundle)
 /// 4. C/C++ (`compile_commands.json`, `CMakeLists.txt`, `meson.build`, `.clangd`)
 /// 5. Python (`pyproject.toml`, `requirements.txt`, `setup.py`, etc.)
-/// 6. TypeScript / JavaScript (`tsconfig.json`, `package.json`, etc.)
-/// 7. C/C++ built with Make (a Makefile next to C sources)
-/// 8. Kotlin (`build.gradle.kts`, `settings.gradle.kts`)
-/// 9. Java (`pom.xml`, `build.gradle`)
-/// 10. C# (`*.csproj`, `*.sln`, `global.json`)
-/// 11. PHP (`composer.json`)
-/// 12. Ruby (`Gemfile`)
-/// 13. Generic LSP fallback
+/// Structured and language-specific project markers take priority over generic Markdown files.
 pub fn detect_engine(root: &Path) -> EngineKind {
     for marker in RUST_MARKERS {
         if root.join(marker).exists() {
@@ -819,16 +920,23 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_csharp_project(root) {
         return EngineKind::Csharp;
     }
-    if KOTLIN_MARKERS.iter().any(|m| root.join(m).exists()) {
+    if has_kotlin_project(root) {
         return EngineKind::Kotlin;
     }
     if SCALA_MARKERS.iter().any(|m| root.join(m).exists()) {
         return EngineKind::Scala;
     }
-    for marker in JAVA_MARKERS {
-        if root.join(marker).exists() {
-            return EngineKind::Java;
-        }
+    if has_groovy_gradle_sources(root) {
+        return EngineKind::Groovy;
+    }
+    if has_java_project(root) {
+        return EngineKind::Java;
+    }
+    if has_svelte_project(root) {
+        return EngineKind::Svelte;
+    }
+    if has_vue_project(root) {
+        return EngineKind::Vue;
     }
     for marker in TYPESCRIPT_MARKERS {
         if root.join(marker).exists() {
@@ -871,9 +979,6 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     }
     if has_julia_project(root) {
         return EngineKind::Julia;
-    }
-    if has_shell_project(root) {
-        return EngineKind::Shell;
     }
     if has_r_project(root) {
         return EngineKind::R;
@@ -923,12 +1028,6 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_racket_project(root) {
         return EngineKind::Racket;
     }
-    if has_svelte_project(root) {
-        return EngineKind::Svelte;
-    }
-    if has_vue_project(root) {
-        return EngineKind::Vue;
-    }
     if has_terraform_project(root) {
         return EngineKind::Terraform;
     }
@@ -940,9 +1039,6 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     }
     if has_dockerfile_project(root) {
         return EngineKind::Dockerfile;
-    }
-    if has_markdown_project(root) {
-        return EngineKind::Markdown;
     }
     if has_yaml_project(root) {
         return EngineKind::Yaml;
@@ -989,6 +1085,12 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_cue_project(root) {
         return EngineKind::Cue;
     }
+    if has_shell_project(root) {
+        return EngineKind::Shell;
+    }
+    if has_markdown_project(root) {
+        return EngineKind::Markdown;
+    }
     EngineKind::Generic
 }
 
@@ -1014,10 +1116,10 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     if has_swift_project(root) {
         engines.push(EngineKind::Swift);
     }
-    if KOTLIN_MARKERS.iter().any(|m| root.join(m).exists()) {
+    if has_kotlin_project(root) {
         engines.push(EngineKind::Kotlin);
     }
-    if JAVA_MARKERS.iter().any(|m| root.join(m).exists()) {
+    if has_java_project(root) {
         engines.push(EngineKind::Java);
     }
     if has_csharp_project(root) {
@@ -1095,7 +1197,7 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     if has_crystal_project(root) {
         engines.push(EngineKind::Crystal);
     }
-    if has_groovy_project(root) {
+    if has_groovy_project(root) || has_groovy_gradle_sources(root) {
         engines.push(EngineKind::Groovy);
     }
     if has_ada_project(root) {
@@ -1359,9 +1461,40 @@ mod tests {
         assert_eq!(detect_all_engines(dir.path()), vec![EngineKind::Java]);
 
         let dir_kt = tempdir().unwrap();
-        std::fs::write(dir_kt.path().join("build.gradle.kts"), "").unwrap();
+        std::fs::write(
+            dir_kt.path().join("build.gradle.kts"),
+            "plugins { kotlin(\"jvm\") version \"2.0.0\" }",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir_kt.path().join("src/main/kotlin")).unwrap();
+        std::fs::write(
+            dir_kt.path().join("src/main/kotlin/Main.kt"),
+            "fun main() {}",
+        )
+        .unwrap();
         assert_eq!(detect_engine(dir_kt.path()), EngineKind::Kotlin);
         assert_eq!(detect_all_engines(dir_kt.path()), vec![EngineKind::Kotlin]);
+
+        let dir_java_kts = tempdir().unwrap();
+        std::fs::write(
+            dir_java_kts.path().join("build.gradle.kts"),
+            "plugins { java }\ndependencies {\n    implementation(\"org.jetbrains.kotlin:kotlin-stdlib:1.9.0\")\n}",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir_java_kts.path().join("src/main/java")).unwrap();
+        std::fs::write(
+            dir_java_kts.path().join("src/main/java/Main.java"),
+            "class Main {}",
+        )
+        .unwrap();
+        assert_eq!(detect_engine(dir_java_kts.path()), EngineKind::Java);
+        assert_eq!(detect_all_engines(dir_java_kts.path()), vec![EngineKind::Java]);
+
+        let dir_groovy_gradle = tempdir().unwrap();
+        std::fs::write(dir_groovy_gradle.path().join("build.gradle"), "").unwrap();
+        std::fs::create_dir_all(dir_groovy_gradle.path().join("src/main/groovy")).unwrap();
+        assert_eq!(detect_engine(dir_groovy_gradle.path()), EngineKind::Groovy);
+        assert!(detect_all_engines(dir_groovy_gradle.path()).contains(&EngineKind::Groovy));
 
         let dir_cs = tempdir().unwrap();
         std::fs::write(dir_cs.path().join("App.csproj"), "<Project></Project>").unwrap();
@@ -1525,7 +1658,16 @@ mod tests {
             Case { lang: "Cpp", files: &[("CMakeLists.txt", "project(test)")], kind: EngineKind::Cpp },
             Case { lang: "Swift", files: &[("Package.swift", "// swift-tools-version:5.9")], kind: EngineKind::Swift },
             Case { lang: "Java", files: &[("pom.xml", "<project></project>")], kind: EngineKind::Java },
-            Case { lang: "Kotlin", files: &[("build.gradle.kts", "")], kind: EngineKind::Kotlin },
+            Case {
+                lang: "Kotlin",
+                files: &[
+                    (
+                        "build.gradle.kts",
+                        "plugins { kotlin(\"jvm\") version \"2.0.0\" }",
+                    ),
+                ],
+                kind: EngineKind::Kotlin,
+            },
             Case { lang: "Csharp", files: &[("global.json", "{}")], kind: EngineKind::Csharp },
             Case { lang: "Php", files: &[("composer.json", "{}")], kind: EngineKind::Php },
             Case { lang: "Ruby", files: &[("Gemfile", "")], kind: EngineKind::Ruby },
