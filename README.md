@@ -390,6 +390,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`rails/rails`](https://github.com/rails/rails) | Ruby (32-core node) | 67 / 67 tools (573K lines, clean DAG, Active Record Relation AST, 60K test asserts, 1.4K exceptions) | 573.5K lines (3,478 files) | 0.58 ms RTT | [Rails Under the Microscope →](https://prod.codes/blog/rails-under-the-microscope-67-ast-tools/) |
 | [`jekyll/jekyll`](https://github.com/jekyll/jekyll) | Ruby (32-core node) | 67 / 67 tools (23K lines, clean DAG, 6-stage compilation pipeline, 1.3K test asserts) | 22.8K lines (162 files) | 0.58 ms RTT | [Jekyll Under the Microscope →](https://prod.codes/blog/jekyll-under-the-microscope-67-ast-tools/) |
 | [`mastodon/mastodon`](https://github.com/mastodon/mastodon) | Ruby (32-core node) | 67 / 67 tools (190K lines, clean DAG, ActivityPub JSON-LD verification, 8.2K RSpec asserts) | 189.7K lines (3,278 files) | 0.58 ms RTT | [Mastodon Under the Microscope →](https://prod.codes/blog/mastodon-under-the-microscope-67-ast-tools/) |
+| [`Homebrew/brew`](https://github.com/Homebrew/brew) | Ruby (32-core node) | 67 / 67 tools (371K lines, clean DAG, Sorbet typed strict, 12.4K test asserts, 2.2K exceptions) | 371.1K lines (2,379 files) | 0.58 ms RTT | [Homebrew Under the Microscope →](https://prod.codes/blog/homebrew-under-the-microscope-67-ast-tools/) |
 
 
 

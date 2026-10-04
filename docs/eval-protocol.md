@@ -735,6 +735,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 8,191 RSpec expectations and 344 explicit `raise` exception egress points guarding cryptographic signatures, signature validation, domain blocks, and Sidekiq retries. Evaluated ActivityPub federation processing pipeline in `app/services/activitypub/process_activity_service.rb`, handling JSON-LD compaction, Linked Data Signatures, and cryptographic actor verification. AST refactoring evaluated `prod-code extract-function` on `app/models/account.rb`, extracting normalized acct address parsing, verified with 0 analyzer errors on cluster nodes.
     - **Full Deep-Dive Report**: [Mastodon Under the Microscope: What 67 Remote AST Tools Found Inside the Federated ActivityPub Engine (prod.codes)](https://prod.codes/blog/mastodon-under-the-microscope-67-ast-tools/)
 
+60. **[Homebrew/brew](https://github.com/Homebrew/brew)** (Ruby)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 371,069 lines of Ruby across 2,379 source files (`Library/Homebrew/`: 214.3K LOC / 1,416 files, `Library/Homebrew/test/`: 156.2K LOC / 959 files), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: macOS and Linux package manager analyzed with `prod-code dependencies`. Discovered zero circular dependencies (clean directed acyclic graph) across core namespaces isolating cask DSL, cellar management, bottle distribution, and hardware detection. Scanned 2,426 files with Sorbet static typing pragmas (`# typed: strict` / `# typed: true`). Clone analysis (`prod-code duplicates`) scanned 2,375 files (370,966 lines) identifying 5 clone groups with 1.1% duplication at 6 lines, dominated by Sorbet and frozen string headers in subcommands.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 12,415 RSpec expectations and 2,173 typed `raise` exception egress points guarding bottle SHA-256 checksums, architecture compatibility, cellar links, and sandboxing rules. Evaluated package installation pipeline in `Library/Homebrew/formula_installer.rb` (`check_install_sanity -> compute_dependencies -> pour_bottle -> link_keg`). AST refactoring evaluated `prod-code extract-function` on `Library/Homebrew/utils/bottles.rb`, extracting bottle tag parsing logic, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [Homebrew Under the Microscope: What 67 Remote AST Tools Found Inside the macOS Package Manager (prod.codes)](https://prod.codes/blog/homebrew-under-the-microscope-67-ast-tools/)
+
 
 
 
