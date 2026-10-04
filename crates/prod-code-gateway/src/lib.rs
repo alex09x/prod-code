@@ -1587,6 +1587,7 @@ fn read_server_file(
         path: req.path.clone(),
         content: None,
         truncated: false,
+        is_executable: false,
         error: None,
     };
     if !is_readable_source_path(storage_root, &path) {
@@ -1610,6 +1611,12 @@ fn read_server_file(
     };
     match std::fs::read(&path) {
         Ok(mut bytes) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                resp.is_executable = std::fs::metadata(&path)
+                    .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
+            }
             if bytes.len() as u64 > max {
                 bytes.truncate(max as usize);
                 resp.truncated = true;
@@ -8324,6 +8331,11 @@ mod tests {
         std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
         let data = vec![b'y'; 3 * 1024 * 1024]; // 3 MiB
         std::fs::write(&artifact, &data).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
 
         let req = prod_code_protocol::ReadFileRequest {
             path: artifact.to_string_lossy().into_owned(),
@@ -8332,6 +8344,8 @@ mod tests {
         let resp = read_server_file(temp_storage.path(), &req);
         assert!(resp.error.is_none(), "read_server_file failed: {:?}", resp.error);
         assert!(!resp.truncated, "workspace artifact must not be truncated under 64 MiB");
+        #[cfg(unix)]
+        assert!(resp.is_executable, "gateway response must retain executable mode");
         assert_eq!(resp.content.expect("content").len(), 3 * 1024 * 1024);
     }
 

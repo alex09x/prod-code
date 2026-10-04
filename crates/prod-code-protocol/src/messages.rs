@@ -1638,6 +1638,9 @@ pub struct ReadFileResponse {
     pub content: Option<Vec<u8>>,
     #[serde(default)]
     pub truncated: bool,
+    /// Whether the source file has any executable permission bit set on the gateway.
+    #[serde(default)]
+    pub is_executable: bool,
     #[serde(default)]
     pub error: Option<String>,
 }

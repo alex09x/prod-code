@@ -395,6 +395,7 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
                 path: read_req.path,
                 content: Some(b"pub fn pulled() {}\n".to_vec()),
                 truncated: false,
+                is_executable: true,
                 error: None,
             }))
             .await
@@ -416,8 +417,150 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
         std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
         "pub fn pulled() {}\n"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(
+            std::fs::metadata(root.join("src/lib.rs")).unwrap().permissions().mode() & 0o111,
+            0,
+            "remote executable mode must be preserved by pull"
+        );
+    }
 }
 
+
+#[tokio::test]
+async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
+    let original = "pub fn original() {}\n";
+    let ws = Workspace::new(&[("src/lib.rs", original)]);
+    let root = ws.root();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut framed = accept_one(listener).await;
+        let _ = match framed.next().await.unwrap().unwrap() {
+            WireMessage::HandshakeRequest(req) => req,
+            other => panic!("expected HandshakeRequest: {other:?}"),
+        };
+        framed
+            .send(WireMessage::HandshakeResponse(prod_code_protocol::HandshakeResponse {
+                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                server_pid: 1234,
+                session_id: 1,
+                server_workspace_root: "/server/ws/truncated".to_string(),
+                detected_engine: "rust".to_string(),
+                stale_paths: Vec::new(),
+                engine_age_ms: Some(100),
+                index_gated: false,
+                capabilities: None,
+            }))
+            .await
+            .unwrap();
+        let request = match framed.next().await.unwrap().unwrap() {
+            WireMessage::ReadFileRequest(request) => request,
+            other => panic!("expected ReadFileRequest: {other:?}"),
+        };
+        framed
+            .send(WireMessage::ReadFileResponse(ReadFileResponse {
+                path: request.path,
+                content: Some(b"pub fn partial".to_vec()),
+                truncated: true,
+                is_executable: false,
+                error: None,
+            }))
+            .await
+            .unwrap();
+    });
+
+    let error = prod_code_mcp::sync::pull_remote_files(
+        addr,
+        &root,
+        &[std::path::PathBuf::from("src/lib.rs")],
+    )
+    .await
+    .expect_err("truncated source must never replace the local file");
+    assert!(format!("{error:#}").contains("truncated"), "{error:#}");
+    assert_eq!(std::fs::read_to_string(root.join("src/lib.rs")).unwrap(), original);
+}
+
+#[tokio::test]
+async fn pull_remote_files_follows_a_redirected_handshake() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn old() {}\n")]);
+    let root = ws.root();
+    let redirect_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redirect_addr = redirect_listener.local_addr().unwrap();
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_addr = target_listener.local_addr().unwrap();
+
+    let redirect_task = tokio::spawn(async move {
+        let mut framed = accept_one(redirect_listener).await;
+        let request = match framed.next().await.unwrap().unwrap() {
+            WireMessage::HandshakeRequest(request) => request,
+            other => panic!("expected HandshakeRequest: {other:?}"),
+        };
+        assert!(request.capabilities.unwrap().redirects);
+        framed
+            .send(WireMessage::Redirect {
+                target_addr: target_addr.to_string(),
+                reason: Some("workspace is served by the target node".to_string()),
+            })
+            .await
+            .unwrap();
+    });
+
+    let target_task = tokio::spawn(async move {
+        let mut framed = accept_one(target_listener).await;
+        let request = match framed.next().await.unwrap().unwrap() {
+            WireMessage::HandshakeRequest(request) => request,
+            other => panic!("expected redirected HandshakeRequest: {other:?}"),
+        };
+        assert_eq!(request.redirect_count, 1);
+        framed
+            .send(WireMessage::HandshakeResponse(prod_code_protocol::HandshakeResponse {
+                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                server_pid: 5678,
+                session_id: 2,
+                server_workspace_root: "/server/ws/redirected".to_string(),
+                detected_engine: "rust".to_string(),
+                stale_paths: Vec::new(),
+                engine_age_ms: Some(100),
+                index_gated: false,
+                capabilities: None,
+            }))
+            .await
+            .unwrap();
+        let file_request = match framed.next().await.unwrap().unwrap() {
+            WireMessage::ReadFileRequest(request) => request,
+            other => panic!("expected redirected ReadFileRequest: {other:?}"),
+        };
+        assert_eq!(file_request.path, "/server/ws/redirected/src/lib.rs");
+        framed
+            .send(WireMessage::ReadFileResponse(ReadFileResponse {
+                path: file_request.path,
+                content: Some(b"pub fn redirected() {}\n".to_vec()),
+                truncated: false,
+                is_executable: false,
+                error: None,
+            }))
+            .await
+            .unwrap();
+    });
+
+    let pulled = prod_code_mcp::sync::pull_remote_files(
+        redirect_addr,
+        &root,
+        &[std::path::PathBuf::from("src/lib.rs")],
+    )
+    .await
+    .expect("the pull retries at the redirected node");
+    redirect_task.await.unwrap();
+    target_task.await.unwrap();
+    assert_eq!(pulled, vec!["src/lib.rs"]);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "pub fn redirected() {}\n"
+    );
+}
 
 #[tokio::test]
 async fn run_remote_fails_to_connect_to_an_unreachable_gateway() {
@@ -600,6 +743,7 @@ async fn read_remote_file_returns_the_bytes() {
                 path: req.path,
                 content: Some(b"content".to_vec()),
                 truncated: false,
+                is_executable: false,
                 error: None,
             }))
             .await
@@ -629,6 +773,7 @@ async fn read_remote_file_reports_the_gateways_error() {
                 path: req.path,
                 content: None,
                 truncated: false,
+                is_executable: false,
                 error: Some("no such file".to_string()),
             }))
             .await
@@ -657,6 +802,7 @@ async fn read_remote_file_reports_an_empty_reply() {
                 path: req.path,
                 content: None,
                 truncated: false,
+                is_executable: false,
                 error: None,
             }))
             .await

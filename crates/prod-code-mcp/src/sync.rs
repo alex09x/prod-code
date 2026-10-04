@@ -1344,37 +1344,58 @@ pub async fn pull_remote_files(
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let identity = workspace_identity(&canonical_root);
 
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let mut current_remote = remote;
+    let mut redirect_count = 0;
+    let (mut framed, handshake_resp) = loop {
+        let stream = prod_code_protocol::transport::connect(current_remote)
+            .await
+            .with_context(|| format!("failed to connect to remote gateway at {current_remote}"))?;
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        framed
+            .send(WireMessage::HandshakeRequest(prod_code_protocol::HandshakeRequest {
+                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
+                capabilities: Some(prod_code_protocol::ClientCapabilities {
+                    redirects: true,
+                    ..Default::default()
+                }),
+                client_name: "prod-code-pull".to_string(),
+                client_pid: std::process::id(),
+                auth_token: None,
+                client_workspace_root: canonical_root.to_string_lossy().to_string(),
+                preferred_engine: None,
+                base_workspace_name: Some(identity.name.clone()),
+                engine_subpath: None,
+                client_agent: Some(prod_code_protocol::detect_client_agent()),
+                client_host: Some(prod_code_protocol::client_host()),
+                purpose: None,
+                redirect_count,
+            }))
+            .await?;
 
-    framed
-        .send(WireMessage::HandshakeRequest(prod_code_protocol::HandshakeRequest {
-            protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-            supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
-            capabilities: Some(prod_code_protocol::ClientCapabilities::default()),
-            client_name: "prod-code-pull".to_string(),
-            client_pid: std::process::id(),
-            auth_token: None,
-            client_workspace_root: canonical_root.to_string_lossy().to_string(),
-            preferred_engine: None,
-            base_workspace_name: Some(identity.name.clone()),
-            engine_subpath: None,
-            client_agent: Some(prod_code_protocol::detect_client_agent()),
-            client_host: Some(prod_code_protocol::client_host()),
-            purpose: None,
-            redirect_count: 0,
-        }))
-        .await?;
-
-    let handshake_resp = loop {
-        match framed.next().await {
-            Some(Ok(WireMessage::HandshakeResponse(resp))) => break resp,
-            Some(Ok(WireMessage::Auth(_))) => continue,
-            Some(Ok(other)) => anyhow::bail!("unexpected message during handshake: {other:?}"),
-            Some(Err(e)) => anyhow::bail!("connection error during handshake: {e}"),
-            None => anyhow::bail!("gateway closed connection during handshake"),
+        let response = loop {
+            match framed.next().await {
+                Some(Ok(WireMessage::HandshakeResponse(resp))) => break Some((framed, resp)),
+                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                    redirect_count += 1;
+                    if redirect_count > 3 {
+                        anyhow::bail!("too many gateway redirects during pull: {reason:?}");
+                    }
+                    current_remote = crate::cluster::parse_remotes(&target_addr)?
+                        .into_iter()
+                        .next()
+                        .with_context(|| format!("redirect target resolved to no addresses: {target_addr}"))?;
+                    tracing::info!(%current_remote, ?reason, "following gateway redirect during pull");
+                    break None;
+                }
+                Some(Ok(WireMessage::Auth(_))) => continue,
+                Some(Ok(other)) => anyhow::bail!("unexpected message during handshake: {other:?}"),
+                Some(Err(e)) => anyhow::bail!("connection error during handshake: {e}"),
+                None => anyhow::bail!("gateway closed connection during handshake"),
+            }
+        };
+        if let Some(handshake) = response {
+            break handshake;
         }
     };
 
@@ -1420,7 +1441,7 @@ pub async fn pull_remote_files(
             anyhow::bail!("remote file {rel_str} exceeded maximum pull size limit (truncated)");
         }
 
-        let is_executable = read_resp.content.as_deref().is_some_and(|b| {
+        let is_executable = read_resp.is_executable || read_resp.content.as_deref().is_some_and(|b| {
             b.starts_with(b"\x7fELF")
                 || b.starts_with(b"#!")
                 || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
@@ -1444,7 +1465,7 @@ pub async fn pull_remote_files(
         return Ok(Vec::new());
     }
 
-    apply_pulled_files_for(&canonical_root, &remote.to_string(), &pulled_deltas)
+    apply_pulled_files_for(&canonical_root, &current_remote.to_string(), &pulled_deltas)
 }
 
 /// Persist the watermarks for a sync plan after its files have been accepted by the gateway.
