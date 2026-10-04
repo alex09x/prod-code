@@ -1610,4 +1610,45 @@ mod tests {
         assert!(removed2);
         assert_eq!(shrunk2, "");
     }
+
+    #[test]
+    fn go_call_rewriting_skips_comments_strings_and_identifier_substrings() {
+        let source = "package p\nfunc use() {\n Add(1)\n _ = \"Add failed\"\n // Add remains a comment\n AddSuffix()\n}\n";
+        let (rewritten, count) = rewrite_go_call_sites(source, "Add", "helpers").unwrap();
+
+        assert_eq!(count, 1);
+        assert!(rewritten.contains("helpers.Add(1)"));
+        assert!(rewritten.contains("\"Add failed\""));
+        assert!(rewritten.contains("// Add remains a comment"));
+        assert!(rewritten.contains("AddSuffix()"));
+    }
+
+    #[test]
+    fn go_import_path_keeps_the_module_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("go.mod"), "module example.com/app\n").unwrap();
+        let target = temp.path().join("internal/helpers");
+        std::fs::create_dir_all(&target).unwrap();
+
+        assert_eq!(
+            go_module_import_path(&target).unwrap(),
+            "example.com/app/internal/helpers"
+        );
+    }
+
+    #[test]
+    fn cpp_moves_reject_implementation_file_targets() {
+        assert!(cpp_move_target_is_implementation(
+            Language::Cpp,
+            Path::new("helpers.cpp")
+        ));
+        assert!(!cpp_move_target_is_implementation(
+            Language::Cpp,
+            Path::new("helpers.hpp")
+        ));
+        assert!(!cpp_move_target_is_implementation(
+            Language::TypeScript,
+            Path::new("helpers.cpp")
+        ));
+    }
 }
