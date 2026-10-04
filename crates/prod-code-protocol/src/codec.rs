@@ -10,12 +10,16 @@ use tokio_util::codec::{Decoder, Encoder};
 /// its own (#313).
 pub const MAX_FRAME_SIZE: usize = 256 * 1024 * 1024;
 
-/// Length-delimited codec for `WireMessage`.
+/// Length-delimited codec for `WireMessage`, optionally with trailing NUL completion marker.
 ///
 /// Format on wire:
-/// `[4-byte big-endian length N] [N bytes UTF-8 JSON encoded WireMessage]`
-#[derive(Debug, Default, Clone)]
-pub struct ProdCodeCodec;
+/// `[4-byte big-endian length N] [N bytes UTF-8 JSON encoded WireMessage] [optional 0x00 NUL marker]`
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ProdCodeCodec {
+    /// When true, outgoing frames will append a trailing NUL byte (0x00) after the frame body,
+    /// and incoming frames will require the NUL completion marker.
+    nul_marker: bool,
+}
 
 struct BoundedWriter<W> {
     inner: W,
@@ -56,7 +60,18 @@ impl<W: io::Write> io::Write for BoundedWriter<W> {
 
 impl ProdCodeCodec {
     pub fn new() -> Self {
-        Self
+        Self { nul_marker: false }
+    }
+
+    /// Creates a codec configured with or without trailing NUL completion markers.
+    pub fn with_nul_marker(mut self, enabled: bool) -> Self {
+        self.nul_marker = enabled;
+        self
+    }
+
+    /// Whether this codec is configured to emit and enforce trailing NUL completion markers.
+    pub fn has_nul_marker(&self) -> bool {
+        self.nul_marker
     }
 
     /// Encode a referenced `WireMessage` directly into `dst` without allocating an intermediate heap buffer.
@@ -106,6 +121,10 @@ impl ProdCodeCodec {
         }
 
         dst[header_offset..header_offset + 4].copy_from_slice(&(frame_len as u32).to_be_bytes());
+        if self.nul_marker {
+            dst.reserve(1);
+            dst.put_u8(0);
+        }
         Ok(())
     }
 }
@@ -130,7 +149,8 @@ impl Decoder for ProdCodeCodec {
             ));
         }
 
-        if src.len() < 4 + frame_len {
+        let extra_nul = if self.nul_marker { 1 } else { 0 };
+        if src.len() < 4 + frame_len + extra_nul {
             // Need more data. Do not reserve the declared frame size here: a peer can advertise
             // a valid maximum-sized frame and then never send its body. The surrounding framed
             // reader will grow its buffer incrementally as bytes actually arrive.
@@ -139,7 +159,22 @@ impl Decoder for ProdCodeCodec {
 
         // Consume the length header
         src.advance(4);
-        let frame_data = src.split_to(frame_len);
+        let mut frame_data = src.split_to(frame_len);
+
+        // Consume trailing NUL completion marker if present
+        if !src.is_empty() && src[0] == 0 {
+            src.advance(1);
+        } else if self.nul_marker {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Missing expected NUL completion marker after frame",
+            ));
+        }
+
+        // Also tolerate NUL byte included within frame_len
+        if frame_data.ends_with(b"\0") {
+            frame_data.truncate(frame_data.len() - 1);
+        }
 
         let message = serde_json::from_slice::<WireMessage>(&frame_data).map_err(|e| {
             io::Error::new(
@@ -431,5 +466,138 @@ mod tests {
         assert_eq!(&buf[..initial_len], b"prefix8B");
         // Capacity restoration branch was exercised and restored the original capacity
         assert_eq!(buf.capacity(), initial_cap);
+    }
+    #[test]
+    fn test_codec_nul_marker_roundtrip() {
+        let mut codec = ProdCodeCodec::new().with_nul_marker(true);
+        assert!(codec.has_nul_marker());
+        let mut buf = BytesMut::new();
+
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            supported_versions: Some(vec![1]),
+            capabilities: None,
+            client_name: "test-client-nul".to_string(),
+            client_pid: 5678,
+            auth_token: None,
+            client_workspace_root: "/home/user/project-nul".to_string(),
+            preferred_engine: None,
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        });
+
+        codec.encode(original.clone(), &mut buf).unwrap();
+        // The last byte on the wire must be the NUL completion marker (0x00)
+        assert_eq!(buf.last(), Some(&0));
+
+        let decoded = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode message with NUL marker");
+        assert_eq!(decoded, original);
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_codec_decodes_trailing_nul_without_flag() {
+        let mut enc_codec = ProdCodeCodec::new().with_nul_marker(true);
+        let mut dec_codec = ProdCodeCodec::new(); // default: with_nul_marker(false)
+        assert!(!dec_codec.has_nul_marker());
+
+        let mut buf = BytesMut::new();
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            supported_versions: Some(vec![1]),
+            capabilities: None,
+            client_name: "compat-client".to_string(),
+            client_pid: 9999,
+            auth_token: None,
+            client_workspace_root: "/home/user/compat".to_string(),
+            preferred_engine: None,
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        });
+
+        enc_codec.encode(original.clone(), &mut buf).unwrap();
+        assert_eq!(buf.last(), Some(&0));
+
+        // Default codec must transparently decode the frame and consume the trailing NUL marker
+        let decoded = dec_codec.decode(&mut buf).unwrap().expect("decodes transparently");
+        assert_eq!(decoded, original);
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_codec_decodes_embedded_nul_in_frame_len() {
+        let mut dec_codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            supported_versions: Some(vec![1]),
+            capabilities: None,
+            client_name: "embedded-nul".to_string(),
+            client_pid: 1,
+            auth_token: None,
+            client_workspace_root: "/p".to_string(),
+            preferred_engine: None,
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        });
+
+        let mut json_with_nul = serde_json::to_vec(&original).unwrap();
+        json_with_nul.push(0);
+        buf.put_u32(json_with_nul.len() as u32);
+        buf.put_slice(&json_with_nul);
+
+        let decoded = dec_codec.decode(&mut buf).unwrap().expect("decodes frame with internal NUL");
+        assert_eq!(decoded, original);
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_codec_nul_marker_fails_when_nul_missing() {
+        let mut enc_codec = ProdCodeCodec::new(); // no NUL marker
+        let mut dec_codec = ProdCodeCodec::new().with_nul_marker(true); // requires NUL marker
+
+        let mut buf = BytesMut::new();
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            supported_versions: Some(vec![1]),
+            capabilities: None,
+            client_name: "missing-nul-client".to_string(),
+            client_pid: 4321,
+            auth_token: None,
+            client_workspace_root: "/home/user/missing".to_string(),
+            preferred_engine: None,
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: None,
+            redirect_count: 0,
+        });
+
+        enc_codec.encode(original, &mut buf).unwrap();
+        // Since dec_codec expects length + NUL marker (+1 byte), it will wait for the missing NUL byte
+        assert_eq!(dec_codec.decode(&mut buf).unwrap(), None);
+
+        // If we append a non-zero byte instead of NUL, it should report an error
+        buf.put_u8(b'X');
+        let err = dec_codec.decode(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("Missing expected NUL completion marker"));
     }
 }
