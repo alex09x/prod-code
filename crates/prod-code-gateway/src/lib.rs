@@ -1486,6 +1486,15 @@ pub async fn apply_sync_probe(
 /// copies, toolchain and dependency caches under the home directory, and system SDK
 /// locations. Nothing else on the host is readable this way.
 fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    is_readable_source_path_with_home(storage_root, path, home.as_deref())
+}
+
+fn is_readable_source_path_with_home(
+    storage_root: &std::path::Path,
+    path: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> bool {
     if !path.is_absolute() || !path.is_file() {
         return false;
     }
@@ -1493,8 +1502,7 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
     if canonical.starts_with(storage_root) {
         return true;
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = home {
         let allowed_home = [
             ".cargo/registry",
             ".cargo/git",
@@ -1528,11 +1536,8 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             return true;
         }
     }
-    if let Some(gopath) = std::env::var_os("GOPATH") {
-        let gopath = PathBuf::from(gopath);
-        if canonical.starts_with(gopath.join("pkg/mod")) || canonical.starts_with(gopath.join("src")) {
-            return true;
-        }
+    if is_gopath_source_path(&canonical, std::env::var_os("GOPATH").as_deref()) {
+        return true;
     }
     if let Some(goroot) = std::env::var_os("GOROOT") {
         let goroot = PathBuf::from(goroot);
@@ -1540,7 +1545,7 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             return true;
         }
     }
-    const SYSTEM_ROOTS: [&str; 15] = [
+    const SYSTEM_ROOTS: [&str; 14] = [
         "/snap",
         "/usr/include",
         "/usr/local/include",
@@ -1555,12 +1560,19 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
         "/Library/Frameworks",
         "/System/Library/Frameworks",
         "/opt/conda",
-        "/node_modules",
     ];
     if SYSTEM_ROOTS.iter().any(|root| canonical.starts_with(root)) {
         return true;
     }
-    canonical.components().any(|c| c.as_os_str() == "node_modules")
+    false
+}
+
+fn is_gopath_source_path(path: &std::path::Path, gopath: Option<&std::ffi::OsStr>) -> bool {
+    gopath.is_some_and(|value| {
+        std::env::split_paths(value).any(|root| {
+            path.starts_with(root.join("pkg/mod")) || path.starts_with(root.join("src"))
+        })
+    })
 }
 
 /// Serves a `ReadFileRequest` under the readable-path policy, capped in size.
@@ -8323,43 +8335,60 @@ mod tests {
     fn is_readable_source_path_allows_polyglot_dependencies_and_rejects_arbitrary_files() {
         let storage = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("HOME", home.path());
-        }
-
         // 1. Rust cargo registry
         let cargo_file = home.path().join(".cargo/registry/src/github.com/lib.rs");
         std::fs::create_dir_all(cargo_file.parent().unwrap()).unwrap();
         std::fs::write(&cargo_file, "pub fn foo() {}").unwrap();
-        assert!(is_readable_source_path(storage.path(), &cargo_file));
+        assert!(is_readable_source_path_with_home(storage.path(), &cargo_file, Some(home.path())));
 
         // 2. Python virtualenv / uv cache
         let py_file = home.path().join(".cache/uv/wheels/pkg/module.py");
         std::fs::create_dir_all(py_file.parent().unwrap()).unwrap();
         std::fs::write(&py_file, "def bar(): pass").unwrap();
-        assert!(is_readable_source_path(storage.path(), &py_file));
+        assert!(is_readable_source_path_with_home(storage.path(), &py_file, Some(home.path())));
 
         // 3. Node pnpm store
         let pnpm_file = home.path().join(".local/share/pnpm/store/pkg/index.d.ts");
         std::fs::create_dir_all(pnpm_file.parent().unwrap()).unwrap();
         std::fs::write(&pnpm_file, "export declare const x: number;").unwrap();
-        assert!(is_readable_source_path(storage.path(), &pnpm_file));
+        assert!(is_readable_source_path_with_home(storage.path(), &pnpm_file, Some(home.path())));
 
-        // 4. Any node_modules
+        // 4. Do not expose unrelated checkouts just because they contain node_modules.
         let nm_file = home.path().join("projects/foo/node_modules/bar/index.js");
         std::fs::create_dir_all(nm_file.parent().unwrap()).unwrap();
         std::fs::write(&nm_file, "module.exports = {};").unwrap();
-        assert!(is_readable_source_path(storage.path(), &nm_file));
+        assert!(!is_readable_source_path_with_home(storage.path(), &nm_file, Some(home.path())));
+
+        let workspace_nm_file = storage
+            .path()
+            .join("workspace/node_modules/bar/index.js");
+        std::fs::create_dir_all(workspace_nm_file.parent().unwrap()).unwrap();
+        std::fs::write(&workspace_nm_file, "module.exports = {};").unwrap();
+        assert!(is_readable_source_path(storage.path(), &workspace_nm_file));
 
         // 5. Arbitrary sensitive files rejected
         let ssh_key = home.path().join(".ssh/id_rsa");
         std::fs::create_dir_all(ssh_key.parent().unwrap()).unwrap();
         std::fs::write(&ssh_key, "private-key-material").unwrap();
-        assert!(!is_readable_source_path(storage.path(), &ssh_key));
+        assert!(!is_readable_source_path_with_home(storage.path(), &ssh_key, Some(home.path())));
 
         let bashrc = home.path().join(".bashrc");
         std::fs::write(&bashrc, "export SECRET=1").unwrap();
-        assert!(!is_readable_source_path(storage.path(), &bashrc));
+        assert!(!is_readable_source_path_with_home(storage.path(), &bashrc, Some(home.path())));
+    }
+
+    #[test]
+    fn gopath_source_policy_checks_each_configured_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let source = second.join("pkg/mod/example.test/module@v1/source.go");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "package module\n").unwrap();
+        let gopath = std::env::join_paths([first.as_os_str(), second.as_os_str()]).unwrap();
+
+        assert!(is_gopath_source_path(&source.canonicalize().unwrap(), Some(&gopath)));
+        assert!(!is_gopath_source_path(&source, Some(first.as_os_str())));
     }
 
     #[tokio::test]
