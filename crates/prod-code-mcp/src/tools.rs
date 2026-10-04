@@ -5692,13 +5692,12 @@ async fn handle_codemod(
     let scope = args
         .get("path")
         .and_then(|v| v.as_str())
-        .map(|p| resolve_file_path(workspace_root, p));
+        .map(|p| crate::codemod::resolve_workspace_scope(workspace_root, p))
+        .transpose()?;
 
     // First: Run polyglot structural AST codemod engine across target scope.
-    let polyglot_outcome = crate::codemod::run_codemod(workspace_root, rule, scope.as_deref(), apply);
-    if let Ok(outcome) = polyglot_outcome
-        && outcome.files_matched > 0
-    {
+    let outcome = crate::codemod::run_codemod(workspace_root, rule, scope.as_deref(), apply)?;
+    if outcome.files_matched > 0 {
         let mut text = format!("`{rule}`\n");
         text.push_str(&format!(
             "{} changed line(s) in {} file(s)\n\n",

@@ -722,6 +722,16 @@ async fn code_codemod_requires_a_rule_shaped_like_pattern_to_replacement() {
     .expect("a rule without ==>> is a tool error, not a network call");
     assert!(result.is_error);
     assert!(text_of(&result).contains("pattern ==>> replacement"));
+
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_codemod",
+        serde_json::json!({ "rule": "==>> x" }),
+    )
+    .await
+    .expect_err("malformed rules must propagate as tool errors");
+    assert!(format!("{err:#}").contains("pattern in rule cannot be empty"));
 }
 
 // ---------------------------------------------------------------------------------------
