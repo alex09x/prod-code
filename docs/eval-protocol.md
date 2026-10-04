@@ -805,6 +805,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 3,451 test assertions across `test/` (2,853 `assert`, 108 `refute`, 145 `assert_receive`, 21 `refute_receive`, 324 `assert_raise`), 215 explicit `raise` exception egress points guarding HEEx compile-time tag verification, assign tracking, component boundary isolation, and dead-render fallbacks. Evaluated the incremental AST diff engine in `lib/phoenix_live_view/diff.ex` (`render/4` traversing `%Rendered{}` structs to emit minimal dynamic diffs) and the `~H` compile pipeline in `lib/phoenix_component.ex`. AST refactoring was attempted but unsupported; no successful extraction is claimed.
     - **Full Deep-Dive Report**: [Phoenix LiveView Under the Microscope: What 67 Remote AST Tools Found Inside the Server-Driven UI and Diff Engine (prod.codes)](https://prod.codes/blog/phoenix-live-view-under-the-microscope-67-ast-tools/)
 
+71. **[dashbitco/broadway](https://github.com/dashbitco/broadway)** (Elixir)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400`)
+    - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
+    - **Key Metrics**: 10,271 lines across 46 source files (`lib/`: 5.7K LOC / 22 files, `test/`: 3.4K LOC / 11 files, documentation: 864 LOC / 9 files), 0.35 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 46 files (10,271 lines) identifying clone patterns in test pipeline setup definitions, batcher configuration fixtures, and mock acknowledger callbacks.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 435 test assertions across `test/` (171 `assert`, 4 `refute`, 251 `assert_receive`, 1 `refute_receive`, 8 `assert_raise`), 18 explicit `raise` exception egress points guarding NimbleOptions validation, batcher option parsing, and partition topology boundaries. Evaluated the multi-stage GenStage supervision topology in `lib/broadway/topology/topology.ex` and message envelope transformation in `lib/broadway/message.ex`. AST refactoring was attempted but unsupported; no successful extraction is claimed.
+    - **Full Deep-Dive Report**: [Broadway Under the Microscope: What 67 Remote AST Tools Found Inside the GenStage Concurrent Data Pipeline (prod.codes)](https://prod.codes/blog/broadway-under-the-microscope-67-ast-tools/)
+
 
 
 
