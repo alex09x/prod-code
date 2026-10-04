@@ -1098,6 +1098,12 @@ fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(Stri
         if is_node_cache(&name) {
             continue;
         }
+        if name == "typings" && path.is_symlink() {
+            let cache_root = python_cache::python_stub_cache_dir();
+            if python_cache::is_shared_stub_cache_link(&path, &cache_root) {
+                continue;
+            }
+        }
         if path.is_dir() {
             walk_files(root, &path, out);
         } else if path.is_file()
@@ -2781,7 +2787,7 @@ pub fn polyglot_compiler_cache_env(
         }
     }
     // Python shared virtual-environment stub cache across worktrees (Roadmap 3.6)
-    env.extend(python_cache::python_stub_cache_env());
+    env.extend(python_cache::python_stub_cache_env_for_workspace(workspace));
     // Swift shared module cache across worktrees (Roadmap 3.7)
     env.extend(swift_cache::swift_module_cache_env());
     // TypeScript shared @types and declaration cache across worktrees (Roadmap 3.5)

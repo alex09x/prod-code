@@ -28,9 +28,9 @@ pub const PYTHON_STUB_CACHE_ENV: &str = "PROD_CODE_PYTHON_STUB_CACHE";
 /// Ensures the directory exists with mode `0700` on Unix systems.
 pub fn python_stub_cache_dir() -> PathBuf {
     if let Some(custom) = std::env::var_os(PYTHON_STUB_CACHE_ENV) {
-        let p = PathBuf::from(custom);
-        let _ = ensure_cache_dir(&p);
-        return p;
+        if let Some(path) = resolve_python_cache_dir(PathBuf::from(custom)) {
+            return path;
+        }
     }
 
     if let Some(home) = std::env::var_os("HOME") {
@@ -38,28 +38,134 @@ pub fn python_stub_cache_dir() -> PathBuf {
             .join(".cache")
             .join("prod-code")
             .join("python-stubs");
-        if ensure_cache_dir(&p).is_ok() {
-            return p;
+        if let Some(path) = resolve_python_cache_dir(p) {
+            return path;
         }
     }
 
-    let var_tmp = PathBuf::from("/var/tmp/prod-code/python-stubs");
-    if ensure_cache_dir(&var_tmp).is_ok() {
-        return var_tmp;
+    let user = cache_user_suffix();
+    let var_tmp = PathBuf::from("/var/tmp").join(format!("prod-code-python-stubs-{user}"));
+    if let Some(path) = resolve_python_cache_dir(var_tmp) {
+        return path;
     }
 
-    let temp = std::env::temp_dir().join("prod-code-python-stubs");
-    let _ = ensure_cache_dir(&temp);
-    temp
+    let temp = std::env::temp_dir().join(format!(
+        "prod-code-python-stubs-{user}-{}",
+        std::process::id()
+    ));
+    resolve_python_cache_dir(temp).expect("no private Python stub cache directory could be created")
+}
+
+fn resolve_python_cache_dir(path: PathBuf) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    if path.file_name().is_none() || std::env::current_dir().ok().as_deref() == Some(path.as_path())
+    {
+        return None;
+    }
+    ensure_cache_dir(&path).ok()?;
+    Some(path)
+}
+
+fn cache_user_suffix() -> String {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() }.to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "default".to_string())
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+}
+
+pub(crate) fn is_shared_stub_cache_link(path: &Path, cache_root: &Path) -> bool {
+    if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return false;
+    }
+    let (Ok(target), Ok(cache_root)) = (fs::canonicalize(path), fs::canonicalize(cache_root))
+    else {
+        return false;
+    };
+    target.starts_with(cache_root)
 }
 
 /// Ensures `dir` exists and has secure permissions (`0700` on Unix).
 pub fn ensure_cache_dir(dir: &Path) -> io::Result<()> {
+    if dir.as_os_str().is_empty() || dir.file_name().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid cache directory path",
+        ));
+    }
     fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+        let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let fd = unsafe {
+            libc::open(
+                path.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fd was returned by open and ownership is transferred to File.
+        let directory = unsafe { std::fs::File::from_raw_fd(fd) };
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Python stub cache directory is not owned by the current user",
+            ));
+        }
+        if metadata.mode() & 0o077 != 0
+            && unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let secured = directory.metadata()?;
+        if !secured.is_dir()
+            || secured.uid() != unsafe { libc::geteuid() }
+            || secured.mode() & 0o077 != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Python stub cache directory could not be secured to mode 0700",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let metadata = fs::symlink_metadata(dir)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Python stub cache path is not a real directory",
+            ));
+        }
     }
     Ok(())
 }
@@ -67,13 +173,148 @@ pub fn ensure_cache_dir(dir: &Path) -> io::Result<()> {
 /// Returns the environment variables that configure the shared Python stub cache
 /// across basedpyright, pyright, mypy, and Python type checkers (Roadmap 3.6).
 pub fn python_stub_cache_env() -> Vec<(String, String)> {
-    let dir = python_stub_cache_dir();
+    python_stub_cache_env_for_dir(&python_stub_cache_dir())
+}
+
+/// Uses the workspace's version-isolated typings view when starting its type checker.
+pub fn python_stub_cache_env_for_workspace(workspace: &Path) -> Vec<(String, String)> {
+    python_stub_cache_env_for_dir(&workspace.join("typings"))
+}
+
+fn python_stub_cache_env_for_dir(dir: &Path) -> Vec<(String, String)> {
     let dir_str = dir.to_string_lossy().into_owned();
     vec![
         (PYTHON_STUB_CACHE_ENV.to_string(), dir_str.clone()),
         ("MYPYPATH".to_string(), dir_str.clone()),
         ("TYPINGS_PATH".to_string(), dir_str),
     ]
+}
+
+fn python_manifest_fingerprint(root: &Path) -> Option<String> {
+    const MANIFESTS: &[&str] = &[
+        "pyproject.toml",
+        "uv.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements.lock",
+        "constraints.txt",
+        "environment.yml",
+        "conda-lock.yml",
+        "setup.cfg",
+        "setup.py",
+    ];
+    let mut material = Vec::new();
+    for name in MANIFESTS {
+        if let Ok(contents) = fs::read(root.join(name)) {
+            material.extend_from_slice(name.as_bytes());
+            material.push(0);
+            material.extend_from_slice(&contents);
+            material.push(0xff);
+        }
+    }
+    (!material.is_empty()).then(|| format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&material)))
+}
+
+fn python_installed_stub_fingerprint(stubs: &[PathBuf]) -> Option<String> {
+    let site_packages: std::collections::BTreeSet<PathBuf> = stubs
+        .iter()
+        .filter_map(|stub| stub.parent().map(Path::to_path_buf))
+        .collect();
+    let mut distributions = Vec::new();
+    for site in site_packages {
+        let Ok(entries) = fs::read_dir(site) else {
+            continue;
+        };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            if !name.to_string_lossy().ends_with(".dist-info")
+                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            {
+                continue;
+            }
+            let metadata = entry.path().join("METADATA");
+            if let Ok(contents) = fs::read(&metadata) {
+                distributions.push((name, contents));
+            }
+        }
+    }
+    distributions.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut material = Vec::new();
+    for (name, contents) in distributions {
+        material.extend_from_slice(name.to_string_lossy().as_bytes());
+        material.push(0);
+        material.extend_from_slice(&contents);
+        material.push(0xff);
+    }
+    (!material.is_empty()).then(|| format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&material)))
+}
+
+fn python_stub_cache_namespace(
+    from: &Path,
+    to: &Path,
+    from_stubs: &[PathBuf],
+    to_stubs: &[PathBuf],
+    from_typings: &Path,
+    to_typings: &Path,
+) -> (String, bool) {
+    let from_manifest = python_manifest_fingerprint(from);
+    let to_manifest = python_manifest_fingerprint(to);
+    let from_installed = python_installed_stub_fingerprint(from_stubs);
+    let to_installed = python_installed_stub_fingerprint(to_stubs);
+    let manifests_match = match (&from_manifest, &to_manifest) {
+        (Some(from), Some(to)) => from == to,
+        (Some(_), None) | (None, None) => true,
+        (None, Some(_)) => false,
+    };
+    let installed_match = match (&from_installed, &to_installed) {
+        (Some(from), Some(to)) => from == to,
+        (Some(_), None) | (None, None) => true,
+        (None, Some(_)) => false,
+    };
+    let compatible = manifests_match && installed_match;
+    let mut material = Vec::new();
+    for (label, value) in [
+        ("manifest", to_manifest.as_ref().or(from_manifest.as_ref())),
+        (
+            "installed-stubs",
+            if compatible {
+                from_installed.as_ref().or(to_installed.as_ref())
+            } else {
+                to_installed.as_ref()
+            },
+        ),
+    ] {
+        if let Some(value) = value {
+            material.extend_from_slice(label.as_bytes());
+            material.push(0);
+            material.extend_from_slice(value.as_bytes());
+            material.push(0xff);
+        }
+    }
+    for typings in [from_typings, to_typings] {
+        if typings.is_dir()
+            && !fs::symlink_metadata(typings).is_ok_and(|meta| meta.file_type().is_symlink())
+        {
+            let identity = typings
+                .canonicalize()
+                .unwrap_or_else(|_| typings.to_path_buf());
+            material.extend_from_slice(b"local-typings\0");
+            material.extend_from_slice(identity.to_string_lossy().as_bytes());
+            material.push(0xff);
+        }
+    }
+    if material.is_empty() {
+        let identity = to.canonicalize().unwrap_or_else(|_| to.to_path_buf());
+        material.extend_from_slice(identity.to_string_lossy().as_bytes());
+    }
+    (
+        format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&material)),
+        compatible,
+    )
 }
 
 /// Checks whether `root` represents or contains a Python project.
@@ -174,39 +415,16 @@ impl TargetLock {
     }
 }
 
-#[cfg(unix)]
-fn sync_mtime(src: &Path, dst: &Path) {
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
-    if let Ok(meta) = fs::metadata(src) {
-        let times = [
-            libc::timespec {
-                tv_sec: meta.atime() as libc::time_t,
-                tv_nsec: meta.atime_nsec() as libc::c_long,
-            },
-            libc::timespec {
-                tv_sec: meta.mtime() as libc::time_t,
-                tv_nsec: meta.mtime_nsec() as libc::c_long,
-            },
-        ];
-        if let Ok(c_path) = std::ffi::CString::new(dst.as_os_str().as_bytes()) {
-            unsafe {
-                libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn sync_mtime(_src: &Path, _dst: &Path) {}
-
 static STUB_FILE_NONCE: AtomicU64 = AtomicU64::new(1);
 
 /// Copies a file to `dst` atomically under a per-target lock, ensuring that concurrent seeders
 /// do not race and that older files never overwrite newer files.
 fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
     let parent = dst.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination file has no parent directory")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination file has no parent directory",
+        )
     })?;
     ensure_cache_dir(parent)?;
 
@@ -250,7 +468,7 @@ fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        let ret = unsafe { libc::flock(tmp_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        let ret = unsafe { libc::flock(tmp_file.as_raw_fd(), libc::LOCK_EX) };
         if ret != 0 {
             let _ = fs::remove_file(&tmp_path);
             return Err(io::Error::last_os_error());
@@ -276,8 +494,6 @@ fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
     }
 
     drop(tmp_file);
-
-    sync_mtime(src, dst);
 
     Ok(bytes)
 }
@@ -328,11 +544,7 @@ pub fn merge_stubs(src_dir: &Path, dst_dir: &Path) -> io::Result<u64> {
     merge_stubs_inner(src_dir, dst_dir, &mut visited)
 }
 
-fn merge_stubs_inner(
-    src_dir: &Path,
-    dst_dir: &Path,
-    visited: &mut VisitedDirs,
-) -> io::Result<u64> {
+fn merge_stubs_inner(src_dir: &Path, dst_dir: &Path, visited: &mut VisitedDirs) -> io::Result<u64> {
     if !src_dir.is_dir() || !visited.insert(src_dir) {
         return Ok(0);
     }
@@ -366,9 +578,8 @@ fn merge_stubs_inner(
         if file_type.is_dir() {
             bytes_written += merge_stubs_inner(&path, &target_path, visited)?;
         } else if file_type.is_file() {
-            let is_stub_file = name_str.ends_with(".pyi")
-                || name_str == "py.typed"
-                || name_str.ends_with(".py");
+            let is_stub_file =
+                name_str.ends_with(".pyi") || name_str == "py.typed" || name_str.ends_with(".py");
 
             if !is_stub_file {
                 continue;
@@ -397,7 +608,10 @@ fn merge_stubs_inner(
 /// Seeds Python type stubs and connects the workspace to the shared virtual-environment
 /// stub cache for basedpyright, pyright, and mypy (Roadmap 3.6).
 pub fn seed_python_worktree(from: &Path, to: &Path) -> io::Result<Option<u64>> {
-    seed_python_worktree_within(from, to, disk_space(to))
+    if !is_python_project(from) {
+        return Ok(None);
+    }
+    seed_python_worktree_within(from, to, disk_space(&python_stub_cache_dir()))
 }
 
 /// Seeds Python type stubs respecting a provided disk space budget.
@@ -410,32 +624,57 @@ pub fn seed_python_worktree_within(
         return Ok(None);
     }
 
-    let cache_dir = python_stub_cache_dir();
     let mut total_bytes = 0u64;
 
-    // 1. Gather all candidate stub sources to calculate aggregate disk requirement
+    // 1. Gather candidate stubs and isolate cache views by the resolved Python dependency set.
     let from_typings = from.join("typings");
-    let typings_size = if from_typings.is_dir() {
-        tree_size(&from_typings)
-    } else {
-        0
-    };
-
-    let mut venv_stubs = Vec::new();
+    let to_typings = to.join("typings");
+    let mut from_venv_stubs = Vec::new();
+    let mut to_venv_stubs = Vec::new();
     for venv_name in &[".venv", "venv"] {
-        let venv_path = from.join(venv_name);
-        if venv_path.is_dir() {
-            venv_stubs.extend(find_venv_stubs(&venv_path));
+        let from_venv = from.join(venv_name);
+        if from_venv.is_dir() {
+            from_venv_stubs.extend(find_venv_stubs(&from_venv));
+        }
+        let to_venv = to.join(venv_name);
+        if to_venv.is_dir() {
+            to_venv_stubs.extend(find_venv_stubs(&to_venv));
         }
     }
+    let (namespace, compatible) = python_stub_cache_namespace(
+        from,
+        to,
+        &from_venv_stubs,
+        &to_venv_stubs,
+        &from_typings,
+        &to_typings,
+    );
+    let cache_dir = python_stub_cache_dir().join(namespace);
+    ensure_cache_dir(&cache_dir)?;
+    let venv_stubs = if compatible {
+        from_venv_stubs
+    } else {
+        to_venv_stubs
+    };
+    let to_has_real_typings = fs::symlink_metadata(&to_typings)
+        .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink());
+    let source_typings = if compatible {
+        from_typings.is_dir().then_some(&from_typings)
+    } else {
+        to_has_real_typings.then_some(&to_typings)
+    };
+    let typings_size = source_typings.map_or(0, |dir| tree_size(dir));
     let venv_stubs_size: u64 = venv_stubs.iter().map(|s| tree_size(s)).sum();
     let aggregate_stubs_size = typings_size + venv_stubs_size;
 
     // Enforce aggregate disk budget across both project typings and virtual environment stubs
-    if aggregate_stubs_size > 0 && seed_fits("python type stubs cache", aggregate_stubs_size, space) {
-        if typings_size > 0 {
-            let merged = merge_stubs(&from_typings, &cache_dir)?;
-            total_bytes += merged;
+    if aggregate_stubs_size > 0 && seed_fits("python type stubs cache", aggregate_stubs_size, space)
+    {
+        if let Some(source_typings) = source_typings {
+            if typings_size > 0 {
+                let merged = merge_stubs(source_typings, &cache_dir)?;
+                total_bytes += merged;
+            }
         }
 
         for stub_dir in venv_stubs {
@@ -446,31 +685,45 @@ pub fn seed_python_worktree_within(
         }
     }
 
-    // 3. Establish `to/typings` symlink pointing to the shared stub cache
-    let to_typings = to.join("typings");
-    if !to_typings.exists() {
-        if let Some(parent) = to_typings.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        #[cfg(unix)]
-        {
-            if std::os::unix::fs::symlink(&cache_dir, &to_typings).is_ok() {
-                total_bytes += 1;
+    // 3. Establish `to/typings` symlink pointing to this dependency-version cache view.
+    match fs::symlink_metadata(&to_typings) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let expected = cache_dir
+                .canonicalize()
+                .unwrap_or_else(|_| cache_dir.clone());
+            if fs::canonicalize(&to_typings).ok().as_deref() != Some(expected.as_path()) {
+                fs::remove_file(&to_typings)?;
+                #[cfg(unix)]
+                {
+                    std::os::unix::fs::symlink(&expected, &to_typings)?;
+                    total_bytes += 1;
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = copy_dir_preserving(&cache_dir, &to_typings);
+                }
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = copy_dir_preserving(&cache_dir, &to_typings);
+        Err(_) => {
+            if let Some(parent) = to_typings.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&cache_dir, &to_typings)?;
+                total_bytes += 1;
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = copy_dir_preserving(&cache_dir, &to_typings);
+            }
         }
-    } else if fs::symlink_metadata(&to_typings)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        // Symlink already exists
-    } else if to_typings.is_dir() {
-        // If it's already a real directory, merge into shared cache
-        let merged = merge_stubs(&to_typings, &cache_dir)?;
-        total_bytes += merged;
+        Ok(meta) if meta.is_dir() => {
+            // Keep a worktree's real typings directory available while merging its declarations.
+            let merged = merge_stubs(&to_typings, &cache_dir)?;
+            total_bytes += merged;
+        }
+        _ => {}
     }
 
     // 4. Update pyrightconfig.json in `to` if present to include stubPath
@@ -535,15 +788,12 @@ fn copy_dir_preserving(src: &Path, dst: &Path) -> io::Result<u64> {
     if dst.exists() {
         return Ok(tree_size(dst));
     }
-    let parent = dst.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent")
-    })?;
+    let parent = dst
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
     fs::create_dir_all(parent)?;
 
-    let dst_name = dst
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("stubs");
+    let dst_name = dst.file_name().and_then(|n| n.to_str()).unwrap_or("stubs");
 
     let mut attempts = 0;
     let (holder, staging_dst) = loop {
@@ -636,9 +886,9 @@ pub(crate) fn parse_tmp_stub_timestamp(name: &str) -> Option<SystemTime> {
             // Must be a reasonable epoch timestamp (after year 2020: ~1.57e18 nanos)
             const MIN_VALID_NANOS: u128 = 1_500_000_000_000_000_000;
             if nanos >= MIN_VALID_NANOS {
-                let secs = (nanos / 1_000_000_000) as u64;
+                let secs = u64::try_from(nanos / 1_000_000_000).ok()?;
                 let subsec = (nanos % 1_000_000_000) as u32;
-                return Some(SystemTime::UNIX_EPOCH + Duration::new(secs, subsec));
+                return SystemTime::UNIX_EPOCH.checked_add(Duration::new(secs, subsec));
             }
         }
     }
@@ -729,7 +979,9 @@ mod unix_pruner {
 
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(root_fd, &mut st) } != 0 {
-            unsafe { libc::close(root_fd); }
+            unsafe {
+                libc::close(root_fd);
+            }
             return Ok(0);
         }
 
@@ -738,7 +990,9 @@ mod unix_pruner {
             || (st.st_dev as u64) != expected_meta.dev()
             || (st.st_ino as u64) != expected_meta.ino()
         {
-            unsafe { libc::close(root_fd); }
+            unsafe {
+                libc::close(root_fd);
+            }
             return Ok(0);
         }
 
@@ -853,7 +1107,8 @@ mod unix_pruner {
 
                 if is_tmp_stub {
                     if mode == libc::S_IFREG {
-                        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                        let modified =
+                            SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
                         let file_size = st.st_size as u64;
                         let name_str = name.to_str().unwrap_or("");
                         let created_at = parse_tmp_stub_timestamp(name_str);
@@ -902,7 +1157,8 @@ mod unix_pruner {
                         libc::close(child_fd);
                     }
                 } else if mode == libc::S_IFREG {
-                    let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                    let modified =
+                        SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
                     let size = st.st_size as u64;
                     *total_size += size;
                     files.push(CacheEntry {
@@ -932,7 +1188,9 @@ mod unix_pruner {
             };
             if next_fd < 0 {
                 for fd in fds_to_close {
-                    unsafe { libc::close(fd); }
+                    unsafe {
+                        libc::close(fd);
+                    }
                 }
                 return false;
             }
@@ -958,7 +1216,9 @@ mod unix_pruner {
         };
 
         for fd in fds_to_close {
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
         }
 
         removed
@@ -1014,37 +1274,46 @@ fn prune_fallback(
         tmp_grace_period: Duration,
         removed: &mut usize,
     ) {
-        let Ok(entries) = fs::read_dir(dir) else { return; };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue; };
-            if file_type.is_symlink() { continue; }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.ends_with(".lock") { continue; }
+            if name_str.ends_with(".lock") {
+                continue;
+            }
             let is_tmp_stub = name_str.starts_with(".tmp-stub-");
-            if name_str.starts_with('.') && !is_tmp_stub { continue; }
+            if name_str.starts_with('.') && !is_tmp_stub {
+                continue;
+            }
 
             if file_type.is_dir() {
                 walk(&path, files, total_size, now, tmp_grace_period, removed);
             } else if file_type.is_file() {
-                let Ok(meta) = fs::metadata(&path) else { continue; };
+                let Ok(meta) = fs::metadata(&path) else {
+                    continue;
+                };
                 let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 let size = meta.len();
                 let created_at = parse_tmp_stub_timestamp(&name_str);
                 let age = match created_at {
-                    Some(ts) => now.duration_since(ts).unwrap_or_else(|_| {
-                        now.duration_since(modified).unwrap_or(Duration::ZERO)
-                    }),
+                    Some(ts) => now
+                        .duration_since(ts)
+                        .unwrap_or_else(|_| now.duration_since(modified).unwrap_or(Duration::ZERO)),
                     None => now.duration_since(modified).unwrap_or(Duration::ZERO),
                 };
 
                 if is_tmp_stub {
                     // On non-Unix, check if file is exclusively locked by testing write access
-                    let is_locked = fs::OpenOptions::new()
-                        .write(true)
-                        .open(&path)
-                        .is_err();
+                    let is_locked = fs::OpenOptions::new().write(true).open(&path).is_err();
 
                     if !is_locked && age > tmp_grace_period {
                         if fs::remove_file(&path).is_ok() {
@@ -1061,7 +1330,14 @@ fn prune_fallback(
         }
     }
 
-    walk(cache_dir, &mut files, &mut total_size, now, tmp_grace_period, &mut removed);
+    walk(
+        cache_dir,
+        &mut files,
+        &mut total_size,
+        now,
+        tmp_grace_period,
+        &mut removed,
+    );
 
     // Evict files older than max_age
     files.retain(|(path, size, modified)| {
@@ -1099,24 +1375,53 @@ mod tests {
     use super::*;
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[cfg(unix)]
+    #[test]
+    fn shared_stub_cache_link_is_recognized_by_canonical_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache").join("namespace");
+        fs::create_dir_all(&cache).unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let link = workspace.join("typings");
+        symlink(&cache, &link).unwrap();
+
+        assert!(is_shared_stub_cache_link(
+            &link,
+            temp.path().join("cache").as_path()
+        ));
+    }
+
     #[test]
     fn test_python_stub_cache_env_and_path() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let custom_cache = temp.path().join("my-custom-python-stubs");
 
-        unsafe { std::env::set_var(PYTHON_STUB_CACHE_ENV, &custom_cache); }
+        unsafe {
+            std::env::set_var(PYTHON_STUB_CACHE_ENV, &custom_cache);
+        }
         let dir = python_stub_cache_dir();
         assert_eq!(dir, custom_cache);
         assert!(dir.is_dir());
 
         let envs = python_stub_cache_env();
         let custom_str = custom_cache.to_str().unwrap();
-        assert!(envs.iter().any(|(k, v)| k == PYTHON_STUB_CACHE_ENV && v == custom_str));
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == PYTHON_STUB_CACHE_ENV && v == custom_str)
+        );
         assert!(envs.iter().any(|(k, v)| k == "MYPYPATH" && v == custom_str));
-        assert!(envs.iter().any(|(k, v)| k == "TYPINGS_PATH" && v == custom_str));
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "TYPINGS_PATH" && v == custom_str)
+        );
 
-        unsafe { std::env::remove_var(PYTHON_STUB_CACHE_ENV); }
+        unsafe {
+            std::env::remove_var(PYTHON_STUB_CACHE_ENV);
+        }
     }
 
     #[test]
@@ -1135,7 +1440,9 @@ mod tests {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let custom_cache = temp.path().join("shared-stubs");
-        unsafe { std::env::set_var(PYTHON_STUB_CACHE_ENV, &custom_cache); }
+        unsafe {
+            std::env::set_var(PYTHON_STUB_CACHE_ENV, &custom_cache);
+        }
 
         let from = temp.path().join("origin-project");
         let to = temp.path().join("worktree-project");
@@ -1145,27 +1452,52 @@ mod tests {
         // Add local typings
         let from_typings = from.join("typings").join("requests");
         fs::create_dir_all(&from_typings).unwrap();
-        fs::write(from_typings.join("__init__.pyi"), "def get(url: str): ...\n").unwrap();
+        fs::write(
+            from_typings.join("__init__.pyi"),
+            "def get(url: str): ...\n",
+        )
+        .unwrap();
 
         // Run seed
-        let result = seed_python_worktree(&from, &to).unwrap();
-        assert!(result.is_some());
+        // Keep the test independent of the remote node's current filesystem pressure.
+        let result = seed_python_worktree_within(
+            &from,
+            &to,
+            Some(DiskSpace {
+                free: 1_000_000,
+                total: 1_000_000,
+            }),
+        )
+        .unwrap();
+        assert!(
+            result.is_some_and(|bytes| bytes > 0),
+            "Python stub seeding did not publish any bytes"
+        );
 
-        // Verify stubs were merged into shared cache
-        assert!(custom_cache.join("requests").join("__init__.pyi").is_file());
-
-        // Verify to/typings symlink points to shared cache
+        // Verify stubs were merged into this dependency-set's cache view.
         let to_typings = to.join("typings");
-        assert!(fs::symlink_metadata(&to_typings).unwrap().file_type().is_symlink());
-        assert_eq!(fs::read_link(&to_typings).unwrap(), custom_cache);
+        assert!(
+            fs::symlink_metadata(&to_typings)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let cache_view = fs::read_link(&to_typings).unwrap();
+        assert!(cache_view.starts_with(&custom_cache));
+        assert!(cache_view.join("requests").join("__init__.pyi").is_file());
 
-        unsafe { std::env::remove_var(PYTHON_STUB_CACHE_ENV); }
+        unsafe {
+            std::env::remove_var(PYTHON_STUB_CACHE_ENV);
+        }
     }
 
     #[test]
     fn test_parse_tmp_stub_timestamp() {
         let now = SystemTime::now();
-        let nanos = now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let name = format!(".tmp-stub-1234-5-{nanos:x}");
         let parsed = parse_tmp_stub_timestamp(&name).unwrap();
         let diff = if now > parsed {
@@ -1178,5 +1510,8 @@ mod tests {
         assert!(parse_tmp_stub_timestamp("regular.pyi").is_none());
         assert!(parse_tmp_stub_timestamp(".tmp-stub-invalid").is_none());
         assert!(parse_tmp_stub_timestamp(".tmp-stub-active-worker-2").is_none());
+        assert!(
+            parse_tmp_stub_timestamp(".tmp-stub-1-1-ffffffffffffffffffffffffffffffff").is_none()
+        );
     }
 }
