@@ -381,6 +381,28 @@ impl ShadowRootOwner {
     }
 }
 
+static RAM_SHADOW_OWNERS: OnceLock<
+    Mutex<std::collections::HashMap<PathBuf, Arc<ShadowRootOwner>>>,
+> = OnceLock::new();
+
+fn acquire_ram_shadow_root(storage_root: &Path) -> Result<Option<PathBuf>> {
+    let Some(root) = ram_shadow_root(storage_root) else {
+        return Ok(None);
+    };
+    let owners = RAM_SHADOW_OWNERS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut owners = owners.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if owners.contains_key(&root) {
+        return Ok(Some(root));
+    }
+    let owner = Arc::new(ShadowRootOwner::acquire(&root)?);
+    let swept = owner.sweep();
+    if swept > 0 {
+        tracing::info!(root = %root.display(), swept, "removed leftover RAM shadow hypotheses");
+    }
+    owners.insert(root.clone(), owner);
+    Ok(Some(root))
+}
+
 /// `None` when this node can run hypotheses as overlay shadows, otherwise why it cannot.
 /// Probed once per process: a throw-away overlay mount inside a user namespace.
 pub fn overlay_unavailable() -> Option<&'static str> {
@@ -1717,29 +1739,39 @@ pub async fn run_shadow(
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
     let (mut effective_shadow_root, mut is_ram, mut fallback_shadow_root) = if overlay && ram_requested {
-        if let Some(ram_root) = ram_shadow_root(&state.storage_root) {
-            let probe_ok = (|| -> std::io::Result<()> {
-                std::fs::create_dir_all(&ram_root)?;
-                let probe = ram_root.join(format!(".probe-{}", std::process::id()));
-                std::fs::write(&probe, b"ok")?;
-                let _ = std::fs::remove_file(&probe);
-                Ok(())
-            })();
-            match probe_ok {
-                Ok(()) => (ram_root, true, Some(state.shadow_root.clone())),
-                Err(why) => {
-                    tracing::warn!(
-                        %why,
-                        "🌓 [SHADOW] in-memory RAM overlay requested but RAM root is unwritable; falling back to disk overlay"
-                    );
-                    (state.shadow_root.clone(), false, None)
+        match acquire_ram_shadow_root(&state.storage_root) {
+            Ok(Some(ram_root)) => {
+                let probe_ok = (|| -> std::io::Result<()> {
+                    std::fs::create_dir_all(&ram_root)?;
+                    let probe = ram_root.join(format!(".probe-{}", std::process::id()));
+                    std::fs::write(&probe, b"ok")?;
+                    let _ = std::fs::remove_file(&probe);
+                    Ok(())
+                })();
+                match probe_ok {
+                    Ok(()) => (ram_root, true, Some(state.shadow_root.clone())),
+                    Err(why) => {
+                        tracing::warn!(
+                            %why,
+                            "🌓 [SHADOW] in-memory RAM overlay requested but RAM root is unwritable; falling back to disk overlay"
+                        );
+                        (state.shadow_root.clone(), false, None)
+                    }
                 }
             }
-        } else {
-            tracing::warn!(
-                "🌓 [SHADOW] in-memory RAM overlay requested but /dev/shm is unavailable; falling back to disk overlay"
-            );
-            (state.shadow_root.clone(), false, None)
+            Ok(None) => {
+                tracing::warn!(
+                    "🌓 [SHADOW] in-memory RAM overlay requested but /dev/shm is unavailable; falling back to disk overlay"
+                );
+                (state.shadow_root.clone(), false, None)
+            }
+            Err(why) => {
+                tracing::warn!(
+                    %why,
+                    "🌓 [SHADOW] cannot claim RAM shadow namespace; falling back to disk overlay"
+                );
+                (state.shadow_root.clone(), false, None)
+            }
         }
     } else {
         let is_ram = state.shadow_root.starts_with("/dev/shm");
@@ -1969,6 +2001,24 @@ mod tests {
         } else {
             assert_eq!(result, None);
         }
+    }
+
+    #[test]
+    fn ram_shadow_root_keeps_its_owner_lock_after_acquisition_returns() {
+        let storage = tempfile::tempdir().unwrap();
+        let Some(root) = ram_shadow_root(storage.path()) else {
+            return;
+        };
+
+        assert_eq!(
+            acquire_ram_shadow_root(storage.path()).unwrap(),
+            Some(root.clone())
+        );
+        assert!(
+            ShadowRootOwner::acquire(&root).is_err(),
+            "another owner must not claim the RAM namespace during this gateway process"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
