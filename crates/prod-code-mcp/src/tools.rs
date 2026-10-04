@@ -3692,6 +3692,7 @@ async fn handle_change_signature(
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
+    let ext = file_path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     // The compile gate runs `cargo check` on a preview and writes it on the compiler's word
     // alone, past the Go adapter's own refusals of a gopls edit that is not the signature change
@@ -3706,6 +3707,10 @@ async fn handle_change_signature(
              parameter list; omit `verify`"
         );
     }
+    anyhow::ensure!(
+        !verify || ext == "rs",
+        "verify: compile for change_signature is supported only for Rust; the gateway compile gate runs cargo check and nothing was written"
+    );
     let modifiers = crate::signature::Modifiers {
         returns: args
             .get("returns")

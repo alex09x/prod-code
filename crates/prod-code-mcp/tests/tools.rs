@@ -4619,6 +4619,39 @@ async fn code_change_signature_reorders_parameters_and_call_sites() {
 }
 
 #[tokio::test]
+async fn code_change_signature_rejects_cargo_compile_verification_for_typescript() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "export function join(a: string, b: string) { return a + b; }\n";
+    let file = write(&ws, "src/api.ts", source);
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_change_signature",
+        serde_json::json!({
+            "path": "src/api.ts",
+            "line": 1,
+            "character": 17,
+            "params": ["b", "a"],
+            "verify": "compile",
+            "apply": true
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("supported only for Rust"));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), source);
+}
+
+#[tokio::test]
 async fn code_generate_fixture_builds_and_verifies_a_value() {
     let ws = workspace();
     write(
