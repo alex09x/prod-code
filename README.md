@@ -392,6 +392,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`mastodon/mastodon`](https://github.com/mastodon/mastodon) | Ruby (32-core node) | 67 / 67 tools (190K lines, clean DAG, ActivityPub JSON-LD verification, 8.2K RSpec asserts) | 189.7K lines (3,278 files) | 0.58 ms RTT | [Mastodon Under the Microscope →](https://prod.codes/blog/mastodon-under-the-microscope-67-ast-tools/) |
 | [`Homebrew/brew`](https://github.com/Homebrew/brew) | Ruby (32-core node) | 67 / 67 tools (371K lines, clean DAG, Sorbet typed strict, 12.4K test asserts, 2.2K exceptions) | 371.1K lines (2,379 files) | 0.58 ms RTT | [Homebrew Under the Microscope →](https://prod.codes/blog/homebrew-under-the-microscope-67-ast-tools/) |
 | [`flutter/flutter`](https://github.com/flutter/flutter) | Dart (32-core node) | 67 / 67 tools (2.60M lines, clean DAG, 10-phase render pipeline, 112.7K test asserts, 3.8K errors) | 2.60M lines (6,554 files) | 0.30 ms RTT | [Flutter Under the Microscope →](https://prod.codes/blog/flutter-under-the-microscope-67-ast-tools/) |
+| [`felangel/bloc`](https://github.com/felangel/bloc) | Dart (32-core node) | 67 / 67 tools (46K lines, clean DAG, reactive event transformers, 1.6K test asserts, 72 errors) | 45.7K lines (616 files) | 0.35 ms RTT | [Bloc Under the Microscope →](https://prod.codes/blog/bloc-under-the-microscope-67-ast-tools/) |
 
 
 
