@@ -1778,22 +1778,14 @@ impl StreamSessionManager {
 
         match validate_text(remote, root, file, &accumulated).await {
             Ok(report) => {
-                let serious_intercept = report
-                    .hallucinations
-                    .iter()
-                    .find(|h| {
-                        if is_last {
-                            true
-                        } else {
-                            matches!(
-                                h.kind,
-                                HallucinationKind::InvalidMethodInvocation
-                                    | HallucinationKind::IncorrectArgumentType
-                                    | HallucinationKind::BorrowCheckerError
-                            )
-                        }
-                    })
-                    .cloned();
+                // A later chunk can add imports, trait impls, declarations, and types that make
+                // semantic errors in this prefix valid. Do not terminate generation until the
+                // source unit is complete.
+                let serious_intercept = if is_last {
+                    report.hallucinations.first().cloned()
+                } else {
+                    None
+                };
 
                 if let Some(intercept) = serious_intercept {
                     self.remove_session_key(&key);
@@ -1864,7 +1856,14 @@ impl StreamSessionManager {
                     intercepted: false,
                     interception: None,
                     final_report: None,
-                    summary: format!("checkpoint at chunk {} passed", chunk_index),
+                    summary: if report.errors > 0 {
+                        format!(
+                            "checkpoint at chunk {} found {} provisional error(s); semantic interceptions are deferred until close",
+                            chunk_index, report.errors
+                        )
+                    } else {
+                        format!("checkpoint at chunk {} passed", chunk_index)
+                    },
                 })
             }
             Err(err) => {

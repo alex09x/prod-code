@@ -3335,7 +3335,7 @@ async fn code_validate_edit_stream_chunks_intercepts_invalid_methods() {
 }
 
 #[tokio::test]
-async fn code_validate_edit_incremental_chunk_feeding_intercepts_on_the_fly() {
+async fn code_validate_edit_incremental_chunk_feeding_defers_prefix_methods_until_close() {
     let ws = workspace();
     let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
     commit(&ws);
@@ -3358,16 +3358,18 @@ async fn code_validate_edit_incremental_chunk_feeding_intercepts_on_the_fly() {
         }
         "textDocument/diagnostic" => {
             let current = text_clone.lock().unwrap().clone();
-            if current.contains("hallucinated_execute") {
+            if current.contains("self.late_method()")
+                && !(current.contains("trait Late") && current.contains("impl Late for Client"))
+            {
                 serde_json::json!({
                     "kind": "full",
                     "items": [{
                         "severity": 1,
                         "code": "unresolved-method",
-                        "message": "no method named `hallucinated_execute` found for struct `Client`",
+                        "message": "no method named `late_method` found for struct `Client`",
                         "range": {
                             "start": { "line": 2, "character": 4 },
-                            "end": { "line": 2, "character": 24 }
+                            "end": { "line": 2, "character": 16 }
                         }
                     }]
                 })
@@ -3396,23 +3398,41 @@ async fn code_validate_edit_incremental_chunk_feeding_intercepts_on_the_fly() {
     .expect("chunk 1 executes");
     assert!(!r1.is_error, "chunk 1 should pass: {}", text_of(&r1));
 
-    // Chunk 2: introduces hallucination at checkpoint
+    // The call is currently unresolved, but a later trait declaration can make this prefix valid.
     let r2 = execute_tool(
         remote,
         &ws.root(),
         "code_validate_edit",
         serde_json::json!({
             "path": "src/lib.rs",
-            "chunk": "impl Client {\n    pub fn run(&self) {\n        self.hallucinated_execute();\n",
+            "chunk": "impl Client {\n    pub fn run(&self) {\n        self.late_method();\n    }\n}\n",
             "session_id": sid
         }),
     )
     .await
     .expect("chunk 2 executes");
-    assert!(r2.is_error, "chunk 2 should be intercepted");
+    assert!(!r2.is_error, "an incomplete source prefix is not intercepted");
     let t2 = text_of(&r2);
-    assert!(t2.contains("INTERCEPT"), "{t2}");
-    assert!(t2.contains("hallucinated_execute"), "{t2}");
+    assert!(t2.contains("provisional error(s)"), "{t2}");
+
+    let r3 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "trait Late { fn late_method(&self); }\nimpl Late for Client { fn late_method(&self) {} }\n",
+            "session_id": sid,
+            "close": true
+        }),
+    )
+    .await
+    .expect("the later declaration completes the source unit");
+    assert!(
+        !r3.is_error,
+        "the complete valid source is accepted: {}",
+        text_of(&r3)
+    );
 }
 
 #[tokio::test]
@@ -3519,6 +3539,38 @@ async fn code_validate_edit_stream_sessions_isolated_across_files() {
     .expect("chunk lib close executes");
     assert!(!r3.is_error);
     assert!(text_of(&r3).contains("stream generation validated clean"));
+}
+
+#[tokio::test]
+async fn code_validate_edit_first_chunk_without_session_id_starts_a_session() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "pub struct Client;\n"
+        }),
+    )
+    .await
+    .expect("an anonymous first chunk starts a session");
+
+    assert!(!result.is_error);
+    assert!(text_of(&result).contains("Stream chunk 1 [stream-"));
 }
 
 #[tokio::test]
