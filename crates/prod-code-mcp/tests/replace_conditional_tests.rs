@@ -1,5 +1,5 @@
 use prod_code_mcp::replace_conditional::replace_conditional_impl;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -356,5 +356,50 @@ async fn test_replace_conditional_no_block_error() {
     .await
     .unwrap_err();
 
-    assert!(err.to_string().contains("no switch, match, or if-else conditional block found"));
+    assert!(
+        err.to_string()
+            .contains("no switch, match, or if-else conditional block found")
+    );
+}
+
+#[tokio::test]
+async fn replace_conditional_requires_an_explicit_polymorphic_receiver() {
+    let source = r#"function run(kind: string) {
+    switch (kind) {
+        case "A":
+            logA();
+            break;
+        default:
+            logOther();
+    }
+}
+"#;
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("run.ts", source)]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("run.ts");
+    let gw = fake_gateway().await;
+
+    let err = replace_conditional_impl(
+        gw.addr(),
+        &root,
+        &file,
+        2,
+        5,
+        "Handler",
+        "handle",
+        &[],
+        None,
+        None,
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains("`target_var` is required"),
+        "{err:#}"
+    );
+    assert_eq!(fs::read_to_string(file).unwrap(), source);
 }
