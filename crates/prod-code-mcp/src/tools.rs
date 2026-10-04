@@ -8176,6 +8176,27 @@ pub async fn workspace_symbol_search(
     hint: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
+    workspace_symbol_search_with_retry_policy(remote, root, query, hint, limit, true).await
+}
+
+async fn workspace_symbol_search_auxiliary(
+    remote: SocketAddr,
+    root: &Path,
+    query: &str,
+    hint: Option<&Path>,
+    limit: usize,
+) -> Result<Vec<SymbolHit>> {
+    workspace_symbol_search_with_retry_policy(remote, root, query, hint, limit, false).await
+}
+
+async fn workspace_symbol_search_with_retry_policy(
+    remote: SocketAddr,
+    root: &Path,
+    query: &str,
+    hint: Option<&Path>,
+    limit: usize,
+    retry_empty_answer: bool,
+) -> Result<Vec<SymbolHit>> {
     // The LSP servers (tsc, clangd, pyright) index a project once one of its files is open;
     // the session opens the anchor file before the query, so pick a real source file when the
     // caller gave none or a directory.
@@ -8202,7 +8223,7 @@ pub async fn workspace_symbol_search(
     let gated = crate::session::pooled_index_gated(remote, root, &anchor).await;
     let retries = match age {
         _ if gated => 0,
-        _ if hint.is_some() => 0,
+        _ if !retry_empty_answer => 0,
         Some(age) if age >= crate::session::INDEXING_GRACE => 0,
         Some(_) => 3,
         None => 1,
@@ -9343,7 +9364,19 @@ async fn symbol_search_across_projects(
     hint: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
-    let mut hits = workspace_symbol_search(remote, root, query, hint, limit).await?;
+    let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
+    let mut hits = match tokio::time::timeout_at(
+        deadline,
+        workspace_symbol_search(remote, root, query, hint, limit),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            tracing::warn!(query, "primary workspace symbol search reached budget; returning no hits");
+            return Ok(Vec::new());
+        }
+    };
     let name = bare_symbol_name(query);
     let named = |hits: &[SymbolHit]| {
         hits.iter()
@@ -9352,7 +9385,6 @@ async fn symbol_search_across_projects(
     if named(&hits) {
         return Ok(hits);
     }
-    let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
     if let Some(hint) = hint {
         // The project a path names may keep no index (sourcekit-lsp before a build): the
         // outlines of its files that name the symbol still find it (#358).
@@ -9376,12 +9408,12 @@ async fn symbol_search_across_projects(
             } else {
                 files_naming(hint, engine, name, deadline)
             };
-            if !files.is_empty() {
-                if let Ok(Ok(decls)) =
-                    tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name)).await
-                {
-                    hits.extend(decls);
-                }
+            if !files.is_empty()
+                && let Ok(Ok(decls)) =
+                    tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name))
+                        .await
+            {
+                hits.extend(decls);
             }
         }
         return Ok(hits);
@@ -9439,7 +9471,7 @@ async fn symbol_search_across_projects(
             break;
         }
 
-        let search_fut = workspace_symbol_search(node, root, query, Some(&anchor), limit);
+        let search_fut = workspace_symbol_search_auxiliary(node, root, query, Some(&anchor), limit);
         let found = match tokio::time::timeout_at(deadline, search_fut).await {
             Ok(Ok(found)) => found,
             Ok(Err(err)) => {
@@ -9524,11 +9556,12 @@ fn files_naming(
 
 /// Whether `text` has `name` as a whole word.
 fn names_word(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    text.match_indices(name).any(|(at, _)| {
-        !text[..at].chars().next_back().is_some_and(is_word)
-            && !text[at + name.len()..].chars().next().is_some_and(is_word)
-    })
+    text.split(|c: char| !is_word(c))
+        .any(|word| word.eq_ignore_ascii_case(name))
 }
 
 /// How far below a directory a search of its sources looks.

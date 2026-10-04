@@ -805,6 +805,53 @@ async fn code_symbols_returns_prefix_matches_without_scanning_unrelated_nested_p
     assert_eq!(query_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+/// A case-insensitive exact match in a nested project must outrank a root prefix match.
+#[tokio::test]
+async fn code_symbols_finds_case_insensitive_exact_nested_match() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub fn foobar() {}\n"),
+        ("nested_go/go.mod", "module nested_go\n\ngo 1.22\n"),
+        (
+            "nested_go/helper.go",
+            "package nested_go\n\nfunc Foo() {}\n",
+        ),
+    ]);
+    let root_path = ws.root().join("src/lib.rs");
+    let nested_path = ws.root().join("nested_go/helper.go");
+    let query_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let q_clone = Arc::clone(&query_count);
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "workspace/symbol" => {
+            let index = q_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if index == 0 {
+                serde_json::Value::Array(vec![answers::symbol("foobar", 12, &root_path, 1, 8)])
+            } else {
+                serde_json::Value::Array(vec![answers::symbol("Foo", 12, &nested_path, 2, 6)])
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_symbols",
+        serde_json::json!({ "query": "foo" }),
+    )
+    .await
+    .expect("the nested exact search runs");
+    assert!(!result.is_error);
+    let text = text_of(&result);
+    assert!(text.contains("[Function] Foo"), "{text}");
+    assert!(text.contains("[Function] foobar"), "{text}");
+    assert_eq!(query_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 /// Issue #829: MCP `tools/call` aborts early with a typed error when tool call exceeds timeout budget.
 #[tokio::test]
 async fn tools_call_times_out_with_typed_error_under_budget() {
