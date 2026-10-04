@@ -1188,34 +1188,34 @@ pub fn recognise_swift(text: &str, at: usize) -> Result<PolyglotLoop> {
             format!("let {acc} = {source}.reduce(0, +)")
         }
         Shape::Sum { cond: None, value } => {
-            format!("let {acc} = {source}.reduce(0) {{ $0 + ({value}) }}")
+            format!("let {acc} = {source}.reduce(0) {{ _acc, {pattern} in _acc + ({value}) }}")
         }
         Shape::Sum { cond: Some(c), value } => {
-            format!("let {acc} = {source}.filter {{ {c} }}.reduce(0) {{ $0 + ({value}) }}")
+            format!("let {acc} = {source}.filter {{ {pattern} in {c} }}.reduce(0) {{ _acc, {pattern} in _acc + ({value}) }}")
         }
         Shape::Count { cond } => {
-            format!("let {acc} = {source}.filter {{ {cond} }}.count")
+            format!("let {acc} = {source}.filter {{ {pattern} in {cond} }}.count")
         }
         Shape::Collect { cond: None, value } if value == pattern => {
             format!("let {acc} = {source}.map {{ {pattern} }}")
         }
         Shape::Collect { cond: None, value } => {
-            format!("let {acc} = {source}.map {{ {value} }}")
+            format!("let {acc} = {source}.map {{ {pattern} in {value} }}")
         }
         Shape::Collect { cond: Some(c), value } => {
-            format!("let {acc} = {source}.filter {{ {c} }}.map {{ {value} }}")
+            format!("let {acc} = {source}.filter {{ {pattern} in {c} }}.map {{ {pattern} in {value} }}")
         }
         Shape::Find { cond, value } if value == pattern => {
-            format!("let {acc} = {source}.first(where: {{ {cond} }})")
+            format!("let {acc} = {source}.first(where: {{ {pattern} in {cond} }})")
         }
         Shape::Find { cond, value } => {
-            format!("let {acc} = {source}.first(where: {{ {cond} }}).map {{ {value} }}")
+            format!("let {acc} = {source}.first(where: {{ {pattern} in {cond} }}).map {{ {pattern} in {value} }}")
         }
         Shape::Any { cond } => {
-            format!("let {acc} = {source}.contains(where: {{ {cond} }})")
+            format!("let {acc} = {source}.contains(where: {{ {pattern} in {cond} }})")
         }
         Shape::All { cond } => {
-            format!("let {acc} = {source}.allSatisfy {{ {cond} }}")
+            format!("let {acc} = {source}.allSatisfy {{ {pattern} in {cond} }}")
         }
     };
 
@@ -1277,7 +1277,36 @@ pub fn recognise_cpp(text: &str, at: usize) -> Result<PolyglotLoop> {
         .find(|s| !s.is_empty())
         .context("could not extract accumulator variable")?
         .to_string();
+    let accumulator_decl = lhs_dec.trim().to_string();
     let init = init.trim();
+    anyhow::ensure!(
+        !source.starts_with('{'),
+        "a braced range initializer cannot be safely stored for a single-evaluation iterator conversion"
+    );
+    let mut range_name = "__prod_code_range".to_string();
+    let mut suffix = 0usize;
+    while text.contains(&range_name) {
+        suffix += 1;
+        range_name = format!("__prod_code_range_{suffix}");
+    }
+    let raw_acc_type = accumulator_decl
+        .strip_suffix(&acc)
+        .unwrap_or_default()
+        .trim();
+    let acc_type = raw_acc_type
+        .strip_prefix("const ")
+        .or_else(|| raw_acc_type.strip_prefix("volatile "))
+        .unwrap_or(raw_acc_type)
+        .trim();
+    anyhow::ensure!(
+        !acc_type.contains('&'),
+        "a reference accumulator cannot be represented safely by std::accumulate"
+    );
+    let sum_initial = if acc_type.is_empty() || acc_type == "auto" || acc_type == "decltype(auto)" {
+        init.to_string()
+    } else {
+        format!("static_cast<{acc_type}>({init})")
+    };
 
     for word in ["continue", "return", "throw"] {
         anyhow::ensure!(
@@ -1390,22 +1419,22 @@ pub fn recognise_cpp(text: &str, at: usize) -> Result<PolyglotLoop> {
 
     let statement = match shape {
         Shape::Sum { cond: None, value } if value == pattern => {
-            format!("const auto {acc} = std::accumulate({source}.begin(), {source}.end(), 0);")
+            format!("{accumulator_decl} = std::accumulate({range_name}.begin(), {range_name}.end(), {sum_initial});")
         }
         Shape::Sum { cond: None, value } => {
-            format!("const auto {acc} = std::accumulate({source}.begin(), {source}.end(), 0, [](auto _acc, const auto& {pattern}) {{ return _acc + ({value}); }});")
+            format!("{accumulator_decl} = std::accumulate({range_name}.begin(), {range_name}.end(), {sum_initial}, [](auto _acc, const auto& {pattern}) {{ return _acc + ({value}); }});")
         }
         Shape::Sum { cond: Some(c), value } => {
-            format!("const auto {acc} = std::accumulate({source}.begin(), {source}.end(), 0, [](auto _acc, const auto& {pattern}) {{ return ({c}) ? _acc + ({value}) : _acc; }});")
+            format!("{accumulator_decl} = std::accumulate({range_name}.begin(), {range_name}.end(), {sum_initial}, [](auto _acc, const auto& {pattern}) {{ return ({c}) ? _acc + ({value}) : _acc; }});")
         }
         Shape::Count { cond } => {
-            format!("const auto {acc} = std::count_if({source}.begin(), {source}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
+            format!("const auto {acc} = std::count_if({range_name}.begin(), {range_name}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
         }
         Shape::Any { cond } => {
-            format!("const bool {acc} = std::any_of({source}.begin(), {source}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
+            format!("const bool {acc} = std::any_of({range_name}.begin(), {range_name}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
         }
         Shape::All { cond } => {
-            format!("const bool {acc} = std::all_of({source}.begin(), {source}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
+            format!("const bool {acc} = std::all_of({range_name}.begin(), {range_name}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
         }
         _ => anyhow::bail!("unsupported shape for C++"),
     };
@@ -1414,7 +1443,7 @@ pub fn recognise_cpp(text: &str, at: usize) -> Result<PolyglotLoop> {
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect();
-    let replacement = format!("{indent}{statement}");
+    let replacement = format!("{indent}auto&& {range_name} = ({source});\n{indent}{statement}");
 
     Ok(PolyglotLoop {
         start: dec_start,
@@ -1445,16 +1474,33 @@ pub fn recognise_go(text: &str, at: usize) -> Result<PolyglotLoop> {
     let header = text[for_at + 4..open_brace].trim();
     let (lhs, source) = header.split_once(" range ").context("expected `range` in for loop")?;
     let source = source.trim().to_string();
-    let pattern = if let Some((_, v)) = lhs.split_once(',') {
-        v.trim().to_string()
+    let range_vars: Vec<&str> = lhs.split(',').map(str::trim).collect();
+    anyhow::ensure!(
+        (1..=2).contains(&range_vars.len()) && !range_vars[0].is_empty(),
+        "Go range header must name one or two variables"
+    );
+    let pattern = if range_vars.len() == 2 {
+        range_vars[1].to_string()
     } else {
-        lhs.trim().to_string()
+        range_vars[0].to_string()
     };
     let pattern = pattern.strip_suffix(":=").unwrap_or(&pattern).trim().to_string();
 
     let close_brace = crate::parameter_object::matching_bracket(text, open_brace)
         .context("the loop's body is not closed")?;
     let body = text[open_brace + 1..close_brace].trim();
+    if range_vars.len() == 2 && range_vars[0] != "_" {
+        anyhow::ensure!(
+            whole_word_count(body, range_vars[0]) == 0,
+            "the loop body uses range index/key `{}`, which the iterator conversion cannot preserve",
+            range_vars[0]
+        );
+    }
+    let range_binding = if range_vars.len() == 2 {
+        format!("_, {pattern}")
+    } else {
+        pattern.clone()
+    };
 
     let before_loop = text[..for_line_start].trim_end_matches(['\n', ' ', '\t']);
     let dec_start = before_loop.rfind('\n').map_or(0, |i| i + 1);
@@ -1590,25 +1636,25 @@ pub fn recognise_go(text: &str, at: usize) -> Result<PolyglotLoop> {
 
     let statement = match shape {
         Shape::Sum { cond: None, value } => {
-            format!("{acc} := func() int {{ s := 0; for _, {pattern} := range {source} {{ s += {value} }}; return s }}()")
+            format!("{acc} := func() int {{ s := 0; for {range_binding} := range {source} {{ s += {value} }}; return s }}()")
         }
         Shape::Sum { cond: Some(c), value } => {
-            format!("{acc} := func() int {{ s := 0; for _, {pattern} := range {source} {{ if {c} {{ s += {value} }} }}; return s }}()")
+            format!("{acc} := func() int {{ s := 0; for {range_binding} := range {source} {{ if {c} {{ s += {value} }} }}; return s }}()")
         }
         Shape::Count { cond } => {
-            format!("{acc} := func() int {{ c := 0; for _, {pattern} := range {source} {{ if {cond} {{ c++ }} }}; return c }}()")
+            format!("{acc} := func() int {{ c := 0; for {range_binding} := range {source} {{ if {cond} {{ c++ }} }}; return c }}()")
         }
         Shape::Collect { cond: None, value } => {
-            format!("{acc} := func() []interface{{}} {{ res := make([]interface{{}}, 0); for _, {pattern} := range {source} {{ res = append(res, {value}) }}; return res }}()")
+            format!("{acc} := func() []interface{{}} {{ res := make([]interface{{}}, 0); for {range_binding} := range {source} {{ res = append(res, {value}) }}; return res }}()")
         }
         Shape::Collect { cond: Some(c), value } => {
-            format!("{acc} := func() []interface{{}} {{ res := make([]interface{{}}, 0); for _, {pattern} := range {source} {{ if {c} {{ res = append(res, {value}) }} }}; return res }}()")
+            format!("{acc} := func() []interface{{}} {{ res := make([]interface{{}}, 0); for {range_binding} := range {source} {{ if {c} {{ res = append(res, {value}) }} }}; return res }}()")
         }
         Shape::Any { cond } => {
-            format!("{acc} := func() bool {{ for _, {pattern} := range {source} {{ if {cond} {{ return true }} }}; return false }}()")
+            format!("{acc} := func() bool {{ for {range_binding} := range {source} {{ if {cond} {{ return true }} }}; return false }}()")
         }
         Shape::All { cond } => {
-            format!("{acc} := func() bool {{ for _, {pattern} := range {source} {{ if !({cond}) {{ return false }} }}; return true }}()")
+            format!("{acc} := func() bool {{ for {range_binding} := range {source} {{ if !({cond}) {{ return false }} }}; return true }}()")
         }
         _ => anyhow::bail!("unsupported shape for Go"),
     };
@@ -1944,22 +1990,41 @@ mod tests {
     fn polyglot_swift_recognised() {
         let src = "func total(prices: [Int]) -> Int {\n    var sum = 0\n    for p in prices {\n        sum += p * 2\n    }\n    return sum\n}";
         let poly = recognise_swift(src, src.find("for ").unwrap()).unwrap();
-        assert_eq!(poly.replacement, "    let sum = prices.reduce(0) { $0 + (p * 2) }");
+        assert_eq!(poly.replacement, "    let sum = prices.reduce(0) { _acc, p in _acc + (p * 2) }");
 
         let cnt_src = "func evens(xs: [Int]) -> Int {\n    var count = 0\n    for x in xs {\n        if x % 2 == 0 {\n            count += 1\n        }\n    }\n    return count\n}";
         let poly = recognise_swift(cnt_src, cnt_src.find("for ").unwrap()).unwrap();
-        assert_eq!(poly.replacement, "    let count = xs.filter { x % 2 == 0 }.count");
+        assert_eq!(poly.replacement, "    let count = xs.filter { x in x % 2 == 0 }.count");
+    }
+
+    #[test]
+    fn swift_conversions_bind_the_loop_element_in_each_closure() {
+        let collect = "func doubled(prices: [Int]) -> [Int] {\n    var result: [Int] = []\n    for p in prices {\n        result.append(p * 2)\n    }\n    return result\n}";
+        let poly = recognise_swift(collect, collect.find("for ").unwrap()).unwrap();
+        assert!(poly.replacement.contains("map { p in p * 2 }"));
+
+        let find = "func findPrice(prices: [Int]) -> Int? {\n    var found: Int? = nil\n    for p in prices {\n        if p > 0 {\n            found = p * 2\n            break\n        }\n    }\n    return found\n}";
+        let poly = recognise_swift(find, find.find("for ").unwrap()).unwrap();
+        assert!(poly.replacement.contains("first(where: { p in p > 0 }).map { p in p * 2 }"));
+
+        let any = "func hasPrice(prices: [Int]) -> Bool {\n    var found = false\n    for p in prices {\n        if p > 0 {\n            found = true\n            break\n        }\n    }\n    return found\n}";
+        let poly = recognise_swift(any, any.find("for ").unwrap()).unwrap();
+        assert!(poly.replacement.contains("contains(where: { p in p > 0 })"));
+
+        let all = "func allPrices(prices: [Int]) -> Bool {\n    var valid = true\n    for p in prices {\n        if p <= 0 {\n            valid = false\n            break\n        }\n    }\n    return valid\n}";
+        let poly = recognise_swift(all, all.find("for ").unwrap()).unwrap();
+        assert!(poly.replacement.contains("allSatisfy { p in !(p <= 0) }"));
     }
 
     #[test]
     fn polyglot_cpp_recognised() {
         let src = "int total(const std::vector<int>& prices) {\n    int sum = 0;\n    for (const auto& p : prices) {\n        sum += p * 2;\n    }\n    return sum;\n}";
         let poly = recognise_cpp(src, src.find("for ").unwrap()).unwrap();
-        assert_eq!(poly.replacement, "    const auto sum = std::accumulate(prices.begin(), prices.end(), 0, [](auto _acc, const auto& p) { return _acc + (p * 2); });");
+        assert_eq!(poly.replacement, "    auto&& __prod_code_range = (prices);\n    int sum = std::accumulate(__prod_code_range.begin(), __prod_code_range.end(), static_cast<int>(0), [](auto _acc, const auto& p) { return _acc + (p * 2); });");
 
         let any_src = "bool has_even(const std::vector<int>& xs) {\n    bool has_any = false;\n    for (const auto& x : xs) {\n        if (x % 2 == 0) {\n            has_any = true;\n            break;\n        }\n    }\n    return has_any;\n}";
         let poly = recognise_cpp(any_src, any_src.find("for ").unwrap()).unwrap();
-        assert_eq!(poly.replacement, "    const bool has_any = std::any_of(xs.begin(), xs.end(), [](const auto& x) { return x % 2 == 0; });");
+        assert_eq!(poly.replacement, "    auto&& __prod_code_range = (xs);\n    const bool has_any = std::any_of(__prod_code_range.begin(), __prod_code_range.end(), [](const auto& x) { return x % 2 == 0; });");
     }
 
     #[test]
@@ -1967,5 +2032,23 @@ mod tests {
         let src = "func total(prices []int) int {\n    sum := 0\n    for _, p := range prices {\n        sum += p * 2\n    }\n    return sum\n}";
         let poly = recognise_go(src, src.find("for ").unwrap()).unwrap();
         assert_eq!(poly.replacement, "    sum := func() int { s := 0; for _, p := range prices { s += p * 2 }; return s }()");
+    }
+
+    #[test]
+    fn cpp_conversion_evaluates_range_once_and_preserves_accumulator_type() {
+        let src = "long long total = 0;\nfor (const auto& value : make_values()) {\n    total += value;\n}";
+        let poly = recognise_cpp(src, src.find("for ").unwrap()).unwrap();
+
+        assert_eq!(poly.replacement.matches("make_values()").count(), 1);
+        assert!(poly.replacement.contains("static_cast<long long>(0)"));
+    }
+
+    #[test]
+    fn go_single_range_variable_remains_the_index() {
+        let src = "func total(values []int) int {\n    sum := 0\n    for i := range values {\n        sum += i\n    }\n    return sum\n}";
+        let poly = recognise_go(src, src.find("for ").unwrap()).unwrap();
+
+        assert!(poly.replacement.contains("for i := range values"));
+        assert!(!poly.replacement.contains("for _, i := range values"));
     }
 }
