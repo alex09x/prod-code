@@ -8899,7 +8899,7 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = read_name_scan_text(&path) else {
             continue;
         };
         if !names_word(&text, name) {
@@ -9400,8 +9400,8 @@ async fn symbol_search_across_projects(
                 Err(_) => return Ok(hits),
             };
             let files = if hint.is_file() {
-                std::fs::read_to_string(hint)
-                    .is_ok_and(|text| names_word(&text, name))
+                read_name_scan_text(hint)
+                    .is_some_and(|text| names_word(&text, name))
                     .then(|| hint.to_path_buf())
                     .into_iter()
                     .collect()
@@ -9538,7 +9538,7 @@ fn files_naming(
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = read_name_scan_text(&path) else {
             continue;
         };
         if !names_word(&text, name) {
@@ -9562,6 +9562,23 @@ fn names_word(text: &str, name: &str) -> bool {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     text.split(|c: char| !is_word(c))
         .any(|word| word.eq_ignore_ascii_case(name))
+}
+
+/// Maximum bytes read from any one source while searching for names synchronously.
+const MAX_NAME_SCAN_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Reads only the prefix needed for bounded symbol-name discovery. Large generated sources do
+/// not get to exceed the overall search budget through one unbounded synchronous read.
+fn read_name_scan_text(path: &Path) -> Option<String> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_NAME_SCAN_FILE_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// How far below a directory a search of its sources looks.
@@ -9607,7 +9624,7 @@ fn projects_naming(
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        if !std::fs::read_to_string(&path).is_ok_and(|text| names_word(&text, name)) {
+        if !read_name_scan_text(&path).is_some_and(|text| names_word(&text, name)) {
             continue;
         }
         if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
@@ -9905,6 +9922,19 @@ fn identifier_at(path: &Path, remote: &RemoteSources, line: u32, col: u32, name:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn name_scan_source_read_stops_at_the_per_file_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.rs");
+        let mut contents = vec![b'x'; super::MAX_NAME_SCAN_FILE_BYTES as usize + 16];
+        contents.extend_from_slice(b"target_at_end");
+        std::fs::write(&path, contents).unwrap();
+
+        let scanned = super::read_name_scan_text(&path).unwrap();
+        assert_eq!(scanned.len(), super::MAX_NAME_SCAN_FILE_BYTES as usize);
+        assert!(!super::names_word(&scanned, "target_at_end"));
+    }
+
     #[test]
     fn protobuf_outline_skips_complete_option_and_reserved_statements() {
         let proto = r#"
