@@ -12,8 +12,8 @@
 //! - Go: `type T struct`, `func NewT(...) *T` or `TBuilder`, rewriting `&T{...}` and `T{...}`.
 //! - TypeScript / JavaScript: classes and interfaces, static factory `create` or `TBuilder`, rewriting `new T(...)`.
 //! - Python: `@classmethod def create(cls, ...)` or `TBuilder`, rewriting `T(...)`.
-//! - C++: `struct T` / `class T`, static `create` or `TBuilder`, rewriting `T{...}`.
-//! - Swift: `struct T` / `class T`, static `create` or `TBuilder`, rewriting `T(...)`.
+//! - C++ and Swift declarations and constructor call sites use their native factory and builder
+//!   forms.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -388,28 +388,28 @@ pub fn parse_python_fields(text: &str) -> Vec<FieldDecl> {
         && let Some(close) = text[init_pos + open..].find(')')
     {
         let params = &text[init_pos + open + 1..init_pos + open + close];
-            for p in split_balanced_commas(params) {
-                let p = p.trim();
-                if p == "self" || p.is_empty() {
-                    continue;
-                }
-                if let Some((n, t)) = p.split_once(':') {
-                    let n = n.trim().split('=').next().unwrap_or(n).trim();
-                    let t = t.trim().split('=').next().unwrap_or(t).trim();
-                    fields.push(FieldDecl {
-                        name: n.to_string(),
-                        ty: t.to_string(),
-                        vis: String::new(),
-                    });
-                } else {
-                    let n = p.split('=').next().unwrap_or(p).trim();
-                    fields.push(FieldDecl {
-                        name: n.to_string(),
-                        ty: "Any".to_string(),
-                        vis: String::new(),
-                    });
-                }
+        for p in split_balanced_commas(params) {
+            let p = p.trim();
+            if p == "self" || p.is_empty() {
+                continue;
             }
+            if let Some((n, t)) = p.split_once(':') {
+                let n = n.trim().split('=').next().unwrap_or(n).trim();
+                let t = t.trim().split('=').next().unwrap_or(t).trim();
+                fields.push(FieldDecl {
+                    name: n.to_string(),
+                    ty: t.to_string(),
+                    vis: String::new(),
+                });
+            } else {
+                let n = p.split('=').next().unwrap_or(p).trim();
+                fields.push(FieldDecl {
+                    name: n.to_string(),
+                    ty: "Any".to_string(),
+                    vis: String::new(),
+                });
+            }
+        }
     }
     if fields.is_empty() {
         for line in text.lines() {
@@ -482,16 +482,14 @@ pub fn parse_swift_fields(inner: &str) -> Vec<FieldDecl> {
 
 fn is_ident_str(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && s.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
         && s.chars().all(is_ident)
 }
 
 /// Parses the declaration of `type_name` in `text` given its language.
-pub fn parse_struct_declaration(
-    text: &str,
-    type_name: &str,
-    language: &str,
-) -> Result<StructDecl> {
+pub fn parse_struct_declaration(text: &str, type_name: &str, language: &str) -> Result<StructDecl> {
     match language {
         "rust" => parse_rust_struct_decl(text, type_name),
         "go" => parse_go_struct_decl(text, type_name),
@@ -511,13 +509,20 @@ pub fn parse_rust_struct_decl(text: &str, type_name: &str) -> Result<StructDecl>
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let before = text[..at].trim_end();
         let is_struct = before.ends_with("struct")
             || before.ends_with("struct ")
-            || before.contains("struct ") && before[before.rfind("struct ").unwrap()..].chars().all(|c| c.is_whitespace() || is_ident(c) || c == '(' || c == ')');
+            || before.contains("struct ")
+                && before[before.rfind("struct ").unwrap()..]
+                    .chars()
+                    .all(|c| c.is_whitespace() || is_ident(c) || c == '(' || c == ')');
         if !is_struct {
             continue;
         }
@@ -525,7 +530,9 @@ pub fn parse_rust_struct_decl(text: &str, type_name: &str) -> Result<StructDecl>
         let line_start = text[..struct_kw].rfind('\n').map_or(0, |i| i + 1);
         let is_pub = text[line_start..struct_kw].contains("pub");
         let generics = extract_generics(text, at + type_name.len());
-        let open_from = generics.as_ref().map_or(at + type_name.len(), |(_, end)| *end);
+        let open_from = generics
+            .as_ref()
+            .map_or(at + type_name.len(), |(_, end)| *end);
         let Some(open_rel) = text[open_from..].find('{') else {
             continue;
         };
@@ -556,7 +563,11 @@ fn parse_go_struct_decl(text: &str, type_name: &str) -> Result<StructDecl> {
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let after = &text[at + type_name.len()..];
@@ -591,7 +602,11 @@ fn parse_ts_struct_decl(text: &str, type_name: &str, language: &str) -> Result<S
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let before = text[..at].trim_end();
@@ -606,7 +621,12 @@ fn parse_ts_struct_decl(text: &str, type_name: &str, language: &str) -> Result<S
         let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
             continue;
         };
-        let fields = parse_ts_fields(&text[open + 1..close]);
+        let body = &text[open + 1..close];
+        let fields = if matches!(language, "javascript" | "javascriptreact") {
+            parse_javascript_fields(body)
+        } else {
+            parse_ts_fields(body)
+        };
         let (line, col) = crate::signature::position_at(text, at)?;
         return Ok(StructDecl {
             name: type_name.to_string(),
@@ -620,7 +640,79 @@ fn parse_ts_struct_decl(text: &str, type_name: &str, language: &str) -> Result<S
             col,
         });
     }
-    anyhow::bail!("cannot find declaration of class/interface `{type_name}` in TypeScript/JavaScript file")
+    anyhow::bail!(
+        "cannot find declaration of class/interface `{type_name}` in TypeScript/JavaScript file"
+    )
+}
+
+fn parse_javascript_fields(body: &str) -> Vec<FieldDecl> {
+    let mut fields: Vec<FieldDecl> = Vec::new();
+    let mut brace_depth = 0i32;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if brace_depth == 0 && !trimmed.is_empty() && !trimmed.starts_with("//") {
+            let candidate = trimmed
+                .split(['=', ';'])
+                .next()
+                .unwrap_or("")
+                .trim_start()
+                .trim_start_matches("public ")
+                .trim_start_matches("private ")
+                .trim_start_matches("protected ")
+                .trim_start_matches("static ")
+                .trim();
+            if is_ident_str(candidate) && !fields.iter().any(|field| field.name == candidate) {
+                fields.push(FieldDecl {
+                    name: candidate.to_string(),
+                    ty: String::new(),
+                    vis: String::new(),
+                });
+            }
+        }
+        brace_depth += line.chars().filter(|ch| *ch == '{').count() as i32;
+        brace_depth -= line.chars().filter(|ch| *ch == '}').count() as i32;
+    }
+
+    if let Some(constructor_at) = body.find("constructor") {
+        let after_constructor = &body[constructor_at + "constructor".len()..];
+        if let Some(params_rel) = after_constructor.find('(') {
+            let params_open = constructor_at + "constructor".len() + params_rel;
+            if let Some(params_close) = crate::parameter_object::matching_bracket(body, params_open)
+            {
+                let parameters = split_balanced_commas(&body[params_open + 1..params_close]);
+                let after_params = &body[params_close + 1..];
+                if let Some(body_open_rel) = after_params.find('{') {
+                    let body_open = params_close + 1 + body_open_rel;
+                    if let Some(body_close) =
+                        crate::parameter_object::matching_bracket(body, body_open)
+                    {
+                        let constructor_body = &body[body_open + 1..body_close];
+                        for parameter in parameters {
+                            let name = parameter
+                                .trim()
+                                .trim_start_matches("...")
+                                .split(['=', ':'])
+                                .next()
+                                .unwrap_or("")
+                                .trim();
+                            if !is_ident_str(name)
+                                || !constructor_body.contains(&format!("this.{name}"))
+                                || fields.iter().any(|field| field.name == name)
+                            {
+                                continue;
+                            }
+                            fields.push(FieldDecl {
+                                name: name.to_string(),
+                                ty: String::new(),
+                                vis: String::new(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fields
 }
 
 fn parse_python_struct_decl(text: &str, type_name: &str) -> Result<StructDecl> {
@@ -628,7 +720,11 @@ fn parse_python_struct_decl(text: &str, type_name: &str) -> Result<StructDecl> {
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let before = text[..at].trim_end();
@@ -681,7 +777,11 @@ fn parse_cpp_struct_decl(text: &str, type_name: &str, language: &str) -> Result<
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let before = text[..at].trim_end();
@@ -716,7 +816,11 @@ fn parse_swift_struct_decl(text: &str, type_name: &str) -> Result<StructDecl> {
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let before = text[..at].trim_end();
@@ -791,7 +895,7 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
                 "\n\nfunc {factory_name}({params}) *{name} {{\n    return &{name}{{\n        {field_inits}\n    }}\n}}"
             )
         }
-        "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => {
+        "typescript" | "typescriptreact" => {
             let params = decl
                 .fields
                 .iter()
@@ -806,6 +910,18 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
                 .join(", ");
             format!(
                 "\n    static {factory_name}({params}): {name} {{\n        return new {name}({args});\n    }}\n"
+            )
+        }
+        "javascript" | "javascriptreact" => {
+            let params = decl
+                .fields
+                .iter()
+                .map(|f| f.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let args = params.clone();
+            format!(
+                "\n    static {factory_name}({params}) {{\n        return new {name}({args});\n    }}\n"
             )
         }
         "python" => {
@@ -895,7 +1011,12 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
             let build_fields = decl
                 .fields
                 .iter()
-                .map(|f| format!("            {}: self.{}.expect(\"{} is required\"),", f.name, f.name, f.name))
+                .map(|f| {
+                    format!(
+                        "            {}: self.{}.expect(\"{} is required\"),",
+                        f.name, f.name, f.name
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
 
@@ -931,7 +1052,7 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
                 "\n\ntype {builder_name} struct {{\n{builder_fields}\n}}\n\nfunc New{builder_name}() *{builder_name} {{\n    return &{builder_name}{{}}\n}}\n\n{setters_text}\n\nfunc (b *{builder_name}) Build() *{name} {{\n    return &{name}{{\n{build_fields}\n    }}\n}}"
             )
         }
-        "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => {
+        "typescript" | "typescriptreact" => {
             let builder_fields = decl
                 .fields
                 .iter()
@@ -959,6 +1080,31 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
                 "\n\nexport class {builder_name} {{\n{builder_fields}\n\n{setters_text}\n\n    build(): {name} {{\n        return new {name}({build_args});\n    }}\n}}\n"
             )
         }
+        "javascript" | "javascriptreact" => {
+            let initializers = decl
+                .fields
+                .iter()
+                .map(|field| format!("        this._{} = undefined;", field.name))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut setters = Vec::new();
+            for field in &decl.fields {
+                setters.push(format!(
+                    "    {}(value) {{\n        this._{} = value;\n        return this;\n    }}",
+                    field.name, field.name
+                ));
+            }
+            let setters_text = setters.join("\n\n");
+            let build_args = decl
+                .fields
+                .iter()
+                .map(|field| format!("this._{}", field.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "\n\nexport class {builder_name} {{\n    constructor() {{\n{initializers}\n    }}\n\n{setters_text}\n\n    build() {{\n        return new {name}({build_args});\n    }}\n}}\n"
+            )
+        }
         "python" => {
             let inits = decl
                 .fields
@@ -979,7 +1125,7 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
             let build_args = decl
                 .fields
                 .iter()
-                .map(|f| format!("{}={}", f.name, f.name))
+                .map(|f| format!("{}=self._{}", f.name, f.name))
                 .collect::<Vec<_>>()
                 .join(", ");
 
@@ -1049,7 +1195,9 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
 
 fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
-    chars.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + chars.as_str())
+    chars.next().map_or_else(String::new, |f| {
+        f.to_uppercase().collect::<String>() + chars.as_str()
+    })
 }
 
 /// Discovered raw instantiation to rewrite.
@@ -1058,6 +1206,7 @@ pub struct InstantiationSite {
     pub start: usize,
     pub end: usize,
     pub field_values: BTreeMap<String, String>,
+    pub field_order: Vec<String>,
     pub prefix: String,
     pub has_rest_pattern: bool,
 }
@@ -1071,6 +1220,14 @@ pub fn find_rust_instantiations(
 ) -> (Vec<InstantiationSite>, Vec<String>) {
     let mut sites = Vec::new();
     let mut blocked = Vec::new();
+    let target_self_ranges = crate::extract_field::impl_blocks(text)
+        .into_iter()
+        .filter_map(|(impl_type, _, open, close)| {
+            let base = impl_type.split('<').next().unwrap_or(&impl_type).trim();
+            let base = base.rsplit("::").next().unwrap_or(base).trim();
+            (base == type_name).then_some((open, close))
+        })
+        .collect::<Vec<_>>();
 
     let matches: Vec<(usize, &str)> = text
         .match_indices(type_name)
@@ -1078,6 +1235,13 @@ pub fn find_rust_instantiations(
         .collect();
 
     for (at, name) in matches {
+        if crate::extract_field::is_in_literal_or_comment(
+            text,
+            at,
+            crate::parameter_object::Language::Rust,
+        ) {
+            continue;
+        }
         if at >= decl_start && at < decl_end {
             continue;
         }
@@ -1085,6 +1249,13 @@ pub fn find_rust_instantiations(
             continue;
         }
         if text[at + name.len()..].chars().next().is_some_and(is_ident) {
+            continue;
+        }
+        if name == "Self"
+            && !target_self_ranges
+                .iter()
+                .any(|(open, close)| *open < at && at < *close)
+        {
             continue;
         }
         let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
@@ -1126,6 +1297,7 @@ pub fn find_rust_instantiations(
         }
 
         let mut field_values = BTreeMap::new();
+        let mut field_order = Vec::new();
         let chunks = split_balanced_commas(inner);
         for chunk in chunks {
             let trimmed = chunk.trim();
@@ -1134,9 +1306,11 @@ pub fn find_rust_instantiations(
             }
             if let Some((f, val)) = trimmed.split_once(':') {
                 field_values.insert(f.trim().to_string(), val.trim().to_string());
+                field_order.push(f.trim().to_string());
             } else if is_ident_str(trimmed) {
                 // Shorthand field: `name` is `name: name`
                 field_values.insert(trimmed.to_string(), trimmed.to_string());
+                field_order.push(trimmed.to_string());
             }
         }
 
@@ -1156,6 +1330,7 @@ pub fn find_rust_instantiations(
             start: prefix_start,
             end: close + 1,
             field_values,
+            field_order,
             prefix,
             has_rest_pattern: false,
         });
@@ -1175,13 +1350,24 @@ pub fn find_go_instantiations(
 ) -> Vec<InstantiationSite> {
     let mut sites = Vec::new();
     for (at, _) in text.match_indices(type_name) {
+        if crate::extract_field::is_in_literal_or_comment(
+            text,
+            at,
+            crate::parameter_object::Language::Go,
+        ) {
+            continue;
+        }
         if at >= decl_start && at < decl_end {
             continue;
         }
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let after = &text[at + type_name.len()..];
@@ -1201,11 +1387,22 @@ pub fn find_go_instantiations(
         };
 
         let mut field_values = BTreeMap::new();
+        let mut field_order = Vec::new();
         let inner = &text[open + 1..close];
+        let mut positional_index = 0usize;
         for chunk in split_balanced_commas(inner) {
             let trimmed = chunk.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
             if let Some((k, v)) = trimmed.split_once(':') {
                 field_values.insert(k.trim().to_string(), v.trim().to_string());
+                field_order.push(k.trim().to_string());
+            } else {
+                let key = format!("__positional_{positional_index}");
+                field_values.insert(key.clone(), trimmed.to_string());
+                field_order.push(key);
+                positional_index += 1;
             }
         }
 
@@ -1213,6 +1410,7 @@ pub fn find_go_instantiations(
             start,
             end: close + 1,
             field_values,
+            field_order,
             prefix: String::new(),
             has_rest_pattern: false,
         });
@@ -1230,6 +1428,13 @@ pub fn find_ts_instantiations(
     let mut sites = Vec::new();
     let pat = format!("new {type_name}");
     for (at, _) in text.match_indices(&pat) {
+        if crate::extract_field::is_in_literal_or_comment(
+            text,
+            at,
+            crate::parameter_object::Language::TypeScript,
+        ) {
+            continue;
+        }
         if at >= decl_start && at < decl_end {
             continue;
         }
@@ -1243,11 +1448,111 @@ pub fn find_ts_instantiations(
             continue;
         };
         let mut field_values = BTreeMap::new();
-        field_values.insert("__raw_args__".to_string(), text[open + 1..close].trim().to_string());
+        field_values.insert(
+            "__raw_args__".to_string(),
+            text[open + 1..close].trim().to_string(),
+        );
         sites.push(InstantiationSite {
             start: at,
             end: close + 1,
             field_values,
+            field_order: Vec::new(),
+            prefix: String::new(),
+            has_rest_pattern: false,
+        });
+    }
+    sites
+}
+
+/// Finds direct C++ object initializations (`T{...}` and `T(...)`).
+pub fn find_cpp_instantiations(
+    text: &str,
+    type_name: &str,
+    decl_start: usize,
+    decl_end: usize,
+) -> Vec<InstantiationSite> {
+    let mut sites = Vec::new();
+    for (at, _) in text.match_indices(type_name) {
+        if crate::extract_field::is_in_literal_or_comment(
+            text,
+            at,
+            crate::parameter_object::Language::Cpp,
+        ) || (at >= decl_start && at < decl_end)
+            || (at > 0 && text[..at].chars().next_back().is_some_and(is_ident))
+            || text[at + type_name.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_ident)
+        {
+            continue;
+        }
+        let after = &text[at + type_name.len()..];
+        let trimmed = after.trim_start();
+        let Some(_) = trimmed.chars().next().filter(|c| matches!(c, '{' | '(')) else {
+            continue;
+        };
+        let open = at + type_name.len() + after.len() - trimmed.len();
+        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+            continue;
+        };
+        let mut field_values = BTreeMap::new();
+        field_values.insert(
+            "__raw_args__".to_string(),
+            text[open + 1..close].trim().to_string(),
+        );
+        sites.push(InstantiationSite {
+            start: at,
+            end: close + 1,
+            field_values,
+            field_order: Vec::new(),
+            prefix: String::new(),
+            has_rest_pattern: false,
+        });
+    }
+    sites
+}
+
+/// Finds Swift memberwise initializer calls (`T(...)`).
+pub fn find_swift_instantiations(
+    text: &str,
+    type_name: &str,
+    decl_start: usize,
+    decl_end: usize,
+) -> Vec<InstantiationSite> {
+    let mut sites = Vec::new();
+    for (at, _) in text.match_indices(type_name) {
+        if crate::extract_field::is_in_literal_or_comment(
+            text,
+            at,
+            crate::parameter_object::Language::Swift,
+        ) || (at >= decl_start && at < decl_end)
+            || (at > 0 && text[..at].chars().next_back().is_some_and(is_ident))
+            || text[at + type_name.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_ident)
+        {
+            continue;
+        }
+        let after = &text[at + type_name.len()..];
+        let trimmed = after.trim_start();
+        if !trimmed.starts_with('(') {
+            continue;
+        }
+        let open = at + type_name.len() + after.len() - trimmed.len();
+        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+            continue;
+        };
+        let mut field_values = BTreeMap::new();
+        field_values.insert(
+            "__raw_args__".to_string(),
+            text[open + 1..close].trim().to_string(),
+        );
+        sites.push(InstantiationSite {
+            start: at,
+            end: close + 1,
+            field_values,
+            field_order: Vec::new(),
             prefix: String::new(),
             has_rest_pattern: false,
         });
@@ -1264,13 +1569,24 @@ pub fn find_python_instantiations(
 ) -> Vec<InstantiationSite> {
     let mut sites = Vec::new();
     for (at, _) in text.match_indices(type_name) {
+        if crate::extract_field::is_in_literal_or_comment(
+            text,
+            at,
+            crate::parameter_object::Language::Python,
+        ) {
+            continue;
+        }
         if at >= decl_start && at < decl_end {
             continue;
         }
         if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
             continue;
         }
-        if text[at + type_name.len()..].chars().next().is_some_and(is_ident) {
+        if text[at + type_name.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        {
             continue;
         }
         let before = text[..at].trim_end();
@@ -1287,11 +1603,15 @@ pub fn find_python_instantiations(
             continue;
         };
         let mut field_values = BTreeMap::new();
-        field_values.insert("__raw_args__".to_string(), text[open + 1..close].trim().to_string());
+        field_values.insert(
+            "__raw_args__".to_string(),
+            text[open + 1..close].trim().to_string(),
+        );
         sites.push(InstantiationSite {
             start: at,
             end: close + 1,
             field_values,
+            field_order: Vec::new(),
             prefix: String::new(),
             has_rest_pattern: false,
         });
@@ -1300,12 +1620,132 @@ pub fn find_python_instantiations(
 }
 
 /// Rewrites a single instantiation site based on mode and language.
+fn is_pure_reorder_value(value: &str) -> bool {
+    let value = value.trim();
+    if matches!(
+        value,
+        "true" | "false" | "nil" | "None" | "null" | "nullptr"
+    ) {
+        return true;
+    }
+    if value.chars().all(is_ident)
+        || value
+            .split("::")
+            .all(|part| !part.is_empty() && part.chars().all(is_ident))
+    {
+        return true;
+    }
+    if matches!(value.chars().next(), Some('\'' | '"' | '`'))
+        && value.ends_with(value.chars().next().unwrap())
+        && !value.contains("${")
+    {
+        return true;
+    }
+    value.trim_start_matches(['+', '-']).chars().all(|c| {
+        c.is_ascii_digit() || matches!(c, '.' | '_' | 'x' | 'X' | 'u' | 'U' | 'i' | 'I' | 'f' | 'F')
+    }) && value.chars().any(|c| c.is_ascii_digit())
+}
+
+fn go_zero_value(ty: &str) -> String {
+    let ty = ty.trim();
+    match ty {
+        "bool" => "false".into(),
+        "string" => "\"\"".into(),
+        "byte" | "rune" | "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
+        | "uint16" | "uint32" | "uint64" | "uintptr" | "float32" | "float64" | "complex64"
+        | "complex128" => "0".into(),
+        _ if ty.starts_with('*')
+            || ty.starts_with("[]")
+            || ty.starts_with("map[")
+            || ty.starts_with("chan ")
+            || ty.starts_with("func(")
+            || ty.starts_with("interface{")
+            || ty.starts_with("interface {")
+            || ty == "any"
+            || ty == "error" =>
+        {
+            "nil".into()
+        }
+        _ => format!("{ty}{{}}"),
+    }
+}
+
+fn go_literal_values(site: &InstantiationSite, decl: &StructDecl) -> Result<Vec<Option<String>>> {
+    let positional = site
+        .field_values
+        .keys()
+        .any(|field| field.starts_with("__positional_"));
+    if positional {
+        anyhow::ensure!(
+            site.field_values
+                .keys()
+                .all(|field| field.starts_with("__positional_")),
+            "Go literals cannot mix keyed and positional elements"
+        );
+        anyhow::ensure!(
+            site.field_values.len() <= decl.fields.len(),
+            "Go positional literal has more values than declared fields"
+        );
+        return Ok(decl
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                site.field_values
+                    .get(&format!("__positional_{index}"))
+                    .cloned()
+            })
+            .collect());
+    }
+    for field in site.field_values.keys() {
+        anyhow::ensure!(
+            decl.fields.iter().any(|declared| declared.name == *field),
+            "Go literal refers to unknown field `{field}`"
+        );
+    }
+    Ok(decl
+        .fields
+        .iter()
+        .map(|field| site.field_values.get(&field.name).cloned())
+        .collect())
+}
+
 pub fn rewrite_instantiation(
     site: &InstantiationSite,
     decl: &StructDecl,
     mode: ReplaceMode,
     target_name: &str,
 ) -> Result<String> {
+    if matches!(decl.language.as_str(), "rust" | "go")
+        && !site
+            .field_order
+            .iter()
+            .any(|field| field.starts_with("__positional_"))
+    {
+        let expected = decl
+            .fields
+            .iter()
+            .filter(|field| site.field_values.contains_key(&field.name))
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        let actual = site
+            .field_order
+            .iter()
+            .filter(|field| site.field_values.contains_key(field.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if expected != actual
+            && actual.iter().any(|field| {
+                site.field_values
+                    .get(*field)
+                    .is_some_and(|value| !is_pure_reorder_value(value))
+            })
+        {
+            anyhow::bail!(
+                "literal field expressions are ordered differently from the declaration and may have side effects; nothing was rewritten"
+            );
+        }
+    }
     match decl.language.as_str() {
         "rust" => {
             let type_ref = format!("{}{}", site.prefix, decl.name);
@@ -1313,10 +1753,9 @@ pub fn rewrite_instantiation(
                 ReplaceMode::Factory => {
                     let mut args = Vec::new();
                     for f in &decl.fields {
-                        let val = site
-                            .field_values
-                            .get(&f.name)
-                            .with_context(|| format!("missing field `{}` in struct literal", f.name))?;
+                        let val = site.field_values.get(&f.name).with_context(|| {
+                            format!("missing field `{}` in struct literal", f.name)
+                        })?;
                         args.push(val.clone());
                     }
                     Ok(format!("{type_ref}::{target_name}({})", args.join(", ")))
@@ -1332,31 +1771,25 @@ pub fn rewrite_instantiation(
                 }
             }
         }
-        "go" => {
-            match mode {
-                ReplaceMode::Factory => {
-                    let mut args = Vec::new();
-                    for f in &decl.fields {
-                        let val = site
-                            .field_values
-                            .get(&f.name)
-                            .cloned()
-                            .unwrap_or_else(|| f.name.clone());
-                        args.push(val);
-                    }
-                    Ok(format!("{target_name}({})", args.join(", ")))
-                }
-                ReplaceMode::Builder => {
-                    let mut chain = String::new();
-                    for f in &decl.fields {
-                        if let Some(val) = site.field_values.get(&f.name) {
-                            chain.push_str(&format!(".{}({})", f.name, val));
-                        }
-                    }
-                    Ok(format!("New{target_name}(){chain}.Build()"))
-                }
+        "go" => match mode {
+            ReplaceMode::Factory => {
+                let args = go_literal_values(site, decl)?
+                    .into_iter()
+                    .zip(&decl.fields)
+                    .map(|(value, field)| value.unwrap_or_else(|| go_zero_value(&field.ty)))
+                    .collect::<Vec<_>>();
+                Ok(format!("{target_name}({})", args.join(", ")))
             }
-        }
+            ReplaceMode::Builder => {
+                let mut chain = String::new();
+                for (field, value) in decl.fields.iter().zip(go_literal_values(site, decl)?) {
+                    if let Some(value) = value {
+                        chain.push_str(&format!(".{}({})", field.name, value));
+                    }
+                }
+                Ok(format!("New{target_name}(){chain}.Build()"))
+            }
+        },
         "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => {
             let raw_args = site
                 .field_values
@@ -1366,7 +1799,22 @@ pub fn rewrite_instantiation(
             match mode {
                 ReplaceMode::Factory => Ok(format!("{}.{target_name}({raw_args})", decl.name)),
                 ReplaceMode::Builder => {
-                    Ok(format!("{}.builder().build()", decl.name))
+                    let args = if raw_args.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        split_balanced_commas(raw_args)
+                    };
+                    anyhow::ensure!(
+                        args.len() <= decl.fields.len(),
+                        "constructor call has more arguments than fields the builder can set"
+                    );
+                    let setters = decl
+                        .fields
+                        .iter()
+                        .zip(args)
+                        .map(|(field, value)| format!(".{}({})", field.name, value.trim()))
+                        .collect::<String>();
+                    Ok(format!("new {target_name}(){setters}.build()"))
                 }
             }
         }
@@ -1379,20 +1827,96 @@ pub fn rewrite_instantiation(
             match mode {
                 ReplaceMode::Factory => Ok(format!("{}.{target_name}({raw_args})", decl.name)),
                 ReplaceMode::Builder => {
-                    Ok(format!("{}.builder().build()", decl.name))
+                    let args = if raw_args.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        split_balanced_commas(raw_args)
+                    };
+                    let mut setters = Vec::new();
+                    for (index, arg) in args.iter().enumerate() {
+                        let (field_name, value) = if let Some((name, value)) = arg.split_once('=') {
+                            (name.trim(), value.trim())
+                        } else {
+                            let field = decl.fields.get(index).with_context(|| {
+                                "constructor call has more arguments than fields the builder can set"
+                            })?;
+                            (field.name.as_str(), arg.trim())
+                        };
+                        anyhow::ensure!(
+                            decl.fields.iter().any(|field| field.name == field_name),
+                            "constructor argument `{field_name}` does not match a field the builder can set"
+                        );
+                        setters.push(format!(".{field_name}({value})"));
+                    }
+                    Ok(format!("{target_name}(){}.build()", setters.join("")))
                 }
             }
         }
         "cpp" | "c" => {
+            let raw_args = site
+                .field_values
+                .get("__raw_args__")
+                .map(String::as_str)
+                .unwrap_or("");
             match mode {
-                ReplaceMode::Factory => Ok(format!("{}::{target_name}()", decl.name)),
-                ReplaceMode::Builder => Ok(format!("{}::builder().build()", decl.name)),
+                ReplaceMode::Factory => Ok(format!("{}::{target_name}({raw_args})", decl.name)),
+                ReplaceMode::Builder => {
+                    let args = if raw_args.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        split_balanced_commas(raw_args)
+                    };
+                    anyhow::ensure!(
+                        args.len() <= decl.fields.len(),
+                        "constructor call has more arguments than fields the builder can set"
+                    );
+                    let setters = decl
+                        .fields
+                        .iter()
+                        .zip(args)
+                        .map(|(field, value)| format!(".{}({})", field.name, value.trim()))
+                        .collect::<String>();
+                    Ok(format!("{target_name}{{}}{setters}.build()"))
+                }
             }
         }
         "swift" => {
+            let raw_args = site
+                .field_values
+                .get("__raw_args__")
+                .map(String::as_str)
+                .unwrap_or("");
             match mode {
-                ReplaceMode::Factory => Ok(format!("{}.{target_name}()", decl.name)),
-                ReplaceMode::Builder => Ok(format!("{}.builder().build()", decl.name)),
+                ReplaceMode::Factory => Ok(format!("{}.{target_name}({raw_args})", decl.name)),
+                ReplaceMode::Builder => {
+                    let args = if raw_args.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        split_balanced_commas(raw_args)
+                    };
+                    anyhow::ensure!(
+                        args.len() <= decl.fields.len(),
+                        "constructor call has more arguments than fields the builder can set"
+                    );
+                    let mut setters = Vec::new();
+                    for (index, arg) in args.iter().enumerate() {
+                        let (field_name, value) = if let Some((label, value)) = arg.split_once(':')
+                        {
+                            (label.trim(), value.trim())
+                        } else {
+                            let field = decl.fields.get(index).with_context(|| {
+                                "constructor call has more arguments than fields the builder can set"
+                            })?;
+                            (field.name.as_str(), arg.trim())
+                        };
+                        anyhow::ensure!(
+                            decl.fields.iter().any(|field| field.name == field_name),
+                            "constructor argument label `{field_name}` does not match a field the builder can set"
+                        );
+                        setters.push(format!(".set{}({value})", capitalize(field_name)));
+                    }
+                    Ok(format!("{target_name}(){}.build()", setters.join("")))
+                }
             }
         }
         _ => anyhow::bail!("unsupported language: {}", decl.language),
@@ -1412,12 +1936,11 @@ pub async fn replace_constructor_impl(
     force: bool,
     verify: Option<&str>,
 ) -> Result<ReplaceConstructorResult> {
-    let decl_text = std::fs::read_to_string(file)
-        .with_context(|| format!("cannot read {}", file.display()))?;
+    let decl_text =
+        std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     let language = crate::lang::language_id_for_path(file).to_string();
 
     let decl = parse_struct_declaration(&decl_text, type_name, &language)?;
-
     let target_name = match target_name_opt {
         Some(n) => n.to_string(),
         None => match mode {
@@ -1442,10 +1965,30 @@ pub async fn replace_constructor_impl(
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
 
     // 1. Add generated factory / builder declaration to the defining file
+    let insert_at = if mode == ReplaceMode::Factory
+        && matches!(
+            language.as_str(),
+            "typescript"
+                | "typescriptreact"
+                | "javascript"
+                | "javascriptreact"
+                | "cpp"
+                | "c"
+                | "swift"
+        ) {
+        decl.decl_end.saturating_sub(1)
+    } else if mode == ReplaceMode::Builder
+        && matches!(language.as_str(), "cpp" | "c")
+        && decl_text.as_bytes().get(decl.decl_end) == Some(&b';')
+    {
+        decl.decl_end + 1
+    } else {
+        decl.decl_end
+    };
     edits
         .entry(file.to_path_buf())
         .or_default()
-        .push((decl.decl_end, 0, generated_code));
+        .push((insert_at, 0, generated_code));
 
     let mut all_blocked = Vec::new();
     let mut instantiations_rewritten = 0usize;
@@ -1482,10 +2025,32 @@ pub async fn replace_constructor_impl(
                 find_python_instantiations(&body, type_name, 0, 0),
                 Vec::new(),
             ),
+            "cpp" | "c" => (
+                find_cpp_instantiations(
+                    &body,
+                    type_name,
+                    if path == file { decl.decl_start } else { 0 },
+                    if path == file { decl.decl_end } else { 0 },
+                ),
+                Vec::new(),
+            ),
+            "swift" => (
+                find_swift_instantiations(
+                    &body,
+                    type_name,
+                    if path == file { decl.decl_start } else { 0 },
+                    if path == file { decl.decl_end } else { 0 },
+                ),
+                Vec::new(),
+            ),
             _ => (Vec::new(), Vec::new()),
         };
 
-        all_blocked.extend(blocked.into_iter().map(|b| format!("{}: {b}", display(root, &path))));
+        all_blocked.extend(
+            blocked
+                .into_iter()
+                .map(|b| format!("{}: {b}", display(root, &path))),
+        );
 
         for site in sites {
             match rewrite_instantiation(&site, &decl, mode, &target_name) {
@@ -1498,11 +2063,7 @@ pub async fn replace_constructor_impl(
                     instantiations_rewritten += 1;
                 }
                 Err(err) => {
-                    all_blocked.push(format!(
-                        "{} at {}: {err}",
-                        display(root, &path),
-                        site.start
-                    ));
+                    all_blocked.push(format!("{} at {}: {err}", display(root, &path), site.start));
                 }
             }
         }
@@ -1565,7 +2126,7 @@ pub async fn replace_constructor_impl(
     let mut applied = false;
     if apply {
         anyhow::ensure!(
-            all_blocked.is_empty() || force,
+            all_blocked.is_empty(),
             "{} instantiation(s) could not be safely rewritten; nothing was written:\n  {}",
             all_blocked.len(),
             all_blocked.join("\n  ")
@@ -1587,7 +2148,11 @@ pub async fn replace_constructor_impl(
         file: display(root, file),
         mode,
         target_name,
-        declared_fields: decl.fields.iter().map(|f| format!("{}: {}", f.name, f.ty)).collect(),
+        declared_fields: decl
+            .fields
+            .iter()
+            .map(|f| format!("{}: {}", f.name, f.ty))
+            .collect(),
         instantiations_rewritten,
         blocked: all_blocked,
         unmatched: Vec::new(),
@@ -1678,8 +2243,12 @@ pub struct User {
         assert_eq!(decl.fields[2].ty, "Option<String>");
 
         let factory = generate_factory_code(&decl, "new");
-        assert!(factory.contains("pub fn new(name: String, age: u32, email: Option<String>) -> Self"));
-        assert!(factory.contains("Self {\n            name,\n            age,\n            email,\n        }"));
+        assert!(
+            factory.contains("pub fn new(name: String, age: u32, email: Option<String>) -> Self")
+        );
+        assert!(factory.contains(
+            "Self {\n            name,\n            age,\n            email,\n        }"
+        ));
 
         let builder = generate_builder_code(&decl, "UserBuilder");
         assert!(builder.contains("pub struct UserBuilder"));
@@ -1706,7 +2275,8 @@ fn run() {
 }
 "#;
         let decl = parse_rust_struct_decl(code, "Config").unwrap();
-        let (sites, blocked) = find_rust_instantiations(code, "Config", decl.decl_start, decl.decl_end);
+        let (sites, blocked) =
+            find_rust_instantiations(code, "Config", decl.decl_start, decl.decl_end);
         assert!(blocked.is_empty());
         assert_eq!(sites.len(), 3);
 
@@ -1723,8 +2293,12 @@ fn run() {
         assert_eq!(r3, "Config::new(host, port)");
 
         // Builder rewrite
-        let b1 = rewrite_instantiation(&sites[0], &decl, ReplaceMode::Builder, "ConfigBuilder").unwrap();
-        assert_eq!(b1, "Config::builder().host(\"127.0.0.1\".into()).port(8080).build()");
+        let b1 =
+            rewrite_instantiation(&sites[0], &decl, ReplaceMode::Builder, "ConfigBuilder").unwrap();
+        assert_eq!(
+            b1,
+            "Config::builder().host(\"127.0.0.1\".into()).port(8080).build()"
+        );
     }
 
     #[test]
@@ -1741,7 +2315,8 @@ fn foo() {
 }
 "#;
         let decl = parse_rust_struct_decl(code, "Point").unwrap();
-        let (sites, blocked) = find_rust_instantiations(code, "Point", decl.decl_start, decl.decl_end);
+        let (sites, blocked) =
+            find_rust_instantiations(code, "Point", decl.decl_start, decl.decl_end);
         assert_eq!(sites.len(), 1);
         assert_eq!(blocked.len(), 1);
         assert!(blocked[0].contains("struct update syntax `..`"));

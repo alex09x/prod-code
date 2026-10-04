@@ -1,14 +1,22 @@
 use prod_code_mcp::replace_constructor::{
-    find_go_instantiations, find_python_instantiations, find_rust_instantiations,
-    find_ts_instantiations, generate_builder_code, generate_factory_code,
-    parse_go_struct_fields, parse_python_fields, parse_rust_struct_decl, parse_rust_struct_fields,
+    ReplaceMode, find_go_instantiations, find_python_instantiations, find_rust_instantiations,
+    find_ts_instantiations, generate_builder_code, generate_factory_code, parse_go_struct_fields,
+    parse_python_fields, parse_rust_struct_decl, parse_rust_struct_fields,
     parse_struct_declaration, parse_ts_fields, replace_constructor_with_builder,
-    replace_constructor_with_factory, rewrite_instantiation, ReplaceMode,
+    replace_constructor_with_factory, rewrite_instantiation,
 };
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+
+async fn fake_gateway() -> ScriptedGateway {
+    ScriptedGateway::start(|method, _params| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await
+}
 
 #[test]
 fn test_rust_parse_struct_and_generate_factory() {
@@ -127,7 +135,8 @@ fn test_polyglot_helpers() {
     assert_eq!(g_fields.len(), 2);
     let g_sites = find_go_instantiations(go_code, "Item", g_decl.decl_start, g_decl.decl_end);
     assert_eq!(g_sites.len(), 1);
-    let g_rw = rewrite_instantiation(&g_sites[0], &g_decl, ReplaceMode::Factory, "NewItem").unwrap();
+    let g_rw =
+        rewrite_instantiation(&g_sites[0], &g_decl, ReplaceMode::Factory, "NewItem").unwrap();
     assert_eq!(g_rw, "NewItem(\"Book\", 19.99)");
 
     // TypeScript fields & instantiations
@@ -138,7 +147,8 @@ fn test_polyglot_helpers() {
     assert_eq!(ts_fields.len(), 2);
     let ts_sites = find_ts_instantiations(ts_code, "Greeter", ts_decl.decl_start, ts_decl.decl_end);
     assert_eq!(ts_sites.len(), 1);
-    let ts_rw = rewrite_instantiation(&ts_sites[0], &ts_decl, ReplaceMode::Factory, "create").unwrap();
+    let ts_rw =
+        rewrite_instantiation(&ts_sites[0], &ts_decl, ReplaceMode::Factory, "create").unwrap();
     assert_eq!(ts_rw, "Greeter.create(\"Hello\")");
 
     // Python fields & instantiations
@@ -147,9 +157,11 @@ fn test_polyglot_helpers() {
     assert_eq!(py_decl.fields.len(), 2);
     let py_fields = parse_python_fields("def __init__(self, x: int, y: int): pass");
     assert_eq!(py_fields.len(), 2);
-    let py_sites = find_python_instantiations(py_code, "Order", py_decl.decl_start, py_decl.decl_end);
+    let py_sites =
+        find_python_instantiations(py_code, "Order", py_decl.decl_start, py_decl.decl_end);
     assert_eq!(py_sites.len(), 1);
-    let py_rw = rewrite_instantiation(&py_sites[0], &py_decl, ReplaceMode::Factory, "create").unwrap();
+    let py_rw =
+        rewrite_instantiation(&py_sites[0], &py_decl, ReplaceMode::Factory, "create").unwrap();
     assert_eq!(py_rw, "Order.create(1, \"Tea\")");
 }
 
@@ -167,10 +179,7 @@ pub fn make_default_server() -> ServerOpts {
     }
 }
 "#;
-    let ws = Workspace::new(&[
-        ("Cargo.toml", CARGO_TOML),
-        ("src/lib.rs", initial_code),
-    ]);
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", initial_code)]);
     let root = ws.root();
     let lib_rs = root.join("src/lib.rs");
 
@@ -217,10 +226,7 @@ pub fn make_client() -> ClientConfig {
     }
 }
 "#;
-    let ws = Workspace::new(&[
-        ("Cargo.toml", CARGO_TOML),
-        ("src/lib.rs", initial_code),
-    ]);
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", initial_code)]);
     let root = ws.root();
     let lib_rs = root.join("src/lib.rs");
 
@@ -265,10 +271,7 @@ pub fn make_task() -> Task {
     Task { id: 42, title: "Deliver Milestone 14".to_string() }
 }
 "#;
-    let ws = Workspace::new(&[
-        ("Cargo.toml", CARGO_TOML),
-        ("src/lib.rs", initial_code),
-    ]);
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", initial_code)]);
     let root = ws.root();
     let lib_rs = root.join("src/lib.rs");
 
@@ -297,4 +300,322 @@ pub fn make_task() -> Task {
     assert!(!res.is_error);
     let modified = fs::read_to_string(&lib_rs).unwrap();
     assert!(modified.contains("Task::new(42, \"Deliver Milestone 14\".to_string())"));
+}
+
+#[test]
+fn rust_constructor_discovery_skips_comments_strings_and_foreign_self() {
+    let source = r#"struct Config {
+    value: i32,
+}
+
+impl Config {
+    fn make() -> Self { Self { value: 1 } }
+}
+
+impl Other {
+    fn make() -> Self { Self { value: 2 } }
+}
+
+fn test() {
+    let _example = "Config { value: 3 }";
+    // Config { value: 4 }
+    let _actual = Config { value: 5 };
+}
+"#;
+    let decl = parse_rust_struct_decl(source, "Config").unwrap();
+    let (sites, blocked) =
+        find_rust_instantiations(source, "Config", decl.decl_start, decl.decl_end);
+    assert!(blocked.is_empty(), "{blocked:?}");
+    assert_eq!(sites.len(), 2, "{sites:?}");
+}
+
+#[test]
+fn rust_constructor_rewrite_refuses_side_effect_reordering() {
+    let source = r#"struct Pair {
+    second: i32,
+    first: i32,
+}
+fn make() -> Pair { Pair { first: observe(), second: mutate() } }
+"#;
+    let decl = parse_rust_struct_decl(source, "Pair").unwrap();
+    let (sites, blocked) = find_rust_instantiations(source, "Pair", decl.decl_start, decl.decl_end);
+    assert!(blocked.is_empty());
+    let err = rewrite_instantiation(&sites[0], &decl, ReplaceMode::Factory, "new").unwrap_err();
+    assert!(err.to_string().contains("ordered differently"), "{err:#}");
+}
+
+#[test]
+fn go_constructor_rewrite_preserves_omitted_and_positional_field_values() {
+    let source = r#"package example
+type User struct {
+    Name string
+    Age int
+}
+func make() {
+    _ = &User{Name: "Ada"}
+    _ = User{"Grace", 37}
+}
+"#;
+    let decl = parse_struct_declaration(source, "User", "go").unwrap();
+    let sites = find_go_instantiations(source, "User", decl.decl_start, decl.decl_end);
+    assert_eq!(sites.len(), 2, "{sites:?}");
+    assert_eq!(
+        rewrite_instantiation(&sites[0], &decl, ReplaceMode::Factory, "NewUser").unwrap(),
+        "NewUser(\"Ada\", 0)"
+    );
+    assert_eq!(
+        rewrite_instantiation(&sites[1], &decl, ReplaceMode::Factory, "NewUser").unwrap(),
+        "NewUser(\"Grace\", 37)"
+    );
+}
+
+#[tokio::test]
+async fn javascript_factory_is_inserted_in_class_and_preserves_constructor_arguments() {
+    let source = r#"export class Point {
+    constructor(public x: number, public y: number) {}
+}
+const point = new Point(computeX(), 2);
+const example = "new Point(3, 4)";
+// new Point(5, 6)
+"#;
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("point.ts", source)]);
+    let root = ws.root();
+    let file = root.join("point.ts");
+    let gateway = fake_gateway().await;
+
+    let result = replace_constructor_with_factory(
+        gateway.addr(),
+        &root,
+        &file,
+        "Point",
+        Some("create"),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.instantiations_rewritten, 1);
+    let content = fs::read_to_string(file).unwrap();
+    let class_end = content.find("\n}").expect("class close");
+    assert!(content[..class_end].contains("static create(x: number, y: number): Point"));
+    assert!(content.contains("Point.create(computeX(), 2)"), "{content}");
+    assert!(content.contains("\"new Point(3, 4)\""), "{content}");
+    assert!(content.contains("// new Point(5, 6)"), "{content}");
+}
+
+#[tokio::test]
+async fn javascript_factory_has_no_typescript_return_annotation() {
+    let source = "class Greeter { constructor() {} }\nconst g = new Greeter();\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("greeter.js", source)]);
+    let root = ws.root();
+    let file = root.join("greeter.js");
+    let gateway = fake_gateway().await;
+
+    let result = replace_constructor_with_factory(
+        gateway.addr(),
+        &root,
+        &file,
+        "Greeter",
+        Some("create"),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.instantiations_rewritten, 1);
+    let content = fs::read_to_string(file).unwrap();
+    assert!(content.contains("static create() {"), "{content}");
+    assert!(!content.contains("static create(): Greeter"), "{content}");
+    assert!(content.contains("const g = Greeter.create();"), "{content}");
+}
+
+#[tokio::test]
+async fn python_builder_uses_values_saved_by_its_setters() {
+    let source = "class Person:\n    name: str\n    def __init__(self, name):\n        self.name = name\nperson = Person(\"Ada\")\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("person.py", source)]);
+    let root = ws.root();
+    let file = root.join("person.py");
+    let gateway = fake_gateway().await;
+
+    let result = replace_constructor_with_builder(
+        gateway.addr(),
+        &root,
+        &file,
+        "Person",
+        Some("PersonBuilder"),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.instantiations_rewritten, 1);
+    let content = fs::read_to_string(file).unwrap();
+    assert!(
+        content.contains("PersonBuilder().name(\"Ada\").build()"),
+        "{content}"
+    );
+    assert!(
+        content.contains("return Person(name=self._name)"),
+        "{content}"
+    );
+    assert!(!content.contains("return Person(name=name)"), "{content}");
+}
+
+#[tokio::test]
+async fn cpp_and_swift_factory_discovery_preserves_constructor_arguments() {
+    let cases = [
+        (
+            "point.cpp",
+            "struct Point {\n    int x;\n    int y;\n};\nPoint make() { return Point{computeX(), 2}; }\nconst char* example = \"Point{3, 4}\";\n// Point{5, 6}\n",
+            "cpp",
+            "Point::create(computeX(), 2)",
+        ),
+        (
+            "point.swift",
+            "struct Point {\n    var x: Int\n    var y: Int\n}\nfunc make() -> Point { return Point(x: computeX(), y: 2) }\nlet example = \"Point(x: 3, y: 4)\"\n// Point(x: 5, y: 6)\n",
+            "swift",
+            "Point.create(x: computeX(), y: 2)",
+        ),
+    ];
+    for (path, source, _, expected_call) in cases {
+        let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), (path, source)]);
+        let root = ws.root();
+        let file = root.join(path);
+        let gateway = fake_gateway().await;
+        let result = replace_constructor_with_factory(
+            gateway.addr(),
+            &root,
+            &file,
+            "Point",
+            Some("create"),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.instantiations_rewritten, 1, "{path}");
+        let content = fs::read_to_string(file).unwrap();
+        assert!(content.contains(expected_call), "{path}: {content}");
+        let type_close = if path.ends_with(".cpp") {
+            content.find("\n};").unwrap()
+        } else {
+            content.find("\n}").unwrap()
+        };
+        assert!(
+            content[..type_close].contains("static"),
+            "{path}: {content}"
+        );
+        assert!(
+            content.contains("\"Point{3, 4}\"") || content.contains("\"Point(x: 3, y: 4)\""),
+            "{path}: {content}"
+        );
+        assert!(content.contains("// Point"), "{path}: {content}");
+    }
+}
+
+#[tokio::test]
+async fn cpp_and_swift_builders_route_constructor_arguments_through_setters() {
+    let cases = [
+        (
+            "point.cpp",
+            "struct Point {\n    int x;\n};\nPoint make() { return Point{loadX()}; }\n",
+            "PointBuilder{}.x(loadX()).build()",
+        ),
+        (
+            "point.swift",
+            "struct Point {\n    var x: Int\n}\nfunc make() -> Point { return Point(x: loadX()) }\n",
+            "PointBuilder().setX(loadX()).build()",
+        ),
+    ];
+    for (path, source, expected_call) in cases {
+        let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), (path, source)]);
+        let root = ws.root();
+        let file = root.join(path);
+        let gateway = fake_gateway().await;
+        let result = replace_constructor_with_builder(
+            gateway.addr(),
+            &root,
+            &file,
+            "Point",
+            Some("PointBuilder"),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.instantiations_rewritten, 1, "{path}");
+        let content = fs::read_to_string(file).unwrap();
+        assert!(content.contains(expected_call), "{path}: {content}");
+    }
+}
+
+#[tokio::test]
+async fn typescript_builder_routes_constructor_arguments_through_setters() {
+    let source = "export class Person {\n    constructor(public name: string, public age: number) {}\n}\nconst p = new Person(loadName(), 37);\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("person.ts", source)]);
+    let root = ws.root();
+    let file = root.join("person.ts");
+    let gateway = fake_gateway().await;
+
+    let result = replace_constructor_with_builder(
+        gateway.addr(),
+        &root,
+        &file,
+        "Person",
+        Some("PersonBuilder"),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.instantiations_rewritten, 1);
+    let content = fs::read_to_string(file).unwrap();
+    assert!(
+        content.contains("new PersonBuilder().name(loadName()).age(37).build()"),
+        "{content}"
+    );
+}
+
+#[tokio::test]
+async fn javascript_builder_routes_assigned_constructor_properties_without_types() {
+    let source = "class Person { constructor(name) { this.name = name; } }\nconst p = new Person(loadName());\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("person.js", source)]);
+    let root = ws.root();
+    let file = root.join("person.js");
+    let gateway = fake_gateway().await;
+
+    let result = replace_constructor_with_builder(
+        gateway.addr(),
+        &root,
+        &file,
+        "Person",
+        Some("PersonBuilder"),
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.instantiations_rewritten, 1);
+    let content = fs::read_to_string(file).unwrap();
+    assert!(
+        content.contains("new PersonBuilder().name(loadName()).build()"),
+        "{content}"
+    );
+    assert!(content.contains("class PersonBuilder"), "{content}");
+    assert!(!content.contains("private _name?"), "{content}");
+    assert!(!content.contains("value: "), "{content}");
 }
