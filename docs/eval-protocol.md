@@ -639,4 +639,12 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,824 invariant assertion checks across 233 files in 496 ms (512 `assert($A)` matches and 1,312 `doAssert($A)` matches across AST validation and type-checking routines). AST program slicing verified minimal data-flow paths through symbol resolution tables (`suggestsymdb.nim`), reducing AST dependency trees by 94%.
     - **Full Deep-Dive Report**: [Nim Under the Microscope: What 67 Remote AST Tools Found Inside the Self-Hosted Metaprogramming Compiler (prod.codes)](https://prod.codes/blog/nim-under-the-microscope-67-ast-tools/)
 
+48. **[status-im/nimbus-eth2](https://github.com/status-im/nimbus-eth2)** (Nim)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 179,711 lines of Nim across 379 source files (core beacon chain `beacon_chain/`: 125.1K LOC across 233 files, consensus tests `tests/`: 48.4K LOC across 129 files, node CLI `ncli/`: 4.6K LOC across 9 files), 0.63 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Ethereum consensus client engine analyzed with `prod-code dependencies` across root `beacon_chain.nimble`. Discovered zero circular dependencies (clean directed acyclic graph) separating network transport (`libp2p`), state transition mechanics (`spec/state_transition.nim`), block database storage (`beacon_chain_db.nim`), and versioned fork definitions (`spec/datatypes/`). Clone analysis (`prod-code duplicates`) scanned 383 files (180,639 lines) and isolated 5 clone groups with 0.4% duplication at 10 lines, dominated by Clone Group #2206 with 19 occurrences of consensus state headers across consecutive Ethereum hard-fork specifications (Phase 0, Altair, Bellatrix, Capella, Deneb, Electra, Fulu).
+    - **Semantic Guards & Refactorings**: Structural search scanned sources identifying zero-exception verification practices powered by 585 `Result[T, E]` type declarations throughout consensus verification and state transition functions, backed by 194 invariant assertions. AST refactoring evaluated `prod-code extract-function` across consensus serialization wrappers, verified with clean AST construction on remote nodes.
+    - **Full Deep-Dive Report**: [Nimbus Under the Microscope: What 67 Remote AST Tools Found Inside the Ethereum Consensus Client (prod.codes)](https://prod.codes/blog/nimbus-under-the-microscope-67-ast-tools/)
+
 
