@@ -1175,9 +1175,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root_path = root.path().to_path_buf();
         let root_text = root_path.to_string_lossy().into_owned();
+        let probe_marker = root_path.join("health-probe-seen");
+        let probe_marker_text = probe_marker.to_string_lossy().into_owned();
         let translator = PathTranslator::new(&root_text, &root_text);
         let script = concat!(
             "import json, sys\n",
+            "import os\n",
             "while True:\n",
             "    length = None\n",
             "    while True:\n",
@@ -1186,6 +1189,7 @@ mod tests {
             "        if line in (b'\\r\\n', b'\\n'): break\n",
             "        if line.lower().startswith(b'content-length:'): length = int(line.split(b':', 1)[1])\n",
             "    message = json.loads(sys.stdin.buffer.read(length))\n",
+            "    if message.get('method') == 'prodCode/healthProbe': open(os.environ['PROBE_MARKER'], 'w').write('seen')\n",
             "    result = {'capabilities': {}} if message.get('method') == 'initialize' else {}\n",
             "    body = json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}).encode()\n",
             "    sys.stdout.buffer.write(b'Content-Length: %d\\r\\n\\r\\n' % len(body) + body)\n",
@@ -1194,7 +1198,7 @@ mod tests {
         let command = ServerCommand {
             program: "python3".to_string(),
             args: vec!["-u".to_string(), "-c".to_string(), script.to_string()],
-            env: Vec::new(),
+            env: vec![("PROBE_MARKER".to_string(), probe_marker_text)],
             ready: ReadySignal::Unknown,
         };
         let servers = EditorServers::default();
@@ -1246,34 +1250,25 @@ mod tests {
             matches!(init, WireMessage::LspPayload(payload) if serde_json::from_str::<serde_json::Value>(&payload).unwrap()["id"] == 1)
         );
 
-        let mut probe_id = None;
-        for _ in 0..12 {
+        // Allow several probe intervals after initialization; the first interval may have
+        // elapsed before the initialization response made probes eligible.
+        for _ in 0..24 {
             client.send(WireMessage::Ping).await.unwrap();
             let response = tokio::time::timeout(Duration::from_millis(40), client.next())
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            match response {
-                WireMessage::Pong => {}
-                WireMessage::LspPayload(payload) => {
-                    let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
-                    if value["method"] == HEALTH_PROBE_METHOD {
-                        probe_id = value.get("id").cloned();
-                        break;
-                    }
-                }
-                other => panic!("unexpected message: {other:?}"),
+            assert!(matches!(response, WireMessage::Pong));
+            if probe_marker.exists() {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
-        let probe_id = probe_id.expect("health probe should run despite gateway pings");
-        client
-            .send(WireMessage::LspPayload(
-                serde_json::json!({"jsonrpc":"2.0","id":probe_id,"result":{}}).to_string(),
-            ))
-            .await
-            .unwrap();
+        assert!(
+            probe_marker.exists(),
+            "health probe should reach the LSP server despite gateway pings"
+        );
         client
             .send(WireMessage::Disconnect {
                 reason: "test complete".to_string(),
