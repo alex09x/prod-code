@@ -77,16 +77,16 @@ def make_cpio_trailer() -> bytes:
 class RpmHeaderBuilder:
     """Builds binary RPM header structure with index and data sections."""
 
-    RPM_NULL = 1
-    RPM_CHAR = 2
-    RPM_INT8 = 3
-    RPM_INT16 = 4
-    RPM_INT32 = 5
-    RPM_INT64 = 6
-    RPM_STRING = 7
-    RPM_BIN = 8
-    RPM_STRING_ARRAY = 9
-    RPM_I18NSTRING = 11
+    RPM_NULL = 0
+    RPM_CHAR = 1
+    RPM_INT8 = 2
+    RPM_INT16 = 3
+    RPM_INT32 = 4
+    RPM_INT64 = 5
+    RPM_STRING = 6
+    RPM_BIN = 7
+    RPM_STRING_ARRAY = 8
+    RPM_I18NSTRING = 9
 
     def __init__(self):
         self.entries: List[Tuple[int, int, bytes, int]] = []
@@ -212,8 +212,8 @@ def build_rpm(
     gh.add_string(1022, rpm_arch)                   # ARCH
 
     if postin_script:
-        gh.add_string(1023, postin_script)          # POSTIN
-        gh.add_string(1024, "/bin/sh")              # POSTINPROG
+        gh.add_string(1024, postin_script)          # POSTIN
+        gh.add_string_array(1086, ["/bin/sh"])     # POSTINPROG
 
     # Split files into dirnames, basenames, dirindexes
     dir_to_idx = {}
