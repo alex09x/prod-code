@@ -2730,7 +2730,7 @@ pub fn compiler_cache_env(workspace: &Path, ccache: bool) -> Vec<(String, String
             "CCACHE_SLOPPINESS".to_string(),
             "pch_defines,time_macros".to_string(),
         ),
-        ("CCACHE_PCH_EXTERNAL_CHECKS".to_string(), "1".to_string()),
+        ("CCACHE_PCH_EXTSUM".to_string(), "1".to_string()),
         (
             "CMAKE_C_COMPILER_LAUNCHER".to_string(),
             "ccache".to_string(),
@@ -9347,7 +9347,7 @@ mod tests {
         assert_eq!(get("CCACHE_BASEDIR"), Some("/srv/workspaces/shop--wt-1a2b"));
         assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
         assert_eq!(get("CCACHE_SLOPPINESS"), Some("pch_defines,time_macros"));
-        assert_eq!(get("CCACHE_PCH_EXTERNAL_CHECKS"), Some("1"));
+        assert_eq!(get("CCACHE_PCH_EXTSUM"), Some("1"));
         assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
         assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
         assert!(on_path("sh"), "sh is on PATH on every node");
