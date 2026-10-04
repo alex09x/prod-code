@@ -275,6 +275,15 @@ fn identity(d: &DocDiagnostic, text: &str) -> (String, Option<String>, String, S
     (d.severity.clone(), d.code.clone(), d.message.clone(), line)
 }
 
+fn refresh_hallucinations(report: &mut DiagnosticsReport) {
+    report.hallucinations = report
+        .items
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == "error")
+        .filter_map(classify_hallucination)
+        .collect();
+}
+
 /// Moves from `report.items` to `report.preexisting` every diagnostic that `before` — the same
 /// file's diagnostics against `before_text`, the text on disk — already had. Each diagnostic
 /// before the edit accounts for at most one after it, so a second copy of an old error on a new
@@ -318,6 +327,7 @@ fn set_aside_preexisting(
         .iter()
         .filter(|d| d.severity == "warning")
         .count();
+    refresh_hallucinations(report);
 }
 
 /// Moves to `report.in_derive` every E0282 on a line of `text` that is a `#[derive(...)]`
@@ -350,6 +360,7 @@ fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
         .iter()
         .filter(|d| d.severity == "warning")
         .count();
+    refresh_hallucinations(report);
 }
 
 /// Whether an E0277 message is about an auto trait: "the trait bound `NonNull<()>: Send` is
@@ -2379,6 +2390,7 @@ async fn reconcile_swift_cross_target_diagnostics(
                 .iter()
                 .filter(|item| item.severity == "warning")
                 .count();
+            refresh_hallucinations(report);
         }
     }
 
@@ -2790,6 +2802,25 @@ mod tests {
             shown.contains("2 diagnostic(s) the file already had before this edit are not counted: 2× type annotations needed [E0282]"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_preexisting_error_is_removed_from_stream_interceptions() {
+        let text = "fn call() { value.missing(); }\n";
+        let error = DocDiagnostic {
+            code: Some("unresolved-method".to_string()),
+            ..diagnostic("error", "no method named `missing` found", 1)
+        };
+        let before = report_of(vec![error.clone()]);
+        let mut report = report_of(vec![error]);
+        report.hallucinations = report.items.iter().filter_map(classify_hallucination).collect();
+        assert_eq!(report.hallucinations.len(), 1);
+
+        set_aside_preexisting(&mut report, text, &before, text);
+
+        assert!(report.items.is_empty());
+        assert_eq!(report.errors, 0);
+        assert!(report.hallucinations.is_empty());
     }
 
     #[test]
@@ -3544,4 +3575,3 @@ mod hallucination_interception_phase77_tests {
         assert_eq!(deserialized.intercepted, true);
     }
 }
-
