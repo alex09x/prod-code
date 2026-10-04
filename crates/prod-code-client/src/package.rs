@@ -47,6 +47,8 @@ pub enum PackageSubcommands {
 pub enum PackageType {
     MacosPkg,
     Debian,
+    Rpm,
+    ArchLinux,
     Homebrew,
     LocalUserBinary,
     CargoBin,
@@ -58,6 +60,8 @@ impl std::fmt::Display for PackageType {
         match self {
             Self::MacosPkg => write!(f, "macOS Package (.pkg)"),
             Self::Debian => write!(f, "Debian Package (.deb)"),
+            Self::Rpm => write!(f, "RPM Package (.rpm)"),
+            Self::ArchLinux => write!(f, "Arch Linux Package (pacman/PKGBUILD)"),
             Self::Homebrew => write!(f, "Homebrew Formula"),
             Self::LocalUserBinary => write!(f, "Local User Binary (~/.local/bin)"),
             Self::CargoBin => write!(f, "Cargo Binary (~/.cargo/bin)"),
@@ -68,15 +72,35 @@ impl std::fmt::Display for PackageType {
 
 /// Detects the package type and origin from the executable path.
 pub fn detect_package_type(exe_path: &Path) -> PackageType {
+    detect_package_type_with_fs(exe_path, |p| Path::new(p).exists())
+}
+
+/// Detects package type given a filesystem existence checker (for testing).
+pub fn detect_package_type_with_fs(
+    exe_path: &Path,
+    path_exists: impl Fn(&str) -> bool,
+) -> PackageType {
     let s = exe_path.to_string_lossy();
     if s.contains("/opt/homebrew/") || s.contains("/usr/local/Cellar/") || s.contains("/Cellar/") {
         PackageType::Homebrew
     } else if s == "/usr/local/bin/prod-code" && cfg!(target_os = "macos") {
         PackageType::MacosPkg
     } else if (s == "/usr/bin/prod-code" || s == "/usr/local/bin/prod-code")
-        && Path::new("/etc/debian_version").exists()
+        && (path_exists("/etc/debian_version") || path_exists("/etc/debian-release"))
     {
         PackageType::Debian
+    } else if (s == "/usr/bin/prod-code" || s == "/usr/local/bin/prod-code")
+        && (path_exists("/etc/redhat-release")
+            || path_exists("/etc/fedora-release")
+            || path_exists("/etc/almalinux-release")
+            || path_exists("/etc/rocky-release")
+            || path_exists("/etc/centos-release"))
+    {
+        PackageType::Rpm
+    } else if (s == "/usr/bin/prod-code" || s == "/usr/local/bin/prod-code")
+        && path_exists("/etc/arch-release")
+    {
+        PackageType::ArchLinux
     } else if s.contains("/.local/bin/") {
         PackageType::LocalUserBinary
     } else if s.contains("/.cargo/bin/") {
@@ -409,6 +433,10 @@ pub async fn run_package_sync(remote: Option<SocketAddr>) -> Result<()> {
     println!("  • Ubuntu/Debian nodes (booster, ram9, rama):");
     println!("      curl -fsSL https://prod.codes/install.sh | sh");
     println!("      or: sudo dpkg -i prod-code_{current_version}_amd64.deb && systemctl --user restart prod-code-gateway");
+    println!("  • RHEL/Fedora/CentOS nodes:");
+    println!("      sudo rpm -Uvh prod-code-{current_version}-1.x86_64.rpm && systemctl --user restart prod-code-gateway");
+    println!("  • Arch Linux nodes:");
+    println!("      sudo pacman -U prod-code-{current_version}-1-x86_64.pkg.tar.gz && systemctl --user restart prod-code-gateway");
     println!("  • macOS node (192.168.2.40):");
     println!("      scripts/deploy-mac-node.sh");
     println!("  • Rule 11 Reminder: Never restart a node while running commands exist.");
@@ -436,12 +464,34 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_package_type_rpm_and_arch() {
+        assert_eq!(
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/redhat-release"),
+            PackageType::Rpm
+        );
+        assert_eq!(
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/fedora-release"),
+            PackageType::Rpm
+        );
+        assert_eq!(
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/arch-release"),
+            PackageType::ArchLinux
+        );
+        assert_eq!(
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/debian_version"),
+            PackageType::Debian
+        );
+    }
+
+    #[test]
     fn test_parse_checksums_file() {
         let text = r#"
 # Release SHA256 checksums
 d23d1f9d01dae8d11bf4cc6582a33c13c9f47bcb193b0e06bcbbc527e2dd3b55  prod-code-0.3.19-macOS.dmg
 3c4bb48bd3dcb0361ba3e26666a732cc4c1c6b8e017bba62de80d1016302c484  prod-code-0.3.19-macOS.pkg
 d05c83197facae2d0615fc834c04b9dc149ecb0e6abe120573ea1d8ad191be44  prod-code_0.3.19_amd64.deb
+8f5a1e2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f  prod-code-0.3.19-1.x86_64.rpm
+1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b  prod-code-0.3.19-1-x86_64.pkg.tar.gz
 "#;
         let map = parse_checksums_file(text);
         assert_eq!(
@@ -452,5 +502,28 @@ d05c83197facae2d0615fc834c04b9dc149ecb0e6abe120573ea1d8ad191be44  prod-code_0.3.
             map.get("prod-code_0.3.19_amd64.deb").unwrap(),
             "d05c83197facae2d0615fc834c04b9dc149ecb0e6abe120573ea1d8ad191be44"
         );
+        assert_eq!(
+            map.get("prod-code-0.3.19-1.x86_64.rpm").unwrap(),
+            "8f5a1e2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f"
+        );
+        assert_eq!(
+            map.get("prod-code-0.3.19-1-x86_64.pkg.tar.gz").unwrap(),
+            "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b"
+        );
+    }
+
+    #[test]
+    fn test_package_scripts_exist_and_executable() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir.parent().unwrap().parent().unwrap();
+        let rpm_script = root.join("scripts/packaging/package-rpm.py");
+        let arch_script = root.join("scripts/packaging/package-arch.sh");
+        let deb_script = root.join("scripts/packaging/package-deb.py");
+        let build_all = root.join("scripts/packaging/build-all-packages.sh");
+
+        assert!(rpm_script.exists(), "package-rpm.py must exist");
+        assert!(arch_script.exists(), "package-arch.sh must exist");
+        assert!(deb_script.exists(), "package-deb.py must exist");
+        assert!(build_all.exists(), "build-all-packages.sh must exist");
     }
 }

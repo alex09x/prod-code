@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-all-packages.sh - Builds Debian packages, macOS installer .pkg, macOS .dmg, Homebrew formula, and SHA256 checksums.
+# build-all-packages.sh - Builds Debian packages, RPM packages, Arch packages, macOS installer .pkg, macOS .dmg, Homebrew formula, and SHA256 checksums.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +44,45 @@ python3 "$SCRIPT_DIR/package-deb.py" \
     --readme "$ROOT_DIR/README.md" \
     --output "$OUT_DIR/prod-code_${VERSION}_amd64.deb"
 
-# 2. macOS .pkg & .dmg (if on macOS)
+# 2. RPM packages (.rpm)
+echo "Generating RPM package (aarch64)..."
+python3 "$SCRIPT_DIR/package-rpm.py" \
+    --version "$VERSION" \
+    --arch "aarch64" \
+    --client-bin "$CLIENT_BIN" \
+    --service-file "$ROOT_DIR/crates/prod-code-gateway/prod-code-gateway.service" \
+    --readme "$ROOT_DIR/README.md" \
+    --output "$OUT_DIR/prod-code-${VERSION}-1.aarch64.rpm"
+
+echo "Generating RPM package (x86_64)..."
+python3 "$SCRIPT_DIR/package-rpm.py" \
+    --version "$VERSION" \
+    --arch "x86_64" \
+    --client-bin "$CLIENT_BIN" \
+    --service-file "$ROOT_DIR/crates/prod-code-gateway/prod-code-gateway.service" \
+    --readme "$ROOT_DIR/README.md" \
+    --output "$OUT_DIR/prod-code-${VERSION}-1.x86_64.rpm"
+
+# 3. Arch Linux packages (.pkg.tar.gz & PKGBUILD)
+echo "Generating Arch Linux package (x86_64)..."
+"$SCRIPT_DIR/package-arch.sh" \
+    --version "$VERSION" \
+    --arch "x86_64" \
+    --client-bin "$CLIENT_BIN" \
+    --service-file "$ROOT_DIR/crates/prod-code-gateway/prod-code-gateway.service" \
+    --readme "$ROOT_DIR/README.md" \
+    --output-dir "$OUT_DIR"
+
+echo "Generating Arch Linux package (aarch64)..."
+"$SCRIPT_DIR/package-arch.sh" \
+    --version "$VERSION" \
+    --arch "aarch64" \
+    --client-bin "$CLIENT_BIN" \
+    --service-file "$ROOT_DIR/crates/prod-code-gateway/prod-code-gateway.service" \
+    --readme "$ROOT_DIR/README.md" \
+    --output-dir "$OUT_DIR"
+
+# 4. macOS .pkg & .dmg (if on macOS)
 if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "Generating macOS installer package (.pkg)..."
     "$SCRIPT_DIR/package-macos-pkg.sh" \
@@ -59,10 +97,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         --output "$OUT_DIR/prod-code-${VERSION}-macOS.dmg"
 fi
 
-# 3. Copy universal installer
+# 5. Copy universal installer
 cp "$SCRIPT_DIR/install.sh" "$OUT_DIR/install.sh"
 
-# 4. Generate SHA256 checksums
+# 6. Generate SHA256 checksums
 echo "Generating SHA256SUMS..."
 cd "$OUT_DIR"
 shasum -a 256 prod-code* > SHA256SUMS
