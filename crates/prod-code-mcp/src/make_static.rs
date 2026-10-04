@@ -21,7 +21,7 @@ pub struct MadeStatic {
     /// The receiver the declaration had: `&self`, `&mut self`, `self`.
     pub receiver: String,
     pub rewritten_calls: usize,
-    /// Call sites whose receiver would be dropped although evaluating it does something.
+    /// Call sites that cannot be safely rewritten, due to receiver effects or unknown type.
     pub blocked: Vec<String>,
     pub unmatched: Vec<String>,
     pub rewritten: Vec<(String, String)>,
@@ -52,9 +52,7 @@ impl MadeStatic {
         let mut out = format!(
             "`{call_target}` ({})\n\n- the receiver `{}` is removed: it was never used\n- {} call site(s) \
              now call `{call_target}`\n\n",
-            self.file,
-            self.receiver,
-            self.rewritten_calls,
+            self.file, self.receiver, self.rewritten_calls,
         );
         let mut body = String::new();
         let mut changed_lines = 0usize;
@@ -413,6 +411,142 @@ impl Language {
     }
 }
 
+fn method_declaration_position(
+    code: &str,
+    lang: Language,
+    owner: &str,
+    method: &str,
+) -> Result<(u32, u32)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut type_start = None;
+    let mut type_end = lines.len();
+    if lang != Language::Go {
+        let type_prefixes: &[&str] = match lang {
+            Language::TypeScript => &["class ", "export class ", "export default class "],
+            Language::Python => &["class "],
+            Language::Cpp => &["class ", "struct "],
+            Language::Swift => &["class ", "struct ", "actor "],
+            Language::Go => &[],
+        };
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            let type_keyword = match lang {
+                Language::TypeScript => "class",
+                Language::Python => "class",
+                Language::Cpp => {
+                    if trimmed.starts_with("struct ") {
+                        "struct"
+                    } else {
+                        "class"
+                    }
+                }
+                Language::Swift => {
+                    if trimmed.starts_with("actor ") {
+                        "actor"
+                    } else if trimmed.starts_with("struct ") {
+                        "struct"
+                    } else {
+                        "class"
+                    }
+                }
+                Language::Go => unreachable!(),
+            };
+            let declared_type = type_prefixes
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+                .then(|| {
+                    let mut words = trimmed.split_whitespace();
+                    words
+                        .position(|word| word == type_keyword)
+                        .and_then(|_| words.next())
+                        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_'))
+                })
+                .flatten();
+            if declared_type == Some(owner) {
+                type_start = Some(idx);
+                if lang == Language::Python {
+                    let indent = line.len() - trimmed.len();
+                    type_end = lines
+                        .iter()
+                        .enumerate()
+                        .skip(idx + 1)
+                        .find(|(_, nested)| {
+                            !nested.trim().is_empty()
+                                && !nested.trim_start().starts_with('#')
+                                && nested.len() - nested.trim_start().len() <= indent
+                        })
+                        .map_or(lines.len(), |(end, _)| end);
+                } else {
+                    let mut depth = 0i32;
+                    for (end, nested) in lines.iter().enumerate().skip(idx) {
+                        depth += nested.chars().filter(|c| *c == '{').count() as i32;
+                        depth -= nested.chars().filter(|c| *c == '}').count() as i32;
+                        if end > idx && depth == 0 {
+                            type_end = end;
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    let start = type_start.unwrap_or(0);
+    for (idx, line) in lines.iter().enumerate().take(type_end).skip(start) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with('*') {
+            continue;
+        }
+        let name_at = match lang {
+            Language::TypeScript => {
+                let before = trimmed.split_once('(').map(|(before, _)| before.trim());
+                (before.and_then(|before| before.split_whitespace().last()) == Some(method))
+                    .then(|| line.find(method))
+                    .flatten()
+            }
+            Language::Python => (trimmed.starts_with(&format!("def {method}("))
+                || trimmed.starts_with(&format!("async def {method}(")))
+            .then(|| line.find(method))
+            .flatten(),
+            Language::Cpp => {
+                let before = trimmed.split_once('(').map(|(before, _)| before.trim());
+                (before.is_some_and(|before| {
+                    before.split_whitespace().last().is_some_and(|name| {
+                        name.trim_start_matches('*').trim_start_matches('&') == method
+                    })
+                }))
+                .then(|| line.find(method))
+                .flatten()
+            }
+            Language::Swift => trimmed
+                .contains(&format!("func {method}("))
+                .then(|| line.find(method))
+                .flatten(),
+            Language::Go => trimmed.strip_prefix("func (").and_then(|after| {
+                let close = after.find(')')?;
+                let receiver = after[..close]
+                    .split_whitespace()
+                    .last()?
+                    .trim_start_matches('*');
+                let tail = after[close + 1..].trim_start();
+                (receiver == owner && tail.starts_with(&format!("{method}(")))
+                    .then(|| line.find(method))
+                    .flatten()
+            }),
+        };
+        if let Some(col) = name_at {
+            let offset = code
+                .split_inclusive('\n')
+                .take(idx)
+                .map(str::len)
+                .sum::<usize>()
+                + col;
+            return crate::signature::position_at(code, offset);
+        }
+    }
+    anyhow::bail!("cannot locate the selected `{owner}.{method}` declaration")
+}
+
 pub fn extract_receiver(before: &str) -> Option<&str> {
     let trimmed = before.trim_end();
     if trimmed.is_empty() {
@@ -454,11 +588,7 @@ pub fn extract_receiver(before: &str) -> Option<&str> {
         i -= 1;
     }
     let recv = trimmed[i..].trim_start_matches("return ").trim_start();
-    if recv.is_empty() {
-        None
-    } else {
-        Some(recv)
-    }
+    if recv.is_empty() { None } else { Some(recv) }
 }
 
 pub fn find_method_at_line(code: &str, line_1based: u32) -> Option<(String, Option<String>)> {
@@ -475,10 +605,11 @@ pub fn find_method_at_line(code: &str, line_1based: u32) -> Option<(String, Opti
         if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
             let rest = trimmed.strip_prefix("async ").unwrap_or(trimmed);
             if let Some(after_def) = rest.strip_prefix("def ")
-                && let Some(paren) = after_def.find('(') {
-                    let name = after_def[..paren].trim();
-                    return Some((name.to_string(), None));
-                }
+                && let Some(paren) = after_def.find('(')
+            {
+                let name = after_def[..paren].trim();
+                return Some((name.to_string(), None));
+            }
         }
         if let Some(after_func) = trimmed.strip_prefix("func ") {
             if after_func.starts_with('(') {
@@ -527,54 +658,103 @@ pub fn find_method_at_line(code: &str, line_1based: u32) -> Option<(String, Opti
     None
 }
 
-pub fn rewrite_calls_in_code(
+fn rewrite_calls_in_code(
     code: &str,
     target_method: &str,
     owner_class: &str,
     lang: Language,
     file_rel: &str,
     blocked: &mut Vec<String>,
+    semantic_references: Option<&mut std::collections::HashSet<(u32, u32)>>,
 ) -> (String, usize) {
     let mut out = String::new();
     let mut rewritten = 0;
     let needle_dot = format!(".{target_method}(");
     let needle_arrow = format!("->{target_method}(");
+    let lexical_language = match lang {
+        Language::TypeScript => crate::parameter_object::Language::TypeScript,
+        Language::Python => crate::parameter_object::Language::Python,
+        Language::Cpp => crate::parameter_object::Language::Cpp,
+        Language::Swift => crate::parameter_object::Language::Swift,
+        Language::Go => crate::parameter_object::Language::Go,
+    };
 
-    for (line_idx, line) in code.lines().enumerate() {
+    let mut semantic_references = semantic_references;
+    let mut absolute_offset = 0usize;
+    for (line_idx, raw_line) in code.split_inclusive('\n').enumerate() {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let ending = &raw_line[line.len()..];
+        let line_start = absolute_offset;
+        absolute_offset += raw_line.len();
         let trimmed = line.trim_start();
         let comment_prefix = match lang {
             Language::Python => "#",
             _ => "//",
         };
         if trimmed.starts_with(comment_prefix) || trimmed.starts_with('*') {
-            out.push_str(line);
-            out.push('\n');
+            out.push_str(raw_line);
             continue;
         }
 
-        let has_needle = line.contains(&needle_dot) || (lang == Language::Cpp && line.contains(&needle_arrow));
+        let has_needle =
+            line.contains(&needle_dot) || (lang == Language::Cpp && line.contains(&needle_arrow));
         if !has_needle {
-            out.push_str(line);
-            out.push('\n');
+            out.push_str(raw_line);
             continue;
         }
 
-        let mut current_line = line.to_string();
-        while let Some(pos) = current_line.find(&needle_dot).or_else(|| {
-            if lang == Language::Cpp {
-                current_line.find(&needle_arrow)
-            } else {
-                None
-            }
-        }) {
-            let is_arrow = current_line[pos..].starts_with("->");
+        let mut current_line = String::new();
+        let mut cursor = 0usize;
+        loop {
+            let next_dot = line[cursor..]
+                .find(&needle_dot)
+                .map(|p| (cursor + p, false));
+            let next_arrow = (lang == Language::Cpp)
+                .then(|| {
+                    line[cursor..]
+                        .find(&needle_arrow)
+                        .map(|p| (cursor + p, true))
+                })
+                .flatten();
+            let Some((pos, is_arrow)) = (match (next_dot, next_arrow) {
+                (Some(dot), Some(arrow)) => Some(if dot.0 <= arrow.0 { dot } else { arrow }),
+                (Some(dot), None) => Some(dot),
+                (None, Some(arrow)) => Some(arrow),
+                (None, None) => None,
+            }) else {
+                break;
+            };
             let op_len = if is_arrow { 2 } else { 1 };
-            let before = &current_line[..pos];
-            let after = &current_line[pos + op_len + target_method.len() + 1..];
+            let end = pos + op_len + target_method.len() + 1;
+            if crate::inline_parameter::is_in_string(code, line_start + pos, lexical_language) {
+                current_line.push_str(&line[cursor..end]);
+                cursor = end;
+                continue;
+            }
+            let method_offset = line_start + pos + op_len;
+            let method_position = crate::signature::position_at(code, method_offset).ok();
+            let Some(references) = semantic_references.as_deref_mut() else {
+                current_line.push_str(&line[cursor..end]);
+                cursor = end;
+                continue;
+            };
+            let Some(method_position) = method_position else {
+                current_line.push_str(&line[cursor..end]);
+                cursor = end;
+                continue;
+            };
+            if !references.remove(&method_position) {
+                current_line.push_str(&line[cursor..end]);
+                cursor = end;
+                continue;
+            }
+            let before = &line[..pos];
 
             if let Some(recv) = extract_receiver(before) {
                 if recv == owner_class {
-                    break;
+                    current_line.push_str(&line[cursor..end]);
+                    cursor = end;
+                    continue;
                 }
                 let site = format!("{file_rel}:{}:{}", line_idx + 1, pos + 1);
                 if receiver_has_effects(recv) {
@@ -592,26 +772,27 @@ pub fn rewrite_calls_in_code(
                     }
                 };
                 let recv_start = pos - recv.len();
-                current_line = format!("{}{target_call}{after}", &current_line[..recv_start]);
+                current_line.push_str(&line[cursor..recv_start]);
+                current_line.push_str(&target_call);
                 rewritten += 1;
+                cursor = end;
             } else {
-                break;
+                current_line.push_str(&line[cursor..end]);
+                cursor = end;
             }
         }
+        current_line.push_str(&line[cursor..]);
         out.push_str(&current_line);
-        out.push('\n');
-    }
-
-    if !code.ends_with('\n') && out.ends_with('\n') {
-        out.pop();
+        out.push_str(ending);
     }
     (out, rewritten)
 }
 
-pub fn make_static_ts(
+fn make_static_ts(
     code: &str,
     target_class: Option<&str>,
     target_method: &str,
+    semantic_references: Option<&mut std::collections::HashSet<(u32, u32)>>,
 ) -> Result<(String, String, String, usize, Vec<String>)> {
     let lines: Vec<&str> = code.lines().collect();
     let mut class_start = None;
@@ -621,7 +802,10 @@ pub fn make_static_ts(
 
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("class ") || trimmed.starts_with("export class ") || trimmed.starts_with("export default class ") {
+        if trimmed.starts_with("class ")
+            || trimmed.starts_with("export class ")
+            || trimmed.starts_with("export default class ")
+        {
             let words: Vec<&str> = trimmed.split_whitespace().collect();
             let mut name = "";
             for (w_idx, w) in words.iter().enumerate() {
@@ -665,9 +849,8 @@ pub fn make_static_ts(
         }
     }
 
-    let m_idx = method_line_idx.with_context(|| {
-        format!("Method `{target_method}` not found in class `{class_name}`")
-    })?;
+    let m_idx = method_line_idx
+        .with_context(|| format!("Method `{target_method}` not found in class `{class_name}`"))?;
 
     let m_line = lines[m_idx];
     if m_line.contains("static ") {
@@ -727,15 +910,23 @@ pub fn make_static_ts(
         Language::TypeScript,
         "",
         &mut blocked,
+        semantic_references,
     );
 
-    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+    Ok((
+        class_name,
+        target_method.to_string(),
+        final_code,
+        rewritten_calls,
+        blocked,
+    ))
 }
 
-pub fn make_static_py(
+fn make_static_py(
     code: &str,
     target_class: Option<&str>,
     target_method: &str,
+    semantic_references: Option<&mut std::collections::HashSet<(u32, u32)>>,
 ) -> Result<(String, String, String, usize, Vec<String>)> {
     let lines: Vec<&str> = code.lines().collect();
     let mut class_start = None;
@@ -748,11 +939,7 @@ pub fn make_static_py(
         if let Some(after_class_raw) = trimmed.strip_prefix("class ") {
             let indent = line.len() - trimmed.len();
             let after_class = after_class_raw.trim_start();
-            let name = after_class
-                .split(['(', ':'])
-                .next()
-                .unwrap_or("")
-                .trim();
+            let name = after_class.split(['(', ':']).next().unwrap_or("").trim();
             if target_class.is_none() || target_class == Some(name) {
                 class_start = Some(idx);
                 class_name = name.to_string();
@@ -785,9 +972,8 @@ pub fn make_static_py(
         }
     }
 
-    let m_idx = method_line_idx.with_context(|| {
-        format!("Method `{target_method}` not found in class `{class_name}`")
-    })?;
+    let m_idx = method_line_idx
+        .with_context(|| format!("Method `{target_method}` not found in class `{class_name}`"))?;
 
     if m_idx > 0 && lines[m_idx - 1].trim() == "@staticmethod" {
         anyhow::bail!("`{target_method}` is already a static method");
@@ -856,6 +1042,20 @@ pub fn make_static_py(
 
     let intermediate = new_lines.join("\n");
     let mut blocked = Vec::new();
+    let mut semantic_references = semantic_references;
+    if let Some(references) = semantic_references.as_deref_mut() {
+        let declaration_line = u32::try_from(m_idx + 1).unwrap_or(u32::MAX);
+        *references = references
+            .drain()
+            .map(|(line, col)| {
+                if line >= declaration_line {
+                    (line.saturating_add(1), col)
+                } else {
+                    (line, col)
+                }
+            })
+            .collect();
+    }
     let (final_code, rewritten_calls) = rewrite_calls_in_code(
         &intermediate,
         target_method,
@@ -863,15 +1063,23 @@ pub fn make_static_py(
         Language::Python,
         "",
         &mut blocked,
+        semantic_references,
     );
 
-    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+    Ok((
+        class_name,
+        target_method.to_string(),
+        final_code,
+        rewritten_calls,
+        blocked,
+    ))
 }
 
-pub fn make_static_cpp(
+fn make_static_cpp(
     code: &str,
     target_class: Option<&str>,
     target_method: &str,
+    semantic_references: Option<&mut std::collections::HashSet<(u32, u32)>>,
 ) -> Result<(String, String, String, usize, Vec<String>)> {
     let lines: Vec<&str> = code.lines().collect();
     let mut class_start = None;
@@ -886,7 +1094,9 @@ pub fn make_static_cpp(
             let mut name = "";
             for (w_idx, w) in words.iter().enumerate() {
                 if (*w == "class" || *w == "struct") && w_idx + 1 < words.len() {
-                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    name = words[w_idx + 1]
+                        .trim_matches(|c| c == '{' || c == ':')
+                        .trim();
                     break;
                 }
             }
@@ -928,9 +1138,8 @@ pub fn make_static_cpp(
         }
     }
 
-    let m_idx = method_line_idx.with_context(|| {
-        format!("Method `{target_method}` not found in class `{class_name}`")
-    })?;
+    let m_idx = method_line_idx
+        .with_context(|| format!("Method `{target_method}` not found in class `{class_name}`"))?;
 
     let m_line = lines[m_idx];
     if m_line.trim_start().starts_with("static ") {
@@ -988,15 +1197,23 @@ pub fn make_static_cpp(
         Language::Cpp,
         "",
         &mut blocked,
+        semantic_references,
     );
 
-    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+    Ok((
+        class_name,
+        target_method.to_string(),
+        final_code,
+        rewritten_calls,
+        blocked,
+    ))
 }
 
-pub fn make_static_swift(
+fn make_static_swift(
     code: &str,
     target_class: Option<&str>,
     target_method: &str,
+    semantic_references: Option<&mut std::collections::HashSet<(u32, u32)>>,
 ) -> Result<(String, String, String, usize, Vec<String>)> {
     let lines: Vec<&str> = code.lines().collect();
     let mut class_start = None;
@@ -1006,12 +1223,17 @@ pub fn make_static_swift(
 
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("class ") || trimmed.starts_with("struct ") || trimmed.starts_with("actor ") {
+        if trimmed.starts_with("class ")
+            || trimmed.starts_with("struct ")
+            || trimmed.starts_with("actor ")
+        {
             let words: Vec<&str> = trimmed.split_whitespace().collect();
             let mut name = "";
             for (w_idx, w) in words.iter().enumerate() {
                 if (*w == "class" || *w == "struct" || *w == "actor") && w_idx + 1 < words.len() {
-                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    name = words[w_idx + 1]
+                        .trim_matches(|c| c == '{' || c == ':')
+                        .trim();
                     break;
                 }
             }
@@ -1047,9 +1269,8 @@ pub fn make_static_swift(
         }
     }
 
-    let m_idx = method_line_idx.with_context(|| {
-        format!("Method `{target_method}` not found in `{class_name}`")
-    })?;
+    let m_idx = method_line_idx
+        .with_context(|| format!("Method `{target_method}` not found in `{class_name}`"))?;
 
     let m_line = lines[m_idx];
     if m_line.contains("static func ") || m_line.contains("class func ") {
@@ -1083,8 +1304,11 @@ pub fn make_static_swift(
     let mut new_lines = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
         if idx == m_idx {
-            let replaced = line.replace("mutating func ", "static func ")
-                .replace("func ", "static func ");
+            let replaced = if line.contains("mutating func ") {
+                line.replace("mutating func ", "static func ")
+            } else {
+                line.replace("func ", "static func ")
+            };
             new_lines.push(replaced);
         } else {
             new_lines.push(line.to_string());
@@ -1100,15 +1324,23 @@ pub fn make_static_swift(
         Language::Swift,
         "",
         &mut blocked,
+        semantic_references,
     );
 
-    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+    Ok((
+        class_name,
+        target_method.to_string(),
+        final_code,
+        rewritten_calls,
+        blocked,
+    ))
 }
 
-pub fn make_static_go(
+fn make_static_go(
     code: &str,
     target_struct: Option<&str>,
     target_method: &str,
+    semantic_references: Option<&mut std::collections::HashSet<(u32, u32)>>,
 ) -> Result<(String, String, String, usize, Vec<String>)> {
     let lines: Vec<&str> = code.lines().collect();
     let mut method_line_idx = None;
@@ -1145,9 +1377,8 @@ pub fn make_static_go(
         }
     }
 
-    let m_idx = method_line_idx.with_context(|| {
-        format!("Method `{target_method}` with receiver not found in Go file")
-    })?;
+    let m_idx = method_line_idx
+        .with_context(|| format!("Method `{target_method}` with receiver not found in Go file"))?;
 
     let mut m_body_end = m_idx;
     let mut m_depth = 0i32;
@@ -1216,9 +1447,16 @@ pub fn make_static_go(
         Language::Go,
         "",
         &mut blocked,
+        semantic_references,
     );
 
-    Ok((struct_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+    Ok((
+        struct_name,
+        target_method.to_string(),
+        final_code,
+        rewritten_calls,
+        blocked,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1236,13 +1474,72 @@ pub async fn make_static_polyglot(
     let lang = Language::from_path(file_path)
         .with_context(|| format!("Unsupported language for file: {}", file_path.display()))?;
 
-    let (owner, method, new_content, file_rewritten, mut blocked) = match lang {
-        Language::TypeScript => make_static_ts(&content, class_name, method_name)?,
-        Language::Python => make_static_py(&content, class_name, method_name)?,
-        Language::Cpp => make_static_cpp(&content, class_name, method_name)?,
-        Language::Swift => make_static_swift(&content, class_name, method_name)?,
-        Language::Go => make_static_go(&content, class_name, method_name)?,
+    let (owner, method, _, _, mut blocked) = match lang {
+        Language::TypeScript => make_static_ts(&content, class_name, method_name, None)?,
+        Language::Python => make_static_py(&content, class_name, method_name, None)?,
+        Language::Cpp => make_static_cpp(&content, class_name, method_name, None)?,
+        Language::Swift => make_static_swift(&content, class_name, method_name, None)?,
+        Language::Go => make_static_go(&content, class_name, method_name, None)?,
     };
+
+    let (declaration_line, declaration_col) =
+        method_declaration_position(&content, lang, &owner, &method)?;
+    let references = crate::signature::references(
+        remote,
+        workspace_root,
+        file_path,
+        declaration_line,
+        declaration_col,
+    )
+    .await
+    .with_context(|| format!("cannot find calls to `{owner}.{method}`; nothing was planned"))?;
+    let mut references_by_file: BTreeMap<PathBuf, std::collections::HashSet<(u32, u32)>> =
+        BTreeMap::new();
+    for (path, line, col) in references {
+        let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+        references_by_file
+            .entry(canonical)
+            .or_default()
+            .insert((line, col));
+    }
+    let canonical_target =
+        std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+    let mut target_references = references_by_file
+        .remove(&canonical_target)
+        .unwrap_or_default();
+    let (_, _, new_content, file_rewritten, parser_blocked) = match lang {
+        Language::TypeScript => make_static_ts(
+            &content,
+            Some(&owner),
+            &method,
+            Some(&mut target_references),
+        )?,
+        Language::Python => make_static_py(
+            &content,
+            Some(&owner),
+            &method,
+            Some(&mut target_references),
+        )?,
+        Language::Cpp => make_static_cpp(
+            &content,
+            Some(&owner),
+            &method,
+            Some(&mut target_references),
+        )?,
+        Language::Swift => make_static_swift(
+            &content,
+            Some(&owner),
+            &method,
+            Some(&mut target_references),
+        )?,
+        Language::Go => make_static_go(
+            &content,
+            Some(&owner),
+            &method,
+            Some(&mut target_references),
+        )?,
+    };
+    blocked.extend(parser_blocked);
 
     let receiver = match lang {
         Language::TypeScript => "this".to_string(),
@@ -1254,33 +1551,61 @@ pub async fn make_static_polyglot(
 
     let mut rewritten = vec![(file_path.to_string_lossy().to_string(), new_content)];
     let mut total_rewritten_calls = file_rewritten;
+    let mut unmatched = Vec::new();
+    for (line, col) in target_references {
+        unmatched.push(format!(
+            "{}:{line}:{col}: analyzer reference was not a supported call",
+            display(workspace_root, file_path)
+        ));
+    }
 
     for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
         let path = entry.path();
-        if path.is_file() && path != file_path && lang.matches_extension(path)
+        if path.is_file()
+            && path != file_path
+            && lang.matches_extension(path)
             && let Ok(other_content) = std::fs::read_to_string(path)
-                && other_content.contains(method_name) {
-                    let rel = display(workspace_root, path);
-                    let (new_other, calls) = rewrite_calls_in_code(
-                        &other_content,
-                        method_name,
-                        &owner,
-                        lang,
-                        &rel,
-                        &mut blocked,
-                    );
-                    if new_other != other_content {
-                        rewritten.push((path.to_string_lossy().to_string(), new_other));
-                        total_rewritten_calls += calls;
-                    }
-                }
+            && other_content.contains(method_name)
+        {
+            let rel = display(workspace_root, path);
+            let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let mut file_references = references_by_file.remove(&canonical).unwrap_or_default();
+            let (new_other, calls) = rewrite_calls_in_code(
+                &other_content,
+                method_name,
+                &owner,
+                lang,
+                &rel,
+                &mut blocked,
+                Some(&mut file_references),
+            );
+            for (line, col) in file_references {
+                unmatched.push(format!(
+                    "{rel}:{line}:{col}: analyzer reference was not a supported call"
+                ));
+            }
+            if new_other != other_content {
+                rewritten.push((path.to_string_lossy().to_string(), new_other));
+                total_rewritten_calls += calls;
+            }
+        }
+    }
+
+    for (path, references) in references_by_file {
+        for (line, col) in references {
+            unmatched.push(format!(
+                "{}:{line}:{col}: analyzer reference was not a supported call",
+                display(workspace_root, &path)
+            ));
+        }
     }
 
     let to_check: Vec<(PathBuf, String)> = rewritten
         .iter()
         .map(|(p, t)| (PathBuf::from(p), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, workspace_root, &to_check, &[]).await?;
+    let reports =
+        crate::diagnostics::validate_texts(remote, workspace_root, &to_check, &[]).await?;
     let diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -1301,7 +1626,7 @@ pub async fn make_static_polyglot(
 
     if apply {
         anyhow::ensure!(
-            blocked.is_empty() || force,
+            blocked.is_empty(),
             "{} call site(s) would drop a receiver that does something; nothing was written:\n  {}",
             blocked.len(),
             blocked.join("\n  ")
@@ -1329,7 +1654,7 @@ pub async fn make_static_polyglot(
         receiver,
         rewritten_calls: total_rewritten_calls,
         blocked,
-        unmatched: vec![],
+        unmatched,
         rewritten,
         diagnostics,
         applied: apply,
@@ -1339,6 +1664,20 @@ pub async fn make_static_polyglot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn refs_for(code: &str, method: &str) -> std::collections::HashSet<(u32, u32)> {
+        let mut refs = std::collections::HashSet::new();
+        for needle in [format!(".{method}("), format!("->{method}(")] {
+            for (offset, _) in code.match_indices(&needle) {
+                if let Ok(position) =
+                    crate::signature::position_at(code, offset + needle.find(method).unwrap())
+                {
+                    refs.insert(position);
+                }
+            }
+        }
+        refs
+    }
 
     #[test]
     fn a_receiver_is_split_off_the_parameter_list() {
@@ -1442,21 +1781,43 @@ mod tests {
     add(a: number, b: number): number {
         return a + b;
     }
+
+    total(): number {
+        return this.add(10, 20);
+    }
 }
 
 function test() {
     const calc = new Calculator();
-    const sum = calc.add(10, 20);
 }
 "#;
+        let mut refs = refs_for(ts_code, "add");
         let (owner, method, transformed, calls, blocked) =
-            make_static_ts(ts_code, Some("Calculator"), "add").unwrap();
+            make_static_ts(ts_code, Some("Calculator"), "add", Some(&mut refs)).unwrap();
         assert_eq!(owner, "Calculator");
         assert_eq!(method, "add");
         assert_eq!(calls, 1);
         assert!(blocked.is_empty());
         assert!(transformed.contains("static add(a: number, b: number): number {"));
         assert!(transformed.contains("Calculator.add(10, 20)"));
+    }
+
+    #[test]
+    fn make_static_does_not_rewrite_a_same_named_method_on_an_unresolved_receiver() {
+        let code = "const value = set.add(10, 20);\n";
+        let mut blocked = Vec::new();
+        let (rewritten, count) = rewrite_calls_in_code(
+            code,
+            "add",
+            "Calculator",
+            Language::TypeScript,
+            "example.ts",
+            &mut blocked,
+            Some(&mut std::collections::HashSet::new()),
+        );
+        assert_eq!(count, 0);
+        assert_eq!(rewritten, code);
+        assert!(blocked.is_empty());
     }
 
     #[test]
@@ -1468,7 +1829,7 @@ function test() {
     }
 }
 "#;
-        let err = make_static_ts(ts_code, Some("Counter"), "bump").unwrap_err();
+        let err = make_static_ts(ts_code, Some("Counter"), "bump", None).unwrap_err();
         assert!(err.to_string().contains("uses `this`"));
     }
 
@@ -1482,8 +1843,9 @@ def run():
     util = MathUtil()
     result = util.multiply(5, 6)
 "#;
+        let mut refs = refs_for(py_code, "multiply");
         let (owner, method, transformed, calls, blocked) =
-            make_static_py(py_code, Some("MathUtil"), "multiply").unwrap();
+            make_static_py(py_code, Some("MathUtil"), "multiply", Some(&mut refs)).unwrap();
         assert_eq!(owner, "MathUtil");
         assert_eq!(method, "multiply");
         assert_eq!(calls, 1);
@@ -1506,8 +1868,9 @@ void run() {
     int s = u.sum(3, 4);
 }
 "#;
+        let mut refs = refs_for(cpp_code, "sum");
         let (owner, method, transformed, calls, blocked) =
-            make_static_cpp(cpp_code, Some("Util"), "sum").unwrap();
+            make_static_cpp(cpp_code, Some("Util"), "sum", Some(&mut refs)).unwrap();
         assert_eq!(owner, "Util");
         assert_eq!(method, "sum");
         assert_eq!(calls, 1);
@@ -1529,14 +1892,49 @@ func test() {
     let msg = g.greet(name: "World")
 }
 "#;
+        let mut refs = refs_for(swift_code, "greet");
         let (owner, method, transformed, calls, blocked) =
-            make_static_swift(swift_code, Some("Greeter"), "greet").unwrap();
+            make_static_swift(swift_code, Some("Greeter"), "greet", Some(&mut refs)).unwrap();
         assert_eq!(owner, "Greeter");
         assert_eq!(method, "greet");
         assert_eq!(calls, 1);
         assert!(blocked.is_empty());
         assert!(transformed.contains("static func greet(name: String) -> String {"));
         assert!(transformed.contains("Greeter.greet(name: \"World\")"));
+    }
+
+    #[test]
+    fn make_static_does_not_duplicate_modifier_for_mutating_swift_method() {
+        let source = "struct Counter {\n    mutating func reset() {\n    }\n}\n";
+        let (_, _, rewritten, _, blocked) = make_static_swift(
+            source,
+            Some("Counter"),
+            "reset",
+            Some(&mut std::collections::HashSet::new()),
+        )
+        .unwrap();
+        assert!(rewritten.contains("static func reset()"), "{rewritten}");
+        assert!(!rewritten.contains("static static func"), "{rewritten}");
+        assert!(blocked.is_empty(), "{blocked:?}");
+    }
+
+    #[test]
+    fn static_call_rewrite_skips_string_literals_on_lines_with_real_calls() {
+        let code = "let example = \"this.add(1)\"; const result = this.add(2);\n";
+        let mut blocked = Vec::new();
+        let (rewritten, count) = rewrite_calls_in_code(
+            code,
+            "add",
+            "Calculator",
+            Language::TypeScript,
+            "example.ts",
+            &mut blocked,
+            Some(&mut refs_for(code, "add")),
+        );
+        assert_eq!(count, 1);
+        assert!(rewritten.contains("\"this.add(1)\""), "{rewritten}");
+        assert!(rewritten.contains("Calculator.add(2)"), "{rewritten}");
+        assert!(blocked.is_empty(), "{blocked:?}");
     }
 
     #[test]
@@ -1554,8 +1952,9 @@ func main() {
     res := svc.Process("test")
 }
 "#;
+        let mut refs = refs_for(go_code, "Process");
         let (owner, method, transformed, calls, blocked) =
-            make_static_go(go_code, Some("Service"), "Process").unwrap();
+            make_static_go(go_code, Some("Service"), "Process", Some(&mut refs)).unwrap();
         assert_eq!(owner, "Service");
         assert_eq!(method, "Process");
         assert_eq!(calls, 1);
@@ -1574,7 +1973,9 @@ function test() {
     getWorker()?.run();
 }
 "#;
-        let (_, _, _, _, blocked) = make_static_ts(ts_code, Some("Worker"), "run").unwrap();
+        let mut refs = refs_for(ts_code, "run");
+        let (_, _, _, _, blocked) =
+            make_static_ts(ts_code, Some("Worker"), "run", Some(&mut refs)).unwrap();
         assert_eq!(blocked.len(), 1);
         assert!(blocked[0].contains("is evaluated for what it does"));
     }

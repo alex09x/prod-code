@@ -4497,7 +4497,7 @@ async fn handle_make_static(
     };
 
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && (done.blocked.is_empty() || force) {
+    let gate = if verify && done.blocked.is_empty() {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
