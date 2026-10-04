@@ -24,6 +24,13 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Top-level pieces of `text` separated by `sep`, as byte ranges, outside every bracket.
 pub fn split_top(text: &str, sep: char) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
@@ -283,6 +290,7 @@ pub struct Extracted {
     pub root: PathBuf,
     pub rewritten: Vec<(String, String)>,
     pub accesses: usize,
+    pub unmatched: Vec<String>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
 }
@@ -317,6 +325,12 @@ impl Extracted {
                     .header(&format!("a/{rel}"), &format!("b/{rel}"))
                     .to_string(),
             );
+        }
+        if !self.unmatched.is_empty() {
+            out.push_str("\nunresolved references (the edit is incomplete):\n");
+            for reference in &self.unmatched {
+                out.push_str(&format!("  • {reference}\n"));
+            }
         }
         if self.diagnostics.is_empty() {
             out.push_str("\nthe analyzer accepts the result: 0 errors\n");
@@ -720,6 +734,8 @@ pub fn restructure_ts(
         ret_type: Option<String>,
         full_text: String,
         body: String,
+        start_line: usize,
+        end_line: usize,
     }
 
     let mut moved_methods: BTreeMap<String, TsMethod> = BTreeMap::new();
@@ -767,6 +783,8 @@ pub fn restructure_ts(
                         };
                         let method_text = body[line_start..=close_b].trim().to_string();
                         let m_body = body[open_b + 1..close_b].to_string();
+                        let start_line = body[..line_start].matches('\n').count();
+                        let end_line = body[..close_b].matches('\n').count();
                         let method_name = last_word.to_string();
                         if methods.contains(&method_name) {
                             moved_methods.insert(
@@ -778,6 +796,8 @@ pub fn restructure_ts(
                                     ret_type,
                                     full_text: method_text,
                                     body: m_body,
+                                    start_line,
+                                    end_line,
                                 },
                             );
                         }
@@ -870,14 +890,33 @@ pub fn restructure_ts(
         .map(|f| {
             if let Some(rhs) = ctor_assigned_fields.get(f) {
                 rhs.clone()
+            } else if let Some((decl, _)) = field_decls.get(f) {
+                decl.split_once('=')
+                    .map(|(_, rhs)| rhs.trim().trim_end_matches(';').trim().to_string())
+                    .unwrap_or_else(|| {
+                        if is_js {
+                            "undefined".to_string()
+                        } else {
+                            "undefined as any".to_string()
+                        }
+                    })
             } else {
-                f.clone()
+                if is_js {
+                    "undefined".to_string()
+                } else {
+                    "undefined as any".to_string()
+                }
             }
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let delegate_initializer = if ctor_assigned_fields.is_empty() {
+        format!(" = new {helper}({helper_init_args})")
+    } else {
+        String::new()
+    };
 
-    for line in body.lines() {
+    for (line_index, line) in body.lines().enumerate() {
         let trimmed = line.trim();
         let is_moved_field_decl = fields.iter().any(|f| {
             if let Some((decl_line, _)) = field_decls.get(f) {
@@ -892,7 +931,9 @@ pub fn restructure_ts(
                 let vis = if is_js { "" } else { "public " };
                 let type_ann = if is_js { "" } else { ": " };
                 let type_name = if is_js { "" } else { helper };
-                new_body_lines.push(format!("    {vis}{field}{type_ann}{type_name};"));
+                new_body_lines.push(format!(
+                    "    {vis}{field}{type_ann}{type_name}{delegate_initializer};"
+                ));
                 delegate_field_placed = true;
             }
             continue;
@@ -918,9 +959,9 @@ pub fn restructure_ts(
             }
         }
 
-        let is_moved_method = moved_methods.values().any(|minfo| {
-            minfo.full_text.lines().any(|ml| ml.trim() == trimmed)
-        });
+        let is_moved_method = moved_methods
+            .values()
+            .any(|minfo| minfo.start_line <= line_index && line_index <= minfo.end_line);
         if is_moved_method {
             continue;
         }
@@ -932,8 +973,10 @@ pub fn restructure_ts(
         let vis = if is_js { "" } else { "public " };
         let type_ann = if is_js { "" } else { ": " };
         let type_name = if is_js { "" } else { helper };
-        let init_val = format!(" = new {helper}()");
-        new_body_lines.insert(0, format!("    {vis}{field}{type_ann}{type_name}{init_val};"));
+        new_body_lines.insert(
+            0,
+            format!("    {vis}{field}{type_ann}{type_name}{delegate_initializer};"),
+        );
     }
 
     for m in methods {
@@ -962,7 +1005,14 @@ pub fn restructure_ts(
     let new_body = new_body_lines.join("\n");
     let mut out = text.to_string();
     out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
-    let final_text = format!("{helper_text}\n\n{out}");
+    let owner_marker = format!("class {owner}");
+    let struct_marker = format!("struct {owner}");
+    let owner_start = text[..open_brace]
+        .rfind(&owner_marker)
+        .or_else(|| text[..open_brace].rfind(&struct_marker))
+        .context("cannot locate the selected C++ declaration for helper insertion")?;
+    out.insert_str(owner_start, &format!("{helper_text}\n\n"));
+    let final_text = out;
     Ok((final_text, owner))
 }
 
@@ -1260,7 +1310,7 @@ pub fn restructure_cpp(
     helper: &str,
     field: &str,
 ) -> Result<(String, String)> {
-    let (open_brace, close_brace, owner) = {
+    let (owner_start, open_brace, close_brace, owner) = {
         let mut found = None;
         for keyword in ["class ", "struct "] {
             for (i, _) in text.match_indices(keyword) {
@@ -1285,7 +1335,7 @@ pub fn restructure_cpp(
                         continue;
                     }
                 }
-                found = Some((open, close, name));
+                found = Some((i, open, close, name));
                 break;
             }
             if found.is_some() {
@@ -1342,6 +1392,8 @@ pub fn restructure_cpp(
         params: String,
         full_text: String,
         body: String,
+        start_line: usize,
+        end_line: usize,
     }
     let mut moved_methods: BTreeMap<String, CppMethod> = BTreeMap::new();
     let mut offset = 0;
@@ -1370,6 +1422,8 @@ pub fn restructure_cpp(
                     let sig = body[line_start..open_b].trim().to_string();
                     let m_body = body[open_b + 1..close_b].to_string();
                     let full_text = body[line_start..=close_b].trim().to_string();
+                    let start_line = body[..line_start].matches('\n').count();
+                    let end_line = body[..close_b].matches('\n').count();
                     let mname = last_word.to_string();
                     if methods.contains(&mname) {
                         moved_methods.insert(
@@ -1379,6 +1433,8 @@ pub fn restructure_cpp(
                                 params,
                                 full_text,
                                 body: m_body,
+                                start_line,
+                                end_line,
                             },
                         );
                     }
@@ -1442,7 +1498,13 @@ pub fn restructure_cpp(
     let mut new_body_lines = Vec::new();
     let mut delegate_placed = false;
 
-    for line in body.lines() {
+    for (line_index, line) in body.lines().enumerate() {
+        if moved_methods
+            .values()
+            .any(|minfo| minfo.start_line <= line_index && line_index <= minfo.end_line)
+        {
+            continue;
+        }
         let trimmed = line.trim();
         let is_moved_field = fields.iter().any(|f| {
             if let Some(decl) = field_decls.get(f) {
@@ -1497,13 +1559,6 @@ pub fn restructure_cpp(
             continue;
         }
 
-        let is_moved_method = moved_methods.values().any(|minfo| {
-            minfo.full_text.lines().any(|ml| ml.trim() == trimmed)
-        });
-        if is_moved_method {
-            continue;
-        }
-
         new_body_lines.push(line.to_string());
     }
 
@@ -1521,8 +1576,8 @@ pub fn restructure_cpp(
     let new_body = new_body_lines.join("\n");
     let mut out = text.to_string();
     out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
-    let final_text = format!("{helper_text}\n\n{out}");
-    Ok((final_text, owner))
+    out.insert_str(owner_start, &format!("{helper_text}\n\n"));
+    Ok((out, owner))
 }
 
 pub fn restructure_swift(
@@ -1614,6 +1669,8 @@ pub fn restructure_swift(
         params: String,
         full_text: String,
         body: String,
+        start_line: usize,
+        end_line: usize,
     }
 
     let mut moved_methods: BTreeMap<String, SwiftMethod> = BTreeMap::new();
@@ -1643,6 +1700,8 @@ pub fn restructure_swift(
                         let sig = body[line_start..open_b].trim().to_string();
                         let m_body = body[open_b + 1..close_b].to_string();
                         let full_text = body[line_start..=close_b].trim().to_string();
+                        let start_line = body[..line_start].matches('\n').count();
+                        let end_line = body[..close_b].matches('\n').count();
                         let mname = last_word.to_string();
                         if methods.contains(&mname) {
                             moved_methods.insert(
@@ -1652,6 +1711,8 @@ pub fn restructure_swift(
                                     params,
                                     full_text,
                                     body: m_body,
+                                    start_line,
+                                    end_line,
                                 },
                             );
                         }
@@ -1719,7 +1780,13 @@ pub fn restructure_swift(
         .collect::<Vec<_>>()
         .join(", ");
 
-    for line in body.lines() {
+    for (line_index, line) in body.lines().enumerate() {
+        if moved_methods
+            .values()
+            .any(|minfo| minfo.start_line <= line_index && line_index <= minfo.end_line)
+        {
+            continue;
+        }
         let trimmed = line.trim();
         let is_moved_prop = fields.iter().any(|f| {
             if let Some(decl) = prop_decls.get(f) {
@@ -1754,13 +1821,6 @@ pub fn restructure_swift(
             if trimmed.contains('}') {
                 inside_init = false;
             }
-        }
-
-        let is_moved_method = moved_methods.values().any(|minfo| {
-            minfo.full_text.lines().any(|ml| ml.trim() == trimmed)
-        });
-        if is_moved_method {
-            continue;
         }
 
         new_body_lines.push(line.to_string());
@@ -2208,6 +2268,37 @@ pub fn rewrite_external_file(
     (out, accesses)
 }
 
+fn owner_region<'a>(text: &'a str, lang: Language, owner: &str) -> Option<&'a str> {
+    if lang == Language::Go {
+        return Some(text);
+    }
+    let markers = match lang {
+        Language::TypeScript | Language::JavaScript | Language::Python => {
+            vec![format!("class {owner}")]
+        }
+        Language::Cpp | Language::C => {
+            vec![format!("class {owner}"), format!("struct {owner}")]
+        }
+        Language::Swift => vec![
+            format!("class {owner}"),
+            format!("struct {owner}"),
+            format!("actor {owner}"),
+        ],
+        Language::Go => return Some(text),
+        Language::Rust | Language::Java => return None,
+    };
+    let start = markers
+        .iter()
+        .filter_map(|marker| text.rfind(marker))
+        .max()?;
+    if lang == Language::Python {
+        return Some(&text[start..]);
+    }
+    let open = start + text[start..].find('{')?;
+    let close = crate::parameter_object::matching_bracket(text, open)?;
+    Some(&text[open + 1..close])
+}
+
 /// Extracts `fields` and `methods` of the struct at `line`:`col` of `file` into `helper`, held
 /// in the new field `field` for Rust.
 #[allow(clippy::too_many_arguments)]
@@ -2381,6 +2472,7 @@ pub async fn extract_delegate_rust(
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
             .collect(),
         accesses,
+        unmatched: Vec::new(),
         diagnostics,
         applied,
     })
@@ -2449,20 +2541,151 @@ pub async fn extract_delegate_polyglot(
 
     let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut accesses = 0;
+    let mut unmatched = Vec::new();
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let canonical_owner_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let mut references_by_file_line: BTreeMap<PathBuf, BTreeMap<u32, usize>> = BTreeMap::new();
+    for moved_field in fields {
+        let position = match crate::encapsulate_field::field_position_in_lsp(
+            remote,
+            root,
+            file,
+            &owner,
+            moved_field,
+        )
+        .await
+        {
+            Ok(position) => position,
+            Err(err) => {
+                unmatched.push(format!(
+                    "{}: references for moved field `{moved_field}` could not be resolved: {err:#}",
+                    display(root, file)
+                ));
+                continue;
+            }
+        };
+        let Some((line, col)) = position else {
+            continue;
+        };
+        match crate::signature::references(remote, root, file, line, col).await {
+            Ok(references) => {
+                for (path, line, _) in references {
+                    let path = std::fs::canonicalize(&path).unwrap_or(path);
+                    if !path.starts_with(&canonical_root) || Language::of(&path) != Some(lang) {
+                        unmatched.push(format!(
+                            "{}: moved-field reference is outside the supported workspace language",
+                            display(root, &path)
+                        ));
+                        continue;
+                    }
+                    if path != canonical_owner_file {
+                        *references_by_file_line
+                            .entry(path)
+                            .or_default()
+                            .entry(line)
+                            .or_default() += 1;
+                    }
+                }
+            }
+            Err(err) => unmatched.push(format!(
+                "{}: references for moved field `{moved_field}` could not be resolved: {err:#}",
+                display(root, file)
+            )),
+        }
+    }
 
+    let owner_body = owner_region(&restructured, lang, &owner).unwrap_or(&restructured);
+    let (owner_probe, _) = rewrite_external_file(owner_body, lang, &owner, field, fields, helper);
+    if owner_probe != owner_body {
+        unmatched.push(format!(
+            "{}: remaining owner methods contain moved-field accesses that need semantic resolution",
+            display(root, file)
+        ));
+    }
+    if matches!(lang, Language::Cpp | Language::C)
+        && fields.iter().any(|moved| owner_body.contains(moved))
+    {
+        unmatched.push(format!(
+            "{}: unqualified moved-field uses need semantic resolution",
+            display(root, file)
+        ));
+    }
     files.insert(file.to_path_buf(), restructured);
 
+    let mut processed = std::collections::BTreeSet::new();
     for entry in ignore::WalkBuilder::new(root).build().flatten() {
         let path = entry.path();
         if path.is_file() && path != file && Language::of(path) == Some(lang)
             && let Ok(content) = std::fs::read_to_string(path)
-            && fields.iter().any(|f| content.contains(f)) {
-                let (rewritten, acc) = rewrite_external_file(&content, lang, &owner, field, fields, helper);
+                && fields.iter().any(|f| content.contains(f)) {
+                let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                processed.insert(canonical.clone());
+                if lang == Language::Go {
+                    let (rewritten, _) = rewrite_external_file(&content, lang, &owner, field, fields, helper);
+                    if rewritten != content {
+                        unmatched.push(format!(
+                            "{}: Go literals need package-aware semantic resolution before they can be rewritten",
+                            display(root, path)
+                        ));
+                    }
+                    continue;
+                }
+                let refs = references_by_file_line.get(&canonical);
+                let mut rewritten = String::with_capacity(content.len());
+                let mut rewrite_failed = false;
+                let mut file_accesses = 0usize;
+                for (index, raw_line) in content.split_inclusive('\n').enumerate() {
+                    let line_number = index as u32 + 1;
+                    let expected = refs.and_then(|by_line| by_line.get(&line_number)).copied().unwrap_or(0);
+                    let (body, ending) = if let Some(body) = raw_line.strip_suffix("\r\n") {
+                        (body, "\r\n")
+                    } else if let Some(body) = raw_line.strip_suffix('\n') {
+                        (body, "\n")
+                    } else {
+                        (raw_line, "")
+                    };
+                    let (line, actual) = rewrite_external_file(body, lang, &owner, field, fields, helper);
+                    if actual != expected {
+                        if actual > 0 || expected > 0 {
+                            unmatched.push(format!(
+                                "{}:{}: {actual} textual moved-field access(es) do not match {expected} analyzer reference(s)",
+                                display(root, path),
+                                line_number
+                            ));
+                            rewrite_failed = true;
+                            rewritten.push_str(raw_line);
+                            continue;
+                        }
+                    }
+                    file_accesses += actual;
+                    rewritten.push_str(&line);
+                    rewritten.push_str(ending);
+                }
+                if refs.is_some_and(|by_line| by_line.keys().any(|line| *line as usize > content.lines().count())) {
+                    unmatched.push(format!(
+                        "{}: analyzer reference points beyond end of file",
+                        display(root, path)
+                    ));
+                    rewrite_failed = true;
+                }
+                if rewrite_failed {
+                    continue;
+                }
                 if rewritten != content {
+                    accesses += file_accesses;
                     files.insert(path.to_path_buf(), rewritten);
-                    accesses += acc;
+                } else if file_accesses > 0 {
+                    accesses += file_accesses;
                 }
             }
+    }
+    for path in references_by_file_line.keys() {
+        if !processed.contains(path) {
+                    unmatched.push(format!(
+                "{}: analyzer reference did not resolve to a readable workspace source file",
+                display(root, path)
+                    ));
+        }
     }
 
     files.retain(|p, t| std::fs::read_to_string(p).map(|o| o != *t).unwrap_or(true));
@@ -2489,6 +2712,12 @@ pub async fn extract_delegate_polyglot(
 
     let mut applied = false;
     if apply {
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) cannot be safely matched to `{owner}`; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
         anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written:\n  {}",
