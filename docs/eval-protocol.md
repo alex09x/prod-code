@@ -679,6 +679,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,390 invariant assertions enforcing stream buffer boundaries, protocol state validity, and serialization invariants. Evaluated compile-time declarative REST code generation in `web/vibe/web/rest.d`, where template metaprogramming inspects D `interface` signatures to synthesize both HTTP server routes and type-safe client proxies without runtime reflection. AST refactoring evaluated `prod-code extract-function` on `utils/vibe/utils/string.d`, extracting string sanitize helpers, verified with clean AST construction on cluster nodes.
     - **Full Deep-Dive Report**: [Vibe.d Under the Microscope: What 67 Remote AST Tools Found Inside the D Asynchronous Web Framework (prod.codes)](https://prod.codes/blog/vibed-under-the-microscope-67-ast-tools/)
 
+53. **[laravel/framework](https://github.com/laravel/framework)** (PHP)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 573,479 lines of PHP across 3,120 source files (core framework `src/Illuminate/`: 273.2K LOC across 1,706 files, test suites `tests/`: 293.2K LOC across 1,336 files), 0.58 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Web application framework analyzed with `prod-code dependencies` across root `composer.json` and PSR-4 namespace mappings. Discovered zero circular dependencies (clean directed acyclic graph) isolating inversion-of-control container (`Illuminate\Container`), database/Eloquent ORM (`Illuminate\Database`), routing pipeline (`Illuminate\Routing`), facade abstractions (`Illuminate\Support\Facades`), and async queuing infrastructure. Clone analysis (`prod-code duplicates`) scanned 3,120 files (573,479 lines) and isolated 5 clone groups with 0.9% duplication at 6 lines, led by repetitive HTTP client mock response assertions in `tests/Http/HttpClientTest.php:2663-4315`.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 34,633 test assertions and 670 typed exception egress points across Illuminate components. Evaluated recursive autowiring and contextual dependency resolution in `Illuminate\Container\Container`, resolving constructor reflection parameter graphs with zero memory leakage. AST refactoring evaluated `prod-code extract-function` on `src/Illuminate/Support/Str.php` (`replaceFirst`), extracting substring offset calculations, verified with 0 analyzer errors on cluster nodes.
+    - **Full Deep-Dive Report**: [Laravel Under the Microscope: What 67 Remote AST Tools Found Inside the PHP Web Artisan Framework (prod.codes)](https://prod.codes/blog/laravel-under-the-microscope-67-ast-tools/)
+
+
 
 
 

@@ -383,6 +383,8 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`dlang/dmd`](https://github.com/dlang/dmd) | D (32-core node) | 67 / 67 tools (976K lines, clean DAG, ImportC C11 AST parser, 12K invariants, CTFE interpreter) | 976K lines (5,579 files) | 0.58 ms RTT | [DMD Under the Microscope →](https://prod.codes/blog/dmd-under-the-microscope-67-ast-tools/) |
 | [`dlang/phobos`](https://github.com/dlang/phobos) | D (32-core node) | 67 / 67 tools (366K lines, clean DAG, range pipeline architecture, 33K asserts, 5.6K unittests) | 366K lines (186 files) | 0.58 ms RTT | [Phobos Under the Microscope →](https://prod.codes/blog/phobos-under-the-microscope-67-ast-tools/) |
 | [`vibe-d/vibe.d`](https://github.com/vibe-d/vibe.d) | D (32-core node) | 67 / 67 tools (30K lines, clean DAG, compile-time REST interface generator, 1.4K asserts) | 30.2K lines (108 files) | 0.58 ms RTT | [Vibe.d Under the Microscope →](https://prod.codes/blog/vibed-under-the-microscope-67-ast-tools/) |
+| [`laravel/framework`](https://github.com/laravel/framework) | PHP (32-core node) | 67 / 67 tools (573K lines, clean DAG, IoC container reflection, 34K test asserts, Eloquent ORM) | 573K lines (3,120 files) | 0.58 ms RTT | [Laravel Under the Microscope →](https://prod.codes/blog/laravel-under-the-microscope-67-ast-tools/) |
+
 
 
 
