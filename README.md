@@ -389,6 +389,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`WordPress/WordPress`](https://github.com/WordPress/WordPress) | PHP (32-core node) | 67 / 67 tools (674K lines, clean DAG, WP_Hook event dispatcher, 2.4K hook points, 3.7K error guards) | 673.9K lines (1,899 files) | 0.58 ms RTT | [WordPress Under the Microscope →](https://prod.codes/blog/wordpress-under-the-microscope-67-ast-tools/) |
 | [`rails/rails`](https://github.com/rails/rails) | Ruby (32-core node) | 67 / 67 tools (573K lines, clean DAG, Active Record Relation AST, 60K test asserts, 1.4K exceptions) | 573.5K lines (3,478 files) | 0.58 ms RTT | [Rails Under the Microscope →](https://prod.codes/blog/rails-under-the-microscope-67-ast-tools/) |
 | [`jekyll/jekyll`](https://github.com/jekyll/jekyll) | Ruby (32-core node) | 67 / 67 tools (23K lines, clean DAG, 6-stage compilation pipeline, 1.3K test asserts) | 22.8K lines (162 files) | 0.58 ms RTT | [Jekyll Under the Microscope →](https://prod.codes/blog/jekyll-under-the-microscope-67-ast-tools/) |
+| [`mastodon/mastodon`](https://github.com/mastodon/mastodon) | Ruby (32-core node) | 67 / 67 tools (190K lines, clean DAG, ActivityPub JSON-LD verification, 8.2K RSpec asserts) | 189.7K lines (3,278 files) | 0.58 ms RTT | [Mastodon Under the Microscope →](https://prod.codes/blog/mastodon-under-the-microscope-67-ast-tools/) |
 
 
 
