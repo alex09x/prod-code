@@ -19,6 +19,10 @@ fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
 fn display_relative_or_name(from_file: &Path, to_file: &Path) -> String {
     let from_dir = from_file.parent().unwrap_or(Path::new(""));
     let rel = path_relative_from(to_file, from_dir);
@@ -794,6 +798,73 @@ fn get_go_package(file: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
+fn go_module_import_path(target_dir: &Path) -> Result<String> {
+    let target = std::fs::canonicalize(target_dir).unwrap_or_else(|_| target_dir.to_path_buf());
+    let mut directory = Some(target.as_path());
+    while let Some(dir) = directory {
+        if let Ok(manifest) = std::fs::read_to_string(dir.join("go.mod"))
+            && let Some(module) = manifest.lines().find_map(|line| {
+                line.trim()
+                    .strip_prefix("module ")
+                    .map(|value| value.trim().trim_matches('"').to_string())
+                    .filter(|value| !value.is_empty())
+            })
+        {
+            let relative = target.strip_prefix(dir).unwrap_or(Path::new(""));
+            let suffix = relative.to_string_lossy().replace('\\', "/");
+            return Ok(if suffix.is_empty() {
+                module
+            } else {
+                format!("{module}/{suffix}")
+            });
+        }
+        directory = dir.parent();
+    }
+    anyhow::bail!(
+        "cannot find the Go module path for {}",
+        target_dir.display()
+    )
+}
+
+fn rewrite_go_call_sites(
+    source_text: &str,
+    decl_name: &str,
+    target_pkg: &str,
+) -> Result<(String, usize)> {
+    let mut edits = Vec::new();
+    for (at, _) in source_text.match_indices(decl_name) {
+        if (at > 0 && source_text[..at].chars().next_back().is_some_and(is_ident))
+            || source_text[at + decl_name.len()..].chars().next().is_some_and(is_ident)
+            || crate::inline_parameter::is_in_comment(source_text, at, Language::Go)
+            || crate::inline_parameter::is_in_string(source_text, at, Language::Go)
+        {
+            continue;
+        }
+        let before = source_text[..at].trim_end();
+        if before.ends_with('.') {
+            continue; // A selector, which may name an unrelated method.
+        }
+        let after = source_text[at + decl_name.len()..].trim_start();
+        if after.starts_with('(') {
+            let line_start = source_text[..at].rfind('\n').map_or(0, |i| i + 1);
+            if source_text[line_start..at].trim_start().starts_with("func ") {
+                continue; // A separate declaration is not a call site.
+            }
+            edits.push((at, decl_name.len()));
+        } else {
+            anyhow::bail!(
+                "Go reference `{decl_name}` at byte {at} is not a call; cannot safely qualify it"
+            );
+        }
+    }
+    let count = edits.len();
+    let mut rewritten = source_text.to_string();
+    for (at, len) in edits.into_iter().rev() {
+        rewritten.replace_range(at..at + len, &format!("{target_pkg}.{decl_name}"));
+    }
+    Ok((rewritten, count))
+}
+
 fn add_go_import(content: &str, pkg: &str) -> String {
     let import_str = format!("import \"{pkg}\"\n");
     if let Some(pos) = content.find("package ") {
@@ -815,12 +886,19 @@ fn rewrite_go_cross_pkg_in_source(
     target_pkg: &str,
     target_file: &Path,
     root: &Path,
-) -> (String, String) {
-    let replaced = source_text.replace(decl_name, &format!("{target_pkg}.{decl_name}"));
+) -> Result<(String, String)> {
     let target_dir = target_file.parent().unwrap_or(root);
-    let target_import_path = display(root, target_dir);
+    let target_import_path = go_module_import_path(target_dir)?;
+    anyhow::ensure!(
+        !source_text.contains(&format!("\"{target_import_path}\"")),
+        "the target Go module is already imported and its local alias cannot be safely resolved"
+    );
+    let (replaced, calls) = rewrite_go_call_sites(source_text, decl_name, target_pkg)?;
+    if calls == 0 {
+        return Ok((source_text.to_string(), String::new()));
+    }
     let with_import = add_go_import(&replaced, &target_import_path);
-    (with_import, format!("imported \"{target_import_path}\""))
+    Ok((with_import, format!("imported \"{target_import_path}\"")))
 }
 
 pub fn carry_imports_polyglot(
@@ -949,9 +1027,9 @@ pub fn update_source_imports(
     target_file: &Path,
     root: &Path,
     lang: Language,
-) -> (String, Option<String>) {
+) -> Result<(String, Option<String>)> {
     if !is_symbol_used(source_text, decl_name) {
-        return (source_text.to_string(), None);
+        return Ok((source_text.to_string(), None));
     }
 
     match lang {
@@ -963,7 +1041,7 @@ pub fn update_source_imports(
             } else {
                 None
             };
-            (new_text, note)
+            Ok((new_text, note))
         }
         Language::Python => {
             let mod_spec = python_module_specifier(source_file, target_file, root);
@@ -973,16 +1051,16 @@ pub fn update_source_imports(
             } else {
                 None
             };
-            (new_text, note)
+            Ok((new_text, note))
         }
         Language::Go => {
             let src_pkg = get_go_package(source_file);
             let tgt_pkg = get_go_package(target_file);
-            if src_pkg == tgt_pkg {
-                (
+            if source_file.parent() == target_file.parent() {
+                Ok((
                     source_text.to_string(),
                     Some(format!("same package `{src_pkg}`: direct access")),
-                )
+                ))
             } else {
                 let (new_text, note) = rewrite_go_cross_pkg_in_source(
                     source_text,
@@ -990,26 +1068,26 @@ pub fn update_source_imports(
                     &tgt_pkg,
                     target_file,
                     root,
-                );
-                (new_text, Some(note))
+                )?;
+                Ok((new_text, (!note.is_empty()).then_some(note)))
             }
         }
         Language::Cpp | Language::C => {
             let rel = display_relative_or_name(source_file, target_file);
             let include_line = format!("#include \"{rel}\"");
             if source_text.contains(&include_line) {
-                (source_text.to_string(), None)
+                Ok((source_text.to_string(), None))
             } else {
                 let new_text = format!("{include_line}\n{source_text}");
-                (new_text, Some(format!("included \"{rel}\"")))
+                Ok((new_text, Some(format!("included \"{rel}\""))))
             }
         }
-        Language::Swift => (
+        Language::Swift => Ok((
             source_text.to_string(),
             Some("same module: direct access".to_string()),
-        ),
-        Language::Rust => (source_text.to_string(), None),
-        Language::Java => (source_text.to_string(), None),
+        )),
+        Language::Rust => Ok((source_text.to_string(), None)),
+        Language::Java => Ok((source_text.to_string(), None)),
     }
 }
 
@@ -1261,6 +1339,14 @@ fn initial_file_header(target: &Path, lang: Language) -> String {
     }
 }
 
+fn cpp_move_target_is_implementation(lang: Language, target: &Path) -> bool {
+    matches!(lang, Language::Cpp | Language::C)
+        && matches!(
+            target.extension().and_then(|ext| ext.to_str()),
+            Some("cpp" | "cc" | "cxx" | "c")
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn move_item(
     remote: SocketAddr,
@@ -1289,6 +1375,11 @@ pub async fn move_item(
         lang.fence(),
         target_lang.fence()
     );
+    if cpp_move_target_is_implementation(lang, target) {
+        anyhow::bail!(
+            "cannot move a C/C++ declaration into an implementation file: callers cannot safely include a `.cpp`/`.c` file; move it to a header instead"
+        );
+    }
 
     let source_text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read {}", file.display()))?;
@@ -1334,7 +1425,7 @@ pub async fn move_item(
     };
 
     let (source_new, source_import_note) =
-        update_source_imports(&source_new_cut, &name, file, target, root, lang);
+        update_source_imports(&source_new_cut, &name, file, target, root, lang)?;
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
