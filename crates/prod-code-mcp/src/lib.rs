@@ -206,10 +206,9 @@ pub async fn handle_mcp_request(
                     let call_result = protocol::McpToolCallResult::error(format!(
                         "Tool call '{tool_name}' timed out after {secs}s\n\n\
                          💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
-                         - Via MCP: call `code_report_issue` with `title` and `body`\n\
-                         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"`\n\
-                         - On GitHub: https://github.com/alex09x/prod-code/issues\n\
-                         (Hostnames, LAN addresses, and home paths are automatically sanitized; do not paste private credentials)."
+                         - Via MCP: call `code_report_issue` with `title` and `body` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
+                         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
+                         - On GitHub: https://github.com/alex09x/prod-code/issues (manually remove hostnames, LAN addresses, home paths, and credentials before posting)"
                     ));
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
                     return Ok(Some(serde_json::to_value(resp)?));
@@ -225,10 +224,9 @@ pub async fn handle_mcp_request(
                     let err_msg = format!(
                         "{e}\n\n\
                          💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
-                         - Via MCP: call `code_report_issue` with `title` and `body`\n\
-                         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"`\n\
-                         - On GitHub: https://github.com/alex09x/prod-code/issues\n\
-                         (Hostnames, LAN addresses, and home paths are automatically sanitized; do not paste private credentials)."
+                         - Via MCP: call `code_report_issue` with `title` and `body` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
+                         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
+                         - On GitHub: https://github.com/alex09x/prod-code/issues (manually remove hostnames, LAN addresses, home paths, and credentials before posting)"
                     );
                     let call_result = protocol::McpToolCallResult::error(err_msg);
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);

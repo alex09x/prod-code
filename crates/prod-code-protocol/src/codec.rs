@@ -177,6 +177,30 @@ impl ProdCodeCodec {
     }
 }
 
+/// RFC 9110 Section 5.6.2 token character:
+/// `tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA`
+#[inline]
+fn is_rfc_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
+
 impl Decoder for ProdCodeCodec {
     type Item = WireMessage;
     type Error = io::Error;
@@ -257,20 +281,20 @@ impl Decoder for ProdCodeCodec {
         }
 
         // Check if incoming stream begins with a syntactically valid HTTP request line or response.
-        // A valid HTTP request starts with an ASCII method token (2..=16 uppercase letters) followed by a space,
+        // A valid HTTP request starts with an RFC 9110 token method (e.g. GET, POST, M-SEARCH) followed by a space,
         // or an HTTP/1.x response line.
         let is_http = if src.starts_with(b"HTTP/") {
             true
         } else if let Some(space_pos) = src.iter().position(|&b| b == b' ') {
-            (2..=16).contains(&space_pos)
-                && src[..space_pos].iter().all(|b| b.is_ascii_uppercase())
+            (1..=64).contains(&space_pos)
+                && src[..space_pos].iter().all(|&b| is_rfc_token_byte(b))
                 && (src.len() <= space_pos + 1
                     || src[space_pos + 1] == b'/'
                     || src[space_pos + 1] == b'*'
-                    || src[space_pos + 1].is_ascii_alphanumeric())
+                    || is_rfc_token_byte(src[space_pos + 1]))
         } else {
-            // Buffer is too short to find a space yet, but starts with uppercase letters that could be an HTTP method
-            src.len() < 16 && src.iter().all(|b| b.is_ascii_uppercase())
+            // Buffer is too short to find a space yet, but starts with RFC token characters that could form an HTTP method
+            src.len() <= 64 && src.iter().all(|&b| is_rfc_token_byte(b))
         };
 
         if is_http {
@@ -1078,6 +1102,18 @@ mod tests {
             WireMessage::HttpProbe {
                 method: "TRACE".to_string(),
                 path: "/debug".to_string(),
+            }
+        );
+
+        buf.extend_from_slice(
+            b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n\r\n",
+        );
+        let decoded_msearch = codec.decode(&mut buf).unwrap().expect("should decode M-SEARCH probe");
+        assert_eq!(
+            decoded_msearch,
+            WireMessage::HttpProbe {
+                method: "M-SEARCH".to_string(),
+                path: "*".to_string(),
             }
         );
 
