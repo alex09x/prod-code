@@ -500,6 +500,24 @@ def asked_prod_code(transcript, symbol):
     return False
 
 
+def reported_prod_code_issue(transcript, symbol):
+    """Whether this session filed an issue about prod-code via code_report_issue or
+    the prod-code report-issue CLI. Without a transcript (interactive human), returns True."""
+    if not transcript or not os.path.isfile(transcript):
+        return True
+    try:
+        with open(transcript, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 2_000_000))
+            tail = f.read().decode("utf-8", "ignore")
+    except OSError:
+        return True
+    for line in tail.splitlines():
+        if re.search(r"prod-code__code_report_issue|prod_code__code_report_issue|\"code_report_issue\"|prod-code\s+report-issue\b", line):
+            return True
+    return False
+
+
 def log(entry):
     try:
         with open(LOG, "a") as f:
@@ -862,32 +880,38 @@ def main():
     if reason:
         log({"ts": int(time.time()), "agent": agent, "rule": "local-build", "decision": "deny", "cwd": cwd, "cmd": command[:300]})
     transcript = payload.get("transcript_path") or payload.get("transcriptPath")
+    if not transcript and payload.get("conversationId"):
+        cand = os.path.expanduser(f"~/.gemini/antigravity-cli/brain/{payload['conversationId']}/.system_generated/logs/transcript.jsonl")
+        if os.path.isfile(cand):
+            transcript = cand
+
     if not reason:
         found = symbol_grep(command, cwd)
         if found is None and "PROD_CODE_GREP=1" in command:
             again = symbol_grep(command.replace("PROD_CODE_GREP=1", ""), cwd)
-            if again and not asked_prod_code(transcript, again[0]):
-                # An override is for a place where prod-code failed: it has to have been asked.
-                log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": again[0], "cmd": command[:300]})
+            if again:
                 sym = again[0]
-                reason = (
-                    f"PROD_CODE_GREP=1 is accepted only after prod-code was asked about `{sym}` in this session, and "
-                    f"it was not. Ask it first: code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}} "
-                    f"or code_symbols {{query: \"{sym}\"}} (CLI: prod-code def|refs --symbol {sym}). To read the whole "
-                    f"definition, use code_definition and then read the file at the position it gives. If prod-code is "
-                    f"wrong or empty, report it with code_report_issue; then the override works."
-                )
-            elif again:
-                log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override", "cwd": cwd, "symbol": again[0], "cmd": command[:300]})
+                if not asked_prod_code(transcript, sym):
+                    log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
+                    reason = (
+                        f"Grep for symbol `{sym}` is blocked. Ask prod-code first: "
+                        f"code_definition {{symbol: \"{sym}\"}} or code_symbols {{query: \"{sym}\"}}."
+                    )
+                elif not reported_prod_code_issue(transcript, sym):
+                    log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
+                    reason = (
+                        f"Grep for symbol `{sym}` is blocked. If prod-code failed to resolve `{sym}`, "
+                        f"you must report the bug first: code_report_issue {{title: \"Symbol not found: {sym}\", body: \"...\"}}."
+                    )
+                else:
+                    log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
         if found:
             sym, pat = found
             log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "deny", "cwd": cwd, "symbol": sym, "pattern": pat, "cmd": command[:300]})
             reason = (
-                f"`{pat}` looks up the symbol `{sym}`. Use prod-code, which resolves the symbol instead of matching text: "
-                f"code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}}, or code_symbols {{query: \"{sym}\"}} "
-                f"(CLI: prod-code def|refs --symbol {sym}, prod-code symbols {sym}). "
-                "If prod-code answers wrong, empty or not at all, report it with code_report_issue; after prod-code "
-                "has been asked about this symbol, PROD_CODE_GREP=1 in front of the grep lets it through."
+                f"Grep for code symbol `{sym}` is blocked (`{pat}`). Use prod-code AST tools: "
+                f"code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}}, or code_symbols {{query: \"{sym}\"}}. "
+                f"If prod-code returns empty or errors, file a bug: code_report_issue {{title: \"Symbol not found: {sym}\", body: \"...\"}}."
             )
     if not reason and agy:
         # No decision at all: "allow" would skip Antigravity's own permission prompt.
