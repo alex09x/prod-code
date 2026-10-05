@@ -889,6 +889,67 @@ class ProdCodeGuardSymbolGrepPolicyTests(unittest.TestCase):
         # Antigravity does not print decision on allow
         self.assertEqual(stdout_3.getvalue().strip(), "")
 
+    def test_agent_without_transcript_is_blocked(self) -> None:
+        # For AI agents, lack of transcript must block the bypass rather than assuming True
+        self.assertFalse(guard.reported_prod_code_issue(None, "my_func", agent="Bash"))
+        self.assertFalse(guard.reported_prod_code_issue("/nonexistent/path", "my_func", agent="Bash"))
+        self.assertFalse(guard.asked_prod_code(None, "my_func", agent="Bash"))
+        self.assertFalse(guard.asked_prod_code("/nonexistent/path", "my_func", agent="Bash"))
+
+    def test_claude_code_session_transcript_resolution(self) -> None:
+        repo_root = str(Path(__file__).parent.parent)
+        session_id = "test-claude-session-1234"
+        cwd_slug = repo_root.replace("/", "-")
+        fake_home = self.temp_dir.name
+        claude_dir = os.path.join(fake_home, ".claude", "projects", f"-{cwd_slug.lstrip('-')}")
+        os.makedirs(claude_dir, exist_ok=True)
+        transcript_path = os.path.join(claude_dir, f"{session_id}.jsonl")
+
+        with open(transcript_path, "w") as f:
+            f.write(json.dumps({"type": "tool_use", "name": "mcp__prod-code__code_definition", "input": {"symbol": "target_symbol"}}) + "\n")
+
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": 'PROD_CODE_GREP=1 git grep -n "target_symbol" scripts/',
+            },
+            "session_id": session_id,
+            "cwd": repo_root,
+        }
+
+        # Case 1: Asked prod-code in transcript, but did not report issue yet -> denied
+        with mock.patch("os.path.expanduser", side_effect=lambda p: p.replace("~", fake_home)):
+            stdout = io.StringIO()
+            orig_stdin, orig_stdout = sys.stdin, sys.stdout
+            try:
+                sys.stdin = io.StringIO(json.dumps(payload))
+                sys.stdout = stdout
+                guard.main()
+            finally:
+                sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+            out = stdout.getvalue().strip()
+            self.assertTrue(out)
+            res = json.loads(out)
+            self.assertEqual(res["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertIn("report the bug first: code_report_issue", res["hookSpecificOutput"]["permissionDecisionReason"])
+
+            # Case 2: Now append code_report_issue to transcript -> allowed
+            with open(transcript_path, "a") as f:
+                f.write(json.dumps({"type": "tool_use", "name": "mcp__prod-code__code_report_issue", "input": {"title": "Symbol not found: target_symbol"}}) + "\n")
+
+            stdout_2 = io.StringIO()
+            try:
+                sys.stdin = io.StringIO(json.dumps(payload))
+                sys.stdout = stdout_2
+                guard.main()
+            finally:
+                sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+            # Allowed -> no denial output printed for Bash
+            self.assertEqual(stdout_2.getvalue().strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
