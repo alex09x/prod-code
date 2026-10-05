@@ -7402,3 +7402,46 @@ async fn code_definition_concurrent_body_calls_succeed_without_transport_closed(
     assert!(t1.contains("pub fn one"), "{t1}");
     assert!(t2.contains("pub fn two"), "{t2}");
 }
+
+#[tokio::test]
+async fn qualified_symbol_fast_path_queries_type_outline_before_common_member_name() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let ws = workspace();
+    let source = "pub struct Server;\nimpl Server {\n    pub fn new() -> Self { Server }\n}\n";
+    let file = write(&ws, "src/lib.rs", source);
+    commit(&ws);
+
+    let searched_new = Arc::new(AtomicBool::new(false));
+    let searched_new_seen = searched_new.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => {
+            let q = params["query"].as_str().unwrap_or("");
+            if q == "new" {
+                searched_new_seen.store(true, Ordering::SeqCst);
+                serde_json::Value::Array(Vec::new())
+            } else if q == "Server" {
+                serde_json::json!([answers::symbol("Server", 23, &file, 1, 12)])
+            } else {
+                serde_json::json!([])
+            }
+        }
+        "textDocument/documentSymbol" => {
+            let ty = answers::document_symbol("Server", 23, 1, 1, 12);
+            let mut imp = answers::document_symbol("impl Server", 19, 2, 4, 6);
+            imp["children"] = serde_json::json!([answers::document_symbol("new", 6, 3, 3, 12)]);
+            serde_json::json!([ty, imp])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let hit = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "Server::new", None)
+        .await
+        .expect("Server::new resolves via owning type outline");
+    assert_eq!((hit.line, hit.col), (3, 12));
+    assert!(
+        !searched_new.load(Ordering::SeqCst),
+        "fast path must not search workspace/symbol for common method name `new`"
+    );
+}
+

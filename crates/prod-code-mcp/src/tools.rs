@@ -8491,30 +8491,36 @@ pub async fn resolve_symbol(
     let qualifier = parts.len().checked_sub(2).map(|i| parts[i]);
     // Every qualifying segment, for a path (`crate::module::item`) the hit's file spells out.
     let qualifiers = &parts[..parts.len().saturating_sub(1)];
-    let hits = symbol_search_across_projects(remote, root, name, hint, 200).await?;
-    let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
-        .into_iter()
-        .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
-    let exact = if qualifier.is_some() {
-        // A qualifier is an eligibility requirement, not a scoring preference: choosing a
-        // same-named member of another type would make every symbol-addressable tool act on a
-        // declaration the caller explicitly did not name. rust-analyzer can omit fields and
-        // methods from its index, so ask the named type's outline after the eligible index hits
-        // are exhausted.
-        let eligible: Vec<SymbolHit> = exact
-            .into_iter()
-            .filter(|hit| qualifier_matches(root, hit, qualifiers))
-            .collect();
-        if !eligible.is_empty() {
-            eligible
+    let exact: Vec<SymbolHit> = if qualifier.is_some() {
+        // Fast-path: When looking up a qualified symbol (`Type::member`), resolve via the
+        // owning type's outline first. The type itself (`qualifiers.last()`) is almost always
+        // unique or has very few candidates, whereas common method names (`new`, `get`, `run`, `init`)
+        // return 200+ unrelated candidates across the entire workspace and lead to expensive scans.
+        let members = type_members(remote, root, qualifiers, name, hint)
+            .await
+            .unwrap_or_default();
+        if !members.is_empty() {
+            members
         } else {
-            let members = type_members(remote, root, qualifiers, name, hint).await?;
-            if members.is_empty() {
+            let hits = symbol_search_across_projects(remote, root, name, hint, 200).await?;
+            let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
+                .into_iter()
+                .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
+            let eligible: Vec<SymbolHit> = exact
+                .into_iter()
+                .filter(|hit| qualifier_matches(root, hit, qualifiers))
+                .collect();
+            if !eligible.is_empty() {
+                eligible
+            } else {
                 anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
             }
-            members
         }
     } else {
+        let hits = symbol_search_across_projects(remote, root, name, hint, 200).await?;
+        let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
+            .into_iter()
+            .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         if exact.is_empty() {
             let members = unindexed_members(remote, root, name, hint).await?;
             if !members.is_empty() {
@@ -9343,12 +9349,17 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 const TYPE_MEMBERS_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 
-fn find_source_members(path: &Path, owner: &[&str], member: &str) -> Vec<SymbolHit> {
+fn find_source_members(root: &Path, path: &Path, owner: &[&str], member: &str) -> Vec<SymbolHit> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     let type_name = owner.last().copied().unwrap_or_default();
     if !names_word(&text, member) || (!type_name.is_empty() && !names_word(&text, type_name)) {
+        return Vec::new();
+    }
+    if !type_name.is_empty()
+        && !owner_path_matches(root, path, owner, &[type_name.to_string()])
+    {
         return Vec::new();
     }
     let mut hits = Vec::new();
@@ -9381,7 +9392,7 @@ async fn type_members(
         return Ok(Vec::new());
     };
     let deadline = tokio::time::Instant::now() + TYPE_MEMBERS_BUDGET;
-    let types = workspace_symbol_search(remote, root, type_name, hint, 200)
+    let types = symbol_search_across_projects(remote, root, type_name, hint, 50)
         .await
         .unwrap_or_default();
     let mut files: Vec<std::path::PathBuf> = Vec::new();
@@ -9501,7 +9512,7 @@ async fn type_members(
     }
     if members.is_empty() {
         for file in files.iter().chain(&candidates) {
-            for hit in find_source_members(file, owner, member) {
+            for hit in find_source_members(root, file, owner, member) {
                 if !members
                     .iter()
                     .any(|m| m.path == hit.path && m.line == hit.line && m.col == hit.col)
