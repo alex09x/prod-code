@@ -597,34 +597,38 @@ fn identify_primary_source(
 
 /// Seeds and relocates clangd background index shards from `from` to `to`.
 ///
-/// Searches `<from>/.cache/clangd/index/` and `<from>/.clangd/index/` for `.idx` files.
+/// Searches the index directory next to `compile_commands.json` first, then the conventional
+/// `<from>/.cache/clangd/index/` and `<from>/.clangd/index/` locations.
 /// For each shard:
 /// 1. Rewrites string table paths from `from` to `to`.
 /// 2. Derives the target source file path and computes its new LLVM xxh3 digest.
-/// 3. Emits `<to>/.cache/clangd/index/<filename>.<new-digest>.idx`.
-/// 4. Generates `<to>/.cache/clangd/index/.gitignore` with `*\n`.
+/// 3. Emits each shard under the matching target index directory.
+/// 4. Generates an index `.gitignore` with `*\n`.
 ///
 /// Returns total bytes written, or `None` if no shards were present.
 pub fn seed_clangd_index(from: &Path, to: &Path) -> io::Result<Option<u64>> {
     let candidate_dirs = [
-        from.join(".cache").join("clangd").join("index"),
-        from.join(".clangd").join("index"),
+        (
+            from.join("build").join(".cache").join("clangd").join("index"),
+            to.join("build").join(".cache").join("clangd").join("index"),
+        ),
+        (
+            from.join(".cache").join("clangd").join("index"),
+            to.join(".cache").join("clangd").join("index"),
+        ),
+        (
+            from.join(".clangd").join("index"),
+            to.join(".clangd").join("index"),
+        ),
     ];
 
-    let mut found_dir = None;
-    for cand in &candidate_dirs {
-        if cand.is_dir() {
-            found_dir = Some(cand);
-            break;
-        }
-    }
-
-    let Some(index_dir) = found_dir else {
+    let Some((index_dir, target_index_dir)) = candidate_dirs
+        .iter()
+        .find(|(candidate, _)| candidate.is_dir())
+    else {
         return Ok(None);
     };
-
-    let target_index_dir = to.join(".cache").join("clangd").join("index");
-    std::fs::create_dir_all(&target_index_dir)?;
+    std::fs::create_dir_all(target_index_dir)?;
 
     let mut total_bytes = 0u64;
     let mut seeded_shards = 0usize;
@@ -1004,8 +1008,14 @@ mod tests {
         );
         std::fs::write(from_build.join("compile_commands.json"), cdb_content).unwrap();
 
-        // 2. Setup mock .cache/clangd/index
-        let from_index = from_root.join(".cache").join("clangd").join("index");
+        // 2. Setup a build-local clangd index plus an empty conventional index directory.
+        let conventional_index = from_root.join(".cache").join("clangd").join("index");
+        std::fs::create_dir_all(&conventional_index).unwrap();
+        let from_index = from_root
+            .join("build")
+            .join(".cache")
+            .join("clangd")
+            .join("index");
         std::fs::create_dir_all(&from_index).unwrap();
 
         let source_file = from_root.join("src").join("lib.cpp");
@@ -1051,14 +1061,25 @@ mod tests {
         assert!(to_cdb.contains(&to_root.display().to_string()));
         assert!(!to_cdb.contains(&from_root.display().to_string()));
 
-        // Verify index shard in to
+        // A build-local index beside compile_commands.json is seeded into the matching target.
         let to_source_file = to_root.join("src").join("lib.cpp");
         let expected_to_shard = shard_filename_for_path(&to_source_file).unwrap();
-        let to_shard_path = to_root.join(".cache").join("clangd").join("index").join(&expected_to_shard);
+        let to_index = to_root
+            .join("build")
+            .join(".cache")
+            .join("clangd")
+            .join("index");
+        let to_shard_path = to_index.join(&expected_to_shard);
         assert!(to_shard_path.is_file(), "expected shard {expected_to_shard} was not created");
 
-        let to_gitignore = to_root.join(".cache").join("clangd").join("index").join(".gitignore");
+        let to_gitignore = to_index.join(".gitignore");
         assert!(to_gitignore.is_file());
+        let conventional_shard = to_root
+            .join(".cache")
+            .join("clangd")
+            .join("index")
+            .join(&expected_to_shard);
+        assert!(!conventional_shard.exists());
     }
 
     #[test]

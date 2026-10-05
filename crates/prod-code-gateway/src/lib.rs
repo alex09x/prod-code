@@ -23,7 +23,7 @@ pub mod workspace;
 
 pub use detect::detect_engine;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
@@ -53,6 +53,83 @@ pub static ACTIVE_QUERIES: AtomicUsize = AtomicUsize::new(0);
 type RunningTable = std::collections::HashMap<u64, (String, String, Instant)>;
 static RUNNING_COMMANDS: std::sync::LazyLock<std::sync::Mutex<RunningTable>> =
     std::sync::LazyLock::new(Default::default);
+
+#[cfg(unix)]
+fn remove_stale_unix_socket(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(
+        metadata.file_type().is_socket(),
+        "refusing to replace non-socket path {}",
+        path.display()
+    );
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => anyhow::bail!("Unix socket {} is already accepting connections", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            let current = match std::fs::symlink_metadata(path) {
+                Ok(current) => current,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            anyhow::ensure!(
+                current.file_type().is_socket()
+                    && current.dev() == metadata.dev()
+                    && current.ino() == metadata.ino(),
+                "Unix socket path {} changed while checking whether it is stale",
+                path.display()
+            );
+            std::fs::remove_file(path)
+                .with_context(|| format!("cannot remove stale Unix socket {}", path.display()))?;
+            Ok(())
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("cannot verify whether Unix socket {} is stale", path.display())),
+    }
+}
+
+#[cfg(unix)]
+struct SocketCleaner {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl SocketCleaner {
+    fn new(path: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_socket() {
+            return Err(std::io::Error::other("bound Unix socket path is not a socket"));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SocketCleaner {
+    fn drop(&mut self) {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+        if std::fs::symlink_metadata(&self.path).is_ok_and(|metadata| {
+            metadata.file_type().is_socket()
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode
+        }) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
 static NEXT_COMMAND_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A command's entry in [`RUNNING_COMMANDS`], removed when the command's handler returns,
@@ -1098,6 +1175,12 @@ fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(Stri
         if is_node_cache(&name) {
             continue;
         }
+        if name == "typings" && path.is_symlink() {
+            let cache_root = python_cache::python_stub_cache_dir();
+            if python_cache::is_shared_stub_cache_link(&path, &cache_root) {
+                continue;
+            }
+        }
         if path.is_dir() {
             walk_files(root, &path, out);
         } else if path.is_file()
@@ -1480,6 +1563,15 @@ pub async fn apply_sync_probe(
 /// copies, toolchain and dependency caches under the home directory, and system SDK
 /// locations. Nothing else on the host is readable this way.
 fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    is_readable_source_path_with_home(storage_root, path, home.as_deref())
+}
+
+fn is_readable_source_path_with_home(
+    storage_root: &std::path::Path,
+    path: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> bool {
     if !path.is_absolute() || !path.is_file() {
         return false;
     }
@@ -1487,8 +1579,7 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
     if canonical.starts_with(storage_root) {
         return true;
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = home {
         let allowed_home = [
             ".cargo/registry",
             ".cargo/git",
@@ -1522,11 +1613,8 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             return true;
         }
     }
-    if let Some(gopath) = std::env::var_os("GOPATH") {
-        let gopath = PathBuf::from(gopath);
-        if canonical.starts_with(gopath.join("pkg/mod")) || canonical.starts_with(gopath.join("src")) {
-            return true;
-        }
+    if is_gopath_source_path(&canonical, std::env::var_os("GOPATH").as_deref()) {
+        return true;
     }
     if let Some(goroot) = std::env::var_os("GOROOT") {
         let goroot = PathBuf::from(goroot);
@@ -1534,7 +1622,7 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             return true;
         }
     }
-    const SYSTEM_ROOTS: [&str; 15] = [
+    const SYSTEM_ROOTS: [&str; 14] = [
         "/snap",
         "/usr/include",
         "/usr/local/include",
@@ -1549,12 +1637,19 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
         "/Library/Frameworks",
         "/System/Library/Frameworks",
         "/opt/conda",
-        "/node_modules",
     ];
     if SYSTEM_ROOTS.iter().any(|root| canonical.starts_with(root)) {
         return true;
     }
-    canonical.components().any(|c| c.as_os_str() == "node_modules")
+    false
+}
+
+fn is_gopath_source_path(path: &std::path::Path, gopath: Option<&std::ffi::OsStr>) -> bool {
+    gopath.is_some_and(|value| {
+        std::env::split_paths(value).any(|root| {
+            path.starts_with(root.join("pkg/mod")) || path.starts_with(root.join("src"))
+        })
+    })
 }
 
 /// Serves a `ReadFileRequest` under the readable-path policy, capped in size.
@@ -1569,6 +1664,7 @@ fn read_server_file(
         path: req.path.clone(),
         content: None,
         truncated: false,
+        is_executable: None,
         error: None,
     };
     if !is_readable_source_path(storage_root, &path) {
@@ -1592,6 +1688,13 @@ fn read_server_file(
     };
     match std::fs::read(&path) {
         Ok(mut bytes) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = std::fs::metadata(&path) {
+                    resp.is_executable = Some(metadata.permissions().mode() & 0o111 != 0);
+                }
+            }
             if bytes.len() as u64 > max {
                 bytes.truncate(max as usize);
                 resp.truncated = true;
@@ -2513,7 +2616,6 @@ fn restore_tree(
                 };
                 #[cfg(not(unix))]
                 let is_executable = false;
-                restored.stale.push(rel.clone());
                 restored.files.push(FileDelta {
                     relative_path: rel.clone(),
                     content: Some(kept.bytes.clone()),
@@ -2563,7 +2665,7 @@ async fn restore_after_lost_client(
     let unkept = restored
         .files
         .iter()
-        .filter(|f| f.content.is_none())
+        .filter(|f| f.content.is_none() && restored.stale.contains(&f.relative_path))
         .count();
     if unkept > 0 {
         tracing::warn!(
@@ -2724,7 +2826,7 @@ pub fn compiler_cache_env(workspace: &Path, ccache: bool) -> Vec<(String, String
             "CCACHE_SLOPPINESS".to_string(),
             "pch_defines,time_macros".to_string(),
         ),
-        ("CCACHE_PCH_EXTERNAL_CHECKS".to_string(), "1".to_string()),
+        ("CCACHE_PCH_EXTSUM".to_string(), "1".to_string()),
         (
             "CMAKE_C_COMPILER_LAUNCHER".to_string(),
             "ccache".to_string(),
@@ -2781,7 +2883,7 @@ pub fn polyglot_compiler_cache_env(
         }
     }
     // Python shared virtual-environment stub cache across worktrees (Roadmap 3.6)
-    env.extend(python_cache::python_stub_cache_env());
+    env.extend(python_cache::python_stub_cache_env_for_workspace(workspace));
     // Swift shared module cache across worktrees (Roadmap 3.7)
     env.extend(swift_cache::swift_module_cache_env());
     // TypeScript shared @types and declaration cache across worktrees (Roadmap 3.5)
@@ -4415,8 +4517,12 @@ pub async fn handle_client(
                 let engine_kind =
                     detect::resolve_engine(&engine_root, req.preferred_engine.as_deref());
                 let engine = engine_kind.as_str();
+                let supports_redirects = req
+                    .capabilities
+                    .as_ref()
+                    .is_some_and(|capabilities| capabilities.redirects);
                 if !state.serves_engine(engine) {
-                    if req.redirect_count < 2 {
+                    if supports_redirects && req.redirect_count < 2 {
                         let view = state.cluster_view().await;
                         if let Some(target) = view.nodes.iter().find(|n| {
                             n.alive && cluster_supports_engine(&n.status, engine)
@@ -4455,7 +4561,7 @@ pub async fn handle_client(
                     .get_loaded(&server_workspace)
                     .await
                     .is_some();
-                if req.redirect_count < 3 {
+                if supports_redirects && req.redirect_count < 3 {
                     let view = state.cluster_view().await;
                     let own_addr = state.advertise.read().await.clone();
                     let ws_name = req
@@ -4545,7 +4651,7 @@ pub async fn handle_client(
                 // on this node (#332); without one here, the shared engines answer it.
                 if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR)
                     && editor_proxy::enabled()
-                    && let Some(command) = editor_proxy::server_command(engine)
+                    && let Some(command) = editor_proxy::server_command_for_workspace(engine, &server_workspace)
                 {
                     framed
                         .send(WireMessage::HandshakeResponse(HandshakeResponse {
@@ -4642,6 +4748,10 @@ pub async fn handle_client(
                                     .base_workspace_name
                                     .as_deref()
                                     .unwrap_or(&req.client_workspace_root);
+                                let required_headroom = state
+                                    .workspace_manager
+                                    .admission()
+                                    .reserve_for(engine);
                                 let target = view
                                     .nodes
                                     .iter()
@@ -4652,8 +4762,14 @@ pub async fn handle_client(
                                             && n.addr != view.this_node
                                             && cluster_supports_engine(&n.status, engine)
                                             && n.status.host.pressure().is_none()
+                                            && n.status
+                                                .host
+                                                .memory_available_bytes
+                                                .is_none_or(|available| available >= required_headroom)
+                                            && (req.redirect_count == 0
+                                                || !n.workspaces.iter().any(|w| w.name == ws_name))
                                     })
-                                    .max_by_key(|n| n.workspaces.iter().any(|w| w.name == ws_name));
+                                    .max_by_key(|n| n.status.host.memory_available_bytes.unwrap_or(0));
 
                                 if let Some(target) = target {
                                     tracing::info!(
@@ -4679,30 +4795,19 @@ pub async fn handle_client(
                                 }
                             }
 
-                            if is_capacity
-                                && engine != "cpp"
-                                && session_view.accounted.generic_engine.is_some()
-                            {
-                                tracing::warn!(
-                                    session_id,
-                                    engine,
-                                    "private validation engine unavailable under memory pressure; validating on the main engine"
-                                );
-                            } else {
-                                let reason = format!("private validation engine unavailable: {err:#}");
-                                tracing::warn!(
-                                    session_id,
-                                    engine,
-                                    reason,
-                                    "refusing validation handshake"
-                                );
-                                state
-                                    .workspace_manager
-                                    .unregister_session_view(session_view)
-                                    .await;
-                                framed.send(WireMessage::Disconnect { reason }).await?;
-                                return Ok(());
-                            }
+                            let reason = format!("private validation engine unavailable: {err:#}");
+                            tracing::warn!(
+                                session_id,
+                                engine,
+                                reason,
+                                "refusing validation handshake"
+                            );
+                            state
+                                .workspace_manager
+                                .unregister_session_view(session_view)
+                                .await;
+                            framed.send(WireMessage::Disconnect { reason }).await?;
+                            return Ok(());
                         }
                     }
                 }
@@ -4899,9 +5004,6 @@ async fn run_session_loop(
             rebalance_msg = rebalance_rx.recv() => {
                 match rebalance_msg {
                     Ok((target_addr, reason)) => {
-                        if meta.editor {
-                            continue;
-                        }
                         tracing::info!(
                             session_id = meta.session_id,
                             target = %target_addr,
@@ -7358,8 +7460,53 @@ fn available_engines() -> Vec<String> {
         engines.push("go (gopls)".to_string());
     }
     for engine in [
-        "cpp", "swift", "python", "typescript", "java", "kotlin", "csharp", "scala", "php", "ruby", "dart",
+        "cpp",
+        "swift",
+        "python",
+        "typescript",
+        "java",
+        "kotlin",
+        "csharp",
+        "php",
+        "ruby",
+        "dart",
         "zig",
+        "elixir",
+        "scala",
+        "lua",
+        "haskell",
+        "ocaml",
+        "clojure",
+        "julia",
+        "shell",
+        "r",
+        "erlang",
+        "fsharp",
+        "perl",
+        "solidity",
+        "nim",
+        "d",
+        "fortran",
+        "sql",
+        "graphql",
+        "protobuf",
+        "crystal",
+        "groovy",
+        "ada",
+        "v",
+        "racket",
+        "terraform",
+        "nix",
+        "markdown",
+        "yaml",
+        "toml",
+        "json",
+        "html",
+        "css",
+        "dockerfile",
+        "svelte",
+        "vue",
+        "assembly",
     ] {
         if let Some(server) = prod_code_engine_generic::GenericLspConfig::installed_server(engine) {
             engines.push(format!("{engine} ({server})"));
@@ -8063,14 +8210,16 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     ));
 
     #[cfg(unix)]
+    let mut socket_cleaner = None;
+    #[cfg(unix)]
     let unix_listener = if let Some(ref path) = cli.socket_path {
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        }
+        remove_stale_unix_socket(path)?;
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("cannot create socket directory {}", parent.display()))?;
         }
         let u_listener = tokio::net::UnixListener::bind(path)?;
+        socket_cleaner = Some(SocketCleaner::new(path)?);
         tracing::info!("prod-code gateway listening on unix socket {}", path.display());
         Some(u_listener)
     } else {
@@ -8078,17 +8227,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     };
 
     #[cfg(unix)]
-    struct SocketCleaner<'a>(Option<&'a Path>);
-    #[cfg(unix)]
-    impl Drop for SocketCleaner<'_> {
-        fn drop(&mut self) {
-            if let Some(p) = self.0 {
-                let _ = std::fs::remove_file(p);
-            }
-        }
-    }
-    #[cfg(unix)]
-    let _cleaner = SocketCleaner(cli.socket_path.as_deref());
+    let _socket_cleaner = socket_cleaner;
 
     // A gateway is stopped by its supervisor (launchd, systemd) and by a deploy script, both
     // of which send SIGTERM and then wait. Without a handler the process dies where it stands:
@@ -8302,6 +8441,11 @@ mod tests {
         std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
         let data = vec![b'y'; 3 * 1024 * 1024]; // 3 MiB
         std::fs::write(&artifact, &data).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
 
         let req = prod_code_protocol::ReadFileRequest {
             path: artifact.to_string_lossy().into_owned(),
@@ -8310,6 +8454,8 @@ mod tests {
         let resp = read_server_file(temp_storage.path(), &req);
         assert!(resp.error.is_none(), "read_server_file failed: {:?}", resp.error);
         assert!(!resp.truncated, "workspace artifact must not be truncated under 64 MiB");
+        #[cfg(unix)]
+        assert_eq!(resp.is_executable, Some(true), "gateway response must retain executable mode");
         assert_eq!(resp.content.expect("content").len(), 3 * 1024 * 1024);
     }
 
@@ -8317,43 +8463,60 @@ mod tests {
     fn is_readable_source_path_allows_polyglot_dependencies_and_rejects_arbitrary_files() {
         let storage = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("HOME", home.path());
-        }
-
         // 1. Rust cargo registry
         let cargo_file = home.path().join(".cargo/registry/src/github.com/lib.rs");
         std::fs::create_dir_all(cargo_file.parent().unwrap()).unwrap();
         std::fs::write(&cargo_file, "pub fn foo() {}").unwrap();
-        assert!(is_readable_source_path(storage.path(), &cargo_file));
+        assert!(is_readable_source_path_with_home(storage.path(), &cargo_file, Some(home.path())));
 
         // 2. Python virtualenv / uv cache
         let py_file = home.path().join(".cache/uv/wheels/pkg/module.py");
         std::fs::create_dir_all(py_file.parent().unwrap()).unwrap();
         std::fs::write(&py_file, "def bar(): pass").unwrap();
-        assert!(is_readable_source_path(storage.path(), &py_file));
+        assert!(is_readable_source_path_with_home(storage.path(), &py_file, Some(home.path())));
 
         // 3. Node pnpm store
         let pnpm_file = home.path().join(".local/share/pnpm/store/pkg/index.d.ts");
         std::fs::create_dir_all(pnpm_file.parent().unwrap()).unwrap();
         std::fs::write(&pnpm_file, "export declare const x: number;").unwrap();
-        assert!(is_readable_source_path(storage.path(), &pnpm_file));
+        assert!(is_readable_source_path_with_home(storage.path(), &pnpm_file, Some(home.path())));
 
-        // 4. Any node_modules
+        // 4. Do not expose unrelated checkouts just because they contain node_modules.
         let nm_file = home.path().join("projects/foo/node_modules/bar/index.js");
         std::fs::create_dir_all(nm_file.parent().unwrap()).unwrap();
         std::fs::write(&nm_file, "module.exports = {};").unwrap();
-        assert!(is_readable_source_path(storage.path(), &nm_file));
+        assert!(!is_readable_source_path_with_home(storage.path(), &nm_file, Some(home.path())));
+
+        let workspace_nm_file = storage
+            .path()
+            .join("workspace/node_modules/bar/index.js");
+        std::fs::create_dir_all(workspace_nm_file.parent().unwrap()).unwrap();
+        std::fs::write(&workspace_nm_file, "module.exports = {};").unwrap();
+        assert!(is_readable_source_path(storage.path(), &workspace_nm_file));
 
         // 5. Arbitrary sensitive files rejected
         let ssh_key = home.path().join(".ssh/id_rsa");
         std::fs::create_dir_all(ssh_key.parent().unwrap()).unwrap();
         std::fs::write(&ssh_key, "private-key-material").unwrap();
-        assert!(!is_readable_source_path(storage.path(), &ssh_key));
+        assert!(!is_readable_source_path_with_home(storage.path(), &ssh_key, Some(home.path())));
 
         let bashrc = home.path().join(".bashrc");
         std::fs::write(&bashrc, "export SECRET=1").unwrap();
-        assert!(!is_readable_source_path(storage.path(), &bashrc));
+        assert!(!is_readable_source_path_with_home(storage.path(), &bashrc, Some(home.path())));
+    }
+
+    #[test]
+    fn gopath_source_policy_checks_each_configured_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let source = second.join("pkg/mod/example.test/module@v1/source.go");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "package module\n").unwrap();
+        let gopath = std::env::join_paths([first.as_os_str(), second.as_os_str()]).unwrap();
+
+        assert!(is_gopath_source_path(&source.canonicalize().unwrap(), Some(&gopath)));
+        assert!(!is_gopath_source_path(&source, Some(first.as_os_str())));
     }
 
     #[tokio::test]
@@ -9341,7 +9504,7 @@ mod tests {
         assert_eq!(get("CCACHE_BASEDIR"), Some("/srv/workspaces/shop--wt-1a2b"));
         assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
         assert_eq!(get("CCACHE_SLOPPINESS"), Some("pch_defines,time_macros"));
-        assert_eq!(get("CCACHE_PCH_EXTERNAL_CHECKS"), Some("1"));
+        assert_eq!(get("CCACHE_PCH_EXTSUM"), Some("1"));
         assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
         assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
         assert!(on_path("sh"), "sh is on PATH on every node");
@@ -9568,7 +9731,7 @@ mod tests {
         assert!(!root.join("both.txt").exists());
         assert_eq!(
             restored.stale,
-            vec!["both.txt".to_string(), "cmd.txt".to_string()]
+            vec!["both.txt".to_string()]
         );
         let mut files: Vec<&str> = restored
             .files
@@ -9629,7 +9792,6 @@ mod tests {
         assert_eq!(
             workspace::stale_paths(&root),
             [
-                "src/a.rs".to_string(),
                 "src/b.rs".to_string(),
                 "src/big.rs".to_string()
             ]
@@ -10452,5 +10614,3 @@ mod exec_resilience_tests {
         assert!(is_ram_cache_enabled_with(true, None));
     }
 }
-
-

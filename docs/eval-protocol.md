@@ -810,9 +810,8 @@ For every refactoring tool tested:
     - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
     - **Key Metrics**: 10,271 lines across 46 source files (`lib/`: 5.7K LOC / 22 files, `test/`: 3.4K LOC / 11 files, documentation: 864 LOC / 9 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 46 files (10,271 lines) identifying clone patterns in test pipeline setup definitions, batcher configuration fixtures, and mock acknowledger callbacks.
-    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 435 test assertions across `test/` (171 `assert`, 4 `refute`, 251 `assert_receive`, 1 `refute_receive`, 8 `assert_raise`), 18 explicit `raise` exception egress points guarding NimbleOptions validation, batcher option parsing, and partition topology boundaries. Evaluated the multi-stage GenStage supervision topology in `lib/broadway/topology/topology.ex` and message envelope transformation in `lib/broadway/message.ex`. AST refactoring was attempted but unsupported; no successful extraction is claimed.
+    - **Semantic Guards & Refactorings**: Structural search scanned sources finding 435 test assertions across `test/` (171 `assert`, 4 `refute`, 251 `assert_receive`, 1 `refute_receive`, 8 `assert_raise`), 18 explicit `raise` exception egress points guarding NimbleOptions validation, batcher option parsing, and partition topology boundaries. Evaluated the multi-stage GenStage supervision topology in `lib/broadway/topology.ex` and message envelope transformation in `lib/broadway/message.ex`. AST refactoring was attempted but unsupported; no successful extraction is claimed.
     - **Full Deep-Dive Report**: [Broadway Under the Microscope: What 67 Remote AST Tools Found Inside the GenStage Concurrent Data Pipeline (prod.codes)](https://prod.codes/blog/broadway-under-the-microscope-67-ast-tools/)
-
 
 
 

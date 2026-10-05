@@ -197,8 +197,9 @@ impl LspSession {
                         indexing_status: true,
                         shadow_runs: true,
                         multi_root: true,
-                        sync_chunking: true,
+                        sync_chunking: false,
                         unix_socket_local: cfg!(unix),
+                        redirects: true,
                     }),
                     client_name: "prod-code-batch".to_string(),
                     client_pid: std::process::id(),
@@ -221,13 +222,12 @@ impl LspSession {
                         anyhow::bail!("too many gateway redirects: {reason:?}");
                     }
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
-                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
-                        remote = addr;
-                        crate::cluster::remember_placement(&identity.name, remote);
-                        continue;
-                    } else {
-                        anyhow::bail!("invalid redirect target address: {target_addr}");
-                    }
+                    remote = crate::cluster::parse_remotes(&target_addr)?
+                        .into_iter()
+                        .next()
+                        .with_context(|| format!("redirect target resolved to no addresses: {target_addr}"))?;
+                    crate::cluster::remember_placement(&identity.name, remote);
+                    continue;
                 }
                 Some(Ok(WireMessage::Disconnect { reason })) => {
                     anyhow::bail!("gateway refused the session: {reason}")
@@ -359,7 +359,10 @@ impl LspSession {
                 Ok(Some(Ok(WireMessage::Redirect { target_addr, reason }))) => {
                     tracing::info!(%target_addr, ?reason, "received dynamic redirect mid-session from gateway");
                     let ws_identity = workspace_identity(&self.root);
-                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                    if let Some(addr) = crate::cluster::parse_remotes(&target_addr)
+                        .ok()
+                        .and_then(|addrs| addrs.into_iter().next())
+                    {
                         crate::cluster::remember_placement(&ws_identity.name, addr);
                     }
                     anyhow::bail!("session rebalanced to {target_addr}: {}", reason.unwrap_or_default());

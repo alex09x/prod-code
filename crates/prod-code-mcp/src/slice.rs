@@ -1027,26 +1027,38 @@ async fn slice_with(
         };
         let rel = relative(root, &file);
 
-        let (display_text, names_source_text) = if options.dataflow && item_depth == 0 {
-            let target_line = options.target_line.or(if seed_line >= decl.start_line() && seed_line <= decl.end_line() {
-                Some(seed_line)
-            } else {
-                None
-            });
+        let (display_text, names) = if options.dataflow && item_depth == 0 {
             let df = crate::dataflow::slice_intra_function(
                 &facts[&file].text,
                 decl.start_line(),
                 decl.end_line(),
                 &decl.name,
                 &rel,
-                target_line,
+                options.target_line,
                 options.target_var.as_deref(),
             );
             let formatted = df.formatted_slice.clone();
+            let mut names = Vec::new();
+            let mut seen_names = HashSet::new();
+            for statement in &df.statements {
+                if let Some(source_line) = lines_of(
+                    &facts[&file].text,
+                    &facts[&file].lines,
+                    statement.line,
+                    statement.line,
+                ) {
+                    for candidate in candidate_names(&source_line, statement.line) {
+                        if seen_names.insert(candidate.0.clone()) {
+                            names.push(candidate);
+                        }
+                    }
+                }
+            }
             report.dataflow_slice = Some(df);
-            (formatted.clone(), formatted)
+            (formatted, names)
         } else {
-            (text.clone(), text.clone())
+            let names = candidate_names(&text, decl.start_line());
+            (text.clone(), names)
         };
 
         if bytes.saturating_add(display_text.len()) > options.max_bytes {
@@ -1073,7 +1085,6 @@ async fn slice_with(
             continue;
         }
 
-        let names = candidate_names(&names_source_text, decl.start_line());
         if names.len() > MAX_NAMES_PER_ITEM {
             report.gaps.push(SliceGap {
                 kind: GapKind::NameLimit,
@@ -1729,4 +1740,3 @@ mod tests {
         assert!(text.contains("(the seed, data-flow sliced)"));
     }
 }
-

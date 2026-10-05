@@ -71,6 +71,12 @@ case "$ARCH" in
 esac
 
 mkdir -p "$OUTPUT_DIR"
+if [[ ! -f "$SERVICE_FILE" || ! -f "$README_FILE" ]]; then
+    echo "Error: service file and README are required to generate a usable PKGBUILD." >&2
+    exit 1
+fi
+SERVICE_SHA256="$(shasum -a 256 "$SERVICE_FILE" | cut -d' ' -f1)"
+README_SHA256="$(shasum -a 256 "$README_FILE" | cut -d' ' -f1)"
 
 # 1. Generate PKGBUILD for AUR / makepkg
 PKGBUILD_CONTENT="# Maintainer: Alexander Panasenko <alex@prod.codes>
@@ -83,8 +89,10 @@ url=\"https://prod.codes\"
 license=('Apache-2.0')
 depends=()
 optdepends=('systemd: for background user service')
+source=(\"prod-code-gateway.service\" \"README.md\")
 source_x86_64=(\"https://github.com/alex09x/prod-code/releases/download/v\${pkgver}/prod-code-x86_64-unknown-linux-gnu\")
 source_aarch64=(\"https://github.com/alex09x/prod-code/releases/download/v\${pkgver}/prod-code-aarch64-unknown-linux-gnu\")
+sha256sums=(\"${SERVICE_SHA256}\" \"${README_SHA256}\")
 sha256sums_x86_64=('SKIP')
 sha256sums_aarch64=('SKIP')
 
@@ -96,13 +104,17 @@ package() {
 "
 
 if [[ -n "$PKGBUILD_OUT" ]]; then
-    mkdir -p "$(dirname "$PKGBUILD_OUT")"
-    echo "$PKGBUILD_CONTENT" > "$PKGBUILD_OUT"
-    echo "✓ PKGBUILD generated: $PKGBUILD_OUT"
+    PKGBUILD_PATH="$PKGBUILD_OUT"
+    PKGBUILD_DIR="$(dirname "$PKGBUILD_OUT")"
 else
-    echo "$PKGBUILD_CONTENT" > "$OUTPUT_DIR/PKGBUILD"
-    echo "✓ PKGBUILD generated: $OUTPUT_DIR/PKGBUILD"
+    PKGBUILD_PATH="$OUTPUT_DIR/PKGBUILD"
+    PKGBUILD_DIR="$OUTPUT_DIR"
 fi
+mkdir -p "$PKGBUILD_DIR"
+printf '%s\n' "$PKGBUILD_CONTENT" > "$PKGBUILD_PATH"
+cp "$SERVICE_FILE" "$PKGBUILD_DIR/prod-code-gateway.service"
+cp "$README_FILE" "$PKGBUILD_DIR/README.md"
+echo "✓ PKGBUILD generated: $PKGBUILD_PATH"
 
 # 2. If client binary is provided, generate standalone .pkg.tar.gz package
 if [[ -n "$CLIENT_BIN" && -f "$CLIENT_BIN" ]]; then

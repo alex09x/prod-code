@@ -94,6 +94,34 @@ def is_test_file(relative: str) -> bool:
     return "tests" in parts
 
 
+def cargo_workspace_search_dirs(root_path: pathlib.Path) -> list[pathlib.Path]:
+    """Use Cargo's resolved workspace membership when Python cannot parse TOML."""
+    try:
+        out = subprocess.run(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+            cwd=root_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as err:
+        raise ValueError(f"cannot determine Cargo workspace members: {err}") from err
+    try:
+        metadata = json.loads(out.stdout)
+        members = set(metadata["workspace_members"])
+        packages = metadata["packages"]
+        dirs = list(dict.fromkeys(
+            pathlib.Path(package["manifest_path"]).resolve().parent
+            for package in packages
+            if package["id"] in members
+        ))
+    except (KeyError, TypeError, json.JSONDecodeError) as err:
+        raise ValueError(f"invalid Cargo metadata while resolving workspace members: {err}") from err
+    if not dirs:
+        raise ValueError("Cargo metadata returned no workspace member packages")
+    return dirs
+
+
 def find_rust_source_files(root: str) -> set[str]:
     """Find all Rust source files in the repository/workspace, relative to root."""
     root_path = pathlib.Path(root).resolve()
@@ -123,8 +151,11 @@ def find_rust_source_files(root: str) -> set[str]:
                             for p in root_path.glob(member):
                                 if p.is_dir() and p.resolve() not in excluded_dirs:
                                     search_dirs.append(p.resolve())
-        except Exception:
+        except (OSError, ValueError, TypeError):
             search_dirs = []
+
+    if cargo_toml.is_file() and not search_dirs:
+        search_dirs = cargo_workspace_search_dirs(root_path)
 
     if not search_dirs:
         search_dirs = [root_path]

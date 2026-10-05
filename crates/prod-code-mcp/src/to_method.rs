@@ -576,6 +576,32 @@ pub fn split_call_arguments(args_str: &str) -> Vec<String> {
     args
 }
 
+fn receiver_argument<'a>(argument: &'a str, language: Language) -> &'a str {
+    let argument = argument.trim();
+    let label_separator = match language {
+        Language::Swift => Some(':'),
+        Language::Python => Some('='),
+        _ => None,
+    };
+    let Some(separator) = label_separator else {
+        return argument;
+    };
+    let Some((label, value)) = argument.split_once(separator) else {
+        return argument;
+    };
+    let label = label.trim();
+    let mut chars = label.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(is_ident);
+    if valid {
+        value.trim()
+    } else {
+        argument
+    }
+}
+
 pub fn to_method_ts(
     code: &str,
     target_class: Option<&str>,
@@ -1304,12 +1330,7 @@ pub fn rewrite_static_calls_in_code(
                 continue;
             }
 
-            let raw_recv = args[0].trim();
-            let recv = raw_recv
-                .split_once(':')
-                .or_else(|| raw_recv.split_once('='))
-                .map(|(_, val)| val.trim())
-                .unwrap_or(raw_recv);
+            let recv = receiver_argument(&args[0], lang);
             let rest_args = if args.len() > 1 {
                 args[1..].join(", ")
             } else {
@@ -1473,6 +1494,9 @@ mod tests {
         assert_eq!(receiver_of("&items[0]"), "items[0]");
         assert_eq!(receiver_of("*boxed"), "(*boxed)");
         assert_eq!(receiver_of("a + b"), "(a + b)");
+        assert_eq!(receiver_argument("cond ? a : b", Language::TypeScript), "cond ? a : b");
+        assert_eq!(receiver_argument("target = value", Language::Cpp), "target = value");
+        assert_eq!(receiver_argument("label: value", Language::Swift), "value");
     }
 
     #[test]

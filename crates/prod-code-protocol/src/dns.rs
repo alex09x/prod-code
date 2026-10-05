@@ -139,11 +139,16 @@ pub fn resolve_project_node<'a>(project: &str, nodes: &'a [DiscoveredNode]) -> O
         return Some(n);
     }
 
-    // 2. Prefer a node that has a workspace starting with the project prefix (e.g. repo--wt-123)
+    // 2. Prefer a node that has this project or one of its named worktree copies.
+    let project_lower = proj_clean.to_ascii_lowercase();
+    let worktree_prefix = format!("{project_lower}--wt-");
     let prefix_node = nodes.iter().find(|n| {
         n.workspaces
             .iter()
-            .any(|w| w.name.to_ascii_lowercase().starts_with(&proj_clean.to_ascii_lowercase()))
+            .any(|w| {
+                let name = w.name.to_ascii_lowercase();
+                name == project_lower || name.starts_with(&worktree_prefix)
+            })
     });
     if let Some(n) = prefix_node {
         return Some(n);
@@ -151,7 +156,8 @@ pub fn resolve_project_node<'a>(project: &str, nodes: &'a [DiscoveredNode]) -> O
 
     // 3. Fallback to deterministic rendezvous hashing over available nodes
     nodes.iter().max_by_key(|n| {
-        let key = format!("{}:{}", proj_clean.to_ascii_lowercase(), n.addr);
+        // Match MCP placement's rendezvous key: `{workspace_name}|{socket_addr}`.
+        let key = format!("{project_lower}|{}", n.addr);
         content_hash(key.as_bytes())
     })
 }
@@ -691,7 +697,16 @@ mod tests {
 
         // Unloaded project resolves deterministically via rendezvous hashing
         let resolved_other = resolve_project_node("analytics", &nodes).expect("analytics node");
-        assert!(resolved_other.addr == "192.168.2.10:9400".parse().unwrap() || resolved_other.addr == "192.168.2.20:9400".parse().unwrap());
+        let rendezvous = nodes
+            .iter()
+            .max_by_key(|node| content_hash(format!("analytics|{}", node.addr).as_bytes()))
+            .unwrap();
+        assert_eq!(resolved_other.addr, rendezvous.addr);
+
+        let unrelated_prefix = mock_node("192.168.2.10:9400", &[("shopping-cart", "rust", 1)]);
+        let worktree = mock_node("192.168.2.20:9400", &[("shop--wt-a1b2", "rust", 1)]);
+        let nodes = vec![unrelated_prefix, worktree.clone()];
+        assert_eq!(resolve_project_node("shop", &nodes).unwrap().addr, worktree.addr);
     }
 
     #[test]

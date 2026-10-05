@@ -20,8 +20,8 @@ use prod_code_protocol::{
     transport::read_lsp_frame,
 };
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::{AbortHandle, JoinHandle};
@@ -77,6 +77,14 @@ fn runs(program: &str) -> bool {
 /// The language server an editor gets for `engine` on this node, or `None` when the node has
 /// none; the session is then served by the shared engines.
 pub fn server_command(engine: &str) -> Option<ServerCommand> {
+    server_command_inner(engine, None)
+}
+
+pub fn server_command_for_workspace(engine: &str, workspace_root: &Path) -> Option<ServerCommand> {
+    server_command_inner(engine, Some(workspace_root))
+}
+
+fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<ServerCommand> {
     use prod_code_engine_generic::GenericLspConfig;
     let from = |config: GenericLspConfig| ServerCommand {
         program: config.command,
@@ -102,15 +110,29 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         "cpp" => from(GenericLspConfig::for_cpp()),
         "python" => {
             let mut cfg = GenericLspConfig::for_python();
-            for (k, v) in crate::python_cache::python_stub_cache_env() {
-                cfg.env.insert(k, v);
-            }
-            if let Some(opts) = cfg.initialization_options.as_mut().and_then(|o| o.as_object_mut()) {
+            let stub_path = if let Some(workspace_root) = workspace_root {
+                for (k, v) in
+                    crate::python_cache::python_stub_cache_env_for_workspace(workspace_root)
+                {
+                    cfg.env.insert(k, v);
+                }
+                workspace_root.join("typings")
+            } else {
+                for (k, v) in crate::python_cache::python_stub_cache_env() {
+                    cfg.env.insert(k, v);
+                }
+                crate::python_cache::python_stub_cache_dir()
+            };
+            if let Some(opts) = cfg
+                .initialization_options
+                .as_mut()
+                .and_then(|o| o.as_object_mut())
+            {
                 if let Some(py) = opts.get_mut("python").and_then(|p| p.as_object_mut()) {
                     if let Some(an) = py.get_mut("analysis").and_then(|a| a.as_object_mut()) {
                         an.insert(
                             "stubPath".to_string(),
-                            serde_json::Value::String(crate::python_cache::python_stub_cache_dir().to_string_lossy().into_owned()),
+                            serde_json::Value::String(stub_path.to_string_lossy().into_owned()),
                         );
                     }
                 }
@@ -532,10 +554,7 @@ struct HealthProbePending {
 }
 
 pub fn health_probe_sequence(id: &serde_json::Value, id_prefix: &str) -> Option<u64> {
-    id.as_str()?
-        .strip_prefix(id_prefix)?
-        .parse::<u64>()
-        .ok()
+    id.as_str()?.strip_prefix(id_prefix)?.parse::<u64>().ok()
 }
 
 pub fn valid_dispatch_response(value: &serde_json::Value) -> bool {
@@ -723,7 +742,11 @@ where
     let _stderr_guard = TaskAbortGuard::new(&stderr_task);
 
     let (to_server_tx, to_server_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
-    let mut registration = servers.register(root.to_path_buf(), to_server_tx.clone(), options.write_budget);
+    let mut registration = servers.register(
+        root.to_path_buf(),
+        to_server_tx.clone(),
+        options.write_budget,
+    );
     let mut writer_task = tokio::spawn(write_server_frames(stdin, to_server_rx));
     let _writer_guard = TaskAbortGuard::new(&writer_task);
 
@@ -744,6 +767,9 @@ where
     let next_probe_id = Arc::new(AtomicU64::new(1));
     let last_activity = Arc::new(std::sync::Mutex::new(Instant::now()));
     let ordinary_epoch = Arc::new(AtomicU64::new(0));
+    let lsp_initialized = Arc::new(AtomicBool::new(false));
+    let initialize_request_id: Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let readiness = Arc::new(Readiness::new(command.ready));
     let in_flight_requests = Arc::new(AtomicUsize::new(0));
     let (retire_tx, mut retire_rx) = tokio::sync::watch::channel(false);
@@ -756,6 +782,7 @@ where
         let health_probe_id_prefix = Arc::clone(&health_probe_id_prefix);
         let last_activity = Arc::clone(&last_activity);
         let probe_ordinary_epoch = Arc::clone(&ordinary_epoch);
+        let probe_lsp_initialized = Arc::clone(&lsp_initialized);
         let readiness = Arc::clone(&readiness);
         let in_flight_requests = Arc::clone(&in_flight_requests);
         let retire_tx = retire_tx.clone();
@@ -766,6 +793,10 @@ where
                 tokio::time::sleep(interval).await;
                 if *retire_tx.borrow() {
                     break;
+                }
+
+                if !probe_lsp_initialized.load(Ordering::Acquire) {
+                    continue;
                 }
 
                 let activity_before_wait = probe_ordinary_epoch.load(Ordering::Acquire);
@@ -870,6 +901,8 @@ where
     let reader_probe_state = Arc::clone(&probe_state);
     let reader_last_activity = Arc::clone(&last_activity);
     let reader_ordinary_epoch = Arc::clone(&ordinary_epoch);
+    let reader_lsp_initialized = Arc::clone(&lsp_initialized);
+    let reader_initialize_request_id = Arc::clone(&initialize_request_id);
     let reader_readiness = Arc::clone(&readiness);
     let reader_in_flight_requests = Arc::clone(&in_flight_requests);
     let write_budget = options.write_budget;
@@ -884,21 +917,36 @@ where
                 reader_readiness.on_message(&val);
                 let id = val.get("id");
                 let method = val.get("method").and_then(|m| m.as_str());
-
-                let probe_seq = id.and_then(|id| health_probe_sequence(id, &reader_health_probe_id_prefix));
                 if method.is_none()
-                    && let (Some(id_str), Some(seq)) = (id.and_then(serde_json::Value::as_str), probe_seq)
+                    && id.is_some()
+                    && reader_initialize_request_id
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .as_ref()
+                        == id
+                {
+                    reader_lsp_initialized.store(true, Ordering::Release);
+                }
+
+                let probe_seq =
+                    id.and_then(|id| health_probe_sequence(id, &reader_health_probe_id_prefix));
+                if method.is_none()
+                    && let (Some(id_str), Some(seq)) =
+                        (id.and_then(serde_json::Value::as_str), probe_seq)
                 {
                     if valid_dispatch_response(&val) {
                         let waiter = {
-                            let mut pending = reader_health_pending.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut pending = reader_health_pending
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
                             if pending.as_ref().is_some_and(|p| p.id == id_str) {
                                 pending.take().map(|p| p.response)
                             } else {
                                 None
                             }
                         };
-                        let mut state = reader_probe_state.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut state =
+                            reader_probe_state.lock().unwrap_or_else(|e| e.into_inner());
                         if seq > state.latest_valid_sequence {
                             state.latest_valid_sequence = seq;
                             state.valid_evidence_epoch = state.valid_evidence_epoch.wrapping_add(1);
@@ -916,12 +964,18 @@ where
 
                 if method.is_none() {
                     if id.is_some() {
-                        reader_in_flight_requests.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                            Some(count.saturating_sub(1))
-                        }).ok();
+                        reader_in_flight_requests
+                            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                                Some(count.saturating_sub(1))
+                            })
+                            .ok();
                     }
                 }
-                record_liveness(&reader_ordinary_epoch, &reader_last_activity, &reader_probe_state);
+                record_liveness(
+                    &reader_ordinary_epoch,
+                    &reader_last_activity,
+                    &reader_probe_state,
+                );
             }
 
             let editor = reader_translator.translate_lsp_to_client(&body);
@@ -950,7 +1004,15 @@ where
             message = socket_rx.next() => match message {
                 Some(Ok(WireMessage::LspPayload(raw))) => {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                        if let Some(id) = val.get("id") {
+                        if val.get("method").and_then(|m| m.as_str()) == Some("initialize")
+                            && let Some(id) = val.get("id")
+                        {
+                            *initialize_request_id.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some(id.clone());
+                        }
+                        if val.get("method").is_some()
+                            && let Some(id) = val.get("id")
+                        {
                             // Reject client requests attempting to use reserved probe prefix
                             if id.as_str().is_some_and(|s| s.starts_with(HEALTH_PROBE_ID_PREFIX)) {
                                 let error_reply = serde_json::json!({
@@ -983,7 +1045,6 @@ where
                     }
                 }
                 Some(Ok(WireMessage::Ping)) => {
-                    record_liveness(&ordinary_epoch, &last_activity, &probe_state);
                     let deadline = Instant::now() + options.write_budget;
                     if to_editor_tx.try_send(PendingEditorMessage {
                         message: WireMessage::Pong,
@@ -1103,6 +1164,119 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gateway_watchdog_pings_do_not_suppress_post_initialize_health_probes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client_socket, (server_socket, _)) =
+            tokio::try_join!(tokio::net::TcpStream::connect(addr), listener.accept()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().to_path_buf();
+        let root_text = root_path.to_string_lossy().into_owned();
+        let probe_marker = root_path.join("health-probe-seen");
+        let probe_marker_text = probe_marker.to_string_lossy().into_owned();
+        let translator = PathTranslator::new(&root_text, &root_text);
+        let script = concat!(
+            "import json, sys\n",
+            "import os\n",
+            "while True:\n",
+            "    length = None\n",
+            "    while True:\n",
+            "        line = sys.stdin.buffer.readline()\n",
+            "        if not line: sys.exit(0)\n",
+            "        if line in (b'\\r\\n', b'\\n'): break\n",
+            "        if line.lower().startswith(b'content-length:'): length = int(line.split(b':', 1)[1])\n",
+            "    message = json.loads(sys.stdin.buffer.read(length))\n",
+            "    if message.get('method') == 'prodCode/healthProbe': open(os.environ['PROBE_MARKER'], 'w').write('seen')\n",
+            "    result = {'capabilities': {}} if message.get('method') == 'initialize' else {}\n",
+            "    body = json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}).encode()\n",
+            "    sys.stdout.buffer.write(b'Content-Length: %d\\r\\n\\r\\n' % len(body) + body)\n",
+            "    sys.stdout.buffer.flush()\n",
+        );
+        let command = ServerCommand {
+            program: "python3".to_string(),
+            args: vec!["-u".to_string(), "-c".to_string(), script.to_string()],
+            env: vec![("PROBE_MARKER".to_string(), probe_marker_text)],
+            ready: ReadySignal::Unknown,
+        };
+        let servers = EditorServers::default();
+        let server_task = tokio::spawn(async move {
+            let _root = root;
+            run_with_options(
+                Framed::new(server_socket, ProdCodeCodec::new()),
+                translator,
+                command,
+                &root_path,
+                &servers,
+                1,
+                EditorProxyOptions {
+                    health_probe_interval: Some(Duration::from_millis(60)),
+                    health_response_timeout: Duration::from_secs(1),
+                    ..EditorProxyOptions::default()
+                },
+            )
+            .await
+        });
+        let mut client = Framed::new(client_socket, ProdCodeCodec::new());
+
+        for _ in 0..4 {
+            client.send(WireMessage::Ping).await.unwrap();
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_millis(100), client.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                WireMessage::Pong
+            ));
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        client
+            .send(WireMessage::LspPayload(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        let init = tokio::time::timeout(Duration::from_secs(1), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(init, WireMessage::LspPayload(payload) if serde_json::from_str::<serde_json::Value>(&payload).unwrap()["id"] == 1)
+        );
+
+        // Allow several probe intervals after initialization; the first interval may have
+        // elapsed before the initialization response made probes eligible.
+        for _ in 0..24 {
+            client.send(WireMessage::Ping).await.unwrap();
+            let response = tokio::time::timeout(Duration::from_millis(40), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(matches!(response, WireMessage::Pong));
+            if probe_marker.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        assert!(
+            probe_marker.exists(),
+            "health probe should reach the LSP server despite gateway pings"
+        );
+        client
+            .send(WireMessage::Disconnect {
+                reason: "test complete".to_string(),
+            })
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), server_task).await;
+    }
 
     #[tokio::test]
     async fn frames_are_read_whatever_the_case_of_their_headers() {

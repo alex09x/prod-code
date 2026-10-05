@@ -335,8 +335,9 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
             indexing_status: true,
             shadow_runs: true,
             multi_root: true,
-            sync_chunking: true,
+            sync_chunking: false,
             unix_socket_local: true,
+            redirects: false,
         };
 
         framed
@@ -427,7 +428,10 @@ async fn transparent_gateway_redirection_e2e() {
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(vec![PROTOCOL_VERSION]),
-                capabilities: None,
+                capabilities: Some(ClientCapabilities {
+                    redirects: true,
+                    ..Default::default()
+                }),
                 client_name: "redirect-client".to_string(),
                 client_pid: 12345,
                 auth_token: None,

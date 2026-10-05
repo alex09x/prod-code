@@ -232,6 +232,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         path: req.path,
                         content: script.read_file.clone(),
                         truncated: false,
+                        is_executable: Some(false),
                         error: if script.read_file.is_some() {
                             None
                         } else {
@@ -721,6 +722,16 @@ async fn code_codemod_requires_a_rule_shaped_like_pattern_to_replacement() {
     .expect("a rule without ==>> is a tool error, not a network call");
     assert!(result.is_error);
     assert!(text_of(&result).contains("pattern ==>> replacement"));
+
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_codemod",
+        serde_json::json!({ "rule": "==>> x" }),
+    )
+    .await
+    .expect_err("malformed rules must propagate as tool errors");
+    assert!(format!("{err:#}").contains("pattern in rule cannot be empty"));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -803,6 +814,53 @@ async fn code_symbols_returns_prefix_matches_without_scanning_unrelated_nested_p
     assert!(text.contains("[Function] run_lsp_bridge"), "{text}");
     // Crucial: workspace/symbol was queried exactly once for the root workspace, not for nested_go
     assert_eq!(query_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// A case-insensitive exact match in a nested project must outrank a root prefix match.
+#[tokio::test]
+async fn code_symbols_finds_case_insensitive_exact_nested_match() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub fn foobar() {}\n"),
+        ("nested_go/go.mod", "module nested_go\n\ngo 1.22\n"),
+        (
+            "nested_go/helper.go",
+            "package nested_go\n\nfunc Foo() {}\n",
+        ),
+    ]);
+    let root_path = ws.root().join("src/lib.rs");
+    let nested_path = ws.root().join("nested_go/helper.go");
+    let query_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let q_clone = Arc::clone(&query_count);
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "workspace/symbol" => {
+            let index = q_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if index == 0 {
+                serde_json::Value::Array(vec![answers::symbol("foobar", 12, &root_path, 1, 8)])
+            } else {
+                serde_json::Value::Array(vec![answers::symbol("Foo", 12, &nested_path, 2, 6)])
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_symbols",
+        serde_json::json!({ "query": "foo" }),
+    )
+    .await
+    .expect("the nested exact search runs");
+    assert!(!result.is_error);
+    let text = text_of(&result);
+    assert!(text.contains("[Function] Foo"), "{text}");
+    assert!(text.contains("[Function] foobar"), "{text}");
+    assert_eq!(query_count.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 /// Issue #829: MCP `tools/call` aborts early with a typed error when tool call exceeds timeout budget.
@@ -3287,7 +3345,7 @@ async fn code_validate_edit_stream_chunks_intercepts_invalid_methods() {
 }
 
 #[tokio::test]
-async fn code_validate_edit_incremental_chunk_feeding_intercepts_on_the_fly() {
+async fn code_validate_edit_incremental_chunk_feeding_defers_prefix_methods_until_close() {
     let ws = workspace();
     let _lib = write(&ws, "src/lib.rs", "pub struct Client;\n");
     commit(&ws);
@@ -3310,16 +3368,18 @@ async fn code_validate_edit_incremental_chunk_feeding_intercepts_on_the_fly() {
         }
         "textDocument/diagnostic" => {
             let current = text_clone.lock().unwrap().clone();
-            if current.contains("hallucinated_execute") {
+            if current.contains("self.late_method()")
+                && !(current.contains("trait Late") && current.contains("impl Late for Client"))
+            {
                 serde_json::json!({
                     "kind": "full",
                     "items": [{
                         "severity": 1,
                         "code": "unresolved-method",
-                        "message": "no method named `hallucinated_execute` found for struct `Client`",
+                        "message": "no method named `late_method` found for struct `Client`",
                         "range": {
                             "start": { "line": 2, "character": 4 },
-                            "end": { "line": 2, "character": 24 }
+                            "end": { "line": 2, "character": 16 }
                         }
                     }]
                 })
@@ -3348,23 +3408,41 @@ async fn code_validate_edit_incremental_chunk_feeding_intercepts_on_the_fly() {
     .expect("chunk 1 executes");
     assert!(!r1.is_error, "chunk 1 should pass: {}", text_of(&r1));
 
-    // Chunk 2: introduces hallucination at checkpoint
+    // The call is currently unresolved, but a later trait declaration can make this prefix valid.
     let r2 = execute_tool(
         remote,
         &ws.root(),
         "code_validate_edit",
         serde_json::json!({
             "path": "src/lib.rs",
-            "chunk": "impl Client {\n    pub fn run(&self) {\n        self.hallucinated_execute();\n",
+            "chunk": "impl Client {\n    pub fn run(&self) {\n        self.late_method();\n    }\n}\n",
             "session_id": sid
         }),
     )
     .await
     .expect("chunk 2 executes");
-    assert!(r2.is_error, "chunk 2 should be intercepted");
+    assert!(!r2.is_error, "an incomplete source prefix is not intercepted");
     let t2 = text_of(&r2);
-    assert!(t2.contains("INTERCEPT"), "{t2}");
-    assert!(t2.contains("hallucinated_execute"), "{t2}");
+    assert!(t2.contains("provisional error(s)"), "{t2}");
+
+    let r3 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "trait Late { fn late_method(&self); }\nimpl Late for Client { fn late_method(&self) {} }\n",
+            "session_id": sid,
+            "close": true
+        }),
+    )
+    .await
+    .expect("the later declaration completes the source unit");
+    assert!(
+        !r3.is_error,
+        "the complete valid source is accepted: {}",
+        text_of(&r3)
+    );
 }
 
 #[tokio::test]
@@ -3471,6 +3549,38 @@ async fn code_validate_edit_stream_sessions_isolated_across_files() {
     .expect("chunk lib close executes");
     assert!(!r3.is_error);
     assert!(text_of(&r3).contains("stream generation validated clean"));
+}
+
+#[tokio::test]
+async fn code_validate_edit_first_chunk_without_session_id_starts_a_session() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub struct Client;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "chunk": "pub struct Client;\n"
+        }),
+    )
+    .await
+    .expect("an anonymous first chunk starts a session");
+
+    assert!(!result.is_error);
+    assert!(text_of(&result).contains("Stream chunk 1 [stream-"));
 }
 
 #[tokio::test]
@@ -4516,6 +4626,76 @@ async fn code_change_signature_reorders_parameters_and_call_sites() {
     let text = text_of(&result);
     assert!(text.contains("- now: (b: &str, a: &str)"), "{text}");
     assert!(text.contains("join(\"y\", \"x\")"), "{text}");
+}
+
+#[tokio::test]
+async fn code_change_signature_rejects_cargo_compile_verification_for_typescript() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "export function join(a: string, b: string) { return a + b; }\n";
+    let file = write(&ws, "src/api.ts", source);
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_change_signature",
+        serde_json::json!({
+            "path": "src/api.ts",
+            "line": 1,
+            "character": 17,
+            "params": ["b", "a"],
+            "verify": "compile",
+            "apply": true
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("supported only for Rust"),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), source);
+}
+
+#[tokio::test]
+async fn code_inline_parameter_rejects_cargo_compile_verification_for_typescript() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "export function clamp(value: number, max: number) { return Math.min(value, max); }\n";
+    let file = write(&ws, "src/math.ts", source);
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_inline_parameter",
+        serde_json::json!({
+            "path": "src/math.ts",
+            "line": 1,
+            "character": 32,
+            "function": "clamp",
+            "parameter": "max",
+            "verify": "compile",
+            "apply": true
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("only supported for Rust"));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), source);
 }
 
 #[tokio::test]
@@ -7078,5 +7258,3 @@ async fn code_definition_concurrent_body_calls_succeed_without_transport_closed(
     assert!(t1.contains("pub fn one"), "{t1}");
     assert!(t2.contains("pub fn two"), "{t2}");
 }
-
-

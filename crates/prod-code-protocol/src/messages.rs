@@ -319,6 +319,9 @@ pub struct ClientCapabilities {
     pub sync_chunking: bool,
     #[serde(default)]
     pub unix_socket_local: bool,
+    /// The client can decode transparent gateway redirect frames during handshakes.
+    #[serde(default)]
+    pub redirects: bool,
 }
 
 /// Server capabilities granted during handshake.
@@ -1635,6 +1638,10 @@ pub struct ReadFileResponse {
     pub content: Option<Vec<u8>>,
     #[serde(default)]
     pub truncated: bool,
+    /// Whether the source file has any executable permission bit set on the gateway.
+    /// `None` indicates a legacy gateway that did not report file permissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_executable: Option<bool>,
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -2601,4 +2608,3 @@ mod wire_tests {
         );
     }
 }
-

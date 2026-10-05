@@ -12,6 +12,30 @@ async fn fake_gateway() -> ScriptedGateway {
     .await
 }
 
+fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: usize) -> serde_json::Value {
+    let at = source
+        .match_indices(name)
+        .nth(occurrence)
+        .expect("reference occurrence")
+        .0;
+    let before = &source[..at];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
+    let character = before.rsplit('\n').next().unwrap_or_default().encode_utf16().count() as u32;
+    serde_json::json!({
+        "uri": url::Url::from_file_path(file).unwrap().to_string(),
+        "range": { "start": { "line": line, "character": character } }
+    })
+}
+
+async fn fake_gateway_with_references(references: Vec<serde_json::Value>) -> ScriptedGateway {
+    ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        "textDocument/references" => serde_json::Value::Array(references.clone()),
+        _ => serde_json::Value::Null,
+    })
+    .await
+}
+
 #[tokio::test]
 async fn test_invert_boolean_typescript_multi_file() {
     let ws = Workspace::new(&[
@@ -35,11 +59,23 @@ export function check() {
 }
 "#,
         ),
+        (
+            "other.ts",
+            "export class External { isValid(x: number) { return x > 0; } }\nexport function unrelated(external: External) { return external.isValid(5); }\n",
+        ),
     ]);
     let root = ws.root().to_path_buf();
     let math_file = root.join("math.ts");
     let client_file = root.join("client.ts");
-    let gw = fake_gateway().await;
+    let other_file = root.join("other.ts");
+    let other_before = fs::read_to_string(&other_file).unwrap();
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway_with_references(vec![
+        reference_at(&client_file, &client_text, "isValid", 1),
+        reference_at(&client_file, &client_text, "isValid", 2),
+        reference_at(&client_file, &client_text, "isValid", 3),
+    ])
+    .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -70,6 +106,86 @@ export function check() {
     assert!(client_content.contains("!isInvalid(5)"));
     assert!(client_content.contains("isInvalid(10)"));
     assert!(client_content.contains("(!isInvalid(15)).toString()"));
+    assert_eq!(fs::read_to_string(other_file).unwrap(), other_before);
+}
+
+#[tokio::test]
+async fn test_invert_boolean_refuses_unresolved_import_alias_calls() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "math.ts",
+            "export function isValid(x: number): boolean { return x > 0; }\n",
+        ),
+        (
+            "client.ts",
+            "import { isValid as check } from './math';\nexport function run() {\n    return check(5);\n}\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let math_file = root.join("math.ts");
+    let client_file = root.join("client.ts");
+    let math_before = fs::read_to_string(&math_file).unwrap();
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "check", 0)])
+        .await;
+
+    let error = invert_polyglot(
+        gw.addr(),
+        &root,
+        &math_file,
+        None,
+        None,
+        Some("isValid"),
+        "isInvalid",
+        true,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("alias"));
+    assert_eq!(fs::read_to_string(math_file).unwrap(), math_before);
+    assert_eq!(fs::read_to_string(client_file).unwrap(), client_text);
+}
+
+#[tokio::test]
+async fn test_invert_boolean_refuses_to_write_when_analyzer_returns_no_references() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "math.ts",
+            "export function isValid(x: number): boolean { return x > 0; }\n",
+        ),
+        (
+            "client.ts",
+            "import { isValid } from './math';\nexport function run() { return isValid(5); }\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let math_file = root.join("math.ts");
+    let client_file = root.join("client.ts");
+    let math_before = fs::read_to_string(&math_file).unwrap();
+    let client_before = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway().await;
+
+    let error = invert_polyglot(
+        gw.addr(),
+        &root,
+        &math_file,
+        None,
+        None,
+        Some("isValid"),
+        "isInvalid",
+        true,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("references for `isValid` were empty"));
+    assert_eq!(fs::read_to_string(math_file).unwrap(), math_before);
+    assert_eq!(fs::read_to_string(client_file).unwrap(), client_before);
 }
 
 #[tokio::test]
@@ -99,7 +215,12 @@ def run():
     let root = ws.root().to_path_buf();
     let math_file = root.join("math_mod.py");
     let client_file = root.join("client.py");
-    let gw = fake_gateway().await;
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway_with_references(vec![
+        reference_at(&client_file, &client_text, "is_valid", 1),
+        reference_at(&client_file, &client_text, "is_valid", 2),
+    ])
+    .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -157,7 +278,9 @@ int run() {
     let root = ws.root().to_path_buf();
     let math_file = root.join("math.cpp");
     let client_file = root.join("client.cpp");
-    let gw = fake_gateway().await;
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
+        .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -183,7 +306,7 @@ int run() {
     assert!(math_content.contains("return !(x > 0);"));
 
     let client_content = fs::read_to_string(&client_file).unwrap();
-    assert!(client_content.contains("bool isInvalid(int x);"));
+    assert!(client_content.contains("bool isInvalid(int x);"), "{client_content}");
     assert!(client_content.contains("!isInvalid(10)"));
 }
 
@@ -209,7 +332,9 @@ async fn test_invert_boolean_swift_multi_file() {
     let root = ws.root().to_path_buf();
     let math_file = root.join("math.swift");
     let client_file = root.join("client.swift");
-    let gw = fake_gateway().await;
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 0)])
+        .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -266,7 +391,9 @@ func run() bool {
     let root = ws.root().to_path_buf();
     let math_file = root.join("math.go");
     let client_file = root.join("client.go");
-    let gw = fake_gateway().await;
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "IsValid", 0)])
+        .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -310,7 +437,9 @@ async fn test_invert_boolean_recursive_refused() {
     ]);
     let root = ws.root().to_path_buf();
     let math_file = root.join("math.ts");
-    let gw = fake_gateway().await;
+    let math_text = fs::read_to_string(&math_file).unwrap();
+    let gw = fake_gateway_with_references(vec![reference_at(&math_file, &math_text, "isValid", 1)])
+        .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -357,7 +486,10 @@ export function check() {
     ]);
     let root = ws.root().to_path_buf();
     let math_file = root.join("math.ts");
-    let gw = fake_gateway().await;
+    let client_file = root.join("client.ts");
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
+        .await;
 
     let res = invert_polyglot(
         gw.addr(),

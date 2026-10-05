@@ -22,10 +22,13 @@ records what was run and what it showed.
    references the phase.
 2. **Branch from `main`**: `feat/<topic>`, `fix/<topic>`, `perf/<topic>`, `docs/<topic>`.
    Nothing is committed to `main` directly.
-3. **Run the checks on a build node before opening the PR**: for Rust changes,
-   `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-   and the tests of the crates you touched. For scripts, run their own checks and tests.
-   Exercise the scenario from the issue, against a running gateway when it involves one.
+3. **Follow the Development validation policy on a build node**: during development,
+   run only new or directly affected tests; do not run broad workspace suites, formatters,
+   or linters in the edit loop. Immediately before committing, run formatting and lint
+   checks once on the completed change (`cargo fmt --all -- --check`, `code_lint`), then
+   ONE final build/test gate for the changed deliverable (`code_check` / `code_test`) on a
+   build node, never locally. For scripts, run their own focused checks and tests. Exercise
+   the scenario from the issue, against a running gateway when it involves one.
 4. **Open the pull request** with the template. The PR must let a reader repeat what you
    did: the commands you ran, their output before and after, on which kind of node
    (described generically: "32-core Linux node", "developer workstation"). Before/after

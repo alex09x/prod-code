@@ -492,6 +492,10 @@ pub enum CppBuild {
 /// The build, lint and test tooling detected in a checkout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectTools {
+    /// The Java project uses Gradle rather than Maven.
+    pub java_gradle: bool,
+    /// Whether the Java Gradle project provides its wrapper script.
+    pub java_gradle_wrapper: bool,
     pub package_manager: PackageManager,
     pub js_tests: JsTestRunner,
     /// `eslint` or `biome` when configured.
@@ -507,6 +511,8 @@ pub struct ProjectTools {
 impl Default for ProjectTools {
     fn default() -> Self {
         Self {
+            java_gradle: false,
+            java_gradle_wrapper: false,
             package_manager: PackageManager::Npm,
             js_tests: JsTestRunner::Script,
             js_linter: None,
@@ -536,6 +542,16 @@ fn file_contains(root: &Path, name: &str, needle: &str) -> bool {
 /// Detects the tooling of the checkout at `root` from its manifests and lock files.
 pub fn detect_tools(root: &Path) -> ProjectTools {
     let mut tools = ProjectTools::default();
+    tools.java_gradle_wrapper = root.join("gradlew").is_file();
+    tools.java_gradle = !root.join("pom.xml").exists()
+        && [
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ]
+        .iter()
+        .any(|name| root.join(name).exists());
 
     // JavaScript / TypeScript
     let package_json: serde_json::Value = std::fs::read(root.join("package.json"))
@@ -777,6 +793,21 @@ pub fn plan_command_with(
         PythonRuntime::System => strs(&["python3"]),
     };
     let mut cmd: Vec<String> = match (language, kind) {
+        ("java", VerifyKind::Check) if tools.java_gradle => vec![
+            if tools.java_gradle_wrapper { "./gradlew" } else { "gradle" }.to_string(),
+            "testClasses".to_string(),
+        ],
+        ("java", VerifyKind::Test) if tools.java_gradle => {
+            let mut command = vec![
+                if tools.java_gradle_wrapper { "./gradlew" } else { "gradle" }.to_string(),
+                "test".to_string(),
+            ];
+            if let Some(filter) = filter {
+                command.push("--tests".to_string());
+                command.push(filter.to_string());
+            }
+            command
+        }
         ("typescript", VerifyKind::Check) => {
             let mut c = strs(&pm.exec());
             c.extend(strs(&["tsc", "--noEmit", "--pretty", "false"]));
@@ -1053,7 +1084,15 @@ fn plan_command_basic(
         ("java", VerifyKind::Test) => vec!["mvn", "test"],
         ("kotlin", VerifyKind::Check) => vec!["gradle", "compileKotlin"],
         ("kotlin", VerifyKind::Test) => vec!["gradle", "test"],
-        ("php", VerifyKind::Check) => vec!["php", "-l"],
+        ("php", VerifyKind::Check) => vec![
+            "sh",
+            "-c",
+            r#"if ! find . -type f \( -name '*.php' -o -name '*.phtml' \) -print -quit | grep -q .; then
+    echo 'no PHP source files found' >&2
+    exit 1
+fi
+find . -type f \( -name '*.php' -o -name '*.phtml' \) -print0 | xargs -0 -n1 php -l"#,
+        ],
         ("php", VerifyKind::Test) => vec!["phpunit"],
         ("ruby", VerifyKind::Check) => vec!["bundle", "exec", "rake", "test"],
         ("ruby", VerifyKind::Test) => vec!["bundle", "exec", "rake", "test"],
@@ -1083,7 +1122,15 @@ fn plan_command_basic(
         ("erlang", VerifyKind::Test) => vec!["rebar3", "eunit"],
         ("fsharp", VerifyKind::Check) => vec!["dotnet", "build"],
         ("fsharp", VerifyKind::Test) => vec!["dotnet", "test"],
-        ("perl", VerifyKind::Check) => vec!["perl", "-c"],
+        ("perl", VerifyKind::Check) => vec![
+            "sh",
+            "-c",
+            r#"if ! find . -type f \( -name '*.pl' -o -name '*.pm' -o -name '*.t' \) -print -quit | grep -q .; then
+    echo 'no Perl source files found' >&2
+    exit 1
+fi
+find . -type f \( -name '*.pl' -o -name '*.pm' -o -name '*.t' \) -print0 | xargs -0 -n1 perl -Ilib -c"#,
+        ],
         ("perl", VerifyKind::Test) => vec!["prove", "-l"],
         ("solidity", VerifyKind::Check) => vec!["forge", "build"],
         ("solidity", VerifyKind::Test) => vec!["forge", "test"],
@@ -1131,8 +1178,15 @@ fn plan_command_basic(
         ("svelte", VerifyKind::Test) => vec!["svelte-check"],
         ("vue", VerifyKind::Check) => vec!["vue-tsc", "--noEmit"],
         ("vue", VerifyKind::Test) => vec!["vue-tsc", "--noEmit"],
-        ("assembly", VerifyKind::Check) => vec!["nasm", "-f", "elf64"],
-        ("assembly", VerifyKind::Test) => vec!["nasm", "-f", "elf64"],
+        ("assembly", VerifyKind::Check) | ("assembly", VerifyKind::Test) => vec![
+            "sh",
+            "-c",
+            r#"if ! find . -type f \( -name '*.asm' -o -name '*.nasm' -o -name '*.s' -o -name '*.S' \) -print -quit | grep -q .; then
+    echo 'no Assembly source files found' >&2
+    exit 1
+fi
+find . -type f \( -name '*.asm' -o -name '*.nasm' -o -name '*.s' -o -name '*.S' \) -print0 | xargs -0 -n1 sh -c 'case "$0" in *.asm|*.nasm) nasm -f elf64 -o /dev/null "$0" ;; *.s|*.S) as --64 -o /dev/null "$0" ;; esac'"#,
+        ],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -1637,7 +1691,13 @@ pub fn parse_go_test_json(text: &str) -> (u64, u64, Vec<TestFailure>) {
         let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        let pkg = ev.get("Package").and_then(|p| p.as_str()).unwrap_or("");
+        // Go 1.25 build-output/build-fail events use ImportPath where test events use Package.
+        // Keep both under the same package key so a later package-level fail retains compiler text.
+        let pkg = ev
+            .get("Package")
+            .and_then(|p| p.as_str())
+            .or_else(|| ev.get("ImportPath").and_then(|p| p.as_str()))
+            .unwrap_or("");
         if let Some(test) = ev.get("Test").and_then(|t| t.as_str()) {
             let key = format!("{pkg}.{test}");
             match ev.get("Action").and_then(|a| a.as_str()) {
@@ -1660,11 +1720,19 @@ pub fn parse_go_test_json(text: &str) -> (u64, u64, Vec<TestFailure>) {
             }
         } else {
             match ev.get("Action").and_then(|a| a.as_str()) {
-                Some("output") => {
+                Some("output" | "build-output") => {
                     pkg_outputs
                         .entry(pkg.to_string())
                         .or_default()
                         .push_str(ev.get("Output").and_then(|o| o.as_str()).unwrap_or(""));
+                }
+                Some("build-fail") => {
+                    if let Some(output) = ev.get("Output").and_then(|o| o.as_str()) {
+                        pkg_outputs
+                            .entry(pkg.to_string())
+                            .or_default()
+                            .push_str(output);
+                    }
                 }
                 Some("pass") => {
                     pkg_outputs.remove(pkg);
@@ -2382,8 +2450,10 @@ pub fn parse_verification_output(
         }
         ("swift", VerifyKind::Test) => {
             let combined = format!("{stdout}\n{stderr}");
+            // XCTest prints test stdout mixed with build output. Plain `error: ...` lines on
+            // stdout are user logs, not compiler diagnostics; compiler/SwiftPM errors remain
+            // available on stderr and test failures are parsed from the combined stream below.
             diagnostics.extend(parse_swift_text(stderr));
-            diagnostics.extend(parse_swift_text(stdout));
             diagnostics.retain(|d| !d.message.starts_with("-["));
             let (p, f, fails) = parse_xctest_text(&combined);
             tests_passed = p;
@@ -2531,6 +2601,17 @@ pub async fn run_verify_with(
         relativize_diagnostics(&mut diagnostics, &nested);
     }
     relativize_diagnostics(&mut diagnostics, &outcome.exit.server_workspace_root);
+    if let Some(subdir) = &subdir {
+        let subdir = Path::new(subdir);
+        for diagnostic in &mut diagnostics {
+            if let Some(file) = diagnostic.file.as_mut() {
+                let path = Path::new(file);
+                if !path.is_absolute() && !path.starts_with(subdir) {
+                    *file = subdir.join(path).to_string_lossy().replace('\\', "/");
+                }
+            }
+        }
+    }
     for failure in &mut failures {
         let prefix = format!(
             "{}/",

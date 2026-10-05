@@ -238,7 +238,8 @@ impl ReachabilityGraph {
         target_idx: usize,
         ref_locations: &[(String, u32, u32)],
         is_test_ref: impl Fn(&str, u32) -> bool,
-    ) {
+    ) -> Vec<(String, u32, u32)> {
+        let mut unattributed = Vec::new();
         for (ref_file, ref_line, ref_col) in ref_locations {
             if is_test_ref(ref_file, *ref_line) {
                 // Called from a test; mark target reachable by treating it as referenced by a test root
@@ -252,8 +253,14 @@ impl ReachabilityGraph {
 
             if let Some(caller_idx) = self.find_enclosing_symbol(ref_file, *ref_line, *ref_col) {
                 self.add_edge(caller_idx, target_idx);
+            } else {
+                // A real reference with no indexed enclosing declaration may come from
+                // module-level code or a file omitted from the scan. Do not call its target dead.
+                self.mark_unverified(target_idx);
+                unattributed.push((ref_file.clone(), *ref_line, *ref_col));
             }
         }
+        unattributed
     }
 
     /// Computes whole-program graph reachability from all root entry points.

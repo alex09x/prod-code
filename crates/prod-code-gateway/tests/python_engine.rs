@@ -98,14 +98,13 @@ fn test_seed_python_worktree_typings_and_symlink() {
     let result = seed_python_worktree(&from, &to).unwrap();
     assert!(result.is_some());
 
-    // Verify stubs were merged into shared stub cache
-    assert!(custom_cache.join("pandas").join("__init__.pyi").is_file());
-    assert!(custom_cache.join("pandas").join("py.typed").is_file());
-
-    // Verify to/typings symlink points to shared stub cache
+    // Verify stubs were merged into this dependency-set's cache view.
     let to_typings = to.join("typings");
     assert!(fs::symlink_metadata(&to_typings).unwrap().file_type().is_symlink());
-    assert_eq!(fs::read_link(&to_typings).unwrap(), custom_cache);
+    let cache_view = fs::read_link(&to_typings).unwrap();
+    assert!(cache_view.starts_with(&custom_cache));
+    assert!(cache_view.join("pandas").join("__init__.pyi").is_file());
+    assert!(cache_view.join("pandas").join("py.typed").is_file());
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
@@ -138,8 +137,11 @@ fn test_seed_python_worktree_venv_stubs_discovery() {
     let result = seed_python_worktree(&from, &to).unwrap();
     assert!(result.is_some());
 
-    // Verify torch-stubs indexed into shared cache
-    assert!(custom_cache.join("torch-stubs").join("__init__.pyi").is_file());
+    // Verify torch-stubs are indexed into this dependency-set's cache view.
+    let to_typings = to.join("typings");
+    let cache_view = fs::read_link(&to_typings).unwrap();
+    assert!(cache_view.starts_with(&custom_cache));
+    assert!(cache_view.join("torch-stubs").join("__init__.pyi").is_file());
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
@@ -329,12 +331,12 @@ fn test_seed_python_worktree_skips_venv_stubs_when_disk_space_insufficient() {
     let result = seed_python_worktree_within(&from, &to, restricted_space).unwrap();
     assert!(result.is_some());
 
-    // venv stubs must NOT be copied due to insufficient space
-    assert!(!custom_cache.join("pandas-stubs").exists());
-
-    // But symlink to typings still established
+    // venv stubs must NOT be copied due to insufficient space.
     let to_typings = to.join("typings");
     assert!(fs::symlink_metadata(&to_typings).unwrap().file_type().is_symlink());
+    let cache_view = fs::read_link(&to_typings).unwrap();
+    assert!(cache_view.starts_with(&custom_cache));
+    assert!(!cache_view.join("pandas-stubs").exists());
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);

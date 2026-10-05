@@ -1,12 +1,26 @@
 use prod_code_mcp::make_static::make_static_polyglot;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
 
-async fn fake_gateway() -> ScriptedGateway {
-    ScriptedGateway::start(|method, _params| match method {
+fn call_reference(file: &std::path::Path, source: &str, method: &str) -> serde_json::Value {
+    let needle = format!(".{method}(");
+    let at = source.find(&needle).expect("method call") + 1;
+    let before = &source[..at];
+    serde_json::json!({
+        "uri": url::Url::from_file_path(file).unwrap().to_string(),
+        "range": { "start": {
+            "line": before.bytes().filter(|byte| *byte == b'\n').count(),
+            "character": before.rsplit('\n').next().unwrap_or_default().encode_utf16().count()
+        }}
+    })
+}
+
+async fn fake_gateway(references: Vec<serde_json::Value>) -> ScriptedGateway {
+    ScriptedGateway::start(move |method, _params| match method {
         "textDocument/diagnostic" => answers::no_diagnostics(),
+        "textDocument/references" => serde_json::Value::Array(references.clone()),
         _ => serde_json::Value::Null,
     })
     .await
@@ -39,7 +53,12 @@ export function compute() {
     let root = ws.root().to_path_buf();
     let math_file = root.join("math.ts");
     let client_file = root.join("client.ts");
-    let gw = fake_gateway().await;
+    let gw = fake_gateway(vec![call_reference(
+        &client_file,
+        &fs::read_to_string(&client_file).unwrap(),
+        "add",
+    )])
+    .await;
 
     let res = make_static_polyglot(
         gw.addr(),
@@ -67,6 +86,44 @@ export function compute() {
 }
 
 #[tokio::test]
+async fn test_make_static_rewrites_only_the_selected_method_references() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "math.ts",
+            "export class Calculator {\n    add(a: number) { return a + 1; }\n}\n",
+        ),
+        (
+            "client.ts",
+            "const calculator = new Calculator();\ncalculator.add(1);\nconst set = new Set();\nset.add(2);\nconst label = \"calculator.add(3)\";\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let math_file = root.join("math.ts");
+    let client_file = root.join("client.ts");
+    let client = fs::read_to_string(&client_file).unwrap();
+    let gw = fake_gateway(vec![call_reference(&client_file, &client, "add")]).await;
+
+    let result = make_static_polyglot(
+        gw.addr(),
+        &root,
+        &math_file,
+        Some("Calculator"),
+        "add",
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.rewritten_calls, 1);
+    let client = fs::read_to_string(client_file).unwrap();
+    assert!(client.contains("Calculator.add(1)"), "{client}");
+    assert!(client.contains("set.add(2)"), "{client}");
+    assert!(client.contains("\"calculator.add(3)\""), "{client}");
+}
+
+#[tokio::test]
 async fn test_make_static_python_multi_file() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
@@ -91,7 +148,12 @@ def run():
     let root = ws.root().to_path_buf();
     let formatter_file = root.join("formatter.py");
     let app_file = root.join("app.py");
-    let gw = fake_gateway().await;
+    let gw = fake_gateway(vec![call_reference(
+        &app_file,
+        &fs::read_to_string(&app_file).unwrap(),
+        "format_text",
+    )])
+    .await;
 
     let res = make_static_polyglot(
         gw.addr(),
@@ -112,7 +174,9 @@ def run():
     assert!(res.applied);
 
     let fmt_content = fs::read_to_string(&formatter_file).unwrap();
-    assert!(fmt_content.contains("@staticmethod\n    def format_text(prefix: str, text: str) -> str:"));
+    assert!(
+        fmt_content.contains("@staticmethod\n    def format_text(prefix: str, text: str) -> str:")
+    );
 
     let app_content = fs::read_to_string(&app_file).unwrap();
     assert!(app_content.contains("Formatter.format_text(\"INFO\", \"hello world\")"));
@@ -146,7 +210,12 @@ int main() {
     let root = ws.root().to_path_buf();
     let header_file = root.join("calc.h");
     let main_file = root.join("main.cpp");
-    let gw = fake_gateway().await;
+    let gw = fake_gateway(vec![call_reference(
+        &main_file,
+        &fs::read_to_string(&main_file).unwrap(),
+        "multiply",
+    )])
+    .await;
 
     let res = make_static_polyglot(
         gw.addr(),
@@ -198,7 +267,12 @@ async fn test_make_static_swift_multi_file() {
     let root = ws.root().to_path_buf();
     let helper_file = root.join("Helper.swift");
     let app_file = root.join("App.swift");
-    let gw = fake_gateway().await;
+    let gw = fake_gateway(vec![call_reference(
+        &app_file,
+        &fs::read_to_string(&app_file).unwrap(),
+        "combine",
+    )])
+    .await;
 
     let res = make_static_polyglot(
         gw.addr(),
@@ -255,7 +329,12 @@ func main() {
     let root = ws.root().to_path_buf();
     let service_file = root.join("service.go");
     let main_file = root.join("main.go");
-    let gw = fake_gateway().await;
+    let gw = fake_gateway(vec![call_reference(
+        &main_file,
+        &fs::read_to_string(&main_file).unwrap(),
+        "Execute",
+    )])
+    .await;
 
     let res = make_static_polyglot(
         gw.addr(),
@@ -303,7 +382,12 @@ export function test() {
     ]);
     let root = ws.root().to_path_buf();
     let util_file = root.join("util.ts");
-    let gw = fake_gateway().await;
+    let gw = fake_gateway(vec![call_reference(
+        &util_file,
+        &fs::read_to_string(&util_file).unwrap(),
+        "helper",
+    )])
+    .await;
 
     let args = serde_json::json!({
         "path": "util.ts",
@@ -311,17 +395,72 @@ export function test() {
         "apply": true,
     });
 
-    let tool_res = prod_code_mcp::tools::execute_tool(
-        gw.addr(),
-        &root,
-        "code_make_static",
-        args,
-    )
-    .await
-    .unwrap();
+    let tool_res = prod_code_mcp::tools::execute_tool(gw.addr(), &root, "code_make_static", args)
+        .await
+        .unwrap();
 
     assert!(!tool_res.is_error);
     let content = fs::read_to_string(&util_file).unwrap();
     assert!(content.contains("static helper(x: number): number {"));
     assert!(content.contains("Util.helper(21)"));
+}
+
+fn member_reference(file: &std::path::Path, source: &str, method: &str) -> serde_json::Value {
+    let needle = format!(".{method};");
+    let at = source.find(&needle).expect("method member reference") + 1;
+    let before = &source[..at];
+    serde_json::json!({
+        "uri": url::Url::from_file_path(file).unwrap().to_string(),
+        "range": { "start": {
+            "line": before.bytes().filter(|byte| *byte == b'\n').count(),
+            "character": before.rsplit('\n').next().unwrap_or_default().encode_utf16().count()
+        }}
+    })
+}
+
+#[tokio::test]
+async fn test_make_static_refuses_apply_when_references_unmatched() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "util.ts",
+            r#"export class Util {
+    helper(x: number): number {
+        return x * 2;
+    }
+}
+
+export function test() {
+    const u = new Util();
+    const fn_ref = u.helper;
+    return fn_ref;
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let util_file = root.join("util.ts");
+    let util_source = fs::read_to_string(&util_file).unwrap();
+    let gw = fake_gateway(vec![member_reference(&util_file, &util_source, "helper")]).await;
+
+    let res = make_static_polyglot(
+        gw.addr(),
+        &root,
+        &util_file,
+        Some("Util"),
+        "helper",
+        true,
+        false,
+    )
+    .await;
+
+    assert!(res.is_err());
+    let err = res.unwrap_err().to_string();
+    assert!(
+        err.contains("1 reference(s) were not rewritten; nothing was written"),
+        "{err}"
+    );
+
+    let content = fs::read_to_string(&util_file).unwrap();
+    assert_eq!(content, util_source);
 }

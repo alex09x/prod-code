@@ -20,6 +20,27 @@ async fn fake_gateway() -> ScriptedGateway {
                         }
                     }
                 ])
+            } else if uri.ends_with("/math.ts") {
+                let client_uri = uri.replace("/math.ts", "/client.ts");
+                serde_json::json!([
+                    {
+                        "uri": client_uri,
+                        "range": {
+                            "start": { "line": 3, "character": 11 },
+                            "end": { "line": 3, "character": 20 }
+                        }
+                    }
+                ])
+            } else if uri.ends_with("/src/main.ts") {
+                serde_json::json!([
+                    {
+                        "uri": uri,
+                        "range": {
+                            "start": { "line": 6, "character": 11 },
+                            "end": { "line": 6, "character": 20 }
+                        }
+                    }
+                ])
             } else {
                 serde_json::json!([])
             }
@@ -85,6 +106,51 @@ export async function run() {
     let client_content = fs::read_to_string(&client_file).unwrap();
     assert!(client_content.contains("const a = await calculate(5);"));
     assert!(client_content.contains("const b = (await calculate(10)).toString();"));
+}
+
+#[tokio::test]
+async fn wrap_return_rebases_same_file_callsite_after_signature_rewrite() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/main.ts",
+            "export function calculate() {\n    const inner = () => { return 2; };\n    return [1];\n}\n\nexport async function run() {\n    return calculate()[0].toString();\n}\n",
+        ),
+        (
+            "src/other.ts",
+            "class Other { calculate(value: number) { return value; } }\nexport function other() { return new Other().calculate(5); }\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("src/main.ts");
+    let other_file = root.join("src/other.ts");
+    let other_before = fs::read_to_string(&other_file).unwrap();
+    let gateway = fake_gateway().await;
+    let result = wrap_polyglot(
+        gateway.addr(),
+        &root,
+        &file,
+        Some("calculate"),
+        None,
+        None,
+        Wrapper::Promise,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(result.applied);
+    let updated = fs::read_to_string(&file).unwrap();
+    assert!(updated.contains("async function calculate()"), "{updated}");
+    assert!(!updated.contains("Promise<void>"), "{updated}");
+    assert!(updated.contains("const inner = () => { return 2; }"), "{updated}");
+    assert!(updated.contains("return [1]"), "{updated}");
+    assert!(
+        updated.contains("(await calculate())[0].toString()"),
+        "{updated}; result={result:?}"
+    );
+    assert_eq!(fs::read_to_string(other_file).unwrap(), other_before);
 }
 
 #[tokio::test]

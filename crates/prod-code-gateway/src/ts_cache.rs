@@ -657,7 +657,58 @@ fn tree_size_inner(
 
 /// Seeds TypeScript type declarations and `@types` cache across worktrees.
 pub fn seed_typescript_worktree(from: &Path, to: &Path) -> io::Result<Option<u64>> {
-    seed_typescript_worktree_within(from, to, disk_space(to))
+    if !is_typescript_project(from) {
+        return Ok(None);
+    }
+    seed_typescript_worktree_within(from, to, disk_space(&ts_types_cache_dir()))
+}
+
+fn types_cache_namespace(from: &Path, to: &Path, type_dirs: &[PathBuf]) -> String {
+    const MANIFESTS: [&str; 8] = [
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+        "deno.lock",
+    ];
+    let mut key = Vec::new();
+    let mut has_lockfile = false;
+    for root in [from, to] {
+        for name in MANIFESTS {
+            if let Ok(contents) = fs::read(root.join(name)) {
+                key.extend_from_slice(name.as_bytes());
+                key.push(0);
+                key.extend_from_slice(&contents);
+                key.push(0xff);
+                has_lockfile |= name != "package.json";
+            }
+        }
+    }
+    for type_dir in type_dirs {
+        if type_dir.file_name() != Some(std::ffi::OsStr::new("@types")) {
+            let identity = type_dir
+                .canonicalize()
+                .unwrap_or_else(|_| type_dir.clone())
+                .to_string_lossy()
+                .into_owned();
+            key.extend_from_slice(b"custom-type-root\0");
+            key.extend_from_slice(identity.as_bytes());
+            key.push(0xff);
+        }
+    }
+    if !has_lockfile {
+        // With no resolver lock, keep installations in distinct views rather than guessing that
+        // same-named declarations in separate workspaces have identical versions.
+        for root in [from, to] {
+            let identity = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            key.extend_from_slice(identity.to_string_lossy().as_bytes());
+            key.push(0xff);
+        }
+    }
+    format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&key))
 }
 
 /// Seeds TypeScript type declarations respecting a provided disk space budget.
@@ -670,11 +721,13 @@ pub fn seed_typescript_worktree_within(
         return Ok(None);
     }
 
-    let cache_dir = ts_types_cache_dir();
     let mut total_bytes = 0u64;
 
-    // 1. Gather all candidate type declaration directories
+    // 1. Gather all candidate type declaration directories and isolate each resolver version set.
     let discovered_types = find_project_types_within(from, &[from, to]);
+    let cache_dir = ts_types_cache_dir().join(types_cache_namespace(from, to, &discovered_types));
+    ensure_cache_dir(&cache_dir)?;
+    let cache_dir = cache_dir.canonicalize()?;
     let aggregate_size: u64 = discovered_types
         .iter()
         .map(|d| tree_size_within(d, &[from, to]))
@@ -716,8 +769,10 @@ pub fn seed_typescript_worktree_within(
             }
         }
         Ok(m) if m.file_type().is_symlink() => {
-            // Already a symlink. If dangling, replace with shared cache symlink.
-            if !to_at_types.exists() {
+            // Retarget existing worktrees when their package lock resolves a different type set.
+            let points_to_cache =
+                fs::canonicalize(&to_at_types).is_ok_and(|target| target == cache_dir);
+            if !points_to_cache {
                 let _ = fs::remove_file(&to_at_types);
                 #[cfg(unix)]
                 {

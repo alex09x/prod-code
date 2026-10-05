@@ -203,10 +203,15 @@ impl ImpactReport {
                 self.unattributed_files.join(", ")
             ));
         }
-        if self.tests.len() > 25 {
+        let rust_filter_count = self
+            .tests
+            .iter()
+            .map(|test| test.name.rsplit("::").next().unwrap_or(&test.name))
+            .collect::<BTreeSet<_>>()
+            .len();
+        if self.language == "rust" && rust_filter_count > 25 {
             return Some(format!(
-                "{} affected tests exceed the selective threshold; the whole suite is faster",
-                self.tests.len()
+                "{rust_filter_count} distinct Rust test filters exceed the selective threshold; the whole suite is faster"
             ));
         }
         None
@@ -272,7 +277,9 @@ impl ImpactReport {
             out.push('\n');
         }
         if !self.signature_warnings.is_empty() {
-            out.push_str("⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:\n\n");
+            out.push_str(
+                "⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:\n\n",
+            );
             for warn in &self.signature_warnings {
                 out.push_str(&format!(
                     "- `{}` (`{}:{}`):\n  - Old: `{}`\n  - New: `{}`\n  - Unadjusted call sites ({}):\n",
@@ -822,14 +829,7 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
 
 /// Known agent and editor scratch or cache directories whose untracked contents are not project source (#760).
 const SCRATCH_DIRS: &[&str] = &[
-    ".prod",
-    ".scratch",
-    ".tmp",
-    ".cache",
-    ".vscode",
-    ".idea",
-    ".claude",
-    ".cursor",
+    ".prod", ".scratch", ".tmp", ".cache", ".vscode", ".idea", ".claude", ".cursor",
 ];
 
 /// Whether an untracked path lies in a known scratch or cache directory (e.g. `.prod/`, `.scratch/`, `.tmp/`) (#760).
@@ -1398,7 +1398,10 @@ pub fn test_marker(language: &str, text: &str, line: u32, name: &str) -> Option<
                 || t.starts_with("test.only(")
             {
                 if let Some(rest) = t.split_once('(').map(|x| x.1.trim_start())
-                    && let Some(quote) = rest.chars().next().filter(|&c| c == '"' || c == '\'' || c == '`')
+                    && let Some(quote) = rest
+                        .chars()
+                        .next()
+                        .filter(|&c| c == '"' || c == '\'' || c == '`')
                     && let Some(desc) = rest[1..].split(quote).next()
                 {
                     return Some(desc.to_string());
@@ -1461,11 +1464,13 @@ pub fn looks_like_test(language: &str, name: &str, file: &str) -> bool {
                     || base.ends_with("_test.py")
                     || lower.contains("/tests/"))
         }
-        "typescript" => {
-            lower.contains(".test.") || lower.contains(".spec.") || lower.contains("/__tests__/")
-        }
+        // A test filename contains helpers that are not test-runner entry points. TypeScript
+        // registrations are established by the analyzer's test flag or `test_marker` below.
+        "typescript" => false,
         "swift" => name.starts_with("test") && lower.ends_with("tests.swift"),
-        "cpp" => lower.contains("test"),
+        // A path containing `test` does not make every C++ helper a runnable test. Registered
+        // gtest/Catch2 tests are recognized from their macros by `test_marker`.
+        "cpp" => false,
         _ => name.to_ascii_lowercase().contains("test"),
     }
 }
@@ -1638,16 +1643,60 @@ pub fn test_command_for_tests(
     if tests.is_empty() {
         return None;
     }
-    let test_langs: HashSet<&str> = tests
-        .iter()
-        .map(|t| file_language(root, &t.file).unwrap_or(default_language))
-        .collect();
-    if test_langs.len() == 1 {
-        let lang = test_langs.into_iter().next().unwrap();
-        test_command(lang, tools, tests)
-    } else {
-        test_command(default_language, tools, tests)
+    let root_language = crate::sync::expected_engine(root);
+    let mut groups: BTreeMap<(String, String), Vec<Symbol>> = BTreeMap::new();
+    for test in tests {
+        let abs = root.join(&test.file);
+        let (subpath, mut language) = crate::sync::engine_project(root, &abs);
+        if let Some(own) = crate::sync::engine_for_file(&abs)
+            && language.as_deref() == root_language.as_deref()
+            && Some(own) != language.as_deref()
+        {
+            language = Some(own);
+        }
+        let language = language.unwrap_or(default_language).to_string();
+        let subpath = subpath.unwrap_or_default();
+        let mut test = test.clone();
+        if !subpath.is_empty() {
+            let project = Path::new(&subpath);
+            if let Ok(relative) = Path::new(&test.file).strip_prefix(project) {
+                test.file = relative.to_string_lossy().into_owned();
+            }
+        }
+        groups.entry((subpath, language)).or_default().push(test);
     }
+
+    let single_root_project = groups.len() == 1
+        && groups
+            .keys()
+            .next()
+            .is_some_and(|(subpath, _)| subpath.is_empty());
+    let mut commands = Vec::with_capacity(groups.len());
+    for ((subpath, language), project_tests) in groups {
+        let project_tools = if subpath.is_empty() {
+            None
+        } else {
+            Some(crate::verify::detect_tools(&root.join(&subpath)))
+        };
+        let project_tools = project_tools.as_ref().unwrap_or(tools);
+        let command = test_command(&language, project_tools, &project_tests)?;
+        if single_root_project {
+            return Some(command);
+        }
+        let run = shell_words(&command);
+        let dir = if subpath.is_empty() {
+            ".".to_string()
+        } else {
+            subpath.clone()
+        };
+        commands.push(format!("(cd {} && {run})", shell_words(&[dir])));
+    }
+    Some(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        commands.join(" && "),
+        "prod-code-impact".to_string(),
+    ])
 }
 
 struct SessionPool<'a> {
@@ -1868,18 +1917,15 @@ pub async fn analyze(
                         && let Ok(base_text) = std::str::from_utf8(&base_bytes)
                     {
                         let base_lines: Vec<&str> = base_text.lines().collect();
-                        if let Some(base_line) = find_function_in_text(&base_lines, name, file_lang)
+                        if let Some(base_line) =
+                            base_line_for_new_line(file_hunks, *sl).and_then(|mapped| {
+                                find_function_in_text(&base_lines, name, file_lang, mapped)
+                            })
                             && let Some((_, _, base_sig)) =
                                 extract_signature_span(&base_lines, base_line, name, file_lang)
                             && base_sig != curr_sig
                         {
-                            adjusted_signatures.push((
-                                sym,
-                                base_sig,
-                                curr_sig,
-                                sig_start,
-                                sig_end,
-                            ));
+                            adjusted_signatures.push((sym, base_sig, curr_sig, sig_start, sig_end));
                         }
                     }
                 }
@@ -1938,12 +1984,12 @@ pub async fn analyze(
     // has read the project, and "no callers" would then read as "no test is affected" (#202).
     // For the managed servers, an empty answer for the first changed function is asked again a
     // few times before it is believed; rust-analyzer answers from a database already loaded.
-    if language != "rust"
-        && let Some(first) = changed.first()
-    {
+    if let Some(first) = changed.first() {
         let first_abs = root.join(&first.file);
         let first_lang = file_language(root, &first.file).unwrap_or(&language);
-        if let Ok(first_session) = session_pool.session_for_file(&first_abs).await {
+        if first_lang != "rust"
+            && let Ok(first_session) = session_pool.session_for_file(&first_abs).await
+        {
             let mut answer = incoming_calls(first_session, root, first_lang, first).await;
             for _ in 0..COLD_RETRIES {
                 if matches!(&answer, Incoming::Callers(found) if !found.is_empty()) {
@@ -2044,14 +2090,16 @@ pub async fn analyze(
             Err(_) => Vec::new(),
         };
         let mut unadjusted = Vec::new();
-        for (call_file, call_line, call_col, caller) in sites {
+        for (call_file, call_line, call_col, call_end_line, caller) in sites {
             if call_file == sym.file && call_line >= sig_start && call_line <= sig_end {
                 continue;
             }
             let is_sibling = call_file != sym.file;
             let adjusted = match changes.get(&call_file) {
                 None => false,
-                Some(Change::Hunks(hunks)) => hunks.iter().any(|h| h.touches(call_line, call_line)),
+                Some(Change::Hunks(hunks)) => {
+                    hunks.iter().any(|h| h.touches(call_line, call_end_line))
+                }
                 Some(Change::Unknown(_)) => true,
             };
             if !adjusted {
@@ -2130,7 +2178,8 @@ fn normalize_signature(lines: &[&str], language: &str) -> String {
             prev_ws = false;
         }
     }
-    let trimmed = out.trim_end_matches(|c: char| c == '{' || c == ':' || c == ';' || c.is_whitespace());
+    let trimmed =
+        out.trim_end_matches(|c: char| c == '{' || c == ':' || c == ';' || c.is_whitespace());
     trimmed.replace("( ", "(").replace(" )", ")").to_string()
 }
 
@@ -2254,7 +2303,35 @@ fn extract_signature_span(
     Some(((start_idx + 1) as u32, (end_idx + 1) as u32, sig_text))
 }
 
-fn find_function_in_text(lines: &[&str], name: &str, language: &str) -> Option<u32> {
+fn base_line_for_new_line(hunks: &[Hunk], new_line: u32) -> Option<u32> {
+    let mut hunks = hunks.to_vec();
+    hunks.sort_by_key(|hunk| hunk.start);
+    let mut delta = 0i64;
+    for hunk in hunks {
+        if new_line < hunk.start {
+            break;
+        }
+        if hunk.added > 0 && new_line < hunk.start.saturating_add(hunk.added) {
+            if hunk.removed == 0 {
+                return None;
+            }
+            let old_start = (hunk.start as i64).checked_sub(delta)?;
+            let offset = new_line.saturating_sub(hunk.start);
+            let offset = offset.min(hunk.removed - 1);
+            return u32::try_from(old_start + offset as i64).ok();
+        }
+        delta += i64::from(hunk.added) - i64::from(hunk.removed);
+    }
+    u32::try_from(i64::from(new_line).checked_sub(delta)?).ok()
+}
+
+fn find_function_in_text(
+    lines: &[&str],
+    name: &str,
+    language: &str,
+    preferred_line: u32,
+) -> Option<u32> {
+    let mut best: Option<(u32, u32)> = None;
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with('*') {
@@ -2313,9 +2390,11 @@ fn find_function_in_text(lines: &[&str], name: &str, language: &str) -> Option<u
                             .is_none_or(|c| !c.is_alphanumeric() && c != '_')
                     } else if let Some(close_paren) = rest.find(')') {
                         let after = rest[close_paren + 1..].trim_start();
-                        after
-                            .strip_prefix(name)
-                            .is_some_and(|tail| tail.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_'))
+                        after.strip_prefix(name).is_some_and(|tail| {
+                            tail.chars()
+                                .next()
+                                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+                        })
                     } else {
                         false
                     }
@@ -2382,17 +2461,21 @@ fn find_function_in_text(lines: &[&str], name: &str, language: &str) -> Option<u
             }
         };
         if matched {
-            return Some((i + 1) as u32);
+            let line = (i + 1) as u32;
+            let distance = line.abs_diff(preferred_line);
+            if best.is_none_or(|(_, best_distance)| distance < best_distance) {
+                best = Some((line, distance));
+            }
         }
     }
-    None
+    best.map(|(line, _)| line)
 }
 
 async fn discover_call_sites(
     session: &mut LspSession,
     root: &Path,
     sym: &Symbol,
-) -> Vec<(String, u32, u32, Option<String>)> {
+) -> Vec<(String, u32, u32, u32, Option<String>)> {
     let mut sites = Vec::new();
     let abs = root.join(&sym.file);
     let Ok(uri) = Url::from_file_path(&abs).map(|u| u.to_string()) else {
@@ -2415,6 +2498,7 @@ async fn discover_call_sites(
         )
         .await
     {
+        let mut source_cache: HashMap<String, String> = HashMap::new();
         for loc in locs {
             let Some(loc_uri) = loc.get("uri").and_then(|u| u.as_str()) else {
                 continue;
@@ -2427,7 +2511,13 @@ async fn discover_call_sites(
                 && let Some(line) = one_based(start, "line")
                 && let Some(col) = one_based(start, "character")
             {
-                sites.push((rel_file, line, col, None));
+                let source = source_cache.entry(rel_file.clone()).or_insert_with(|| {
+                    std::fs::read_to_string(root.join(&rel_file)).unwrap_or_default()
+                });
+                let file_lang = file_language(root, &rel_file).unwrap_or("generic");
+                let end_line = call_expression_end_line(source, line, col, &sym.name, file_lang)
+                    .unwrap_or(line);
+                sites.push((rel_file, line, col, end_line, None));
             }
         }
     }
@@ -2466,7 +2556,17 @@ async fn discover_call_sites(
                                 && let Some(line) = one_based(start, "line")
                                 && let Some(col) = one_based(start, "character")
                             {
-                                sites.push((rel_file.clone(), line, col, caller_name.clone()));
+                                let end_line = range
+                                    .get("end")
+                                    .and_then(|end| one_based(end, "line"))
+                                    .unwrap_or(line);
+                                sites.push((
+                                    rel_file.clone(),
+                                    line,
+                                    col,
+                                    end_line.max(line),
+                                    caller_name.clone(),
+                                ));
                             }
                         }
                     } else if let Some(rel_file) = caller_file
@@ -2477,24 +2577,120 @@ async fn discover_call_sites(
                         && let Some(line) = one_based(start, "line")
                         && let Some(col) = one_based(start, "character")
                     {
-                        sites.push((rel_file, line, col, caller_name.clone()));
+                        let source =
+                            std::fs::read_to_string(root.join(&rel_file)).unwrap_or_default();
+                        let file_lang = file_language(root, &rel_file).unwrap_or("generic");
+                        let end_line =
+                            call_expression_end_line(&source, line, col, &sym.name, file_lang)
+                                .unwrap_or(line);
+                        sites.push((rel_file, line, col, end_line, caller_name.clone()));
                     }
                 }
             }
         }
     }
 
-    let mut map: BTreeMap<(String, u32, u32), Option<String>> = BTreeMap::new();
-    for (file, line, col, caller) in sites {
-        let entry = map.entry((file, line, col)).or_default();
-        if entry.is_none() && caller.is_some() {
-            *entry = caller;
+    let mut map: BTreeMap<(String, u32, u32), (u32, Option<String>)> = BTreeMap::new();
+    for (file, line, col, end_line, caller) in sites {
+        let entry = map
+            .entry((file, line, col))
+            .or_insert((end_line, caller.clone()));
+        entry.0 = entry.0.max(end_line);
+        if entry.1.is_none() && caller.is_some() {
+            entry.1 = caller;
         }
     }
 
     map.into_iter()
-        .map(|((file, line, col), caller)| (file, line, col, caller))
+        .map(|((file, line, col), (end_line, caller))| (file, line, col, end_line, caller))
         .collect()
+}
+
+fn lsp_position_to_byte_offset(text: &str, line: u32, character: u32) -> Option<usize> {
+    if line == 0 || character == 0 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for (index, raw_line) in text.split_inclusive('\n').enumerate() {
+        if index as u32 + 1 != line {
+            offset += raw_line.len();
+            continue;
+        }
+        let line_text = raw_line
+            .strip_suffix('\n')
+            .unwrap_or(raw_line)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| raw_line.strip_suffix('\n').unwrap_or(raw_line));
+        let target = (character - 1) as usize;
+        let mut units = 0usize;
+        for (byte, ch) in line_text.char_indices() {
+            if units == target {
+                return Some(offset + byte);
+            }
+            let next = units + ch.len_utf16();
+            if target < next {
+                return None;
+            }
+            units = next;
+        }
+        return (units == target).then_some(offset + line_text.len());
+    }
+    None
+}
+
+fn call_expression_end_line(
+    text: &str,
+    line: u32,
+    col: u32,
+    name: &str,
+    language: &str,
+) -> Option<u32> {
+    let start = lsp_position_to_byte_offset(text, line, col)?;
+    let rest = text.get(start..)?;
+    if !rest.starts_with(name) {
+        return None;
+    }
+    let mut cursor = start + name.len();
+    while text[cursor..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+    {
+        cursor += text[cursor..].chars().next()?.len_utf8();
+    }
+    if language == "rust" && text[cursor..].starts_with("::<") {
+        cursor += 2;
+    }
+    if text[cursor..].starts_with('<') {
+        let mut depth = 0usize;
+        let mut close = None;
+        for (offset, ch) in text[cursor..].char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        close = Some(cursor + offset + ch.len_utf8());
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        cursor = close?;
+    }
+    while text[cursor..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+    {
+        cursor += text[cursor..].chars().next()?.len_utf8();
+    }
+    if text.as_bytes().get(cursor) != Some(&b'(') {
+        return None;
+    }
+    let close = crate::parameter_object::matching_bracket(text, cursor)?;
+    Some(text[..=close].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1)
 }
 
 /// Adds `gap` unless it is already noted: two walks through one function meet the same gap.
@@ -2841,7 +3037,7 @@ mod tests {
             "crates/a/tests/it.rs"
         ));
         assert!(looks_like_test("python", "test_adds", "tests/test_math.py"));
-        assert!(looks_like_test("typescript", "adds", "src/math.test.ts"));
+        assert!(!looks_like_test("typescript", "adds", "src/math.test.ts"));
         assert!(looks_like_test(
             "swift",
             "testAdds",
@@ -3134,7 +3330,8 @@ mod tests {
             module(serde_json::json!({ "x": 1 })),
             module(serde_json::json!([function(serde_json::json!("1"))])),
         ] {
-            let error = collect_functions(std::slice::from_ref(&bad), None, &mut Vec::new()).unwrap_err();
+            let error =
+                collect_functions(std::slice::from_ref(&bad), None, &mut Vec::new()).unwrap_err();
             assert!(error.contains("cannot read"), "{bad}: {error}");
         }
         // An empty list, or a symbol with no children, is a complete answer.
@@ -3204,7 +3401,10 @@ mod tests {
             callers: 82,
             limit: 30,
         };
-        assert!(gap.describe().contains("has 82 callers, exceeding the fan-in limit of 30"));
+        assert!(
+            gap.describe()
+                .contains("has 82 callers, exceeding the fan-in limit of 30")
+        );
 
         let report = ImpactReport {
             language: "rust".to_string(),
@@ -3220,7 +3420,11 @@ mod tests {
                     col: 1,
                 })
                 .collect(),
-            test_command: Some(vec!["cargo".to_string(), "test".to_string(), "--workspace".to_string()]),
+            test_command: Some(vec![
+                "cargo".to_string(),
+                "test".to_string(),
+                "--workspace".to_string(),
+            ]),
             unattributed_files: vec![],
             index: None,
             reaches: vec![],
@@ -3252,40 +3456,57 @@ mod tests {
         let (start, end, sig) = extract_signature_span(&lines, 1, "add_item", "rust").unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 4);
-        assert_eq!(sig, "pub fn add_item(id: u64, name: &str,) -> Result<(), Error>");
+        assert_eq!(
+            sig,
+            "pub fn add_item(id: u64, name: &str,) -> Result<(), Error>"
+        );
 
         let go_src = "func (s *Store) Save(\n    ctx context.Context,\n    data []byte,\n) error {\n    return nil\n}\n";
         let lines: Vec<&str> = go_src.lines().collect();
         let (start, end, sig) = extract_signature_span(&lines, 1, "Save", "go").unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 4);
-        assert_eq!(sig, "func (s *Store) Save(ctx context.Context, data []byte,) error");
+        assert_eq!(
+            sig,
+            "func (s *Store) Save(ctx context.Context, data []byte,) error"
+        );
 
         let py_src = "def calculate_price(\n    base: float,\n    tax_rate: float = 0.05,\n) -> float:\n    return base * (1 + tax_rate)\n";
         let lines: Vec<&str> = py_src.lines().collect();
-        let (start, end, sig) = extract_signature_span(&lines, 1, "calculate_price", "python").unwrap();
+        let (start, end, sig) =
+            extract_signature_span(&lines, 1, "calculate_price", "python").unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 4);
-        assert_eq!(sig, "def calculate_price(base: float, tax_rate: float = 0.05,) -> float");
+        assert_eq!(
+            sig,
+            "def calculate_price(base: float, tax_rate: float = 0.05,) -> float"
+        );
 
         let ts_src = "export async function fetchUser(\n    userId: string,\n    timeoutMs: number = 5000\n): Promise<User> {\n    return null;\n}\n";
         let lines: Vec<&str> = ts_src.lines().collect();
-        let (start, end, sig) = extract_signature_span(&lines, 1, "fetchUser", "typescript").unwrap();
+        let (start, end, sig) =
+            extract_signature_span(&lines, 1, "fetchUser", "typescript").unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 4);
-        assert_eq!(sig, "export async function fetchUser(userId: string, timeoutMs: number = 5000): Promise<User>");
+        assert_eq!(
+            sig,
+            "export async function fetchUser(userId: string, timeoutMs: number = 5000): Promise<User>"
+        );
 
         // One-line function bodies must not leak into signature (Issue #785)
-        let one_line_rust = "fn action_payload(message: &[u8]) -> Vec<u8> { codec_payload(0, message) }\n";
+        let one_line_rust =
+            "fn action_payload(message: &[u8]) -> Vec<u8> { codec_payload(0, message) }\n";
         let lines: Vec<&str> = one_line_rust.lines().collect();
-        let (start, end, sig) = extract_signature_span(&lines, 1, "action_payload", "rust").unwrap();
+        let (start, end, sig) =
+            extract_signature_span(&lines, 1, "action_payload", "rust").unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 1);
         assert_eq!(sig, "fn action_payload(message: &[u8]) -> Vec<u8>");
 
         let multiline_rust = "fn action_payload(\n    message: &[u8]\n) -> Vec<u8> {\n    codec_payload(0, message)\n}\n";
         let lines: Vec<&str> = multiline_rust.lines().collect();
-        let (m_start, m_end, m_sig) = extract_signature_span(&lines, 1, "action_payload", "rust").unwrap();
+        let (m_start, m_end, m_sig) =
+            extract_signature_span(&lines, 1, "action_payload", "rust").unwrap();
         assert_eq!(m_start, 1);
         assert_eq!(m_end, 3);
         assert_eq!(m_sig, "fn action_payload(message: &[u8]) -> Vec<u8>");
@@ -3347,7 +3568,10 @@ mod tests {
         };
 
         let rendered = report.render();
-        assert!(rendered.contains("signature warnings (unadjusted call sites before full compilation):"));
+        assert!(
+            rendered
+                .contains("signature warnings (unadjusted call sites before full compilation):")
+        );
         assert!(rendered.contains("`process_order` signature changed in src/order.rs:12:8"));
         assert!(rendered.contains("old: pub fn process_order(id: u64) -> bool"));
         assert!(rendered.contains("new: pub fn process_order(id: u64, priority: bool) -> bool"));
@@ -3356,7 +3580,11 @@ mod tests {
         assert!(rendered.contains("• src/order.rs:99:5 in `retry_order`"));
 
         let ci = report.ci_summary(None, "no tests affected");
-        assert!(ci.contains("⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:"));
+        assert!(
+            ci.contains(
+                "⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:"
+            )
+        );
         assert!(ci.contains("`process_order` (`src/order.rs:12`)"));
         assert!(ci.contains("[sibling] `src/worker.rs:45:10` in `run_worker`"));
     }
@@ -3411,13 +3639,21 @@ mod tests {
         let empty_excludes = path.join(".empty_excludes");
         std::fs::write(&empty_excludes, "").unwrap();
         std::process::Command::new("git")
-            .args(["config", "core.excludesFile", empty_excludes.to_str().unwrap()])
+            .args([
+                "config",
+                "core.excludesFile",
+                empty_excludes.to_str().unwrap(),
+            ])
             .current_dir(path)
             .output()
             .unwrap();
 
         std::fs::create_dir_all(path.join(".prod/tmp/resident-repair")).unwrap();
-        std::fs::write(path.join(".prod/tmp/resident-repair/scratch.go"), "package scratch\n").unwrap();
+        std::fs::write(
+            path.join(".prod/tmp/resident-repair/scratch.go"),
+            "package scratch\n",
+        )
+        .unwrap();
 
         std::fs::create_dir_all(path.join(".scratch")).unwrap();
         std::fs::write(path.join(".scratch/draft.go"), "package draft\n").unwrap();
@@ -3434,7 +3670,10 @@ mod tests {
             .output()
             .unwrap();
         let status_str = String::from_utf8_lossy(&status.stdout);
-        assert!(status_str.contains("?? .prod/tmp/resident-repair/scratch.go"), "{status_str}");
+        assert!(
+            status_str.contains("?? .prod/tmp/resident-repair/scratch.go"),
+            "{status_str}"
+        );
         assert!(status_str.contains("?? .scratch/draft.go"), "{status_str}");
         assert!(status_str.contains("?? .support/helper.rs"), "{status_str}");
         assert!(status_str.contains("?? untracked.rs"), "{status_str}");
@@ -3501,10 +3740,14 @@ export const routeMethod = (req) => {
         let mut out = Vec::new();
         collect_functions(symbols.as_array().unwrap(), Some(js_code), &mut out).unwrap();
         let names: Vec<&str> = out.iter().map(|(n, _, _, _, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["handleTabCreated", "addChildTabHandoff", "routeMethod"]);
+        assert_eq!(
+            names,
+            vec!["handleTabCreated", "addChildTabHandoff", "routeMethod"]
+        );
 
         // Test marker recognition
-        let test_src = "it('should create tab', async () => {});\ntest(\"route valid request\", () => {});\n";
+        let test_src =
+            "it('should create tab', async () => {});\ntest(\"route valid request\", () => {});\n";
         assert_eq!(
             test_marker("typescript", test_src, 1, "anonymous").as_deref(),
             Some("should create tab")
@@ -3515,9 +3758,62 @@ export const routeMethod = (req) => {
         );
 
         // Test file convention
-        assert!(looks_like_test("typescript", "anyFunc", "extension/background.test.js"));
-        assert!(looks_like_test("typescript", "anyFunc", "test/unit.spec.ts"));
-        assert!(looks_like_test("typescript", "anyFunc", "src/__tests__/app.js"));
-        assert!(!looks_like_test("typescript", "anyFunc", "extension/background.js"));
+        assert!(!looks_like_test(
+            "typescript",
+            "anyFunc",
+            "extension/background.test.js"
+        ));
+        assert!(!looks_like_test(
+            "typescript",
+            "anyFunc",
+            "test/unit.spec.ts"
+        ));
+        assert!(!looks_like_test(
+            "typescript",
+            "anyFunc",
+            "src/__tests__/app.js"
+        ));
+        assert!(!looks_like_test(
+            "typescript",
+            "anyFunc",
+            "extension/background.js"
+        ));
+    }
+
+    #[test]
+    fn base_signature_lookup_tracks_the_changed_duplicate_declaration() {
+        let base_lines = [
+            "class First {",
+            "  run(value: number) {}",
+            "}",
+            "class Target {",
+            "  run(value: string) {}",
+            "}",
+        ];
+        let hunk = Hunk {
+            start: 4,
+            added: 2,
+            removed: 0,
+        };
+        let base_line = base_line_for_new_line(&[hunk], 7).unwrap();
+        assert_eq!(base_line, 5);
+        assert_eq!(
+            find_function_in_text(&base_lines, "run", "typescript", base_line),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn call_site_range_includes_multiline_arguments_for_diff_matching() {
+        let text = "fn caller() {\n    helper(\n        value,\n        true,\n    );\n}\n";
+        let end_line = call_expression_end_line(text, 2, 5, "helper", "rust").unwrap();
+        assert_eq!(end_line, 5);
+        let hunk = Hunk {
+            start: 4,
+            added: 1,
+            removed: 1,
+        };
+        assert!(!hunk.touches(2, 2));
+        assert!(hunk.touches(2, end_line));
     }
 }

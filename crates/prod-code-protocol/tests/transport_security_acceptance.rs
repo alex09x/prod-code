@@ -178,6 +178,7 @@ async fn test_packet_capture_wire_confidentiality() {
                             path: req.path,
                             content: Some(response_content.as_bytes().to_vec()),
                             truncated: false,
+                            is_executable: Some(false),
                             error: None,
                         }))
                         .await
@@ -287,6 +288,7 @@ async fn test_packet_capture_wire_confidentiality() {
                             path: req.path,
                             content: Some(response_content.as_bytes().to_vec()),
                             truncated: false,
+                            is_executable: Some(false),
                             error: None,
                         }))
                         .await
@@ -1401,6 +1403,7 @@ async fn test_tls_handshake_and_warm_request_overhead_benchmark() {
     } else {
         std::time::Duration::from_nanos(0)
     };
+    let warm_overhead_p95 = tls_p95.saturating_sub(plain_p95);
 
     println!(
         "\n=== Phase 5.6 Transport Security Benchmark Report ===\n\
@@ -1408,7 +1411,7 @@ async fn test_tls_handshake_and_warm_request_overhead_benchmark() {
          TLS 1.3 Handshake:   {:>8.2?}\n\
          Plaintext Warm RTT:  p50={:>8.2?}, p95={:>8.2?}\n\
          TLS 1.3 Warm RTT:    p50={:>8.2?}, p95={:>8.2?}\n\
-         Warm RTT Overhead:   {:>8.2?}\n\
+         Warm RTT Overhead:   p50={:>8.2?}, p95={:>8.2?}\n\
          =====================================================",
         plain_handshake_duration,
         tls_handshake_duration,
@@ -1416,7 +1419,8 @@ async fn test_tls_handshake_and_warm_request_overhead_benchmark() {
         plain_p95,
         tls_p50,
         tls_p95,
-        warm_overhead_p50
+        warm_overhead_p50,
+        warm_overhead_p95
     );
 
     // Warm-request overhead budget: must be well below 1.0 millisecond (< 1000 µs)
@@ -1424,6 +1428,11 @@ async fn test_tls_handshake_and_warm_request_overhead_benchmark() {
         warm_overhead_p50 < std::time::Duration::from_millis(1),
         "Warm request overhead ({:?}) exceeds 1ms budget",
         warm_overhead_p50
+    );
+    assert!(
+        warm_overhead_p95 < std::time::Duration::from_millis(1),
+        "Warm request p95 overhead ({:?}) exceeds 1ms budget",
+        warm_overhead_p95
     );
 }
 

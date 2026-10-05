@@ -31,6 +31,50 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn is_side_effect_free_argument(argument: &str, lang: Language) -> bool {
+    let argument = if lang == Language::Python {
+        argument
+            .split_once('=')
+            .map(|(_, value)| value.trim())
+            .unwrap_or(argument.trim())
+    } else if lang == Language::Swift {
+        argument
+            .split_once(':')
+            .filter(|(label, _)| label.trim().chars().all(is_ident))
+            .map(|(_, value)| value.trim())
+            .unwrap_or(argument.trim())
+    } else {
+        argument.trim()
+    };
+    if argument.is_empty() {
+        return false;
+    }
+    if argument.chars().all(is_ident) {
+        return true;
+    }
+    if matches!(argument, "true" | "false" | "True" | "False" | "None" | "nil" | "null" | "nullptr") {
+        return true;
+    }
+    let first = argument.chars().next().unwrap_or_default();
+    if first.is_ascii_digit() || ((first == '-' || first == '+') && argument.chars().nth(1).is_some_and(|c| c.is_ascii_digit())) {
+        return argument
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'));
+    }
+    if let Some(quote) = argument.chars().next().filter(|c| matches!(c, '\'' | '"')) {
+        return argument.ends_with(quote) && !argument[1..argument.len().saturating_sub(1)].contains('\n');
+    }
+    false
+}
+
+fn one_based_lsp_position(text: &str, byte_offset: usize) -> (u32, u32) {
+    let before = &text[..byte_offset];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+    let column_text = before.rsplit('\n').next().unwrap_or_default();
+    let character = column_text.encode_utf16().count() as u32 + 1;
+    (line, character)
+}
+
 fn display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -403,13 +447,9 @@ fn format_polyglot_param(name: &str, ty: &str, value: &str, lang: Language) -> S
                 name.to_string()
             }
         }
-        Language::Cpp | Language::C => {
-            if !value.is_empty() {
-                format!("{ty} {name} = {value}")
-            } else {
-                format!("{ty} {name}")
-            }
-        }
+        // Added call sites receive `value` explicitly. A C++ default here would be
+        // duplicated between a header declaration and its source definition.
+        Language::Cpp | Language::C => format!("{ty} {name}"),
         Language::Swift => {
             if !value.is_empty() {
                 format!("{name}: {ty} = {value}")
@@ -546,6 +586,40 @@ pub async fn change_with(
 
     let decl = find_polyglot_declaration(&text, lang, line, col)?;
     let old_signature = text[decl.open_paren + 1..decl.close_paren].trim().to_string();
+    let sources = collect_workspace_sources(root, lang);
+    let has_call_candidates = sources.iter().any(|src_path| {
+        let content = if src_path == file {
+            text.clone()
+        } else if let Ok(content) = std::fs::read_to_string(src_path) {
+            content
+        } else {
+            return false;
+        };
+        content.match_indices(&decl.fn_name).any(|(at, _)| {
+            let after = &content[at + decl.fn_name.len()..];
+            !(at > 0 && content[..at].chars().next_back().is_some_and(is_ident))
+                && !after.starts_with(is_ident)
+                && !is_in_comment(&content, at, lang)
+                && !crate::inline_parameter::is_in_string(&content, at, lang)
+                && !is_import_or_export_context(&content, at, lang)
+                && !(src_path == file
+                    && at >= decl.open_paren.saturating_sub(decl.fn_name.len() + 20)
+                    && at <= decl.close_paren)
+                && call_args_span(&content, at + decl.fn_name.len()).is_some()
+        })
+    });
+    let mut semantic_references = if has_call_candidates {
+        crate::signature::references(remote, root, file, line, col)
+            .await?
+            .into_iter()
+            .map(|(path, ref_line, ref_col)| {
+                let path = std::fs::canonicalize(&path).unwrap_or(path);
+                (path, ref_line, ref_col)
+            })
+            .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
 
     // Safety check 1: verify all Keep params exist in declaration
     for r in request {
@@ -752,8 +826,7 @@ pub async fn change_with(
 
     // Apply call site edits across the workspace
     let mut rewritten_files = Vec::new();
-    let sources = collect_workspace_sources(root, lang);
-
+    let mut unmatched = Vec::new();
     for src_path in &sources {
         let is_decl_file = src_path == file;
         let content = if is_decl_file {
@@ -785,8 +858,17 @@ pub async fn change_with(
                 continue;
             }
 
-            // Skip comments and imports
-            if is_in_comment(&content, at, lang) || is_import_or_export_context(&content, at, lang) {
+            let source_path = std::fs::canonicalize(src_path).unwrap_or_else(|_| src_path.clone());
+            let (line_num, col_num) = one_based_lsp_position(&content, at);
+            let reference_key = (source_path, line_num, col_num);
+            if is_import_or_export_context(&content, at, lang) {
+                semantic_references.remove(&reference_key);
+                continue;
+            }
+            // Skip comments and strings.
+            if is_in_comment(&content, at, lang)
+                || crate::inline_parameter::is_in_string(&content, at, lang)
+            {
                 continue;
             }
 
@@ -799,11 +881,15 @@ pub async fn change_with(
             let Some((args_start, args_end)) = call_args_span(&content, at + fn_name.len()) else {
                 continue;
             };
+            let site = format!("{}:{line_num}:{col_num}", display(root, src_path));
 
             // Check if C/C++ prototype
             if matches!(lang, Language::Cpp | Language::C)
                 && is_c_cpp_prototype(&content, at, args_start, args_end)
             {
+                if content[args_start..args_end].trim() != old_signature.trim() {
+                    continue;
+                }
                 let after_paren = content[args_end + 1..].trim_start();
                 if after_paren.starts_with(';') {
                     // It's a prototype: rewrite prototype parameter list and return type
@@ -818,11 +904,34 @@ pub async fn change_with(
                 }
             }
 
+            if !semantic_references.remove(&reference_key) {
+                continue;
+            }
+
             // Call site rewriting
             let old_args_str = &content[args_start..args_end];
             let old_args = split_args(old_args_str);
             let is_python_keyword_call = lang == Language::Python
                 && old_args.iter().any(|a| a.split_once('=').is_some());
+            let kept_indices = request
+                .iter()
+                .filter_map(|r| match r {
+                    Param::Keep(name) => decl.params.iter().position(|d| &d.name == name),
+                    Param::Add { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            let reordered = kept_indices.windows(2).any(|pair| pair[0] > pair[1]);
+            let dropped = kept_indices.len() < decl.params.len();
+            let effectful_existing = old_args.iter().any(|arg| !is_side_effect_free_argument(arg, lang));
+            let effectful_added = request.iter().any(|r| {
+                matches!(r, Param::Add { value, .. } if !is_side_effect_free_argument(value, lang))
+            });
+            if ((reordered || dropped) && effectful_existing) || effectful_added {
+                unmatched.push(format!(
+                    "{site} has argument side effects that cannot safely survive this signature change"
+                ));
+                continue;
+            }
 
             let mut new_args = Vec::new();
             for r in request {
@@ -926,6 +1035,13 @@ pub async fn change_with(
                         file_edits.push((at, at, "await ".to_string()));
                     }
                 }
+            } else if modifiers.asyncness == Some(false) {
+                let before_call = content[..at].trim_end();
+                if let Some(await_start) = before_call.strip_suffix("await").map(str::len)
+                    && !content[..await_start].chars().next_back().is_some_and(is_ident)
+                {
+                    file_edits.push((await_start, at, String::new()));
+                }
             }
         }
 
@@ -941,6 +1057,14 @@ pub async fn change_with(
             let rel_path = display(root, src_path);
             rewritten_files.push((rel_path, new_content));
         }
+    }
+
+    for (path, ref_line, ref_col) in semantic_references {
+        unmatched.push(format!(
+            "{}:{ref_line}:{ref_col}: analyzer reference to `{}` could not be rewritten safely",
+            display(root, &path),
+            decl.fn_name
+        ));
     }
 
     // Format rule description
@@ -972,6 +1096,18 @@ pub async fn change_with(
 
     // If apply is true and no diagnostics, write all files
     if apply {
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} call site(s) could not be rewritten safely; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
+        anyhow::ensure!(
+            overlay_diags.is_empty() || force,
+            "the analyzer reports {} error(s); nothing was written:\n  {}",
+            overlay_diags.len(),
+            overlay_diags.join("\n  ")
+        );
         for (rel, content) in &rewritten_files {
             let full_path = root.join(rel);
             std::fs::write(&full_path, content)
@@ -987,7 +1123,7 @@ pub async fn change_with(
         new_signature,
         rule,
         rewritten: rewritten_files,
-        unmatched: Vec::new(),
+        unmatched,
         unexpected: Vec::new(),
         diagnostics: overlay_diags,
         applied: apply,

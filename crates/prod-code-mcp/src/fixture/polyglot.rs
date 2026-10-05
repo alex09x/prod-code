@@ -19,6 +19,11 @@ pub enum PolyglotShape {
     Enum(Vec<String>),
     /// An interface, trait, or protocol with method signatures.
     Interface { methods: Vec<MethodSignature> },
+    /// An interface with both named properties and method signatures.
+    InterfaceWithFields {
+        methods: Vec<MethodSignature>,
+        fields: Vec<(String, String)>,
+    },
 }
 
 /// Parses a declaration into a `PolyglotShape` based on the file language.
@@ -101,23 +106,12 @@ fn parse_go_method_signature(line: &str) -> Option<MethodSignature> {
     let params_str = &rest[..close_paren];
     let returns_str = rest[close_paren + 1..].trim();
 
-    let mut params = Vec::new();
-    for part in split_comma_top_level(params_str) {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        if let Some((pname, pty)) = part.split_once(char::is_whitespace) {
-            params.push((pname.trim().to_string(), pty.trim().to_string()));
-        } else {
-            params.push((String::new(), part.to_string()));
-        }
-    }
+    let params = parse_go_parameters(params_str)?;
 
     let return_type = if returns_str.is_empty() {
         None
     } else {
-        Some(returns_str.trim_start_matches('(').trim_end_matches(')').trim().to_string())
+        Some(parse_go_result_types(returns_str)?)
     };
 
     Some(MethodSignature {
@@ -125,6 +119,107 @@ fn parse_go_method_signature(line: &str) -> Option<MethodSignature> {
         params,
         return_type,
     })
+}
+
+fn parse_go_parameters(parameters: &str) -> Option<Vec<(String, String)>> {
+    let parts = split_comma_top_level(parameters);
+    let mut params = Vec::new();
+    let mut pending_names = Vec::new();
+    for (index, raw) in parts.iter().enumerate() {
+        let part = raw.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((names_part, ty)) = part.split_once(char::is_whitespace) {
+            let mut names = pending_names.drain(..).collect::<Vec<_>>();
+            names.extend(names_part.split_whitespace().map(str::to_string));
+            let ty = ty.trim();
+            if names.is_empty() || ty.is_empty() {
+                return None;
+            }
+            for name in names {
+                params.push((name, ty.to_string()));
+            }
+        } else if parts
+            .get(index + 1)
+            .is_some_and(|next| next.split_once(char::is_whitespace).is_some())
+            && !go_type_form(part)
+        {
+            pending_names.push(part.to_string());
+        } else {
+            if !pending_names.is_empty() {
+                return None;
+            }
+            params.push((String::new(), part.to_string()));
+        }
+    }
+    if !pending_names.is_empty() {
+        return None;
+    }
+    Some(params)
+}
+
+fn parse_go_result_types(results: &str) -> Option<String> {
+    let results = results.trim();
+    let inside = if results.starts_with('(') && results.ends_with(')') {
+        &results[1..results.len() - 1]
+    } else {
+        results
+    };
+    let mut types = Vec::new();
+    let parts = split_comma_top_level(inside);
+    let mut pending_names = Vec::new();
+    for (index, raw) in parts.iter().enumerate() {
+        let part = raw.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((names_part, ty)) = part.split_once(char::is_whitespace)
+            && !go_type_form(part)
+        {
+            if !pending_names.is_empty() {
+                types.extend(std::iter::repeat_n(ty.trim().to_string(), pending_names.len()));
+                pending_names.clear();
+            }
+            types.extend(
+                names_part
+                    .split_whitespace()
+                    .map(|_| ty.trim().to_string()),
+            );
+        } else if parts
+            .get(index + 1)
+            .is_some_and(|next| next.split_once(char::is_whitespace).is_some())
+            && !go_type_form(part)
+        {
+            pending_names.push(part.to_string());
+        } else {
+            if !pending_names.is_empty() {
+                return None;
+            }
+            types.push(part.to_string());
+        }
+    }
+    if !pending_names.is_empty() {
+        return None;
+    }
+    (!types.is_empty()).then(|| types.join(", "))
+}
+
+fn go_type_form(value: &str) -> bool {
+    matches!(
+        value,
+        "bool" | "string" | "error" | "byte" | "rune" | "int" | "int8" | "int16"
+            | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
+            | "uintptr" | "float32" | "float64" | "complex64" | "complex128" | "any"
+    ) || value.starts_with(['*', '['])
+        || value.starts_with("map[")
+        || value.starts_with("chan")
+        || value.starts_with("<-chan")
+        || value.starts_with("func")
+        || value.starts_with("struct {")
+        || value.starts_with("interface {")
+        || value.contains('.')
+        || value.chars().next().is_some_and(char::is_uppercase)
 }
 
 /// Parses TypeScript / JavaScript `interface`, `type`, and `enum`.
@@ -200,12 +295,12 @@ pub fn parse_ts_shape(decl: &str) -> Option<PolyglotShape> {
         }
     }
 
-    if !methods.is_empty() && fields.is_empty() {
+    if !methods.is_empty() && !fields.is_empty() {
+        Some(PolyglotShape::InterfaceWithFields { methods, fields })
+    } else if !methods.is_empty() {
         Some(PolyglotShape::Interface { methods })
     } else if !fields.is_empty() {
         Some(PolyglotShape::Record(fields))
-    } else if !methods.is_empty() {
-        Some(PolyglotShape::Interface { methods })
     } else {
         Some(PolyglotShape::Record(Vec::new()))
     }
@@ -239,9 +334,9 @@ pub fn parse_python_shape(decl: &str) -> Option<PolyglotShape> {
                         let ty = ty_part.split('=').next().unwrap_or(ty_part).trim();
                         fields.push((name.to_string(), ty.to_string()));
                     } else if let Some((name_part, _)) = part.split_once('=') {
-                        fields.push((name_part.trim().to_string(), "any".to_string()));
+                        fields.push((name_part.trim().to_string(), String::new()));
                     } else {
-                        fields.push((part.to_string(), "any".to_string()));
+                        fields.push((part.to_string(), String::new()));
                     }
                 }
             }
@@ -526,6 +621,9 @@ pub fn sample_value_for_type(
     randomized: bool,
 ) -> String {
     let t = ty.trim();
+    if language == Language::Python && t.is_empty() {
+        return "None".to_string();
+    }
     let fn_opt = field_name.map(str::to_ascii_lowercase);
     let fn_ref = fn_opt.as_deref().unwrap_or("");
 
@@ -848,6 +946,9 @@ pub fn format_polyglot_fixture(
     if mock {
         let (methods, fields) = match shape {
             PolyglotShape::Interface { methods } => (methods.as_slice(), [].as_slice()),
+            PolyglotShape::InterfaceWithFields { methods, fields } => {
+                (methods.as_slice(), fields.as_slice())
+            }
             PolyglotShape::Record(fields) => ([].as_slice(), fields.as_slice()),
             _ => ([].as_slice(), [].as_slice()),
         };
@@ -970,6 +1071,10 @@ pub fn format_polyglot_fixture(
             let code = generate_mock(language, type_name, methods, &[]);
             (code.clone(), code)
         }
+        PolyglotShape::InterfaceWithFields { methods, fields } => {
+            let code = generate_mock(language, type_name, methods, fields);
+            (code.clone(), code)
+        }
     }
 }
 
@@ -1032,7 +1137,7 @@ fn find_matching_paren(s: &str) -> Option<usize> {
     None
 }
 
-fn split_comma_top_level(s: &str) -> Vec<String> {
+pub(super) fn split_comma_top_level(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut depth = 0;

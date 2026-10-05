@@ -275,6 +275,15 @@ fn identity(d: &DocDiagnostic, text: &str) -> (String, Option<String>, String, S
     (d.severity.clone(), d.code.clone(), d.message.clone(), line)
 }
 
+fn refresh_hallucinations(report: &mut DiagnosticsReport) {
+    report.hallucinations = report
+        .items
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == "error")
+        .filter_map(classify_hallucination)
+        .collect();
+}
+
 /// Moves from `report.items` to `report.preexisting` every diagnostic that `before` — the same
 /// file's diagnostics against `before_text`, the text on disk — already had. Each diagnostic
 /// before the edit accounts for at most one after it, so a second copy of an old error on a new
@@ -318,6 +327,7 @@ fn set_aside_preexisting(
         .iter()
         .filter(|d| d.severity == "warning")
         .count();
+    refresh_hallucinations(report);
 }
 
 /// Moves to `report.in_derive` every E0282 on a line of `text` that is a `#[derive(...)]`
@@ -350,6 +360,7 @@ fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
         .iter()
         .filter(|d| d.severity == "warning")
         .count();
+    refresh_hallucinations(report);
 }
 
 /// Whether an E0277 message is about an auto trait: "the trait bound `NonNull<()>: Send` is
@@ -1767,22 +1778,14 @@ impl StreamSessionManager {
 
         match validate_text(remote, root, file, &accumulated).await {
             Ok(report) => {
-                let serious_intercept = report
-                    .hallucinations
-                    .iter()
-                    .find(|h| {
-                        if is_last {
-                            true
-                        } else {
-                            matches!(
-                                h.kind,
-                                HallucinationKind::InvalidMethodInvocation
-                                    | HallucinationKind::IncorrectArgumentType
-                                    | HallucinationKind::BorrowCheckerError
-                            )
-                        }
-                    })
-                    .cloned();
+                // A later chunk can add imports, trait impls, declarations, and types that make
+                // semantic errors in this prefix valid. Do not terminate generation until the
+                // source unit is complete.
+                let serious_intercept = if is_last {
+                    report.hallucinations.first().cloned()
+                } else {
+                    None
+                };
 
                 if let Some(intercept) = serious_intercept {
                     self.remove_session_key(&key);
@@ -1853,7 +1856,14 @@ impl StreamSessionManager {
                     intercepted: false,
                     interception: None,
                     final_report: None,
-                    summary: format!("checkpoint at chunk {} passed", chunk_index),
+                    summary: if report.errors > 0 {
+                        format!(
+                            "checkpoint at chunk {} found {} provisional error(s); semantic interceptions are deferred until close",
+                            chunk_index, report.errors
+                        )
+                    } else {
+                        format!("checkpoint at chunk {} passed", chunk_index)
+                    },
                 })
             }
             Err(err) => {
@@ -2379,6 +2389,7 @@ async fn reconcile_swift_cross_target_diagnostics(
                 .iter()
                 .filter(|item| item.severity == "warning")
                 .count();
+            refresh_hallucinations(report);
         }
     }
 
@@ -2516,22 +2527,46 @@ fn public_reexport_token(text: &str, diagnostic: &DocDiagnostic) -> Option<u32> 
         .split(';')
         .next()?
         .trim();
-    if statement.chars().any(|ch| matches!(ch, '{' | '}' | '*')) {
-        return None;
-    }
-    let local_name = statement
-        .rsplit_once(" as ")
-        .map(|(_, alias)| alias.trim())
-        .unwrap_or_else(|| statement.rsplit("::").next().unwrap_or(statement).trim());
-    let name = local_name.strip_prefix("r#").unwrap_or(local_name);
-    let token = rust_code_identifiers(text)
+    let local_names: Vec<&str> = if let Some(open) = statement.find('{') {
+        let close = statement.rfind('}')?;
+        if close < open || !statement[close + 1..].trim().is_empty() {
+            return None;
+        }
+        statement[open + 1..close]
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                item.rsplit_once(" as ")
+                    .map(|(_, alias)| alias.trim())
+                    .unwrap_or_else(|| item.rsplit("::").next().unwrap_or(item).trim())
+            })
+            .collect()
+    } else {
+        if statement.chars().any(|ch| matches!(ch, '}' | '*')) {
+            return None;
+        }
+        vec![statement
+            .rsplit_once(" as ")
+            .map(|(_, alias)| alias.trim())
+            .unwrap_or_else(|| statement.rsplit("::").next().unwrap_or(statement).trim())]
+    };
+    let names: BTreeSet<&str> = local_names
         .into_iter()
-        .filter(|token| token.line == line_number && token.name == name)
-        .max_by_key(|token| token.col)?;
-    let token_position = (token.line, token.col);
+        .map(|name| name.strip_prefix("r#").unwrap_or(name))
+        .collect();
     let diagnostic_start = (diagnostic.line, diagnostic.col);
     let diagnostic_end = diagnostic.end?;
-    (diagnostic_start <= token_position && token_position < diagnostic_end).then_some(token.col)
+    let token = rust_code_identifiers(text)
+        .into_iter()
+        .filter(|token| {
+            token.line == line_number
+                && names.contains(token.name.as_str())
+                && diagnostic_start <= (token.line, token.col)
+                && (token.line, token.col) < diagnostic_end
+        })
+        .max_by_key(|token| token.col)?;
+    Some(token.col)
 }
 
 /// A declaration removed from one file may still resolve in the complete proposal: a move,
@@ -2790,6 +2825,25 @@ mod tests {
             shown.contains("2 diagnostic(s) the file already had before this edit are not counted: 2× type annotations needed [E0282]"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_preexisting_error_is_removed_from_stream_interceptions() {
+        let text = "fn call() { value.missing(); }\n";
+        let error = DocDiagnostic {
+            code: Some("unresolved-method".to_string()),
+            ..diagnostic("error", "no method named `missing` found", 1)
+        };
+        let before = report_of(vec![error.clone()]);
+        let mut report = report_of(vec![error]);
+        report.hallucinations = report.items.iter().filter_map(classify_hallucination).collect();
+        assert_eq!(report.hallucinations.len(), 1);
+
+        set_aside_preexisting(&mut report, text, &before, text);
+
+        assert!(report.items.is_empty());
+        assert_eq!(report.errors, 0);
+        assert!(report.hallucinations.is_empty());
     }
 
     #[test]
@@ -3544,4 +3598,3 @@ mod hallucination_interception_phase77_tests {
         assert_eq!(deserialized.intercepted, true);
     }
 }
-

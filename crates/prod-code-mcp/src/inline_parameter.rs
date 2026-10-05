@@ -635,6 +635,51 @@ pub(crate) fn is_c_cpp_prototype(content: &str, at: usize, close_paren: usize) -
     after_paren.starts_with(';')
 }
 
+pub(crate) fn is_in_string(content: &str, at: usize, lang: Language) -> bool {
+    let mut chars = content[..at].chars().peekable();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+    while let Some(ch) = chars.next() {
+        if line_comment {
+            if ch == '\n' {
+                line_comment = false;
+            }
+            continue;
+        }
+        if block_comment {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                block_comment = false;
+            }
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if lang == Language::Python && ch == '#' {
+            line_comment = true;
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            line_comment = true;
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            block_comment = true;
+        } else if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+        }
+    }
+    quote.is_some() || line_comment || block_comment
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn find_calls_in_content(
     content: &str,
@@ -650,6 +695,9 @@ fn find_calls_in_content(
     decl_close: usize,
     body_open: usize,
     body_close: usize,
+    selected_param_types: &[Option<String>],
+    semantic_references: &mut std::collections::HashSet<(u32, u32)>,
+    references_were_empty: bool,
 ) -> (Vec<FoundCall>, Vec<(usize, usize, String)>, Vec<String>) {
     let mut calls = Vec::new();
     let mut proto_edits = Vec::new();
@@ -666,35 +714,56 @@ fn find_calls_in_content(
         if after.starts_with(is_ident) {
             continue;
         }
+        if is_in_comment(content, at, lang) || is_in_string(content, at, lang) {
+            continue;
+        }
 
         // Line and column for site reporting
-        let line = content[..at].lines().count();
-        let col = at - content[..at].rfind('\n').map_or(0, |p| p + 1) + 1;
+        let (lsp_line, lsp_col) = crate::signature::position_at(content, at).unwrap_or((0, 0));
+        let line = lsp_line.saturating_sub(1);
+        let col = lsp_col;
         let site = format!("{file_rel}:{line}:{col}");
+
+        if is_import_or_export_context(content, at, lang) {
+            semantic_references.remove(&(lsp_line, lsp_col));
+            continue;
+        }
 
         // Declaration check
         if is_decl_file && at >= decl_open.saturating_sub(fn_name.len() + 20) && at <= decl_close {
             continue;
         }
 
+        // Self-call check inside function's own body
+        if is_decl_file && at > body_open && at < body_close {
+            if semantic_references.remove(&(lsp_line, lsp_col)) || references_were_empty {
+                unmatched.push(format!("{site} (a call inside `{fn_name}` itself passes its own `{target_param_name}`)"));
+            }
+            continue;
+        }
+
         let Some((args_start, args_end)) = crate::parameter_object::call_args_span(content, at + fn_name.len()) else {
-            if !is_import_or_export_context(content, at, lang) && !is_in_comment(content, at, lang) {
+            if semantic_references.remove(&(lsp_line, lsp_col)) || references_were_empty {
                 unmatched.push(format!("{site} (the function used as a value: it would change type)"));
             }
             continue;
         };
 
-        // Self-call check inside function's own body
-        if is_decl_file && at > body_open && at < body_close {
-            unmatched.push(format!("{site} (a call inside `{fn_name}` itself passes its own `{target_param_name}`)"));
+        if matches!(lang, Language::Cpp | Language::C) && is_c_cpp_prototype(content, at, args_end) {
+            let (_, proto_params) = crate::parameter_object::parse_params(&content[args_start..args_end], lang);
+            let proto_types = proto_params.iter().map(|p| p.ty.clone()).collect::<Vec<_>>();
+            if proto_types == selected_param_types
+                && let Some(p_idx) = proto_params.iter().position(|p| p.name == target_param_name)
+            {
+                let kept: Vec<String> = proto_params.iter().enumerate().filter(|(i, _)| *i != p_idx).map(|(_, p)| p.raw.clone()).collect();
+                proto_edits.push((args_start, args_end - args_start, kept.join(", ")));
+            }
             continue;
         }
 
-        if matches!(lang, Language::Cpp | Language::C) && is_c_cpp_prototype(content, at, args_end) {
-            let (_, proto_params) = crate::parameter_object::parse_params(&content[args_start..args_end], lang);
-            if let Some(p_idx) = proto_params.iter().position(|p| p.name == target_param_name) {
-                let kept: Vec<String> = proto_params.iter().enumerate().filter(|(i, _)| *i != p_idx).map(|(_, p)| p.raw.clone()).collect();
-                proto_edits.push((args_start, args_end - args_start, kept.join(", ")));
+        if !semantic_references.remove(&(lsp_line, lsp_col)) {
+            if references_were_empty {
+                unmatched.push(format!("{site} (analyzer references for `{fn_name}` were empty)"));
             }
             continue;
         }
@@ -780,22 +849,43 @@ pub async fn inline_parameter_polyglot(
     let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
 
     let decl = find_polyglot_declaration(&text, lang, line, function)?;
+    let name_at = text[..decl.open_paren]
+        .rfind(&decl.fn_name)
+        .context("cannot locate the selected function name")?;
+    let (reference_line, reference_col) = crate::signature::position_at(&text, name_at)?;
+    let mut references_by_file: BTreeMap<PathBuf, std::collections::HashSet<(u32, u32)>> =
+        BTreeMap::new();
+    for (path, ref_line, ref_col) in crate::signature::references(
+        remote,
+        root,
+        file,
+        reference_line,
+        reference_col,
+    )
+    .await?
+    {
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        references_by_file
+            .entry(path)
+            .or_default()
+            .insert((ref_line, ref_col));
+    }
+    let references_were_empty = references_by_file.values().all(|references| references.is_empty());
     let target_idx = if let Some(p_name) = param {
         decl.params
             .iter()
             .position(|p| p.name == p_name)
             .with_context(|| format!("parameter `{p_name}` not found in `{}`", decl.fn_name))?
     } else if let Some(c) = character && let Some(l) = line {
-        let (fl, _) = crate::signature::position_at(&text, decl.open_paren)?;
-        if fl == l {
-            let offset = crate::signature::offset_of(&text, l, c).unwrap_or(decl.open_paren);
-            decl.params
-                .iter()
-                .position(|p| p.name_at <= offset && offset <= p.name_at + p.name.len())
-                .unwrap_or(0)
-        } else {
-            0
-        }
+        let offset = crate::signature::offset_of(&text, l, c)
+            .context("the parameter position is not inside the file")?;
+        decl.params
+            .iter()
+            .position(|p| {
+                let start = decl.open_paren + 1 + p.name_at;
+                start <= offset && offset <= start + p.name.len()
+            })
+            .context("the selected position is not inside a parameter name")?
     } else if decl.params.len() == 1 {
         0
     } else {
@@ -807,6 +897,7 @@ pub async fn inline_parameter_polyglot(
     let target_param_type = target_param.ty.clone();
     let target_label = target_param.label.clone();
     let has_receiver = decl.receiver.is_some();
+    let selected_param_types = decl.params.iter().map(|param| param.ty.clone()).collect::<Vec<_>>();
 
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
     texts.insert(file.to_path_buf(), text.clone());
@@ -815,6 +906,8 @@ pub async fn inline_parameter_polyglot(
     let mut values: Vec<(String, String)> = Vec::new();
 
     let rel_decl_file = display(root, file);
+    let canonical_decl = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let mut decl_references = references_by_file.remove(&canonical_decl).unwrap_or_default();
     let (decl_calls, decl_protos, decl_unmatched) = find_calls_in_content(
         &text,
         &rel_decl_file,
@@ -829,8 +922,16 @@ pub async fn inline_parameter_polyglot(
         decl.close_paren,
         decl.body_open,
         decl.body_close,
+        &selected_param_types,
+        &mut decl_references,
+        references_were_empty,
     );
     all_unmatched.extend(decl_unmatched);
+    for (ref_line, ref_col) in decl_references {
+        all_unmatched.push(format!(
+            "{rel_decl_file}:{ref_line}:{ref_col}: analyzer reference could not be rewritten safely"
+        ));
+    }
     for (p_at, p_len, p_rep) in decl_protos {
         edits.entry(file.to_path_buf()).or_default().push((p_at, p_len, p_rep));
     }
@@ -864,6 +965,8 @@ pub async fn inline_parameter_polyglot(
             continue;
         }
         let rel_other = display(root, path);
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut other_references = references_by_file.remove(&canonical).unwrap_or_default();
         let (other_calls, other_protos, other_unmatched) = find_calls_in_content(
             &other_content,
             &rel_other,
@@ -878,8 +981,16 @@ pub async fn inline_parameter_polyglot(
             0,
             0,
             0,
+            &selected_param_types,
+            &mut other_references,
+            references_were_empty,
         );
         all_unmatched.extend(other_unmatched);
+        for (ref_line, ref_col) in other_references {
+            all_unmatched.push(format!(
+                "{rel_other}:{ref_line}:{ref_col}: analyzer reference could not be rewritten safely"
+            ));
+        }
         if !other_calls.is_empty() || !other_protos.is_empty() {
             texts.insert(path.to_path_buf(), other_content.clone());
             for (p_at, p_len, p_rep) in other_protos {
@@ -893,7 +1004,7 @@ pub async fn inline_parameter_polyglot(
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| *i != call.arg_index)
-                    .map(|(_, a)| a.trim())
+                    .map(|(_, arg)| arg.trim())
                     .collect();
                 edits.entry(path.to_path_buf()).or_default().push((
                     call.args_start,
@@ -901,6 +1012,15 @@ pub async fn inline_parameter_polyglot(
                     remaining.join(", "),
                 ));
             }
+        }
+    }
+
+    for (path, references) in references_by_file {
+        for (ref_line, ref_col) in references {
+            all_unmatched.push(format!(
+                "{}:{ref_line}:{ref_col}: analyzer reference could not be rewritten safely",
+                display(root, &path)
+            ));
         }
     }
 

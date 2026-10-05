@@ -1,11 +1,79 @@
 use prod_code_mcp::extract_delegate::extract_delegate_polyglot;
 use prod_code_testkit::{answers, ScriptedGateway, Workspace};
 use std::fs;
+use std::path::Path;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
 
 async fn fake_gateway() -> ScriptedGateway {
     ScriptedGateway::start(|method, _params| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await
+}
+
+async fn semantic_gateway(
+    owner_file: &Path,
+    owner: &str,
+    fields: &[&str],
+    sources: &[(&Path, &str)],
+) -> ScriptedGateway {
+    let owner_uri = url::Url::from_file_path(owner_file).unwrap().to_string();
+    let children: Vec<serde_json::Value> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            serde_json::json!({
+                "name": field,
+                "kind": 8,
+                "selectionRange": { "start": { "line": 0, "character": index }, "end": { "line": 0, "character": index + field.len() } }
+            })
+        })
+        .collect();
+    let symbols = serde_json::json!([{
+        "name": owner,
+        "kind": 5,
+        "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": owner.len() } },
+        "children": children
+    }]);
+    let mut references_by_field = Vec::new();
+    for field in fields {
+        let mut locations = Vec::new();
+        for (path, source) in sources {
+            let uri = url::Url::from_file_path(path).unwrap().to_string();
+            for (line_number, line) in source.lines().enumerate() {
+                for needle in [format!(".{field}"), format!("->{field}")] {
+                    let mut offset = 0;
+                    while let Some(relative) = line[offset..].find(&needle) {
+                        let start = offset + relative + needle.len() - field.len();
+                        let character = line[..start].encode_utf16().count();
+                        locations.push(serde_json::json!({
+                            "uri": uri.clone(),
+                            "range": { "start": { "line": line_number, "character": character } }
+                        }));
+                        offset = start + field.len();
+                    }
+                }
+            }
+        }
+        references_by_field.push(serde_json::Value::Array(locations));
+    }
+    ScriptedGateway::start(move |method, params| match method {
+        "textDocument/documentSymbol"
+            if params["textDocument"]["uri"].as_str() == Some(owner_uri.as_str()) =>
+        {
+            symbols.clone()
+        }
+        "textDocument/references"
+            if params["textDocument"]["uri"].as_str() == Some(owner_uri.as_str()) =>
+        {
+            let index = params["position"]["character"].as_u64().unwrap_or(0) as usize;
+            references_by_field
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]))
+        }
         "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     })
@@ -48,7 +116,15 @@ export function printDetails(acc: Account) {
     let root = ws.root().to_path_buf();
     let account_file = root.join("account.ts");
     let client_file = root.join("client.ts");
-    let gw = fake_gateway().await;
+    let account_text = fs::read_to_string(&account_file).unwrap();
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = semantic_gateway(
+        &account_file,
+        "Account",
+        &["street", "city"],
+        &[(&account_file, &account_text), (&client_file, &client_text)],
+    )
+    .await;
 
     let res = extract_delegate_polyglot(
         gw.addr(),
@@ -74,11 +150,14 @@ export function printDetails(acc: Account) {
     assert_eq!(res.accesses, 2); // acc.street and acc.city in client.ts
 
     let account_content = fs::read_to_string(&account_file).unwrap();
-    assert!(account_content.contains("addressInfo: AddressInfo;"));
+    assert!(account_content.contains(
+        "addressInfo: AddressInfo = new AddressInfo(undefined as any, undefined as any);"
+    ));
     assert!(account_content.contains("class AddressInfo {"));
     assert!(account_content.contains("street: string;"));
     assert!(account_content.contains("city: string;"));
     assert!(account_content.contains("return this.addressInfo.address();"));
+    assert!(account_content.contains("deposit(amount: number)"));
 
     let client_content = fs::read_to_string(&client_file).unwrap();
     assert!(client_content.contains("console.log(acc.addressInfo.street);"));
@@ -119,7 +198,15 @@ def run(p: Person):
     let root = ws.root().to_path_buf();
     let person_file = root.join("person.py");
     let app_file = root.join("app.py");
-    let gw = fake_gateway().await;
+    let person_text = fs::read_to_string(&person_file).unwrap();
+    let app_text = fs::read_to_string(&app_file).unwrap();
+    let gw = semantic_gateway(
+        &person_file,
+        "Person",
+        &["street", "city"],
+        &[(&person_file, &person_text), (&app_file, &app_text)],
+    )
+    .await;
 
     let res = extract_delegate_polyglot(
         gw.addr(),
@@ -194,7 +281,15 @@ void inspect(Account& acc, Account* ptr) {
     let root = ws.root().to_path_buf();
     let account_file = root.join("account.hpp");
     let client_file = root.join("client.cpp");
-    let gw = fake_gateway().await;
+    let account_text = fs::read_to_string(&account_file).unwrap();
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = semantic_gateway(
+        &account_file,
+        "Account",
+        &["street", "city"],
+        &[(&account_file, &account_text), (&client_file, &client_text)],
+    )
+    .await;
 
     let res = extract_delegate_polyglot(
         gw.addr(),
@@ -258,7 +353,15 @@ async fn test_extract_delegate_swift_multi_file() {
     let root = ws.root().to_path_buf();
     let user_file = root.join("user.swift");
     let client_file = root.join("client.swift");
-    let gw = fake_gateway().await;
+    let user_text = fs::read_to_string(&user_file).unwrap();
+    let client_text = fs::read_to_string(&client_file).unwrap();
+    let gw = semantic_gateway(
+        &user_file,
+        "User",
+        &["street", "city"],
+        &[(&user_file, &user_text), (&client_file, &client_text)],
+    )
+    .await;
 
     let res = extract_delegate_polyglot(
         gw.addr(),
@@ -294,7 +397,7 @@ async fn test_extract_delegate_swift_multi_file() {
 }
 
 #[tokio::test]
-async fn test_extract_delegate_go_multi_file_and_struct_literal() {
+async fn test_extract_delegate_refuses_unresolved_go_literals_from_another_package() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -334,9 +437,11 @@ func run() {
     let root = ws.root().to_path_buf();
     let server_file = root.join("server.go");
     let main_file = root.join("main.go");
+    let server_before = fs::read_to_string(&server_file).unwrap();
+    let main_before = fs::read_to_string(&main_file).unwrap();
     let gw = fake_gateway().await;
 
-    let res = extract_delegate_polyglot(
+    let err = extract_delegate_polyglot(
         gw.addr(),
         &root,
         &server_file,
@@ -352,25 +457,10 @@ func run() {
         None,
     )
     .await
-    .unwrap();
-
-    assert_eq!(res.helper, "Endpoint");
-    assert_eq!(res.field, "endpoint");
-    assert!(res.applied);
-
-    let server_content = fs::read_to_string(&server_file).unwrap();
-    assert!(server_content.contains("endpoint Endpoint"));
-    assert!(server_content.contains("type Endpoint struct {"));
-    assert!(server_content.contains("Host string"));
-    assert!(server_content.contains("Port int"));
-    assert!(server_content.contains("func (s *Server) Address() string {"));
-    assert!(server_content.contains("return s.endpoint.Address()"));
-
-    let main_content = fs::read_to_string(&main_file).unwrap();
-    assert!(main_content.contains("endpoint: Endpoint{ Host: \"localhost\", Port: 8080 }") || main_content.contains("endpoint: Endpoint"));
-    assert!(main_content.contains("println(srv.endpoint.Host)"));
-    assert!(main_content.contains("println(srv.endpoint.Port)"));
-    assert!(main_content.contains("println(srv.Address())"));
+    .expect_err("unresolved package-qualified Go literals must not be rewritten");
+    assert!(format!("{err:#}").contains("Go literals need package-aware semantic resolution"), "{err:#}");
+    assert_eq!(fs::read_to_string(&server_file).unwrap(), server_before);
+    assert_eq!(fs::read_to_string(&main_file).unwrap(), main_before);
 }
 
 #[tokio::test]

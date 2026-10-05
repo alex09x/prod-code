@@ -259,7 +259,7 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_encapsulate_field".to_string(),
-            description: "Make a public field private and turn every access to it outside its declaring file into a method call: reads become `x.field()` (or `x.getField()`), plain writes become `x.set_field(v)` (or `x.setField(v)`). Supports Rust, TypeScript/JavaScript, Python, C++, Swift, and Go. Generates idiomatic getters and setters, updates internal references, rewrites external reads and writes across the workspace, and validates in-memory analyzer overlays before writing."
+            description: "Encapsulate a field with idiomatic getters and setters, rewriting analyzer-resolved references across the workspace. Supports Rust, TypeScript/JavaScript, Python, C++, Swift, and unexported, untagged Go fields. Plain reads become getter calls and writes become setter calls. Apply is refused when a same-named access cannot be proven to reference the selected field; `force` does not bypass unresolved references. Validates in-memory analyzer overlays before writing."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -1111,12 +1111,12 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_source".to_string(),
-            description: "Read a source file that exists only on the gateway host: standard library sources (Rust std, Go GOROOT, Swift frameworks, system C++ headers), dependency registries and caches (Cargo registry/git, Go pkg/mod, node_modules, npm/bun/pnpm/yarn, Python uv/poetry/pipx/virtualenv wheels) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
+            description: "Read a source file from the local workspace or from the gateway host. Accepts a workspace-relative path or an absolute path/file URI inside the local checkout; external absolute paths such as standard library sources (Rust std, Go GOROOT, Swift frameworks, system C++ headers), dependency registries and caches (Cargo registry/git, Go pkg/mod, node_modules, npm/bun/pnpm/yarn, Python uv/poetry/pipx/virtualenv wheels), and SDK headers are read from the gateway. Optionally a window of lines around one line."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Absolute path (or file:// URI) on the gateway, as returned by code_definition" },
+                    "path": { "type": "string", "description": "Workspace-relative path, absolute path or file:// URI inside the local checkout, or an external absolute path/file URI on the gateway (as returned by code_definition)" },
                     "line": { "type": "integer", "description": "1-based line to centre on; omitted: the whole file (up to 2 MiB)" },
                     "context": { "type": "integer", "description": "Lines of context around `line` (default 30)" }
                 },
@@ -2400,6 +2400,25 @@ fn protobuf_outline(text: &str, path: &str, options: &OutlineOptions) -> String 
         let tok = &tokens[idx];
         let current_depth = stack.len() + 1;
 
+        if matches!(tok.text.as_str(), "option" | "reserved" | "extensions" | "syntax" | "import") {
+            idx += 1;
+            let mut nested = 0usize;
+            while idx < n {
+                match tokens[idx].text.as_str() {
+                    "{" | "(" => nested += 1,
+                    "}" | ")" if nested > 0 => nested -= 1,
+                    "}" => break,
+                    ";" if nested == 0 => {
+                        idx += 1;
+                        break;
+                    }
+                    _ => {}
+                }
+                idx += 1;
+            }
+            continue;
+        }
+
         if tok.text == "{" {
             stack.push(Container::Other);
             idx += 1;
@@ -3673,6 +3692,7 @@ async fn handle_change_signature(
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
+    let ext = file_path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     // The compile gate runs `cargo check` on a preview and writes it on the compiler's word
     // alone, past the Go adapter's own refusals of a gopls edit that is not the signature change
@@ -3687,6 +3707,10 @@ async fn handle_change_signature(
              parameter list; omit `verify`"
         );
     }
+    anyhow::ensure!(
+        !verify || ext == "rs",
+        "verify: compile for change_signature is supported only for Rust; the gateway compile gate runs cargo check and nothing was written"
+    );
     let modifiers = crate::signature::Modifiers {
         returns: args
             .get("returns")
@@ -3906,7 +3930,9 @@ async fn handle_introduce_parameter_object(
     if gate.as_ref().is_some_and(|g| g.applied) {
         done.applied = true;
     }
-    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let clean = done.unmatched.is_empty()
+        && done.diagnostics.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
     let mut text = done.render(6000);
     if let Some(gate) = &gate {
         text.push_str(&gate.text);
@@ -4011,7 +4037,9 @@ async fn handle_extract_delegate(
     if gate.as_ref().is_some_and(|g| g.applied) {
         done.applied = true;
     }
-    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let clean = done.unmatched.is_empty()
+        && done.diagnostics.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
     let mut out = done.render();
     if let Some(gate) = &gate {
         out.push_str(&gate.text);
@@ -4161,6 +4189,10 @@ async fn handle_extract_field(
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_rust = ext == "rs";
+    anyhow::ensure!(
+        !verify || is_rust,
+        "verify: compile is only supported for Rust code_extract_field; no files were written"
+    );
 
     let mut done = if is_rust {
         crate::extract_field::extract(
@@ -4194,7 +4226,7 @@ async fn handle_extract_field(
         .await?
     };
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && (done.blocked.is_empty() || force) {
+    let gate = if verify && done.blocked.is_empty() {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -4264,22 +4296,50 @@ async fn handle_generify(
         .unwrap_or("T");
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut declaration_line = line;
 
     let file_path = if let Some(p) = path_str {
         resolve_file_path(workspace_root, p)
     } else if let Some(sym) = symbol {
-        let mut found = None;
-        for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
-            let p = entry.path();
-            if p.is_file()
-                && let Ok(content) = std::fs::read_to_string(p)
-                && content.contains(sym)
-            {
-                found = Some(p.to_path_buf());
-                break;
+        let wanted = sym
+            .rsplit_once("::")
+            .map(|(_, name)| name)
+            .or_else(|| sym.rsplit_once('.').map(|(_, name)| name))
+            .unwrap_or(sym);
+        let supported_source = |path: &Path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "c" | "swift" | "go" | "java")
+            )
+        };
+        let candidates: std::collections::BTreeSet<(PathBuf, u32, u32)> =
+            crate::tools::workspace_symbol_search(remote, workspace_root, sym, None, 100)
+                .await?
+                .into_iter()
+                .filter(|hit| {
+                    let name = hit
+                        .name
+                        .rsplit_once("::")
+                        .map(|(_, name)| name)
+                        .or_else(|| hit.name.rsplit_once('.').map(|(_, name)| name))
+                        .unwrap_or(&hit.name);
+                    name.eq_ignore_ascii_case(wanted) && supported_source(&hit.path)
+                })
+                .map(|hit| (
+                    std::fs::canonicalize(&hit.path).unwrap_or(hit.path),
+                    hit.line,
+                    hit.col,
+                ))
+                .collect();
+        match candidates.len() {
+            0 => anyhow::bail!("no supported declaration for symbol {sym} was found"),
+            1 => {
+                let (path, found_line, _) = candidates.into_iter().next().unwrap();
+                declaration_line = Some(found_line);
+                path
             }
+            _ => anyhow::bail!("multiple declarations for symbol {sym} were found; pass a path to select one"),
         }
-        found.with_context(|| format!("could not find file declaring symbol `{sym}`"))?
     } else {
         anyhow::bail!("Missing 'path' or 'symbol' argument");
     };
@@ -4289,7 +4349,7 @@ async fn handle_generify(
         workspace_root,
         &file_path,
         symbol,
-        line,
+        declaration_line,
         character,
         param,
         bound,
@@ -4334,7 +4394,6 @@ async fn handle_invert_boolean(
     let file_path = resolve_file_path(workspace_root, path_str);
     let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_rust = ext == "rs";
-
     let mut done = if is_rust {
         let l = line.context("Missing 'line' argument for Rust invert_boolean")?;
         let c = character.context("Missing 'character' argument for Rust invert_boolean")?;
@@ -4364,7 +4423,7 @@ async fn handle_invert_boolean(
         .await?
     };
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && (done.blocked.is_empty() || force) {
+    let gate = if verify && (done.unmatched.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -4469,7 +4528,7 @@ async fn handle_make_static(
     };
 
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && (done.blocked.is_empty() || force) {
+    let gate = if verify && done.blocked.is_empty() {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -4574,7 +4633,7 @@ async fn handle_convert_to_method(
     };
 
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify && force {
+    let gate = if verify && (done.unmatched.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -4630,6 +4689,10 @@ async fn handle_inline_parameter(
     let file_path = resolve_file_path(workspace_root, path_str);
     let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_rust = ext == "rs";
+    anyhow::ensure!(
+        !verify || is_rust,
+        "verify: compile is only supported for Rust inline_parameter; no files were written"
+    );
 
     let mut done = if is_rust {
         let l = line.context("Missing 'line' argument for Rust inline_parameter")?;
@@ -5049,6 +5112,12 @@ async fn handle_extract_interface(
         .unwrap_or_default();
     let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let col = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    if file_path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        anyhow::ensure!(
+            line > 0 && col > 0,
+            "Rust extract_interface requires one-based line and character positions"
+        );
+    }
     let migrate_callers = args
         .get("migrate_callers")
         .and_then(|v| v.as_bool())
@@ -5660,13 +5729,12 @@ async fn handle_codemod(
     let scope = args
         .get("path")
         .and_then(|v| v.as_str())
-        .map(|p| resolve_file_path(workspace_root, p));
+        .map(|p| crate::codemod::resolve_workspace_scope(workspace_root, p))
+        .transpose()?;
 
     // First: Run polyglot structural AST codemod engine across target scope.
-    let polyglot_outcome = crate::codemod::run_codemod(workspace_root, rule, scope.as_deref(), apply);
-    if let Ok(outcome) = polyglot_outcome
-        && outcome.files_matched > 0
-    {
+    let outcome = crate::codemod::run_codemod(workspace_root, rule, scope.as_deref(), apply)?;
+    if outcome.files_matched > 0 {
         let mut text = format!("`{rule}`\n");
         text.push_str(&format!(
             "{} changed line(s) in {} file(s)\n\n",
@@ -5815,10 +5883,10 @@ async fn handle_slice(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    let (file_path, line, character) = if let Some(sym) = args.get("symbol").and_then(|v| v.as_str()) {
+    let (file_path, line, character, symbol_based) = if let Some(sym) = args.get("symbol").and_then(|v| v.as_str()) {
         let hint = args.get("path").and_then(|v| v.as_str()).map(Path::new);
         let hit = resolve_symbol(remote, workspace_root, sym, hint).await?;
-        (hit.path, hit.line, hit.col)
+        (hit.path, hit.line, hit.col, true)
     } else {
         let path_str = args
             .get("path")
@@ -5829,7 +5897,7 @@ async fn handle_slice(
             .and_then(|v| v.as_u64())
             .context("Missing 'line' argument (or pass 'symbol')")? as u32;
         let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-        (resolve_file_path(workspace_root, path_str), line, character)
+        (resolve_file_path(workspace_root, path_str), line, character, false)
     };
 
     let depth = args
@@ -5847,7 +5915,8 @@ async fn handle_slice(
     let target_line = args
         .get("target_line")
         .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
+        .map(|v| v as u32)
+        .or_else(|| (dataflow && !symbol_based).then_some(line));
     let target_var = args
         .get("target_var")
         .and_then(|v| v.as_str())
@@ -5907,8 +5976,8 @@ async fn handle_shadow_run(
     let in_memory = args
         .get("in_memory")
         .and_then(|v| v.as_bool())
-        .or_else(|| args.get("ram").and_then(|v| v.as_bool()))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || args.get("ram").and_then(|v| v.as_bool()).unwrap_or(false);
     let subdir = args
         .get("cwd")
         .and_then(|v| v.as_str())
@@ -6038,11 +6107,11 @@ async fn handle_diagnostics(
 
     if tool_name == "code_validate_edit" {
         if let Some(chunk) = args.get("chunk").and_then(|v| v.as_str()) {
-            let session_id = match args.get("session_id").and_then(|v| v.as_str()) {
-                Some(id) if !id.trim().is_empty() => id.to_string(),
+            let (session_id, implicit_session) = match args.get("session_id").and_then(|v| v.as_str()) {
+                Some(id) if !id.trim().is_empty() => (id.to_string(), false),
                 _ => {
                     let counter = crate::diagnostics::next_batch_counter();
-                    format!("stream-{}-{}", std::process::id(), counter)
+                    (format!("stream-{}-{}", std::process::id(), counter), true)
                 }
             };
             let close = args
@@ -6052,7 +6121,8 @@ async fn handle_diagnostics(
             let reset = args
                 .get("reset")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || implicit_session;
             let borrow_check = args
                 .get("borrow_check")
                 .and_then(|v| v.as_bool())
@@ -8157,6 +8227,27 @@ pub async fn workspace_symbol_search(
     hint: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
+    workspace_symbol_search_with_retry_policy(remote, root, query, hint, limit, true).await
+}
+
+async fn workspace_symbol_search_auxiliary(
+    remote: SocketAddr,
+    root: &Path,
+    query: &str,
+    hint: Option<&Path>,
+    limit: usize,
+) -> Result<Vec<SymbolHit>> {
+    workspace_symbol_search_with_retry_policy(remote, root, query, hint, limit, false).await
+}
+
+async fn workspace_symbol_search_with_retry_policy(
+    remote: SocketAddr,
+    root: &Path,
+    query: &str,
+    hint: Option<&Path>,
+    limit: usize,
+    retry_empty_answer: bool,
+) -> Result<Vec<SymbolHit>> {
     // The LSP servers (tsc, clangd, pyright) index a project once one of its files is open;
     // the session opens the anchor file before the query, so pick a real source file when the
     // caller gave none or a directory.
@@ -8183,7 +8274,7 @@ pub async fn workspace_symbol_search(
     let gated = crate::session::pooled_index_gated(remote, root, &anchor).await;
     let retries = match age {
         _ if gated => 0,
-        _ if hint.is_some() => 0,
+        _ if !retry_empty_answer => 0,
         Some(age) if age >= crate::session::INDEXING_GRACE => 0,
         Some(_) => 3,
         None => 1,
@@ -8859,7 +8950,7 @@ async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> 
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = read_name_scan_text(&path) else {
             continue;
         };
         if !names_word(&text, name) {
@@ -9324,7 +9415,19 @@ async fn symbol_search_across_projects(
     hint: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
-    let mut hits = workspace_symbol_search(remote, root, query, hint, limit).await?;
+    let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
+    let mut hits = match tokio::time::timeout_at(
+        deadline,
+        workspace_symbol_search(remote, root, query, hint, limit),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            tracing::warn!(query, "primary workspace symbol search reached budget; returning no hits");
+            return Ok(Vec::new());
+        }
+    };
     let name = bare_symbol_name(query);
     let named = |hits: &[SymbolHit]| {
         hits.iter()
@@ -9333,7 +9436,6 @@ async fn symbol_search_across_projects(
     if named(&hits) {
         return Ok(hits);
     }
-    let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
     if let Some(hint) = hint {
         // The project a path names may keep no index (sourcekit-lsp before a build): the
         // outlines of its files that name the symbol still find it (#358).
@@ -9349,20 +9451,20 @@ async fn symbol_search_across_projects(
                 Err(_) => return Ok(hits),
             };
             let files = if hint.is_file() {
-                std::fs::read_to_string(hint)
-                    .is_ok_and(|text| names_word(&text, name))
+                read_name_scan_text(hint)
+                    .is_some_and(|text| names_word(&text, name))
                     .then(|| hint.to_path_buf())
                     .into_iter()
                     .collect()
             } else {
                 files_naming(hint, engine, name, deadline)
             };
-            if !files.is_empty() {
-                if let Ok(Ok(decls)) =
-                    tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name)).await
-                {
-                    hits.extend(decls);
-                }
+            if !files.is_empty()
+                && let Ok(Ok(decls)) =
+                    tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name))
+                        .await
+            {
+                hits.extend(decls);
             }
         }
         return Ok(hits);
@@ -9420,7 +9522,7 @@ async fn symbol_search_across_projects(
             break;
         }
 
-        let search_fut = workspace_symbol_search(node, root, query, Some(&anchor), limit);
+        let search_fut = workspace_symbol_search_auxiliary(node, root, query, Some(&anchor), limit);
         let found = match tokio::time::timeout_at(deadline, search_fut).await {
             Ok(Ok(found)) => found,
             Ok(Err(err)) => {
@@ -9487,7 +9589,7 @@ fn files_naming(
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = read_name_scan_text(&path) else {
             continue;
         };
         if !names_word(&text, name) {
@@ -9505,11 +9607,29 @@ fn files_naming(
 
 /// Whether `text` has `name` as a whole word.
 fn names_word(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    text.match_indices(name).any(|(at, _)| {
-        !text[..at].chars().next_back().is_some_and(is_word)
-            && !text[at + name.len()..].chars().next().is_some_and(is_word)
-    })
+    text.split(|c: char| !is_word(c))
+        .any(|word| word.eq_ignore_ascii_case(name))
+}
+
+/// Maximum bytes read from any one source while searching for names synchronously.
+const MAX_NAME_SCAN_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Reads only the prefix needed for bounded symbol-name discovery. Large generated sources do
+/// not get to exceed the overall search budget through one unbounded synchronous read.
+fn read_name_scan_text(path: &Path) -> Option<String> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_NAME_SCAN_FILE_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// How far below a directory a search of its sources looks.
@@ -9555,7 +9675,7 @@ fn projects_naming(
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        if !std::fs::read_to_string(&path).is_ok_and(|text| names_word(&text, name)) {
+        if !read_name_scan_text(&path).is_some_and(|text| names_word(&text, name)) {
             continue;
         }
         if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
@@ -9853,6 +9973,49 @@ fn identifier_at(path: &Path, remote: &RemoteSources, line: u32, col: u32, name:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn name_scan_source_read_stops_at_the_per_file_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.rs");
+        let mut contents = vec![b'x'; super::MAX_NAME_SCAN_FILE_BYTES as usize + 16];
+        contents.extend_from_slice(b"target_at_end");
+        std::fs::write(&path, contents).unwrap();
+
+        let scanned = super::read_name_scan_text(&path).unwrap();
+        assert_eq!(scanned.len(), super::MAX_NAME_SCAN_FILE_BYTES as usize);
+        assert!(!super::names_word(&scanned, "target_at_end"));
+    }
+
+    #[test]
+    fn protobuf_outline_skips_complete_option_and_reserved_statements() {
+        let proto = r#"
+            syntax = "proto3";
+            package example;
+            option deprecated = true;
+            message Request {
+                option deprecated = true;
+                reserved 2, 4 to 6;
+                extensions 100 to max;
+                string name = 1;
+            }
+            enum State {
+                option deprecated = true;
+                reserved "OLD";
+                READY = 0;
+            }
+        "#;
+        let outline = super::protobuf_outline(
+            proto,
+            "api.proto",
+            &super::OutlineOptions::all(10, false, ""),
+        );
+        assert!(outline.contains("[Field] name"), "{outline}");
+        assert!(outline.contains("[EnumMember] READY"), "{outline}");
+        assert!(!outline.contains("deprecated"), "{outline}");
+        assert!(!outline.contains("extensions"), "{outline}");
+        assert!(!outline.contains("reserved"), "{outline}");
+    }
+
     /// A declaration is the name right after a declaring keyword or a Go receiver; a use, a
     /// path or a local binding is not (#379).
     #[test]

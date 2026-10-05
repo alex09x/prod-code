@@ -17,7 +17,7 @@ pub fn default_server_capabilities() -> ServerCapabilities {
         indexing_status: true,
         shadow_runs: true,
         multi_root: true,
-        sync_chunking: true,
+        sync_chunking: false,
         unix_socket_local: cfg!(unix),
     }
 }

@@ -177,6 +177,7 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         path: req.path,
                         content,
                         truncated: false,
+                        is_executable: Some(false),
                         error,
                     }))
                     .await?;

@@ -122,6 +122,7 @@ fn capabilities_negotiation_computes_common_subset_or_defaults() {
         multi_root: true,
         sync_chunking: false,
         unix_socket_local: true,
+        redirects: false,
     };
     let negotiated = negotiate_capabilities(Some(&client_caps), &server_caps);
     assert!(negotiated.direct_edit);

@@ -248,7 +248,18 @@ pub fn other_checkout(root: &Path, file: &Path) -> Option<PathBuf> {
 
 /// The engine a source file's extension names, when it names one.
 pub fn engine_for_file(path: &Path) -> Option<&'static str> {
+    let filename = path.file_name()?.to_str()?.to_ascii_lowercase();
+    if filename.starts_with("dockerfile") || filename.starts_with("containerfile") {
+        return Some("dockerfile");
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if ext == "v"
+        && path
+            .ancestors()
+            .any(|directory| directory.join("v.mod").is_file())
+    {
+        return Some("v");
+    }
     Some(match ext.as_str() {
         "rs" => "rust",
         "go" => "go",
@@ -261,6 +272,53 @@ pub fn engine_for_file(path: &Path) -> Option<&'static str> {
         "cs" => "csharp",
         "scala" | "sc" => "scala",
         "zig" => "zig",
+        "php" => "php",
+        "rb" => "ruby",
+        "dart" => "dart",
+        "ex" | "exs" => "elixir",
+        "lua" => "lua",
+        "hs" | "lhs" => "haskell",
+        "ml" | "mli" => "ocaml",
+        "clj" | "cljs" | "cljc" => "clojure",
+        "jl" => "julia",
+        "sh" | "bash" | "zsh" => "shell",
+        "r" => "r",
+        "erl" => "erlang",
+        "fs" | "fsi" | "fsx" | "fsproj" => "fsharp",
+        "pl" | "pm" => "perl",
+        "sol" => "solidity",
+        "nim" | "nimble" => "nim",
+        "d" => "d",
+        "f" | "for" | "f77" | "f90" | "f95" | "f03" | "f08" => "fortran",
+        "sql" => "sql",
+        "graphql" | "gql" => "graphql",
+        "proto" => "protobuf",
+        "cr" => "crystal",
+        "groovy" | "gvy" => "groovy",
+        "gpr" | "adb" | "ads" => "ada",
+        "vsh" => "v",
+        "rkt" => "racket",
+        "tf" | "tofu" => "terraform",
+        "nix" => "nix",
+        "md" | "markdown" => "markdown",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "json" | "jsonc" => "json",
+        "html" | "htm" => "html",
+        "css" | "scss" | "less" => "css",
+        "svelte" => "svelte",
+        "vue" => "vue",
+        "asm" | "nasm" | "s" => "assembly",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "bzl" | "star" => "starlark",
+        "hcl" => "hcl",
+        "typ" => "typst",
+        "wat" | "wast" => "wat",
+        "sv" | "svh" => "systemverilog",
+        "vhd" | "vhdl" => "vhdl",
+        "bal" => "ballerina",
+        "jsonnet" | "libsonnet" => "jsonnet",
+        "cue" => "cue",
         _ => return None,
     })
 }
@@ -628,6 +686,44 @@ fn has_c_sources(dir: &Path) -> bool {
     })
 }
 
+fn mcp_directory_has_kotlin_source(dir: &Path, depth: usize) -> bool {
+    if depth > 6 {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || matches!(name.as_str(), "build" | "target" | "node_modules" | ".gradle") {
+            return false;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            mcp_directory_has_kotlin_source(&path, depth + 1)
+        } else {
+            path.extension().and_then(|extension| extension.to_str()) == Some("kt")
+        }
+    })
+}
+
+fn mcp_has_kotlin_project(root: &Path) -> bool {
+    if ["src", "app/src", "common/src", "shared/src"]
+        .iter()
+        .any(|relative| mcp_directory_has_kotlin_source(&root.join(relative), 0))
+    {
+        return true;
+    }
+    ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]
+        .iter()
+        .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
+        .any(|text| {
+            ["org.jetbrains.kotlin", "kotlin(\"jvm\")", "kotlin(\"android\")", "kotlin(\"multiplatform\")"]
+                .iter()
+                .any(|marker| text.contains(marker))
+        })
+}
+
 /// The engine a directory's own manifests ask for. A Makefile next to C or C++ sources, at the
 /// root or in `src/`, is a C/C++ project built with Make, below every other manifest: Go,
 /// Python and JavaScript repositories keep a Makefile of tasks too. A `project.yml` with
@@ -635,6 +731,24 @@ fn has_c_sources(dir: &Path) -> bool {
 /// (#404). The gateway's `detect_engine` decides the same way.
 fn engine_at(root: &Path) -> Option<&'static str> {
     let has = |name: &str| root.join(name).exists();
+    let has_ext = |extensions: &[&str]| {
+        std::fs::read_dir(root).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extensions.contains(&extension.to_ascii_lowercase().as_str()))
+            })
+        })
+    };
+    let has_prefix = |prefix: &str| {
+        std::fs::read_dir(root).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_name().to_string_lossy().starts_with(prefix)
+            })
+        })
+    };
     let has_xcode = std::fs::read_dir(root)
         .map(|entries| {
             entries.flatten().any(|e| {
@@ -662,22 +776,17 @@ fn engine_at(root: &Path) -> Option<&'static str> {
                 })
             })
             .unwrap_or(false);
-    let has_kotlin = has("build.gradle.kts") || has("settings.gradle.kts");
+    let has_kotlin = mcp_has_kotlin_project(root);
     let has_scala = has("build.sbt")
         || has("build.sc")
         || has(".scala-build")
         || root.join("project/build.properties").exists()
         || root.join("project/plugins.sbt").exists();
+    let has_groovy_gradle_sources = has("build.gradle") && root.join("src/main/groovy").is_dir();
     if has("Cargo.toml") {
         Some("rust")
     } else if has("go.mod") || has("go.work") {
         Some("go")
-    } else if has_csharp {
-        Some("csharp")
-    } else if has_kotlin {
-        Some("kotlin")
-    } else if has_scala {
-        Some("scala")
     } else if has("Package.swift") || has_xcode || xcodegen {
         Some("swift")
     } else if has("compile_commands.json")
@@ -693,6 +802,25 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         || has("Pipfile")
     {
         Some("python")
+    } else if has_csharp {
+        Some("csharp")
+    } else if has_kotlin {
+        Some("kotlin")
+    } else if has_scala {
+        Some("scala")
+    } else if has_groovy_gradle_sources {
+        Some("groovy")
+    } else if has("pom.xml")
+        || has("build.gradle")
+        || has("build.gradle.kts")
+        || has("settings.gradle")
+        || has("settings.gradle.kts")
+    {
+        Some("java")
+    } else if has("svelte.config.js") || has("svelte.config.ts") || has_ext(&["svelte"]) {
+        Some("svelte")
+    } else if has("vue.config.js") || has("vue.config.ts") || has_ext(&["vue"]) {
+        Some("vue")
     } else if has("tsconfig.json")
         || has("package.json")
         || has("jsconfig.json")
@@ -702,25 +830,158 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         Some("typescript")
     } else if make_cpp {
         Some("cpp")
-    } else if has("pom.xml")
-        || has("build.gradle")
-        || has("build.gradle.kts")
-        || has("settings.gradle")
-        || has("settings.gradle.kts")
-    {
-        Some("java")
+    } else if has("composer.json") {
+        Some("php")
+    } else if has("Gemfile") {
+        Some("ruby")
+    } else if has("pubspec.yaml") {
+        Some("dart")
     } else if has("build.zig") || has("build.zig.zon") {
         Some("zig")
     } else if has("mix.exs") {
         Some("elixir")
-    } else if has(".luarc.json") || has(".luacheckrc") {
+    } else if has(".luarc.json") || has(".luacheckrc") || has_ext(&["lua"]) {
         Some("lua")
-    } else if has("cabal.project") || has("stack.yaml") || has("package.yaml") {
+    } else if has("cabal.project") || has("stack.yaml") || has("package.yaml") || has_ext(&["hs", "lhs", "cabal"]) {
         Some("haskell")
-    } else if has("nim.cfg") {
+    } else if has("dune-project") || has("dune") || has_ext(&["ml", "mli"]) {
+        Some("ocaml")
+    } else if has("project.clj") || has("deps.edn") || has_ext(&["clj", "cljs", "cljc"]) {
+        Some("clojure")
+    } else if has("JuliaProject.toml") || has_ext(&["jl"]) {
+        Some("julia")
+    } else if has("DESCRIPTION") || has("NAMESPACE") || has_ext(&["r"]) {
+        Some("r")
+    } else if has("rebar.config") || has("rebar.lock") || has("erlang.mk") || has_ext(&["erl"]) {
+        Some("erlang")
+    } else if has_ext(&["fs", "fsi", "fsx", "fsproj"]) {
+        Some("fsharp")
+    } else if has("cpanfile") || has("Makefile.PL") || has("Build.PL") || has("dist.ini") || has_ext(&["pl", "pm"]) {
+        Some("perl")
+    } else if has("foundry.toml")
+        || has("hardhat.config.js")
+        || has("hardhat.config.ts")
+        || has("hardhat.config.cjs")
+        || has("truffle-config.js")
+        || has_ext(&["sol"])
+    {
+        Some("solidity")
+    } else if has("nim.cfg") || has_ext(&["nimble"]) {
         Some("nim")
     } else if has("dub.json") || has("dub.sdl") {
         Some("d")
+    } else if has("fpm.toml") || has_ext(&["f", "for", "f90", "f95", "f03", "f08"]) {
+        Some("fortran")
+    } else if has(".sqlfluff") || has("sqlfluff.cfg") || has(".sqls.json") || has("sqls.json") || has("schema.sql") || has_ext(&["sql"]) {
+        Some("sql")
+    } else if has("codegen.yml")
+        || has("codegen.ts")
+        || has("codegen.json")
+        || has(".graphqlrc")
+        || has(".graphqlrc.yml")
+        || has(".graphqlrc.json")
+        || has("schema.graphql")
+        || has_ext(&["graphql", "gql"])
+    {
+        Some("graphql")
+    } else if has("buf.yaml")
+        || has("buf.work.yaml")
+        || has("buf.gen.yaml")
+        || has("buf.lock")
+        || has(".protolint.yaml")
+        || has_ext(&["proto"])
+    {
+        Some("protobuf")
+    } else if has("shard.yml") || has("shard.lock") || has_ext(&["cr"]) {
+        Some("crystal")
+    } else if has("Jenkinsfile") || has_ext(&["groovy", "gvy"]) {
+        Some("groovy")
+    } else if has("default.gpr") || has_ext(&["gpr", "adb", "ads"]) {
+        Some("ada")
+    } else if has("v.mod") || has_ext(&["vsh"]) {
+        Some("v")
+    } else if has("info.rkt") || has_ext(&["rkt"]) {
+        Some("racket")
+    } else if has("main.tf")
+        || has("versions.tf")
+        || has("terraform.tf")
+        || has(".terraform.lock.hcl")
+        || has_ext(&["tf", "tofu"])
+    {
+        Some("terraform")
+    } else if has("flake.nix")
+        || has("default.nix")
+        || has("shell.nix")
+        || has("configuration.nix")
+        || has_ext(&["nix"])
+    {
+        Some("nix")
+    } else if has(".asm-lsp.toml") || has_ext(&["asm", "nasm", "s"]) {
+        Some("assembly")
+    } else if has_prefix("Dockerfile")
+        || has_prefix("Containerfile")
+        || has(".hadolint.yaml")
+        || has(".hadolint.yml")
+        || has_ext(&["dockerfile"])
+    {
+        Some("dockerfile")
+    } else if has("PSScriptAnalyzerSettings.psd1") || has("profile.ps1") || has_ext(&["ps1", "psm1", "psd1"]) {
+        Some("powershell")
+    } else if has("BUILD.bazel")
+        || has("WORKSPACE.bazel")
+        || has("MODULE.bazel")
+        || has("BUILD")
+        || has("WORKSPACE")
+        || has("Tiltfile")
+        || has_ext(&["bzl", "star"])
+    {
+        Some("starlark")
+    } else if has("terragrunt.hcl") || has(".tflint.hcl") || has_ext(&["hcl"]) {
+        Some("hcl")
+    } else if has("typst.toml") || has_ext(&["typ"]) {
+        Some("typst")
+    } else if has("wat.json") || has_ext(&["wat", "wast"]) {
+        Some("wat")
+    } else if has("verilator.f") || has_ext(&["sv", "svh"]) {
+        Some("systemverilog")
+    } else if has("vunit.py") || has_ext(&["vhd", "vhdl"]) {
+        Some("vhdl")
+    } else if has("Ballerina.toml") || has_ext(&["bal"]) {
+        Some("ballerina")
+    } else if has("jsonnetfile.json") || has_ext(&["jsonnet", "libsonnet"]) {
+        Some("jsonnet")
+    } else if has("cue.mod") || has_ext(&["cue"]) {
+        Some("cue")
+    } else if has(".yamllint")
+        || has(".yamllint.yml")
+        || has(".yamllint.yaml")
+        || has(".gitlab-ci.yml")
+        || has("docker-compose.yml")
+        || has("docker-compose.yaml")
+        || has("compose.yaml")
+        || has("compose.yml")
+    {
+        Some("yaml")
+    } else if has("taplo.toml") || has(".taplo.toml") {
+        Some("toml")
+    } else if has(".jsonlintrc") || has(".jsonlintrc.json") || has(".jsonlint") {
+        Some("json")
+    } else if has("index.html") || has("htmlhint.json") || has(".htmlhintrc") || has_ext(&["html", "htm"]) {
+        Some("html")
+    } else if has("stylelint.config.js")
+        || has("stylelint.config.cjs")
+        || has("stylelint.config.mjs")
+        || has(".stylelintrc")
+        || has(".stylelintrc.json")
+        || has(".stylelintrc.yml")
+        || has("styles.css")
+        || has_ext(&["css", "scss", "less"])
+    {
+        Some("css")
+    } else if has(".shellcheckrc") || has_ext(&["sh", "bash", "zsh"]) {
+        Some("shell")
+    } else if has("README.md") || has(".marksman.toml") || has_ext(&["md", "markdown"]) {
+        Some("markdown")
     } else {
         None
     }
@@ -1163,7 +1424,17 @@ pub fn prepare_workspace_sync_for(
         state.filter_version = RELEVANCE_VERSION;
     }
     let initial = state.base_commit_sha.is_none() && subpath.is_none();
-    let current_base = git_head(&canonical_root)?;
+    let current_base = match git_head(&canonical_root) {
+        Ok(base) => base,
+        Err(_) => {
+            return prepare_non_git_workspace_sync(
+                &canonical_root,
+                node,
+                subpath,
+                state,
+            );
+        }
+    };
     let (mut changes, current_dirty) = changed_paths(
         &canonical_root,
         state.base_commit_sha.as_deref(),
@@ -1197,15 +1468,22 @@ pub fn prepare_workspace_sync_for(
         }
 
         let full_path = canonical_root.join(&relative_path);
-        let Ok(metadata) = full_path.metadata() else {
+        let Ok(sym_meta) = full_path.symlink_metadata() else {
             continue;
         };
-        if !fits_sync(&relative_path, &metadata) {
+        if sym_meta.file_type().is_symlink() {
+            continue;
+        }
+        if !fits_sync(&relative_path, &sym_meta) {
             continue;
         }
 
-        let content = std::fs::read(&full_path)?;
-        let entry = sync_file_entry(&metadata, &content);
+        let Some((content, is_exec)) =
+            read_regular_file_secure(&full_path, &canonical_root)?
+        else {
+            continue;
+        };
+        let entry = sync_file_entry(&sym_meta, &content);
         if state.files.get(&relative_path) == Some(&entry) {
             continue;
         }
@@ -1213,7 +1491,7 @@ pub fn prepare_workspace_sync_for(
         files.push(FileDelta {
             relative_path: relative_path.clone(),
             content: Some(content),
-            is_executable: is_executable(&metadata),
+            is_executable: is_exec,
         });
         state.files.insert(relative_path, entry);
     }
@@ -1232,27 +1510,37 @@ pub fn prepare_workspace_sync_for(
     let listed = git_listed_paths(&canonical_root, &lost);
     for rel in lost {
         let full_path = canonical_root.join(&rel);
-        let content = full_path
-            .metadata()
-            .ok()
-            .filter(|m| listed.contains(&rel) && is_synced_git_path(&rel) && fits_sync(&rel, m))
-            .and_then(|m| {
-                // Read only once it is known to be sent: an ignored file stays unread.
-                let content = std::fs::read(&full_path).ok()?;
-                Some((m, content))
-            });
-        match content {
-            Some((metadata, content)) => {
+        match full_path.symlink_metadata() {
+            Ok(sym_meta) => {
+                if sym_meta.file_type().is_symlink()
+                    || !listed.contains(&rel)
+                    || !is_synced_git_path(&rel)
+                    || !fits_sync(&rel, &sym_meta)
+                {
+                    state.files.remove(&rel);
+                    files.push(FileDelta {
+                        relative_path: rel,
+                        content: None,
+                        is_executable: false,
+                    });
+                    continue;
+                }
+                let Some((content, is_executable)) =
+                    read_regular_file_secure(&full_path, &canonical_root)?
+                else {
+                    state.resend.insert(rel);
+                    continue;
+                };
                 state
                     .files
-                    .insert(rel.clone(), sync_file_entry(&metadata, &content));
+                    .insert(rel.clone(), sync_file_entry(&sym_meta, &content));
                 files.push(FileDelta {
                     relative_path: rel,
                     content: Some(content),
-                    is_executable: is_executable(&metadata),
+                    is_executable,
                 });
             }
-            None => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 state.files.remove(&rel);
                 files.push(FileDelta {
                     relative_path: rel,
@@ -1260,6 +1548,7 @@ pub fn prepare_workspace_sync_for(
                     is_executable: false,
                 });
             }
+            Err(err) => return Err(err.into()),
         }
     }
 
@@ -1274,6 +1563,82 @@ pub fn prepare_workspace_sync_for(
         state,
         node: node.to_string(),
         initial,
+    })
+}
+
+/// A manifest-based checkout has no Git baseline for a diff. Walk its relevant source tree and
+/// compare file stamps with the acknowledged watermark instead, retaining deletions from the
+/// previous scan and honoring explicit resend requests.
+fn prepare_non_git_workspace_sync(
+    root: &Path,
+    node: &str,
+    subpath: Option<&Path>,
+    mut state: SyncCache,
+) -> Result<SyncPlan> {
+    if state.filter_version != RELEVANCE_VERSION {
+        state.files.clear();
+        state.filter_version = RELEVANCE_VERSION;
+    }
+    let filter = SyncPathFilter::new(root, subpath)?;
+    let previous: HashSet<String> = state
+        .files
+        .keys()
+        .filter(|path| filter.includes(path))
+        .cloned()
+        .collect();
+    let mut resend = HashSet::new();
+    for path in std::mem::take(&mut state.resend) {
+        if filter.includes(&path) {
+            state.files.remove(&path);
+            resend.insert(path);
+        } else {
+            state.resend.insert(path);
+        }
+    }
+
+    let scanned = scan_workspace_files(root, subpath)?;
+    let mut files = Vec::new();
+    let mut present = HashSet::new();
+    for mut delta in scanned {
+        let Some(content) = delta.content.as_deref() else {
+            continue;
+        };
+        let relative_path = delta.relative_path.clone();
+        let full_path = root.join(&relative_path);
+        let metadata = std::fs::symlink_metadata(&full_path)
+            .with_context(|| format!("cannot stat synced file {}", full_path.display()))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        let entry = sync_file_entry(&metadata, content);
+        present.insert(delta.relative_path.clone());
+        if state.files.get(&relative_path) != Some(&entry) {
+            delta.is_executable = is_executable(&metadata);
+            files.push(delta);
+        }
+        state.files.insert(relative_path, entry);
+    }
+
+    for path in previous.union(&resend) {
+        if !present.contains(path) && !files.iter().any(|delta| delta.relative_path == *path) {
+            files.push(FileDelta {
+                relative_path: path.clone(),
+                content: None,
+                is_executable: false,
+            });
+            state.files.remove(path);
+        }
+    }
+
+    // No Git commit represents this workspace. Keeping the base absent makes a later sync
+    // continue to use the manifest probe instead of failing on `git rev-parse HEAD`.
+    state.base_commit_sha = None;
+    state.dirty_paths.clear();
+    Ok(SyncPlan {
+        files,
+        state,
+        node: node.to_string(),
+        initial: subpath.is_none(),
     })
 }
 
@@ -1344,37 +1709,62 @@ pub async fn pull_remote_files(
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let identity = workspace_identity(&canonical_root);
 
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let mut current_remote = remote;
+    let mut redirect_count = 0;
+    let (mut framed, handshake_resp) = loop {
+        let stream = prod_code_protocol::transport::connect(current_remote)
+            .await
+            .with_context(|| format!("failed to connect to remote gateway at {current_remote}"))?;
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        framed
+            .send(WireMessage::HandshakeRequest(
+                prod_code_protocol::HandshakeRequest {
+                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                    supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
+                    capabilities: Some(prod_code_protocol::ClientCapabilities {
+                        redirects: true,
+                        ..Default::default()
+                    }),
+                    client_name: "prod-code-pull".to_string(),
+                    client_pid: std::process::id(),
+                    auth_token: None,
+                    client_workspace_root: canonical_root.to_string_lossy().to_string(),
+                    preferred_engine: None,
+                    base_workspace_name: Some(identity.name.clone()),
+                    engine_subpath: None,
+                    client_agent: Some(prod_code_protocol::detect_client_agent()),
+                    client_host: Some(prod_code_protocol::client_host()),
+                    purpose: None,
+                    redirect_count,
+                },
+            ))
+            .await?;
 
-    framed
-        .send(WireMessage::HandshakeRequest(prod_code_protocol::HandshakeRequest {
-            protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-            supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
-            capabilities: Some(prod_code_protocol::ClientCapabilities::default()),
-            client_name: "prod-code-pull".to_string(),
-            client_pid: std::process::id(),
-            auth_token: None,
-            client_workspace_root: canonical_root.to_string_lossy().to_string(),
-            preferred_engine: None,
-            base_workspace_name: Some(identity.name.clone()),
-            engine_subpath: None,
-            client_agent: Some(prod_code_protocol::detect_client_agent()),
-            client_host: Some(prod_code_protocol::client_host()),
-            purpose: None,
-            redirect_count: 0,
-        }))
-        .await?;
-
-    let handshake_resp = loop {
-        match framed.next().await {
-            Some(Ok(WireMessage::HandshakeResponse(resp))) => break resp,
-            Some(Ok(WireMessage::Auth(_))) => continue,
-            Some(Ok(other)) => anyhow::bail!("unexpected message during handshake: {other:?}"),
-            Some(Err(e)) => anyhow::bail!("connection error during handshake: {e}"),
-            None => anyhow::bail!("gateway closed connection during handshake"),
+        let response = loop {
+            match framed.next().await {
+                Some(Ok(WireMessage::HandshakeResponse(resp))) => break Some((framed, resp)),
+                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                    redirect_count += 1;
+                    if redirect_count > 3 {
+                        anyhow::bail!("too many gateway redirects during pull: {reason:?}");
+                    }
+                    current_remote = crate::cluster::parse_remotes(&target_addr)?
+                        .into_iter()
+                        .next()
+                        .with_context(|| {
+                            format!("redirect target resolved to no addresses: {target_addr}")
+                        })?;
+                    tracing::info!(%current_remote, ?reason, "following gateway redirect during pull");
+                    break None;
+                }
+                Some(Ok(WireMessage::Auth(_))) => continue,
+                Some(Ok(other)) => anyhow::bail!("unexpected message during handshake: {other:?}"),
+                Some(Err(e)) => anyhow::bail!("connection error during handshake: {e}"),
+                None => anyhow::bail!("gateway closed connection during handshake"),
+            }
+        };
+        if let Some(handshake) = response {
+            break handshake;
         }
     };
 
@@ -1386,7 +1776,17 @@ pub async fn pull_remote_files(
         } else {
             canonical_root.join(file)
         };
-        let rel = match abs.strip_prefix(&canonical_root) {
+        let mut normalized = PathBuf::new();
+        for comp in abs.components() {
+            match comp {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                c => normalized.push(c.as_os_str()),
+            }
+        }
+        let rel = match normalized.strip_prefix(&canonical_root) {
             Ok(rel) => rel,
             Err(_) => continue,
         };
@@ -1420,12 +1820,15 @@ pub async fn pull_remote_files(
             anyhow::bail!("remote file {rel_str} exceeded maximum pull size limit (truncated)");
         }
 
-        let is_executable = read_resp.content.as_deref().is_some_and(|b| {
-            b.starts_with(b"\x7fELF")
-                || b.starts_with(b"#!")
-                || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
-                || b.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
-        });
+        let is_executable = match read_resp.is_executable {
+            Some(explicit) => explicit,
+            None => read_resp.content.as_deref().is_some_and(|b| {
+                b.starts_with(b"\x7fELF")
+                    || b.starts_with(b"#!")
+                    || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+                    || b.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
+            }),
+        };
 
         pulled_deltas.push(FileDelta {
             relative_path: rel_str,
@@ -1444,7 +1847,7 @@ pub async fn pull_remote_files(
         return Ok(Vec::new());
     }
 
-    apply_pulled_files_for(&canonical_root, &remote.to_string(), &pulled_deltas)
+    apply_pulled_files_for(&canonical_root, &current_remote.to_string(), &pulled_deltas)
 }
 
 /// Persist the watermarks for a sync plan after its files have been accepted by the gateway.
@@ -1683,11 +2086,17 @@ impl SyncPathFilter {
                 };
                 let path = std::fs::canonicalize(&path).unwrap_or(path);
                 let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-                Some(
-                    path.strip_prefix(&canon_root)
-                        .or_else(|_| path.strip_prefix(root))?
-                        .to_path_buf(),
-                )
+                let relative = path
+                    .strip_prefix(&canon_root)
+                    .or_else(|_| path.strip_prefix(root))?
+                    .to_path_buf();
+                if !path.exists()
+                    && !git_listed_files(&canon_root, &path)
+                        .is_some_and(|listed| !listed.is_empty())
+                {
+                    anyhow::bail!("sync path {:?} does not exist and is not a tracked deletion", path);
+                }
+                Some(relative)
             }
             None => None,
         };
@@ -1729,6 +2138,24 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
             | "Pipfile"
             | "BUILD"
             | "WORKSPACE"
+            | "cabal.project"
+            | "stack.yaml"
+            | "package.yaml"
+            | "dune-project"
+            | "dune"
+            | "deps.edn"
+            | "DESCRIPTION"
+            | "NAMESPACE"
+            | "rebar.config"
+            | "rebar.lock"
+            | "erlang.mk"
+            | "cpanfile"
+            | "Makefile.PL"
+            | "Build.PL"
+            | "dist.ini"
+            | "nim.cfg"
+            | "dub.json"
+            | "dub.sdl"
             | "rustc-wrapper"
             | "rustc_wrapper"
             | "cargo-wrapper"
@@ -1860,6 +2287,9 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "java"
                 | "kt"
                 | "kts"
+                | "fsproj"
+                | "cabal"
+                | "nimble"
                 | "scala"
                 | "sc"
                 | "cs"
@@ -1893,7 +2323,6 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "sol"
                 | "nim"
                 | "nims"
-                | "nimble"
                 | "d"
                 | "di"
                 | "f"
@@ -2068,6 +2497,90 @@ fn git_listed_files(root: &Path, dir: &Path) -> Option<Vec<String>> {
     Some(files)
 }
 
+#[cfg(unix)]
+fn verify_fd_containment(file: &std::fs::File, canonical_root: &Path) -> Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; libc::PATH_MAX as usize];
+        if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr() as *mut libc::c_char) } != -1 {
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            if let Ok(path_str) = std::str::from_utf8(&buf[..len]) {
+                return Ok(Path::new(path_str).starts_with(canonical_root));
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(link) = std::fs::read_link(format!("/proc/self/fd/{fd}")) {
+            return Ok(link.starts_with(canonical_root));
+        }
+        Ok(false)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = fd;
+        let _ = canonical_root;
+        anyhow::bail!("File descriptor containment verification is not supported on this platform");
+    }
+}
+
+/// Securely opens and reads a regular file without following symlinks to eliminate symlink TOCTOU.
+/// Rejects symlinks at opening via `O_NOFOLLOW` and reads directly from the verified file handle.
+fn read_regular_file_secure(path: &Path, canonical_root: &Path) -> Result<Option<(Vec<u8>, bool)>> {
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        let _ = canonical_root;
+        anyhow::bail!("Secure file reading is unsupported on non-Unix platforms");
+    }
+
+    #[cfg(unix)]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+
+        let mut file = match options.open(path) {
+            Ok(f) => f,
+            Err(err) => {
+                if err.raw_os_error() == Some(libc::ELOOP) {
+                    return Ok(None);
+                }
+                return Ok(None);
+            }
+        };
+
+        let metadata = match file.metadata() {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+
+        if !metadata.file_type().is_file() {
+            return Ok(None);
+        }
+
+        if !verify_fd_containment(&file, canonical_root)? {
+            return Ok(None);
+        }
+
+        let mut content = Vec::new();
+        use std::io::Read;
+        if file.read_to_end(&mut content).is_err() {
+            return Ok(None);
+        }
+
+        let is_exec = is_executable(&metadata);
+        Ok(Some((content, is_exec)))
+    }
+}
+
 /// Scan workspace directory and generate FileDelta list, filtering out build artifacts and VCS.
 ///
 /// In a git checkout the list is git's (see [`is_synced_git_path`]); elsewhere the directory is
@@ -2093,6 +2606,17 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
     let mut deltas = Vec::new();
 
     if target_dir.is_file() {
+        if let Ok(sym_meta) = target_dir.symlink_metadata() {
+            if sym_meta.file_type().is_symlink() {
+                return Ok(deltas);
+            }
+        }
+        let Ok(canonical) = std::fs::canonicalize(&target_dir) else {
+            return Ok(deltas);
+        };
+        if !canonical.starts_with(&canonical_root) {
+            return Ok(deltas);
+        }
         let rel_path = target_dir
             .strip_prefix(&canonical_root)
             .unwrap_or(&target_dir)
@@ -2103,12 +2627,15 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
         if is_relevant_code_or_manifest_file(&rel_path)
             || (listed_by_git && is_synced_git_path(&rel_path))
         {
-            let content = std::fs::read(&target_dir)?;
-            deltas.push(FileDelta {
-                relative_path: rel_path,
-                content: Some(content),
-                is_executable: false,
-            });
+            if let Some((content, is_exec)) =
+                read_regular_file_secure(&target_dir, &canonical_root)?
+            {
+                deltas.push(FileDelta {
+                    relative_path: rel_path,
+                    content: Some(content),
+                    is_executable: is_exec,
+                });
+            }
         }
         return Ok(deltas);
     }
@@ -2119,22 +2646,20 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
                 continue;
             }
             let full_path = canonical_root.join(&rel_path);
-            let Ok(metadata) = full_path.metadata() else {
+            let Ok(sym_meta) = full_path.symlink_metadata() else {
                 continue; // listed by git, deleted on disk
             };
-            if !fits_sync(&rel_path, &metadata) {
+            if sym_meta.file_type().is_symlink() {
                 continue;
             }
-            let Ok(content) = std::fs::read(&full_path) else {
+            if !fits_sync(&rel_path, &sym_meta) {
+                continue;
+            }
+            let Some((content, is_executable)) =
+                read_regular_file_secure(&full_path, &canonical_root)?
+            else {
                 continue;
             };
-            #[cfg(unix)]
-            let is_executable = {
-                use std::os::unix::fs::PermissionsExt;
-                metadata.permissions().mode() & 0o111 != 0
-            };
-            #[cfg(not(unix))]
-            let is_executable = false;
             deltas.push(FileDelta {
                 relative_path: rel_path,
                 content: Some(content),
@@ -2156,7 +2681,7 @@ pub fn collect_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
     // private overlay, so each new session must announce all of them; a persistent
     // "already sent" cache would silently drop them for the second connection onwards.
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    Ok(collect_git_dirty_files(&canonical_root, false).unwrap_or_default())
+    collect_git_dirty_files(&canonical_root, false)
 }
 
 /// Like [`collect_dirty_files`] but skips files whose mtime/size/hash watermark is already
@@ -2164,7 +2689,7 @@ pub fn collect_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
 /// previously synced files, i.e. the disk-backed base workspace, not session overlays.
 pub fn collect_dirty_files_incremental(root: &Path) -> Result<Vec<FileDelta>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    Ok(collect_git_dirty_files(&canonical_root, true).unwrap_or_default())
+    collect_git_dirty_files(&canonical_root, true)
 }
 
 fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta>> {
@@ -2235,10 +2760,11 @@ fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta
             if cache.files.remove(rel_path).is_some() {
                 cache_modified = true;
             }
-        } else if full_path.is_file()
-            && let Ok(metadata) = full_path.metadata()
-        {
-            let size = metadata.len();
+        } else if let Ok(sym_meta) = full_path.symlink_metadata() {
+            if sym_meta.file_type().is_symlink() {
+                continue;
+            }
+            let size = sym_meta.len();
             if size > MAX_FILE_SIZE {
                 continue;
             }
@@ -2246,28 +2772,23 @@ fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta
                 continue;
             }
 
-            #[cfg(unix)]
-            let is_executable = {
-                use std::os::unix::fs::PermissionsExt;
-                metadata.permissions().mode() & 0o111 != 0
+            let Some((content, is_executable)) =
+                read_regular_file_secure(&full_path, root)?
+            else {
+                continue;
             };
-            #[cfg(not(unix))]
-            let is_executable = false;
-
-            if let Ok(content) = std::fs::read(&full_path) {
-                let entry = sync_file_entry(&metadata, &content);
-                if cache.files.get(rel_path) == Some(&entry) {
-                    // File was already synced and has not changed.
-                    continue;
-                }
-                deltas.push(FileDelta {
-                    relative_path: rel_path.to_string(),
-                    content: Some(content),
-                    is_executable,
-                });
-                cache.files.insert(rel_path.to_string(), entry);
-                cache_modified = true;
+            let entry = sync_file_entry(&sym_meta, &content);
+            if cache.files.get(rel_path) == Some(&entry) {
+                // File was already synced and has not changed.
+                continue;
             }
+            deltas.push(FileDelta {
+                relative_path: rel_path.to_string(),
+                content: Some(content),
+                is_executable,
+            });
+            cache.files.insert(rel_path.to_string(), entry);
+            cache_modified = true;
         }
     }
 
@@ -2370,6 +2891,23 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
             continue;
         }
 
+        // Security: reject symlinks and symlinked targets pointing outside the workspace root
+        if entry.file_type().map_or(true, |ft| ft.is_symlink() || !ft.is_file()) {
+            continue;
+        }
+        if let Ok(sym_meta) = path.symlink_metadata() {
+            if sym_meta.file_type().is_symlink() {
+                continue;
+            }
+        }
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            if !canonical.starts_with(canonical_root) || !canonical.is_file() {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
         let rel_path = path
             .strip_prefix(canonical_root)
             .unwrap_or(path)
@@ -2387,19 +2925,8 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
             continue;
         }
 
-        if let Ok(content) = std::fs::read(path) {
-            #[cfg(unix)]
-            let is_executable = {
-                use std::os::unix::fs::PermissionsExt;
-                entry
-                    .metadata()
-                    .ok()
-                    .map(|m| m.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
-            };
-            #[cfg(not(unix))]
-            let is_executable = false;
-
+        if let Some((content, is_executable)) = read_regular_file_secure(path, canonical_root)?
+        {
             deltas.push(FileDelta {
                 relative_path: rel_path,
                 content: Some(content),
@@ -3785,5 +4312,80 @@ version = "0.2.2"
         assert!(is_relevant_code_or_manifest_file("examples/data/loading.rs"));
         assert!(is_relevant_code_or_manifest_file("tests/state/test_state.rs"));
         assert!(is_relevant_code_or_manifest_file("benches/state/bench_state.rs"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_scan_workspace_files_rejects_symlinks_in_non_git_sync() {
+        let ws = tempfile::tempdir().expect("tempdir");
+        let ws_root = ws.path();
+        std::fs::create_dir_all(ws_root.join("src")).expect("src dir");
+        std::fs::write(ws_root.join("src/valid.rs"), "pub fn ok() {}\n").expect("write valid");
+
+        // External secret file
+        let external = tempfile::tempdir().expect("external dir");
+        let secret_file = external.path().join("id_rsa");
+        std::fs::write(&secret_file, "secret-private-key-bytes").expect("write secret");
+
+        // Create symlink inside workspace pointing to external secret
+        let leak_symlink = ws_root.join("src/leak.rs");
+        std::os::unix::fs::symlink(&secret_file, &leak_symlink).expect("symlink");
+
+        let deltas = scan_workspace_files(ws_root, None).expect("scan");
+        assert!(deltas.iter().any(|d| d.relative_path == "src/valid.rs"));
+        assert!(
+            !deltas.iter().any(|d| d.relative_path == "src/leak.rs"),
+            "symlink pointing outside workspace root must be rejected"
+        );
+        for delta in &deltas {
+            if let Some(content) = &delta.content {
+                assert_ne!(
+                    content.as_slice(),
+                    b"secret-private-key-bytes",
+                    "leaked external content must not be present in any file delta"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_scan_workspace_files_rejects_git_listed_symlinks_in_commitless_repo() {
+        let ws = tempfile::tempdir().expect("tempdir");
+        let ws_root = ws.path();
+
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(ws_root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git init");
+        assert!(status.success());
+
+        std::fs::create_dir_all(ws_root.join("src")).expect("src dir");
+        std::fs::write(ws_root.join("src/valid.rs"), "pub fn ok() {}\n").expect("write valid");
+
+        let external = tempfile::tempdir().expect("external dir");
+        let secret_file = external.path().join("id_rsa");
+        std::fs::write(&secret_file, "secret-private-key-bytes").expect("write secret");
+
+        let leak_symlink = ws_root.join("src/leak.rs");
+        std::os::unix::fs::symlink(&secret_file, &leak_symlink).expect("symlink");
+
+        let deltas = scan_workspace_files(ws_root, None).expect("scan");
+        assert!(deltas.iter().any(|d| d.relative_path == "src/valid.rs"));
+        assert!(
+            !deltas.iter().any(|d| d.relative_path == "src/leak.rs"),
+            "git-listed symlink pointing outside workspace root must be rejected"
+        );
+        for delta in &deltas {
+            if let Some(content) = &delta.content {
+                assert_ne!(
+                    content.as_slice(),
+                    b"secret-private-key-bytes",
+                    "leaked external content must not be present in any file delta"
+                );
+            }
+        }
     }
 }

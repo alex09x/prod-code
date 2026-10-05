@@ -491,6 +491,51 @@ fn source_line(text: &str, at: usize) -> String {
         .to_string()
 }
 
+pub(crate) fn is_in_literal_or_comment(text: &str, at: usize, lang: Language) -> bool {
+    let mut chars = text[..at].chars().peekable();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+    while let Some(ch) = chars.next() {
+        if line_comment {
+            if ch == '\n' {
+                line_comment = false;
+            }
+            continue;
+        }
+        if block_comment {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                block_comment = false;
+            }
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if lang == Language::Python && ch == '#' {
+            line_comment = true;
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            line_comment = true;
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            block_comment = true;
+        } else if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+        }
+    }
+    quote.is_some() || line_comment || block_comment
+}
+
 /// Promotes the expression selected in `file` into a field of the type its method belongs to.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract(
@@ -1141,6 +1186,7 @@ pub async fn extract_polyglot(
     let expression = text[from..to].trim().to_string();
     anyhow::ensure!(!expression.is_empty(), "the selection is only whitespace");
 
+    let mut is_static_method = false;
     let (owner, method, receiver_name, params, body_open, body_close, class_body_open, class_close_line_start, init_body) = match lang {
         Language::Go => {
             let mut found = None;
@@ -1328,6 +1374,7 @@ pub async fn extract_polyglot(
                     let p_slice = &before_body[first_paren + 1..last_paren];
                     let head = before_body[..first_paren].trim_end();
                     let m_name = head.split_whitespace().last().unwrap_or("").trim();
+                    is_static_method = head.split_whitespace().any(|word| word == "static");
                     found_method = Some((m_name.to_string(), parse_params_ts(p_slice), b_open, b_close));
                     break;
                 }
@@ -1481,18 +1528,27 @@ pub async fn extract_polyglot(
             let decl = match lang {
                 Language::TypeScript => {
                     if let Some(t) = ty {
+                    if is_static_method {
+                        format!("    static {name}: {t} = {init};\n")
+                    } else {
                         format!("    {name}: {t} = {init};\n")
+                    }
+                } else {
+                    if is_static_method {
+                        format!("    static {name} = {init};\n")
                     } else {
                         format!("    {name} = {init};\n")
                     }
                 }
-                _ => format!("    {name} = {init};\n"),
+            }
+            _ if is_static_method => format!("    static {name} = {init};\n"),
+            _ => format!("    {name} = {init};\n"),
             };
             (line_after_open, decl)
         }
         Language::Python => {
             if let Some((_, init_end)) = init_body {
-                (init_end, format!("\n        self.{name} = {init}"))
+                (init_end, format!("\n        self.{name} = {init}\n"))
             } else {
                 let decl = if let Some(t) = ty {
                     format!("    {name}: {t} = {init}\n")
@@ -1538,12 +1594,37 @@ pub async fn extract_polyglot(
 
     let mut replaced = 0usize;
     if replace_all {
+        let lead = text[from..to].len() - text[from..to].trim_start().len();
+        let selected = from + lead;
+        own_edits.push((selected, expression.len(), recv_expr.clone()));
+        replaced = 1;
         let mut at = body_open;
         while let Some(i) = text[at..body_close].find(&expression) {
             let hit = at + i;
+            let after = hit + expression.len();
+            if hit == selected {
+                at = after;
+                continue;
+            }
+            let left_boundary = expression
+                .chars()
+                .next()
+                .is_none_or(|c| !is_ident(c)
+                    || hit == 0
+                    || !text[..hit].chars().next_back().is_some_and(is_ident));
+            let right_boundary = expression
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_ident(c)
+                    || after >= text.len()
+                    || !text[after..].chars().next().is_some_and(is_ident));
+            if is_in_literal_or_comment(&text, hit, lang) || !left_boundary || !right_boundary {
+                at = hit + expression.len();
+                continue;
+            }
             own_edits.push((hit, expression.len(), recv_expr.clone()));
             replaced += 1;
-            at = hit + expression.len();
+            at = after;
         }
     } else {
         let lead = text[from..to].len() - text[from..to].trim_start().len();
@@ -1552,7 +1633,15 @@ pub async fn extract_polyglot(
     }
 
     let mut constructors = 0usize;
+    let mut unmatched = Vec::new();
     if lang == Language::Go {
+        let target_package = text.lines().find_map(|line| {
+            line.trim_start()
+                .strip_prefix("package ")
+                .and_then(|p| p.split_whitespace().next())
+        });
+        let target_dir = file.parent().unwrap_or(root);
+        let target_dir = std::fs::canonicalize(target_dir).unwrap_or_else(|_| target_dir.to_path_buf());
         for entry in ignore::WalkBuilder::new(root).build().flatten() {
             let path = entry.path();
             if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("go") {
@@ -1570,7 +1659,37 @@ pub async fn extract_polyglot(
             while let Some(pos) = content[cur..].find(&needle) {
                 let hit = cur + pos;
                 cur = hit + needle.len();
+                if is_in_literal_or_comment(&content, hit, lang) {
+                    continue;
+                }
                 if hit > 0 && is_ident(content[..hit].chars().next_back().unwrap()) {
+                    continue;
+                }
+                if content[..hit].trim_end().ends_with('.') {
+                    unmatched.push(format!(
+                        "{}:{}: Go literal type `{owner}` is package-qualified and cannot be matched to the selected declaration",
+                        display(root, path),
+                        content[..hit].lines().count()
+                    ));
+                    continue;
+                }
+                let candidate_package = content.lines().find_map(|line| {
+                    line.trim_start()
+                        .strip_prefix("package ")
+                        .and_then(|p| p.split_whitespace().next())
+                });
+                let candidate_dir = path.parent().unwrap_or(root);
+                let candidate_dir = std::fs::canonicalize(candidate_dir)
+                    .unwrap_or_else(|_| candidate_dir.to_path_buf());
+                if target_package.is_none()
+                    || candidate_package != target_package
+                    || candidate_dir != target_dir
+                {
+                    unmatched.push(format!(
+                        "{}:{}: unqualified Go literal type `{owner}` is in another package and cannot be resolved safely",
+                        display(root, path),
+                        content[..hit].lines().count()
+                    ));
                     continue;
                 }
                 let open = hit + owner.len();
@@ -1677,6 +1796,12 @@ pub async fn extract_polyglot(
     let mut applied = false;
     if apply {
         anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} constructor reference(s) could not be matched to `{owner}`; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
+        anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written. Pass `init`, or \
              `force: true` to write it anyway:\n  {}",
@@ -1699,7 +1824,7 @@ pub async fn extract_polyglot(
         replaced,
         constructors,
         blocked: Vec::new(),
-        unmatched: Vec::new(),
+        unmatched,
         rewritten: rewritten
             .into_iter()
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))

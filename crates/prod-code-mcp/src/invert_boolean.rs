@@ -135,6 +135,104 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn is_in_string_or_comment(content: &str, at: usize, lang: Language) -> bool {
+    let mut chars = content[..at].chars().peekable();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+    while let Some(ch) = chars.next() {
+        if line_comment {
+            if ch == '\n' {
+                line_comment = false;
+            }
+            continue;
+        }
+        if block_comment {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                block_comment = false;
+            }
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if lang == Language::Python && ch == '#' {
+            line_comment = true;
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            line_comment = true;
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            block_comment = true;
+        } else if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+        }
+    }
+    quote.is_some() || line_comment || block_comment
+}
+
+fn one_based_lsp_position(text: &str, byte_offset: usize) -> (u32, u32) {
+    let before = &text[..byte_offset];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+    let column_text = before.rsplit('\n').next().unwrap_or_default();
+    let character = column_text.encode_utf16().count() as u32 + 1;
+    (line, character)
+}
+
+fn is_import_export_call_context(text: &str, at: usize, lang: Language) -> bool {
+    if !matches!(lang, Language::TypeScript | Language::JavaScript) {
+        return crate::inline_parameter::is_import_or_export_context(text, at, lang);
+    }
+    let line_start = text[..at].rfind('\n').map_or(0, |position| position + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |offset| at + offset);
+    let line = text[line_start..line_end].trim_start();
+    if line.starts_with("import ")
+        || line.starts_with("import{")
+        || line.starts_with("export {")
+        || line.starts_with("export{")
+        || line.starts_with("export *")
+        || line.starts_with("from ")
+        || line.contains("require(")
+    {
+        return true;
+    }
+    let before = &text[..at];
+    before
+        .rfind("import {")
+        .or_else(|| before.rfind("export {"))
+        .is_some_and(|start| !before[start..].contains('}'))
+}
+
+fn nested_method_header(header: &str) -> bool {
+    let header = header.rsplit('{').next().unwrap_or(header).trim();
+    let Some(open) = header.rfind('(') else {
+        return false;
+    };
+    let name = header[..open]
+        .split_whitespace()
+        .next_back()
+        .unwrap_or_default()
+        .trim_start_matches('*')
+        .trim_start_matches('&');
+    if matches!(name, "if" | "for" | "while" | "switch" | "catch" | "with") {
+        return false;
+    }
+    let rest = header[open..].trim_end();
+    rest.ends_with(')')
+        || [" const", " async", " throws", " rethrows", " noexcept", " override", " final"]
+            .iter()
+            .any(|suffix| rest.ends_with(suffix))
+}
+
 /// The `return` keywords that return from the function whose body is `inner`: not one inside a
 /// closure or an `async` block, where `return` returns from that instead.
 pub fn own_returns(inner: &str) -> Vec<usize> {
@@ -148,12 +246,38 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
             i = inner[i..].find('\n').map_or(bytes.len(), |n| i + n);
             continue;
         }
-        if c == b'"' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] != b'"' {
-                j += if bytes[j] == b'\\' { 2 } else { 1 };
+        if inner[i..].starts_with("/*") {
+            i += 2;
+            let mut depth = 1usize;
+            while i < bytes.len() && depth > 0 {
+                if inner[i..].starts_with("/*") {
+                    depth += 1;
+                    i += 2;
+                } else if inner[i..].starts_with("*/") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += inner[i..].chars().next().unwrap().len_utf8();
+                }
             }
-            i = j + 1;
+            continue;
+        }
+        if matches!(c, b'"' | b'\'' | b'`') {
+            let quote = c;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                    if i < bytes.len() {
+                        i += inner[i..].chars().next().unwrap().len_utf8();
+                    }
+                } else if bytes[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += inner[i..].chars().next().unwrap().len_utf8();
+                }
+            }
             continue;
         }
         if c == b'{' {
@@ -168,7 +292,8 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
                 || line.contains(" fn ")
                 || line.contains("func ")
                 || line.contains("function ")
-                || line.contains("=>");
+                || line.contains("=>")
+                || nested_method_header(line);
             stack.push(opaque);
             i += 1;
             continue;
@@ -186,7 +311,7 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
         {
             out.push(i);
         }
-        i += 1;
+        i += inner[i..].chars().next().unwrap().len_utf8();
     }
     out
 }
@@ -759,6 +884,36 @@ pub async fn invert_polyglot(
     let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
 
     let decl = find_polyglot_predicate_declaration(&text, lang, line, symbol)?;
+    let (selected_line, selected_col) = one_based_lsp_position(&text, decl.decl_name_at);
+    let mut semantic_references = crate::signature::references(
+        remote,
+        root,
+        file,
+        selected_line,
+        selected_col,
+    )
+    .await?
+    .into_iter()
+    .map(|(path, ref_line, ref_col)| {
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        (path, ref_line, ref_col)
+    })
+    .collect::<std::collections::HashSet<_>>();
+    let references_are_empty = semantic_references.is_empty();
+    let selected_cpp_param_types = if matches!(lang, Language::Cpp | Language::C) {
+        let after_name = decl.decl_name_at + decl.fn_name.len();
+        let open_paren = after_name + text[after_name..decl.close_paren].find('(').unwrap_or_default();
+        crate::parameter_object::parse_params(
+            &text[open_paren + 1..decl.close_paren],
+            lang,
+        )
+        .1
+        .into_iter()
+        .map(|param| param.ty)
+        .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     anyhow::ensure!(decl.fn_name != new_name, "the new name is the old one");
 
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
@@ -811,37 +966,95 @@ pub async fn invert_polyglot(
             if after.starts_with(is_ident) {
                 continue;
             }
+            if is_in_string_or_comment(&other_content, at, lang) {
+                continue;
+            }
 
-            let line = other_content[..at].lines().count();
-            let col = at - other_content[..at].rfind('\n').map_or(0, |p| p + 1) + 1;
+            let source_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let (line, col) = one_based_lsp_position(&other_content, at);
+            let reference_key = (source_path, line, col);
             let site = format!("{rel_path}:{line}:{col}");
+
+            if is_import_export_call_context(&other_content, at, lang) {
+                if references_are_empty {
+                    all_unmatched.push(format!(
+                        "{site}: analyzer references for `{}` were empty; nothing was written",
+                        decl.fn_name
+                    ));
+                    continue;
+                }
+                semantic_references.remove(&reference_key);
+                let line_start = other_content[..at].rfind('\n').map_or(0, |n| n + 1);
+                let line_end = other_content[at..]
+                    .find('\n')
+                    .map_or(other_content.len(), |n| at + n);
+                if other_content[line_start..line_end].contains(" as ") {
+                    all_unmatched.push(format!(
+                        "{site} imports `{}` through an alias; alias call sites are not resolved",
+                        decl.fn_name
+                    ));
+                } else {
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                }
+                continue;
+            }
 
             // Declaration check in declaring file
             if is_decl_file && at >= decl.decl_name_at && at <= decl.close_paren {
+                semantic_references.remove(&reference_key);
+                continue;
+            }
+
+            if references_are_empty {
+                all_unmatched.push(format!(
+                    "{site}: analyzer references for `{}` were empty; nothing was written",
+                    decl.fn_name
+                ));
                 continue;
             }
 
             // Self-call check inside function's own body
             if is_decl_file && at > decl.body_open && at < decl.body_close {
-                anyhow::bail!("`{}` calls itself; invert a recursive predicate by hand", decl.fn_name);
+                if semantic_references.remove(&reference_key) {
+                    anyhow::bail!("`{}` calls itself; invert a recursive predicate by hand", decl.fn_name);
+                }
+                continue;
             }
 
-            let Some((_args_start, args_end)) = crate::parameter_object::call_args_span(&other_content, at + decl.fn_name.len()) else {
-                if crate::inline_parameter::is_in_comment(&other_content, at, lang) {
-                    continue;
-                }
-                if crate::inline_parameter::is_import_or_export_context(&other_content, at, lang) {
+            let candidate_args = crate::parameter_object::call_args_span(
+                &other_content,
+                at + decl.fn_name.len(),
+            );
+            if matches!(lang, Language::Cpp | Language::C)
+                && let Some((args_start, args_end)) = candidate_args
+                && crate::inline_parameter::is_c_cpp_prototype(
+                    &other_content,
+                    at,
+                    args_end,
+                )
+            {
+                let (_, proto_params) = crate::parameter_object::parse_params(
+                    &other_content[args_start..args_end],
+                    lang,
+                );
+                let proto_types = proto_params
+                    .into_iter()
+                    .map(|param| param.ty)
+                    .collect::<Vec<_>>();
+                if proto_types == selected_cpp_param_types {
                     file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
-                    continue;
                 }
+                continue;
+            }
+
+            if !semantic_references.remove(&reference_key) {
+                continue;
+            }
+
+            let Some((_args_start, args_end)) = candidate_args else {
                 all_unmatched.push(format!("{site} `{}` used as a value", decl.fn_name));
                 continue;
             };
-
-            if matches!(lang, Language::Cpp | Language::C) && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, args_end) {
-                file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
-                continue;
-            }
 
             // Real call site!
             let begin = call_start(&other_content, at);
@@ -894,6 +1107,14 @@ pub async fn invert_polyglot(
             texts.insert(path.to_path_buf(), other_content);
             edits.entry(path.to_path_buf()).or_default().extend(file_edits);
         }
+    }
+
+    for (path, ref_line, ref_col) in semantic_references {
+        all_unmatched.push(format!(
+            "{}:{ref_line}:{ref_col}: analyzer reference to `{}` could not be inverted safely",
+            display(root, &path),
+            decl.fn_name
+        ));
     }
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -1001,6 +1222,18 @@ mod tests {
         assert_eq!(own_returns(inner).len(), 1);
         assert!(own_returns("\n    \"return\" == s\n").is_empty());
         assert!(own_returns("\n    returns_ok()\n").is_empty());
+    }
+
+    #[test]
+    fn a_return_inside_a_nested_class_method_is_not_the_functions() {
+        let body = "\n    class Local {\n        check() {\n            return true;\n        }\n    }\n    return false;\n";
+        assert_eq!(own_returns(body), vec![body.rfind("return false").unwrap()]);
+    }
+
+    #[test]
+    fn a_return_inside_single_quoted_template_or_comment_text_is_ignored() {
+        let body = "let message = '🟦 return true;';\nlet template = `return false;`;\n/* return true; */\nreturn result;";
+        assert_eq!(own_returns(body), vec![body.rfind("return result").unwrap()]);
     }
 
     #[test]

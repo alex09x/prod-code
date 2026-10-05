@@ -195,8 +195,14 @@ impl WorkspaceIndex {
 
             for target in seen_in_d {
                 *in_degree.entry(target.clone()).or_insert(0) += 1;
-                mentions.entry(d_name.clone()).or_default().insert(target.clone());
-                referenced_by.entry(target).or_default().insert(d_name.clone());
+                mentions
+                    .entry(d_name.clone())
+                    .or_default()
+                    .insert(target.clone());
+                referenced_by
+                    .entry(target)
+                    .or_default()
+                    .insert(d_name.clone());
             }
         }
 
@@ -309,6 +315,7 @@ impl SearchIndexes {
                 for rel in pending {
                     reindex_one(&root, index, &rel, &self.inner.next_generation);
                 }
+                index.rebuild_graph();
             }
             let embedded = index.declarations().filter(|d| d.vector.is_some()).count();
             let with_vectors = query_vector.as_deref().filter(|_| embedded > 0);
@@ -544,17 +551,14 @@ fn refresh(root: &Path, index: &mut WorkspaceIndex, generations: &AtomicU64) {
 fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: &AtomicU64) {
     let Some(path) = source_path(root, rel) else {
         index.files.remove(rel);
-        index.rebuild_graph();
         return;
     };
     let Ok(meta) = std::fs::metadata(&path) else {
         index.files.remove(rel);
-        index.rebuild_graph();
         return;
     };
     if meta.len() > MAX_FILE_BYTES {
         index.files.remove(rel);
-        index.rebuild_graph();
         return;
     }
     let stamp = (
@@ -567,7 +571,6 @@ fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: 
     );
     let Ok(text) = std::fs::read_to_string(&path) else {
         index.files.remove(rel);
-        index.rebuild_graph();
         return;
     };
     let decls = declarations_in(rel, &text)
@@ -582,7 +585,6 @@ fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: 
             decls,
         },
     );
-    index.rebuild_graph();
 }
 
 /// Resolves the checkout itself once, so aliases to the checkout behave like the checkout, but
@@ -779,11 +781,7 @@ fn declaration_on(line: &str, language: &str) -> Option<(String, String)> {
             } else {
                 keyword(
                     t,
-                    &[
-                        ("type", "type"),
-                        ("const", "constant"),
-                        ("var", "variable"),
-                    ],
+                    &[("type", "type"), ("const", "constant"), ("var", "variable")],
                 )
             }
         }
@@ -827,13 +825,73 @@ fn declaration_on(line: &str, language: &str) -> Option<(String, String)> {
                 ],
             )
             .or_else(|| {
-                let before = t.split_once('(')?.0.trim_end();
+                let open = t.find('(')?;
+                let before = t[..open].trim_end();
+                let mut depth = 0usize;
+                let mut close_idx = None;
+                let mut in_single = false;
+                let mut in_double = false;
+                let mut in_backtick = false;
+                let mut escaped = false;
+                for (idx, ch) in t[open..].char_indices() {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    if ch == '\\' {
+                        escaped = true;
+                        continue;
+                    }
+                    if in_single {
+                        if ch == '\'' {
+                            in_single = false;
+                        }
+                        continue;
+                    }
+                    if in_double {
+                        if ch == '"' {
+                            in_double = false;
+                        }
+                        continue;
+                    }
+                    if in_backtick {
+                        if ch == '`' {
+                            in_backtick = false;
+                        }
+                        continue;
+                    }
+                    match ch {
+                        '\'' => in_single = true,
+                        '"' => in_double = true,
+                        '`' => in_backtick = true,
+                        '(' => depth += 1,
+                        ')' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                close_idx = Some(open + idx);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let close = close_idx?;
+                let after = t[close + 1..].trim_start();
+                let has_return_type = after.strip_prefix(':').is_some_and(|ty| {
+                    let ty = ty.trim();
+                    !ty.is_empty() && (ty.ends_with(';') || ty.contains('{'))
+                });
+                let declaration_tail = after.starts_with('{') || has_return_type;
                 (!before.is_empty()
-                    && t.contains(')')
+                    && declaration_tail
                     && !before.contains(' ')
+                    && !before.contains('.')
                     && !t.starts_with("//")
                     && !t.starts_with('*')
-                    && !matches!(before, "if" | "for" | "while" | "switch" | "catch" | "return"))
+                    && !matches!(
+                        before,
+                        "if" | "for" | "while" | "switch" | "catch" | "return"
+                    ))
                 .then(|| ident(before))
                 .flatten()
                 .map(|n| ("method".to_string(), n))
@@ -1144,12 +1202,14 @@ fn rank_weighted(
     let terms = tokenize(query);
     let docs = candidates(index, &terms, subpath);
     let fallback_graph;
-    let graph = if index.graph.in_degree.is_empty() && index.graph.mentions.is_empty() && !index.is_empty() {
-        fallback_graph = index.build_graph();
-        &fallback_graph
-    } else {
-        &index.graph
-    };
+    let graph =
+        if index.graph.in_degree.is_empty() && index.graph.mentions.is_empty() && !index.is_empty()
+        {
+            fallback_graph = index.build_graph();
+            &fallback_graph
+        } else {
+            &index.graph
+        };
 
     let mut fused: Vec<HitAttribution<'_>> = Vec::new();
 
@@ -1160,7 +1220,11 @@ fn rank_weighted(
         let reason = if matched_terms.is_empty() {
             format!("lexical: rank {}", rank + 1)
         } else {
-            format!("lexical: rank {} (matched {})", rank + 1, matched_terms.join(", "))
+            format!(
+                "lexical: rank {} (matched {})",
+                rank + 1,
+                matched_terms.join(", ")
+            )
         };
         match fused.iter_mut().find(|h| std::ptr::eq(h.decl, *decl)) {
             Some(h) => {
@@ -2592,19 +2656,31 @@ impl Metrics {
 
         // Node is referenced by Cluster::schedule and doc
         let node_deg = index.graph.in_degree.get("Node").copied().unwrap_or(0);
-        assert!(node_deg >= 1, "Node in-degree should be >= 1, got {node_deg}");
+        assert!(
+            node_deg >= 1,
+            "Node in-degree should be >= 1, got {node_deg}"
+        );
 
         // Context is referenced by JobScheduler.Run
         let ctx_deg = index.graph.in_degree.get("Context").copied().unwrap_or(0);
-        assert!(ctx_deg >= 1, "Context in-degree should be >= 1, got {ctx_deg}");
+        assert!(
+            ctx_deg >= 1,
+            "Context in-degree should be >= 1, got {ctx_deg}"
+        );
 
         // Task is referenced by Worker.execute
         let task_deg = index.graph.in_degree.get("Task").copied().unwrap_or(0);
-        assert!(task_deg >= 1, "Task in-degree should be >= 1, got {task_deg}");
+        assert!(
+            task_deg >= 1,
+            "Task in-degree should be >= 1, got {task_deg}"
+        );
 
         // Tensor is referenced by ModelRunner.run
         let tensor_deg = index.graph.in_degree.get("Tensor").copied().unwrap_or(0);
-        assert!(tensor_deg >= 1, "Tensor in-degree should be >= 1, got {tensor_deg}");
+        assert!(
+            tensor_deg >= 1,
+            "Tensor in-degree should be >= 1, got {tensor_deg}"
+        );
 
         // Verify category weighting
         assert!(category_weight("struct") > category_weight("function"));
@@ -2666,11 +2742,25 @@ pub fn run_exec_command(output: &mut ExecOutput) {}
         assert!(!hits.is_empty(), "expected hits for query");
 
         // TailBuffer should be the top hit due to structural centrality and in-degree reinforcement
-        assert_eq!(hits[0].name, "TailBuffer", "TailBuffer should be top hit: got {:?}", hits.iter().map(|h| &h.name).collect::<Vec<_>>());
+        assert_eq!(
+            hits[0].name,
+            "TailBuffer",
+            "TailBuffer should be top hit: got {:?}",
+            hits.iter().map(|h| &h.name).collect::<Vec<_>>()
+        );
         assert!(hits[0].score.is_some(), "hit must have attributable score");
-        let reasons = hits[0].rank_reasons.as_ref().expect("hit must have rank reasons");
-        assert!(reasons.iter().any(|r| r.contains("graph:")), "reasons must contain graph attribution: {reasons:?}");
-        assert!(reasons.iter().any(|r| r.contains("lexical:")), "reasons must contain lexical attribution: {reasons:?}");
+        let reasons = hits[0]
+            .rank_reasons
+            .as_ref()
+            .expect("hit must have rank reasons");
+        assert!(
+            reasons.iter().any(|r| r.contains("graph:")),
+            "reasons must contain graph attribution: {reasons:?}"
+        );
+        assert!(
+            reasons.iter().any(|r| r.contains("lexical:")),
+            "reasons must contain lexical attribution: {reasons:?}"
+        );
     }
 
     #[test]
@@ -2679,7 +2769,9 @@ pub fn run_exec_command(output: &mut ExecOutput) {}
         // Generate a synthetic workspace with 20 files and 420 declarations
         for f in 0..20 {
             let mut text = String::new();
-            text.push_str(&format!("/// Module {f} primary manager.\npub struct Manager{f} {{\n    id: u32,\n}}\n\n"));
+            text.push_str(&format!(
+                "/// Module {f} primary manager.\npub struct Manager{f} {{\n    id: u32,\n}}\n\n"
+            ));
             for d in 0..20 {
                 text.push_str(&format!(
                     "/// Operation {d} in module {f} processing requests.\npub fn process_req_{f}_{d}(mgr: &Manager{f}) -> u32 {{ {d} }}\n\n"
@@ -2729,8 +2821,37 @@ pub fn run_exec_command(output: &mut ExecOutput) {}
         );
 
         // Strict assertion: universal sub-10 ms latency (p50 and p95 under 10 ms)
-        assert!(p50_us < 10_000, "p50 latency was {} us (> 10000 us)", p50_us);
-        assert!(p95_us < 10_000, "p95 latency was {} us (> 10000 us)", p95_us);
+        assert!(
+            p50_us < 10_000,
+            "p50 latency was {} us (> 10000 us)",
+            p50_us
+        );
+        assert!(
+            p95_us < 10_000,
+            "p95 latency was {} us (> 10000 us)",
+            p95_us
+        );
+    }
+
+    #[test]
+    fn typescript_method_detection_rejects_calls_but_accepts_declarations() {
+        assert_eq!(declaration_on("doWork(arg);", "typescript"), None);
+        assert_eq!(declaration_on("console.log(arg);", "typescript"), None);
+        assert_eq!(
+            declaration_on("doWork(arg): void {", "typescript"),
+            Some(("method".to_string(), "doWork".to_string()))
+        );
+        assert_eq!(
+            declaration_on("doWork(arg) {", "typescript"),
+            Some(("method".to_string(), "doWork".to_string()))
+        );
+        assert_eq!(
+            declaration_on("doWork(cb: (x: number) => void): void {", "typescript"),
+            Some(("method".to_string(), "doWork".to_string()))
+        );
+        assert_eq!(
+            declaration_on("doWork(cb: (x: number) => void) {", "typescript"),
+            Some(("method".to_string(), "doWork".to_string()))
+        );
     }
 }
-

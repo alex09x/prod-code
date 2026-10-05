@@ -13,7 +13,7 @@
 //! - `std::make_shared<$T>($args) ==>> std::allocate_shared<$T>(alloc, $args)`
 //! - `print($x) ==>> os_log("\($x)")`
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,8 @@ use std::time::Instant;
 /// Supported file extensions for polyglot structural codemods.
 pub const CODE_EXTENSIONS: &[&str] = &[
     "rs", "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "cpp", "cc", "cxx", "c", "hpp", "h",
-    "swift", "java", "kt", "kts", "cs", "scala", "zig", "nim", "d", "php", "rb", "dart", "lua", "ex", "exs",
+    "swift", "java", "kt", "kts", "cs", "scala", "zig", "nim", "d", "php", "rb", "dart", "lua",
+    "ex", "exs",
 ];
 
 /// Directories to skip during workspace-wide codemod traversal.
@@ -95,9 +96,11 @@ impl CompiledPattern {
         let mut required_literals = Vec::new();
         for tok in &pattern_tokens {
             if let PatternToken::Literal(TokenKind::Ident(name)) = tok
-                && name.len() >= 2 && !name.starts_with('$') {
-                    required_literals.push(name.clone());
-                }
+                && name.len() >= 2
+                && !name.starts_with('$')
+            {
+                required_literals.push(name.clone());
+            }
         }
         required_literals.sort();
         required_literals.dedup();
@@ -162,7 +165,9 @@ fn tokenize_pattern(pattern: &str) -> Result<Vec<PatternToken>> {
         if b == b'$' {
             let start = i;
             i += 1;
-            while i < bytes.len() && (bytes[i] == b'$' || bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            while i < bytes.len()
+                && (bytes[i] == b'$' || bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+            {
                 i += 1;
             }
             let name = &pattern[start + 1..i];
@@ -222,7 +227,9 @@ fn tokenize_pattern(pattern: &str) -> Result<Vec<PatternToken>> {
         // Numbers
         if b.is_ascii_digit() {
             let start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_') {
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_')
+            {
                 i += 1;
             }
             tokens.push(PatternToken::Literal(TokenKind::NumberLit(
@@ -236,7 +243,25 @@ fn tokenize_pattern(pattern: &str) -> Result<Vec<PatternToken>> {
             let pair = &pattern[i..i + 2];
             if matches!(
                 pair,
-                "==" | "!=" | "<=" | ">=" | "&&" | "||" | "->" | "::" | "+=" | "-=" | "*=" | "/=" | ":=" | "=>" | "??" | "?." | "<<" | ">>" | "**" | "//"
+                "==" | "!="
+                    | "<="
+                    | ">="
+                    | "&&"
+                    | "||"
+                    | "->"
+                    | "::"
+                    | "+="
+                    | "-="
+                    | "*="
+                    | "/="
+                    | ":="
+                    | "=>"
+                    | "??"
+                    | "?."
+                    | "<<"
+                    | ">>"
+                    | "**"
+                    | "//"
             ) {
                 tokens.push(PatternToken::Literal(TokenKind::Punct(pair.to_string())));
                 i += 2;
@@ -280,7 +305,9 @@ fn parse_replacement(rep: &str) -> Vec<ReplacementToken> {
             }
             let var_start = i + 1;
             i += 1;
-            while i < bytes.len() && (bytes[i] == b'$' || bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            while i < bytes.len()
+                && (bytes[i] == b'$' || bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+            {
                 i += 1;
             }
             let name = &rep[var_start..i];
@@ -393,7 +420,9 @@ pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
         // Identifiers
         if b.is_ascii_alphabetic() || b == b'_' || b == b'$' {
             let start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$') {
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+            {
                 i += 1;
             }
             tokens.push(SourceToken {
@@ -407,7 +436,9 @@ pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
         // Numbers
         if b.is_ascii_digit() {
             let start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_') {
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_')
+            {
                 i += 1;
             }
             tokens.push(SourceToken {
@@ -424,7 +455,25 @@ pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
             let pair = &source[i..i + 2];
             if matches!(
                 pair,
-                "==" | "!=" | "<=" | ">=" | "&&" | "||" | "->" | "::" | "+=" | "-=" | "*=" | "/=" | ":=" | "=>" | "??" | "?." | "<<" | ">>" | "**" | "//"
+                "==" | "!="
+                    | "<="
+                    | ">="
+                    | "&&"
+                    | "||"
+                    | "->"
+                    | "::"
+                    | "+="
+                    | "-="
+                    | "*="
+                    | "/="
+                    | ":="
+                    | "=>"
+                    | "??"
+                    | "?."
+                    | "<<"
+                    | ">>"
+                    | "**"
+                    | "//"
             ) {
                 tokens.push(SourceToken {
                     kind: TokenKind::Punct(pair.to_string()),
@@ -507,12 +556,38 @@ fn is_boundary_token(kind: &TokenKind, next_expected: &TokenKind) -> bool {
     }
     match kind {
         TokenKind::Punct(p) if p == ";" => true,
+        TokenKind::Punct(p) if p == ":" => true,
         TokenKind::Punct(p) if matches!(p.as_str(), "=" | ":=" | "+=" | "-=" | "*=" | "/=") => true,
         TokenKind::Punct(p) if p == "," => !matches!(next_expected, TokenKind::CloseDelim(_)),
         TokenKind::Ident(id) => matches!(
             id.as_str(),
-            "let" | "var" | "const" | "return" | "fn" | "func" | "function" | "def"
-                | "class" | "struct" | "enum" | "interface" | "import" | "export" | "package"
+            "let"
+                | "var"
+                | "const"
+                | "return"
+                | "fn"
+                | "func"
+                | "function"
+                | "def"
+                | "class"
+                | "struct"
+                | "enum"
+                | "interface"
+                | "import"
+                | "export"
+                | "package"
+                | "if"
+                | "else"
+                | "for"
+                | "while"
+                | "switch"
+                | "case"
+                | "catch"
+                | "throw"
+                | "yield"
+                | "defer"
+                | "break"
+                | "continue"
         ),
         _ => false,
     }
@@ -565,6 +640,12 @@ fn match_pattern_tokens(
                         let mut cur = code_idx;
 
                         while cur < tokens.len() {
+                            if depth == 0
+                                && cur > var_start_token
+                                && newline_separates_expressions(source, tokens, cur)
+                            {
+                                return None;
+                            }
                             match tokens[cur].kind {
                                 TokenKind::OpenDelim(_) => depth += 1,
                                 TokenKind::CloseDelim(_) => {
@@ -641,6 +722,29 @@ fn match_pattern_tokens(
     Some((match_start_byte, match_end_byte, code_idx, bindings))
 }
 
+fn newline_separates_expressions(source: &str, tokens: &[SourceToken], current: usize) -> bool {
+    let previous = &tokens[current - 1];
+    let next = &tokens[current];
+    if !source[previous.end_byte..next.start_byte].contains('\n') {
+        return false;
+    }
+    let can_end = matches!(
+        previous.kind,
+        TokenKind::Ident(_)
+            | TokenKind::NumberLit(_)
+            | TokenKind::StringLit(_)
+            | TokenKind::CloseDelim(_)
+    );
+    let can_start = matches!(
+        next.kind,
+        TokenKind::Ident(_)
+            | TokenKind::NumberLit(_)
+            | TokenKind::StringLit(_)
+            | TokenKind::OpenDelim(_)
+    );
+    can_end && can_start
+}
+
 /// Attempt to match a pattern starting at `start_idx` in `tokens`.
 fn match_at(
     tokens: &[SourceToken],
@@ -649,8 +753,13 @@ fn match_at(
     rule: &CodemodRule,
     source: &str,
 ) -> Option<CodemodMatch> {
-    let (match_start_byte, match_end_byte, _, bindings) =
-        match_pattern_tokens(tokens, start_idx, matching_delims, &rule.pattern_tokens, source)?;
+    let (match_start_byte, match_end_byte, _, bindings) = match_pattern_tokens(
+        tokens,
+        start_idx,
+        matching_delims,
+        &rule.pattern_tokens,
+        source,
+    )?;
 
     // Synthesize replacement text
     let mut rep = String::new();
@@ -774,6 +883,10 @@ fn collect_code_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            continue;
+        }
 
         if path.is_dir() {
             if !SKIPPED_DIRS.contains(&name.as_str()) && !name.starts_with('.') {
@@ -788,6 +901,94 @@ fn collect_code_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Resolve a user supplied relative codemod scope without traversing links or leaving the
+/// workspace. The path must already exist as a file or directory.
+pub fn resolve_workspace_scope(workspace_root: &Path, raw: &str) -> Result<PathBuf> {
+    let raw_trimmed = raw.trim();
+    anyhow::ensure!(
+        !raw_trimmed.is_empty(),
+        "codemod path must name a file or directory"
+    );
+    let requested = Path::new(raw);
+    anyhow::ensure!(
+        !requested.is_absolute(),
+        "codemod path must be relative to the workspace"
+    );
+    let mut has_curdir = false;
+    let mut components = Vec::new();
+    for component in requested.components() {
+        match component {
+            std::path::Component::CurDir => {
+                has_curdir = true;
+            }
+            std::path::Component::Normal(name) => components.push(name),
+            std::path::Component::ParentDir => {
+                anyhow::bail!("codemod path cannot contain parent traversal")
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                anyhow::bail!("codemod path must be relative to the workspace")
+            }
+        }
+    }
+    let is_root_scope = components.is_empty() && has_curdir;
+    anyhow::ensure!(
+        !components.is_empty() || is_root_scope,
+        "codemod path must name a file or directory"
+    );
+    let root = workspace_root
+        .canonicalize()
+        .context("cannot resolve workspace root")?;
+    let mut target = root.clone();
+    for component in components {
+        target.push(component);
+        let metadata = std::fs::symlink_metadata(&target).with_context(|| {
+            format!(
+                "codemod path component does not exist: {}",
+                target.display()
+            )
+        })?;
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "codemod path cannot traverse symlink {}",
+            target.display()
+        );
+    }
+    let metadata = std::fs::metadata(&target)?;
+    anyhow::ensure!(
+        metadata.is_file() || metadata.is_dir(),
+        "codemod path must be a file or directory"
+    );
+    anyhow::ensure!(target.starts_with(&root), "codemod path escapes workspace");
+    Ok(target)
+}
+
+fn validate_scope_path(workspace_root: &Path, scope: &Path) -> Result<PathBuf> {
+    let root = workspace_root
+        .canonicalize()
+        .context("cannot resolve workspace root")?;
+    let relative = scope
+        .strip_prefix(&root)
+        .context("codemod scope is outside the workspace")?;
+    let mut target = root.clone();
+    for component in relative.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(name) => target.push(name),
+            _ => anyhow::bail!("codemod scope contains an unsafe path component"),
+        }
+        let metadata = std::fs::symlink_metadata(&target)?;
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "codemod scope traverses a symlink"
+        );
+    }
+    anyhow::ensure!(
+        target.is_file() || target.is_dir(),
+        "codemod scope does not exist"
+    );
+    Ok(target)
+}
+
 /// Run structural codemod across a file or workspace checkout.
 pub fn run_codemod(
     workspace_root: &Path,
@@ -797,24 +998,20 @@ pub fn run_codemod(
 ) -> Result<CodemodOutcome> {
     let start = Instant::now();
     let rule = CodemodRule::parse(rule_str)?;
+    let workspace_root = workspace_root
+        .canonicalize()
+        .context("cannot resolve workspace root")?;
 
     let mut target_files = Vec::new();
     if let Some(target) = scope {
+        let target = validate_scope_path(&workspace_root, target)?;
         if target.is_file() {
             target_files.push(target.to_path_buf());
         } else if target.is_dir() {
-            collect_code_files(target, &mut target_files);
-        } else {
-            // Path might be relative to workspace root
-            let abs = workspace_root.join(target);
-            if abs.is_file() {
-                target_files.push(abs);
-            } else if abs.is_dir() {
-                collect_code_files(&abs, &mut target_files);
-            }
+            collect_code_files(&target, &mut target_files);
         }
     } else {
-        collect_code_files(workspace_root, &mut target_files);
+        collect_code_files(&workspace_root, &mut target_files);
     }
 
     target_files.sort();
@@ -831,7 +1028,7 @@ pub fn run_codemod(
 
         if let Some(new_text) = rewrite_source(&old_text, &rule) {
             let rel = path
-                .strip_prefix(workspace_root)
+                .strip_prefix(&workspace_root)
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| path.to_string_lossy().into_owned());
 
@@ -875,7 +1072,7 @@ pub fn run_codemod(
             }));
         }
         let workspace_edit = serde_json::json!({ "documentChanges": document_changes });
-        crate::refactor::apply_workspace_edit(workspace_root, &workspace_edit)?;
+        crate::refactor::apply_workspace_edit(&workspace_root, &workspace_edit)?;
     }
 
     let elapsed = start.elapsed();
@@ -947,15 +1144,30 @@ impl StructuralSearchResult {
         }
 
         for m in self.matches.iter().take(max_items) {
-            let first_line = m.matched_text.lines().next().unwrap_or(&m.matched_text).trim();
-            text.push_str(&format!("  • {}:{}:{}  {}\n", m.file, m.line, m.col, first_line));
+            let first_line = m
+                .matched_text
+                .lines()
+                .next()
+                .unwrap_or(&m.matched_text)
+                .trim();
+            text.push_str(&format!(
+                "  • {}:{}:{}  {}\n",
+                m.file, m.line, m.col, first_line
+            ));
             if !m.bindings.is_empty() {
-                let binds: Vec<String> = m.bindings.iter().map(|(k, v)| format!("${k} = {v}")).collect();
+                let binds: Vec<String> = m
+                    .bindings
+                    .iter()
+                    .map(|(k, v)| format!("${k} = {v}"))
+                    .collect();
                 text.push_str(&format!("    └─ [{}]\n", binds.join(", ")));
             }
         }
         if self.matches.len() > max_items {
-            text.push_str(&format!("\n  … and {} more match(es) truncated\n", self.matches.len() - max_items));
+            text.push_str(&format!(
+                "\n  … and {} more match(es) truncated\n",
+                self.matches.len() - max_items
+            ));
         }
         text
     }
@@ -983,9 +1195,13 @@ pub fn find_structural_matches_in_source(
     let mut i = 0;
 
     while i < tokens.len() {
-        if let Some((start_b, end_b, _, bindings)) =
-            match_pattern_tokens(&tokens, i, &matching_delims, &pattern.pattern_tokens, source)
-        {
+        if let Some((start_b, end_b, _, bindings)) = match_pattern_tokens(
+            &tokens,
+            i,
+            &matching_delims,
+            &pattern.pattern_tokens,
+            source,
+        ) {
             let (line, col) = byte_to_line_col(source, start_b);
             let matched_text = source[start_b..end_b].to_string();
             let mut string_bindings = BTreeMap::new();
@@ -1080,8 +1296,9 @@ mod tests {
 
     #[test]
     fn test_go_error_wrapping_codemod() {
-        let rule = CodemodRule::parse("errors.Wrap($err, $msg) ==>> fmt.Errorf(\"%s: %w\", $msg, $err)")
-            .expect("valid rule");
+        let rule =
+            CodemodRule::parse("errors.Wrap($err, $msg) ==>> fmt.Errorf(\"%s: %w\", $msg, $err)")
+                .expect("valid rule");
         let src = r#"package main
 
 import "errors"
@@ -1100,8 +1317,8 @@ func test() error {
 
     #[test]
     fn test_typescript_logger_codemod() {
-        let rule = CodemodRule::parse("console.log($msg) ==>> logger.info($msg)")
-            .expect("valid rule");
+        let rule =
+            CodemodRule::parse("console.log($msg) ==>> logger.info($msg)").expect("valid rule");
         let src = r#"function login(user: User) {
     console.log("user logged in: " + user.id);
 }
@@ -1112,8 +1329,8 @@ func test() error {
 
     #[test]
     fn test_python_pathlib_codemod() {
-        let rule = CodemodRule::parse("os.path.join($a, $b) ==>> Path($a) / $b")
-            .expect("valid rule");
+        let rule =
+            CodemodRule::parse("os.path.join($a, $b) ==>> Path($a) / $b").expect("valid rule");
         let src = r#"import os
 
 def get_config():
@@ -1126,8 +1343,10 @@ def get_config():
 
     #[test]
     fn test_cpp_smart_pointer_codemod() {
-        let rule = CodemodRule::parse("std::make_shared<$T>($args) ==>> std::allocate_shared<$T>(alloc, $args)")
-            .expect("valid rule");
+        let rule = CodemodRule::parse(
+            "std::make_shared<$T>($args) ==>> std::allocate_shared<$T>(alloc, $args)",
+        )
+        .expect("valid rule");
         let src = r#"#include <memory>
 
 void make() {
@@ -1135,13 +1354,14 @@ void make() {
 }
 "#;
         let rewritten = rewrite_source(src, &rule).expect("should match");
-        assert!(rewritten.contains(r#"auto ptr = std::allocate_shared<Widget>(alloc, 42, "test");"#));
+        assert!(
+            rewritten.contains(r#"auto ptr = std::allocate_shared<Widget>(alloc, 42, "test");"#)
+        );
     }
 
     #[test]
     fn test_swift_os_log_codemod() {
-        let rule = CodemodRule::parse("print($x) ==>> os_log($x)")
-            .expect("valid rule");
+        let rule = CodemodRule::parse("print($x) ==>> os_log($x)").expect("valid rule");
         let src = r#"func log() {
     print("operation succeeded")
 }
@@ -1156,7 +1376,10 @@ void make() {
         let match_src = "let res = compare(x, x);";
         let no_match_src = "let res = compare(x, y);";
 
-        assert_eq!(rewrite_source(match_src, &rule), Some("let res = 0;".to_string()));
+        assert_eq!(
+            rewrite_source(match_src, &rule),
+            Some("let res = 0;".to_string())
+        );
         assert_eq!(rewrite_source(no_match_src, &rule), None);
     }
 
@@ -1204,13 +1427,64 @@ fn test_currency() {
         assert_eq!(matches[0].bindings.get("x").unwrap(), "item");
 
         let tokens = tokenize_source("let symbol = €; let name = café;");
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Punct(p) if p == "€")));
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(id) if id.contains("caf"))));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(&t.kind, TokenKind::Punct(p) if p == "€"))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(&t.kind, TokenKind::Ident(id) if id.contains("caf")))
+        );
 
         // Pattern and codemod rule parsing with multi-byte Unicode characters
-        let rule = CodemodRule::parse("$x.price(€) ==>> $x.cost(¥)").expect("valid rule with unicode");
+        let rule =
+            CodemodRule::parse("$x.price(€) ==>> $x.cost(¥)").expect("valid rule with unicode");
         let src = "let r = item.price(€);";
         let rewritten = rewrite_source(src, &rule).expect("should match and rewrite");
         assert_eq!(rewritten, "let r = item.cost(¥);");
+    }
+
+    #[test]
+    fn metavariables_stop_at_statement_boundaries() {
+        let rule = CodemodRule::parse("$a.unwrap() ==>> handle($a)").unwrap();
+        let source = "let keep = 1; obj.unwrap();\n";
+        let rewritten = rewrite_source(source, &rule).unwrap();
+        assert_eq!(rewritten, "let keep = 1; handle(obj);\n");
+    }
+
+    #[test]
+    fn codemod_scope_rejects_parent_absolute_and_symlink_paths() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sibling = tempfile::tempdir().unwrap();
+        let inside = workspace.path().join("src.rs");
+        std::fs::write(&inside, "fn inside() {}\n").unwrap();
+        let outside = sibling.path().join("outside.rs");
+        std::fs::write(&outside, "fn outside() {}\n").unwrap();
+
+        assert_eq!(
+            resolve_workspace_scope(workspace.path(), "src.rs").unwrap(),
+            inside.canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_workspace_scope(workspace.path(), ".").unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_workspace_scope(workspace.path(), "./.").unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
+        assert!(resolve_workspace_scope(workspace.path(), "").is_err());
+        assert!(resolve_workspace_scope(workspace.path(), "   ").is_err());
+        assert!(resolve_workspace_scope(workspace.path(), "../outside.rs").is_err());
+        assert!(resolve_workspace_scope(workspace.path(), outside.to_str().unwrap()).is_err());
+
+        #[cfg(unix)]
+        {
+            let link = workspace.path().join("external.rs");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(resolve_workspace_scope(workspace.path(), "external.rs").is_err());
+        }
     }
 }

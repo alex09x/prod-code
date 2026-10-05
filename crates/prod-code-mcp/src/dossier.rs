@@ -343,7 +343,9 @@ pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(Strin
         .collect();
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    let mut push = |file: &str, line: u32| {
+    let mut in_python_traceback = false;
+    let mut python_frame_indices = Vec::new();
+    let mut push = |file: &str, line: u32| -> Option<usize> {
         let file = file.trim_matches(|c| c == '"' || c == '(' || c == ')' || c == '\'');
         let mut rel = file
             .strip_prefix(&format!("{root_str}/"))
@@ -354,20 +356,20 @@ pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(Strin
             || rel.contains("/.cargo/")
             || rel.contains("/rustlib/")
         {
-            return;
+            return None;
         }
         if !root.join(&rel).is_file() {
             // A bare name: the unique file with that basename, or the one whose directory
             // matches the test's package.
             if rel.contains('/') {
-                return;
+                return None;
             }
             let candidates: Vec<&String> = all_files
                 .iter()
                 .filter(|p| p.rsplit('/').next() == Some(rel.as_str()))
                 .collect();
             let chosen = match candidates.as_slice() {
-                [] => return,
+                [] => return None,
                 [one] => (*one).clone(),
                 many => many
                     .iter()
@@ -382,10 +384,17 @@ pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(Strin
             rel = chosen;
         }
         if seen.insert((rel.clone(), line)) {
+            let index = out.len();
             out.push((rel, line));
+            Some(index)
+        } else {
+            None
         }
     };
     for raw in text.lines() {
+        if raw.trim() == "Traceback (most recent call last):" {
+            in_python_traceback = true;
+        }
         // Python: File "path", line N
         if let Some(rest) = raw.trim().strip_prefix("File \"")
             && let Some((file, rest)) = rest.split_once("\", line ")
@@ -394,7 +403,11 @@ pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(Strin
                 .next()
                 .and_then(|n| n.parse().ok())
         {
-            push(file, n);
+            if let Some(index) = push(file, n) {
+                if in_python_traceback {
+                    python_frame_indices.push(index);
+                }
+            }
             continue;
         }
         // Everything else: tokens shaped path:line[:col]
@@ -415,8 +428,15 @@ pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(Strin
             if n == 0 {
                 continue;
             }
-            push(file, n);
+            let _ = push(file, n);
         }
+    }
+    drop(push);
+    if in_python_traceback
+        && let Some(deepest) = python_frame_indices.last().copied()
+    {
+        let location = out.remove(deepest);
+        out.insert(0, location);
     }
     out
 }
@@ -1193,6 +1213,10 @@ fn parse_pytest_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<As
         let content = if let Some(after) = after_e.strip_prefix("AssertionError: assert ") {
             after
         } else if let Some(after) = after_e.strip_prefix("AssertionError:") {
+            let after = after.trim();
+            if !after.starts_with("assert ") {
+                return None;
+            }
             after
         } else if let Some(after) = after_e.strip_prefix("assert ") {
             after

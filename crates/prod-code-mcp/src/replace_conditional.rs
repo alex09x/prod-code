@@ -6,7 +6,7 @@
 //!
 //! Supports Python, TypeScript / JavaScript, C++, Swift, and Rust.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -37,6 +37,65 @@ pub struct ConditionalBlock {
     pub discriminator: String,
     pub branches: Vec<ConditionalBranch>,
     pub indent: String,
+}
+
+fn returns_from_conditional(block: &ConditionalBlock) -> Result<bool> {
+    anyhow::ensure!(!block.branches.is_empty(), "conditional has no branches");
+    let mut returns = Vec::with_capacity(block.branches.len());
+    for branch in &block.branches {
+        let body = branch.body.trim_start();
+        let has_return = contains_word(body, "return");
+        let starts_with_return = if let Some(rest) = body.strip_prefix("return") {
+            rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == ';')
+        } else {
+            false
+        };
+        let terminates_without_return = [
+            "throw ",
+            "throw;",
+            "raise ",
+            "raise\n",
+            "raise\r\n",
+            "panic(",
+            "panic!",
+            "fatalError(",
+            "fatalError ",
+        ]
+        .iter()
+        .any(|prefix| body.starts_with(prefix));
+        anyhow::ensure!(
+            !has_return || starts_with_return,
+            "branch control flow is too complex to preserve safely; each branch must return or terminate directly, or none may return"
+        );
+        returns.push(starts_with_return || terminates_without_return);
+    }
+    if returns.iter().all(|value| *value) {
+        anyhow::ensure!(
+            block.branches.iter().any(|branch| branch.is_default),
+            "a returning conditional without a default branch cannot be converted without changing fallthrough behavior"
+        );
+        Ok(true)
+    } else {
+        anyhow::ensure!(
+            returns.iter().all(|value| !*value),
+            "conditional branches mix returns and statements; control flow cannot be preserved safely"
+        );
+        Ok(false)
+    }
+}
+
+fn contains_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(at, _)| {
+        (at == 0
+            || !text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_'))
+            && !text[at + word.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
 }
 
 /// Outcome of replacing a conditional with polymorphism.
@@ -111,7 +170,9 @@ pub fn tag_to_variant_name(tag: &str) -> String {
         return "Default".to_string();
     }
 
-    let is_all_upper = clean.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
+    let is_all_upper = clean
+        .chars()
+        .all(|c| !c.is_alphabetic() || c.is_uppercase());
     let mut out = String::new();
     let mut capitalize_next = true;
     for c in clean.chars() {
@@ -149,16 +210,36 @@ pub fn line_indentation(text: &str, offset: usize) -> String {
 }
 
 /// Convert 1-based (line, col) to byte offset in text.
-pub fn line_col_to_offset(text: &str, line: u32, col: u32) -> usize {
-    let mut offset = 0;
-    for (i, line_str) in text.split_inclusive('\n').enumerate() {
-        if (i as u32 + 1) == line {
-            let col_offset = (col.saturating_sub(1) as usize).min(line_str.len());
-            return offset + col_offset;
-        }
-        offset += line_str.len();
+pub fn line_col_to_offset(text: &str, line: u32, col: u32) -> Option<usize> {
+    if line == 0 || col == 0 {
+        return None;
     }
-    offset
+    let mut line_offset = 0usize;
+    for (index, raw_line) in text.split_inclusive('\n').enumerate() {
+        if index as u32 + 1 != line {
+            line_offset += raw_line.len();
+            continue;
+        }
+        let line_text = raw_line
+            .strip_suffix('\n')
+            .unwrap_or(raw_line)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| raw_line.strip_suffix('\n').unwrap_or(raw_line));
+        let target_units = (col - 1) as usize;
+        let mut units = 0usize;
+        for (byte_offset, ch) in line_text.char_indices() {
+            if units == target_units {
+                return Some(line_offset + byte_offset);
+            }
+            let next_units = units + ch.len_utf16();
+            if target_units < next_units {
+                return None; // The requested column splits a UTF-16 surrogate pair.
+            }
+            units = next_units;
+        }
+        return (units == target_units).then_some(line_offset + line_text.len());
+    }
+    None
 }
 
 fn find_default_label(s: &str) -> Option<(usize, usize)> {
@@ -175,12 +256,41 @@ fn find_default_label(s: &str) -> Option<(usize, usize)> {
     None
 }
 
+fn is_switch_keyword(text: &str, at: usize) -> bool {
+    let after = &text[at + "switch".len()..];
+    (at == 0
+        || !text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_'))
+        && !after
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        && !crate::inline_parameter::is_in_comment(
+            text,
+            at,
+            crate::parameter_object::Language::TypeScript,
+        )
+        && !crate::inline_parameter::is_in_string(
+            text,
+            at,
+            crate::parameter_object::Language::TypeScript,
+        )
+}
+
 /// Parse a `switch` statement in C-like languages (TypeScript, JavaScript, C++, Swift, Go).
 pub fn parse_switch_block(text: &str, search_offset: usize) -> Option<ConditionalBlock> {
-    let switch_keyword_idx = text[search_offset..]
-        .find("switch")
-        .map(|idx| search_offset + idx)
-        .or_else(|| text[..search_offset].rfind("switch"))?;
+    let switch_keyword_idx = text
+        .match_indices("switch")
+        .map(|(at, _)| at)
+        .find(|at| *at >= search_offset && is_switch_keyword(text, *at))
+        .or_else(|| {
+            text.match_indices("switch")
+                .map(|(at, _)| at)
+                .filter(|at| *at < search_offset && is_switch_keyword(text, *at))
+                .last()
+        })?;
 
     let open_brace = text[switch_keyword_idx..].find('{')? + switch_keyword_idx;
     let close_brace = crate::pull_push::find_matching_brace(text, open_brace)?;
@@ -214,9 +324,7 @@ pub fn parse_switch_block(text: &str, search_offset: usize) -> Option<Conditiona
                 let tag = inner[tag_start..colon_idx].trim().to_string();
                 (false, tag, colon_idx + 1)
             }
-            (Some(_), Some((_, d_end))) => {
-                (true, "default".to_string(), pos + d_end)
-            }
+            (Some(_), Some((_, d_end))) => (true, "default".to_string(), pos + d_end),
             (Some(c), None) => {
                 let tag_start = pos + c + 5;
                 let colon_rel = inner[tag_start..].find(':')?;
@@ -224,9 +332,7 @@ pub fn parse_switch_block(text: &str, search_offset: usize) -> Option<Conditiona
                 let tag = inner[tag_start..colon_idx].trim().to_string();
                 (false, tag, colon_idx + 1)
             }
-            (None, Some((_, d_end))) => {
-                (true, "default".to_string(), pos + d_end)
-            }
+            (None, Some((_, d_end))) => (true, "default".to_string(), pos + d_end),
             (None, None) => break,
         };
 
@@ -304,11 +410,7 @@ pub fn parse_if_else_block(text: &str, search_offset: usize) -> Option<Condition
     }
 }
 
-fn parse_python_if_elif(
-    text: &str,
-    if_idx: usize,
-    base_indent: &str,
-) -> Option<ConditionalBlock> {
+fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<ConditionalBlock> {
     let mut branches = Vec::new();
     let mut discriminator = String::new();
 
@@ -323,7 +425,11 @@ fn parse_python_if_elif(
         let line_indent = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
         let base_indent_len = base_indent.len();
 
-        if line_indent == base_indent_len && (trimmed.starts_with("if ") || trimmed.starts_with("elif ") || trimmed.starts_with("else:")) {
+        if line_indent == base_indent_len
+            && (trimmed.starts_with("if ")
+                || trimmed.starts_with("elif ")
+                || trimmed.starts_with("else:"))
+        {
             // Flush previous branch
             if !current_tag.is_empty() {
                 branches.push(ConditionalBranch {
@@ -399,11 +505,7 @@ fn parse_python_if_elif(
     })
 }
 
-fn parse_curly_if_else(
-    text: &str,
-    if_idx: usize,
-    base_indent: &str,
-) -> Option<ConditionalBlock> {
+fn parse_curly_if_else(text: &str, if_idx: usize, base_indent: &str) -> Option<ConditionalBlock> {
     let mut branches = Vec::new();
     let mut discriminator = String::new();
     let mut pos = if_idx;
@@ -411,13 +513,13 @@ fn parse_curly_if_else(
 
     while pos < text.len() {
         let rest = text[pos..].trim_start();
-        if rest.starts_with("if ") || rest.starts_with("else if ") || rest.starts_with("if(") || rest.starts_with("else if(") {
+        if rest.starts_with("if ")
+            || rest.starts_with("else if ")
+            || rest.starts_with("if(")
+            || rest.starts_with("else if(")
+        {
             let is_else_if = rest.starts_with("else if");
-            let after_kw = if is_else_if {
-                &rest[7..]
-            } else {
-                &rest[2..]
-            };
+            let after_kw = if is_else_if { &rest[7..] } else { &rest[2..] };
             let open_brace = after_kw.find('{')?;
             let header = after_kw[..open_brace].trim();
 
@@ -429,7 +531,10 @@ fn parse_curly_if_else(
                 header
             };
 
-            let tag = if let Some((lhs, rhs)) = cond_str.split_once("===").or_else(|| cond_str.split_once("==")) {
+            let tag = if let Some((lhs, rhs)) = cond_str
+                .split_once("===")
+                .or_else(|| cond_str.split_once("=="))
+            {
                 if discriminator.is_empty() {
                     discriminator = lhs.trim().to_string();
                 }
@@ -530,13 +635,17 @@ pub fn parse_rust_match(text: &str, search_offset: usize) -> Option<ConditionalB
             }
             (b, end_rel)
         } else {
-            let next_comma = after_arrow.find(',');
+            let next_comma = find_rust_arm_comma(after_arrow);
             let end_rel = if let Some(c) = next_comma {
                 arrow_idx + 2 + c + 1
             } else {
                 rest.len()
             };
-            let b = rest[arrow_idx + 2..if let Some(c) = next_comma { arrow_idx + 2 + c } else { rest.len() }]
+            let b = rest[arrow_idx + 2..if let Some(c) = next_comma {
+                arrow_idx + 2 + c
+            } else {
+                rest.len()
+            }]
                 .trim()
                 .to_string();
             (b, end_rel)
@@ -569,6 +678,45 @@ pub fn parse_rust_match(text: &str, search_offset: usize) -> Option<ConditionalB
     })
 }
 
+fn find_rust_arm_comma(expression: &str) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut angle = 0usize;
+    let mut previous = String::new();
+    for (i, ch) in expression.char_indices() {
+        if crate::extract_field::is_in_literal_or_comment(
+            expression,
+            i,
+            crate::parameter_object::Language::Rust,
+        ) {
+            continue;
+        }
+        match ch {
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '<' if angle > 0 || previous.trim_end().ends_with("::") => angle += 1,
+            '>' if angle > 0 => angle -= 1,
+            ',' if paren == 0 && bracket == 0 && brace == 0 && angle == 0 => return Some(i),
+            _ => {}
+        }
+        if ch.is_whitespace() {
+            previous.push(ch);
+        } else {
+            previous.push(ch);
+            if previous.len() > 4 {
+                let drain_to = previous.len() - 4;
+                previous.drain(..drain_to);
+            }
+        }
+    }
+    None
+}
+
 /// Core transformation for Python.
 pub fn transform_python(
     text: &str,
@@ -580,6 +728,7 @@ pub fn transform_python(
 ) -> Result<String> {
     let mut out = text.to_string();
     let indent = &block.indent;
+    let returns_value = returns_from_conditional(block)?;
 
     let params_str = if params.is_empty() {
         "self".to_string()
@@ -612,11 +761,7 @@ pub fn transform_python(
         let indented_body = if b.body.trim().is_empty() {
             "        pass".to_string()
         } else {
-            b.body
-                .lines()
-                .map(|l| format!("        {}", l.trim()))
-                .collect::<Vec<_>>()
-                .join("\n")
+            indent_python_branch_body(&b.body)
         };
         let cls = format!(
             "class {v_name}({base_name}):\n    def {method_name}({params_str}):\n{indented_body}\n"
@@ -625,7 +770,8 @@ pub fn transform_python(
     }
 
     // 3. Replacement for conditional block
-    let replacement = format!("{indent}return {target_var}.{method_name}({call_args})");
+    let return_prefix = if returns_value { "return " } else { "" };
+    let replacement = format!("{indent}{return_prefix}{target_var}.{method_name}({call_args})");
     out.replace_range(block.start_offset..block.end_offset, &replacement);
 
     // 4. Prepend classes right before enclosing function or at top of file
@@ -633,6 +779,33 @@ pub fn transform_python(
     out.insert_str(0, &class_definitions);
 
     Ok(out)
+}
+
+fn indent_python_branch_body(body: &str) -> String {
+    let common_indent = body
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+        .min()
+        .unwrap_or(0);
+    body.lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                "        ".to_string()
+            } else {
+                let cut = if common_indent == 0 {
+                    0
+                } else {
+                    line.char_indices()
+                        .take_while(|(_, c)| *c == ' ' || *c == '\t')
+                        .nth(common_indent - 1)
+                        .map_or(0, |(byte, c)| byte + c.len_utf8())
+                };
+                format!("        {}", &line[cut..])
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Core transformation for TypeScript / JavaScript.
@@ -647,8 +820,13 @@ pub fn transform_typescript(
 ) -> Result<String> {
     let mut out = text.to_string();
     let indent = &block.indent;
+    let returns_value = returns_from_conditional(block)?;
 
-    let ret_type = return_type.unwrap_or("any");
+    let ret_type = return_type.unwrap_or(if returns_value { "any" } else { "void" });
+    anyhow::ensure!(
+        returns_value || ret_type == "void",
+        "a statement conditional cannot be assigned a non-void polymorphic return type"
+    );
     let params_str = params.join(", ");
     let call_args = params
         .iter()
@@ -686,7 +864,8 @@ pub fn transform_typescript(
     }
 
     // 3. Replacement
-    let replacement = format!("{indent}return {target_var}.{method_name}({call_args});");
+    let return_prefix = if returns_value { "return " } else { "" };
+    let replacement = format!("{indent}{return_prefix}{target_var}.{method_name}({call_args});");
     out.replace_range(block.start_offset..block.end_offset, &replacement);
 
     // 4. Prepend declarations at top
@@ -708,8 +887,13 @@ pub fn transform_cpp(
 ) -> Result<String> {
     let mut out = text.to_string();
     let indent = &block.indent;
+    let returns_value = returns_from_conditional(block)?;
 
     let ret_type = return_type.unwrap_or("void");
+    anyhow::ensure!(
+        returns_value || ret_type == "void",
+        "a statement conditional cannot be assigned a non-void polymorphic return type"
+    );
     let params_str = params.join(", ");
     let call_args = params
         .iter()
@@ -749,7 +933,9 @@ pub fn transform_cpp(
     } else {
         "."
     };
-    let replacement = format!("{indent}return {target_var}{arrow_or_dot}{method_name}({call_args});");
+    let return_prefix = if returns_value { "return " } else { "" };
+    let replacement =
+        format!("{indent}{return_prefix}{target_var}{arrow_or_dot}{method_name}({call_args});");
     out.replace_range(block.start_offset..block.end_offset, &replacement);
 
     // 4. Prepend classes
@@ -771,8 +957,15 @@ pub fn transform_swift(
 ) -> Result<String> {
     let mut out = text.to_string();
     let indent = &block.indent;
+    let returns_value = returns_from_conditional(block)?;
+    anyhow::ensure!(
+        returns_value || return_type.is_none_or(|ty| ty == "Void" || ty == "void"),
+        "a statement conditional cannot be assigned a non-void polymorphic return type"
+    );
 
-    let ret_type_clause = return_type
+    let ret_type_clause = returns_value
+        .then_some(return_type)
+        .flatten()
         .map(|rt| format!(" -> {rt}"))
         .unwrap_or_default();
     let params_str = params.join(", ");
@@ -812,7 +1005,8 @@ pub fn transform_swift(
     }
 
     // 3. Replacement
-    let replacement = format!("{indent}return {target_var}.{method_name}({call_args})");
+    let return_prefix = if returns_value { "return " } else { "" };
+    let replacement = format!("{indent}{return_prefix}{target_var}.{method_name}({call_args})");
     out.replace_range(block.start_offset..block.end_offset, &replacement);
 
     // 4. Prepend protocol and structs
@@ -903,15 +1097,16 @@ pub async fn replace_conditional_impl(
     force: bool,
     verify: Option<&str>,
 ) -> Result<ReplaceConditionalResult> {
+    anyhow::ensure!(
+        line > 0 && col > 0,
+        "replace_conditional requires one-based line and character coordinates"
+    );
     let file_text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read file {}", file.display()))?;
     let language = crate::lang::language_id_for_path(file).to_string();
 
-    let offset = if line > 0 {
-        line_col_to_offset(&file_text, line, col)
-    } else {
-        0
-    };
+    let offset = line_col_to_offset(&file_text, line, col)
+        .context("requested position is outside the document or splits a UTF-16 surrogate pair")?;
 
     // Locate the conditional block
     let block = parse_switch_block(&file_text, offset)
@@ -924,12 +1119,10 @@ pub async fn replace_conditional_impl(
             )
         })?;
 
-    let default_target = if block.discriminator.is_empty() {
-        "target".to_string()
-    } else {
-        block.discriminator.clone()
-    };
-    let target_var = target_var_opt.unwrap_or(&default_target);
+    let target_var = target_var_opt
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .context("`target_var` is required; the discriminator is not necessarily the polymorphic receiver")?;
 
     let transformed_text = match language.as_str() {
         "python" => transform_python(
@@ -1107,6 +1300,102 @@ mod tests {
     }
 
     #[test]
+    fn switch_parser_ignores_keywords_in_comments_strings_and_identifiers() {
+        let source = r#"function report(kind: string) {
+    const switcheroo = "switch (fake) { case 'bad': }";
+    // switch (alsoFake) { case "bad": }
+    switch (kind) {
+        case "real":
+            reportReal();
+            break;
+        default:
+            reportOther();
+    }
+}
+"#;
+        let block = parse_switch_block(source, 0).unwrap();
+        assert_eq!(block.discriminator, "kind");
+        assert_eq!(block.branches.len(), 2);
+        assert!(
+            block
+                .branches
+                .iter()
+                .all(|branch| !branch.body.contains("bad"))
+        );
+    }
+
+    #[test]
+    fn statement_conditional_keeps_following_execution() {
+        let source = r#"function report(kind: string) {
+    switch (kind) {
+        case "real":
+            logReal();
+            break;
+        default:
+            logOther();
+    }
+    cleanup();
+}
+"#;
+        let block = parse_switch_block(source, 0).unwrap();
+        let transformed =
+            transform_typescript(source, &block, "Reporter", "report", &[], None, "reporter")
+                .unwrap();
+        assert!(
+            transformed.contains("reporter.report();\n    cleanup();"),
+            "{transformed}"
+        );
+        assert!(
+            !transformed.contains("return reporter.report();"),
+            "{transformed}"
+        );
+    }
+
+    #[test]
+    fn statement_conditionals_in_other_languages_also_preserve_following_execution() {
+        let python = "def run(kind):\n    if kind == 'A':\n        log_a()\n    else:\n        log_other()\n    cleanup()\n";
+        let python_block = parse_if_else_block(python, 0).unwrap();
+        let transformed =
+            transform_python(python, &python_block, "Handler", "handle", &[], "handler").unwrap();
+        assert!(transformed.contains("handler.handle()"), "{transformed}");
+        assert!(transformed.contains("cleanup()"), "{transformed}");
+        assert!(
+            !transformed.contains("return handler.handle()"),
+            "{transformed}"
+        );
+
+        let cpp = "void run(int kind) {\n    switch (kind) {\n        case 1: log_a(); break;\n        default: log_other();\n    }\n    cleanup();\n}\n";
+        let cpp_block = parse_switch_block(cpp, 0).unwrap();
+        let transformed =
+            transform_cpp(cpp, &cpp_block, "Handler", "handle", &[], None, "handler").unwrap();
+        assert!(transformed.contains("handler.handle()"), "{transformed}");
+        assert!(transformed.contains("cleanup();"), "{transformed}");
+        assert!(
+            !transformed.contains("return handler.handle()"),
+            "{transformed}"
+        );
+
+        let swift = "func run(kind: Int) {\n    switch kind {\n    case 1: logA()\n    default: logOther()\n    }\n    cleanup()\n}\n";
+        let swift_block = parse_switch_block(swift, 0).unwrap();
+        let transformed = transform_swift(
+            swift,
+            &swift_block,
+            "Handler",
+            "handle",
+            &[],
+            None,
+            "handler",
+        )
+        .unwrap();
+        assert!(transformed.contains("handler.handle()"), "{transformed}");
+        assert!(transformed.contains("cleanup()"), "{transformed}");
+        assert!(
+            !transformed.contains("return handler.handle()"),
+            "{transformed}"
+        );
+    }
+
+    #[test]
     fn test_python_if_elif_replace_conditional() {
         let py_code = r#"def calculate_pay(employee_type, salary, bonus):
     if employee_type == "ENGINEER":
@@ -1236,5 +1525,57 @@ mod tests {
         assert!(res.contains("impl Bird for EuropeanBird {"));
         assert!(res.contains("pub struct AfricanBird;"));
         assert!(res.contains("bird.get_speed()"));
+    }
+
+    #[test]
+    fn test_bare_return_in_conditional_branches() {
+        let block = ConditionalBlock {
+            kind: ConditionalKind::Switch,
+            start_offset: 0,
+            end_offset: 50,
+            discriminator: "action".to_string(),
+            branches: vec![
+                ConditionalBranch {
+                    tag: "Action.Stop".to_string(),
+                    variant_name: "Stop".to_string(),
+                    body: "return;\n".to_string(),
+                    is_default: false,
+                },
+                ConditionalBranch {
+                    tag: "default".to_string(),
+                    variant_name: "Default".to_string(),
+                    body: "return;".to_string(),
+                    is_default: true,
+                },
+            ],
+            indent: "".to_string(),
+        };
+        assert!(returns_from_conditional(&block).unwrap());
+    }
+
+    #[test]
+    fn test_python_bare_return_in_conditional_branches() {
+        let block = ConditionalBlock {
+            kind: ConditionalKind::Match,
+            start_offset: 0,
+            end_offset: 50,
+            discriminator: "status".to_string(),
+            branches: vec![
+                ConditionalBranch {
+                    tag: "Status.Pending".to_string(),
+                    variant_name: "Pending".to_string(),
+                    body: "return".to_string(),
+                    is_default: false,
+                },
+                ConditionalBranch {
+                    tag: "_".to_string(),
+                    variant_name: "Default".to_string(),
+                    body: "return\n".to_string(),
+                    is_default: true,
+                },
+            ],
+            indent: "".to_string(),
+        };
+        assert!(returns_from_conditional(&block).unwrap());
     }
 }

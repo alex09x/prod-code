@@ -19,6 +19,10 @@ fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
 fn display_relative_or_name(from_file: &Path, to_file: &Path) -> String {
     let from_dir = from_file.parent().unwrap_or(Path::new(""));
     let rel = path_relative_from(to_file, from_dir);
@@ -776,6 +780,89 @@ pub(crate) fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str
     (out, true)
 }
 
+fn go_import_package(spec: &str) -> Option<String> {
+    let spec = spec.split_once("//").map_or(spec, |(before, _)| before).trim();
+    let words: Vec<&str> = spec.split_whitespace().collect();
+    let (alias, path) = match words.as_slice() {
+        [path] => (None, *path),
+        [alias, path] if is_ident(alias.chars().next()?) && alias.chars().all(is_ident) => {
+            (Some(*alias), *path)
+        }
+        _ => return None,
+    };
+    if matches!(alias, Some("." | "_")) || !path.starts_with('"') || !path.ends_with('"') {
+        return None;
+    }
+    let import_path = &path[1..path.len() - 1];
+    if import_path == "C" {
+        return None;
+    }
+    let package = match alias {
+        Some(alias) => alias.to_string(),
+        None if !import_path.contains('/') => import_path.to_string(),
+        // Without an explicit alias, a path's last component need not be its package name.
+        None => return None,
+    };
+    package.chars().all(is_ident).then_some(package)
+}
+
+fn go_package_is_used(content: &str, package: &str) -> bool {
+    content.match_indices(package).any(|(at, _)| {
+        let end = at + package.len();
+        !(at > 0 && content[..at].chars().next_back().is_some_and(is_ident))
+            && !content[end..].chars().next().is_some_and(is_ident)
+            && !crate::inline_parameter::is_in_comment(content, at, Language::Go)
+            && !crate::inline_parameter::is_in_string(content, at, Language::Go)
+            && content[end..].trim_start().starts_with('.')
+    })
+}
+
+fn remove_unused_go_imports(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut output = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "import (" {
+            let Some(close) = (i + 1..lines.len()).find(|&at| lines[at].trim() == ")") else {
+                output.push(lines[i].to_string());
+                i += 1;
+                continue;
+            };
+            let specs: Option<Vec<(&str, String)>> = lines[i + 1..close]
+                .iter()
+                .map(|line| go_import_package(line).map(|package| (*line, package)))
+                .collect();
+            if let Some(specs) = specs {
+                let retained: Vec<_> = specs
+                    .into_iter()
+                    .filter(|(_, package)| go_package_is_used(source, package))
+                    .collect();
+                if !retained.is_empty() {
+                    output.push(lines[i].to_string());
+                    output.extend(retained.into_iter().map(|(line, _)| line.to_string()));
+                    output.push(lines[close].to_string());
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        if let Some(spec) = lines[i].trim().strip_prefix("import ")
+            && let Some(package) = go_import_package(spec)
+            && !go_package_is_used(source, &package)
+        {
+            i += 1;
+            continue;
+        }
+        output.push(lines[i].to_string());
+        i += 1;
+    }
+    let mut result = output.join("\n");
+    if source.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
 fn get_go_package(file: &Path) -> String {
     if let Ok(content) = std::fs::read_to_string(file) {
         for line in content.lines() {
@@ -792,6 +879,73 @@ fn get_go_package(file: &Path) -> String {
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "main".to_string())
+}
+
+fn go_module_import_path(target_dir: &Path) -> Result<String> {
+    let target = std::fs::canonicalize(target_dir).unwrap_or_else(|_| target_dir.to_path_buf());
+    let mut directory = Some(target.as_path());
+    while let Some(dir) = directory {
+        if let Ok(manifest) = std::fs::read_to_string(dir.join("go.mod"))
+            && let Some(module) = manifest.lines().find_map(|line| {
+                line.trim()
+                    .strip_prefix("module ")
+                    .map(|value| value.trim().trim_matches('"').to_string())
+                    .filter(|value| !value.is_empty())
+            })
+        {
+            let relative = target.strip_prefix(dir).unwrap_or(Path::new(""));
+            let suffix = relative.to_string_lossy().replace('\\', "/");
+            return Ok(if suffix.is_empty() {
+                module
+            } else {
+                format!("{module}/{suffix}")
+            });
+        }
+        directory = dir.parent();
+    }
+    anyhow::bail!(
+        "cannot find the Go module path for {}",
+        target_dir.display()
+    )
+}
+
+fn rewrite_go_call_sites(
+    source_text: &str,
+    decl_name: &str,
+    target_pkg: &str,
+) -> Result<(String, usize)> {
+    let mut edits = Vec::new();
+    for (at, _) in source_text.match_indices(decl_name) {
+        if (at > 0 && source_text[..at].chars().next_back().is_some_and(is_ident))
+            || source_text[at + decl_name.len()..].chars().next().is_some_and(is_ident)
+            || crate::inline_parameter::is_in_comment(source_text, at, Language::Go)
+            || crate::inline_parameter::is_in_string(source_text, at, Language::Go)
+        {
+            continue;
+        }
+        let before = source_text[..at].trim_end();
+        if before.ends_with('.') {
+            continue; // A selector, which may name an unrelated method.
+        }
+        let after = source_text[at + decl_name.len()..].trim_start();
+        if after.starts_with('(') {
+            let line_start = source_text[..at].rfind('\n').map_or(0, |i| i + 1);
+            if source_text[line_start..at].trim_start().starts_with("func ") {
+                continue; // A separate declaration is not a call site.
+            }
+            edits.push((at, decl_name.len()));
+        } else {
+            anyhow::bail!(
+                "Go reference `{decl_name}` at byte {at} is not a call; cannot safely qualify it"
+            );
+        }
+    }
+    let count = edits.len();
+    let mut rewritten = source_text.to_string();
+    for (at, len) in edits.into_iter().rev() {
+        rewritten.replace_range(at..at + len, &format!("{target_pkg}.{decl_name}"));
+    }
+    Ok((rewritten, count))
 }
 
 fn add_go_import(content: &str, pkg: &str) -> String {
@@ -815,12 +969,19 @@ fn rewrite_go_cross_pkg_in_source(
     target_pkg: &str,
     target_file: &Path,
     root: &Path,
-) -> (String, String) {
-    let replaced = source_text.replace(decl_name, &format!("{target_pkg}.{decl_name}"));
+) -> Result<(String, String)> {
     let target_dir = target_file.parent().unwrap_or(root);
-    let target_import_path = display(root, target_dir);
+    let target_import_path = go_module_import_path(target_dir)?;
+    anyhow::ensure!(
+        !source_text.contains(&format!("\"{target_import_path}\"")),
+        "the target Go module is already imported and its local alias cannot be safely resolved"
+    );
+    let (replaced, calls) = rewrite_go_call_sites(source_text, decl_name, target_pkg)?;
+    if calls == 0 {
+        return Ok((source_text.to_string(), String::new()));
+    }
     let with_import = add_go_import(&replaced, &target_import_path);
-    (with_import, format!("imported \"{target_import_path}\""))
+    Ok((with_import, format!("imported \"{target_import_path}\"")))
 }
 
 pub fn carry_imports_polyglot(
@@ -949,9 +1110,9 @@ pub fn update_source_imports(
     target_file: &Path,
     root: &Path,
     lang: Language,
-) -> (String, Option<String>) {
+) -> Result<(String, Option<String>)> {
     if !is_symbol_used(source_text, decl_name) {
-        return (source_text.to_string(), None);
+        return Ok((source_text.to_string(), None));
     }
 
     match lang {
@@ -963,7 +1124,7 @@ pub fn update_source_imports(
             } else {
                 None
             };
-            (new_text, note)
+            Ok((new_text, note))
         }
         Language::Python => {
             let mod_spec = python_module_specifier(source_file, target_file, root);
@@ -973,16 +1134,16 @@ pub fn update_source_imports(
             } else {
                 None
             };
-            (new_text, note)
+            Ok((new_text, note))
         }
         Language::Go => {
             let src_pkg = get_go_package(source_file);
             let tgt_pkg = get_go_package(target_file);
-            if src_pkg == tgt_pkg {
-                (
+            if source_file.parent() == target_file.parent() {
+                Ok((
                     source_text.to_string(),
                     Some(format!("same package `{src_pkg}`: direct access")),
-                )
+                ))
             } else {
                 let (new_text, note) = rewrite_go_cross_pkg_in_source(
                     source_text,
@@ -990,26 +1151,26 @@ pub fn update_source_imports(
                     &tgt_pkg,
                     target_file,
                     root,
-                );
-                (new_text, Some(note))
+                )?;
+                Ok((new_text, (!note.is_empty()).then_some(note)))
             }
         }
         Language::Cpp | Language::C => {
             let rel = display_relative_or_name(source_file, target_file);
             let include_line = format!("#include \"{rel}\"");
             if source_text.contains(&include_line) {
-                (source_text.to_string(), None)
+                Ok((source_text.to_string(), None))
             } else {
                 let new_text = format!("{include_line}\n{source_text}");
-                (new_text, Some(format!("included \"{rel}\"")))
+                Ok((new_text, Some(format!("included \"{rel}\""))))
             }
         }
-        Language::Swift => (
+        Language::Swift => Ok((
             source_text.to_string(),
             Some("same module: direct access".to_string()),
-        ),
-        Language::Rust => (source_text.to_string(), None),
-        Language::Java => (source_text.to_string(), None),
+        )),
+        Language::Rust => Ok((source_text.to_string(), None)),
+        Language::Java => Ok((source_text.to_string(), None)),
     }
 }
 
@@ -1095,6 +1256,25 @@ pub fn rewrite_caller_imports(
         Language::TypeScript | Language::JavaScript => {
             let rel_to_source = relative_import_specifier(caller_file, source_file);
             let rel_to_target = relative_import_specifier(caller_file, target_file);
+            let moved_default_export = std::fs::read_to_string(source_file)
+                .ok()
+                .is_some_and(|source| {
+                    source.lines().any(|line| {
+                        let line = line.trim();
+                        let Some(decl) = line.strip_prefix("export default ") else {
+                            return false;
+                        };
+                        let decl = decl.strip_prefix("async ").unwrap_or(decl);
+                        let Some(name) = decl
+                            .strip_prefix("function ")
+                            .or_else(|| decl.strip_prefix("class "))
+                        else {
+                            return false;
+                        };
+                        let name = name.chars().take_while(|c| is_ident(*c)).collect::<String>();
+                        name == decl_name
+                    })
+                });
 
             let mut found = false;
             let mut lines = Vec::new();
@@ -1107,6 +1287,18 @@ pub fn rewrite_caller_imports(
                         || trimmed.contains(&rel_to_source.replace("./", "")));
                 if matches_source && is_symbol_used(line, decl_name) {
                     found = true;
+                    let default_binding = trimmed
+                        .strip_prefix("import ")
+                        .and_then(|clause| clause.split_once(" from "))
+                        .map(|(bindings, _)| bindings.trim());
+                    if moved_default_export && default_binding == Some(decl_name) {
+                        let rewritten_import = line
+                            .replace(&rel_to_source, &rel_to_target)
+                            .replace(&rel_to_source.replace("./", ""), &rel_to_target);
+                        lines.push(rewritten_import);
+                        notes.push(format!("rewrote default import to `{rel_to_target}`"));
+                        continue;
+                    }
                     let (shrunk, _) = remove_from_braced_ts_import(line, decl_name);
                     if shrunk.is_empty() {
                         let rewritten_import = line
@@ -1261,6 +1453,14 @@ fn initial_file_header(target: &Path, lang: Language) -> String {
     }
 }
 
+fn cpp_move_target_is_implementation(lang: Language, target: &Path) -> bool {
+    matches!(lang, Language::Cpp | Language::C)
+        && matches!(
+            target.extension().and_then(|ext| ext.to_str()),
+            Some("cpp" | "cc" | "cxx" | "c")
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn move_item(
     remote: SocketAddr,
@@ -1289,6 +1489,11 @@ pub async fn move_item(
         lang.fence(),
         target_lang.fence()
     );
+    if cpp_move_target_is_implementation(lang, target) {
+        anyhow::bail!(
+            "cannot move a C/C++ declaration into an implementation file: callers cannot safely include a `.cpp`/`.c` file; move it to a header instead"
+        );
+    }
 
     let source_text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read {}", file.display()))?;
@@ -1317,6 +1522,11 @@ pub async fn move_item(
 
     let start = with_doc_comment_polyglot(&source_text, decl_start, lang);
     let (source_new_cut, item_raw) = crate::move_item::cut(&source_text, start, decl_end);
+    let source_new_cut = if lang == Language::Go {
+        remove_unused_go_imports(&source_new_cut)
+    } else {
+        source_new_cut
+    };
     let item = format_item_for_target(&item_raw, lang);
 
     let (target_with_carried, carried_notes) =
@@ -1334,7 +1544,7 @@ pub async fn move_item(
     };
 
     let (source_new, source_import_note) =
-        update_source_imports(&source_new_cut, &name, file, target, root, lang);
+        update_source_imports(&source_new_cut, &name, file, target, root, lang)?;
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
@@ -1445,6 +1655,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unused_go_imports_are_removed_without_dropping_used_group_members() {
+        let source = "package p\nimport \"fmt\"\nimport (\n\t\"os\"\n\t\"strings\"\n)\nfunc keep() { fmt.Println(strings.TrimSpace(\" x \")) }\n";
+        let result = remove_unused_go_imports(source);
+
+        assert!(!result.contains("import \"os\""));
+        assert!(result.contains("\"fmt\""));
+        assert!(result.contains("\"strings\""));
+    }
+
+    #[test]
+    fn fully_unused_go_import_group_is_removed() {
+        let source = "package p\nimport (\n\t\"fmt\"\n\t\"os\"\n)\nfunc keep() {}\n";
+        let result = remove_unused_go_imports(source);
+
+        assert!(!result.contains("import ("));
+        assert!(!result.contains("\"fmt\""));
+        assert!(!result.contains("\"os\""));
+    }
+
+    #[test]
     fn relative_import_specifiers_compute_accurately() {
         assert_eq!(
             relative_import_specifier(Path::new("src/features/foo.ts"), Path::new("src/common/utils.ts")),
@@ -1458,6 +1688,31 @@ mod tests {
             relative_import_specifier(Path::new("index.ts"), Path::new("utils.ts")),
             "./utils"
         );
+    }
+
+    #[test]
+    fn default_import_follows_a_moved_default_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("src/source.ts");
+        let target = temp.path().join("src/helpers.ts");
+        let caller = temp.path().join("src/caller.ts");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "export default function Foo() {}\n").unwrap();
+
+        let (rewritten, note) = rewrite_caller_imports(
+            "import Foo from \"./source\";\nFoo();\n",
+            "Foo",
+            &caller,
+            &source,
+            &target,
+            temp.path(),
+            Language::TypeScript,
+        )
+        .unwrap();
+
+        assert!(rewritten.contains("import Foo from \"./helpers\";"));
+        assert!(!rewritten.contains("import { Foo }"));
+        assert!(note.contains("default import"));
     }
 
     #[test]
@@ -1518,5 +1773,75 @@ mod tests {
         let (shrunk2, removed2) = remove_from_braced_ts_import(line_single, "A");
         assert!(removed2);
         assert_eq!(shrunk2, "");
+    }
+
+    #[test]
+    fn go_call_rewriting_skips_comments_strings_and_identifier_substrings() {
+        let source = "package p\nfunc use() {\n Add(1)\n _ = \"Add failed\"\n // Add remains a comment\n AddSuffix()\n}\n";
+        let (rewritten, count) = rewrite_go_call_sites(source, "Add", "helpers").unwrap();
+
+        assert_eq!(count, 1);
+        assert!(rewritten.contains("helpers.Add(1)"));
+        assert!(rewritten.contains("\"Add failed\""));
+        assert!(rewritten.contains("// Add remains a comment"));
+        assert!(rewritten.contains("AddSuffix()"));
+    }
+
+    #[test]
+    fn go_import_path_keeps_the_module_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("go.mod"), "module example.com/app\n").unwrap();
+        let target = temp.path().join("internal/helpers");
+        std::fs::create_dir_all(&target).unwrap();
+
+        assert_eq!(
+            go_module_import_path(&target).unwrap(),
+            "example.com/app/internal/helpers"
+        );
+    }
+
+    #[test]
+    fn cpp_moves_reject_implementation_file_targets() {
+        assert!(cpp_move_target_is_implementation(
+            Language::Cpp,
+            Path::new("helpers.cpp")
+        ));
+        assert!(!cpp_move_target_is_implementation(
+            Language::Cpp,
+            Path::new("helpers.hpp")
+        ));
+        assert!(!cpp_move_target_is_implementation(
+            Language::TypeScript,
+            Path::new("helpers.cpp")
+        ));
+    }
+
+    #[tokio::test]
+    async fn cpp_move_to_implementation_file_refuses_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.cpp");
+        let target = temp.path().join("helpers.cpp");
+        let original = "double area(Shape s) { return s.area(); }\n";
+        std::fs::write(&source, original).unwrap();
+
+        let error = move_item(
+            "127.0.0.1:9400".parse().unwrap(),
+            temp.path(),
+            &source,
+            1,
+            0,
+            &target,
+            true,
+            true,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}")
+                .contains("cannot move a C/C++ declaration into an implementation file")
+        );
+        assert_eq!(std::fs::read_to_string(source).unwrap(), original);
+        assert!(!target.exists());
     }
 }

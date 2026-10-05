@@ -663,6 +663,7 @@ pub async fn shape_of(
         PolyglotShape::Unit => Shape::Unit,
         PolyglotShape::Enum(v) => Shape::Enum(v),
         PolyglotShape::Interface { .. } => Shape::Unit,
+        PolyglotShape::InterfaceWithFields { .. } => Shape::Unit,
     };
     Ok((shape, file))
 }
@@ -708,7 +709,11 @@ pub async fn generate_with_options(
     )
     .await?;
 
-    let is_mock = options.mock || matches!(shape, PolyglotShape::Interface { .. });
+    let is_mock = options.mock
+        || matches!(
+            shape,
+            PolyglotShape::Interface { .. } | PolyglotShape::InterfaceWithFields { .. }
+        );
     let mut fallbacks = Vec::new();
 
     let (value, snippet) = if lang == Language::Rust && !options.randomized && !is_mock {
@@ -718,6 +723,7 @@ pub async fn generate_with_options(
             PolyglotShape::Unit => Shape::Unit,
             PolyglotShape::Enum(v) => Shape::Enum(v.clone()),
             PolyglotShape::Interface { .. } => Shape::Unit,
+            PolyglotShape::InterfaceWithFields { .. } => Shape::Unit,
         };
         let mut seen = vec![symbol.to_string()];
         let val = match &rust_shape {
@@ -771,6 +777,10 @@ pub async fn generate_with_options(
                     )
                 }
             }
+            Language::Go if fixture.is_mock => {
+                let is_interface = matches!(shape, PolyglotShape::Interface { .. });
+                go_mock_verification_probe(&original, &fixture.snippet, symbol, is_interface)
+            }
             Language::Go => {
                 format!("{original}\n\nfunc _TestProdCodeFixtureProbe() {{\n    {}\n}}\n", fixture.snippet)
             }
@@ -814,6 +824,22 @@ pub async fn generate_with_options(
     }
 
     Ok(fixture)
+}
+
+fn go_mock_verification_probe(
+    original: &str,
+    snippet: &str,
+    symbol: &str,
+    is_interface: bool,
+) -> String {
+    let interface_assertion = if is_interface {
+        format!("\nvar _ {symbol} = (*Mock{symbol})(nil)\n")
+    } else {
+        String::new()
+    };
+    format!(
+        "{original}\n\n{snippet}{interface_assertion}\nfunc _TestProdCodeFixtureProbe() {{ _ = &Mock{symbol}{{}} }}\n"
+    )
 }
 
 #[cfg(test)]
@@ -939,6 +965,17 @@ mod tests {
         assert!(f.render().contains("the analyzer rejects it"));
         f.verified = false;
         assert!(f.render().contains("not verified"));
+    }
+
+    #[test]
+    fn go_mock_methods_are_declared_at_file_scope_before_the_probe() {
+        let snippet = "type MockReader struct{}\nfunc (m *MockReader) Read() string { return \"read\" }";
+        let probe = go_mock_verification_probe("package example\n", snippet, "Reader", true);
+        let probe_fn = probe.find("func _TestProdCodeFixtureProbe()").unwrap();
+        let method = probe.find("func (m *MockReader) Read()").unwrap();
+        assert!(method < probe_fn, "{probe}");
+        assert!(probe[probe_fn..].contains("_ = &MockReader{}"), "{probe}");
+        assert!(!probe[probe_fn..].contains("func (m *MockReader) Read()"), "{probe}");
     }
 }
 
