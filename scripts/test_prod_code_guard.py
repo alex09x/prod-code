@@ -237,6 +237,67 @@ class ProdCodeGuardBuildCommandTests(unittest.TestCase):
             with self.subTest(command=cmd):
                 self.assertIsNone(guard.verdict(cmd))
 
+    def test_quoted_search_patterns_and_reporting_payloads_allowed_issue_868(self) -> None:
+        # Issue #868: quoted regex alternations and documentation payloads containing build command names
+        allowed = [
+            "rg -n 'go test ./|cargo test|npm test|swift test' skills -g '*.md'",
+            "printf '%s\\n' 'Symptom: ... rg -n '\\''go test ./|cargo test|npm test'\\'''",
+            'echo "cargo test and npm test are mentioned in documentation"',
+            "cat << 'EOF'\n# Docs\ncargo test\nEOF",
+            "cat <<EOF\n# Docs\ncargo test\nEOF",
+            "bash -c \"rg -n 'cargo test|swift test' docs/\"",
+        ]
+        for cmd in allowed:
+            with self.subTest(command=cmd):
+                self.assertIsNone(
+                    guard.verdict(cmd),
+                    f"Command with quoted data payload `{cmd}` should be allowed (#868)",
+                )
+
+    def test_unquoted_heredoc_command_substitution_denied(self) -> None:
+        cmd = "cat <<EOF\n$(cargo test)\nEOF"
+        self.assertIsNotNone(
+            guard.verdict(cmd),
+            "Command substitution inside unquoted heredoc must be intercepted",
+        )
+
+    def test_non_shell_tool_payloads_ignored_issue_868(self) -> None:
+        # Issue #868: apply_patch or other non-shell tools quoting compiler command names
+        apply_patch_payload = {
+            "tool_name": "apply_patch",
+            "tool_input": {
+                "cmd": "*** Begin Patch\n*** Add File: test.txt\n+ cargo test\n",
+            },
+        }
+        self.assertIsNone(
+            guard.shell_command(apply_patch_payload),
+            "apply_patch tool payload should not be treated as a shell command (#868)",
+        )
+
+        write_file_payload = {
+            "tool_name": "write_to_file",
+            "tool_input": {
+                "command": "cargo test",
+            },
+        }
+        self.assertIsNone(
+            guard.shell_command(write_file_payload),
+            "write_to_file tool payload should not be treated as a shell command",
+        )
+
+        agy_edit_payload = {
+            "toolCall": {
+                "name": "replace_file_content",
+                "args": {
+                    "CommandLine": "cargo test",
+                },
+            }
+        }
+        self.assertIsNone(
+            guard.shell_command(agy_edit_payload),
+            "Non-run_command Antigravity tool should not be treated as a shell command",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,20 +46,138 @@ ALLOWED_ANYWHERE = [
 ]
 
 
-HEREDOC = re.compile(r"<<-?\s*(['\"])(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?=\n|$)", re.S)
+HEREDOC_QUOTED = re.compile(r"<<-?\s*(['\"])(?P<delim>\w+)\1[^\n]*\n.*?\n\s*(?P=delim)\s*(?=\n|$)", re.S)
+HEREDOC_UNQUOTED = re.compile(r"<<-?\s*(?P<delim>\w+)[^\n]*\n(?P<body>.*?)\n\s*(?P=delim)\s*(?=\n|$)", re.S)
 
 
 def without_heredocs(command):
-    """The command with every quoted here-document body removed (`<<'EOF'`, `<<"EOF"`): such a
-    body is data (an issue text, a script fed to python), and a `swift build` quoted in it is
-    not a command. An unquoted `<<EOF` body is kept: the shell runs its `$(...)` and backticks."""
-    # An escaped backtick is a literal character, not a command substitution.
-    return HEREDOC.sub("<<heredoc", command).replace("\\`", "")
+    """The command with every here-document body replaced with `<<heredoc`.
+    For unquoted here-documents, command substitutions `$(...)` and backticks
+    are preserved so nested executable commands can still be analyzed."""
+    cleaned = HEREDOC_QUOTED.sub("<<heredoc", command)
+    substs = []
+
+    def handle_unquoted(m):
+        body = m.group("body")
+        if body:
+            for sub in re.findall(r"\$\((.*?)\)|`([^`]*)`", body, re.S):
+                substs.append(sub[0] or sub[1])
+        return "<<heredoc"
+
+    cleaned = HEREDOC_UNQUOTED.sub(handle_unquoted, cleaned).replace(r"\`", "")
+    if substs:
+        cleaned += "\n" + "\n".join(substs)
+    return cleaned
+
+
+def split_shell_segments(command):
+    """Splits a shell command string into simple command segments, respecting single/double quotes,
+    parentheses, and command substitutions."""
+    cleaned = without_heredocs(command)
+    segments_list = []
+    cur = []
+    extracted_substs = []
+    i = 0
+    n = len(cleaned)
+    in_single = False
+    in_double = False
+
+    while i < n:
+        c = cleaned[i]
+        if c == "\\" and not in_single and i + 1 < n:
+            cur.append(cleaned[i:i+2])
+            i += 2
+            continue
+        if c == "'" and not in_double:
+            in_single = not in_single
+            cur.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            cur.append(c)
+            i += 1
+            continue
+
+        if not in_single and not in_double:
+            if cleaned[i:i+2] == "$(":
+                depth = 1
+                j = i + 2
+                while j < n and depth > 0:
+                    if cleaned[j] == "'" and cleaned[j-1] != "\\":
+                        end_q = cleaned.find("'", j + 1)
+                        j = n if end_q == -1 else end_q + 1
+                        continue
+                    if cleaned[j] == "(" and cleaned[j-1] != "\\": depth += 1
+                    elif cleaned[j] == ")" and cleaned[j-1] != "\\": depth -= 1
+                    j += 1
+                subcmd = cleaned[i+2:j-1]
+                extracted_substs.append(subcmd)
+                cur.append(cleaned[i:j])
+                i = j
+                continue
+            if c == "`":
+                j = cleaned.find("`", i + 1)
+                if j != -1:
+                    subcmd = cleaned[i+1:j]
+                    extracted_substs.append(subcmd)
+                    cur.append(cleaned[i:j+1])
+                    i = j + 1
+                    continue
+            if cleaned[i:i+2] in ("&&", "||"):
+                seg = "".join(cur).strip()
+                if seg: segments_list.append(seg)
+                cur = []
+                i += 2
+                continue
+            if c in (";", "|", "\n", "(", ")"):
+                seg = "".join(cur).strip()
+                if seg: segments_list.append(seg)
+                cur = []
+                i += 1
+                continue
+        elif in_double:
+            if cleaned[i:i+2] == "$(":
+                depth = 1
+                j = i + 2
+                while j < n and depth > 0:
+                    if cleaned[j] == "'" and cleaned[j-1] != "\\":
+                        end_q = cleaned.find("'", j + 1)
+                        j = n if end_q == -1 else end_q + 1
+                        continue
+                    if cleaned[j] == "(" and cleaned[j-1] != "\\": depth += 1
+                    elif cleaned[j] == ")" and cleaned[j-1] != "\\": depth -= 1
+                    j += 1
+                subcmd = cleaned[i+2:j-1]
+                extracted_substs.append(subcmd)
+                cur.append(cleaned[i:j])
+                i = j
+                continue
+            if c == "`":
+                j = cleaned.find("`", i + 1)
+                if j != -1:
+                    subcmd = cleaned[i+1:j]
+                    extracted_substs.append(subcmd)
+                    cur.append(cleaned[i:j+1])
+                    i = j + 1
+                    continue
+
+        cur.append(c)
+        i += 1
+
+    seg = "".join(cur).strip()
+    if seg:
+        segments_list.append(seg)
+
+    for sub in extracted_substs:
+        segments_list.extend(split_shell_segments(sub))
+
+    return segments_list
 
 
 def segments(command):
     """The simple commands of a shell line, each without leading VAR=value assignments."""
-    for part in re.split(r"&&|\|\||[;|\n()]|\$\(|`", without_heredocs(command)):
+    for part in split_shell_segments(command):
         words = part.strip().split()
         while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
             words = words[1:]
@@ -182,13 +300,98 @@ def in_git_repo(cwd):
         d = parent
 
 
+def split_pipelines(command):
+    """Splits command into pipelines separated by &&, ||, ;, \\n outside quotes."""
+    cleaned = without_heredocs(command)
+    pipelines = []
+    cur = []
+    i = 0
+    n = len(cleaned)
+    in_single = False
+    in_double = False
+
+    while i < n:
+        c = cleaned[i]
+        if c == "\\" and not in_single and i + 1 < n:
+            cur.append(cleaned[i:i+2])
+            i += 2
+            continue
+        if c == "'" and not in_double:
+            in_single = not in_single
+            cur.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            cur.append(c)
+            i += 1
+            continue
+
+        if not in_single and not in_double:
+            if cleaned[i:i+2] in ("&&", "||"):
+                pipe = "".join(cur).strip()
+                if pipe:
+                    pipelines.append(pipe)
+                cur = []
+                i += 2
+                continue
+            if c in (";", "\n"):
+                pipe = "".join(cur).strip()
+                if pipe:
+                    pipelines.append(pipe)
+                cur = []
+                i += 1
+                continue
+
+        cur.append(c)
+        i += 1
+
+    pipe = "".join(cur).strip()
+    if pipe:
+        pipelines.append(pipe)
+    return pipelines
+
+
+def first_command_in_pipeline(pipeline):
+    """Returns the first command of a pipeline (before the first pipe | outside quotes)."""
+    cur = []
+    i = 0
+    n = len(pipeline)
+    in_single = False
+    in_double = False
+
+    while i < n:
+        c = pipeline[i]
+        if c == "\\" and not in_single and i + 1 < n:
+            cur.append(pipeline[i:i+2])
+            i += 2
+            continue
+        if c == "'" and not in_double:
+            in_single = not in_single
+            cur.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            cur.append(c)
+            i += 1
+            continue
+
+        if not in_single and not in_double and c == "|":
+            break
+
+        cur.append(c)
+        i += 1
+
+    return "".join(cur).strip()
+
+
 def symbol_grep(command, cwd):
     """(symbol, pattern) when the command looks a symbol up over source files with grep/rg."""
     if "PROD_CODE_GREP=1" in command:
         return None
-    body = without_heredocs(command)
-    for pipeline in re.split(r"&&|\|\||;|\n", body):
-        first = pipeline.split("|")[0].strip()
+    for pipeline in split_pipelines(command):
+        first = first_command_in_pipeline(pipeline)
         try:
             words = shlex.split(first)
         except ValueError:
@@ -296,8 +499,16 @@ def shell_command(payload):
     call = payload.get("toolCall")
     if isinstance(call, dict):
         # Antigravity: {"toolCall": {"name": "run_command", "args": {"CommandLine": "..."}}}
+        if call.get("name") not in ("run_command", "bash", "exec", "sh"):
+            return None
         command = (call.get("args") or {}).get("CommandLine")
         return command if isinstance(command, str) and command.strip() else None
+
+    tool_name = payload.get("tool_name") or payload.get("tool") or ""
+    SHELL_TOOLS = {"bash", "sh", "zsh", "fish", "exec", "shell", "run_shell_command", "run_command"}
+    if tool_name and tool_name.lower() not in SHELL_TOOLS:
+        return None
+
     tool_input = payload.get("tool_input") or {}
     if not isinstance(tool_input, dict):
         return None
