@@ -8365,6 +8365,10 @@ pub async fn run(cli: ServerCli) -> Result<()> {
                             Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
                                 if tls_mode.is_required() {
                                     tracing::warn!(%addr, "Plaintext connection rejected: TLS mode {:?} is strictly required", tls_mode);
+                                    use tokio::io::AsyncWriteExt;
+                                    let mut s = socket;
+                                    let _ = s.write_all(b"HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nUpgrade to TLS/SSL required: port 9400 enforces encrypted transport.\r\n").await;
+                                    let _ = s.flush().await;
                                     return;
                                 }
                                 AnyStream::Tcp(socket)

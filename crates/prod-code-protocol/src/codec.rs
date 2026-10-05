@@ -256,15 +256,22 @@ impl Decoder for ProdCodeCodec {
             return Ok(None);
         }
 
-        // Check if incoming stream begins with an HTTP request or response (dual-protocol sniffing).
-        let is_http = src.starts_with(b"GET ")
-            || src.starts_with(b"POST")
-            || src.starts_with(b"HEAD")
-            || src.starts_with(b"PUT ")
-            || src.starts_with(b"DELE")
-            || src.starts_with(b"OPTI")
-            || src.starts_with(b"PATC")
-            || src.starts_with(b"HTTP");
+        // Check if incoming stream begins with a syntactically valid HTTP request line or response.
+        // A valid HTTP request starts with an ASCII method token (2..=16 uppercase letters) followed by a space,
+        // or an HTTP/1.x response line.
+        let is_http = if src.starts_with(b"HTTP/") {
+            true
+        } else if let Some(space_pos) = src.iter().position(|&b| b == b' ') {
+            (2..=16).contains(&space_pos)
+                && src[..space_pos].iter().all(|b| b.is_ascii_uppercase())
+                && (src.len() <= space_pos + 1
+                    || src[space_pos + 1] == b'/'
+                    || src[space_pos + 1] == b'*'
+                    || src[space_pos + 1].is_ascii_alphanumeric())
+        } else {
+            // Buffer is too short to find a space yet, but starts with uppercase letters that could be an HTTP method
+            src.len() < 16 && src.iter().all(|b| b.is_ascii_uppercase())
+        };
 
         if is_http {
             // Find end of HTTP headers: \r\n\r\n or \n\n
@@ -1053,7 +1060,28 @@ mod tests {
         );
         assert!(buf.is_empty());
 
-        // 3. HttpResponse encoding
+        // 3. CONNECT and TRACE methods (regression tests for generic HTTP request line parsing)
+        buf.extend_from_slice(b"CONNECT host.internal:443 HTTP/1.1\r\nHost: host.internal\r\n\r\n");
+        let decoded_connect = codec.decode(&mut buf).unwrap().expect("should decode CONNECT probe");
+        assert_eq!(
+            decoded_connect,
+            WireMessage::HttpProbe {
+                method: "CONNECT".to_string(),
+                path: "host.internal:443".to_string(),
+            }
+        );
+
+        buf.extend_from_slice(b"TRACE /debug HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let decoded_trace = codec.decode(&mut buf).unwrap().expect("should decode TRACE probe");
+        assert_eq!(
+            decoded_trace,
+            WireMessage::HttpProbe {
+                method: "TRACE".to_string(),
+                path: "/debug".to_string(),
+            }
+        );
+
+        // 4. HttpResponse encoding
         let resp = WireMessage::HttpResponse {
             status: 200,
             content_type: "application/json".to_string(),

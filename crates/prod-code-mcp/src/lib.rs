@@ -204,7 +204,12 @@ pub async fn handle_mcp_request(
                     let secs = call_timeout.as_secs();
                     tracing::warn!(tool = tool_name, secs, "tool call exceeded MCP timeout budget");
                     let call_result = protocol::McpToolCallResult::error(format!(
-                        "Tool call '{tool_name}' timed out after {secs}s"
+                        "Tool call '{tool_name}' timed out after {secs}s\n\n\
+                         💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
+                         - Via MCP: call `code_report_issue` with `title` and `body`\n\
+                         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"`\n\
+                         - On GitHub: https://github.com/alex09x/prod-code/issues\n\
+                         (Hostnames, LAN addresses, and home paths are automatically sanitized; do not paste private credentials)."
                     ));
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
                     return Ok(Some(serde_json::to_value(resp)?));
@@ -217,7 +222,15 @@ pub async fn handle_mcp_request(
                     Ok(Some(serde_json::to_value(resp)?))
                 }
                 Err(e) => {
-                    let call_result = protocol::McpToolCallResult::error(e.to_string());
+                    let err_msg = format!(
+                        "{e}\n\n\
+                         💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
+                         - Via MCP: call `code_report_issue` with `title` and `body`\n\
+                         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"`\n\
+                         - On GitHub: https://github.com/alex09x/prod-code/issues\n\
+                         (Hostnames, LAN addresses, and home paths are automatically sanitized; do not paste private credentials)."
+                    );
+                    let call_result = protocol::McpToolCallResult::error(err_msg);
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
                     Ok(Some(serde_json::to_value(resp)?))
                 }

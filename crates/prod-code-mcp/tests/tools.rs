@@ -1122,7 +1122,7 @@ async fn code_references_respects_limit_and_provides_refactoring_tip() {
 
     let text = text_of(&result);
     assert!(text.contains("Found 3 reference(s):"), "{text}");
-    assert!(text.contains("showing first 2 of 3 references"), "{text}");
+    assert!(text.contains("display capped at first 2 of 3 references"), "{text}");
     assert!(text.contains("💡 Refactoring Tip:"), "{text}");
     assert!(text.contains("code_rename"), "{text}");
 

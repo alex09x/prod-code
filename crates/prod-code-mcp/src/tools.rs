@@ -868,7 +868,7 @@ fn build_tools_raw() -> Vec<McpTool> {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Optional maximum number of references to display (default: 0 for all). Pass e.g. 50 or 100 to paginate and reduce payload size for heavily-referenced symbols."
+                        "description": "Optional display truncation limit (default: 0 for all). Caps the number of reference lines rendered in the output text to keep agent context windows bounded for heavily-referenced symbols. Internal AST refactoring tools always receive the complete reference set."
                     }
                 },
                 "required": ["path", "line", "character"]
@@ -3139,7 +3139,7 @@ async fn handle_references(
         }
         if limit > 0 && total > limit {
             out.push_str(&format!(
-                "  ... (showing first {display_count} of {total} references; pass `limit: 0` to display all)\n"
+                "  ... (display capped at first {display_count} of {total} references; pass `limit: 0` to display all)\n"
             ));
         }
 
