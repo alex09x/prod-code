@@ -382,7 +382,7 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
                 self.assertIsNone(other)
 
                 # Verify file permissions mode 0600
-                state_file = os.path.join(tmpdir, f"rename_{conv}.json")
+                state_file = os.path.join(tmpdir, f"rename_{conv}_repo.json")
                 self.assertTrue(os.path.exists(state_file))
                 file_mode = os.stat(state_file).st_mode & 0o777
                 self.assertEqual(file_mode, 0o600)
@@ -587,6 +587,34 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
                 finally:
                     sys.stdin, sys.stdout = orig_stdin, orig_stdout
                 self.assertEqual(stdout_3.getvalue().strip(), "")
+            finally:
+                guard.RENAME_STATE_DIR = orig_dir
+
+    def test_concurrent_multi_file_rename_serialization(self) -> None:
+        import concurrent.futures
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig_dir = guard.RENAME_STATE_DIR
+            try:
+                guard.RENAME_STATE_DIR = tmpdir
+                conv = "test-concurrent-conv"
+
+                def rename_worker(file_path: str):
+                    return guard.check_multi_file_rename(
+                        conv_id=conv,
+                        file_path=file_path,
+                        old_sym="shared_sym",
+                        new_sym="renamed_sym",
+                        repo_root="/repo",
+                    )
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    f1 = executor.submit(rename_worker, "/repo/src/first.rs")
+                    f2 = executor.submit(rename_worker, "/repo/src/second.rs")
+                    res1 = f1.result()
+                    res2 = f2.result()
+
+                results = [res1[0], res2[0]]
+                self.assertEqual(sorted(results), [False, True], f"Concurrent results: {res1} and {res2}")
             finally:
                 guard.RENAME_STATE_DIR = orig_dir
 

@@ -21,6 +21,7 @@ code_symbols answer that exactly. Text searches (plain words, phrases, regexes),
 logs, docs or configs, and grep as a filter on a pipe stay allowed. PROD_CODE_GREP=1 in the
 command lets a symbol grep through; every such override is logged, because it marks a place
 where prod-code did not serve (and should get a code_report_issue)."""
+import fcntl
 import json
 import os
 import re
@@ -549,7 +550,7 @@ def single_symbol_rename(old_str, new_str):
 
 def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None, now=None):
     """Returns (True, other_file) if (old_sym, new_sym) was already renamed in another file
-    within the same repo within 30m, else (False, None)."""
+    within the same repo within 30m, else (False, None). Serialized via interprocess file lock."""
     if now is None:
         now = int(time.time())
     try:
@@ -561,10 +562,21 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None
     except OSError:
         pass
 
+    clean_id = re.sub(r"[^A-Za-z0-9_-]", "_", conv_id or "default")
+    canon_repo = os.path.abspath(repo_root) if repo_root else ""
+    if canon_repo:
+        repo_slug = re.sub(r"[^A-Za-z0-9_-]", "_", os.path.basename(canon_repo))
+        scope_key = f"{clean_id}_{repo_slug}"
+    else:
+        scope_key = clean_id
+
+    lock_file = os.path.join(RENAME_STATE_DIR, f"rename_{scope_key}.lock")
+    state_file = os.path.join(RENAME_STATE_DIR, f"rename_{scope_key}.json")
+
     # Expire stale session files older than 30m
     try:
         for fname in os.listdir(RENAME_STATE_DIR):
-            if fname.startswith("rename_") and fname.endswith(".json"):
+            if fname.startswith("rename_") and (fname.endswith(".json") or fname.endswith(".lock")):
                 fpath = os.path.join(RENAME_STATE_DIR, fname)
                 try:
                     if now - int(os.path.getmtime(fpath)) > 1800:
@@ -574,50 +586,74 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None
     except OSError:
         pass
 
-    clean_id = re.sub(r"[^A-Za-z0-9_-]", "_", conv_id or "default")
-    state_file = os.path.join(RENAME_STATE_DIR, f"rename_{clean_id}.json")
-
-    entries = []
+    lock_fd = None
     try:
-        if os.path.exists(state_file):
-            with open(state_file, "r") as f:
-                data = json.load(f)
-                entries = data.get("entries", [])
-    except Exception:
-        entries = []
-
-    # Prune entries older than 30 minutes (1800s)
-    entries = [e for e in entries if isinstance(e, dict) and now - e.get("ts", 0) <= 1800]
-
-    abs_file = os.path.abspath(file_path)
-    canon_repo = os.path.abspath(repo_root) if repo_root else ""
-
-    other_file = None
-    for e in entries:
-        if e.get("sym") == old_sym and e.get("new") == new_sym:
-            stored_repo = e.get("repo", "")
-            if canon_repo and stored_repo and canon_repo != stored_repo:
-                continue
-            prev_file = e.get("file")
-            if prev_file and os.path.abspath(prev_file) != abs_file:
-                other_file = prev_file
-                break
-
-    if other_file:
-        return True, other_file
-
-    entries.append({"sym": old_sym, "new": new_sym, "file": abs_file, "repo": canon_repo, "ts": now})
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        flags = os.O_RDWR | os.O_CREAT
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        fd = os.open(state_file, flags, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump({"entries": entries}, f)
+        lock_fd = os.open(lock_file, flags, 0o600)
+        if hasattr(fcntl, "flock"):
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
     except Exception:
-        pass
+        lock_fd = None
 
-    return False, None
+    try:
+        entries = []
+        try:
+            if os.path.exists(state_file):
+                with open(state_file, "r") as f:
+                    data = json.load(f)
+                    entries = data.get("entries", [])
+        except Exception:
+            entries = []
+
+        # Prune entries older than 30 minutes (1800s)
+        entries = [e for e in entries if isinstance(e, dict) and now - e.get("ts", 0) <= 1800]
+
+        abs_file = os.path.abspath(file_path)
+
+        other_file = None
+        for e in entries:
+            if e.get("sym") == old_sym and e.get("new") == new_sym:
+                stored_repo = e.get("repo", "")
+                if canon_repo and stored_repo and canon_repo != stored_repo:
+                    continue
+                prev_file = e.get("file")
+                if prev_file and os.path.abspath(prev_file) != abs_file:
+                    other_file = prev_file
+                    break
+
+        if other_file:
+            return True, other_file
+
+        entries.append({"sym": old_sym, "new": new_sym, "file": abs_file, "repo": canon_repo, "ts": now})
+
+        # Atomic replace via temporary file in the same directory
+        temp_file = os.path.join(RENAME_STATE_DIR, f"tmp_{scope_key}_{os.getpid()}_{time.time_ns()}.json")
+        try:
+            wflags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                wflags |= os.O_NOFOLLOW
+            fd = os.open(temp_file, wflags, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"entries": entries}, f)
+            os.replace(temp_file, state_file)
+        except Exception:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except OSError:
+                    pass
+
+        return False, None
+    finally:
+        if lock_fd is not None:
+            try:
+                if hasattr(fcntl, "flock"):
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+            except OSError:
+                pass
 
 
 def file_edit_details(payload):
