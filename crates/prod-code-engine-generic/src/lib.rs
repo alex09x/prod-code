@@ -231,7 +231,10 @@ impl GenericLspConfig {
             env.insert("MYPYPATH".to_string(), val.to_string_lossy().into_owned());
         }
         if let Some(val) = std::env::var_os("TYPINGS_PATH") {
-            env.insert("TYPINGS_PATH".to_string(), val.to_string_lossy().into_owned());
+            env.insert(
+                "TYPINGS_PATH".to_string(),
+                val.to_string_lossy().into_owned(),
+            );
         }
 
         let initialization_options = if cmd.contains("pyright") {
@@ -421,7 +424,11 @@ impl GenericLspConfig {
                 }
             });
             if let Some(p) = tsserver_path {
-                if let Some(ts) = vtsls_opts.get_mut("typescript").and_then(|t| t.get_mut("tsserver")).and_then(|ts| ts.as_object_mut()) {
+                if let Some(ts) = vtsls_opts
+                    .get_mut("typescript")
+                    .and_then(|t| t.get_mut("tsserver"))
+                    .and_then(|ts| ts.as_object_mut())
+                {
                     ts.insert("path".to_string(), serde_json::Value::String(p));
                 }
             }
@@ -667,9 +674,15 @@ impl GenericLspConfig {
     /// Create a standard configuration for Haskell language servers (haskell-language-server).
     pub fn for_haskell() -> Self {
         let (cmd, args) = if which_bin("haskell-language-server-wrapper").is_ok() {
-            ("haskell-language-server-wrapper".to_string(), vec!["--lsp".to_string()])
+            (
+                "haskell-language-server-wrapper".to_string(),
+                vec!["--lsp".to_string()],
+            )
         } else {
-            ("haskell-language-server".to_string(), vec!["--lsp".to_string()])
+            (
+                "haskell-language-server".to_string(),
+                vec!["--lsp".to_string()],
+            )
         };
         Self {
             command: cmd,
@@ -855,9 +868,15 @@ impl GenericLspConfig {
     /// Create a standard configuration for Solidity language servers.
     pub fn for_solidity() -> Self {
         let (cmd, args) = if which_bin("nomicfoundation-solidity-language-server").is_ok() {
-            ("nomicfoundation-solidity-language-server".to_string(), vec!["--stdio".to_string()])
+            (
+                "nomicfoundation-solidity-language-server".to_string(),
+                vec!["--stdio".to_string()],
+            )
         } else {
-            ("solidity-language-server".to_string(), vec!["--stdio".to_string()])
+            (
+                "solidity-language-server".to_string(),
+                vec!["--stdio".to_string()],
+            )
         };
         Self {
             command: cmd,
@@ -932,7 +951,11 @@ impl GenericLspConfig {
         } else {
             (
                 "sql-language-server".to_string(),
-                vec!["up".to_string(), "--method".to_string(), "stdio".to_string()],
+                vec![
+                    "up".to_string(),
+                    "--method".to_string(),
+                    "stdio".to_string(),
+                ],
             )
         };
         Self {
@@ -970,7 +993,10 @@ impl GenericLspConfig {
     /// Create a standard configuration for Protocol Buffers language servers (buf or protols).
     pub fn for_protobuf() -> Self {
         let (cmd, args) = if which_bin("buf").is_ok() {
-            ("buf".to_string(), vec!["beta".to_string(), "lsp".to_string()])
+            (
+                "buf".to_string(),
+                vec!["beta".to_string(), "lsp".to_string()],
+            )
         } else {
             ("protols".to_string(), vec![])
         };
@@ -1288,7 +1314,10 @@ impl GenericLspConfig {
     /// Create a standard configuration for Vue language servers (vue-language-server or vls).
     pub fn for_vue() -> Self {
         let (cmd, args) = if which_bin("vue-language-server").is_ok() {
-            ("vue-language-server".to_string(), vec!["--stdio".to_string()])
+            (
+                "vue-language-server".to_string(),
+                vec!["--stdio".to_string()],
+            )
         } else {
             ("vls".to_string(), vec![])
         };
@@ -1728,7 +1757,7 @@ impl GenericLspEngine {
                             "Failed to execute command: {} {:?}",
                             config.command, config.args
                         )
-                    })
+                    });
                 }
             }
         };
@@ -1742,7 +1771,9 @@ impl GenericLspEngine {
             .take()
             .context("Failed to open child stdout for generic LSP")?;
         let stderr = child.stderr.take();
-        let stderr_tail = Arc::new(StdMutex::new(std::collections::VecDeque::<String>::with_capacity(32)));
+        let stderr_tail = Arc::new(StdMutex::new(
+            std::collections::VecDeque::<String>::with_capacity(32),
+        ));
         let stderr_tail_writer = Arc::clone(&stderr_tail);
         let (stderr_done_tx, stderr_done) = tokio::sync::watch::channel(false);
         if let Some(mut stderr) = stderr {
@@ -1759,7 +1790,8 @@ impl GenericLspEngine {
                         if c == '\n' {
                             let mut tail = lock_unpoisoned(&stderr_tail_writer);
                             while tail.len() >= 30
-                                || tail.iter().map(|s| s.len()).sum::<usize>() + current_line.len() > 16 * 1024
+                                || tail.iter().map(|s| s.len()).sum::<usize>() + current_line.len()
+                                    > 16 * 1024
                             {
                                 if tail.pop_front().is_none() {
                                     break;
@@ -1774,7 +1806,8 @@ impl GenericLspEngine {
                 if !current_line.is_empty() {
                     let mut tail = lock_unpoisoned(&stderr_tail_writer);
                     while tail.len() >= 30
-                        || tail.iter().map(|s| s.len()).sum::<usize>() + current_line.len() > 16 * 1024
+                        || tail.iter().map(|s| s.len()).sum::<usize>() + current_line.len()
+                            > 16 * 1024
                     {
                         if tail.pop_front().is_none() {
                             break;
@@ -1788,8 +1821,6 @@ impl GenericLspEngine {
             let _ = stderr_done_tx.send(true);
         }
         let exit_details = Arc::new(StdMutex::new(None::<String>));
-        let exit_details_writer = Arc::clone(&exit_details);
-        let stderr_tail_reader = Arc::clone(&stderr_tail);
 
         let (bcast_tx, _) = broadcast::channel(1024);
         let bcast_tx_clone = bcast_tx.clone();
@@ -2122,15 +2153,7 @@ impl GenericLspEngine {
                 },
                 None => "process terminated".to_string(),
             };
-            let tail = lock_unpoisoned(&stderr_tail_reader);
-            let details = if tail.is_empty() {
-                status_msg
-            } else {
-                let lines: Vec<&str> = tail.iter().map(|s| s.as_str()).collect();
-                format!("{status_msg} (stderr: {})", lines.join("\n"))
-            };
-            *lock_unpoisoned(&exit_details_writer) = Some(details);
-            tracing::info!("Generic LSP reader loop finished");
+            tracing::info!(status = %status_msg, "Generic LSP reader loop finished");
         });
 
         let mut engine = Self {
@@ -2205,21 +2228,35 @@ impl GenericLspEngine {
             }
         };
         let mut stderr_done = self.stderr_done.clone();
-        if !*stderr_done.borrow() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done.changed()).await;
-        }
-        if !*stderr_done.borrow() {
-            // Do not cache a snapshot while the bounded stderr reader is still draining.
-            return Some(status_msg);
-        }
+        let drained = if *stderr_done.borrow() {
+            true
+        } else {
+            tokio::time::timeout(Duration::from_secs(2), stderr_done.changed())
+                .await
+                .is_ok()
+                && *stderr_done.borrow()
+        };
         let tail = lock_unpoisoned(&self.stderr_tail);
         let details = if tail.is_empty() {
-            status_msg
+            if drained {
+                status_msg
+            } else {
+                format!("{status_msg} (stderr drain timed out)")
+            }
         } else {
             let lines: Vec<&str> = tail.iter().map(|s| s.as_str()).collect();
-            format!("{status_msg} (stderr: {})", lines.join("\n"))
+            if drained {
+                format!("{status_msg} (stderr: {})", lines.join("\n"))
+            } else {
+                format!(
+                    "{status_msg} (stderr [incomplete drain]: {})",
+                    lines.join("\n")
+                )
+            }
         };
-        *lock_unpoisoned(&self.exit_details) = Some(details.clone());
+        if drained {
+            *lock_unpoisoned(&self.exit_details) = Some(details.clone());
+        }
         Some(details)
     }
 
@@ -2856,7 +2893,9 @@ impl GenericLspEngine {
                         .await
                         .map(|d| format!(": {d}"))
                         .unwrap_or_default();
-                    anyhow::bail!("Language server process has exited while answering '{method}'{details}");
+                    anyhow::bail!(
+                        "Language server process has exited while answering '{method}'{details}"
+                    );
                 }
                 if let Some(busy) = busy {
                     val[BUSY_MEMBER] = serde_json::to_value(busy)?;
@@ -2869,7 +2908,9 @@ impl GenericLspEngine {
                     .await
                     .map(|d| format!(": {d}"))
                     .unwrap_or_default();
-                anyhow::bail!("Language server process has exited while answering '{method}'{details}")
+                anyhow::bail!(
+                    "Language server process has exited while answering '{method}'{details}"
+                )
             }
             Err(_) => {
                 anyhow::bail!("Timeout waiting for response to '{method}'");
@@ -2941,7 +2982,9 @@ impl GenericLspEngine {
                 .await
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
-            anyhow::bail!("Language server process has exited before notification '{method}'{details}");
+            anyhow::bail!(
+                "Language server process has exited before notification '{method}'{details}"
+            );
         }
         let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
         let uri = params
@@ -2966,7 +3009,9 @@ impl GenericLspEngine {
                 .await
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
-            anyhow::bail!("Language server process has exited before notification '{method}'{details}");
+            anyhow::bail!(
+                "Language server process has exited before notification '{method}'{details}"
+            );
         }
         let mut mutation = DocumentMutation {
             engine: self,
@@ -3320,7 +3365,9 @@ impl GenericLspEngine {
                 .await
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
-            anyhow::bail!("Language server process has exited before notification '{method}'{details}");
+            anyhow::bail!(
+                "Language server process has exited before notification '{method}'{details}"
+            );
         }
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
@@ -3855,6 +3902,62 @@ sys.exit(7)
             details.contains("final diagnostic from startup"),
             "{details}"
         );
+    }
+
+    #[tokio::test]
+    async fn exit_details_surfaces_partial_stderr_when_drain_times_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("hanging-stderr-server.py");
+        std::fs::write(
+            &script,
+            r#"import json, subprocess, sys
+length = 0
+while True:
+    line = sys.stdin.buffer.readline()
+    if not line:
+        sys.exit(2)
+    if not line.strip():
+        break
+    if line.lower().startswith(b"content-length:"):
+        length = int(line.split(b":")[1])
+request = json.loads(sys.stdin.buffer.read(length))
+response = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"capabilities": {}}}).encode()
+sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(response) + response)
+sys.stdout.buffer.flush()
+
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=sys.stderr)
+sys.stderr.write("partial diagnostic before timeout\n")
+sys.stderr.flush()
+sys.exit(7)
+"#,
+        )
+        .expect("fake server");
+
+        let engine = GenericLspEngine::spawn(
+            dir.path(),
+            GenericLspConfig {
+                command: "python3".to_string(),
+                args: vec![script.to_string_lossy().into_owned()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("initialize before the fake server exits");
+
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while engine.is_alive() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the fake server exits");
+        let details = engine.exit_details().await.expect("exit details");
+        assert!(details.contains("exit code 7"), "{details}");
+        assert!(
+            details.contains("partial diagnostic before timeout"),
+            "{details}"
+        );
+        assert!(details.contains("stderr [incomplete drain]"), "{details}");
     }
 
     #[tokio::test]

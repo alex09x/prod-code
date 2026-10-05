@@ -109,7 +109,7 @@ Use semantic tools instead of text search:
 - Semantic Intelligence & Architecture: code_structural_search performs polyglot AST pattern matching with metavariables; code_dependencies inspects architectural graphs, coupling metrics (Ca, Ce, instability), and circular cycles; code_find_duplicates harvests Type-1 and Type-2 code clones; code_propose_expression synthesizes type-directed in-scope expressions and accessor chains to prevent hallucinated APIs.
 
 Safe pre-flight validation & hypotheses:
-- Before writing a file, call code_validate_edit with the complete proposed content (or code_validate_edits for multi-file patches): it returns analyzer errors (type errors, unresolved names, hallucinated APIs) in memory without touching disk. Write only after clean. Use code_diagnostics on existing files.
+- Batch diagnostics: optional lightweight code_validate_edits checks the completed coherent batch, not each file/save. It must not launch a build/test; follow the Development validation policy. Use code_diagnostics on existing files.
 - Before committing, call code_impact to determine the blast radius (affected functions, callers, and tests).
 - When evaluating multiple implementation hypotheses or bug fixes, call code_shadow_run with alternative file sets: it executes candidate patches concurrently in private server overlays and reports the winning diff without mutating the git working tree.
 
@@ -122,8 +122,8 @@ Refactoring & code modernization (33 polyglot refactorings):
 - Dead code cleanup: code_dead_code lists unreferenced symbols; code_prune_orphans removes dead code in one verified type-checked pass; code_safe_delete verifies zero references before deleting.
 
 Builds, tests & failure diagnosis on the server:
-- code_check (compile), code_lint, code_test (parsed results; `path` narrows to crate/package), code_benchmarks, and code_exec for any command.
-- When tests fail, call code_diagnose_failure: it analyzes the failure site, code, callers, and diff to pinpoint the root cause. Never build or test locally when these tools are available.
+- Builds, lints & tests: code_check, code_lint, code_test (parsed results; `path` narrows to crate/package), code_benchmarks, and code_exec for any command. Never build or test locally when these tools are available. During development run only new/directly affected tests.
+- Test execution & failure diagnosis: read existing failure output first. code_diagnose_failure EXECUTES tests and is not passive analysis or an automatic follow-up.
 
 When a prod-code tool itself is at fault (a wrong or empty answer, a hang, a crash, an error that does not say what to do, a call far slower than it should be, or a capability you needed and it lacks), report it with code_report_issue as soon as you are sure, then carry on with your task. The title says what went wrong in which tool, for which language; the body gives the exact call with its arguments, what came back, what you expected and how to reproduce it. The issue is public: never put private details in it, such as host names, IP addresses, internal paths or repository names, credentials, or logs with internal data (addresses, the host name and home paths are also removed automatically). When reproducing needs them, write them into your own private record first, such as an incident in your team's knowledge base, and pass its id as `private_ref`; without one, file the issue without them. Give it `labels`: one type (bug, enhancement, documentation, perf) and the areas it is about (gateway, client, mcp, cluster, worktree, infra, test). When a similar issue is listed, add to it with a comment instead of filing another.\
 ";
