@@ -630,6 +630,144 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
             finally:
                 guard.RENAME_STATE_DIR = orig_dir
 
+    def test_codex_apply_patch_parsing_and_detection(self) -> None:
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: /repo/src/lib.rs\n"
+            "@@ -10,3 +10,3 @@\n"
+            "-let x = old_sym;\n"
+            "+let x = new_sym;\n"
+            "*** Update File: /repo/src/main.rs\n"
+            "@@ -5,2 +5,2 @@\n"
+            "-use crate::old_sym;\n"
+            "+use crate::new_sym;\n"
+            "*** End Patch"
+        )
+        payload = {
+            "tool_name": "apply_patch",
+            "tool_input": {
+                "cmd": patch_text,
+            },
+        }
+        edits = guard.file_edits_from_payload(payload)
+        self.assertEqual(len(edits), 2)
+        self.assertEqual(edits[0][0], "/repo/src/lib.rs")
+        self.assertEqual(guard.single_symbol_rename(edits[0][1], edits[0][2]), ("old_sym", "new_sym"))
+        self.assertEqual(edits[1][0], "/repo/src/main.rs")
+        self.assertEqual(guard.single_symbol_rename(edits[1][1], edits[1][2]), ("old_sym", "new_sym"))
+        self.assertFalse(edits[0][3])
+
+        # Test override inside patch
+        patch_override = patch_text + "\n# PROD_CODE_MANUAL_RENAME=1"
+        payload_override = {"tool_name": "apply_patch", "tool_input": {"cmd": patch_override}}
+        edits_override = guard.file_edits_from_payload(payload_override)
+        self.assertTrue(all(e[3] for e in edits_override))
+
+    def test_codex_apply_patch_multi_file_denied_in_main(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig_dir = guard.RENAME_STATE_DIR
+            repo_root = str(Path(__file__).parent.parent)
+            file_a = os.path.join(repo_root, "scripts/hooks/file_a.py")
+            file_b = os.path.join(repo_root, "scripts/hooks/file_b.py")
+            try:
+                guard.RENAME_STATE_DIR = tmpdir
+                # Single patch touching 2 files with the same symbol rename
+                multi_patch = (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {file_a}\n"
+                    "@@ -1,1 +1,1 @@\n"
+                    "-my_symbol = 1\n"
+                    "+new_symbol = 1\n"
+                    f"*** Update File: {file_b}\n"
+                    "@@ -1,1 +1,1 @@\n"
+                    "-my_symbol = 2\n"
+                    "+new_symbol = 2\n"
+                    "*** End Patch"
+                )
+                payload = {
+                    "tool_name": "apply_patch",
+                    "tool_input": {"cmd": multi_patch},
+                    "cwd": repo_root,
+                    "session_id": "test-codex-session",
+                }
+                orig_stdin, orig_stdout = sys.stdin, sys.stdout
+                stdout = io.StringIO()
+                try:
+                    sys.stdin = io.StringIO(json.dumps(payload))
+                    sys.stdout = stdout
+                    guard.main()
+                finally:
+                    sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+                out = stdout.getvalue().strip()
+                self.assertTrue(out)
+                res = json.loads(out)
+                self.assertIn("hookSpecificOutput", res)
+                self.assertEqual(res["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("Multi-file symbol rename detected", res["hookSpecificOutput"]["permissionDecisionReason"])
+                self.assertIn("code_rename", res["hookSpecificOutput"]["permissionDecisionReason"])
+            finally:
+                guard.RENAME_STATE_DIR = orig_dir
+
+    def test_claude_edit_multi_file_denied_in_main(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig_dir = guard.RENAME_STATE_DIR
+            repo_root = str(Path(__file__).parent.parent)
+            file_a = os.path.join(repo_root, "scripts/hooks/file_a.py")
+            file_b = os.path.join(repo_root, "scripts/hooks/file_b.py")
+            try:
+                guard.RENAME_STATE_DIR = tmpdir
+                session = "test-claude-session"
+
+                # 1st Edit: allowed
+                payload_1 = {
+                    "tool_name": "Edit",
+                    "tool_input": {
+                        "file_path": file_a,
+                        "old_string": "def old_foo():",
+                        "new_string": "def new_foo():",
+                    },
+                    "cwd": repo_root,
+                    "session_id": session,
+                }
+                orig_stdin, orig_stdout = sys.stdin, sys.stdout
+                stdout_1 = io.StringIO()
+                try:
+                    sys.stdin = io.StringIO(json.dumps(payload_1))
+                    sys.stdout = stdout_1
+                    guard.main()
+                finally:
+                    sys.stdin, sys.stdout = orig_stdin, orig_stdout
+                self.assertEqual(stdout_1.getvalue().strip(), "")
+
+                # 2nd Edit on different file with same rename: denied with hookSpecificOutput
+                payload_2 = {
+                    "tool_name": "Edit",
+                    "tool_input": {
+                        "file_path": file_b,
+                        "old_string": "old_foo()",
+                        "new_string": "new_foo()",
+                    },
+                    "cwd": repo_root,
+                    "session_id": session,
+                }
+                stdout_2 = io.StringIO()
+                try:
+                    sys.stdin = io.StringIO(json.dumps(payload_2))
+                    sys.stdout = stdout_2
+                    guard.main()
+                finally:
+                    sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+                out_2 = stdout_2.getvalue().strip()
+                self.assertTrue(out_2)
+                res = json.loads(out_2)
+                self.assertEqual(res["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("Multi-file symbol rename detected", res["hookSpecificOutput"]["permissionDecisionReason"])
+                self.assertIn("code_rename", res["hookSpecificOutput"]["permissionDecisionReason"])
+            finally:
+                guard.RENAME_STATE_DIR = orig_dir
+
 
 if __name__ == "__main__":
     unittest.main()

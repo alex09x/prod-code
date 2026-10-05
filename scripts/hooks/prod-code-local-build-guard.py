@@ -661,8 +661,59 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None
                 pass
 
 
-def file_edit_details(payload):
-    """Returns (file_path, old_content, new_content, is_override) for edit tool calls, or None."""
+def parse_patch_edits(patch_text, env_override=False):
+    """Parses Codex apply_patch and unified diff formats, returning
+    [(file_path, old_content, new_content, is_override), ...]."""
+    edits = []
+    if not isinstance(patch_text, str) or not patch_text:
+        return edits
+
+    is_override = env_override or ("PROD_CODE_MANUAL_RENAME=1" in patch_text)
+    current_file = None
+    old_lines = []
+    new_lines = []
+
+    def flush_hunk():
+        nonlocal current_file, old_lines, new_lines
+        if current_file and (old_lines or new_lines):
+            edits.append((current_file, "\n".join(old_lines), "\n".join(new_lines), is_override))
+            old_lines = []
+            new_lines = []
+
+    for line in patch_text.splitlines():
+        if line.startswith("*** Update File: "):
+            flush_hunk()
+            current_file = line[len("*** Update File: "):].strip()
+        elif line.startswith("*** Add File: ") or line.startswith("*** Delete File: "):
+            flush_hunk()
+            current_file = None
+        elif line.startswith("--- a/") or line.startswith("--- "):
+            flush_hunk()
+            parts = line.split(None, 1)
+            p = parts[1] if len(parts) > 1 else ""
+            if p.startswith("a/"):
+                p = p[2:]
+            current_file = p
+        elif line.startswith("+++ b/") or line.startswith("+++ "):
+            parts = line.split(None, 1)
+            p = parts[1] if len(parts) > 1 else ""
+            if p.startswith("b/"):
+                p = p[2:]
+            current_file = p
+        elif current_file:
+            if line.startswith("@@"):
+                flush_hunk()
+            elif line.startswith("-") and not line.startswith("---"):
+                old_lines.append(line[1:])
+            elif line.startswith("+") and not line.startswith("+++"):
+                new_lines.append(line[1:])
+
+    flush_hunk()
+    return edits
+
+
+def file_edits_from_payload(payload):
+    """Returns list of (file_path, old_content, new_content, is_override) for edit tool calls."""
     env_override = os.environ.get("PROD_CODE_MANUAL_RENAME") == "1"
 
     call = payload.get("toolCall")
@@ -675,13 +726,14 @@ def file_edit_details(payload):
             replacement = args.get("ReplacementContent") or args.get("replacement_content") or args.get("new_string") or args.get("new_str") or ""
             desc = f"{args.get('Description', '')} {args.get('Instruction', '')}"
             override = env_override or ("PROD_CODE_MANUAL_RENAME=1" in desc)
-            return target_file, target_content, replacement, override
-        return None
+            return [(target_file, target_content, replacement, override)]
+        return []
 
     tool_name = payload.get("tool_name") or payload.get("tool") or ""
     tool_input = payload.get("tool_input") or {}
     if not isinstance(tool_input, dict):
-        return None
+        return []
+
     if tool_name in ("Edit", "str_replace_editor", "edit_file", "replace_file_content"):
         target_file = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("target_file") or ""
         target_content = tool_input.get("old_string") or tool_input.get("old_str") or tool_input.get("TargetContent") or ""
@@ -690,9 +742,19 @@ def file_edit_details(payload):
             isinstance(v, str) and "PROD_CODE_MANUAL_RENAME=1" in v
             for v in tool_input.values()
         )
-        return target_file, target_content, replacement, override
+        return [(target_file, target_content, replacement, override)]
 
-    return None
+    if tool_name in ("apply_patch", "patch"):
+        patch_text = tool_input.get("cmd") or tool_input.get("patch") or tool_input.get("command") or ""
+        return parse_patch_edits(patch_text, env_override)
+
+    return []
+
+
+def file_edit_details(payload):
+    """Returns (file_path, old_content, new_content, is_override) for edit tool calls, or None."""
+    edits = file_edits_from_payload(payload)
+    return edits[0] if edits else None
 
 
 def shell_command(payload):
@@ -730,12 +792,10 @@ def main():
     agy = isinstance(payload.get("toolCall"), dict)
 
     # 1. Inspect file edit tools for multi-file symbol renames
-    edit = file_edit_details(payload)
-    if edit:
-        target_file, old_content, replacement, override = edit
+    edits = file_edits_from_payload(payload)
+    if edits:
         cwd = os.getcwd()
         if agy:
-            args = payload["toolCall"].get("args") or {}
             paths = payload.get("workspacePaths") or []
             cwd = paths[0] if paths else os.getcwd()
             agent = "antigravity"
@@ -745,42 +805,44 @@ def main():
             agent = "gemini" if payload.get("hook_event_name") == "BeforeTool" else payload.get("tool_name", "")
             conv_id = payload.get("conversation_id") or payload.get("session_id") or "default"
 
-        repo_root = git_repo_root(target_file if target_file else cwd) or git_repo_root(cwd)
-        if target_file and CODE_EXT.search(target_file) and repo_root is not None:
-            sym_pair = single_symbol_rename(old_content, replacement)
-            if sym_pair:
-                old_sym, new_sym = sym_pair
-                if override:
-                    log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "override", "cwd": cwd, "symbol": old_sym, "file": target_file})
-                else:
-                    is_multi, prev_file = check_multi_file_rename(conv_id, target_file, old_sym, new_sym, repo_root=repo_root)
-                    if is_multi:
-                        log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "deny", "cwd": cwd, "symbol": old_sym, "file": target_file, "prev_file": prev_file})
-                        prev_name = os.path.basename(prev_file)
-                        cur_name = os.path.basename(target_file)
-                        reason = (
-                            f"Multi-file symbol rename detected: replacing `{old_sym}` with `{new_sym}` across files "
-                            f"(`{prev_name}` and `{cur_name}`). Do not edit files manually across the workspace. "
-                            f"Use the AST refactoring tool instead: "
-                            f"code_rename {{path: \"{cur_name}\", line: ..., character: ..., new_name: \"{new_sym}\"}} "
-                            f"(CLI: prod-code rename <file> <line> <col> {new_sym}). "
-                            f"It updates all declarations, references, and imports across the entire workspace atomically and safely. "
-                            f"If this is not an automated symbol rename, include PROD_CODE_MANUAL_RENAME=1 in your edit description/explanation "
-                            f"or set PROD_CODE_MANUAL_RENAME=1 in the environment."
-                        )
-                        if agent in ("gemini", "antigravity"):
-                            print(json.dumps({"decision": "deny", "reason": reason}))
-                        else:
-                            print(json.dumps({
-                                "hookSpecificOutput": {
-                                    "hookEventName": "PreToolUse",
-                                    "permissionDecision": "deny",
-                                    "permissionDecisionReason": reason,
-                                }
-                            }))
-                        return 0
+        for target_file, old_content, replacement, override in edits:
+            resolved_file = target_file if os.path.isabs(target_file) else os.path.join(cwd, target_file)
+            repo_root = git_repo_root(resolved_file) or git_repo_root(cwd)
+            if resolved_file and CODE_EXT.search(resolved_file) and repo_root is not None:
+                sym_pair = single_symbol_rename(old_content, replacement)
+                if sym_pair:
+                    old_sym, new_sym = sym_pair
+                    if override:
+                        log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "override", "cwd": cwd, "symbol": old_sym, "file": resolved_file})
                     else:
-                        log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "first-file-tracked", "cwd": cwd, "symbol": old_sym, "file": target_file})
+                        is_multi, prev_file = check_multi_file_rename(conv_id, resolved_file, old_sym, new_sym, repo_root=repo_root)
+                        if is_multi:
+                            log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "deny", "cwd": cwd, "symbol": old_sym, "file": resolved_file, "prev_file": prev_file})
+                            prev_name = os.path.basename(prev_file)
+                            cur_name = os.path.basename(resolved_file)
+                            reason = (
+                                f"Multi-file symbol rename detected: replacing `{old_sym}` with `{new_sym}` across files "
+                                f"(`{prev_name}` and `{cur_name}`). Do not edit files manually across the workspace. "
+                                f"Use the AST refactoring tool instead: "
+                                f"code_rename {{path: \"{cur_name}\", line: ..., character: ..., new_name: \"{new_sym}\"}} "
+                                f"(CLI: prod-code rename <file> <line> <col> {new_sym}). "
+                                f"It updates all declarations, references, and imports across the entire workspace atomically and safely. "
+                                f"If this is not an automated symbol rename, include PROD_CODE_MANUAL_RENAME=1 in your edit description/explanation "
+                                f"or set PROD_CODE_MANUAL_RENAME=1 in the environment."
+                            )
+                            if agent in ("gemini", "antigravity"):
+                                print(json.dumps({"decision": "deny", "reason": reason}))
+                            else:
+                                print(json.dumps({
+                                    "hookSpecificOutput": {
+                                        "hookEventName": "PreToolUse",
+                                        "permissionDecision": "deny",
+                                        "permissionDecisionReason": reason,
+                                    }
+                                }))
+                            return 0
+                        else:
+                            log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "first-file-tracked", "cwd": cwd, "symbol": old_sym, "file": resolved_file})
         return 0
 
     command = shell_command(payload)
