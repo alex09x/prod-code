@@ -769,5 +769,126 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
                 guard.RENAME_STATE_DIR = orig_dir
 
 
+class ProdCodeGuardSymbolGrepPolicyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.transcript_file = os.path.join(self.temp_dir.name, "transcript.jsonl")
+
+    def test_reported_prod_code_issue_check(self) -> None:
+        # Without transcript file -> True (human interactive fallback)
+        self.assertTrue(guard.reported_prod_code_issue(None, "my_func"))
+        self.assertTrue(guard.reported_prod_code_issue("/nonexistent/path", "my_func"))
+
+        # Empty transcript -> False
+        with open(self.transcript_file, "w") as f:
+            f.write(json.dumps({"step": 1, "type": "USER_INPUT"}) + "\n")
+        self.assertFalse(guard.reported_prod_code_issue(self.transcript_file, "my_func"))
+
+        # Transcript with code_report_issue -> True
+        with open(self.transcript_file, "a") as f:
+            f.write(json.dumps({"step": 2, "tool_call": "prod-code__code_report_issue", "args": {"title": "missing my_func"}}) + "\n")
+        self.assertTrue(guard.reported_prod_code_issue(self.transcript_file, "my_func"))
+
+    def test_symbol_grep_denial_message_never_mentions_override_cheat(self) -> None:
+        repo_root = str(Path(__file__).parent.parent)
+        payload = {
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": 'git grep -n "my_symbol" scripts/',
+                    "Cwd": repo_root,
+                },
+            },
+            "workspacePaths": [repo_root],
+            "transcript_path": self.transcript_file,
+        }
+        with open(self.transcript_file, "w") as f:
+            f.write("{}\n")
+
+        stdout = io.StringIO()
+        orig_stdin, orig_stdout = sys.stdin, sys.stdout
+        try:
+            sys.stdin = io.StringIO(json.dumps(payload))
+            sys.stdout = stdout
+            guard.main()
+        finally:
+            sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+        out = stdout.getvalue().strip()
+        self.assertTrue(out)
+        res = json.loads(out)
+        self.assertEqual(res.get("decision"), "deny")
+        reason = res.get("reason", "")
+        self.assertIn("Grep for code symbol `my_symbol` is blocked", reason)
+        self.assertIn("code_definition", reason)
+        self.assertIn("code_report_issue", reason)
+        # CRITICAL: MUST NOT mention PROD_CODE_GREP
+        self.assertNotIn("PROD_CODE_GREP", reason)
+
+    def test_override_requires_both_query_and_issue_report(self) -> None:
+        repo_root = str(Path(__file__).parent.parent)
+        override_cmd = 'PROD_CODE_GREP=1 git grep -n "my_symbol" scripts/'
+
+        # Case 1: Neither asked prod-code nor reported issue
+        with open(self.transcript_file, "w") as f:
+            f.write("{}\n")
+
+        payload = {
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": override_cmd, "Cwd": repo_root},
+            },
+            "workspacePaths": [repo_root],
+            "transcript_path": self.transcript_file,
+        }
+
+        stdout = io.StringIO()
+        orig_stdin, orig_stdout = sys.stdin, sys.stdout
+        try:
+            sys.stdin = io.StringIO(json.dumps(payload))
+            sys.stdout = stdout
+            guard.main()
+        finally:
+            sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+        res = json.loads(stdout.getvalue().strip())
+        self.assertEqual(res.get("decision"), "deny")
+        self.assertIn("Ask prod-code first", res.get("reason", ""))
+        self.assertNotIn("PROD_CODE_GREP", res.get("reason", ""))
+
+        # Case 2: Asked prod-code, but did NOT report issue
+        with open(self.transcript_file, "w") as f:
+            f.write(json.dumps({"tool": "code_definition", "args": {"symbol": "my_symbol"}}) + "\n")
+
+        stdout_2 = io.StringIO()
+        try:
+            sys.stdin = io.StringIO(json.dumps(payload))
+            sys.stdout = stdout_2
+            guard.main()
+        finally:
+            sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+        res_2 = json.loads(stdout_2.getvalue().strip())
+        self.assertEqual(res_2.get("decision"), "deny")
+        self.assertIn("report the bug first: code_report_issue", res_2.get("reason", ""))
+        self.assertNotIn("PROD_CODE_GREP", res_2.get("reason", ""))
+
+        # Case 3: Asked prod-code AND reported issue -> override allowed!
+        with open(self.transcript_file, "a") as f:
+            f.write(json.dumps({"tool": "code_report_issue", "args": {"title": "Symbol not found"}}) + "\n")
+
+        stdout_3 = io.StringIO()
+        try:
+            sys.stdin = io.StringIO(json.dumps(payload))
+            sys.stdout = stdout_3
+            guard.main()
+        finally:
+            sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+        # Antigravity does not print decision on allow
+        self.assertEqual(stdout_3.getvalue().strip(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
