@@ -62,6 +62,14 @@ pub enum TlsMode {
     Mutual,
 }
 
+/// Standard filesystem directory for cluster TLS credentials (~/.prod-code/tls).
+pub fn standard_tls_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(|h| PathBuf::from(h).join(".prod-code").join("tls"))
+}
+
 impl TlsMode {
     pub fn from_env() -> Result<Self> {
         match std::env::var(TLS_MODE_ENV) {
@@ -83,10 +91,15 @@ impl TlsMode {
                 }
             }
             Err(std::env::VarError::NotPresent) => {
-                // If cert or CA is explicitly configured, default to Strict, else Auto.
+                let has_default_certs = standard_tls_dir()
+                    .map(|d| d.join("node.crt").exists() || d.join("ca.crt").exists())
+                    .unwrap_or(false);
+
+                // If cert or CA is explicitly configured or present in standard path, default to Strict, else Auto.
                 if std::env::var(TLS_CERT_ENV).is_ok()
                     || std::env::var(TLS_CA_ENV).is_ok()
                     || std::env::var(TLS_PIN_ENV).is_ok()
+                    || has_default_certs
                 {
                     Ok(TlsMode::Strict)
                 } else {
@@ -413,9 +426,13 @@ impl ServerTlsConfig {
             return Ok(None);
         }
 
-        let cert_var = std::env::var(TLS_CERT_ENV).ok().map(PathBuf::from);
-        let key_var = std::env::var(TLS_KEY_ENV).ok().map(PathBuf::from);
-        let ca_var = std::env::var(TLS_CA_ENV).ok();
+        let default_cert = standard_tls_dir().map(|d| d.join("node.crt")).filter(|p| p.exists());
+        let default_key = standard_tls_dir().map(|d| d.join("node.key")).filter(|p| p.exists());
+        let default_ca = standard_tls_dir().map(|d| d.join("ca.crt")).filter(|p| p.exists());
+
+        let cert_var = std::env::var(TLS_CERT_ENV).ok().map(PathBuf::from).or(default_cert);
+        let key_var = std::env::var(TLS_KEY_ENV).ok().map(PathBuf::from).or(default_key);
+        let ca_var = std::env::var(TLS_CA_ENV).ok().or_else(|| default_ca.map(|p| p.to_string_lossy().into_owned()));
 
         if mode.is_required() {
             if cert_var.is_none() || key_var.is_none() {
@@ -600,8 +617,11 @@ impl ClientTlsConfig {
             }
         }
 
-        if let Ok(ca_path) = std::env::var(TLS_CA_ENV) {
-            let ca_certs = load_certs(ca_path)?;
+        let default_ca = standard_tls_dir().map(|d| d.join("ca.crt")).filter(|p| p.exists());
+        let ca_path_opt = std::env::var(TLS_CA_ENV).ok().map(PathBuf::from).or(default_ca);
+
+        if let Some(ca_path) = ca_path_opt {
+            let ca_certs = load_certs(&ca_path)?;
             let mut roots = RootCertStore::empty();
             for ca in ca_certs {
                 roots.add(ca).map_err(|e| {

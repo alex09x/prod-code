@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! prod-code gateway daemon: multi-tenant server for remote code intelligence over 10 GbE LAN.
 //!
 //! The daemon is a library with a thin binary on top, so that the pieces a socket normally
@@ -4352,22 +4362,44 @@ pub async fn handle_client(
             .await
             .ok()
             .flatten();
-        let presented = match &first {
-            Some(Ok(WireMessage::Auth(token))) => Some(token),
-            _ => None,
-        };
-        if !presented.is_some_and(|token| token.matches(expected)) {
-            tracing::warn!(
-                %addr,
-                presented = presented.is_some(),
-                "🔒 [AUTH] closed a connection without the cluster's token"
-            );
-            let _ = framed
-                .send(WireMessage::Disconnect {
-                    reason: AUTH_REFUSED.to_string(),
-                })
-                .await;
-            return Ok(());
+        match &first {
+            Some(Ok(WireMessage::HttpProbe { method, path })) => {
+                tracing::info!(%addr, %method, %path, "HTTP probe received on token-protected gateway port");
+                let (status, payload) = if path == "/health" || path == "/healthz" {
+                    (200, serde_json::json!({ "status": "ok", "service": "prod-code-gateway" }))
+                } else {
+                    (426, serde_json::json!({
+                        "error": "protocol_mismatch",
+                        "message": "Port 9400 serves prod-code remote code intelligence using a binary framing protocol (or TLS), not general HTTP."
+                    }))
+                };
+                let _ = framed
+                    .send(WireMessage::HttpResponse {
+                        status,
+                        content_type: "application/json".to_string(),
+                        body: serde_json::to_string_pretty(&payload).unwrap_or_default(),
+                    })
+                    .await;
+                return Ok(());
+            }
+            Some(Ok(WireMessage::Auth(token))) if token.matches(expected) => {}
+            _ => {
+                let presented = match &first {
+                    Some(Ok(WireMessage::Auth(token))) => Some(token),
+                    _ => None,
+                };
+                tracing::warn!(
+                    %addr,
+                    presented = presented.is_some(),
+                    "🔒 [AUTH] closed a connection without the cluster's token"
+                );
+                let _ = framed
+                    .send(WireMessage::Disconnect {
+                        reason: AUTH_REFUSED.to_string(),
+                    })
+                    .await;
+                return Ok(());
+            }
         }
     }
 
@@ -4376,6 +4408,25 @@ pub async fn handle_client(
         match msg {
             // A token sent to a gateway that requires none, or sent twice, changes nothing.
             WireMessage::Auth(_) => {}
+            WireMessage::HttpProbe { method, path } => {
+                tracing::info!(%addr, %method, %path, "HTTP probe/request received on gateway port");
+                let (status, payload) = if path == "/health" || path == "/healthz" {
+                    (200, serde_json::json!({ "status": "ok", "service": "prod-code-gateway" }))
+                } else {
+                    (426, serde_json::json!({
+                        "error": "protocol_mismatch",
+                        "message": "Port 9400 serves prod-code remote code intelligence using a binary framing protocol (or TLS), not general HTTP. Connect using the prod-code CLI or MCP server. For health checks, GET /health is supported."
+                    }))
+                };
+                let _ = framed
+                    .send(WireMessage::HttpResponse {
+                        status,
+                        content_type: "application/json".to_string(),
+                        body: serde_json::to_string_pretty(&payload).unwrap_or_default(),
+                    })
+                    .await;
+                return Ok(());
+            }
             WireMessage::StatusRequest => {
                 let status = state.status().await;
                 framed.send(WireMessage::StatusResponse(status)).await?;
@@ -8314,6 +8365,10 @@ pub async fn run(cli: ServerCli) -> Result<()> {
                             Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
                                 if tls_mode.is_required() {
                                     tracing::warn!(%addr, "Plaintext connection rejected: TLS mode {:?} is strictly required", tls_mode);
+                                    use tokio::io::AsyncWriteExt;
+                                    let mut s = socket;
+                                    let _ = s.write_all(b"HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nUpgrade to TLS/SSL required: port 9400 enforces encrypted transport.\r\n").await;
+                                    let _ = s.flush().await;
                                     return;
                                 }
                                 AnyStream::Tcp(socket)

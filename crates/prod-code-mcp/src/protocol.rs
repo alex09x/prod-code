@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Model Context Protocol (MCP) JSON-RPC 2.0 schemas and types.
 
 use serde::{Deserialize, Serialize};
@@ -114,7 +124,8 @@ Safe pre-flight validation & hypotheses:
 - When evaluating multiple implementation hypotheses or bug fixes, call code_shadow_run with alternative file sets: it executes candidate patches concurrently in private server overlays and reports the winning diff without mutating the git working tree.
 
 Refactoring & code modernization (33 polyglot refactorings):
-- Never rewrite function call sites manually: use code_change_signature (reorder, add, or remove parameters with all call sites updated), code_extract_parameter, code_introduce_parameter_object, code_inline_parameter, code_wrap_return.
+- Refactoring workflow: For renaming any symbol (function, type, field, constant, variable) or modifying function signatures across call sites and files, prefer `code_rename` or `code_change_signature` over manual multi-file edits. They rewrite definition, call sites, and imports across the workspace in one atomic, type-checked step, preventing missed references. If a specialized refactoring tool reports unsupported files or a blocked precondition, fall back to manual edits, explain the fallback, and verify diffs carefully.
+- Function parameter & signature refactoring: use code_change_signature (reorder, add, or remove parameters with all call sites updated), code_extract_parameter, code_introduce_parameter_object, code_inline_parameter, code_wrap_return.
 - Object-oriented & pattern refactorings: code_replace_constructor_with_factory, code_replace_constructor_with_builder, code_replace_inheritance_with_delegation, code_replace_conditional_with_polymorphism, code_extract_interface, code_extract_trait, code_extract_delegate.
 - Functions, methods & modules: code_extract_function, code_move, code_move_module, code_move_method, code_convert_to_method, code_make_static.
 - Fields, types & schemas: code_encapsulate_field, code_extract_field, code_migrate_type, code_generify, code_invert_boolean, code_introduce_variable, code_loop_to_iterator, code_schema_rename (cross-language schema field renaming across Rust, Go, TS, Python), code_codemod (structural search & replace), code_generate_fixture.

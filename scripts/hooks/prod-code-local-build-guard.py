@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+#
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+#
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
 """PreToolUse hook for Bash: heavy builds, tests and lints run on the build nodes through
 prod-code, not on this Mac. Denies the command with a pointer to code_check / code_test /
 code_lint / code_exec. Allowed as is: anything through `prod-code exec` or over ssh (a node

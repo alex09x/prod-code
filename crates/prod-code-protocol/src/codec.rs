@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Binary framing codec for prod-code WireMessage streams.
 
 use crate::messages::WireMessage;
@@ -97,6 +107,32 @@ impl ProdCodeCodec {
         dst: &mut BytesMut,
         max_frame_size: usize,
     ) -> Result<(), io::Error> {
+        if let WireMessage::HttpResponse {
+            status,
+            content_type,
+            body,
+        } = item
+        {
+            let status_text = match *status {
+                200 => "OK",
+                400 => "Bad Request",
+                404 => "Not Found",
+                426 => "Upgrade Required",
+                _ => "OK",
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {status_text}\r\n\
+                 Content-Type: {content_type}\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {body}",
+                body.len()
+            );
+            dst.extend_from_slice(response.as_bytes());
+            return Ok(());
+        }
+
         let initial_capacity = dst.capacity();
         let header_offset = dst.len();
         dst.reserve(4);
@@ -139,6 +175,30 @@ impl ProdCodeCodec {
         }
         Ok(())
     }
+}
+
+/// RFC 9110 Section 5.6.2 token character:
+/// `tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA`
+#[inline]
+fn is_rfc_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
 
 impl Decoder for ProdCodeCodec {
@@ -218,6 +278,76 @@ impl Decoder for ProdCodeCodec {
 
         if src.len() < 4 {
             return Ok(None);
+        }
+
+        // Check if incoming stream begins with a syntactically valid HTTP request line or response.
+        // A valid HTTP request starts with an RFC 9110 token method (e.g. GET, POST, M-SEARCH) followed by a space,
+        // a non-empty request target (origin-form, asterisk-form, or authority-form including IPv6 literals [::1]:443),
+        // and an HTTP version.
+        let is_http = if src.starts_with(b"HTTP/") {
+            true
+        } else if let Some(first_space) = src.iter().position(|&b| b == b' ') {
+            if (1..=64).contains(&first_space) && src[..first_space].iter().all(|&b| is_rfc_token_byte(b)) {
+                let rest = &src[first_space + 1..];
+                if rest.is_empty() {
+                    // Method and first space received; waiting for target
+                    true
+                } else if let Some(second_space) = rest.iter().position(|&b| b == b' ') {
+                    let target = &rest[..second_space];
+                    let after_second = &rest[second_space + 1..];
+                    !target.is_empty()
+                        && target.iter().all(|&b| b > 0x20 && b < 0x7F)
+                        && (after_second.is_empty()
+                            || after_second.starts_with(b"HTTP/")
+                            || b"HTTP/".starts_with(&after_second[..after_second.len().min(5)]))
+                } else if let Some(line_end) = rest.windows(2).position(|w| w == b"\r\n") {
+                    let target = &rest[..line_end];
+                    !target.is_empty() && target.iter().all(|&b| b > 0x20 && b < 0x7F)
+                } else if let Some(line_end) = rest.iter().position(|&b| b == b'\n') {
+                    let target = &rest[..line_end];
+                    !target.is_empty() && target.iter().all(|&b| b > 0x20 && b < 0x7F)
+                } else {
+                    // Target is still arriving (e.g. CONNECT [2001:db8::1]:443)
+                    rest.iter().all(|&b| b > 0x20 && b < 0x7F)
+                }
+            } else {
+                false
+            }
+        } else {
+            // Buffer is too short to find a space yet, but starts with RFC token characters that could form an HTTP method
+            src.len() <= 64 && src.iter().all(|&b| is_rfc_token_byte(b))
+        };
+
+        if is_http {
+            // Find end of HTTP headers: \r\n\r\n or \n\n
+            let header_end = src
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| p + 4)
+                .or_else(|| src.windows(2).position(|w| w == b"\n\n").map(|p| p + 2));
+
+            match header_end {
+                Some(end) => {
+                    let req_bytes = src.split_to(end);
+                    let req_str = String::from_utf8_lossy(&req_bytes);
+                    let mut lines = req_str.lines();
+                    let first_line = lines.next().unwrap_or("");
+                    let mut parts = first_line.split_whitespace();
+                    let method = parts.next().unwrap_or("GET").to_string();
+                    let path = parts.next().unwrap_or("/").to_string();
+
+                    return Ok(Some(WireMessage::HttpProbe { method, path }));
+                }
+                None => {
+                    if src.len() > 8192 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "HTTP headers exceeded maximum limit for probe",
+                        ));
+                    }
+                    return Ok(None);
+                }
+            }
         }
 
         let mut length_bytes = [0u8; 4];
@@ -952,5 +1082,88 @@ mod tests {
         let err = dec_codec.decode(&mut buf).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("Missing expected NUL completion marker"));
+    }
+
+    #[test]
+    fn test_codec_http_probe_and_response() {
+        let mut codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+
+        // 1. Incomplete HTTP request waits for more data
+        buf.extend_from_slice(b"GET /health HTTP/1.1\r\nHost: localhost");
+        assert_eq!(codec.decode(&mut buf).unwrap(), None);
+
+        // 2. Complete HTTP request with \r\n\r\n
+        buf.extend_from_slice(b"\r\n\r\n");
+        let decoded = codec.decode(&mut buf).unwrap().expect("should decode HTTP probe");
+        assert_eq!(
+            decoded,
+            WireMessage::HttpProbe {
+                method: "GET".to_string(),
+                path: "/health".to_string()
+            }
+        );
+        assert!(buf.is_empty());
+
+        // 3. CONNECT and TRACE methods (regression tests for generic HTTP request line parsing)
+        buf.extend_from_slice(b"CONNECT host.internal:443 HTTP/1.1\r\nHost: host.internal\r\n\r\n");
+        let decoded_connect = codec.decode(&mut buf).unwrap().expect("should decode CONNECT probe");
+        assert_eq!(
+            decoded_connect,
+            WireMessage::HttpProbe {
+                method: "CONNECT".to_string(),
+                path: "host.internal:443".to_string(),
+            }
+        );
+
+        buf.extend_from_slice(b"TRACE /debug HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let decoded_trace = codec.decode(&mut buf).unwrap().expect("should decode TRACE probe");
+        assert_eq!(
+            decoded_trace,
+            WireMessage::HttpProbe {
+                method: "TRACE".to_string(),
+                path: "/debug".to_string(),
+            }
+        );
+
+        buf.extend_from_slice(
+            b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n\r\n",
+        );
+        let decoded_msearch = codec.decode(&mut buf).unwrap().expect("should decode M-SEARCH probe");
+        assert_eq!(
+            decoded_msearch,
+            WireMessage::HttpProbe {
+                method: "M-SEARCH".to_string(),
+                path: "*".to_string(),
+            }
+        );
+
+        buf.extend_from_slice(
+            b"CONNECT [2001:db8::1]:443 HTTP/1.1\r\nHost: [2001:db8::1]:443\r\n\r\n",
+        );
+        let decoded_ipv6_connect = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode CONNECT probe with IPv6 literal authority");
+        assert_eq!(
+            decoded_ipv6_connect,
+            WireMessage::HttpProbe {
+                method: "CONNECT".to_string(),
+                path: "[2001:db8::1]:443".to_string(),
+            }
+        );
+
+        // 4. HttpResponse encoding
+        let resp = WireMessage::HttpResponse {
+            status: 200,
+            content_type: "application/json".to_string(),
+            body: "{\"status\":\"ok\"}".to_string(),
+        };
+        codec.encode(resp, &mut buf).unwrap();
+        let resp_str = String::from_utf8(buf.to_vec()).unwrap();
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(resp_str.contains("Content-Type: application/json\r\n"));
+        assert!(resp_str.contains("Content-Length: 15\r\n"));
+        assert!(resp_str.ends_with("\r\n\r\n{\"status\":\"ok\"}"));
     }
 }

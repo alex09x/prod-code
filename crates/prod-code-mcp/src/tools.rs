@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 use crate::protocol::{McpTool, McpToolCallResult};
 use crate::report::ReportRequest;
 use crate::sync::{push_workspace_sync, workspace_identity};
@@ -222,7 +232,7 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_rename".to_string(),
-            description: "Semantic rename of a symbol (type, function, field, variable, module) across the whole workspace, named with `symbol` or located by path + 1-based line/column, driven by the remote analyzer. The result is type-checked in one overlay before anything is written, and a rename that does not compile — typically a new name already declared in the same scope — is refused with the errors unless `force` is given. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
+            description: "Preferred tool for workspace-wide renames: Use this tool when renaming any symbol (type, function, field, variable, module) across the workspace instead of manual multi-file text edits. Driven by the remote analyzer, the result is type-checked in one overlay before anything is written, and a rename that does not compile — typically a new name already declared in the same scope — is refused with the errors unless `force` is given. Rewrites every affected file in the checkout (and renames module files) and reports what changed. Fall back to manual edits if the symbol or files are unsupported."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -778,7 +788,7 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_change_signature".to_string(),
-            description: "Change what a function takes, with its call sites, across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust (Roadmap 7.1.1). `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. Synchronizes header prototypes in C++, preserves `self`/`this` receivers in methods, and handles keyword arguments and Swift parameter labels. Dropping a parameter the body still uses is refused with the usages unless `force`. `returns` modifies the return type, `visibility` modifies visibility, and `async` makes the function async and awaits every call. The whole change is type-checked together via analyzer overlays before it is written. Go (a `.go` file, through gopls v0.23.0) reorders named parameters and removes provably unused ones. List each kept parameter once in its new order, or pass an empty array to remove all. Both body inspection and gopls references must prove every removed parameter unused. Dropped arguments must be literals or simple variables: calls, selectors, indexing, receives, conversions and operators are refused because they may have effects or panic. Grouped parameters move one by one; receivers and results stay as declared for parameter changes. A retained variadic parameter stays last; removing it removes the whole argument tail, including spread arguments only when safely removable. Every declaration and call must match the requested list, with comments preserved and no unrelated edits, and the whole proposal is type-checked before writing. Force overrides none of these refusals. Go also adds explicitly typed primitive parameters with numeric, string or rune literal arguments to ordinary non-generic functions and named value/pointer receiver methods, retaining every old parameter in its original order and preserving receiver evaluation. These additions require remote compiler verification of packages and test callers before preview or apply, with the node's build flags preserved. With `returns`, Go also replaces one existing unnamed primitive result of an ordinary non-generic, non-variadic free function while every named parameter remains exactly unchanged. Both old and new result names must be unshadowed predeclared primitive types; complete direct-call evidence and remote compiler verification of packages and test callers are required even for a no-op preview. Method values/expressions, interface obligations or dispatch, generic receivers, receiver-name capture, variadics, grouped-parameter interior insertion, scope-dependent defaults, combined additions with reorders/removals, parameter type changes, named/multiple/void/composite results, receiver or generic result changes, parameter changes combined with `returns`, scope-dependent result types, visibility changes, async, verify, unnamed or blank parameters, generic removals, generic functions with calls, function values and unreconciled calls remain unsupported. Uncertain argument reordering is refused; `true`, `false` and `nil` count as variables because a Go scope may redeclare them."
+            description: "Preferred tool for changing function signatures: Use this tool when changing function parameters, return type, visibility, or asyncness instead of manual multi-file edits. Change what a function takes, with its call sites, across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust (Roadmap 7.1.1). `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. Synchronizes header prototypes in C++, preserves `self`/`this` receivers in methods, and handles keyword arguments and Swift parameter labels. Dropping a parameter the body still uses is refused with the usages unless `force`. `returns` modifies the return type, `visibility` modifies visibility, and `async` makes the function async and awaits every call. The whole change is type-checked together via analyzer overlays before it is written. Go (a `.go` file, through gopls v0.23.0) reorders named parameters and removes provably unused ones. List each kept parameter once in its new order, or pass an empty array to remove all. Both body inspection and gopls references must prove every removed parameter unused. Dropped arguments must be literals or simple variables: calls, selectors, indexing, receives, conversions and operators are refused because they may have effects or panic. Grouped parameters move one by one; receivers and results stay as declared for parameter changes. A retained variadic parameter stays last; removing it removes the whole argument tail, including spread arguments only when safely removable. Every declaration and call must match the requested list, with comments preserved and no unrelated edits, and the whole proposal is type-checked before writing. Force overrides none of these refusals. Go also adds explicitly typed primitive parameters with numeric, string or rune literal arguments to ordinary non-generic functions and named value/pointer receiver methods, retaining every old parameter in its original order and preserving receiver evaluation. These additions require remote compiler verification of packages and test callers before preview or apply, with the node's build flags preserved. With `returns`, Go also replaces one existing unnamed primitive result of an ordinary non-generic, non-variadic free function while every named parameter remains exactly unchanged. Both old and new result names must be unshadowed predeclared primitive types; complete direct-call evidence and remote compiler verification of packages and test callers are required even for a no-op preview. Method values/expressions, interface obligations or dispatch, generic receivers, receiver-name capture, variadics, grouped-parameter interior insertion, scope-dependent defaults, combined additions with reorders/removals, parameter type changes, named/multiple/void/composite results, receiver or generic result changes, parameter changes combined with `returns`, scope-dependent result types, visibility changes, async, verify, unnamed or blank parameters, generic removals, generic functions with calls, function values and unreconciled calls remain unsupported. Uncertain argument reordering is refused; `true`, `false` and `nil` count as variables because a Go scope may redeclare them."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -855,6 +865,10 @@ fn build_tools_raw() -> Vec<McpTool> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Directories of other checkouts to search as well (with `symbol`), e.g. two services that use the same dependency's type"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional display truncation limit (default: 0 for all). Caps the number of reference lines rendered in the output text to keep agent context windows bounded for heavily-referenced symbols. Internal AST refactoring tools always receive the complete reference set."
                     }
                 },
                 "required": ["path", "line", "character"]
@@ -3090,12 +3104,20 @@ async fn handle_references(
         .map(|(name, text)| format!("\n(the position is on `{name}`; the line reads `{text}`)"))
         .unwrap_or_default();
 
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(0);
+
     if all_locs.is_empty() {
         out.push_str("No references found.");
         out.push_str(&stood_on);
     } else {
-        out.push_str(&format!("Found {} reference(s):\n", all_locs.len()));
-        for loc in &all_locs {
+        let total = all_locs.len();
+        out.push_str(&format!("Found {total} reference(s):\n"));
+        let display_count = if limit > 0 { total.min(limit) } else { total };
+        for loc in &all_locs[..display_count] {
             let uri = loc
                 .get("uri")
                 .or_else(|| loc.get("targetUri"))
@@ -3114,6 +3136,25 @@ async fn handle_references(
                 .unwrap_or(0)
                 + 1;
             out.push_str(&format!("  • {uri}:{start_line}:{start_col}\n"));
+        }
+        if limit > 0 && total > limit {
+            out.push_str(&format!(
+                "  ... (display capped at first {display_count} of {total} references; pass `limit: 0` to display all)\n"
+            ));
+        }
+
+        if total > 1 {
+            let sym_name = args
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .or(name_opt.as_deref());
+            let sym_desc = match sym_name {
+                Some(s) => format!("`{s}`"),
+                None => "this symbol".to_string(),
+            };
+            out.push_str(&format!(
+                "\n💡 Refactoring Tip: For workspace-wide renames or signature updates to {sym_desc}, prefer `code_rename` or `code_change_signature`. If the specialized tool reports unsupported or blocked, fallback to manual edits and inspect diffs carefully.\n"
+            ));
         }
     }
 

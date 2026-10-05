@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+#
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
 # package-macos-pkg.sh - Builds a macOS .pkg installer for prod-code using native pkgbuild.
 set -euo pipefail
 
@@ -41,8 +50,8 @@ chmod 755 "$STAGING_DIR/prod-code"
 
 # Code sign if on macOS
 if command -v codesign >/dev/null 2>&1; then
-    SIGN_IDENTITY="${PROD_CODE_SIGN_IDENTITY:-Apple Development: Alexander Panasenko (alex@prod.codes)}"
-    codesign -s "$SIGN_IDENTITY" -f "$STAGING_DIR/prod-code" || codesign -s - -f "$STAGING_DIR/prod-code" || true
+    SIGN_IDENTITY="${PROD_CODE_SIGN_IDENTITY:-Developer ID Application: Alexander Panasenko (284V2M3LN9)}"
+    codesign -s "$SIGN_IDENTITY" -f --options runtime --timestamp "$STAGING_DIR/prod-code" || codesign -s "$SIGN_IDENTITY" -f "$STAGING_DIR/prod-code" || codesign -s - -f "$STAGING_DIR/prod-code" || true
 fi
 
 # Build .pkg

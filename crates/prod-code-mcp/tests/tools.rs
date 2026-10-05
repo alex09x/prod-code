@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! `execute_tool` end to end: every tool name is driven against a scripted gateway and the
 //! rendered text is asserted, not just "it returned something". `list_tools()` itself is
 //! covered by the unit tests inside `src/tools.rs`; this file is the dispatch table.
@@ -1088,6 +1098,48 @@ async fn code_references_counts_hits_and_says_when_there_are_none() {
         text_of(&none),
         "No references found.\n(the position is on `a`; the line reads `pub fn a() {}`)"
     );
+}
+
+#[tokio::test]
+async fn code_references_respects_limit_and_provides_refactoring_tip() {
+    let ws = workspace();
+    let lib = write(&ws, "src/lib.rs", "pub fn target_func() {}\n");
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/references" => answers::locations(&path, &[(2, 1), (5, 3), (8, 4)]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8, "limit": 2 }),
+    )
+    .await
+    .expect("the query runs");
+
+    let text = text_of(&result);
+    assert!(text.contains("Found 3 reference(s):"), "{text}");
+    assert!(text.contains("display capped at first 2 of 3 references"), "{text}");
+    assert!(text.contains("💡 Refactoring Tip:"), "{text}");
+    assert!(text.contains("code_rename"), "{text}");
+
+    let result_default = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("query without limit succeeds");
+    let text_default = text_of(&result_default);
+    assert!(
+        !text_default.contains("showing first"),
+        "should not truncate when limit is omitted: {text_default}"
+    );
+    assert!(text_default.contains("💡 Refactoring Tip:"), "{text_default}");
 }
 
 #[tokio::test]

@@ -1754,7 +1754,19 @@ fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(e) = run_cli().await {
+        eprintln!("Error: {e:#}");
+        eprintln!(
+            "\n💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
+             - Via CLI: prod-code report-issue --title \"...\" --body \"...\" (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
+             - On GitHub: https://github.com/alex09x/prod-code/issues (manually remove hostnames, LAN addresses, home paths, and credentials before posting)"
+        );
+        std::process::exit(1);
+    }
+}
+
+async fn run_cli() -> Result<()> {
     // Everything down to the dispatch below runs on every invocation, whatever the
     // subcommand, and until this timer existed none of it was measured: the query timer
     // starts after it. See the report on stderr under `PROD_CODE_TIMING=1`.
