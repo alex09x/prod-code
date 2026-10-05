@@ -3315,6 +3315,32 @@ fn add_locations(
     }
 }
 
+fn engine_can_reference(caller_engine: Option<&str>, decl_engine: &str) -> bool {
+    match (caller_engine, decl_engine) {
+        (Some(c), d) if c == d => true,
+        (Some("astro" | "svelte" | "vue" | "html" | "javascript"), "typescript") => true,
+        (Some("astro" | "svelte" | "vue" | "html" | "typescript"), "javascript") => true,
+        (Some("cpp"), "c") | (Some("c"), "cpp") => true,
+        _ => false,
+    }
+}
+
+fn imports_declaration(text: &str, decl_path: &Path, name: &str) -> bool {
+    let file_stem = decl_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if (trimmed.starts_with("import ") || trimmed.starts_with("from ")) && trimmed.contains(name) {
+            if file_stem.is_empty() || trimmed.contains(file_stem) {
+                return true;
+            }
+        }
+        if (trimmed.contains("require(") || trimmed.contains("import(")) && trimmed.contains(file_stem) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Collects references across multiple feature-gated targets, shared modules, or separate checkouts (#783).
 /// Scans candidate source files across the workspace that contain `name`. When a candidate use resolves
 /// to the target declaration via `textDocument/definition`, queries references from that target's context
@@ -3342,7 +3368,7 @@ async fn collect_multi_target_references(
     let mut asked = 0usize;
     let mut checkout_use_note = None;
     let candidates = source_files(workspace_root)
-        .filter(|path| crate::sync::engine_for_file(path) == Some(language))
+        .filter(|path| engine_can_reference(crate::sync::engine_for_file(path), language))
         .take(MAX_SCANNED_FILES);
     for path in candidates {
         let is_declaration_file = path == declaration;
@@ -3470,7 +3496,23 @@ async fn collect_multi_target_references(
                     f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object()
                 });
                 if !is_declaration_file && has_no_def && writes_call(&text, name) {
-                    unindexed_callers.push(path.clone());
+                    if !unindexed_callers.contains(&path) {
+                        unindexed_callers.push(path.clone());
+                    }
+                    if imports_declaration(&text, declaration, name) {
+                        seen_files.insert(norm_path.clone());
+                        let use_line = (index + 1) as u64;
+                        let use_col = (col + 1) as u64;
+                        if seen_locs.insert((uri_str.clone(), use_line, use_col)) {
+                            all_locs.push(serde_json::json!({
+                                "uri": &uri_str,
+                                "range": {
+                                    "start": { "line": index, "character": col },
+                                    "end": { "line": index, "character": col + wanted_len }
+                                }
+                            }));
+                        }
+                    }
                 }
             }
         }
@@ -6066,10 +6108,21 @@ async fn handle_validate_edits(
         crate::diagnostics::validate_texts(remote, workspace_root, &edits, &also_check).await?;
     let errors: usize = reports.iter().map(|r| r.errors).sum();
     let warnings: usize = reports.iter().map(|r| r.warnings).sum();
-    let mut text = format!(
-        "{} file(s) checked together: {errors} error(s), {warnings} warning(s)\n{notes}",
-        reports.len()
-    );
+    let excluded: usize = reports.iter().filter(|r| r.is_platform_excluded().is_some()).count();
+    let active = reports.len().saturating_sub(excluded);
+    let mut text = if excluded > 0 {
+        format!(
+            "{} file(s) checked ({} active, {} platform-excluded): {errors} error(s), {warnings} warning(s)\n{notes}",
+            reports.len(),
+            active,
+            excluded
+        )
+    } else {
+        format!(
+            "{} file(s) checked together: {errors} error(s), {warnings} warning(s)\n{notes}",
+            reports.len()
+        )
+    };
     for report in &reports {
         text.push_str(&report.render());
     }
@@ -8423,11 +8476,17 @@ pub async fn resolve_symbol(
     } else {
         if exact.is_empty() {
             let members = unindexed_members(remote, root, name, hint).await?;
-            if members.is_empty() {
-                let unindexed = unindexed_declarations(remote, root, name).await;
-                anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
+            if !members.is_empty() {
+                members
+            } else {
+                let unindexed_hits = find_unindexed_declarations(root, name, hint).await;
+                if !unindexed_hits.is_empty() {
+                    unindexed_hits
+                } else {
+                    let unindexed = unindexed_declarations(remote, root, name).await;
+                    anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
+                }
             }
-            members
         } else {
             exact
         }
@@ -8850,6 +8909,8 @@ fn bare_symbol_name(name: &str) -> &str {
     }
 }
 
+const UNINDEXED_MEMBERS_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Where the checkout's source files declare `member` as a struct/class/interface field or
 /// method when the language server's `workspace/symbol` index omitted it (e.g. rust-analyzer
 /// does not index struct fields).
@@ -8859,6 +8920,7 @@ async fn unindexed_members(
     member: &str,
     hint: Option<&Path>,
 ) -> Result<Vec<SymbolHit>> {
+    let deadline = tokio::time::Instant::now() + UNINDEXED_MEMBERS_BUDGET;
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     if let Some(h) = hint {
         let p = if h.is_absolute() {
@@ -8880,11 +8942,14 @@ async fn unindexed_members(
         .filter(|p| crate::sync::engine_for_file(p).is_some())
         .take(MAX_SCANNED_FILES)
     {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
         if !files.contains(&path)
             && std::fs::read_to_string(&path).is_ok_and(|text| names_word(&text, member))
         {
             files.push(path);
-            if files.len() >= 16 {
+            if files.len() >= 8 {
                 break;
             }
         }
@@ -8892,12 +8957,19 @@ async fn unindexed_members(
 
     let mut members: Vec<SymbolHit> = Vec::new();
     for file in &files {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
         let Ok(uri) = Url::from_file_path(file) else {
             continue;
         };
         let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
-        let Ok(outline) =
-            execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params).await
+        let query_fut = execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params);
+        let Ok(Ok(outline)) = tokio::time::timeout_at(
+            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(3)),
+            query_fut,
+        )
+        .await
         else {
             continue;
         };
@@ -8963,6 +9035,76 @@ const MAX_UNINDEXED_DECLARATIONS: usize = 3;
 
 /// How long unindexed declaration scanning can spend before returning.
 const UNINDEXED_DECLARATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn find_unindexed_declarations(
+    root: &Path,
+    name: &str,
+    hint: Option<&Path>,
+) -> Vec<SymbolHit> {
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Vec::new();
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+    let mut hits = Vec::new();
+    let mut files = Vec::new();
+    if let Some(h) = hint {
+        let p = if h.is_absolute() {
+            h.to_path_buf()
+        } else {
+            root.join(h)
+        };
+        if p.is_file() {
+            files.push(p);
+        } else if p.is_dir() {
+            for entry in source_files(&p).take(8) {
+                if std::fs::read_to_string(&entry).is_ok_and(|text| names_word(&text, name)) {
+                    files.push(entry);
+                }
+            }
+        }
+    }
+    for path in source_files(root)
+        .filter(|path| crate::sync::engine_for_file(path).is_some())
+        .take(MAX_SCANNED_FILES)
+    {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        if !files.contains(&path)
+            && std::fs::read_to_string(&path).is_ok_and(|text| names_word(&text, name))
+        {
+            files.push(path);
+            if files.len() >= 16 {
+                break;
+            }
+        }
+    }
+
+    for path in files {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let Some(text) = read_name_scan_text(&path) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if let Some(col) = declared_at(line, name) {
+                hits.push(SymbolHit {
+                    path: path.clone(),
+                    name: name.to_string(),
+                    kind: "Declaration",
+                    container: None,
+                    line: index as u32 + 1,
+                    col: col as u32 + 1,
+                });
+                if hits.len() >= 10 {
+                    return hits;
+                }
+            }
+        }
+    }
+    hits
+}
 
 /// Where the checkout's own source files declare `name` when the index has no symbol by that
 /// name, and why the analyzer has nothing there: a file no target includes (it has no hover at
@@ -9158,6 +9300,32 @@ fn edit_distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
+const TYPE_MEMBERS_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
+
+fn find_source_members(path: &Path, owner: &[&str], member: &str) -> Vec<SymbolHit> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let type_name = owner.last().copied().unwrap_or_default();
+    if !names_word(&text, member) || (!type_name.is_empty() && !names_word(&text, type_name)) {
+        return Vec::new();
+    }
+    let mut hits = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if let Some(col) = declared_at(line, member) {
+            hits.push(SymbolHit {
+                path: path.to_path_buf(),
+                name: member.to_string(),
+                kind: "Property",
+                container: Some(owner.join("::")),
+                line: index as u32 + 1,
+                col: col as u32 + 1,
+            });
+        }
+    }
+    hits
+}
+
 /// The members called `member` of the type called `type_name`, read from the outline of each
 /// file that declares the type. The type is resolved the way a symbol is, by its exact name;
 /// with a `hint`, members under it are preferred.
@@ -9171,6 +9339,7 @@ async fn type_members(
     let Some(type_name) = owner.last().copied() else {
         return Ok(Vec::new());
     };
+    let deadline = tokio::time::Instant::now() + TYPE_MEMBERS_BUDGET;
     let types = workspace_symbol_search(remote, root, type_name, hint, 200)
         .await
         .unwrap_or_default();
@@ -9201,14 +9370,19 @@ async fn type_members(
     }
     let mut members: Vec<SymbolHit> = Vec::new();
     for file in files.iter().take(8) {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
         let Ok(uri) = Url::from_file_path(file) else {
             continue;
         };
         let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
-        // A file the outline cannot be had for leaves the member unresolved through it; the
-        // caller then reports the name as unknown or falls back to the index's hits.
-        let Ok(outline) =
-            execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params).await
+        let query_fut = execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params);
+        let Ok(Ok(outline)) = tokio::time::timeout_at(
+            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(3)),
+            query_fut,
+        )
+        .await
         else {
             continue;
         };
@@ -9231,9 +9405,12 @@ async fn type_members(
             }
         }
     }
+    let mut candidates = Vec::new();
     if members.is_empty() {
-        let mut candidates = Vec::new();
         for path in source_files(root).take(1000) {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
             if !files.contains(&path)
                 && std::fs::read_to_string(&path)
                     .is_ok_and(|text| names_word(&text, member) && names_word(&text, type_name))
@@ -9245,12 +9422,19 @@ async fn type_members(
             }
         }
         for file in &candidates {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
             let Ok(uri) = Url::from_file_path(file) else {
                 continue;
             };
             let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
-            let Ok(outline) =
-                execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params).await
+            let query_fut = execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params);
+            let Ok(Ok(outline)) = tokio::time::timeout_at(
+                deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(3)),
+                query_fut,
+            )
+            .await
             else {
                 continue;
             };
@@ -9265,6 +9449,18 @@ async fn type_members(
                     line,
                     col,
                 };
+                if !members
+                    .iter()
+                    .any(|m| m.path == hit.path && m.line == hit.line && m.col == hit.col)
+                {
+                    members.push(hit);
+                }
+            }
+        }
+    }
+    if members.is_empty() {
+        for file in files.iter().chain(&candidates) {
+            for hit in find_source_members(file, owner, member) {
                 if !members
                     .iter()
                     .any(|m| m.path == hit.path && m.line == hit.line && m.col == hit.col)

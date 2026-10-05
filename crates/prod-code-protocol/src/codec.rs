@@ -278,7 +278,7 @@ impl Decoder for ProdCodeCodec {
         } else if src.len() >= 5 {
             let hyp_a_valid = {
                 let len_a = u32::from_be_bytes([src[0], src[1], src[2], src[3]]) as usize;
-                if len_a < 2 || len_a > MAX_FRAME_SIZE {
+                if !(2..=MAX_FRAME_SIZE).contains(&len_a) {
                     Some(false)
                 } else if src.len() >= 4 + len_a {
                     Some(serde_json::from_slice::<WireMessage>(&src[4..4 + len_a]).is_ok())
@@ -289,7 +289,7 @@ impl Decoder for ProdCodeCodec {
 
             let hyp_b_valid = {
                 let len_b = u32::from_be_bytes([src[1], src[2], src[3], src[4]]) as usize;
-                if len_b < 2 || len_b > MAX_FRAME_SIZE {
+                if !(2..=MAX_FRAME_SIZE).contains(&len_b) {
                     Some(false)
                 } else if src.len() >= 5 + len_b {
                     Some(serde_json::from_slice::<WireMessage>(&src[5..5 + len_b]).is_ok())

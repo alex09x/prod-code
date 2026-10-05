@@ -205,6 +205,7 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     if !is_in_dependency_dir(&file_dir)
         && let Some(own) = file.as_deref().and_then(engine_for_file)
         && Some(own) != root_engine
+        && !matches!(own, "markdown" | "yaml" | "toml" | "json" | "html" | "css")
         && let Some(rel) = file_dir
             .strip_prefix(&canonical_root)
             .ok()
@@ -265,6 +266,7 @@ pub fn engine_for_file(path: &Path) -> Option<&'static str> {
         "go" => "go",
         "py" | "pyi" => "python",
         "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => "typescript",
+        "astro" => "astro",
         "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" | "m" | "mm" => "cpp",
         "swift" => "swift",
         "java" => "java",
@@ -980,7 +982,7 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         Some("css")
     } else if has(".shellcheckrc") || has_ext(&["sh", "bash", "zsh"]) {
         Some("shell")
-    } else if has("README.md") || has(".marksman.toml") || has_ext(&["md", "markdown"]) {
+    } else if has(".marksman.toml") {
         Some("markdown")
     } else {
         None
@@ -1101,8 +1103,16 @@ pub fn save_sync_cache_for(root: &Path, node: &str, cache: &SyncCache) {
     }
 }
 
+static PROBED_NODES: std::sync::LazyLock<std::sync::Mutex<HashSet<(PathBuf, String)>>> =
+    std::sync::LazyLock::new(Default::default);
+
 /// Forgets the watermarks of `root` for every node.
 pub fn clear_sync_cache(root: &Path) {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    PROBED_NODES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(r, _)| r != &canonical);
     crate::call_tree::clear_call_hierarchy_cache_for(root);
     for path in cache_file_paths(root) {
         let _ = std::fs::remove_file(path);
@@ -1111,6 +1121,11 @@ pub fn clear_sync_cache(root: &Path) {
 
 /// Forgets the watermark of `root` for one node only.
 pub fn clear_sync_cache_for(root: &Path, node: &str) {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    PROBED_NODES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(canonical, node.to_string()));
     crate::call_tree::clear_call_hierarchy_cache_for(root);
     let _ = std::fs::remove_file(cache_file_path(root, node));
 }
@@ -1329,7 +1344,15 @@ async fn push_sync_round(
         ..SyncOutcome::default()
     };
 
-    if plan.initial {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let is_first_contact = subpath.is_none()
+        && PROBED_NODES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((canonical_root.clone(), node.clone()));
+    let needs_probe = plan.initial || is_first_contact;
+
+    if needs_probe {
         framed
             .send(WireMessage::SyncProbeRequest(SyncProbeRequest {
                 client_workspace_root: root_str.clone(),
@@ -1349,6 +1372,23 @@ async fn push_sync_round(
         outcome.server_workspace_root = probe.server_workspace_root;
         let keep: HashSet<String> = probe.missing.into_iter().collect();
         plan.retain_uploads(&keep);
+        let existing: HashSet<String> = plan.files.iter().map(|f| f.relative_path.clone()).collect();
+        for missing_rel in &keep {
+            if !existing.contains(missing_rel) {
+                let full = canonical_root.join(missing_rel);
+                if let Ok(Some((content, is_exec))) = read_regular_file_secure(&full, &canonical_root) {
+                    if let Ok(sym_meta) = full.symlink_metadata() {
+                        let entry = sync_file_entry(&sym_meta, &content);
+                        plan.state.files.insert(missing_rel.clone(), entry);
+                    }
+                    plan.files.push(FileDelta {
+                        relative_path: missing_rel.clone(),
+                        content: Some(content),
+                        is_executable: is_exec,
+                    });
+                }
+            }
+        }
     }
 
     // An empty delta is still sent on later rounds: the gateway's answer tells whether its
@@ -2110,6 +2150,21 @@ impl SyncPathFilter {
     }
 }
 
+/// Returns true if `path` is within a recognized test fixtures or testdata directory.
+pub fn is_fixture_path(path: &Path) -> bool {
+    path.components().any(|c| {
+        if let std::path::Component::Normal(comp) = c {
+            let s = comp.to_string_lossy();
+            matches!(
+                s.as_ref(),
+                "fixtures" | "fixture" | "testdata" | "test_data" | "test-fixtures"
+            )
+        } else {
+            false
+        }
+    })
+}
+
 /// Returns true if the relative path represents a code or configuration file relevant to language servers.
 pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
     let path = Path::new(rel_path);
@@ -2178,6 +2233,8 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 "crates"
                     | "packages"
                     | "src"
+                    | "server"
+                    | "client"
                     | "internal"
                     | "pkg"
                     | "cmd"
@@ -2190,6 +2247,8 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                     | "example"
                     | "tests"
                     | "test"
+                    | "fixtures"
+                    | "testdata"
                     | "benches"
                     | "bench"
             ) {
@@ -2229,8 +2288,8 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
         }
     }
 
-    // 2. Binary / media extensions
-    if is_binary_or_media_file(rel_path) {
+    // 2. Binary / media extensions (fixtures exempt from binary exclusion)
+    if is_binary_or_media_file(rel_path) && !is_fixture_path(path) {
         return false;
     }
 
@@ -2420,15 +2479,23 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
             "crates"
                 | "packages"
                 | "src"
+                | "server"
+                | "client"
                 | "internal"
                 | "pkg"
                 | "cmd"
                 | "api"
                 | "Sources"
                 | "Tests"
+                | "tests"
+                | "test"
+                | "fixtures"
+                | "testdata"
+                | "benches"
+                | "examples"
                 | "include"
                 | "lib"
-        ) {
+        ) || is_fixture_path(path) {
             under_code_dir = true;
         }
         if matches!(dir.as_ref(), "target" | "node_modules" | "__pycache__") {

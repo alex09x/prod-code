@@ -162,11 +162,21 @@ pub struct DiagnosticsReport {
 }
 
 impl DiagnosticsReport {
+    pub fn is_platform_excluded(&self) -> Option<&str> {
+        self.items
+            .iter()
+            .find(|d| d.code.as_deref() == Some("platform-excluded"))
+            .map(|d| d.message.as_str())
+    }
+
     pub fn ok(&self) -> bool {
         self.errors == 0
     }
 
     pub fn render(&self) -> String {
+        if let Some(reason) = self.is_platform_excluded() {
+            return format!("{}: platform-excluded ({})\n", self.file, reason);
+        }
         let mut out = format!(
             "{}: {} error(s), {} warning(s)\n",
             self.file, self.errors, self.warnings
@@ -2256,12 +2266,25 @@ async fn validate_texts_single_engine(
     diagnostic_order.sort_by_key(|(i, _, _)| *i);
     let mut reports = Vec::with_capacity(edits.len() + also_check.len());
     for (i, file, uri) in diagnostic_order {
-        let result = session
+        let diag_result = session
             .request(
                 "textDocument/diagnostic",
                 serde_json::json!({ "textDocument": { "uri": uri } }),
             )
-            .await?;
+            .await;
+        let result = match diag_result {
+            Ok(res) => res,
+            Err(err) => {
+                if let Some(reason) = platform_exclusion_reason(file, &err) {
+                    let shown = display(root, file);
+                    let report = platform_excluded_report(&shown, &reason);
+                    debug_assert_eq!(reports.len(), *i);
+                    reports.push(report);
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         let shown = display(root, file);
         let mut report = parse_items(&shown, &result);
         if let (Some((before, before_text)), Some(text)) =
@@ -2278,13 +2301,25 @@ async fn validate_texts_single_engine(
     }
     for (file, text) in also_check.iter().zip(also_texts) {
         let uri = session.uri_for(file)?;
-        let result = session
+        let diag_result = session
             .query(
                 file,
                 "textDocument/diagnostic",
                 serde_json::json!({ "textDocument": { "uri": uri } }),
             )
-            .await?;
+            .await;
+        let result = match diag_result {
+            Ok(res) => res,
+            Err(err) => {
+                if let Some(reason) = platform_exclusion_reason(file, &err) {
+                    let shown = display(root, file);
+                    let report = platform_excluded_report(&shown, &reason);
+                    reports.push(report);
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         let shown = display(root, file);
         let mut report = parse_items(&shown, &result);
         if let Some((before, before_text)) = baselines.get(&shown) {
@@ -2302,6 +2337,61 @@ async fn validate_texts_single_engine(
     annotate_missing_symbols(&mut reports, &sources, &missing, &resolved);
     let _ = reconcile_swift_cross_target_diagnostics(remote, root, edits, &mut reports).await;
     Ok(reports)
+}
+
+/// Returns a reason string if the error indicates the file was excluded by platform build tags or constraints.
+pub fn platform_exclusion_reason(file: &Path, err: &anyhow::Error) -> Option<String> {
+    let err_str = err.to_string();
+    let lower_err = err_str.to_lowercase();
+    let file_str = file.to_string_lossy();
+
+    let is_metadata_err = lower_err.contains("no package metadata")
+        || lower_err.contains("no packages found")
+        || lower_err.contains("build constraints exclude all go files")
+        || lower_err.contains("cannot find package")
+        || lower_err.contains("no such package");
+
+    if is_metadata_err {
+        if file_str.ends_with("_darwin.go") {
+            return Some("Darwin / macOS build tags excluded on current host".to_string());
+        }
+        if file_str.ends_with("_linux.go") {
+            return Some("Linux build tags excluded on current host".to_string());
+        }
+        if file_str.ends_with("_windows.go") {
+            return Some("Windows build tags excluded on current host".to_string());
+        }
+        if file_str.ends_with("_freebsd.go") || file_str.ends_with("_openbsd.go") {
+            return Some("BSD build tags excluded on current host".to_string());
+        }
+        return Some(format!(
+            "excluded by platform build constraints: {}",
+            err_str.lines().next().unwrap_or(&err_str)
+        ));
+    }
+    None
+}
+
+pub fn platform_excluded_report(file: &str, reason: &str) -> DiagnosticsReport {
+    DiagnosticsReport {
+        file: file.to_string(),
+        errors: 0,
+        warnings: 0,
+        items: vec![DocDiagnostic {
+            severity: "info".to_string(),
+            code: Some("platform-excluded".to_string()),
+            message: reason.to_string(),
+            line: 1,
+            col: 1,
+            source: Some("prod-code".to_string()),
+            note: None,
+            end: None,
+        }],
+        preexisting: Vec::new(),
+        in_derive: Vec::new(),
+        auto_trait: Vec::new(),
+        hallucinations: Vec::new(),
+    }
 }
 
 /// Whether an error message matches a Swift compiler symbol or type resolution error across targets.
