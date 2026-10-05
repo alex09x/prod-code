@@ -573,10 +573,10 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None
     lock_file = os.path.join(RENAME_STATE_DIR, f"rename_{scope_key}.lock")
     state_file = os.path.join(RENAME_STATE_DIR, f"rename_{scope_key}.json")
 
-    # Expire stale session files older than 30m
+    # Expire stale session files older than 30m (only data files, never lock files)
     try:
         for fname in os.listdir(RENAME_STATE_DIR):
-            if fname.startswith("rename_") and (fname.endswith(".json") or fname.endswith(".lock")):
+            if fname.startswith("rename_") and fname.endswith(".json"):
                 fpath = os.path.join(RENAME_STATE_DIR, fname)
                 try:
                     if now - int(os.path.getmtime(fpath)) > 1800:
@@ -592,10 +592,15 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         lock_fd = os.open(lock_file, flags, 0o600)
-        if hasattr(fcntl, "flock"):
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
     except Exception:
-        lock_fd = None
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        # Fail safe rather than running the state update unsynchronized
+        return False, None
 
     try:
         entries = []

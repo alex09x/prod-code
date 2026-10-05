@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HOOK_SCRIPT = Path(__file__).parent / "hooks" / "prod-code-local-build-guard.py"
 
@@ -409,13 +410,24 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
 
                 # Stale session file expiration (>1800s)
                 stale_file = os.path.join(tmpdir, "rename_old_session.json")
+                stale_lock = os.path.join(tmpdir, "rename_old_session.lock")
                 with open(stale_file, "w") as f:
                     f.write("{}")
+                with open(stale_lock, "w") as f:
+                    f.write("")
                 past_time = int(time.time()) - 2000
                 os.utime(stale_file, (past_time, past_time))
-                # Next check cleans up stale file
+                os.utime(stale_lock, (past_time, past_time))
+                # Next check cleans up stale .json file but PRESERVES .lock file
                 guard.check_multi_file_rename(conv, "/repo/src/c.rs", "foo", "bar", repo_root="/repo")
                 self.assertFalse(os.path.exists(stale_file))
+                self.assertTrue(os.path.exists(stale_lock), "Lock files must never be age-unlinked to prevent split inode races")
+
+                # Lock acquisition failure fails safely (returns False, None) without exception
+                with mock.patch("fcntl.flock", side_effect=OSError("flock failed")):
+                    denied, other = guard.check_multi_file_rename(conv, "/repo/src/d.rs", "foo", "bar", repo_root="/repo")
+                    self.assertFalse(denied)
+                    self.assertIsNone(other)
             finally:
                 guard.RENAME_STATE_DIR = orig_dir
 
