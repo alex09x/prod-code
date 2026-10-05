@@ -5064,6 +5064,36 @@ async fn code_exec_rejects_nonexistent_or_outside_cwd() {
 }
 
 #[tokio::test]
+async fn code_exec_accepts_dot_and_workspace_root_cwd() {
+    let ws = rust_workspace("pub fn a() {}\n");
+    let remote = mock_gateway(Script {
+        exec_stdout: b"ok\n".to_vec(),
+        exec_exit: Some(0),
+        ..Script::default()
+    })
+    .await;
+    let res_dot = execute_tool(
+        remote,
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({ "argv": ["echo", "test"], "cwd": "." }),
+    )
+    .await
+    .expect("cwd '.' must succeed");
+    assert!(!res_dot.is_error);
+
+    let res_root = execute_tool(
+        remote,
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({ "argv": ["echo", "test"], "cwd": ws.root().to_str().unwrap() }),
+    )
+    .await
+    .expect("cwd workspace root must succeed");
+    assert!(!res_root.is_error);
+}
+
+#[tokio::test]
 async fn code_exec_rejects_nested_worktree_cwd() {
     let ws = rust_workspace("pub fn a() {}\n");
     let wt_dir = ws.root().join("review-worktrees/pr50");
@@ -5142,6 +5172,27 @@ async fn code_test_parses_cargo_test_output() {
         "{}",
         text_of(&result)
     );
+}
+
+#[tokio::test]
+async fn code_test_accepts_test_filter_and_package_aliases() {
+    let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
+    let remote = mock_gateway(Script {
+        exec_stdout: b"test result: ok. 1 passed; 0 failed; 0 ignored\n".to_vec(),
+        exec_exit: Some(0),
+        ..Script::default()
+    })
+    .await;
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_test",
+        serde_json::json!({ "package": "t", "test_filter": "my_test" }),
+    )
+    .await
+    .expect("test runs with package and test_filter aliases");
+    assert!(!res.is_error);
+    assert!(text_of(&res).contains("1 passed, 0 failed"));
 }
 
 #[tokio::test]

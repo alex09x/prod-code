@@ -1501,12 +1501,14 @@ async fn execute_tool_inner(
         let dirs = dirs.clone();
         return references_across(remote, workspace_root, args, &dirs).await;
     }
-    // Normalize path parameter across aliases: path, file_path, file (#673)
+    // Normalize path parameter across aliases: path, file_path, file, package, crate (#673, #900)
     let mut args = args;
     let initial_path = args
         .get("path")
         .or_else(|| args.get("file_path"))
         .or_else(|| args.get("file"))
+        .or_else(|| args.get("package"))
+        .or_else(|| args.get("crate"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -7201,6 +7203,9 @@ fn resolve_exec_subdir(workspace_root: &Path, raw_cwd: Option<&str>) -> Result<O
     }
     let canon_ws = std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
     let canon_resolved = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+    if canon_resolved == canon_ws {
+        return Ok(None);
+    }
     let mut curr = canon_resolved.as_path();
     while curr != canon_ws {
         if curr.join(".git").exists() {
@@ -7576,6 +7581,8 @@ async fn handle_check(
     };
     let filter = args
         .get("filter")
+        .or_else(|| args.get("test_filter"))
+        .or_else(|| args.get("test"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let timeout_secs = args
@@ -9250,6 +9257,9 @@ fn declared_at(line: &str, name: &str) -> Option<usize> {
         "def",
         "protocol",
         "actor",
+        "var",
+        "let",
+        "val",
     ];
     let chars: Vec<char> = line.chars().collect();
     let wanted: Vec<char> = name.chars().collect();
@@ -10580,5 +10590,13 @@ mod tests {
         assert!(super::qualifier_matches(root, &val_hit, &["Runner"]));
         assert!(super::qualifier_matches(root, &val_hit, &["runner", "Runner"]));
         assert!(!super::qualifier_matches(root, &val_hit, &["Server"]));
+    }
+
+    #[test]
+    fn declared_at_matches_var_let_val_declarations() {
+        assert_eq!(super::declared_at("    var searchState: State", "searchState"), Some(8));
+        assert_eq!(super::declared_at("@Published var searchState: State", "searchState"), Some(15));
+        assert_eq!(super::declared_at("let count = 42;", "count"), Some(4));
+        assert_eq!(super::declared_at("val items = listOf()", "items"), Some(4));
     }
 }

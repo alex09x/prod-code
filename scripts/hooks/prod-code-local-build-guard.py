@@ -480,12 +480,12 @@ def symbol_grep(command, cwd):
     return None
 
 
-def asked_prod_code(transcript, symbol):
+def asked_prod_code(transcript, symbol, agent=None):
     """Whether this session already asked prod-code about `symbol`: a line of its transcript
     that is a prod-code call (MCP code_* tool or the prod-code CLI) and names the symbol. Only
-    the last 2 MB are read. Without a transcript nothing can be shown, so the answer is yes."""
+    the last 2 MB are read. Without a transcript (interactive human), returns True unless agent is specified."""
     if not transcript or not os.path.isfile(transcript):
-        return True
+        return agent is None
     bare = symbol.split("::")[-1].split(".")[-1]
     try:
         with open(transcript, "rb") as f:
@@ -493,25 +493,25 @@ def asked_prod_code(transcript, symbol):
             f.seek(max(0, f.tell() - 2_000_000))
             tail = f.read().decode("utf-8", "ignore")
     except OSError:
-        return True
+        return agent is None
     for line in tail.splitlines():
         if bare in line and re.search(r"prod-code__code_|prod_code__code_|\"code_(definition|references|symbols|search|hover|callers|slice|outline)\"|prod-code\s+(def|refs|symbols|search|hover|callers|slice|outline)\b", line):
             return True
     return False
 
 
-def reported_prod_code_issue(transcript, symbol):
+def reported_prod_code_issue(transcript, symbol, agent=None):
     """Whether this session filed an issue about prod-code via code_report_issue or
-    the prod-code report-issue CLI. Without a transcript (interactive human), returns True."""
+    the prod-code report-issue CLI. Without a transcript (interactive human), returns True unless agent is specified."""
     if not transcript or not os.path.isfile(transcript):
-        return True
+        return agent is None
     try:
         with open(transcript, "rb") as f:
             f.seek(0, 2)
             f.seek(max(0, f.tell() - 2_000_000))
             tail = f.read().decode("utf-8", "ignore")
     except OSError:
-        return True
+        return agent is None
     for line in tail.splitlines():
         if re.search(r"prod-code__code_report_issue|prod_code__code_report_issue|\"code_report_issue\"|prod-code\s+report-issue\b", line):
             return True
@@ -880,10 +880,25 @@ def main():
     if reason:
         log({"ts": int(time.time()), "agent": agent, "rule": "local-build", "decision": "deny", "cwd": cwd, "cmd": command[:300]})
     transcript = payload.get("transcript_path") or payload.get("transcriptPath")
-    if not transcript and payload.get("conversationId"):
-        cand = os.path.expanduser(f"~/.gemini/antigravity-cli/brain/{payload['conversationId']}/.system_generated/logs/transcript.jsonl")
+    conv_id = payload.get("conversationId") or payload.get("conversation_id")
+    if not transcript and conv_id:
+        cand = os.path.expanduser(f"~/.gemini/antigravity-cli/brain/{conv_id}/.system_generated/logs/transcript.jsonl")
         if os.path.isfile(cand):
             transcript = cand
+    sess_id = payload.get("session_id") or payload.get("sessionId")
+    if not transcript and sess_id:
+        cwd_str = cwd or os.getcwd()
+        repo = git_repo_root(cwd_str)
+        candidates = []
+        for path_val in (cwd_str, repo):
+            if path_val:
+                slug = path_val.replace("/", "-")
+                candidates.append(os.path.expanduser(f"~/.claude/projects/{slug}/{sess_id}.jsonl"))
+                candidates.append(os.path.expanduser(f"~/.claude/projects/-{slug.lstrip('-')}/{sess_id}.jsonl"))
+        for cand in candidates:
+            if os.path.isfile(cand):
+                transcript = cand
+                break
 
     if not reason:
         found = symbol_grep(command, cwd)
@@ -891,13 +906,13 @@ def main():
             again = symbol_grep(command.replace("PROD_CODE_GREP=1", ""), cwd)
             if again:
                 sym = again[0]
-                if not asked_prod_code(transcript, sym):
+                if not asked_prod_code(transcript, sym, agent=agent):
                     log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
                     reason = (
                         f"Grep for symbol `{sym}` is blocked. Ask prod-code first: "
                         f"code_definition {{symbol: \"{sym}\"}} or code_symbols {{query: \"{sym}\"}}."
                     )
-                elif not reported_prod_code_issue(transcript, sym):
+                elif not reported_prod_code_issue(transcript, sym, agent=agent):
                     log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
                     reason = (
                         f"Grep for symbol `{sym}` is blocked. If prod-code failed to resolve `{sym}`, "
