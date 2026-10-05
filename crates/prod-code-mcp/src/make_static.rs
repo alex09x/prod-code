@@ -1632,6 +1632,12 @@ pub async fn make_static_polyglot(
             blocked.join("\n  ")
         );
         anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) were not rewritten; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
+        anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written. Pass `force: true` to write it anyway:\n  {}",
             diagnostics.len(),

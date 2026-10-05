@@ -404,3 +404,63 @@ export function test() {
     assert!(content.contains("static helper(x: number): number {"));
     assert!(content.contains("Util.helper(21)"));
 }
+
+fn member_reference(file: &std::path::Path, source: &str, method: &str) -> serde_json::Value {
+    let needle = format!(".{method};");
+    let at = source.find(&needle).expect("method member reference") + 1;
+    let before = &source[..at];
+    serde_json::json!({
+        "uri": url::Url::from_file_path(file).unwrap().to_string(),
+        "range": { "start": {
+            "line": before.bytes().filter(|byte| *byte == b'\n').count(),
+            "character": before.rsplit('\n').next().unwrap_or_default().encode_utf16().count()
+        }}
+    })
+}
+
+#[tokio::test]
+async fn test_make_static_refuses_apply_when_references_unmatched() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "util.ts",
+            r#"export class Util {
+    helper(x: number): number {
+        return x * 2;
+    }
+}
+
+export function test() {
+    const u = new Util();
+    const fn_ref = u.helper;
+    return fn_ref;
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let util_file = root.join("util.ts");
+    let util_source = fs::read_to_string(&util_file).unwrap();
+    let gw = fake_gateway(vec![member_reference(&util_file, &util_source, "helper")]).await;
+
+    let res = make_static_polyglot(
+        gw.addr(),
+        &root,
+        &util_file,
+        Some("Util"),
+        "helper",
+        true,
+        false,
+    )
+    .await;
+
+    assert!(res.is_err());
+    let err = res.unwrap_err().to_string();
+    assert!(
+        err.contains("1 reference(s) were not rewritten; nothing was written"),
+        "{err}"
+    );
+
+    let content = fs::read_to_string(&util_file).unwrap();
+    assert_eq!(content, util_source);
+}

@@ -1468,15 +1468,22 @@ pub fn prepare_workspace_sync_for(
         }
 
         let full_path = canonical_root.join(&relative_path);
-        let Ok(metadata) = full_path.metadata() else {
+        let Ok(sym_meta) = full_path.symlink_metadata() else {
             continue;
         };
-        if !fits_sync(&relative_path, &metadata) {
+        if sym_meta.file_type().is_symlink() {
+            continue;
+        }
+        if !fits_sync(&relative_path, &sym_meta) {
             continue;
         }
 
-        let content = std::fs::read(&full_path)?;
-        let entry = sync_file_entry(&metadata, &content);
+        let Some((content, is_exec)) =
+            read_regular_file_secure(&full_path, &canonical_root)?
+        else {
+            continue;
+        };
+        let entry = sync_file_entry(&sym_meta, &content);
         if state.files.get(&relative_path) == Some(&entry) {
             continue;
         }
@@ -1484,7 +1491,7 @@ pub fn prepare_workspace_sync_for(
         files.push(FileDelta {
             relative_path: relative_path.clone(),
             content: Some(content),
-            is_executable: is_executable(&metadata),
+            is_executable: is_exec,
         });
         state.files.insert(relative_path, entry);
     }
@@ -1504,23 +1511,25 @@ pub fn prepare_workspace_sync_for(
     for rel in lost {
         let full_path = canonical_root.join(&rel);
         let content = full_path
-            .metadata()
+            .symlink_metadata()
             .ok()
+            .filter(|sm| !sm.file_type().is_symlink())
             .filter(|m| listed.contains(&rel) && is_synced_git_path(&rel) && fits_sync(&rel, m))
             .and_then(|m| {
                 // Read only once it is known to be sent: an ignored file stays unread.
-                let content = std::fs::read(&full_path).ok()?;
-                Some((m, content))
+                let (content, is_exec) =
+                    read_regular_file_secure(&full_path, &canonical_root).ok()??;
+                Some((m, content, is_exec))
             });
         match content {
-            Some((metadata, content)) => {
+            Some((metadata, content, is_executable)) => {
                 state
                     .files
                     .insert(rel.clone(), sync_file_entry(&metadata, &content));
                 files.push(FileDelta {
                     relative_path: rel,
                     content: Some(content),
-                    is_executable: is_executable(&metadata),
+                    is_executable,
                 });
             }
             None => {
@@ -1587,8 +1596,11 @@ fn prepare_non_git_workspace_sync(
         };
         let relative_path = delta.relative_path.clone();
         let full_path = root.join(&relative_path);
-        let metadata = std::fs::metadata(&full_path)
+        let metadata = std::fs::symlink_metadata(&full_path)
             .with_context(|| format!("cannot stat synced file {}", full_path.display()))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
         let entry = sync_file_entry(&metadata, content);
         present.insert(delta.relative_path.clone());
         if state.files.get(&relative_path) != Some(&entry) {
@@ -2300,7 +2312,6 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "sol"
                 | "nim"
                 | "nims"
-                | "nimble"
                 | "d"
                 | "di"
                 | "f"
@@ -2515,7 +2526,7 @@ fn read_regular_file_secure(path: &Path, canonical_root: &Path) -> Result<Option
     {
         let _ = path;
         let _ = canonical_root;
-        anyhow::bail!("Non-Git workspace sync is unsupported on non-Unix platforms");
+        anyhow::bail!("Secure file reading is unsupported on non-Unix platforms");
     }
 
     #[cfg(unix)]
@@ -2584,6 +2595,11 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
     let mut deltas = Vec::new();
 
     if target_dir.is_file() {
+        if let Ok(sym_meta) = target_dir.symlink_metadata() {
+            if sym_meta.file_type().is_symlink() {
+                return Ok(deltas);
+            }
+        }
         let Ok(canonical) = std::fs::canonicalize(&target_dir) else {
             return Ok(deltas);
         };
@@ -2619,22 +2635,20 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
                 continue;
             }
             let full_path = canonical_root.join(&rel_path);
-            let Ok(metadata) = full_path.metadata() else {
+            let Ok(sym_meta) = full_path.symlink_metadata() else {
                 continue; // listed by git, deleted on disk
             };
-            if !fits_sync(&rel_path, &metadata) {
+            if sym_meta.file_type().is_symlink() {
                 continue;
             }
-            let Ok(content) = std::fs::read(&full_path) else {
+            if !fits_sync(&rel_path, &sym_meta) {
+                continue;
+            }
+            let Some((content, is_executable)) =
+                read_regular_file_secure(&full_path, &canonical_root)?
+            else {
                 continue;
             };
-            #[cfg(unix)]
-            let is_executable = {
-                use std::os::unix::fs::PermissionsExt;
-                metadata.permissions().mode() & 0o111 != 0
-            };
-            #[cfg(not(unix))]
-            let is_executable = false;
             deltas.push(FileDelta {
                 relative_path: rel_path,
                 content: Some(content),
@@ -2735,10 +2749,11 @@ fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta
             if cache.files.remove(rel_path).is_some() {
                 cache_modified = true;
             }
-        } else if full_path.is_file()
-            && let Ok(metadata) = full_path.metadata()
-        {
-            let size = metadata.len();
+        } else if let Ok(sym_meta) = full_path.symlink_metadata() {
+            if sym_meta.file_type().is_symlink() {
+                continue;
+            }
+            let size = sym_meta.len();
             if size > MAX_FILE_SIZE {
                 continue;
             }
@@ -2746,16 +2761,10 @@ fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta
                 continue;
             }
 
-            #[cfg(unix)]
-            let is_executable = {
-                use std::os::unix::fs::PermissionsExt;
-                metadata.permissions().mode() & 0o111 != 0
-            };
-            #[cfg(not(unix))]
-            let is_executable = false;
-
-            if let Ok(content) = std::fs::read(&full_path) {
-                let entry = sync_file_entry(&metadata, &content);
+            if let Ok(Some((content, is_executable))) =
+                read_regular_file_secure(&full_path, root)
+            {
+                let entry = sync_file_entry(&sym_meta, &content);
                 if cache.files.get(rel_path) == Some(&entry) {
                     // File was already synced and has not changed.
                     continue;
@@ -4315,6 +4324,47 @@ version = "0.2.2"
         assert!(
             !deltas.iter().any(|d| d.relative_path == "src/leak.rs"),
             "symlink pointing outside workspace root must be rejected"
+        );
+        for delta in &deltas {
+            if let Some(content) = &delta.content {
+                assert_ne!(
+                    content.as_slice(),
+                    b"secret-private-key-bytes",
+                    "leaked external content must not be present in any file delta"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_scan_workspace_files_rejects_git_listed_symlinks_in_commitless_repo() {
+        let ws = tempfile::tempdir().expect("tempdir");
+        let ws_root = ws.path();
+
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(ws_root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git init");
+        assert!(status.success());
+
+        std::fs::create_dir_all(ws_root.join("src")).expect("src dir");
+        std::fs::write(ws_root.join("src/valid.rs"), "pub fn ok() {}\n").expect("write valid");
+
+        let external = tempfile::tempdir().expect("external dir");
+        let secret_file = external.path().join("id_rsa");
+        std::fs::write(&secret_file, "secret-private-key-bytes").expect("write secret");
+
+        let leak_symlink = ws_root.join("src/leak.rs");
+        std::os::unix::fs::symlink(&secret_file, &leak_symlink).expect("symlink");
+
+        let deltas = scan_workspace_files(ws_root, None).expect("scan");
+        assert!(deltas.iter().any(|d| d.relative_path == "src/valid.rs"));
+        assert!(
+            !deltas.iter().any(|d| d.relative_path == "src/leak.rs"),
+            "git-listed symlink pointing outside workspace root must be rejected"
         );
         for delta in &deltas {
             if let Some(content) = &delta.content {
