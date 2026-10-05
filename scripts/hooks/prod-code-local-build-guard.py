@@ -298,15 +298,21 @@ def symbol_in(pattern):
     return q if looks_like_symbol(q) else None
 
 
-def in_git_repo(cwd):
-    d = os.path.abspath(cwd or ".")
+def git_repo_root(path):
+    d = os.path.abspath(path or ".")
+    if not os.path.isdir(d):
+        d = os.path.dirname(d)
     while True:
         if os.path.exists(os.path.join(d, ".git")):
-            return True
+            return d
         parent = os.path.dirname(d)
         if parent == d:
-            return False
+            return None
         d = parent
+
+
+def in_git_repo(cwd):
+    return git_repo_root(cwd) is not None
 
 
 def split_pipelines(command):
@@ -501,7 +507,7 @@ def log(entry):
         pass
 
 
-RENAME_STATE_DIR = os.environ.get("PROD_CODE_RENAME_STATE_DIR") or "/tmp/prod-code-renames"
+RENAME_STATE_DIR = os.environ.get("PROD_CODE_RENAME_STATE_DIR") or os.path.expanduser("~/.cache/prod-code-renames")
 KEYWORDS = {
     "if", "else", "elif", "for", "while", "loop", "match", "case", "switch",
     "return", "break", "continue", "yield", "let", "mut", "var", "val", "const",
@@ -541,14 +547,33 @@ def single_symbol_rename(old_str, new_str):
     return None
 
 
-def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, now=None):
-    """Returns (True, other_file) if old_sym was already renamed in another file within 30m, else (False, None)."""
+def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None, now=None):
+    """Returns (True, other_file) if (old_sym, new_sym) was already renamed in another file
+    within the same repo within 30m, else (False, None)."""
     if now is None:
         now = int(time.time())
     try:
-        os.makedirs(RENAME_STATE_DIR, exist_ok=True)
+        os.makedirs(RENAME_STATE_DIR, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(RENAME_STATE_DIR, 0o700)
+        except OSError:
+            pass
     except OSError:
         pass
+
+    # Expire stale session files older than 30m
+    try:
+        for fname in os.listdir(RENAME_STATE_DIR):
+            if fname.startswith("rename_") and fname.endswith(".json"):
+                fpath = os.path.join(RENAME_STATE_DIR, fname)
+                try:
+                    if now - int(os.path.getmtime(fpath)) > 1800:
+                        os.remove(fpath)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
     clean_id = re.sub(r"[^A-Za-z0-9_-]", "_", conv_id or "default")
     state_file = os.path.join(RENAME_STATE_DIR, f"rename_{clean_id}.json")
 
@@ -565,10 +590,14 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, now=None):
     entries = [e for e in entries if isinstance(e, dict) and now - e.get("ts", 0) <= 1800]
 
     abs_file = os.path.abspath(file_path)
+    canon_repo = os.path.abspath(repo_root) if repo_root else ""
 
     other_file = None
     for e in entries:
-        if e.get("sym") == old_sym:
+        if e.get("sym") == old_sym and e.get("new") == new_sym:
+            stored_repo = e.get("repo", "")
+            if canon_repo and stored_repo and canon_repo != stored_repo:
+                continue
             prev_file = e.get("file")
             if prev_file and os.path.abspath(prev_file) != abs_file:
                 other_file = prev_file
@@ -577,9 +606,13 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, now=None):
     if other_file:
         return True, other_file
 
-    entries.append({"sym": old_sym, "new": new_sym, "file": abs_file, "ts": now})
+    entries.append({"sym": old_sym, "new": new_sym, "file": abs_file, "repo": canon_repo, "ts": now})
     try:
-        with open(state_file, "w") as f:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(state_file, flags, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump({"entries": entries}, f)
     except Exception:
         pass
@@ -589,6 +622,8 @@ def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, now=None):
 
 def file_edit_details(payload):
     """Returns (file_path, old_content, new_content, is_override) for edit tool calls, or None."""
+    env_override = os.environ.get("PROD_CODE_MANUAL_RENAME") == "1"
+
     call = payload.get("toolCall")
     if isinstance(call, dict):
         name = call.get("name") or ""
@@ -598,7 +633,7 @@ def file_edit_details(payload):
             target_content = args.get("TargetContent") or args.get("target_content") or args.get("old_string") or args.get("old_str") or ""
             replacement = args.get("ReplacementContent") or args.get("replacement_content") or args.get("new_string") or args.get("new_str") or ""
             desc = f"{args.get('Description', '')} {args.get('Instruction', '')}"
-            override = "PROD_CODE_MANUAL_RENAME=1" in desc
+            override = env_override or ("PROD_CODE_MANUAL_RENAME=1" in desc)
             return target_file, target_content, replacement, override
         return None
 
@@ -610,7 +645,10 @@ def file_edit_details(payload):
         target_file = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("target_file") or ""
         target_content = tool_input.get("old_string") or tool_input.get("old_str") or tool_input.get("TargetContent") or ""
         replacement = tool_input.get("new_string") or tool_input.get("new_str") or tool_input.get("ReplacementContent") or ""
-        override = False
+        override = env_override or any(
+            isinstance(v, str) and "PROD_CODE_MANUAL_RENAME=1" in v
+            for v in tool_input.values()
+        )
         return target_file, target_content, replacement, override
 
     return None
@@ -666,14 +704,15 @@ def main():
             agent = "gemini" if payload.get("hook_event_name") == "BeforeTool" else payload.get("tool_name", "")
             conv_id = payload.get("conversation_id") or payload.get("session_id") or "default"
 
-        if target_file and CODE_EXT.search(target_file) and (in_git_repo(cwd) or in_git_repo(os.path.dirname(os.path.abspath(target_file)))):
+        repo_root = git_repo_root(target_file if target_file else cwd) or git_repo_root(cwd)
+        if target_file and CODE_EXT.search(target_file) and repo_root is not None:
             sym_pair = single_symbol_rename(old_content, replacement)
             if sym_pair:
                 old_sym, new_sym = sym_pair
                 if override:
                     log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "override", "cwd": cwd, "symbol": old_sym, "file": target_file})
                 else:
-                    is_multi, prev_file = check_multi_file_rename(conv_id, target_file, old_sym, new_sym)
+                    is_multi, prev_file = check_multi_file_rename(conv_id, target_file, old_sym, new_sym, repo_root=repo_root)
                     if is_multi:
                         log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "deny", "cwd": cwd, "symbol": old_sym, "file": target_file, "prev_file": prev_file})
                         prev_name = os.path.basename(prev_file)
@@ -685,7 +724,8 @@ def main():
                             f"code_rename {{path: \"{cur_name}\", line: ..., character: ..., new_name: \"{new_sym}\"}} "
                             f"(CLI: prod-code rename <file> <line> <col> {new_sym}). "
                             f"It updates all declarations, references, and imports across the entire workspace atomically and safely. "
-                            f"If this is not a symbol rename, include PROD_CODE_MANUAL_RENAME=1 in your edit description."
+                            f"If this is not an automated symbol rename, include PROD_CODE_MANUAL_RENAME=1 in your edit description/explanation "
+                            f"or set PROD_CODE_MANUAL_RENAME=1 in the environment."
                         )
                         if agent in ("gemini", "antigravity"):
                             print(json.dumps({"decision": "deny", "reason": reason}))

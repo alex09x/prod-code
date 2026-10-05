@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 HOOK_SCRIPT = Path(__file__).parent / "hooks" / "prod-code-local-build-guard.py"
@@ -376,24 +377,45 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
                 conv = "test-conv-123"
 
                 # 1st file: allowed
-                denied, other = guard.check_multi_file_rename(conv, "/repo/src/a.rs", "old_func", "new_func")
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/a.rs", "old_func", "new_func", repo_root="/repo")
                 self.assertFalse(denied)
                 self.assertIsNone(other)
+
+                # Verify file permissions mode 0600
+                state_file = os.path.join(tmpdir, f"rename_{conv}.json")
+                self.assertTrue(os.path.exists(state_file))
+                file_mode = os.stat(state_file).st_mode & 0o777
+                self.assertEqual(file_mode, 0o600)
 
                 # Same file again: allowed
-                denied, other = guard.check_multi_file_rename(conv, "/repo/src/a.rs", "old_func", "new_func")
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/a.rs", "old_func", "new_func", repo_root="/repo")
                 self.assertFalse(denied)
                 self.assertIsNone(other)
 
-                # Different file with same symbol: denied!
-                denied, other = guard.check_multi_file_rename(conv, "/repo/src/b.rs", "old_func", "new_func")
+                # Different rename target for same old symbol (config -> cfg vs config -> settings): allowed!
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/b.rs", "old_func", "distinct_target", repo_root="/repo")
+                self.assertFalse(denied)
+                self.assertIsNone(other)
+
+                # Different repository for same (old_sym, new_sym): allowed!
+                denied, other = guard.check_multi_file_rename(conv, "/other_repo/src/b.rs", "old_func", "new_func", repo_root="/other_repo")
+                self.assertFalse(denied)
+                self.assertIsNone(other)
+
+                # Different file with same (old_sym, new_sym) in SAME repo: denied!
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/b.rs", "old_func", "new_func", repo_root="/repo")
                 self.assertTrue(denied)
                 self.assertEqual(other, os.path.abspath("/repo/src/a.rs"))
 
-                # Different symbol in another file: allowed
-                denied, other = guard.check_multi_file_rename(conv, "/repo/src/c.rs", "another_sym", "new_sym")
-                self.assertFalse(denied)
-                self.assertIsNone(other)
+                # Stale session file expiration (>1800s)
+                stale_file = os.path.join(tmpdir, "rename_old_session.json")
+                with open(stale_file, "w") as f:
+                    f.write("{}")
+                past_time = int(time.time()) - 2000
+                os.utime(stale_file, (past_time, past_time))
+                # Next check cleans up stale file
+                guard.check_multi_file_rename(conv, "/repo/src/c.rs", "foo", "bar", repo_root="/repo")
+                self.assertFalse(os.path.exists(stale_file))
             finally:
                 guard.RENAME_STATE_DIR = orig_dir
 
@@ -419,7 +441,7 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
         self.assertEqual(new_c, "new_var")
         self.assertFalse(override)
 
-        # Override format
+        # Override format in Antigravity Instruction
         agy_override = {
             "toolCall": {
                 "name": "replace_file_content",
@@ -453,6 +475,35 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
         self.assertEqual(old_c, "old_foo")
         self.assertEqual(new_c, "new_foo")
         self.assertFalse(override)
+
+        # Claude Code format with override in tool_input explanation
+        claude_override = {
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/repo/src/lib.rs",
+                "old_string": "old_foo",
+                "new_string": "new_foo",
+                "explanation": "PROD_CODE_MANUAL_RENAME=1 template fallback",
+            },
+        }
+        res = guard.file_edit_details(claude_override)
+        self.assertIsNotNone(res)
+        _, _, _, override = res
+        self.assertTrue(override)
+
+        # Environment variable override for any agent
+        orig_env = os.environ.get("PROD_CODE_MANUAL_RENAME")
+        try:
+            os.environ["PROD_CODE_MANUAL_RENAME"] = "1"
+            res = guard.file_edit_details(claude_payload)
+            self.assertIsNotNone(res)
+            _, _, _, override = res
+            self.assertTrue(override)
+        finally:
+            if orig_env is None:
+                os.environ.pop("PROD_CODE_MANUAL_RENAME", None)
+            else:
+                os.environ["PROD_CODE_MANUAL_RENAME"] = orig_env
 
     def test_end_to_end_antigravity_rename_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
