@@ -16,9 +16,14 @@ This document describes the distribution architecture, packaging tools, self-upd
 
 ## 2. Generating Release Packages
 
-Run the master packaging script:
+Build the release binaries for each target platform, or export the Linux binary paths:
 
 ```bash
+# Optional: explicitly point to pre-built Linux binaries if not in standard target directories
+export CLIENT_BIN_X86_64="target/x86_64-unknown-linux-gnu/release/prod-code"
+export CLIENT_BIN_AARCH64="target/aarch64-unknown-linux-gnu/release/prod-code"
+
+# Run the master packaging script:
 ./scripts/packaging/build-all-packages.sh 0.3.19
 ```
 

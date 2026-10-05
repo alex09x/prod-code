@@ -2016,6 +2016,11 @@ async fn main() -> Result<()> {
                 let root = cwd_root
                     .as_deref()
                     .context("Failed to resolve workspace root")?;
+                let current_dir = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
+                let files: Vec<PathBuf> = files
+                    .into_iter()
+                    .map(|f| if f.is_absolute() { f } else { current_dir.join(f) })
+                    .collect();
                 run_pull(remote, root, files).await
             } else {
                 run_sync(remote, path).await
@@ -2025,6 +2030,11 @@ async fn main() -> Result<()> {
             let root = cwd_root
                 .as_deref()
                 .context("Failed to resolve workspace root")?;
+            let current_dir = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
+            let files: Vec<PathBuf> = files
+                .into_iter()
+                .map(|f| if f.is_absolute() { f } else { current_dir.join(f) })
+                .collect();
             run_pull(remote, root, files).await
         }
         Commands::Def {
@@ -6335,8 +6345,16 @@ async fn run_lsp_bridge(
                     // with a failure, which an editor answers by starting the server again. Left
                     // to the editor's next message, this hung and then exited 0 (#394).
                     Ok((why, redirect_target)) => {
-                        if reconnect {
-                            eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
+                        let is_redirect = redirect_target.is_some();
+                        if reconnect || is_redirect {
+                            if is_redirect {
+                                eprintln!(
+                                    "prod-code lsp: following gateway redirect to {}; reconnecting...",
+                                    redirect_target.unwrap()
+                                );
+                            } else {
+                                eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
+                            }
                             let reconnect_remote = redirect_target.unwrap_or(remote);
                             match reconnect_editor_session(reconnect_remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
                                 Ok((new_tx, new_rx, replay_after_init, new_remote)) => {

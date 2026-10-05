@@ -25,10 +25,36 @@ fi
 
 echo "Using prod-code binary: $CLIENT_BIN"
 
+if [[ -z "${CLIENT_BIN_X86_64:-}" ]]; then
+    for candidate in \
+        "$ROOT_DIR/target/x86_64-unknown-linux-gnu/release/prod-code" \
+        "$ROOT_DIR/dist/bin/prod-code-x86_64-unknown-linux-gnu"; do
+        if [[ -f "$candidate" ]]; then
+            CLIENT_BIN_X86_64="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -z "${CLIENT_BIN_AARCH64:-}" ]]; then
+    for candidate in \
+        "$ROOT_DIR/target/aarch64-unknown-linux-gnu/release/prod-code" \
+        "$ROOT_DIR/dist/bin/prod-code-aarch64-unknown-linux-gnu"; do
+        if [[ -f "$candidate" ]]; then
+            CLIENT_BIN_AARCH64="$candidate"
+            break
+        fi
+    done
+fi
+
 CLIENT_BIN_X86_64="${CLIENT_BIN_X86_64:-}"
 CLIENT_BIN_AARCH64="${CLIENT_BIN_AARCH64:-}"
 if [[ -z "$CLIENT_BIN_X86_64" || ! -f "$CLIENT_BIN_X86_64" || -z "$CLIENT_BIN_AARCH64" || ! -f "$CLIENT_BIN_AARCH64" ]]; then
-    echo "Error: set CLIENT_BIN_X86_64 and CLIENT_BIN_AARCH64 to Linux binaries built for those targets; refusing to label one binary as both architectures." >&2
+    echo "Error: Linux binaries not found in target directories or environment variables." >&2
+    echo "Set CLIENT_BIN_X86_64 and CLIENT_BIN_AARCH64 to the compiled Linux binaries, or build them with:" >&2
+    echo "  cargo build --release --target x86_64-unknown-linux-gnu" >&2
+    echo "  cargo build --release --target aarch64-unknown-linux-gnu" >&2
+    echo "See docs/distribution.md for the complete release workflow." >&2
     exit 1
 fi
 

@@ -1755,7 +1755,17 @@ pub async fn pull_remote_files(
         } else {
             canonical_root.join(file)
         };
-        let rel = match abs.strip_prefix(&canonical_root) {
+        let mut normalized = PathBuf::new();
+        for comp in abs.components() {
+            match comp {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                c => normalized.push(c.as_os_str()),
+            }
+        }
+        let rel = match normalized.strip_prefix(&canonical_root) {
             Ok(rel) => rel,
             Err(_) => continue,
         };

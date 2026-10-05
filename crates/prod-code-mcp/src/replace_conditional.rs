@@ -45,10 +45,17 @@ fn returns_from_conditional(block: &ConditionalBlock) -> Result<bool> {
     for branch in &block.branches {
         let body = branch.body.trim_start();
         let has_return = contains_word(body, "return");
-        let starts_with_return = body.starts_with("return ") || body.starts_with("return\n");
+        let starts_with_return = if let Some(rest) = body.strip_prefix("return") {
+            rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == ';')
+        } else {
+            false
+        };
         let terminates_without_return = [
             "throw ",
+            "throw;",
             "raise ",
+            "raise\n",
+            "raise\r\n",
             "panic(",
             "panic!",
             "fatalError(",
@@ -1518,5 +1525,57 @@ mod tests {
         assert!(res.contains("impl Bird for EuropeanBird {"));
         assert!(res.contains("pub struct AfricanBird;"));
         assert!(res.contains("bird.get_speed()"));
+    }
+
+    #[test]
+    fn test_bare_return_in_conditional_branches() {
+        let block = ConditionalBlock {
+            kind: ConditionalKind::Switch,
+            start_offset: 0,
+            end_offset: 50,
+            discriminator: "action".to_string(),
+            branches: vec![
+                ConditionalBranch {
+                    tag: "Action.Stop".to_string(),
+                    variant_name: "Stop".to_string(),
+                    body: "return;\n".to_string(),
+                    is_default: false,
+                },
+                ConditionalBranch {
+                    tag: "default".to_string(),
+                    variant_name: "Default".to_string(),
+                    body: "return;".to_string(),
+                    is_default: true,
+                },
+            ],
+            indent: "".to_string(),
+        };
+        assert!(returns_from_conditional(&block).unwrap());
+    }
+
+    #[test]
+    fn test_python_bare_return_in_conditional_branches() {
+        let block = ConditionalBlock {
+            kind: ConditionalKind::Match,
+            start_offset: 0,
+            end_offset: 50,
+            discriminator: "status".to_string(),
+            branches: vec![
+                ConditionalBranch {
+                    tag: "Status.Pending".to_string(),
+                    variant_name: "Pending".to_string(),
+                    body: "return".to_string(),
+                    is_default: false,
+                },
+                ConditionalBranch {
+                    tag: "_".to_string(),
+                    variant_name: "Default".to_string(),
+                    body: "return\n".to_string(),
+                    is_default: true,
+                },
+            ],
+            indent: "".to_string(),
+        };
+        assert!(returns_from_conditional(&block).unwrap());
     }
 }

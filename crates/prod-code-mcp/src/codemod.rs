@@ -904,15 +904,23 @@ fn collect_code_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Resolve a user supplied relative codemod scope without traversing links or leaving the
 /// workspace. The path must already exist as a file or directory.
 pub fn resolve_workspace_scope(workspace_root: &Path, raw: &str) -> Result<PathBuf> {
+    let raw_trimmed = raw.trim();
+    anyhow::ensure!(
+        !raw_trimmed.is_empty(),
+        "codemod path must name a file or directory"
+    );
     let requested = Path::new(raw);
     anyhow::ensure!(
         !requested.is_absolute(),
         "codemod path must be relative to the workspace"
     );
+    let mut has_curdir = false;
     let mut components = Vec::new();
     for component in requested.components() {
         match component {
-            std::path::Component::CurDir => {}
+            std::path::Component::CurDir => {
+                has_curdir = true;
+            }
             std::path::Component::Normal(name) => components.push(name),
             std::path::Component::ParentDir => {
                 anyhow::bail!("codemod path cannot contain parent traversal")
@@ -922,8 +930,9 @@ pub fn resolve_workspace_scope(workspace_root: &Path, raw: &str) -> Result<PathB
             }
         }
     }
+    let is_root_scope = components.is_empty() && has_curdir;
     anyhow::ensure!(
-        !components.is_empty(),
+        !components.is_empty() || is_root_scope,
         "codemod path must name a file or directory"
     );
     let root = workspace_root
@@ -1458,6 +1467,16 @@ fn test_currency() {
             resolve_workspace_scope(workspace.path(), "src.rs").unwrap(),
             inside.canonicalize().unwrap()
         );
+        assert_eq!(
+            resolve_workspace_scope(workspace.path(), ".").unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_workspace_scope(workspace.path(), "./.").unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
+        assert!(resolve_workspace_scope(workspace.path(), "").is_err());
+        assert!(resolve_workspace_scope(workspace.path(), "   ").is_err());
         assert!(resolve_workspace_scope(workspace.path(), "../outside.rs").is_err());
         assert!(resolve_workspace_scope(workspace.path(), outside.to_str().unwrap()).is_err());
 
