@@ -2475,6 +2475,90 @@ fn git_listed_files(root: &Path, dir: &Path) -> Option<Vec<String>> {
     Some(files)
 }
 
+#[cfg(unix)]
+fn verify_fd_containment(file: &std::fs::File, canonical_root: &Path) -> Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; libc::PATH_MAX as usize];
+        if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr() as *mut libc::c_char) } != -1 {
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            if let Ok(path_str) = std::str::from_utf8(&buf[..len]) {
+                return Ok(Path::new(path_str).starts_with(canonical_root));
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(link) = std::fs::read_link(format!("/proc/self/fd/{fd}")) {
+            return Ok(link.starts_with(canonical_root));
+        }
+        Ok(false)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = fd;
+        let _ = canonical_root;
+        anyhow::bail!("File descriptor containment verification is not supported on this platform");
+    }
+}
+
+/// Securely opens and reads a regular file without following symlinks to eliminate symlink TOCTOU.
+/// Rejects symlinks at opening via `O_NOFOLLOW` and reads directly from the verified file handle.
+fn read_regular_file_secure(path: &Path, canonical_root: &Path) -> Result<Option<(Vec<u8>, bool)>> {
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        let _ = canonical_root;
+        anyhow::bail!("Non-Git workspace sync is unsupported on non-Unix platforms");
+    }
+
+    #[cfg(unix)]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+
+        let mut file = match options.open(path) {
+            Ok(f) => f,
+            Err(err) => {
+                if err.raw_os_error() == Some(libc::ELOOP) {
+                    return Ok(None);
+                }
+                return Ok(None);
+            }
+        };
+
+        let metadata = match file.metadata() {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+
+        if !metadata.file_type().is_file() {
+            return Ok(None);
+        }
+
+        if !verify_fd_containment(&file, canonical_root)? {
+            return Ok(None);
+        }
+
+        let mut content = Vec::new();
+        use std::io::Read;
+        if file.read_to_end(&mut content).is_err() {
+            return Ok(None);
+        }
+
+        let is_exec = is_executable(&metadata);
+        Ok(Some((content, is_exec)))
+    }
+}
+
 /// Scan workspace directory and generate FileDelta list, filtering out build artifacts and VCS.
 ///
 /// In a git checkout the list is git's (see [`is_synced_git_path`]); elsewhere the directory is
@@ -2500,6 +2584,12 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
     let mut deltas = Vec::new();
 
     if target_dir.is_file() {
+        let Ok(canonical) = std::fs::canonicalize(&target_dir) else {
+            return Ok(deltas);
+        };
+        if !canonical.starts_with(&canonical_root) {
+            return Ok(deltas);
+        }
         let rel_path = target_dir
             .strip_prefix(&canonical_root)
             .unwrap_or(&target_dir)
@@ -2510,12 +2600,15 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
         if is_relevant_code_or_manifest_file(&rel_path)
             || (listed_by_git && is_synced_git_path(&rel_path))
         {
-            let content = std::fs::read(&target_dir)?;
-            deltas.push(FileDelta {
-                relative_path: rel_path,
-                content: Some(content),
-                is_executable: false,
-            });
+            if let Some((content, is_exec)) =
+                read_regular_file_secure(&target_dir, &canonical_root)?
+            {
+                deltas.push(FileDelta {
+                    relative_path: rel_path,
+                    content: Some(content),
+                    is_executable: is_exec,
+                });
+            }
         }
         return Ok(deltas);
     }
@@ -2777,6 +2870,23 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
             continue;
         }
 
+        // Security: reject symlinks and symlinked targets pointing outside the workspace root
+        if entry.file_type().map_or(true, |ft| ft.is_symlink() || !ft.is_file()) {
+            continue;
+        }
+        if let Ok(sym_meta) = path.symlink_metadata() {
+            if sym_meta.file_type().is_symlink() {
+                continue;
+            }
+        }
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            if !canonical.starts_with(canonical_root) || !canonical.is_file() {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
         let rel_path = path
             .strip_prefix(canonical_root)
             .unwrap_or(path)
@@ -2794,19 +2904,8 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
             continue;
         }
 
-        if let Ok(content) = std::fs::read(path) {
-            #[cfg(unix)]
-            let is_executable = {
-                use std::os::unix::fs::PermissionsExt;
-                entry
-                    .metadata()
-                    .ok()
-                    .map(|m| m.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
-            };
-            #[cfg(not(unix))]
-            let is_executable = false;
-
+        if let Some((content, is_executable)) = read_regular_file_secure(path, canonical_root)?
+        {
             deltas.push(FileDelta {
                 relative_path: rel_path,
                 content: Some(content),
@@ -4192,5 +4291,39 @@ version = "0.2.2"
         assert!(is_relevant_code_or_manifest_file("examples/data/loading.rs"));
         assert!(is_relevant_code_or_manifest_file("tests/state/test_state.rs"));
         assert!(is_relevant_code_or_manifest_file("benches/state/bench_state.rs"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_scan_workspace_files_rejects_symlinks_in_non_git_sync() {
+        let ws = tempfile::tempdir().expect("tempdir");
+        let ws_root = ws.path();
+        std::fs::create_dir_all(ws_root.join("src")).expect("src dir");
+        std::fs::write(ws_root.join("src/valid.rs"), "pub fn ok() {}\n").expect("write valid");
+
+        // External secret file
+        let external = tempfile::tempdir().expect("external dir");
+        let secret_file = external.path().join("id_rsa");
+        std::fs::write(&secret_file, "secret-private-key-bytes").expect("write secret");
+
+        // Create symlink inside workspace pointing to external secret
+        let leak_symlink = ws_root.join("src/leak.rs");
+        std::os::unix::fs::symlink(&secret_file, &leak_symlink).expect("symlink");
+
+        let deltas = scan_workspace_files(ws_root, None).expect("scan");
+        assert!(deltas.iter().any(|d| d.relative_path == "src/valid.rs"));
+        assert!(
+            !deltas.iter().any(|d| d.relative_path == "src/leak.rs"),
+            "symlink pointing outside workspace root must be rejected"
+        );
+        for delta in &deltas {
+            if let Some(content) = &delta.content {
+                assert_ne!(
+                    content.as_slice(),
+                    b"secret-private-key-bytes",
+                    "leaked external content must not be present in any file delta"
+                );
+            }
+        }
     }
 }

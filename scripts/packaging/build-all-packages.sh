@@ -12,18 +12,7 @@ mkdir -p "$OUT_DIR"
 
 echo "Building release packages for prod-code v${VERSION}..."
 
-CLIENT_BIN="${CLIENT_BIN:-$HOME/.cargo/bin/prod-code}"
-if [[ ! -f "$CLIENT_BIN" ]]; then
-    echo "Warning: $CLIENT_BIN not found, attempting to find in PATH..."
-    CLIENT_BIN="$(which prod-code || true)"
-fi
 
-if [[ -z "$CLIENT_BIN" || ! -f "$CLIENT_BIN" ]]; then
-    echo "Error: prod-code binary not found." >&2
-    exit 1
-fi
-
-echo "Using prod-code binary: $CLIENT_BIN"
 
 if [[ -z "${CLIENT_BIN_X86_64:-}" ]]; then
     for candidate in \
@@ -134,6 +123,19 @@ echo "Generating Arch Linux package (aarch64)..."
 
 # 4. macOS .pkg & .dmg (if on macOS)
 if [[ "$(uname -s)" == "Darwin" ]]; then
+    CLIENT_BIN="${CLIENT_BIN:-$HOME/.cargo/bin/prod-code}"
+    if [[ ! -f "$CLIENT_BIN" ]]; then
+        echo "Warning: $CLIENT_BIN not found, attempting to find in PATH..."
+        CLIENT_BIN="$(which prod-code || true)"
+    fi
+
+    if [[ -z "$CLIENT_BIN" || ! -f "$CLIENT_BIN" ]]; then
+        echo "Error: prod-code macOS binary not found." >&2
+        echo "Set CLIENT_BIN to the compiled macOS prod-code binary or install it in ~/.cargo/bin." >&2
+        exit 1
+    fi
+    echo "Using macOS prod-code binary: $CLIENT_BIN"
+
     echo "Generating macOS installer package (.pkg)..."
     "$SCRIPT_DIR/package-macos-pkg.sh" \
         --version "$VERSION" \

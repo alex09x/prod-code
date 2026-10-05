@@ -23,6 +23,9 @@ Build the release binaries for each target platform, or export the Linux binary 
 export CLIENT_BIN_X86_64="target/x86_64-unknown-linux-gnu/release/prod-code"
 export CLIENT_BIN_AARCH64="target/aarch64-unknown-linux-gnu/release/prod-code"
 
+# Note: On Linux build hosts, only the Linux target binaries above are required.
+# Host CLIENT_BIN is only consumed on macOS hosts (Darwin) for .pkg and .dmg packaging.
+
 # Run the master packaging script:
 ./scripts/packaging/build-all-packages.sh 0.3.19
 ```
