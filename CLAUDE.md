@@ -13,10 +13,13 @@ full version; this is the part that is not optional.
   `documentation`, `perf`; `test` or `release` for PRs that are only that) and the areas it
   touches (`gateway`, `client`, `mcp`, `cluster`, `worktree`, `infra`, `test`). A PR takes
   the labels of the issue it closes. `report-issue --label X` / `code_report_issue {labels}`.
-- There is no hosted CI. Run `cargo fmt --all -- --check`, `cargo clippy --workspace
-  --all-targets -- -D warnings` and the tests for the touched crates on a build node
-  (`prod-code exec -- ...` or the MCP `code_check` / `code_lint` / `code_test`), never on
-  the developer's machine, and paste what they printed into the PR.
+- There is no hosted CI. Follow the Development validation policy: during the edit
+  loop, run only new or directly affected tests. Immediately before committing, run
+  formatting and lint checks once on the completed change (`cargo fmt --all -- --check`,
+  `code_lint`), followed by ONE final compile/test gate for the changed deliverable
+  (`code_test` / `code_check`) on a build node, never on the developer's machine, and paste
+  what they printed into the PR. Do not run standalone builds, formatters, or workspace-wide
+  lint in the edit loop.
 - Every PR shows how to repeat the result: commands, output before, output after, node
   kind. Performance and correctness claims come with before/after numbers.
 - Merge only with recorded checks; squash-merge, delete the branch.
@@ -31,11 +34,12 @@ gets tested on real work, and how its bugs are found before a user finds them.
   symbols|hover`). Do not grep for code structure or line numbers; grep is for prose.
 - **Change code** with the refactoring tools where one fits: `code_rename`, `code_move`,
   `code_change_signature`, `code_extract_parameter`, `code_extract_field`,
-  `code_encapsulate_field`, `code_introduce_parameter_object`, `code_assist`. Hand-written code
-  goes through `code_validate_edit` / `code_validate_edits` with the complete new text before
-  it is written. No scripted text surgery (sed, python) on source files.
+  `code_encapsulate_field`, `code_introduce_parameter_object`, `code_assist`. Optional
+  lightweight `code_validate_edits` checks the completed coherent batch, not each file/save,
+  and must not launch a build/test. No scripted text surgery (sed, python) on source files.
 - **Build, test and lint** with `code_check`, `code_test`, `code_lint` and `code_exec`, which
-  run on a build node.
+  run on a build node. During development, run only new or directly affected tests; read
+  existing failure logs first (`code_diagnose_failure` executes tests and is not passive analysis).
 - **When the tool is wrong, slow, confusing or missing something**, that is an issue. Open it
   with the command that shows the problem and its output, then fix it like any other change.
   A workaround is not the fix.
