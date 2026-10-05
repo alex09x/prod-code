@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Binary framing codec for prod-code WireMessage streams.
 
 use crate::messages::WireMessage;
@@ -97,6 +107,32 @@ impl ProdCodeCodec {
         dst: &mut BytesMut,
         max_frame_size: usize,
     ) -> Result<(), io::Error> {
+        if let WireMessage::HttpResponse {
+            status,
+            content_type,
+            body,
+        } = item
+        {
+            let status_text = match *status {
+                200 => "OK",
+                400 => "Bad Request",
+                404 => "Not Found",
+                426 => "Upgrade Required",
+                _ => "OK",
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {status_text}\r\n\
+                 Content-Type: {content_type}\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {body}",
+                body.len()
+            );
+            dst.extend_from_slice(response.as_bytes());
+            return Ok(());
+        }
+
         let initial_capacity = dst.capacity();
         let header_offset = dst.len();
         dst.reserve(4);
@@ -218,6 +254,48 @@ impl Decoder for ProdCodeCodec {
 
         if src.len() < 4 {
             return Ok(None);
+        }
+
+        // Check if incoming stream begins with an HTTP request or response (dual-protocol sniffing).
+        let is_http = src.starts_with(b"GET ")
+            || src.starts_with(b"POST")
+            || src.starts_with(b"HEAD")
+            || src.starts_with(b"PUT ")
+            || src.starts_with(b"DELE")
+            || src.starts_with(b"OPTI")
+            || src.starts_with(b"PATC")
+            || src.starts_with(b"HTTP");
+
+        if is_http {
+            // Find end of HTTP headers: \r\n\r\n or \n\n
+            let header_end = src
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| p + 4)
+                .or_else(|| src.windows(2).position(|w| w == b"\n\n").map(|p| p + 2));
+
+            match header_end {
+                Some(end) => {
+                    let req_bytes = src.split_to(end);
+                    let req_str = String::from_utf8_lossy(&req_bytes);
+                    let mut lines = req_str.lines();
+                    let first_line = lines.next().unwrap_or("");
+                    let mut parts = first_line.split_whitespace();
+                    let method = parts.next().unwrap_or("GET").to_string();
+                    let path = parts.next().unwrap_or("/").to_string();
+
+                    return Ok(Some(WireMessage::HttpProbe { method, path }));
+                }
+                None => {
+                    if src.len() > 8192 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "HTTP headers exceeded maximum limit for probe",
+                        ));
+                    }
+                    return Ok(None);
+                }
+            }
         }
 
         let mut length_bytes = [0u8; 4];
@@ -952,5 +1030,40 @@ mod tests {
         let err = dec_codec.decode(&mut buf).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("Missing expected NUL completion marker"));
+    }
+
+    #[test]
+    fn test_codec_http_probe_and_response() {
+        let mut codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+
+        // 1. Incomplete HTTP request waits for more data
+        buf.extend_from_slice(b"GET /health HTTP/1.1\r\nHost: localhost");
+        assert_eq!(codec.decode(&mut buf).unwrap(), None);
+
+        // 2. Complete HTTP request with \r\n\r\n
+        buf.extend_from_slice(b"\r\n\r\n");
+        let decoded = codec.decode(&mut buf).unwrap().expect("should decode HTTP probe");
+        assert_eq!(
+            decoded,
+            WireMessage::HttpProbe {
+                method: "GET".to_string(),
+                path: "/health".to_string()
+            }
+        );
+        assert!(buf.is_empty());
+
+        // 3. HttpResponse encoding
+        let resp = WireMessage::HttpResponse {
+            status: 200,
+            content_type: "application/json".to_string(),
+            body: "{\"status\":\"ok\"}".to_string(),
+        };
+        codec.encode(resp, &mut buf).unwrap();
+        let resp_str = String::from_utf8(buf.to_vec()).unwrap();
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(resp_str.contains("Content-Type: application/json\r\n"));
+        assert!(resp_str.contains("Content-Length: 15\r\n"));
+        assert!(resp_str.ends_with("\r\n\r\n{\"status\":\"ok\"}"));
     }
 }

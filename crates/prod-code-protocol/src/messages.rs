@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -67,6 +77,17 @@ pub enum WireMessage {
     RemoteExecStream(RemoteExecStream),
     /// Final execution verdict, diagnostics, and test summary (Roadmap 6.1).
     RemoteExecResult(RemoteExecResult),
+    /// Lightweight HTTP probe (e.g. GET /health or GET /status) received on gateway port.
+    HttpProbe {
+        method: String,
+        path: String,
+    },
+    /// HTTP response to an HTTP probe.
+    HttpResponse {
+        status: u16,
+        content_type: String,
+        body: String,
+    },
 }
 
 /// The token a cluster's connections open with (#402). Its `Debug` never shows it, so a

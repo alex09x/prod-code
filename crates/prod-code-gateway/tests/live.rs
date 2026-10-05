@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! The gateway, as a client actually meets it: the real binary, the real protocol, the real
 //! analyzer, over a real socket.
 //!
@@ -4074,5 +4084,51 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
         std::fs::read(&file).unwrap(),
         original,
         "refused wire mutations leave the source unchanged"
+    );
+}
+
+#[tokio::test]
+async fn test_gateway_http_health_probe() {
+    let gateway = Gateway::start();
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // 1. GET /health -> 200 OK
+    let mut stream = tokio::net::TcpStream::connect(gateway.addr).await.expect("connect");
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&response);
+    assert!(
+        resp_str.starts_with("HTTP/1.1 200 OK\r\n"),
+        "expected 200 OK, got: {resp_str}"
+    );
+    assert!(
+        resp_str.contains("\"status\": \"ok\""),
+        "expected status ok: {resp_str}"
+    );
+    assert!(
+        resp_str.contains("\"service\": \"prod-code-gateway\""),
+        "expected service name: {resp_str}"
+    );
+
+    // 2. GET /some/path -> 426 Upgrade Required
+    let mut stream2 = tokio::net::TcpStream::connect(gateway.addr).await.expect("connect");
+    stream2
+        .write_all(b"GET /some/path HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response2 = Vec::new();
+    stream2.read_to_end(&mut response2).await.unwrap();
+    let resp_str2 = String::from_utf8_lossy(&response2);
+    assert!(
+        resp_str2.starts_with("HTTP/1.1 426 Upgrade Required\r\n"),
+        "expected 426, got: {resp_str2}"
+    );
+    assert!(
+        resp_str2.contains("\"error\": \"protocol_mismatch\""),
+        "expected protocol mismatch error: {resp_str2}"
     );
 }
