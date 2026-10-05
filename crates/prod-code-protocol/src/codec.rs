@@ -282,16 +282,37 @@ impl Decoder for ProdCodeCodec {
 
         // Check if incoming stream begins with a syntactically valid HTTP request line or response.
         // A valid HTTP request starts with an RFC 9110 token method (e.g. GET, POST, M-SEARCH) followed by a space,
-        // or an HTTP/1.x response line.
+        // a non-empty request target (origin-form, asterisk-form, or authority-form including IPv6 literals [::1]:443),
+        // and an HTTP version.
         let is_http = if src.starts_with(b"HTTP/") {
             true
-        } else if let Some(space_pos) = src.iter().position(|&b| b == b' ') {
-            (1..=64).contains(&space_pos)
-                && src[..space_pos].iter().all(|&b| is_rfc_token_byte(b))
-                && (src.len() <= space_pos + 1
-                    || src[space_pos + 1] == b'/'
-                    || src[space_pos + 1] == b'*'
-                    || is_rfc_token_byte(src[space_pos + 1]))
+        } else if let Some(first_space) = src.iter().position(|&b| b == b' ') {
+            if (1..=64).contains(&first_space) && src[..first_space].iter().all(|&b| is_rfc_token_byte(b)) {
+                let rest = &src[first_space + 1..];
+                if rest.is_empty() {
+                    // Method and first space received; waiting for target
+                    true
+                } else if let Some(second_space) = rest.iter().position(|&b| b == b' ') {
+                    let target = &rest[..second_space];
+                    let after_second = &rest[second_space + 1..];
+                    !target.is_empty()
+                        && target.iter().all(|&b| b > 0x20 && b < 0x7F)
+                        && (after_second.is_empty()
+                            || after_second.starts_with(b"HTTP/")
+                            || b"HTTP/".starts_with(&after_second[..after_second.len().min(5)]))
+                } else if let Some(line_end) = rest.windows(2).position(|w| w == b"\r\n") {
+                    let target = &rest[..line_end];
+                    !target.is_empty() && target.iter().all(|&b| b > 0x20 && b < 0x7F)
+                } else if let Some(line_end) = rest.iter().position(|&b| b == b'\n') {
+                    let target = &rest[..line_end];
+                    !target.is_empty() && target.iter().all(|&b| b > 0x20 && b < 0x7F)
+                } else {
+                    // Target is still arriving (e.g. CONNECT [2001:db8::1]:443)
+                    rest.iter().all(|&b| b > 0x20 && b < 0x7F)
+                }
+            } else {
+                false
+            }
         } else {
             // Buffer is too short to find a space yet, but starts with RFC token characters that could form an HTTP method
             src.len() <= 64 && src.iter().all(|&b| is_rfc_token_byte(b))
@@ -1114,6 +1135,21 @@ mod tests {
             WireMessage::HttpProbe {
                 method: "M-SEARCH".to_string(),
                 path: "*".to_string(),
+            }
+        );
+
+        buf.extend_from_slice(
+            b"CONNECT [2001:db8::1]:443 HTTP/1.1\r\nHost: [2001:db8::1]:443\r\n\r\n",
+        );
+        let decoded_ipv6_connect = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode CONNECT probe with IPv6 literal authority");
+        assert_eq!(
+            decoded_ipv6_connect,
+            WireMessage::HttpProbe {
+                method: "CONNECT".to_string(),
+                path: "[2001:db8::1]:443".to_string(),
             }
         );
 
