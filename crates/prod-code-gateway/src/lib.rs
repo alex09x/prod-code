@@ -3284,10 +3284,26 @@ pub async fn run_exec_with_ram(
         Some(sub)
             if !sub.is_empty()
                 && !sub.starts_with('/')
-                && !sub.split('/').any(|c| c == "..")
-                && workspace.join(sub).is_dir() =>
+                && !sub.split('/').any(|c| c == "..") =>
         {
-            workspace.join(sub)
+            let target = workspace.join(sub);
+            if !target.is_dir() {
+                framed
+                    .send(WireMessage::ExecExit(fail(format!(
+                        "working directory '{sub}' does not exist in workspace {workspace_str}"
+                    ))))
+                    .await?;
+                return Ok(());
+            }
+            target
+        }
+        Some(sub) if !sub.is_empty() => {
+            framed
+                .send(WireMessage::ExecExit(fail(format!(
+                    "invalid working directory '{sub}'"
+                ))))
+                .await?;
+            return Ok(());
         }
         _ => workspace.clone(),
     };
@@ -9691,6 +9707,46 @@ mod tests {
         let mut stale = workspace::stale_paths(&workspace);
         stale.sort();
         assert_eq!(stale, vec!["run.sh", "src/a.rs", "src/gone.rs"]);
+    }
+
+    #[tokio::test]
+    async fn test_exec_fails_when_subdir_does_not_exist() {
+        let storage = tempfile::tempdir().unwrap();
+        let workspace = storage.path().join("test-ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let storage_root = storage.path().to_path_buf();
+        let metrics_dir = tempfile::tempdir().unwrap();
+        let metrics = metrics::Metrics::new(metrics_dir.path().to_path_buf());
+        let gateway = tokio::spawn(async move {
+            let manager = WorkspaceManager::new();
+            let mut framed = Framed::new(AnyStream::from(server), ProdCodeCodec::new());
+            let req = ExecRequest {
+                client_workspace_root: "/tmp/test-ws".to_string(),
+                base_workspace_name: Some("test-ws".to_string()),
+                command: vec!["pwd".to_string()],
+                env: Vec::new(),
+                timeout_secs: 10,
+                pull_changes: false,
+                subdir: Some("nonexistent_sub".to_string()),
+                client_agent: None,
+                client_host: None,
+            };
+            run_exec(&storage_root, &metrics, &manager, &mut framed, req).await
+        });
+
+        let mut framed = Framed::new(client, ProdCodeCodec::new());
+        let exit = match tokio::time::timeout(std::time::Duration::from_secs(10), framed.next()).await {
+            Ok(Some(Ok(WireMessage::ExecExit(exit)))) => exit,
+            other => panic!("expected ExecExit, got: {other:?}"),
+        };
+        assert!(exit.error.as_deref().unwrap_or_default().contains("does not exist"));
+        gateway.await.unwrap().unwrap();
     }
 
     /// A file that a client sync delivered while the command ran is the checkout's text and is

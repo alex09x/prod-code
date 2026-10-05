@@ -4987,6 +4987,53 @@ async fn code_exec_reports_the_exit_status_and_output_tail() {
 }
 
 #[tokio::test]
+async fn code_exec_rejects_nonexistent_or_outside_cwd() {
+    let ws = rust_workspace("pub fn a() {}\n");
+    let remote = mock_gateway(Script::default()).await;
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({ "argv": ["pwd"], "cwd": "nonexistent_sub_dir" }),
+    )
+    .await
+    .expect_err("nonexistent cwd must fail");
+    assert!(format!("{err:#}").contains("does not exist"));
+
+    let err2 = execute_tool(
+        remote,
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({ "argv": ["pwd"], "cwd": "/tmp" }),
+    )
+    .await
+    .expect_err("outside cwd must fail");
+    assert!(format!("{err2:#}").contains("outside workspace root"));
+}
+
+#[tokio::test]
+async fn code_exec_rejects_nested_worktree_cwd() {
+    let ws = rust_workspace("pub fn a() {}\n");
+    let wt_dir = ws.root().join("review-worktrees/pr50");
+    std::fs::create_dir_all(&wt_dir).unwrap();
+    std::fs::write(wt_dir.join(".git"), "gitdir: /tmp/mock-gitdir\n").unwrap();
+
+    let remote = mock_gateway(Script::default()).await;
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({ "argv": ["pwd"], "cwd": "review-worktrees/pr50" }),
+    )
+    .await
+    .expect_err("nested worktree must be rejected");
+    assert!(
+        format!("{err:#}").contains("nested Git worktree"),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
 async fn code_check_reports_ok_with_no_diagnostics() {
     let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
     let remote = mock_gateway(Script {

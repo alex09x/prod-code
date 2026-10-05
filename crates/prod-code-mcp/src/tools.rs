@@ -7116,11 +7116,44 @@ async fn handle_exec(
         .and_then(|v| v.as_u64())
         .unwrap_or(16 * 1024) as usize;
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
-    let subdir = args
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(|p| resolve_file_path(workspace_root, p))
-        .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
+    let subdir = if let Some(raw_cwd) = args.get("cwd").and_then(|v| v.as_str()) {
+        if raw_cwd.trim().is_empty() {
+            None
+        } else {
+            let resolved = resolve_file_path(workspace_root, raw_cwd);
+            if !resolved.exists() {
+                anyhow::bail!("working directory '{raw_cwd}' does not exist");
+            }
+            if !resolved.is_dir() {
+                anyhow::bail!("working directory '{raw_cwd}' is not a directory");
+            }
+            let canon_ws = std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+            let canon_resolved = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+            let mut curr = canon_resolved.as_path();
+            while curr != canon_ws {
+                if curr.join(".git").exists() {
+                    anyhow::bail!(
+                        "working directory '{raw_cwd}' is inside a nested Git worktree or repository; \
+                         nested worktrees cannot be executed through the parent workspace. \
+                         Target the worktree directly as its own workspace."
+                    );
+                }
+                match curr.parent() {
+                    Some(parent) => curr = parent,
+                    None => break,
+                }
+            }
+            let sub = crate::exec::subdir_of(workspace_root, &resolved).with_context(|| {
+                format!(
+                    "working directory '{raw_cwd}' is outside workspace root {}",
+                    workspace_root.display()
+                )
+            })?;
+            Some(sub)
+        }
+    } else {
+        None
+    };
     let outcome = crate::exec::run_remote(
         remote,
         workspace_root,
