@@ -6891,6 +6891,59 @@ async fn code_definition_resolves_trait_impl_in_hint_file_and_reads_body() {
 }
 
 #[tokio::test]
+async fn code_definition_defaults_to_body_true_and_respects_false() {
+    let ws = workspace();
+    let source = "pub fn compute_sum(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+    let lib_file = write(&ws, "src/lib.rs", source);
+    commit(&ws);
+
+    let lib_uri = format!("file://{}", lib_file.display());
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("compute_sum", 12, &lib_file, 1, 8)
+        ]),
+        "textDocument/definition" => serde_json::json!([
+            {
+                "uri": lib_uri,
+                "range": {
+                    "start": { "line": 0, "character": 7 },
+                    "end": { "line": 0, "character": 18 }
+                }
+            }
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    // 1. Omit body parameter -> defaults to true and includes function body
+    let def_default = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "compute_sum" }),
+    )
+    .await
+    .expect("definition succeeds");
+    let text_default = text_of(&def_default);
+    assert!(text_default.contains("Definition:"), "{text_default}");
+    assert!(text_default.contains("compute_sum"), "{text_default}");
+    assert!(text_default.contains("a + b"), "{text_default}");
+
+    // 2. Explicit body: false -> omits the code body
+    let def_no_body = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "compute_sum", "body": false }),
+    )
+    .await
+    .expect("definition succeeds with body: false");
+    let text_no_body = text_of(&def_no_body);
+    assert!(text_no_body.contains("Definition:"), "{text_no_body}");
+    assert!(!text_no_body.contains("a + b"), "{text_no_body}");
+}
+
+#[tokio::test]
 async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_returns_empty() {
     let ws = workspace();
     let stream_source = "pub trait OrderManager {\n    fn order_please(&self);\n}\nimpl OrderManager for StrategyApi {\n    fn order_please(&self) {\n        println!(\"ordered\");\n    }\n}\n";

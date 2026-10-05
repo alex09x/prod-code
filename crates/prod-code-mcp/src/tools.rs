@@ -813,14 +813,14 @@ fn build_tools_raw() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_definition".to_string(),
-            description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it. `body: true` also returns the definition's code (a function with its body, a type with its fields, with the doc comments above it), numbered, so there is no need to read the file or grep for it."
+            description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it. Returns the definition's code (a function with its body, a type with its fields, with doc comments), numbered (at most 300 lines), by default so there is no need to read the file or grep for it. Pass `body: false` to return only the location."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "body": {
                         "type": "boolean",
-                        "description": "Also return the definition's code, numbered (at most 300 lines)"
+                        "description": "Return the definition's code, numbered (at most 300 lines); default true. Pass false to return only the location"
                     },
                     "path": {
                         "type": "string",
@@ -6748,7 +6748,7 @@ async fn handle_definition(
         .get("character")
         .and_then(|v| v.as_u64())
         .context("Missing 'character' argument")? as u32;
-    let body = args.get("body").and_then(|v| v.as_bool()).unwrap_or(false);
+    let body = args.get("body").and_then(|v| v.as_bool()).unwrap_or(true);
     let file_path = resolve_file_path(workspace_root, path_str);
     let file_uri = Url::from_file_path(&file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
