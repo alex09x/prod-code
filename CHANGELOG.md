@@ -2,13 +2,27 @@
 
 ## [Unreleased]
 
+## v0.3.24 — 2026-10-05
+
 ### Added
-- **Cross-Worktree Clangd Index Seeding & Shared PCH Compiler Cache (Phase 3.4)** (`crates/prod-code-gateway`):
-  Implemented cross-worktree clangd symbol index sharing and precompiled header (PCH) compiler caching. During worktree handshake seeding, existing clangd background index shards (`.cache/clangd/index/` and `.clangd/index/`) are relocated into the new worktree copy with RIFF `CdIx` chunk parsing, zlib string table decompression/recompression, and source path replacement that preserves symbol and reference interning string indices. Target shard filenames are recalculated with LLVM-compatible `xxh3_64` path digests. Automated `compile_commands.json` path relocation is applied to `build/compile_commands.json`. Shared ccache compiler environment incorporates `CCACHE_SLOPPINESS=pch_defines,time_macros` and `CCACHE_PCH_EXTERNAL_CHECKS=1` alongside `CCACHE_BASEDIR` to allow precompiled headers to hit cache across distinct worktrees (#833).
-- **Dedicated Editor Language Server Health Supervision & Stress Policy (Phase 3.3)** (`crates/prod-code-gateway`):
-  Implemented periodic health probes for dedicated editor sessions (`run_with_options` in `editor_proxy.rs`). Probes run on configurable intervals (default 60s, timeout 30s) and are deferred under loaded-project stress (in-flight client requests, active language-server indexing/busy readiness progress, and recent ordinary traffic). Reserved probe IDs (`prod-code-editor-health:`) from clients are rejected immediately with JSON-RPC error -32600, private probe replies from the server are intercepted and withheld from the editor, and three consecutive idle probe timeouts retire the session and reap the child process group.
+- **Cross-Worktree Build Caches and Editor LSP Supervision (Phases 3.3–3.7)** (`crates/prod-code-gateway`):
+  Added dedicated editor-server health supervision and cross-worktree cache support for clangd/PCH, Python stubs, Swift modules, and TypeScript declarations. Cache seeding and pruning use bounded, symlink-aware handling.
+- **Isolated Proc-Macro Worker Farm (Phase 5.4)** (`crates/prod-code-engine-rust`, `crates/prod-code-gateway`):
+  Added node-wide worker permits, fair-share allocations, bounded waits, sandbox launcher validation, and fail-closed memory limits for procedural macro servers.
+- **Generic LSP Diagnostics and Polyglot Outlines** (`crates/prod-code-engine-generic`, `crates/prod-code-mcp`):
+  Preserve generic language-server exit details, add Protobuf outlines, improve Markdown front-matter handling, and return typed CLI errors for empty hover/definition results.
+- **Protocol Framing Compatibility** (`crates/prod-code-protocol`):
+  Added negotiated NUL completion markers while retaining compatibility with markerless peers.
 
 ### Fixed
+- **Polyglot Refactoring Safety** (`crates/prod-code-mcp`):
+  Hardened transformations across Rust, TypeScript/JavaScript, Python, Go, C/C++, and Swift to preserve control flow, argument and receiver behavior, and analyzer-resolved references. Apply operations refuse incomplete or unmatched plans before writing.
+- **Bounded Symbol Search and MCP Calls (#829)** (`crates/prod-code-mcp`):
+  Enforced nested-project and unindexed-source query budgets, bounded in-flight LSP operations, and clamped tool-call timeouts below the client deadline.
+- **Workspace Sync, Editor Reconnect, and Remote File Safety** (`crates/prod-code-client`, `crates/prod-code-mcp`, `crates/prod-code-protocol`):
+  Improved reconnect state replay and redirect validation, constrained mirrored paths, rejected symlinked sync inputs, preserved explicit executable modes, and handled stale workspace copies more safely.
+- **Packaging and Remote Execution Reliability (#875, #883)** (`crates/prod-code-client`, `crates/prod-code-gateway`, `scripts/packaging`):
+  Added clearer architecture-specific packaging checks, explicit working-directory errors, protections against nested worktree execution, and honored requested output-tail limits.
 - **ReadFileRequest Protocol Dropping in Active Sessions & 64MiB Artifact Pulls (#820)** (`crates/prod-code-gateway`, `crates/prod-code-mcp`):
   Added `WireMessage::ReadFileRequest` dispatch to active session message loop (`on_client_message`) in the gateway, preventing requests from being dropped after session handshake. Raised maximum file pull limit for workspace files from 2 MiB to 64 MiB (`MAX_PULL_BYTES`). In `pull_remote_files`, added a 30s timeout per frame, explicit truncation and error checks, and executable detection (ELF, Mach-O, shebang) to ensure pulled binaries retain executable permissions (`0o755`).
 - **Multiline Function Header Slice Panic in Expression Synthesis** (`crates/prod-code-mcp`):
