@@ -5978,11 +5978,7 @@ async fn handle_shadow_run(
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
         || args.get("ram").and_then(|v| v.as_bool()).unwrap_or(false);
-    let subdir = args
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(|p| resolve_file_path(workspace_root, p))
-        .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
+    let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
     let outcome = crate::shadow::run_shadow(
         remote,
         workspace_root,
@@ -6000,7 +5996,7 @@ async fn handle_shadow_run(
         (true, Some(i)) => Some(crate::shadow::apply_hypothesis(workspace_root, &specs[i])?),
         _ => None,
     };
-    let text = crate::shadow::render_report(&outcome, &argv, applied.as_deref(), 2000);
+    let text = crate::shadow::render_report(&outcome, &argv, applied.as_deref(), tail_bytes);
     Ok(if outcome.winner.is_some() {
         McpToolCallResult::text(text)
     } else {
@@ -7095,6 +7091,45 @@ fn numbered_lines(lines: &[&str], first: usize, last: usize) -> String {
     out.trim_end().to_string()
 }
 
+fn resolve_exec_subdir(workspace_root: &Path, raw_cwd: Option<&str>) -> Result<Option<String>> {
+    let Some(raw_cwd) = raw_cwd else {
+        return Ok(None);
+    };
+    if raw_cwd.trim().is_empty() {
+        return Ok(None);
+    }
+    let resolved = resolve_file_path(workspace_root, raw_cwd);
+    if !resolved.exists() {
+        anyhow::bail!("working directory '{raw_cwd}' does not exist");
+    }
+    if !resolved.is_dir() {
+        anyhow::bail!("working directory '{raw_cwd}' is not a directory");
+    }
+    let canon_ws = std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+    let canon_resolved = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+    let mut curr = canon_resolved.as_path();
+    while curr != canon_ws {
+        if curr.join(".git").exists() {
+            anyhow::bail!(
+                "working directory '{raw_cwd}' is inside a nested Git worktree or repository; \
+                 nested worktrees cannot be executed through the parent workspace. \
+                 Target the worktree directly as its own workspace."
+            );
+        }
+        match curr.parent() {
+            Some(parent) => curr = parent,
+            None => break,
+        }
+    }
+    let sub = crate::exec::subdir_of(workspace_root, &resolved).with_context(|| {
+        format!(
+            "working directory '{raw_cwd}' is outside workspace root {}",
+            workspace_root.display()
+        )
+    })?;
+    Ok(Some(sub))
+}
+
 async fn handle_exec(
     remote: SocketAddr,
     workspace_root: &Path,
@@ -7116,44 +7151,7 @@ async fn handle_exec(
         .and_then(|v| v.as_u64())
         .unwrap_or(16 * 1024) as usize;
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
-    let subdir = if let Some(raw_cwd) = args.get("cwd").and_then(|v| v.as_str()) {
-        if raw_cwd.trim().is_empty() {
-            None
-        } else {
-            let resolved = resolve_file_path(workspace_root, raw_cwd);
-            if !resolved.exists() {
-                anyhow::bail!("working directory '{raw_cwd}' does not exist");
-            }
-            if !resolved.is_dir() {
-                anyhow::bail!("working directory '{raw_cwd}' is not a directory");
-            }
-            let canon_ws = std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
-            let canon_resolved = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
-            let mut curr = canon_resolved.as_path();
-            while curr != canon_ws {
-                if curr.join(".git").exists() {
-                    anyhow::bail!(
-                        "working directory '{raw_cwd}' is inside a nested Git worktree or repository; \
-                         nested worktrees cannot be executed through the parent workspace. \
-                         Target the worktree directly as its own workspace."
-                    );
-                }
-                match curr.parent() {
-                    Some(parent) => curr = parent,
-                    None => break,
-                }
-            }
-            let sub = crate::exec::subdir_of(workspace_root, &resolved).with_context(|| {
-                format!(
-                    "working directory '{raw_cwd}' is outside workspace root {}",
-                    workspace_root.display()
-                )
-            })?;
-            Some(sub)
-        }
-    } else {
-        None
-    };
+    let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
     let outcome = crate::exec::run_remote(
         remote,
         workspace_root,

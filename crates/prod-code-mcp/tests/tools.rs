@@ -5308,6 +5308,51 @@ async fn code_shadow_run_ranks_and_can_apply_the_winner() {
 }
 
 #[tokio::test]
+async fn code_shadow_run_honors_tail_bytes_without_truncating_to_2000() {
+    let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
+    let mut large_output = Vec::new();
+    large_output.extend_from_slice(b"TAIL_PROBE_BEGIN\n");
+    large_output.extend(vec![b'x'; 3500]);
+    large_output.extend_from_slice(b"\nTAIL_PROBE_END\n");
+
+    let remote = mock_gateway(Script {
+        shadow_results: vec![ShadowHypothesisResult {
+            name: "tail-check".to_string(),
+            exit_code: Some(1),
+            duration_ms: 15,
+            timed_out: false,
+            error: None,
+            output_len: large_output.len() as u64,
+            output_tail: Some(large_output.clone()),
+        }],
+        ..Script::default()
+    })
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_shadow_run",
+        serde_json::json!({
+            "hypotheses": [ { "name": "tail-check", "edits": [ { "path": "src/lib.rs", "new_text": "pub fn a() -> i32 { 2 }" } ] } ],
+            "argv": ["python3", "-c", "sys.exit(1)"],
+            "tail_bytes": 6000
+        }),
+    )
+    .await
+    .expect("shadow run runs");
+    assert!(result.is_error);
+    let text = text_of(&result);
+    assert!(
+        text.contains("TAIL_PROBE_BEGIN"),
+        "report must contain TAIL_PROBE_BEGIN when within tail_bytes: {text}"
+    );
+    assert!(text.contains("TAIL_PROBE_END"), "report must contain TAIL_PROBE_END: {text}");
+    assert!(text.contains("of 3533 bytes"), "{text}");
+    assert!(!text.contains("last 2000 of"), "{text}");
+}
+
+#[tokio::test]
 async fn code_shadow_run_supports_in_memory_ram_mode() {
     let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
     let remote = mock_gateway(Script {
