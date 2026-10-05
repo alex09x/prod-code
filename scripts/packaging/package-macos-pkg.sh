@@ -41,8 +41,8 @@ chmod 755 "$STAGING_DIR/prod-code"
 
 # Code sign if on macOS
 if command -v codesign >/dev/null 2>&1; then
-    SIGN_IDENTITY="${PROD_CODE_SIGN_IDENTITY:-Apple Development: Alexander Panasenko (alex@prod.codes)}"
-    codesign -s "$SIGN_IDENTITY" -f "$STAGING_DIR/prod-code" || codesign -s - -f "$STAGING_DIR/prod-code" || true
+    SIGN_IDENTITY="${PROD_CODE_SIGN_IDENTITY:-Developer ID Application: Alexander Panasenko (284V2M3LN9)}"
+    codesign -s "$SIGN_IDENTITY" -f --options runtime --timestamp "$STAGING_DIR/prod-code" || codesign -s "$SIGN_IDENTITY" -f "$STAGING_DIR/prod-code" || codesign -s - -f "$STAGING_DIR/prod-code" || true
 fi
 
 # Build .pkg
