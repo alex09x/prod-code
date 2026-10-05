@@ -1510,29 +1510,37 @@ pub fn prepare_workspace_sync_for(
     let listed = git_listed_paths(&canonical_root, &lost);
     for rel in lost {
         let full_path = canonical_root.join(&rel);
-        let content = full_path
-            .symlink_metadata()
-            .ok()
-            .filter(|sm| !sm.file_type().is_symlink())
-            .filter(|m| listed.contains(&rel) && is_synced_git_path(&rel) && fits_sync(&rel, m))
-            .and_then(|m| {
-                // Read only once it is known to be sent: an ignored file stays unread.
-                let (content, is_exec) =
-                    read_regular_file_secure(&full_path, &canonical_root).ok()??;
-                Some((m, content, is_exec))
-            });
-        match content {
-            Some((metadata, content, is_executable)) => {
+        match full_path.symlink_metadata() {
+            Ok(sym_meta) => {
+                if sym_meta.file_type().is_symlink()
+                    || !listed.contains(&rel)
+                    || !is_synced_git_path(&rel)
+                    || !fits_sync(&rel, &sym_meta)
+                {
+                    state.files.remove(&rel);
+                    files.push(FileDelta {
+                        relative_path: rel,
+                        content: None,
+                        is_executable: false,
+                    });
+                    continue;
+                }
+                let Some((content, is_executable)) =
+                    read_regular_file_secure(&full_path, &canonical_root)?
+                else {
+                    state.resend.insert(rel);
+                    continue;
+                };
                 state
                     .files
-                    .insert(rel.clone(), sync_file_entry(&metadata, &content));
+                    .insert(rel.clone(), sync_file_entry(&sym_meta, &content));
                 files.push(FileDelta {
                     relative_path: rel,
                     content: Some(content),
                     is_executable,
                 });
             }
-            None => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 state.files.remove(&rel);
                 files.push(FileDelta {
                     relative_path: rel,
@@ -1540,6 +1548,7 @@ pub fn prepare_workspace_sync_for(
                     is_executable: false,
                 });
             }
+            Err(err) => return Err(err.into()),
         }
     }
 
@@ -1811,13 +1820,15 @@ pub async fn pull_remote_files(
             anyhow::bail!("remote file {rel_str} exceeded maximum pull size limit (truncated)");
         }
 
-        let executable_by_signature = read_resp.content.as_deref().is_some_and(|b| {
-            b.starts_with(b"\x7fELF")
-                || b.starts_with(b"#!")
-                || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
-                || b.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
-        });
-        let is_executable = read_resp.is_executable || executable_by_signature;
+        let is_executable = match read_resp.is_executable {
+            Some(explicit) => explicit,
+            None => read_resp.content.as_deref().is_some_and(|b| {
+                b.starts_with(b"\x7fELF")
+                    || b.starts_with(b"#!")
+                    || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+                    || b.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
+            }),
+        };
 
         pulled_deltas.push(FileDelta {
             relative_path: rel_str,
@@ -2670,7 +2681,7 @@ pub fn collect_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
     // private overlay, so each new session must announce all of them; a persistent
     // "already sent" cache would silently drop them for the second connection onwards.
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    Ok(collect_git_dirty_files(&canonical_root, false).unwrap_or_default())
+    collect_git_dirty_files(&canonical_root, false)
 }
 
 /// Like [`collect_dirty_files`] but skips files whose mtime/size/hash watermark is already
@@ -2678,7 +2689,7 @@ pub fn collect_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
 /// previously synced files, i.e. the disk-backed base workspace, not session overlays.
 pub fn collect_dirty_files_incremental(root: &Path) -> Result<Vec<FileDelta>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    Ok(collect_git_dirty_files(&canonical_root, true).unwrap_or_default())
+    collect_git_dirty_files(&canonical_root, true)
 }
 
 fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta>> {
@@ -2761,22 +2772,23 @@ fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta
                 continue;
             }
 
-            if let Ok(Some((content, is_executable))) =
-                read_regular_file_secure(&full_path, root)
-            {
-                let entry = sync_file_entry(&sym_meta, &content);
-                if cache.files.get(rel_path) == Some(&entry) {
-                    // File was already synced and has not changed.
-                    continue;
-                }
-                deltas.push(FileDelta {
-                    relative_path: rel_path.to_string(),
-                    content: Some(content),
-                    is_executable,
-                });
-                cache.files.insert(rel_path.to_string(), entry);
-                cache_modified = true;
+            let Some((content, is_executable)) =
+                read_regular_file_secure(&full_path, root)?
+            else {
+                continue;
+            };
+            let entry = sync_file_entry(&sym_meta, &content);
+            if cache.files.get(rel_path) == Some(&entry) {
+                // File was already synced and has not changed.
+                continue;
             }
+            deltas.push(FileDelta {
+                relative_path: rel_path.to_string(),
+                content: Some(content),
+                is_executable,
+            });
+            cache.files.insert(rel_path.to_string(), entry);
+            cache_modified = true;
         }
     }
 

@@ -245,6 +245,9 @@ impl RemoteFiles {
     /// The node path a `file://` URI of a server's message names, when the editor cannot open
     /// it: a path outside the checkout, or one inside it that only the node's copy has.
     pub fn node_path(&self, uri: &str) -> Option<PathBuf> {
+        if uri.contains("/..") || uri.contains("../") || uri.contains("%2e") || uri.contains("%2E") {
+            return None;
+        }
         let path = PathBuf::from(prod_code_mcp::remote_fs::uri_to_path(uri));
         if path.starts_with(&*self.mirror.read().unwrap_or_else(|p| p.into_inner())) {
             return None;
@@ -252,17 +255,56 @@ impl RemoteFiles {
         let server_root = self.server_root.read().unwrap_or_else(|p| p.into_inner());
         match path.strip_prefix(&self.client_root) {
             Ok(_) if path.exists() => None,
-            Ok(rel) => Some(server_root.join(rel)),
-            Err(_) => Some(path),
+            Ok(rel) => {
+                let mut clean = PathBuf::new();
+                for comp in rel.components() {
+                    match comp {
+                        std::path::Component::Normal(c) => clean.push(c),
+                        std::path::Component::CurDir => {}
+                        std::path::Component::ParentDir => {
+                            if !clean.pop() {
+                                return None;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Some(server_root.join(clean))
+            }
+            Err(_) => {
+                if path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    return None;
+                }
+                Some(path)
+            }
         }
     }
 
-    /// Where the copy of the node's `node` path lives.
-    pub fn mirror_path(&self, node: &Path) -> PathBuf {
-        self.mirror
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .join(node.strip_prefix("/").unwrap_or(node))
+    /// Where the copy of the node's `node` path lives, safely contained within the mirror root.
+    pub fn mirror_path(&self, node: &Path) -> Option<PathBuf> {
+        let mirror = self.mirror.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let mut clean = PathBuf::new();
+        for comp in node.components() {
+            match comp {
+                std::path::Component::Normal(c) => clean.push(c),
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => {}
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    if !clean.pop() {
+                        return None;
+                    }
+                }
+            }
+        }
+        let target = mirror.join(&clean);
+        if target.starts_with(&mirror) {
+            Some(target)
+        } else {
+            None
+        }
     }
 
     /// The local copy of the file a URI names, fetched from the node unless an unchanging copy
@@ -270,7 +312,11 @@ impl RemoteFiles {
     /// such file to give.
     async fn copy(&self, uri: &str) -> Option<String> {
         let node = self.node_path(uri)?;
-        let local = self.mirror_path(&node);
+        let local = self.mirror_path(&node)?;
+        let mirror_root = self.mirror.read().unwrap_or_else(|p| p.into_inner()).clone();
+        if local == mirror_root {
+            return None;
+        }
         let node_text = node.to_string_lossy();
         let immutable = IMMUTABLE.iter().any(|part| node_text.contains(part));
         if !(immutable && local.is_file()) {
@@ -279,7 +325,7 @@ impl RemoteFiles {
                 prod_code_mcp::remote_fs::read_remote_file(remote, &node_text, 0)
                     .await
                     .ok()?;
-            write_read_only(&local, &bytes).ok()?;
+            write_read_only(&mirror_root, &local, &bytes).ok()?;
         }
         url::Url::from_file_path(&local).ok().map(|u| u.to_string())
     }
@@ -319,11 +365,34 @@ impl RemoteFiles {
     }
 }
 
-/// Writes a copy that is read-only, so that an edit meant for the node's file fails to save
-/// rather than going nowhere.
-fn write_read_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes a copy that is read-only, safely verifying it does not traverse outside the mirror root.
+pub fn write_read_only(mirror_root: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if !path.starts_with(mirror_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "mirror path escapes mirror root",
+        ));
+    }
+    if let Ok(meta) = path.symlink_metadata() {
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "refusing to write mirror file through symlink",
+            ));
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        if let Ok(canon_parent) = std::fs::canonicalize(parent) {
+            if let Ok(canon_root) = std::fs::canonicalize(mirror_root) {
+                if !canon_parent.starts_with(&canon_root) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "canonical mirror path escapes mirror root",
+                    ));
+                }
+            }
+        }
     }
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -367,7 +436,7 @@ mod tests {
                                 path: req.path,
                                 content,
                                 truncated: false,
-                                is_executable: false,
+                                is_executable: Some(false),
                                 error,
                             }))
                             .await;
@@ -415,7 +484,7 @@ mod tests {
         });
         let shown: serde_json::Value =
             serde_json::from_str(&files.to_editor(message.to_string()).await).unwrap();
-        let std_copy = files.mirror_path(Path::new(std_file));
+        let std_copy = files.mirror_path(Path::new(std_file)).unwrap();
         assert_eq!(
             shown["result"][0]["uri"],
             format!("file://{}", std_copy.display())
@@ -434,7 +503,7 @@ mod tests {
         }
         // The checkout's own file stays; a file only the node's copy has is copied too.
         assert_eq!(shown["result"][1]["uri"], own);
-        let gen_copy = files.mirror_path(Path::new(generated));
+        let gen_copy = files.mirror_path(Path::new(generated)).unwrap();
         assert_eq!(
             shown["result"][2]["uri"],
             format!("file://{}", gen_copy.display())

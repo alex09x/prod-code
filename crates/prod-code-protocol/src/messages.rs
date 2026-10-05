@@ -1639,8 +1639,9 @@ pub struct ReadFileResponse {
     #[serde(default)]
     pub truncated: bool,
     /// Whether the source file has any executable permission bit set on the gateway.
-    #[serde(default)]
-    pub is_executable: bool,
+    /// `None` indicates a legacy gateway that did not report file permissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_executable: Option<bool>,
     #[serde(default)]
     pub error: Option<String>,
 }

@@ -1664,7 +1664,7 @@ fn read_server_file(
         path: req.path.clone(),
         content: None,
         truncated: false,
-        is_executable: false,
+        is_executable: None,
         error: None,
     };
     if !is_readable_source_path(storage_root, &path) {
@@ -1691,8 +1691,9 @@ fn read_server_file(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                resp.is_executable = std::fs::metadata(&path)
-                    .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
+                if let Ok(metadata) = std::fs::metadata(&path) {
+                    resp.is_executable = Some(metadata.permissions().mode() & 0o111 != 0);
+                }
             }
             if bytes.len() as u64 > max {
                 bytes.truncate(max as usize);
@@ -8454,7 +8455,7 @@ mod tests {
         assert!(resp.error.is_none(), "read_server_file failed: {:?}", resp.error);
         assert!(!resp.truncated, "workspace artifact must not be truncated under 64 MiB");
         #[cfg(unix)]
-        assert!(resp.is_executable, "gateway response must retain executable mode");
+        assert_eq!(resp.is_executable, Some(true), "gateway response must retain executable mode");
         assert_eq!(resp.content.expect("content").len(), 3 * 1024 * 1024);
     }
 

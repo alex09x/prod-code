@@ -825,8 +825,57 @@ fn declaration_on(line: &str, language: &str) -> Option<(String, String)> {
                 ],
             )
             .or_else(|| {
-                let before = t.split_once('(')?.0.trim_end();
-                let close = t.find(')')?;
+                let open = t.find('(')?;
+                let before = t[..open].trim_end();
+                let mut depth = 0usize;
+                let mut close_idx = None;
+                let mut in_single = false;
+                let mut in_double = false;
+                let mut in_backtick = false;
+                let mut escaped = false;
+                for (idx, ch) in t[open..].char_indices() {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    if ch == '\\' {
+                        escaped = true;
+                        continue;
+                    }
+                    if in_single {
+                        if ch == '\'' {
+                            in_single = false;
+                        }
+                        continue;
+                    }
+                    if in_double {
+                        if ch == '"' {
+                            in_double = false;
+                        }
+                        continue;
+                    }
+                    if in_backtick {
+                        if ch == '`' {
+                            in_backtick = false;
+                        }
+                        continue;
+                    }
+                    match ch {
+                        '\'' => in_single = true,
+                        '"' => in_double = true,
+                        '`' => in_backtick = true,
+                        '(' => depth += 1,
+                        ')' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                close_idx = Some(open + idx);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let close = close_idx?;
                 let after = t[close + 1..].trim_start();
                 let has_return_type = after.strip_prefix(':').is_some_and(|ty| {
                     let ty = ty.trim();
@@ -2794,6 +2843,14 @@ pub fn run_exec_command(output: &mut ExecOutput) {}
         );
         assert_eq!(
             declaration_on("doWork(arg) {", "typescript"),
+            Some(("method".to_string(), "doWork".to_string()))
+        );
+        assert_eq!(
+            declaration_on("doWork(cb: (x: number) => void): void {", "typescript"),
+            Some(("method".to_string(), "doWork".to_string()))
+        );
+        assert_eq!(
+            declaration_on("doWork(cb: (x: number) => void) {", "typescript"),
             Some(("method".to_string(), "doWork".to_string()))
         );
     }

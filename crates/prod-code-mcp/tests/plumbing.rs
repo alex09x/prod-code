@@ -397,7 +397,7 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
                 path: read_req.path,
                 content: Some(b"pub fn pulled() {}\n".to_vec()),
                 truncated: false,
-                is_executable: true,
+                is_executable: Some(true),
                 error: None,
             }))
             .await
@@ -430,6 +430,80 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
                 & 0o111,
             0,
             "remote executable mode must be preserved by pull"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pull_remote_files_honors_explicit_non_executable_shebang_script() {
+    let ws = Workspace::new(&[("script.sh", "echo initial\n")]);
+    let root = ws.root();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let mut framed = accept_one(listener).await;
+        let _handshake = framed.next().await;
+        framed
+            .send(WireMessage::HandshakeResponse(
+                prod_code_protocol::HandshakeResponse {
+                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                    server_pid: 1234,
+                    session_id: 1,
+                    server_workspace_root: "/server/ws/fixture".to_string(),
+                    detected_engine: "rust".to_string(),
+                    stale_paths: Vec::new(),
+                    engine_age_ms: Some(100),
+                    index_gated: false,
+                    capabilities: None,
+                },
+            ))
+            .await
+            .unwrap();
+
+        let read_req = match framed.next().await.unwrap().unwrap() {
+            WireMessage::ReadFileRequest(req) => req,
+            other => panic!("expected ReadFileRequest: {other:?}"),
+        };
+        assert_eq!(read_req.path, "/server/ws/fixture/script.sh");
+        framed
+            .send(WireMessage::ReadFileResponse(prod_code_protocol::ReadFileResponse {
+                path: read_req.path,
+                content: Some(b"#!/bin/sh\necho hello\n".to_vec()),
+                truncated: false,
+                is_executable: Some(false),
+                error: None,
+            }))
+            .await
+            .unwrap();
+
+        let _ = framed.next().await; // Disconnect
+    });
+
+    let pulled = prod_code_mcp::sync::pull_remote_files(
+        addr,
+        &root,
+        &[std::path::PathBuf::from("script.sh")],
+    )
+    .await
+    .expect("files are pulled");
+
+    assert_eq!(pulled, vec!["script.sh".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(root.join("script.sh")).unwrap(),
+        "#!/bin/sh\necho hello\n"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(root.join("script.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0,
+            "explicit non-executable mode must be honored even if content starts with shebang"
         );
     }
 }
@@ -472,7 +546,7 @@ async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
                 path: request.path,
                 content: Some(b"pub fn partial".to_vec()),
                 truncated: true,
-                is_executable: false,
+                is_executable: Some(false),
                 error: None,
             }))
             .await
@@ -551,7 +625,7 @@ async fn pull_remote_files_follows_a_redirected_handshake() {
                 path: file_request.path,
                 content: Some(b"pub fn redirected() {}\n".to_vec()),
                 truncated: false,
-                is_executable: false,
+                is_executable: Some(false),
                 error: None,
             }))
             .await
@@ -755,7 +829,7 @@ async fn read_remote_file_returns_the_bytes() {
                 path: req.path,
                 content: Some(b"content".to_vec()),
                 truncated: false,
-                is_executable: false,
+                is_executable: Some(false),
                 error: None,
             }))
             .await
@@ -785,7 +859,7 @@ async fn read_remote_file_reports_the_gateways_error() {
                 path: req.path,
                 content: None,
                 truncated: false,
-                is_executable: false,
+                is_executable: Some(false),
                 error: Some("no such file".to_string()),
             }))
             .await
@@ -814,7 +888,7 @@ async fn read_remote_file_reports_an_empty_reply() {
                 path: req.path,
                 content: None,
                 truncated: false,
-                is_executable: false,
+                is_executable: Some(false),
                 error: None,
             }))
             .await

@@ -178,7 +178,7 @@ async fn test_packet_capture_wire_confidentiality() {
                             path: req.path,
                             content: Some(response_content.as_bytes().to_vec()),
                             truncated: false,
-                            is_executable: false,
+                            is_executable: Some(false),
                             error: None,
                         }))
                         .await
@@ -288,7 +288,7 @@ async fn test_packet_capture_wire_confidentiality() {
                             path: req.path,
                             content: Some(response_content.as_bytes().to_vec()),
                             truncated: false,
-                            is_executable: false,
+                            is_executable: Some(false),
                             error: None,
                         }))
                         .await

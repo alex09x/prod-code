@@ -249,7 +249,7 @@ async fn handle_client(
                         path: req.path,
                         content: Some(b"pub fn mocked_remote_source() {}\n".to_vec()),
                         truncated: false,
-                        is_executable: false,
+                        is_executable: Some(false),
                         error: None,
                     }))
                     .await?;
@@ -3557,7 +3557,7 @@ where
                                     path: req.path,
                                     content,
                                     truncated: false,
-                                    is_executable: false,
+                                    is_executable: Some(false),
                                     error,
                                 })),
                             )
@@ -3579,6 +3579,22 @@ where
                                 log.lock()
                                     .expect("log")
                                     .push((connection, format!("close after {method}")));
+                                break;
+                            }
+                            if let Some(target) = result
+                                .as_ref()
+                                .and_then(|r| r.as_str())
+                                .and_then(|s| s.strip_prefix("__redirect__:"))
+                            {
+                                log.lock()
+                                    .expect("log")
+                                    .push((connection, format!("redirect after {method} to {target}")));
+                                let _ = framed
+                                    .send(WireMessage::Redirect {
+                                        target_addr: target.to_string(),
+                                        reason: Some("rebalance".to_string()),
+                                    })
+                                    .await;
                                 break;
                             }
                             let reply = result.map(|result| {
@@ -4012,6 +4028,179 @@ async fn lsp_auto_reconnects_and_replays_state_on_transient_disconnect() {
     assert!(
         conn2_methods.contains(&"lsp textDocument/hover".to_string()),
         "conn2 should handle hover: {conn2_methods:?}"
+    );
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("child exits on stdin close")
+        .expect("status");
+    assert!(status.success());
+}
+
+/// A mid-session gateway redirect under `--reconnect` must not push workspace files
+/// before the redirected target's handshake and protocol version are validated.
+#[tokio::test]
+async fn lsp_mid_session_redirect_delays_sync_until_target_handshake_validated() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+
+    // Gateway 2 (redirect target)
+    let (addr2, seen2) = recording_gateway_with(
+        |val| {
+            if val["method"] == "textDocument/hover" {
+                Some(serde_json::json!({ "contents": "hover from target gateway" }))
+            } else {
+                None
+            }
+        },
+        HashMap::new(),
+        true,
+    )
+    .await;
+
+    // Gateway 1 (initial gateway, redirects on dropOnce)
+    let target_addr_str = addr2.to_string();
+    let (addr1, _seen1) = recording_gateway_with(
+        move |val| {
+            if val["method"] == "prod-code/dropOnce" {
+                Some(serde_json::json!(format!("__redirect__:{target_addr_str}")))
+            } else {
+                None
+            }
+        },
+        HashMap::new(),
+        true,
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr1.to_string(), "--reconnect"])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+
+    // 1. Initialize
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialize");
+    let init_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(init_resp["id"], 1);
+
+    // 2. Initialized notification
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialized");
+
+    // 3. Open a document
+    let test_uri = format!("file://{}/src/lib.rs", ws.root().display());
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": test_uri,
+                        "languageId": "rust",
+                        "version": 1,
+                        "text": "pub fn hello_world() {}\n"
+                    }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("didOpen");
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 4. Trigger mid-session redirect on gateway 1
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "prod-code/dropOnce",
+                "params": {}
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("trigger redirect");
+
+    // Give time for reconnect and state replay to complete on gateway 2
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 5. Send hover request over the reconnected session
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": test_uri },
+                    "position": { "line": 0, "character": 7 }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("hover over reconnected session");
+
+    let hover_resp = read_lsp_message(&mut stdout).await;
+    assert_eq!(hover_resp["id"], 3);
+    assert_eq!(
+        hover_resp["result"]["contents"],
+        "hover from target gateway"
+    );
+
+    // Verify ordering on the redirect target (gateway 2):
+    // The target connection MUST see handshake before any probe or sync event!
+    let target_events = seen2.lock().expect("seen2").clone();
+    let handshake_idx = target_events
+        .iter()
+        .position(|(_, ev)| ev.starts_with("handshake "))
+        .expect("target must receive handshake");
+    let sync_idx = target_events
+        .iter()
+        .position(|(_, ev)| ev.starts_with("probe ") || ev.starts_with("sync "))
+        .expect("target must observe post-handshake sync/probe");
+    assert!(
+        handshake_idx < sync_idx,
+        "redirect target must receive and validate handshake before any sync/probe: {target_events:?}"
     );
 
     drop(stdin);

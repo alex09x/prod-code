@@ -6047,6 +6047,7 @@ async fn replay_lsp_workspace_state(
 
 async fn reconnect_editor_session(
     remote: SocketAddr,
+    is_redirect: bool,
     engine: Option<&str>,
     cwd: &Path,
     cwd_str: &str,
@@ -6072,11 +6073,20 @@ async fn reconnect_editor_session(
     ];
 
     let mut last_err = None;
+    let initial_redirect_count = if is_redirect { 1 } else { 0 };
     for (attempt, backoff) in backoffs.into_iter().enumerate() {
         if attempt > 0 {
             tokio::time::sleep(backoff).await;
         }
-        match open_editor_session(remote, engine, cwd, cwd_str.to_string(), identity.clone()).await
+        match open_editor_session(
+            remote,
+            engine,
+            cwd,
+            cwd_str.to_string(),
+            identity.clone(),
+            initial_redirect_count,
+        )
+        .await
         {
             Ok((framed, handshake_resp, effective_remote)) => {
                 files.set_node(
@@ -6261,7 +6271,7 @@ async fn run_lsp_bridge(
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
     let (framed, handshake_resp, effective_remote) =
-        match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone()).await {
+        match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone(), 0).await {
             Ok(session) => session,
             Err(err) => return refuse_lsp(&err).await,
         };
@@ -6346,7 +6356,7 @@ async fn run_lsp_bridge(
                     // to the editor's next message, this hung and then exited 0 (#394).
                     Ok((why, redirect_target)) => {
                         let is_redirect = redirect_target.is_some();
-                        if reconnect || is_redirect {
+                        if reconnect {
                             if is_redirect {
                                 eprintln!(
                                     "prod-code lsp: following gateway redirect to {}; reconnecting...",
@@ -6356,7 +6366,7 @@ async fn run_lsp_bridge(
                                 eprintln!("prod-code lsp: the gateway at {remote} {why}; reconnecting...");
                             }
                             let reconnect_remote = redirect_target.unwrap_or(remote);
-                            match reconnect_editor_session(reconnect_remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
+                            match reconnect_editor_session(reconnect_remote, is_redirect, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
                                 Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
                                     if remote != new_remote {
                                         remote = new_remote;
@@ -6412,7 +6422,7 @@ async fn run_lsp_bridge(
                         if reconnect {
                             stdout_task.abort();
                             eprintln!("prod-code lsp: the gateway at {remote} {err_msg}; reconnecting...");
-                            match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
+                            match reconnect_editor_session(remote, false, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
                                 Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
                                     if remote != new_remote {
                                         remote = new_remote;
@@ -6460,7 +6470,7 @@ async fn run_lsp_bridge(
                         if reconnect {
                             stdout_task.abort();
                             eprintln!("prod-code lsp: the gateway at {remote} broke the connection during watchdog ping: {err}; reconnecting...");
-                            match reconnect_editor_session(remote, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
+                            match reconnect_editor_session(remote, false, engine, &cwd, &cwd_str, &identity, &tracker, &files, &pending_requests, &editor_out, &position_encoding, &editor_frames, &mut deferred_editor_frames, &trace).await {
                                 Ok((new_tx, new_rx, replay_after_init, new_remote)) => {
                                     if remote != new_remote {
                                         remote = new_remote;
@@ -6579,6 +6589,7 @@ async fn run_lsp_bridge(
                 );
                 match reconnect_editor_session(
                     remote,
+                    false,
                     engine,
                     &cwd,
                     &cwd_str,
@@ -6672,23 +6683,26 @@ async fn open_editor_session(
     cwd: &Path,
     cwd_str: String,
     identity: prod_code_mcp::sync::WorkspaceIdentity,
+    initial_redirect_count: u32,
 ) -> Result<(
     Framed<prod_code_protocol::AnyStream, ProdCodeCodec>,
     prod_code_protocol::HandshakeResponse,
     SocketAddr,
 )> {
     let supported_versions = supported_protocol_versions();
-    let mut redirect_count = 0;
+    let mut redirect_count = initial_redirect_count;
     loop {
         let stream = prod_code_protocol::transport::connect(remote)
             .await
             .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
         let mut framed = Framed::new(stream, ProdCodeCodec::new());
-        let generation = prod_code_mcp::watch::current_generation(cwd);
-        prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
-            .await
-            .context("workspace sync before the language server session failed")?;
-        prod_code_mcp::watch::mark_synced(cwd, generation);
+        if redirect_count == 0 {
+            let generation = prod_code_mcp::watch::current_generation(cwd);
+            prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
+                .await
+                .context("workspace sync before the language server session failed")?;
+            prod_code_mcp::watch::mark_synced(cwd, generation);
+        }
         framed
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
@@ -6735,6 +6749,13 @@ async fn open_editor_session(
         };
         validate_selected_protocol_version(handshake_resp.protocol_version, &supported_versions)
             .context("gateway returned an incompatible editor handshake response")?;
+        if redirect_count > 0 {
+            let generation = prod_code_mcp::watch::current_generation(cwd);
+            prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
+                .await
+                .context("workspace sync after gateway redirect failed")?;
+            prod_code_mcp::watch::mark_synced(cwd, generation);
+        }
         return Ok((framed, handshake_resp, remote));
     }
 }

@@ -232,7 +232,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         path: req.path,
                         content: script.read_file.clone(),
                         truncated: false,
-                        is_executable: false,
+                        is_executable: Some(false),
                         error: if script.read_file.is_some() {
                             None
                         } else {
