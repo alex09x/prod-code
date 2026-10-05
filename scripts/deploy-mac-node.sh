@@ -44,7 +44,8 @@ else
   scp -q "$HOST:$BIN" "$TMP/prod-code-server"
 fi
 
-codesign -f -s "$IDENTITY" -i "$BUNDLE_ID" "$TMP/prod-code-server"
+codesign -f -s "$IDENTITY" -i "$BUNDLE_ID" --timestamp "$TMP/prod-code-server" 2>/dev/null || \
+codesign -f -s "$IDENTITY" -i "$BUNDLE_ID" --timestamp=none "$TMP/prod-code-server"
 codesign -dv --verbose=2 "$TMP/prod-code-server" 2>&1 | grep -E "^Identifier|TeamIdentifier"
 
 PLIST=$(cat <<PL

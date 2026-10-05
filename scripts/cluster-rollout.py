@@ -288,6 +288,7 @@ def deploy_linux_node_fast(
         f"chmod 755 {dest_tmp}\n"
         f"if [ -f {dest_final} ]; then cp -f {dest_final} {dest_final}.bak; fi\n"
         f"mv -f {dest_tmp} {dest_final}\n"
+        f"if [ -d prod-code/target/release ]; then cp -f {dest_final} prod-code/target/release/prod-code-server; fi\n"
         f"systemctl --user restart prod-code-gateway\n"
         f"sleep 2\n"
         f"systemctl --user is-active prod-code-gateway\n"
