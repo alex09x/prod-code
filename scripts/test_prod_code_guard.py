@@ -335,10 +335,34 @@ class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
         self.assertIsNone(guard.single_symbol_rename("foo-bar", "baz"))
         self.assertIsNone(guard.single_symbol_rename("foo.bar", "baz"))
         self.assertIsNone(guard.single_symbol_rename("a", "b"))  # too short (< 2)
-        # Multi-line code / statements rejected
-        self.assertIsNone(guard.single_symbol_rename("let x = 1;", "let y = 2;"))
-        self.assertIsNone(guard.single_symbol_rename("fn old() {}", "fn new() {}"))
-        self.assertIsNone(guard.single_symbol_rename("old_call()", "new_call()"))
+        # Contextual single-symbol renames (call-sites, definitions, imports)
+        self.assertEqual(
+            guard.single_symbol_rename(
+                "        let hash1 = fnv1a_64(text1.as_bytes());",
+                "        let hash1 = normalized_source_hash(text1.as_bytes());",
+            ),
+            ("fnv1a_64", "normalized_source_hash"),
+        )
+        self.assertEqual(
+            guard.single_symbol_rename(
+                "use ridx_format::{fnv1a_64, DefKind};",
+                "use ridx_format::{normalized_source_hash, DefKind};",
+            ),
+            ("fnv1a_64", "normalized_source_hash"),
+        )
+        self.assertEqual(
+            guard.single_symbol_rename(
+                "pub fn fnv1a_64(&self)",
+                "pub fn normalized_source_hash(&self)",
+            ),
+            ("fnv1a_64", "normalized_source_hash"),
+        )
+        # Multi-line code / statements with logic changes rejected
+        self.assertIsNone(guard.single_symbol_rename("let x = foo();", "let x = foo() + 10;"))
+        self.assertIsNone(guard.single_symbol_rename("if x > 0 { return true; }", "if x >= 0 { return false; }"))
+        self.assertIsNone(guard.single_symbol_rename("let a = 1; let b = 2;", "let c = 1; let d = 2;"))
+        self.assertEqual(guard.single_symbol_rename("fn old() {}", "fn new() {}"), ("old", "new"))
+        self.assertIsNone(guard.single_symbol_rename("fn old() { 1 }", "fn old() { 2 }"))
         # Identical or empty
         self.assertIsNone(guard.single_symbol_rename("foo", "foo"))
         self.assertIsNone(guard.single_symbol_rename("", "bar"))

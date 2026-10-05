@@ -514,18 +514,31 @@ IDENT_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def single_symbol_rename(old_str, new_str):
-    """Returns (old_sym, new_sym) if both are single valid identifier tokens and differ, else None."""
+    """Returns (old_sym, new_sym) if both are single valid identifier tokens and differ,
+    or if the edit is a contextual rename where exactly one identifier symbol changed."""
     old_s = (old_str or "").strip()
     new_s = (new_str or "").strip()
     if not old_s or not new_s or old_s == new_s:
         return None
-    if not IDENT_TOKEN_RE.fullmatch(old_s) or not IDENT_TOKEN_RE.fullmatch(new_s):
+    # 1. Bare naked identifier tokens
+    if IDENT_TOKEN_RE.fullmatch(old_s) and IDENT_TOKEN_RE.fullmatch(new_s):
+        if len(old_s) >= 2 and len(new_s) >= 2 and old_s.lower() not in KEYWORDS and new_s.lower() not in KEYWORDS:
+            return old_s, new_s
         return None
-    if len(old_s) < 2 or len(new_s) < 2:
-        return None
-    if old_s.lower() in KEYWORDS or new_s.lower() in KEYWORDS:
-        return None
-    return old_s, new_s
+    # 2. Contextual single-symbol replacement (e.g. `let h = fnv1a_64(b);` -> `let h = normalized_source_hash(b);`)
+    old_tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,}\b", old_s)) - KEYWORDS
+    new_tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,}\b", new_s)) - KEYWORDS
+    removed = old_tokens - new_tokens
+    added = new_tokens - old_tokens
+    if len(removed) == 1 and len(added) == 1:
+        old_sym = list(removed)[0]
+        new_sym = list(added)[0]
+        if old_sym.isdigit() or new_sym.isdigit() or len(old_sym) < 2 or len(new_sym) < 2:
+            return None
+        simulated = re.sub(r"\b" + re.escape(old_sym) + r"\b", new_sym, old_s)
+        if simulated.strip() == new_s.strip():
+            return old_sym, new_sym
+    return None
 
 
 def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, now=None):
@@ -685,6 +698,8 @@ def main():
                                 }
                             }))
                         return 0
+                    else:
+                        log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "first-file-tracked", "cwd": cwd, "symbol": old_sym, "file": target_file})
         return 0
 
     command = shell_command(payload)
