@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## v0.3.25 — 2026-10-05
+
+### Added
+- **Cluster Rollout Automation Tool** (`scripts/cluster-rollout.py`, `scripts/cluster-rollout.sh`):
+  Added automated and interactive rolling update tooling for the prod-code gateway fleet across Linux and macOS nodes. Includes live node health inspection, disk/memory pressure filtering, fast SCP staging and systemd service verification, rollback on failure, and local client updates.
+- **Strict TLS Auto-Discovery and Plaintext HTTP Interception** (`crates/prod-code-gateway`, `crates/prod-code-protocol`):
+  Enforces encrypted cluster communication by auto-discovering certificates in `~/.prod-code/tls/`. Intercepts incoming plaintext HTTP requests on port 9400 with a lightweight RFC-compliant request sniffer, returning `HTTP/1.1 426 Upgrade Required` to direct clients to TLS endpoints.
+- **AST Refactoring Promotion & Contextual Tips** (`crates/prod-code-mcp`, `crates/prod-code-protocol`):
+  Embedded actionable refactoring guidance into `code_references` output suggesting `code_rename` when multiple symbol usages are detected, and reinforced AST refactoring adoption in MCP system prompts and tool descriptions.
+- **Developer ID Notarization and macOS DMG Packaging** (`scripts/packaging`):
+  Integrated Apple Developer ID Application codesigning, Apple notarytool submission with keychain credentials, and ticket stapling for macOS DMG releases.
+
+### Fixed
+- **RFC 9110 Token Method Parsing & Extended URI Target Matching** (`crates/prod-code-protocol`):
+  Expanded the gateway HTTP protocol sniffer to parse arbitrary RFC 9110 token methods (including SSDP/UPnP `M-SEARCH`) and full URI request targets (including bracketed IPv6 literals).
+- **CLI Error Cause Chain Preservation** (`crates/prod-code-client`):
+  Preserved the full anyhow error cause chain (`{e:#}`) on client command execution failures rather than discarding underlying network or handshake context.
+- **Issue Reporting Scoping** (`crates/prod-code-client`, `crates/prod-code-mcp`):
+  Clarified diagnostic collection and privacy sanitization scopes across MCP and CLI reporting interfaces.
+
 ## v0.3.24 — 2026-10-05
 
 ### Added
