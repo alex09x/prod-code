@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
+#
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+#
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
 """Regression tests for prod-code agent guard hook (scripts/hooks/prod-code-local-build-guard.py)."""
 
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -297,6 +309,211 @@ class ProdCodeGuardBuildCommandTests(unittest.TestCase):
             guard.shell_command(agy_edit_payload),
             "Non-run_command Antigravity tool should not be treated as a shell command",
         )
+
+
+class ProdCodeGuardMultiFileRenameTests(unittest.TestCase):
+    def test_single_symbol_rename_detection(self) -> None:
+        self.assertEqual(
+            guard.single_symbol_rename("old_handler", "new_handler"),
+            ("old_handler", "new_handler"),
+        )
+        self.assertEqual(
+            guard.single_symbol_rename("OldStruct", "NewStruct"),
+            ("OldStruct", "NewStruct"),
+        )
+        self.assertEqual(
+            guard.single_symbol_rename("var1", "var2"),
+            ("var1", "var2"),
+        )
+        # Keywords rejected
+        for kw in ("fn", "func", "let", "mut", "var", "const", "class", "struct", "type", "return", "if", "switch"):
+            with self.subTest(keyword=kw):
+                self.assertIsNone(guard.single_symbol_rename(kw, "other"))
+                self.assertIsNone(guard.single_symbol_rename("other", kw))
+        # Non-identifiers rejected
+        self.assertIsNone(guard.single_symbol_rename("123", "456"))
+        self.assertIsNone(guard.single_symbol_rename("foo-bar", "baz"))
+        self.assertIsNone(guard.single_symbol_rename("foo.bar", "baz"))
+        self.assertIsNone(guard.single_symbol_rename("a", "b"))  # too short (< 2)
+        # Multi-line code / statements rejected
+        self.assertIsNone(guard.single_symbol_rename("let x = 1;", "let y = 2;"))
+        self.assertIsNone(guard.single_symbol_rename("fn old() {}", "fn new() {}"))
+        self.assertIsNone(guard.single_symbol_rename("old_call()", "new_call()"))
+        # Identical or empty
+        self.assertIsNone(guard.single_symbol_rename("foo", "foo"))
+        self.assertIsNone(guard.single_symbol_rename("", "bar"))
+        self.assertIsNone(guard.single_symbol_rename("foo", ""))
+
+    def test_multi_file_rename_state_tracking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig_dir = guard.RENAME_STATE_DIR
+            try:
+                guard.RENAME_STATE_DIR = tmpdir
+                conv = "test-conv-123"
+
+                # 1st file: allowed
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/a.rs", "old_func", "new_func")
+                self.assertFalse(denied)
+                self.assertIsNone(other)
+
+                # Same file again: allowed
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/a.rs", "old_func", "new_func")
+                self.assertFalse(denied)
+                self.assertIsNone(other)
+
+                # Different file with same symbol: denied!
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/b.rs", "old_func", "new_func")
+                self.assertTrue(denied)
+                self.assertEqual(other, os.path.abspath("/repo/src/a.rs"))
+
+                # Different symbol in another file: allowed
+                denied, other = guard.check_multi_file_rename(conv, "/repo/src/c.rs", "another_sym", "new_sym")
+                self.assertFalse(denied)
+                self.assertIsNone(other)
+            finally:
+                guard.RENAME_STATE_DIR = orig_dir
+
+    def test_file_edit_details_extraction(self) -> None:
+        # Antigravity format
+        agy_payload = {
+            "toolCall": {
+                "name": "replace_file_content",
+                "args": {
+                    "TargetFile": "/repo/src/main.rs",
+                    "TargetContent": "old_var",
+                    "ReplacementContent": "new_var",
+                    "Instruction": "Rename variable",
+                    "Description": "Renaming",
+                },
+            }
+        }
+        res = guard.file_edit_details(agy_payload)
+        self.assertIsNotNone(res)
+        file_path, old_c, new_c, override = res
+        self.assertEqual(file_path, "/repo/src/main.rs")
+        self.assertEqual(old_c, "old_var")
+        self.assertEqual(new_c, "new_var")
+        self.assertFalse(override)
+
+        # Override format
+        agy_override = {
+            "toolCall": {
+                "name": "replace_file_content",
+                "args": {
+                    "TargetFile": "/repo/src/main.rs",
+                    "TargetContent": "old_var",
+                    "ReplacementContent": "new_var",
+                    "Instruction": "PROD_CODE_MANUAL_RENAME=1 rename manually",
+                    "Description": "Renaming",
+                },
+            }
+        }
+        res = guard.file_edit_details(agy_override)
+        self.assertIsNotNone(res)
+        _, _, _, override = res
+        self.assertTrue(override)
+
+        # Claude Code format
+        claude_payload = {
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/repo/src/lib.rs",
+                "old_string": "old_foo",
+                "new_string": "new_foo",
+            },
+        }
+        res = guard.file_edit_details(claude_payload)
+        self.assertIsNotNone(res)
+        file_path, old_c, new_c, override = res
+        self.assertEqual(file_path, "/repo/src/lib.rs")
+        self.assertEqual(old_c, "old_foo")
+        self.assertEqual(new_c, "new_foo")
+        self.assertFalse(override)
+
+    def test_end_to_end_antigravity_rename_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig_dir = guard.RENAME_STATE_DIR
+            try:
+                guard.RENAME_STATE_DIR = tmpdir
+                conv = "conv-e2e"
+
+                # Edit 1 on file a.rs (inside git repo)
+                payload_1 = {
+                    "toolCall": {
+                        "name": "replace_file_content",
+                        "args": {
+                            "TargetFile": str(Path(__file__).parent / "hooks" / "file_a.py"),
+                            "TargetContent": "my_symbol",
+                            "ReplacementContent": "my_new_symbol",
+                            "Instruction": "rename",
+                            "Description": "rename",
+                        },
+                    },
+                    "conversationId": conv,
+                    "workspacePaths": [str(Path(__file__).parent.parent)],
+                }
+                stdout_1 = io.StringIO()
+                orig_stdin, orig_stdout = sys.stdin, sys.stdout
+                try:
+                    sys.stdin = io.StringIO(json.dumps(payload_1))
+                    sys.stdout = stdout_1
+                    guard.main()
+                finally:
+                    sys.stdin, sys.stdout = orig_stdin, orig_stdout
+                self.assertEqual(stdout_1.getvalue().strip(), "")
+
+                # Edit 2 on file b.py with SAME symbol -> should be DENIED
+                payload_2 = {
+                    "toolCall": {
+                        "name": "replace_file_content",
+                        "args": {
+                            "TargetFile": str(Path(__file__).parent / "hooks" / "file_b.py"),
+                            "TargetContent": "my_symbol",
+                            "ReplacementContent": "my_new_symbol",
+                            "Instruction": "rename",
+                            "Description": "rename",
+                        },
+                    },
+                    "conversationId": conv,
+                    "workspacePaths": [str(Path(__file__).parent.parent)],
+                }
+                stdout_2 = io.StringIO()
+                try:
+                    sys.stdin = io.StringIO(json.dumps(payload_2))
+                    sys.stdout = stdout_2
+                    guard.main()
+                finally:
+                    sys.stdin, sys.stdout = orig_stdin, orig_stdout
+                out_json = json.loads(stdout_2.getvalue())
+                self.assertEqual(out_json.get("decision"), "deny")
+                self.assertIn("code_rename", out_json.get("reason", ""))
+                self.assertIn("file_a.py", out_json.get("reason", ""))
+
+                # Edit 3 on file c.py with SAME symbol but PROD_CODE_MANUAL_RENAME=1 override -> ALLOWED
+                payload_3 = {
+                    "toolCall": {
+                        "name": "replace_file_content",
+                        "args": {
+                            "TargetFile": str(Path(__file__).parent / "hooks" / "file_c.py"),
+                            "TargetContent": "my_symbol",
+                            "ReplacementContent": "my_new_symbol",
+                            "Instruction": "PROD_CODE_MANUAL_RENAME=1",
+                            "Description": "manual rename override",
+                        },
+                    },
+                    "conversationId": conv,
+                    "workspacePaths": [str(Path(__file__).parent.parent)],
+                }
+                stdout_3 = io.StringIO()
+                try:
+                    sys.stdin = io.StringIO(json.dumps(payload_3))
+                    sys.stdout = stdout_3
+                    guard.main()
+                finally:
+                    sys.stdin, sys.stdout = orig_stdin, orig_stdout
+                self.assertEqual(stdout_3.getvalue().strip(), "")
+            finally:
+                guard.RENAME_STATE_DIR = orig_dir
 
 
 if __name__ == "__main__":
