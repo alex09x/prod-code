@@ -149,7 +149,8 @@ pub async fn collect_host_snapshot(
 
     let host_res = memory::host_resources(storage_root);
 
-    let storage_free_bytes = read_storage_free_bytes(storage_root);
+    let (storage_free_bytes, storage_total_bytes) = read_storage_stat(storage_root);
+    let workspace_storage_bytes = get_cached_workspaces_storage_bytes();
 
     HostSnapshot {
         ts_ms: now_ms(),
@@ -165,6 +166,8 @@ pub async fn collect_host_snapshot(
         host_memory_total_bytes: mem_total,
         storage_free_millis: host_res.storage_free_millis,
         storage_free_bytes,
+        storage_total_bytes,
+        workspace_storage_bytes,
         active_sessions,
         active_queries: crate::ACTIVE_QUERIES.load(std::sync::atomic::Ordering::Relaxed),
         running_commands: running_commands_count,
@@ -173,21 +176,63 @@ pub async fn collect_host_snapshot(
     }
 }
 
-fn read_storage_free_bytes(storage_root: &std::path::Path) -> Option<u64> {
+static WORKSPACES_STORAGE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Returns the cached total disk bytes used by workspace directories.
+pub fn get_cached_workspaces_storage_bytes() -> Option<u64> {
+    let bytes = WORKSPACES_STORAGE_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    if bytes > 0 { Some(bytes) } else { None }
+}
+
+/// Updates the cached total disk bytes used by workspace directories.
+pub fn update_workspaces_storage_bytes(bytes: u64) {
+    WORKSPACES_STORAGE_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Computes the disk storage bytes used by a directory by recursively summing file lengths.
+pub fn calculate_directory_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_file() {
+                        if let Ok(meta) = entry.metadata() {
+                            total = total.saturating_add(meta.len());
+                        }
+                    } else if ft.is_dir() {
+                        stack.push(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    total
+}
+
+fn read_storage_stat(storage_root: &std::path::Path) -> (Option<u64>, Option<u64>) {
     use std::ffi::CString;
-    let path = CString::new(storage_root.to_str()?).ok()?;
+    let Some(s_str) = storage_root.to_str() else {
+        return (None, None);
+    };
+    let Ok(path) = CString::new(s_str) else {
+        return (None, None);
+    };
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } == 0 {
         let s = unsafe { stat.assume_init() };
         let bavail = s.f_bavail as u64;
+        let blocks = s.f_blocks as u64;
         let frsize = if s.f_frsize > 0 {
             s.f_frsize as u64
         } else {
             s.f_bsize as u64
         };
-        return Some(bavail * frsize);
+        return (Some(bavail * frsize), Some(blocks * frsize));
     }
-    None
+    (None, None)
 }
 
 #[cfg(test)]

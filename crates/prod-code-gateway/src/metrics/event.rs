@@ -37,6 +37,8 @@ pub struct Event {
     pub bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<String>,
 }
 
 impl Event {
@@ -62,6 +64,7 @@ impl Event {
             exit_code: None,
             bytes: 0,
             error_class: None,
+            compiler: None,
         }
     }
 
@@ -132,6 +135,7 @@ impl Event {
             agent,
             host,
             workspace,
+            compiler: self.compiler.clone(),
         }
     }
 }
@@ -158,6 +162,36 @@ pub fn command_method(cmd: &str) -> String {
         }
     }
     base
+}
+
+/// Returns true if the command is a compilation, build, or typecheck invocation.
+pub fn is_compilation_command(cmd: &str) -> bool {
+    let mut parts = cmd.split_whitespace();
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let base = std::path::Path::new(first)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| first.to_string());
+
+    match base.as_str() {
+        "cargo" => parts.next().is_none_or(|sub| {
+            matches!(sub, "build" | "check" | "test" | "clippy" | "bench" | "run")
+        }),
+        "rustc" => true,
+        "go" => parts
+            .next()
+            .is_none_or(|sub| matches!(sub, "build" | "test" | "vet" | "run" | "install")),
+        "clang" | "clang++" | "gcc" | "g++" | "cc" | "c++" => true,
+        "swift" | "swiftc" => true,
+        "tsc" => true,
+        "zig" => parts
+            .next()
+            .is_none_or(|sub| matches!(sub, "build" | "test" | "run")),
+        "javac" | "kotlinc" | "scalac" | "dotnet" => true,
+        _ => false,
+    }
 }
 
 /// Categorizes failures into normalized low-cardinality error classes.

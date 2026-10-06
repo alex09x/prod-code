@@ -127,6 +127,8 @@ fn records_and_retrieves_snapshots_and_inventory() {
         host_memory_total_bytes: Some(16 * 1024 * 1024 * 1024),
         storage_free_millis: Some(400),
         storage_free_bytes: Some(50 * 1024 * 1024 * 1024),
+        storage_total_bytes: Some(100 * 1024 * 1024 * 1024),
+        workspace_storage_bytes: Some(5 * 1024 * 1024 * 1024),
         active_sessions: 3,
         active_queries: 1,
         running_commands: 0,
@@ -210,6 +212,8 @@ fn prometheus_formatting_outputs_valid_exposition_text() {
         host_memory_total_bytes: Some(32 * 1024 * 1024 * 1024),
         storage_free_millis: Some(250),
         storage_free_bytes: Some(100 * 1024 * 1024 * 1024),
+        storage_total_bytes: Some(200 * 1024 * 1024 * 1024),
+        workspace_storage_bytes: Some(10 * 1024 * 1024 * 1024),
         active_sessions: 1,
         active_queries: 0,
         running_commands: 0,
@@ -338,4 +342,260 @@ async fn prometheus_push_to_mock_server() {
         .expect("push succeeds");
 
     server_task.await.unwrap();
+}
+
+#[test]
+fn toml_config_parsing_and_cli_merge() {
+    let toml_text = r#"
+[server]
+bind = "127.0.0.1:9500"
+storage = "/srv/prod-code/custom"
+idle_evict_secs = 600
+
+[metrics]
+enabled = true
+snapshot_interval_secs = 20
+
+[metrics.retention]
+retention_days = 7
+max_storage_bytes = 209715200
+
+[metrics.prometheus]
+enabled = true
+mode = "both"
+listen = "127.0.0.1:9501"
+push_url = "http://push.lan:9091"
+push_interval_secs = 10
+job = "prod-code-custom"
+instance = "gateway-custom-1"
+"#;
+
+    let cfg: crate::state::config::GatewayConfigFile = toml::from_str(toml_text).unwrap();
+    assert_eq!(cfg.server.bind, Some("127.0.0.1:9500".parse().unwrap()));
+    assert_eq!(
+        cfg.server.storage,
+        Some(std::path::PathBuf::from("/srv/prod-code/custom"))
+    );
+    assert_eq!(cfg.server.idle_evict_secs, Some(600));
+
+    let prom = cfg.metrics.prometheus.as_ref().unwrap();
+    assert_eq!(prom.enabled, Some(true));
+    assert_eq!(prom.mode.as_deref(), Some("both"));
+    assert_eq!(prom.listen, Some("127.0.0.1:9501".parse().unwrap()));
+    assert_eq!(prom.push_url.as_deref(), Some("http://push.lan:9091"));
+    assert_eq!(prom.push_interval_secs, Some(10));
+    assert_eq!(prom.job.as_deref(), Some("prod-code-custom"));
+    assert_eq!(prom.instance.as_deref(), Some("gateway-custom-1"));
+
+    // Test merge into ServerCli with default CLI
+    let mut cli = crate::ServerCli {
+        bind: "0.0.0.0:9400".parse().unwrap(),
+        socket_path: None,
+        storage: std::path::PathBuf::from("/srv/prod-code/workspaces"),
+        idle_evict_secs: 1800,
+        engine_reserve_mib: 0,
+        max_concurrent_engine_loads: 0,
+        prune_worktree_secs: 3600,
+        prune_worktree_days: None,
+        prune_workspace_secs: 86400,
+        prune_workspace_days: None,
+        prune_below_free_percent: 15,
+        engines: Vec::new(),
+        shadow_dir: None,
+        peers: String::new(),
+        advertise: None,
+        build_cache_ram: false,
+        build_cache_dir: None,
+        prometheus_listen: None,
+        prometheus_push_url: None,
+        prometheus_push_interval_secs: 15,
+        prometheus_job: "prod-code".to_string(),
+        prometheus_instance: None,
+        config: None,
+    };
+
+    cli.merge_config(&cfg, None);
+    assert_eq!(cli.bind, "127.0.0.1:9500".parse().unwrap());
+    assert_eq!(
+        cli.storage,
+        std::path::PathBuf::from("/srv/prod-code/custom")
+    );
+    assert_eq!(cli.idle_evict_secs, 600);
+    assert_eq!(
+        cli.prometheus_listen,
+        Some("127.0.0.1:9501".parse().unwrap())
+    );
+    assert_eq!(
+        cli.prometheus_push_url.as_deref(),
+        Some("http://push.lan:9091")
+    );
+    assert_eq!(cli.prometheus_push_interval_secs, 10);
+    assert_eq!(cli.prometheus_job, "prod-code-custom");
+    assert_eq!(cli.prometheus_instance.as_deref(), Some("gateway-custom-1"));
+}
+
+#[test]
+fn compilation_command_detection_and_compiler_resolution() {
+    use super::event::is_compilation_command;
+
+    assert!(is_compilation_command("cargo check --all-targets"));
+    assert!(is_compilation_command("cargo build --release"));
+    assert!(is_compilation_command("cargo test -p my-crate"));
+    assert!(is_compilation_command("cargo clippy"));
+    assert!(is_compilation_command("rustc -O main.rs"));
+    assert!(is_compilation_command("go build ./..."));
+    assert!(is_compilation_command("go test ./..."));
+    assert!(is_compilation_command("clang -c foo.c"));
+    assert!(is_compilation_command("clang++ -O3 main.cpp"));
+    assert!(is_compilation_command("swift build"));
+    assert!(is_compilation_command("tsc -p tsconfig.json"));
+
+    assert!(!is_compilation_command("ls -la"));
+    assert!(!is_compilation_command("git status"));
+    assert!(!is_compilation_command("cat file.txt"));
+
+    let temp = tempfile::tempdir().unwrap();
+    let m = Metrics::new(temp.path().join("metrics"));
+
+    // Before inventory recorded, resolves to basic tool name
+    assert_eq!(m.resolve_compiler("cargo check").as_deref(), Some("rustc"));
+    assert_eq!(m.resolve_compiler("go test").as_deref(), Some("go"));
+    assert_eq!(m.resolve_compiler("git status"), None);
+
+    // Record inventory
+    m.record_inventory(ToolchainInventory {
+        ts_ms: now_ms(),
+        node: "node-1".into(),
+        engines: vec![
+            EngineToolchainInfo {
+                engine: "rust".into(),
+                available: true,
+                toolchains: vec![ToolchainVersion {
+                    tool: "rustc".into(),
+                    version: "1.85.0 (4d91de4e4 2025-02-17)".into(),
+                }],
+                details: None,
+            },
+            EngineToolchainInfo {
+                engine: "go".into(),
+                available: true,
+                toolchains: vec![ToolchainVersion {
+                    tool: "go".into(),
+                    version: "go1.24.0 linux/amd64".into(),
+                }],
+                details: None,
+            },
+        ],
+    });
+
+    assert_eq!(
+        m.resolve_compiler("cargo check").as_deref(),
+        Some("rustc 1.85.0 (4d91de4e4 2025-02-17)")
+    );
+    assert_eq!(
+        m.resolve_compiler("go build").as_deref(),
+        Some("go go1.24.0 linux/amd64")
+    );
+}
+
+#[test]
+fn compilation_metrics_and_host_gauges_format_correctly() {
+    let temp = tempfile::tempdir().unwrap();
+    let m = Metrics::new(temp.path().join("metrics"));
+    m.set_node("test-node-1");
+
+    // Add compilation events
+    let mut ev1 = Event::blank("exec");
+    ev1.command = "cargo check".into();
+    ev1.method = "cargo-check".into();
+    ev1.engine = "rust".into();
+    ev1.compiler = Some("rustc 1.85.0".into());
+    ev1.duration_ms = 1250;
+    ev1.ok = true;
+    m.record(ev1);
+
+    let mut ev2 = Event::blank("exec");
+    ev2.command = "cargo check".into();
+    ev2.method = "cargo-check".into();
+    ev2.engine = "rust".into();
+    ev2.compiler = Some("rustc 1.85.0".into());
+    ev2.duration_ms = 450;
+    ev2.ok = false;
+    ev2.error_class = Some("exit_non_zero".into());
+    m.record(ev2);
+
+    // Record a complete snapshot with all resource metrics
+    m.record_snapshot(HostSnapshot {
+        ts_ms: now_ms(),
+        node: "test-node-1".into(),
+        version: "0.3.26".into(),
+        git_commit: "f64f78d".into(),
+        platform: "linux x86_64".into(),
+        cpu_count: 32,
+        cpu_usage_millis: Some(18400),                     // 18.4%
+        load_average_millis: Some(2150),                   // 2.15
+        process_rss_bytes: Some(134_217_728),              // 128 MB
+        host_memory_available_bytes: Some(17_179_869_184), // 16 GB
+        host_memory_total_bytes: Some(68_719_476_736),     // 64 GB
+        storage_free_millis: Some(350),                    // 35%
+        storage_free_bytes: Some(350_000_000_000),         // 350 GB
+        storage_total_bytes: Some(1_000_000_000_000),      // 1 TB
+        workspace_storage_bytes: Some(42_000_000_000),     // 42 GB
+        active_sessions: 3,
+        active_queries: 2,
+        running_commands: 1,
+        workspace_count: 5,
+        engine_count: 4,
+    });
+
+    let rendered = super::format_prometheus_metrics(&m, None);
+
+    // Check compilation metrics
+    assert!(rendered.contains("prod_code_compilations_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",status=\"ok\"} 1"));
+    assert!(rendered.contains("prod_code_compilations_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",status=\"error\"} 1"));
+    assert!(rendered.contains("prod_code_compilation_duration_seconds_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",status=\"ok\"} 1.250"));
+    assert!(rendered.contains("prod_code_compilation_errors_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",error_class=\"exit_non_zero\"} 1"));
+
+    // Check host resource gauges
+    assert!(rendered.contains("prod_code_gateway_cpu_usage_ratio{node=\"test-node-1\"} 0.1840"));
+    assert!(rendered.contains("prod_code_gateway_cpu_count{node=\"test-node-1\"} 32"));
+    assert!(rendered.contains("prod_code_gateway_load_average_1m{node=\"test-node-1\"} 2.15"));
+    assert!(
+        rendered.contains("prod_code_gateway_process_rss_bytes{node=\"test-node-1\"} 134217728")
+    );
+    assert!(
+        rendered
+            .contains("prod_code_host_memory_available_bytes{node=\"test-node-1\"} 17179869184")
+    );
+    assert!(
+        rendered.contains("prod_code_host_memory_total_bytes{node=\"test-node-1\"} 68719476736")
+    );
+    // Used memory = 64GB - 16GB = 48GB = 51539607552
+    assert!(
+        rendered.contains("prod_code_host_memory_used_bytes{node=\"test-node-1\"} 51539607552")
+    );
+    assert!(
+        rendered.contains("prod_code_host_storage_total_bytes{node=\"test-node-1\"} 1000000000000")
+    );
+    assert!(
+        rendered.contains("prod_code_host_storage_free_bytes{node=\"test-node-1\"} 350000000000")
+    );
+    assert!(
+        rendered.contains("prod_code_workspaces_storage_bytes{node=\"test-node-1\"} 42000000000")
+    );
+}
+
+#[test]
+fn directory_size_calculation() {
+    use super::snapshot::calculate_directory_size;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    std::fs::write(root.join("file1.txt"), b"12345").unwrap(); // 5 bytes
+    let sub = root.join("subdir");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("file2.txt"), b"abcdefghij").unwrap(); // 10 bytes
+
+    let total = calculate_directory_size(root);
+    assert_eq!(total, 15);
 }

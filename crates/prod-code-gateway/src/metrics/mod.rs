@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 
-pub use event::{Event, classify_error, command_method, now_ms};
+pub use event::{Event, classify_error, command_method, is_compilation_command, now_ms};
 pub use inventory::collect_toolchain_inventory;
 #[allow(unused_imports)]
 pub use prometheus_format::format_prometheus_metrics;
@@ -160,6 +160,40 @@ impl Metrics {
     /// Returns the cached toolchain inventory.
     pub fn toolchain_inventory(&self) -> Option<ToolchainInventory> {
         self.inventory.read().ok().and_then(|i| i.clone())
+    }
+
+    /// Resolves the compiler and tool version associated with a compilation command, if known.
+    pub fn resolve_compiler(&self, command: &str) -> Option<String> {
+        let first = command.split_whitespace().next()?;
+        let base = std::path::Path::new(first)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| first.to_string());
+
+        let target_tool = match base.as_str() {
+            "cargo" | "rustc" => "rustc",
+            "go" => "go",
+            "clang" | "clang++" | "gcc" | "g++" | "cc" | "c++" => "clang",
+            "swift" | "swiftc" => "swift",
+            "tsc" => "tsc",
+            "zig" => "zig",
+            "javac" => "javac",
+            "kotlinc" => "kotlinc",
+            "scalac" => "scala",
+            "dotnet" => "dotnet",
+            _ => return None,
+        };
+
+        if let Some(inv) = self.toolchain_inventory() {
+            for engine in &inv.engines {
+                for tv in &engine.toolchains {
+                    if tv.tool.eq_ignore_ascii_case(target_tool) {
+                        return Some(format!("{target_tool} {}", tv.version));
+                    }
+                }
+            }
+        }
+        Some(target_tool.to_string())
     }
 
     /// Prunes expired metric files from disk according to retention policy.

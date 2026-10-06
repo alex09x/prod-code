@@ -1,0 +1,71 @@
+# prod-code Gateway Configuration File (gateway.toml)
+# Default search paths:
+#   1. Explicit CLI: --config /path/to/gateway.toml
+#   2. /etc/prod-code/gateway.toml
+#   3. ~/.config/prod-code/gateway.toml
+#   4. ~/.prod-code/gateway.toml
+#   5. ./gateway.toml
+
+[server]
+# Network bind address for RPC connections (defaults to 0.0.0.0:9400)
+bind = "0.0.0.0:9400"
+
+# Optional Unix domain socket path
+# socket_path = "/run/prod-code/gateway.sock"
+
+# Workspace storage root directory on server
+storage = "/srv/prod-code/workspaces"
+
+# Advertised host:port for peers and clients
+# advertise = "192.168.1.50:9400"
+
+# Cluster peer addresses (comma-separated or empty)
+# peers = "192.168.1.51:9400,192.168.1.52:9400"
+
+# Languages served (empty means all installed engines)
+# engines = ["rust", "go", "cpp", "python", "swift"]
+
+# Unload idle engines after this many seconds (0 disables, default: 1800)
+idle_evict_secs = 1800
+
+# RAM-disk build cache (/dev/shm)
+build_cache_ram = false
+
+[metrics]
+# Whether metrics collection and in-memory ring is enabled
+enabled = true
+
+# Telemetry snapshot interval in seconds (default: 30)
+snapshot_interval_secs = 30
+
+# Toolchain inventory check interval in seconds (default: 3600)
+inventory_interval_secs = 3600
+
+[metrics.retention]
+# Days to retain daily JSONL metrics files on disk (default: 14)
+retention_days = 14
+
+# Storage budget in bytes for metrics logs (default: 524288000 = 500 MB)
+max_storage_bytes = 524288000
+
+[metrics.prometheus]
+# Enable or disable Prometheus metrics exporter / pusher
+enabled = true
+
+# Mode: "scrape" (pull HTTP endpoint), "push" (push to Pushgateway), "both", or "disabled"
+mode = "scrape"
+
+# HTTP scrape server bind address (serves GET /metrics and GET /health)
+listen = "0.0.0.0:9401"
+
+# Prometheus Pushgateway URL (required when mode is "push" or "both")
+# push_url = "http://pushgateway.lan:9091"
+
+# Push interval in seconds (default: 15)
+push_interval_secs = 15
+
+# Prometheus job label (default: "prod-code")
+job = "prod-code"
+
+# Prometheus instance label (defaults to node advertise address or hostname)
+# instance = "build-node-1"

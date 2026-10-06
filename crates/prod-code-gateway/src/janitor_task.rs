@@ -45,6 +45,15 @@ pub(crate) async fn janitor(
         // allowed to block, instead of by the next request that needs the list.
         let _ = tokio::task::spawn_blocking(refresh_available_engines).await;
 
+        // Periodically compute workspaces directory storage bytes
+        let storage_root_dir = state.storage_root.clone();
+        let ws_bytes = tokio::task::spawn_blocking(move || {
+            metrics::snapshot::calculate_directory_size(&storage_root_dir)
+        })
+        .await
+        .unwrap_or(0);
+        metrics::snapshot::update_workspaces_storage_bytes(ws_bytes);
+
         // Periodic telemetry snapshot collection
         let node = state.metrics.node();
         let active_sessions = state.active_sessions.load(Ordering::Relaxed);
@@ -72,7 +81,7 @@ pub(crate) async fn janitor(
         }
 
         // Periodic toolchain inventory collection (every ~hour or when uninitialized)
-        if state.metrics.toolchain_inventory().is_none() || tick_counter % 60 == 0 {
+        if state.metrics.toolchain_inventory().is_none() || tick_counter.is_multiple_of(60) {
             let inv_node = node.clone();
             let inv_engines = state.advertised_engines();
             let inv = tokio::task::spawn_blocking(move || {

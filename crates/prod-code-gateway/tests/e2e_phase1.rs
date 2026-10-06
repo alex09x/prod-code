@@ -304,6 +304,7 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
         prometheus_push_interval_secs: 15,
         prometheus_job: "prod-code".to_string(),
         prometheus_instance: None,
+        config: None,
     };
 
     let server_task = tokio::spawn(async move {
