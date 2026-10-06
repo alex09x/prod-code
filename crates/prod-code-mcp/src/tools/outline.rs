@@ -239,10 +239,10 @@ fn markdown_outline(text: &str, path: &str, options: &OutlineOptions) -> String 
         if level > options.max_depth || title.is_empty() {
             continue;
         }
-        if let Some(kinds) = &options.kinds {
-            if !kinds.iter().any(|k| k.eq_ignore_ascii_case("heading")) {
-                continue;
-            }
+        if let Some(kinds) = &options.kinds
+            && !kinds.iter().any(|k| k.eq_ignore_ascii_case("heading"))
+        {
+            continue;
         }
         headings += 1;
         out.push_str(&format!("  [Heading {level}] {title} (line {})\n", i + 1));
