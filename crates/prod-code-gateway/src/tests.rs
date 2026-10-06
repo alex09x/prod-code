@@ -1393,9 +1393,7 @@ async fn a_command_whose_client_leaves_changes_nothing_in_the_copy() {
             .mode();
         assert_eq!(mode & 0o777, 0o755);
     }
-    let mut stale = workspace::stale_paths(&workspace);
-    stale.sort();
-    assert_eq!(stale, vec!["run.sh", "src/a.rs", "src/gone.rs"]);
+    assert!(workspace::stale_paths(&workspace).is_empty());
 }
 
 #[tokio::test]
@@ -1805,7 +1803,11 @@ fn test_engine_detection() {
     assert_eq!(detect_engine(java_temp.path()), EngineKind::Java);
 
     let kt_temp = tempfile::tempdir().unwrap();
-    std::fs::write(kt_temp.path().join("build.gradle.kts"), "").unwrap();
+    std::fs::write(
+        kt_temp.path().join("build.gradle.kts"),
+        "plugins { kotlin(\"jvm\") }",
+    )
+    .unwrap();
     assert_eq!(detect_engine(kt_temp.path()), EngineKind::Kotlin);
 
     let cs_temp = tempfile::tempdir().unwrap();
