@@ -183,3 +183,159 @@ fn retention_prunes_stale_files_and_keeps_capacity() {
     let pruned = prune_expired_metrics(&dir, 14, 100 * 1024 * 1024);
     assert_eq!(pruned, 0);
 }
+
+#[test]
+fn prometheus_formatting_outputs_valid_exposition_text() {
+    let temp = tempfile::tempdir().unwrap();
+    let m = Metrics::new(temp.path().join("metrics"));
+
+    let mut ev = Event::blank("lsp");
+    ev.method = "textDocument/definition".into();
+    ev.engine = "rust".into();
+    ev.duration_ms = 45;
+    ev.items = 1;
+    m.record(ev);
+
+    let snap = HostSnapshot {
+        ts_ms: now_ms(),
+        node: "node-x".into(),
+        version: "0.3.26".into(),
+        git_commit: "deadbeef".into(),
+        platform: "linux x86_64".into(),
+        cpu_count: 8,
+        cpu_usage_millis: Some(12500), // 12.5%
+        load_average_millis: Some(850),
+        process_rss_bytes: Some(50 * 1024 * 1024),
+        host_memory_available_bytes: Some(16 * 1024 * 1024 * 1024),
+        host_memory_total_bytes: Some(32 * 1024 * 1024 * 1024),
+        storage_free_millis: Some(250),
+        storage_free_bytes: Some(100 * 1024 * 1024 * 1024),
+        active_sessions: 1,
+        active_queries: 0,
+        running_commands: 0,
+        workspace_count: 2,
+        engine_count: 3,
+    };
+    m.record_snapshot(snap);
+
+    let inv = ToolchainInventory {
+        ts_ms: now_ms(),
+        node: "node-x".into(),
+        engines: vec![EngineToolchainInfo {
+            engine: "rust".into(),
+            available: true,
+            toolchains: vec![ToolchainVersion {
+                tool: "rustc".into(),
+                version: "1.97.1".into(),
+            }],
+            details: None,
+        }],
+    };
+    m.record_inventory(inv);
+
+    let text = super::format_prometheus_metrics(&m, Some("node-x"));
+    assert!(text.contains("# HELP prod_code_operations_total"));
+    assert!(text.contains("prod_code_operations_total{node=\"node-x\",category=\"lsp\",method=\"textDocument/definition\",engine=\"rust\",status=\"ok\"} 1"));
+    assert!(text.contains("prod_code_gateway_cpu_usage_ratio{node=\"node-x\"} 0.1250"));
+    assert!(text.contains("prod_code_gateway_cpu_count{node=\"node-x\"} 8"));
+    assert!(text.contains("prod_code_gateway_info{node=\"node-x\",version=\"0.3.26\",git_commit=\"deadbeef\",platform=\"linux x86_64\"} 1"));
+    assert!(text.contains("prod_code_toolchain_info{node=\"node-x\",engine=\"rust\",tool=\"rustc\",version=\"1.97.1\"} 1"));
+}
+
+#[tokio::test]
+async fn prometheus_http_server_serves_metrics_and_health() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let temp = tempfile::tempdir().unwrap();
+    let m = Arc::new(Metrics::new(temp.path().join("metrics")));
+
+    // Bind on random ephemeral port
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let server_m = Arc::clone(&m);
+    tokio::spawn(async move {
+        let _ = super::run_prometheus_server(addr, server_m, "test-host".to_string()).await;
+    });
+
+    // Wait a moment for server to bind
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Test GET /metrics
+    let mut client = TcpStream::connect(addr).await.expect("connect");
+    client
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).await.unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"));
+    assert!(resp.contains("Content-Type: text/plain; version=0.0.4"));
+
+    // Test GET /health
+    let mut client = TcpStream::connect(addr).await.expect("connect");
+    client
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).await.unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"));
+    assert!(resp.contains("OK"));
+
+    // Test GET /nonexistent
+    let mut client = TcpStream::connect(addr).await.expect("connect");
+    client
+        .write_all(b"GET /unknown HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).await.unwrap();
+    assert!(resp.starts_with("HTTP/1.1 404 Not Found"));
+}
+
+#[test]
+fn prometheus_push_url_builder() {
+    let url = super::prometheus_push::build_pushgateway_url(
+        "http://push.example.com:9091",
+        "prod-code",
+        "worker-1:9400",
+    )
+    .unwrap();
+    assert_eq!(
+        url.as_str(),
+        "http://push.example.com:9091/metrics/job/prod-code/instance/worker-1%3A9400"
+    );
+}
+
+#[tokio::test]
+async fn prometheus_push_to_mock_server() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let req = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(req.starts_with("POST /metrics/job/prod-code/instance/inst-1 HTTP/1.1"));
+        assert!(req.contains("my_metric 42"));
+
+        stream
+            .write_all(b"HTTP/1.1 202 Accepted\r\n\r\n")
+            .await
+            .unwrap();
+    });
+
+    let base = format!("http://{}", addr);
+    super::prometheus_push::push_metrics_to_gateway(&base, "prod-code", "inst-1", "my_metric 42\n")
+        .await
+        .expect("push succeeds");
+
+    server_task.await.unwrap();
+}

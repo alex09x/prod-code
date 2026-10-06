@@ -12,6 +12,9 @@
 
 pub mod event;
 pub mod inventory;
+pub mod prometheus_format;
+pub mod prometheus_push;
+pub mod prometheus_server;
 pub mod snapshot;
 pub mod storage;
 pub mod summary;
@@ -25,6 +28,10 @@ use std::sync::{Mutex, RwLock};
 
 pub use event::{Event, classify_error, command_method, now_ms};
 pub use inventory::collect_toolchain_inventory;
+#[allow(unused_imports)]
+pub use prometheus_format::format_prometheus_metrics;
+pub use prometheus_push::run_prometheus_push_loop;
+pub use prometheus_server::run_prometheus_server;
 pub use snapshot::collect_host_snapshot;
 pub use storage::{DEFAULT_METRICS_RETENTION_DAYS, MAX_METRICS_STORAGE_BYTES, run_writer};
 
@@ -140,6 +147,14 @@ impl Metrics {
         let ring = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
         let skip = ring.len().saturating_sub(count);
         ring.iter().skip(skip).cloned().collect()
+    }
+
+    /// Iterates through all currently buffered events in the in-memory ring.
+    pub fn for_each_ring_event(&self, mut f: impl FnMut(&Event)) {
+        let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        for ev in ring.iter() {
+            f(ev);
+        }
     }
 
     /// Returns the cached toolchain inventory.

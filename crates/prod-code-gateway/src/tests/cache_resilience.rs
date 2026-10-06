@@ -46,6 +46,11 @@ fn test_effective_prune_timeouts() {
         advertise: None,
         build_cache_ram: false,
         build_cache_dir: None,
+        prometheus_listen: None,
+        prometheus_push_url: None,
+        prometheus_push_interval_secs: 15,
+        prometheus_job: "prod-code".to_string(),
+        prometheus_instance: None,
     };
     // Defaults: 1 hour (3600s) for worktrees, 24 hours (86400s) for main workspaces
     assert_eq!(cli.effective_prune_worktree_secs(), 3600);

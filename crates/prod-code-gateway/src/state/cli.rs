@@ -106,6 +106,30 @@ pub struct ServerCli {
     /// or a tmpfs directory.
     #[arg(long, env = "PROD_CODE_BUILD_CACHE_DIR")]
     pub build_cache_dir: Option<PathBuf>,
+
+    /// Optional Prometheus HTTP scrape server bind address (e.g. `0.0.0.0:9401`), serving `/metrics`.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_LISTEN")]
+    pub prometheus_listen: Option<SocketAddr>,
+
+    /// Optional Prometheus Pushgateway base URL (e.g. `http://pushgateway:9091`) to push metrics to.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_PUSH_URL")]
+    pub prometheus_push_url: Option<String>,
+
+    /// Push interval in seconds when pushing metrics to Prometheus Pushgateway. Defaults to 15.
+    #[arg(
+        long,
+        env = "PROD_CODE_PROMETHEUS_PUSH_INTERVAL_SECS",
+        default_value_t = 15
+    )]
+    pub prometheus_push_interval_secs: u64,
+
+    /// Prometheus Pushgateway job label. Defaults to `prod-code`.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_JOB", default_value = "prod-code")]
+    pub prometheus_job: String,
+
+    /// Prometheus Pushgateway instance label. Defaults to the gateway advertise address.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_INSTANCE")]
+    pub prometheus_instance: Option<String>,
 }
 
 impl ServerCli {

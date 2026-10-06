@@ -299,6 +299,11 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
         advertise: None,
         build_cache_ram: false,
         build_cache_dir: None,
+        prometheus_listen: None,
+        prometheus_push_url: None,
+        prometheus_push_interval_secs: 15,
+        prometheus_job: "prod-code".to_string(),
+        prometheus_instance: None,
     };
 
     let server_task = tokio::spawn(async move {
@@ -321,7 +326,10 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(connected, "server failed to listen on unix domain socket within timeout");
+    assert!(
+        connected,
+        "server failed to listen on unix domain socket within timeout"
+    );
 
     // Connect via Unix socket and verify negotiated capabilities
     {
@@ -458,7 +466,10 @@ async fn transparent_gateway_redirection_e2e() {
             .unwrap();
 
         match framed.next().await.unwrap().unwrap() {
-            WireMessage::Redirect { target_addr, reason } => {
+            WireMessage::Redirect {
+                target_addr,
+                reason,
+            } => {
                 redirect_count += 1;
                 assert!(redirect_count <= 2, "too many redirects");
                 assert_eq!(reason.as_deref(), Some("workspace warm on Node B"));
