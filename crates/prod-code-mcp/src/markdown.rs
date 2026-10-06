@@ -63,7 +63,10 @@ pub fn validate_markdown(shown: &str, text: &str) -> DiagnosticsReport {
                     if let Err(err) = toml::from_str::<toml::Value>(&toml_str) {
                         let span = err.span();
                         let line_offset = if let Some(span) = span {
-                            toml_str[..span.start].chars().filter(|&c| c == '\n').count() as u32
+                            toml_str[..span.start]
+                                .chars()
+                                .filter(|&c| c == '\n')
+                                .count() as u32
                         } else {
                             0
                         };
@@ -130,7 +133,9 @@ pub fn validate_markdown(shown: &str, text: &str) -> DiagnosticsReport {
                 if !after.contains(')') {
                     diagnostics.push(DocDiagnostic {
                         severity: "error".to_string(),
-                        message: format!("unclosed link destination on line {line_no}; expected `)`"),
+                        message: format!(
+                            "unclosed link destination on line {line_no}; expected `)`"
+                        ),
                         code: Some("markdown-syntax".to_string()),
                         line: line_no,
                         col: (link_start + 3) as u32,
@@ -162,7 +167,10 @@ pub fn validate_markdown(shown: &str, text: &str) -> DiagnosticsReport {
     DiagnosticsReport {
         file: shown.to_string(),
         errors: diagnostics.iter().filter(|d| d.severity == "error").count(),
-        warnings: diagnostics.iter().filter(|d| d.severity == "warning").count(),
+        warnings: diagnostics
+            .iter()
+            .filter(|d| d.severity == "warning")
+            .count(),
         items: diagnostics,
         preexisting: Vec::new(),
         in_derive: Vec::new(),
@@ -180,7 +188,8 @@ fn validate_yaml_frontmatter(lines: &[&str], diagnostics: &mut Vec<DocDiagnostic
         if line.starts_with('\t') || line.contains(":\t") {
             diagnostics.push(DocDiagnostic {
                 severity: "error".to_string(),
-                message: "YAML frontmatter forbids tab characters for indentation; use spaces".to_string(),
+                message: "YAML frontmatter forbids tab characters for indentation; use spaces"
+                    .to_string(),
                 code: Some("markdown-frontmatter".to_string()),
                 line: line_no,
                 col: 1,
@@ -199,19 +208,18 @@ fn validate_yaml_frontmatter(lines: &[&str], diagnostics: &mut Vec<DocDiagnostic
         if !line.starts_with(' ') && !trimmed.starts_with('-') {
             if let Some((key, _)) = trimmed.split_once(':') {
                 let k = key.trim();
-                if !k.is_empty()
-                    && !seen_top_keys.insert(k.to_string()) {
-                        diagnostics.push(DocDiagnostic {
-                            severity: "error".to_string(),
-                            message: format!("duplicate frontmatter key `{k}`"),
-                            code: Some("markdown-frontmatter".to_string()),
-                            line: line_no,
-                            col: 1,
-                            source: None,
-                            end: None,
-                            note: None,
-                        });
-                    }
+                if !k.is_empty() && !seen_top_keys.insert(k.to_string()) {
+                    diagnostics.push(DocDiagnostic {
+                        severity: "error".to_string(),
+                        message: format!("duplicate frontmatter key `{k}`"),
+                        code: Some("markdown-frontmatter".to_string()),
+                        line: line_no,
+                        col: 1,
+                        source: None,
+                        end: None,
+                        note: None,
+                    });
+                }
             } else {
                 diagnostics.push(DocDiagnostic {
                     severity: "error".to_string(),
@@ -298,7 +306,11 @@ title: "Unclosed"
 "#;
         let report = validate_markdown("post.md", md);
         assert_eq!(report.errors, 1);
-        assert!(report.items[0].message.contains("unclosed YAML frontmatter"));
+        assert!(
+            report.items[0]
+                .message
+                .contains("unclosed YAML frontmatter")
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::loop_to_iterator::loop_to_iterator_polyglot;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -161,7 +161,7 @@ export function allActive(users: { isActive: boolean }[]): boolean {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("const found = users.filter(u => u.isAdmin).map(u => u.name)[0] ?? null;"));
+    assert!(content.contains("const found = (() => { let matched = false; const found = users.find(u => { const yes = u.isAdmin; if (yes) matched = true; return yes; }); return matched ? [found].map(u => u.name)[0] ?? null : null; })();"));
 
     // 5. Any
     let res = loop_to_iterator_polyglot(
@@ -445,7 +445,7 @@ func allActive(users: [User]) -> Bool {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("let sum = prices.reduce(0) { $0 + (p * 2) }"));
+    assert!(content.contains("let sum = prices.reduce(0) { _acc, p in _acc + (p * 2) }"));
 
     // 2. Count
     let res = loop_to_iterator_polyglot(
@@ -462,7 +462,7 @@ func allActive(users: [User]) -> Bool {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("let count = numbers.filter { n % 2 == 0 }.count"));
+    assert!(content.contains("let count = numbers.filter { n in n % 2 == 0 }.count"));
 
     // 3. Collect
     let res = loop_to_iterator_polyglot(
@@ -479,7 +479,7 @@ func allActive(users: [User]) -> Bool {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("let out = users.filter { u.age >= 18 }.map { u.name }"));
+    assert!(content.contains("let out = users.filter { u in u.age >= 18 }.map { u in u.name }"));
 
     // 4. Find
     let res = loop_to_iterator_polyglot(
@@ -496,7 +496,9 @@ func allActive(users: [User]) -> Bool {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("let found = users.first(where: { u.isAdmin }).map { u.name }"));
+    assert!(
+        content.contains("let found = users.first(where: { u in u.isAdmin }).map { u in u.name }")
+    );
 
     // 5. Any
     let res = loop_to_iterator_polyglot(
@@ -513,7 +515,7 @@ func allActive(users: [User]) -> Bool {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("let hasAny = users.contains(where: { u.isAdmin })"));
+    assert!(content.contains("let hasAny = users.contains(where: { u in u.isAdmin })"));
 
     // 6. All
     let res = loop_to_iterator_polyglot(
@@ -530,7 +532,7 @@ func allActive(users: [User]) -> Bool {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("let allValid = users.allSatisfy { u.isActive }"));
+    assert!(content.contains("let allValid = users.allSatisfy { u in u.isActive }"));
 }
 
 #[tokio::test]
@@ -600,7 +602,8 @@ bool all_active(const std::vector<User>& users) {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("const auto sum = std::accumulate(prices.begin(), prices.end(), 0, [](auto _acc, const auto& p) { return _acc + (p * 2); });"));
+    assert!(content.contains("auto&& __prod_code_range = (prices);"));
+    assert!(content.contains("int sum = std::accumulate(__prod_code_range.begin(), __prod_code_range.end(), static_cast<int>(0), [](auto _acc, const auto& p) { return _acc + (p * 2); });"));
 
     // 2. Count
     let res = loop_to_iterator_polyglot(
@@ -617,7 +620,7 @@ bool all_active(const std::vector<User>& users) {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("const auto count = std::count_if(numbers.begin(), numbers.end(), [](const auto& n) { return n % 2 == 0; });"));
+    assert!(content.contains("const auto count = std::count_if(__prod_code_range_1.begin(), __prod_code_range_1.end(), [](const auto& n) { return n % 2 == 0; });"));
 
     // 3. Any
     let res = loop_to_iterator_polyglot(
@@ -634,7 +637,7 @@ bool all_active(const std::vector<User>& users) {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("const bool has_any = std::any_of(users.begin(), users.end(), [](const auto& u) { return u.is_admin; });"));
+    assert!(content.contains("const bool has_any = std::any_of(__prod_code_range_2.begin(), __prod_code_range_2.end(), [](const auto& u) { return u.is_admin; });"));
 
     // 4. All
     let res = loop_to_iterator_polyglot(
@@ -651,7 +654,7 @@ bool all_active(const std::vector<User>& users) {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("const bool all_valid = std::all_of(users.begin(), users.end(), [](const auto& u) { return u.is_active; });"));
+    assert!(content.contains("const bool all_valid = std::all_of(__prod_code_range_3.begin(), __prod_code_range_3.end(), [](const auto& u) { return u.is_active; });"));
 }
 
 #[tokio::test]
@@ -723,7 +726,9 @@ func allActive(users []User) bool {
     .unwrap();
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("sum := func() int { s := 0; for _, p := range prices { s += p * 2 }; return s }()"));
+    assert!(content.contains(
+        "sum := func() int { s := 0; for _, p := range prices { s += p * 2 }; return s }()"
+    ));
 
     // 2. Count
     let res = loop_to_iterator_polyglot(

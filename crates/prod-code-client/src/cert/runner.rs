@@ -1,0 +1,203 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
+use super::types::CertCommands;
+use anyhow::{Context, Result, bail};
+
+pub async fn run_cert(cmd: CertCommands) -> Result<()> {
+    match cmd {
+        CertCommands::Init {
+            out_dir,
+            server_name,
+            ips,
+            json,
+        } => {
+            let mut parsed_ips = Vec::new();
+            for ip_str in ips {
+                let ip: std::net::IpAddr = ip_str
+                    .parse()
+                    .with_context(|| format!("invalid IP address '{ip_str}'"))?;
+                parsed_ips.push(ip);
+            }
+            let report = prod_code_protocol::tls::pki::init_cluster_pki(
+                &out_dir,
+                server_name.as_deref(),
+                &parsed_ips,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "prod-code cluster PKI initialized successfully in {}:",
+                    out_dir.display()
+                );
+                println!("  Root CA Certificate:  {}", report.ca_cert_path.display());
+                println!(
+                    "  Root CA Private Key:  {} (mode 0600)",
+                    report.ca_key_path.display()
+                );
+                println!(
+                    "  Node Certificate:     {}",
+                    report.node_cert_path.display()
+                );
+                println!(
+                    "  Node Private Key:     {} (mode 0600)",
+                    report.node_key_path.display()
+                );
+                println!("  SHA-256 Cert Pin:     {}", report.cert_pin);
+                println!("  TLS Server Name:      {}", report.server_name);
+                println!();
+                println!("To activate strict TLS on cluster nodes and clients:");
+                println!("{}", report.env_example);
+            }
+            Ok(())
+        }
+        CertCommands::Ca {
+            out_dir,
+            common_name,
+        } => {
+            let (ca_cert, ca_key) = prod_code_protocol::tls::pki::generate_ca(&common_name)?;
+            let (cert_p, key_p) = prod_code_protocol::tls::pki::write_cert_and_key(
+                &out_dir, "ca", &ca_cert, &ca_key,
+            )?;
+            println!("Root CA generated in {}:", out_dir.display());
+            println!("  CA Certificate: {}", cert_p.display());
+            println!("  CA Private Key: {} (mode 0600)", key_p.display());
+            Ok(())
+        }
+        CertCommands::Node {
+            ca_cert,
+            ca_key,
+            out_dir,
+            prefix,
+            dns,
+            ips,
+        } => {
+            let ca_cert_pem = std::fs::read_to_string(&ca_cert).with_context(|| {
+                format!("failed reading CA certificate from {}", ca_cert.display())
+            })?;
+            let ca_key_pem = std::fs::read_to_string(&ca_key).with_context(|| {
+                format!("failed reading CA private key from {}", ca_key.display())
+            })?;
+            let mut parsed_ips = Vec::new();
+            for ip_str in ips {
+                let ip: std::net::IpAddr = ip_str
+                    .parse()
+                    .with_context(|| format!("invalid IP address '{ip_str}'"))?;
+                parsed_ips.push(ip);
+            }
+            let san_names = if dns.is_empty() {
+                vec![
+                    prod_code_protocol::tls::DEFAULT_TLS_SERVER_NAME.to_string(),
+                    "localhost".to_string(),
+                ]
+            } else {
+                dns
+            };
+            let (node_cert, node_key) = prod_code_protocol::tls::pki::generate_node_cert(
+                &ca_cert_pem,
+                &ca_key_pem,
+                &san_names,
+                &parsed_ips,
+            )?;
+            let (cert_p, key_p) = prod_code_protocol::tls::pki::write_cert_and_key(
+                &out_dir, &prefix, &node_cert, &node_key,
+            )?;
+            let pin = prod_code_protocol::tls::pki::compute_cert_pin(node_cert.as_bytes())?;
+            println!("Node certificate issued in {}:", out_dir.display());
+            println!("  Certificate:      {}", cert_p.display());
+            println!("  Private Key:      {} (mode 0600)", key_p.display());
+            println!("  SHA-256 Cert Pin: {}", pin);
+            Ok(())
+        }
+        CertCommands::Pin { cert_file } => {
+            let bytes = std::fs::read(&cert_file).with_context(|| {
+                format!("failed reading certificate from {}", cert_file.display())
+            })?;
+            let pin = prod_code_protocol::tls::pki::compute_cert_pin(&bytes)?;
+            println!("{pin}");
+            Ok(())
+        }
+        CertCommands::Verify {
+            cert_file,
+            key_file,
+            ca_cert,
+            server_name,
+            pin,
+        } => {
+            let cert_bytes = std::fs::read(&cert_file).with_context(|| {
+                format!("failed reading certificate from {}", cert_file.display())
+            })?;
+            let cert_pin = prod_code_protocol::tls::pki::compute_cert_pin(&cert_bytes)?;
+            let certs = prod_code_protocol::tls::load_certs(&cert_file).with_context(|| {
+                format!("failed parsing certificate at {}", cert_file.display())
+            })?;
+            let first_cert = certs.first().context("no certificate found in file")?;
+
+            println!("Certificate: {}", cert_file.display());
+            println!("  SHA-256 Pin: {}", cert_pin);
+
+            if let Some(expected_pin) = pin {
+                let norm_expected = expected_pin.replace([':', ' '], "").to_ascii_lowercase();
+                if cert_pin == norm_expected {
+                    println!("  [OK] SHA-256 certificate pin matches expected pin.");
+                } else {
+                    bail!("SHA-256 pin mismatch: expected {norm_expected}, got {cert_pin}");
+                }
+            }
+
+            if let Some(ca_path) = ca_cert {
+                let ca_certs =
+                    prod_code_protocol::tls::load_certs(&ca_path).with_context(|| {
+                        format!("failed loading CA certs from {}", ca_path.display())
+                    })?;
+                println!("  CA Certificate: {}", ca_path.display());
+
+                prod_code_protocol::tls::pki::verify_cert_against_ca(
+                    first_cert,
+                    if certs.len() > 1 { &certs[1..] } else { &[] },
+                    &ca_certs,
+                    server_name.as_deref(),
+                )
+                .with_context(|| {
+                    format!(
+                        "certificate trust verification failed against CA {}",
+                        ca_path.display()
+                    )
+                })?;
+                println!("  [OK] Certificate trust chain and validity period verified against CA.");
+            }
+
+            if let Some(key_path) = key_file {
+                prod_code_protocol::tls::check_key_permissions(&key_path).with_context(|| {
+                    format!("insecure private key permissions on {}", key_path.display())
+                })?;
+                let key =
+                    prod_code_protocol::tls::load_private_key(&key_path).with_context(|| {
+                        format!("failed loading private key at {}", key_path.display())
+                    })?;
+                println!("  Private Key: {}", key_path.display());
+                prod_code_protocol::tls::pki::verify_cert_matches_key(first_cert, &key)
+                    .with_context(|| {
+                        format!(
+                            "private key at {} does not match certificate at {}",
+                            key_path.display(),
+                            cert_file.display()
+                        )
+                    })?;
+                println!("  [OK] Private key matches certificate public key.");
+                println!("  [OK] Private key permissions (0600) and format verified.");
+            }
+
+            println!("Verification passed.");
+            Ok(())
+        }
+    }
+}

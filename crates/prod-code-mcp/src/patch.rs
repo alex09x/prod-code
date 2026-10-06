@@ -387,8 +387,10 @@ mod tests {
         let patched = apply(repo, diff).unwrap();
         assert_eq!(
             patched.texts,
-            vec![(repo.join("file.txt"), "line 1\nline 2 (new)\nline 3\n".to_string())]
+            vec![(
+                repo.join("file.txt"),
+                "line 1\nline 2 (new)\nline 3\n".to_string()
+            )]
         );
     }
 }
-

@@ -8,8 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use prod_code_mcp::wrap_return::{wrap_polyglot, wrap_polyglot_ext, Wrapper};
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_mcp::wrap_return::{Wrapper, wrap_polyglot, wrap_polyglot_ext};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -27,17 +27,6 @@ async fn fake_gateway() -> ScriptedGateway {
                         "range": {
                             "start": { "line": 3, "character": 4 },
                             "end": { "line": 3, "character": 13 }
-                        }
-                    }
-                ])
-            } else if uri.ends_with("/math.ts") {
-                let client_uri = uri.replace("/math.ts", "/client.ts");
-                serde_json::json!([
-                    {
-                        "uri": client_uri,
-                        "range": {
-                            "start": { "line": 3, "character": 11 },
-                            "end": { "line": 3, "character": 20 }
                         }
                     }
                 ])
@@ -130,11 +119,17 @@ async fn wrap_return_rebases_same_file_callsite_after_signature_rewrite() {
             "src/other.ts",
             "class Other { calculate(value: number) { return value; } }\nexport function other() { return new Other().calculate(5); }\n",
         ),
+        (
+            "src/z_other.ts",
+            "class Another { calculate(value: number) { return value; } }\nexport function another() { return new Another().calculate(10); }\n",
+        ),
     ]);
     let root = ws.root().to_path_buf();
     let file = root.join("src/main.ts");
     let other_file = root.join("src/other.ts");
     let other_before = fs::read_to_string(&other_file).unwrap();
+    let z_other_file = root.join("src/z_other.ts");
+    let z_other_before = fs::read_to_string(&z_other_file).unwrap();
     let gateway = fake_gateway().await;
     let result = wrap_polyglot(
         gateway.addr(),
@@ -154,13 +149,17 @@ async fn wrap_return_rebases_same_file_callsite_after_signature_rewrite() {
     let updated = fs::read_to_string(&file).unwrap();
     assert!(updated.contains("async function calculate()"), "{updated}");
     assert!(!updated.contains("Promise<void>"), "{updated}");
-    assert!(updated.contains("const inner = () => { return 2; }"), "{updated}");
+    assert!(
+        updated.contains("const inner = () => { return 2; }"),
+        "{updated}"
+    );
     assert!(updated.contains("return [1]"), "{updated}");
     assert!(
         updated.contains("(await calculate())[0].toString()"),
         "{updated}; result={result:?}"
     );
     assert_eq!(fs::read_to_string(other_file).unwrap(), other_before);
+    assert_eq!(fs::read_to_string(z_other_file).unwrap(), z_other_before);
 }
 
 #[tokio::test]
