@@ -9,12 +9,14 @@
  */
 
 pub mod cli;
+pub mod config;
 pub mod placement;
 pub mod process;
 pub mod server_state;
 pub mod session_meta;
 
 pub use cli::*;
+pub use config::*;
 pub(crate) use placement::*;
 pub use process::*;
 pub use server_state::*;

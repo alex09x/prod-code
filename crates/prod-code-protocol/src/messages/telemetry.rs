@@ -57,6 +57,9 @@ pub struct OperationMetric {
     /// Optional sanitized workspace identifier (never full local filesystem paths).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// Optional compiler name and version (e.g. `rustc 1.85.0`, `go 1.24.0`, `clang 19.1.0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<String>,
 }
 
 impl OperationMetric {
@@ -83,6 +86,7 @@ impl OperationMetric {
             agent: None,
             host: None,
             workspace: None,
+            compiler: None,
         }
     }
 }
@@ -123,6 +127,12 @@ pub struct HostSnapshot {
     /// Free storage on workspaces filesystem in bytes, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_free_bytes: Option<u64>,
+    /// Total storage capacity on workspaces filesystem in bytes, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_total_bytes: Option<u64>,
+    /// Storage used by workspace directories in bytes, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_storage_bytes: Option<u64>,
     /// Count of active client connections / sessions.
     pub active_sessions: usize,
     /// Count of queries currently being executed.
@@ -245,6 +255,8 @@ mod tests {
             host_memory_total_bytes: Some(4096),
             storage_free_millis: Some(500),
             storage_free_bytes: Some(8192),
+            storage_total_bytes: Some(16384),
+            workspace_storage_bytes: Some(1024),
             active_sessions: 2,
             active_queries: 1,
             running_commands: 0,

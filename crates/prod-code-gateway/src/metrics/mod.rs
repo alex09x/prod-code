@@ -12,6 +12,9 @@
 
 pub mod event;
 pub mod inventory;
+pub mod prometheus_format;
+pub mod prometheus_push;
+pub mod prometheus_server;
 pub mod snapshot;
 pub mod storage;
 pub mod summary;
@@ -23,8 +26,12 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 
-pub use event::{Event, classify_error, command_method, now_ms};
+pub use event::{Event, classify_error, command_method, is_compilation_command, now_ms};
 pub use inventory::collect_toolchain_inventory;
+#[allow(unused_imports)]
+pub use prometheus_format::format_prometheus_metrics;
+pub use prometheus_push::run_prometheus_push_loop;
+pub use prometheus_server::run_prometheus_server;
 pub use snapshot::collect_host_snapshot;
 pub use storage::{DEFAULT_METRICS_RETENTION_DAYS, MAX_METRICS_STORAGE_BYTES, run_writer};
 
@@ -142,9 +149,52 @@ impl Metrics {
         ring.iter().skip(skip).cloned().collect()
     }
 
+    /// Iterates through all currently buffered events in the in-memory ring.
+    pub fn for_each_ring_event(&self, mut f: impl FnMut(&Event)) {
+        let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        for ev in ring.iter() {
+            f(ev);
+        }
+    }
+
     /// Returns the cached toolchain inventory.
     pub fn toolchain_inventory(&self) -> Option<ToolchainInventory> {
         self.inventory.read().ok().and_then(|i| i.clone())
+    }
+
+    /// Resolves the compiler and tool version associated with a compilation command, if known.
+    pub fn resolve_compiler(&self, command: &str) -> Option<String> {
+        let first = command.split_whitespace().next()?;
+        let base = std::path::Path::new(first)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| first.to_string());
+
+        let target_tool = match base.as_str() {
+            "cargo" | "rustc" => "rustc",
+            "go" => "go",
+            "clang" | "clang++" | "gcc" | "g++" | "cc" | "c++" => "clang",
+            "swift" | "swiftc" => "swift",
+            "tsc" => "tsc",
+            "npx" if command.split_whitespace().any(|a| a == "tsc") => "tsc",
+            "zig" => "zig",
+            "javac" => "javac",
+            "kotlinc" => "kotlinc",
+            "scalac" => "scala",
+            "dotnet" => "dotnet",
+            _ => return None,
+        };
+
+        if let Some(inv) = self.toolchain_inventory() {
+            for engine in &inv.engines {
+                for tv in &engine.toolchains {
+                    if tv.tool.eq_ignore_ascii_case(target_tool) {
+                        return Some(format!("{target_tool} {}", tv.version));
+                    }
+                }
+            }
+        }
+        Some(target_tool.to_string())
     }
 
     /// Prunes expired metric files from disk according to retention policy.
