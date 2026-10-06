@@ -106,7 +106,12 @@ pub async fn handle_client(
                 return Ok(());
             }
             WireMessage::StatusRequest => {
+                let start = std::time::Instant::now();
                 let status = state.status().await;
+                let mut ev = metrics::Event::blank("status");
+                ev.method = "status".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                state.metrics.record(ev);
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }
             WireMessage::Gossip(gossip) => {
@@ -115,16 +120,33 @@ pub async fn handle_client(
                 framed.send(WireMessage::Gossip(own)).await?;
             }
             WireMessage::ClusterRequest => {
+                let start = std::time::Instant::now();
                 let view = state.cluster_view().await;
+                let mut ev = metrics::Event::blank("cluster");
+                ev.method = "cluster_view".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                ev.items = view.nodes.len() as u64;
+                state.metrics.record(ev);
                 framed.send(WireMessage::ClusterResponse(view)).await?;
             }
             WireMessage::PlaceRequest(req) => {
+                let start = std::time::Instant::now();
                 let resp = state.place(&req).await;
+                let mut ev = metrics::Event::blank("place");
+                ev.method = "place".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                ev.ok = resp.node.is_some();
+                state.metrics.record(ev);
                 framed.send(WireMessage::PlaceResponse(resp)).await?;
             }
             WireMessage::MetricsRequest(req) => {
+                let start = std::time::Instant::now();
                 let node = state.advertise.read().await.clone();
                 let resp = state.metrics.summary(&node, req.since_secs);
+                let mut ev = metrics::Event::blank("metrics");
+                ev.method = "metrics_summary".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                state.metrics.record(ev);
                 framed.send(WireMessage::MetricsResponse(resp)).await?;
             }
             WireMessage::SyncRequest(req) => {
@@ -167,8 +189,14 @@ pub async fn handle_client(
                 framed.send(WireMessage::SyncResponse(resp)).await?;
             }
             WireMessage::SyncProbeRequest(req) => {
+                let start = std::time::Instant::now();
                 let resp =
                     apply_sync_probe(&state.storage_root, &state.workspace_manager, req).await;
+                let mut ev = metrics::Event::blank("sync");
+                ev.method = "sync_probe".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                ev.items = resp.missing.len() as u64 + resp.files_deleted as u64;
+                state.metrics.record(ev);
                 framed.send(WireMessage::SyncProbeResponse(resp)).await?;
             }
             WireMessage::ExecRequest(req) => {
@@ -199,6 +227,7 @@ pub async fn handle_client(
                 shadow::run_shadow(&state, &mut framed, req).await?;
             }
             WireMessage::SearchRequest(req) => {
+                let start = std::time::Instant::now();
                 let resp = {
                     let state = Arc::clone(&state);
                     tokio::task::spawn_blocking(move || {
@@ -206,10 +235,29 @@ pub async fn handle_client(
                     })
                     .await?
                 };
+                let mut ev = metrics::Event::blank("search");
+                ev.method = "search".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                ev.items = resp.hits.len() as u64;
+                ev.ok = resp.error.is_none();
+                if let Some(ref err) = resp.error {
+                    ev.error_class = Some(metrics::classify_error(err, None).to_string());
+                }
+                state.metrics.record(ev);
                 framed.send(WireMessage::SearchResponse(resp)).await?;
             }
             WireMessage::ReadFileRequest(req) => {
+                let start = std::time::Instant::now();
                 let resp = read_server_file(&state.storage_root, &req);
+                let mut ev = metrics::Event::blank("read_file");
+                ev.method = "read_file".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                ev.ok = resp.error.is_none();
+                ev.bytes = resp.content.as_ref().map(|c| c.len() as u64).unwrap_or(0);
+                if let Some(ref err) = resp.error {
+                    ev.error_class = Some(metrics::classify_error(err, None).to_string());
+                }
+                state.metrics.record(ev);
                 framed.send(WireMessage::ReadFileResponse(resp)).await?;
             }
             WireMessage::Ping => {

@@ -103,6 +103,42 @@ pub async fn run_metrics(nodes: &[SocketAddr], since: u64, json: bool) -> Result
             m.sync_bytes as f64 / 1_048_576.0,
             m.events_in_memory
         );
+        if let Some(snap) = m.snapshots.last() {
+            let cpu_str = snap
+                .cpu_usage_pct()
+                .map(|p| format!("{p:.1}%"))
+                .unwrap_or_else(|| "-".to_string());
+            let rss_str = snap
+                .process_rss_bytes
+                .map(|b| format!("{:.0} MB", b as f64 / 1_048_576.0))
+                .unwrap_or_else(|| "-".to_string());
+            let disk_str = snap
+                .storage_free_millis
+                .map(|m| format!("{}% free", m / 10))
+                .unwrap_or_else(|| "-".to_string());
+            println!(
+                "  snapshot: CPU {cpu_str} | RSS {rss_str} | Disk {disk_str} | Sessions {} | Workspaces {} | Engines {}",
+                snap.active_sessions, snap.workspace_count, snap.engine_count
+            );
+        }
+        if let Some(ref inv) = m.inventory {
+            let engines_str: Vec<String> = inv
+                .engines
+                .iter()
+                .filter(|e| e.available)
+                .map(|e| {
+                    if let Some(tc) = e.toolchains.first() {
+                        let short_ver = tc.version.split_whitespace().nth(1).unwrap_or(&tc.version);
+                        format!("{}:{}", e.engine, short_ver)
+                    } else {
+                        e.engine.clone()
+                    }
+                })
+                .collect();
+            if !engines_str.is_empty() {
+                println!("  toolchains: {}", engines_str.join(", "));
+            }
+        }
     }
     Ok(())
 }

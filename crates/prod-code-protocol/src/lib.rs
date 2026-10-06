@@ -22,18 +22,19 @@ pub mod transport;
 
 pub use codec::ProdCodeCodec;
 pub use messages::{
-    ANALYZER_PANIC_CODE, AuthToken, ClientCapabilities, ClusterResponse, DenseStatus, ExecChanges,
-    ExecChunk, ExecExit, ExecMetric, ExecRequest, ExecUsage, FileDelta, FileStamp, HandshakeRequest,
-    HandshakeResponse, HostResources, LoadedWorkspaceInfo, MEMORY_PRESSURE_USED, MetricsRequest,
-    MetricsResponse, NodeGossip, PROTOCOL_VERSION, PURPOSE_EDITOR, PURPOSE_VALIDATION, PeerInfo,
-    PlaceRequest, PlaceResponse, QueryMetric, ReadFileRequest, ReadFileResponse, RunningCommand,
+    ANALYZER_PANIC_CODE, AuthToken, ClientCapabilities, ClusterResponse, DenseStatus,
+    EngineToolchainInfo, ExecChanges, ExecChunk, ExecExit, ExecMetric, ExecRequest, ExecUsage,
+    FileDelta, FileStamp, HandshakeRequest, HandshakeResponse, HostResources, HostSnapshot,
+    LoadedWorkspaceInfo, MEMORY_PRESSURE_USED, MetricsRequest, MetricsResponse, NodeGossip,
+    OperationMetric, PROTOCOL_VERSION, PURPOSE_EDITOR, PURPOSE_VALIDATION, PeerInfo, PlaceRequest,
+    PlaceResponse, QueryMetric, ReadFileRequest, ReadFileResponse, RemoteExecCommand,
+    RemoteExecDiagnostic, RemoteExecFormat, RemoteExecLanguage, RemoteExecRequest,
+    RemoteExecResult, RemoteExecSpan, RemoteExecStream, RemoteExecTestEvent, RunningCommand,
     STORAGE_PRESSURE_FREE, SearchHit, SearchRequest, SearchResponse, ServerCapabilities,
     ShadowHypothesis, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse,
-    SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, client_host,
-    content_hash, detect_client_agent, platform,
-    RemoteExecCommand, RemoteExecDiagnostic, RemoteExecFormat, RemoteExecLanguage,
-    RemoteExecRequest, RemoteExecResult, RemoteExecSpan, RemoteExecStream, RemoteExecTestEvent,
-    parse_cargo_json_event, parse_go_test_json_event,
+    SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, TelemetryRecord,
+    ToolchainInventory, ToolchainVersion, WireMessage, client_host, content_hash,
+    detect_client_agent, parse_cargo_json_event, parse_go_test_json_event, platform,
 };
 pub use negotiation::{
     ProtocolNegotiationError, SUPPORTED_PROTOCOL_VERSIONS, default_server_capabilities,
@@ -42,15 +43,15 @@ pub use negotiation::{
 };
 pub use path::PathTranslator;
 pub use tls::{
-    ClientTlsConfig, ServerTlsConfig, TlsMode, DEFAULT_TLS_SERVER_NAME, TLS_CA_ENV, TLS_CERT_ENV,
-    TLS_ENV_VARS, TLS_KEY_ENV, TLS_MODE_ENV, TLS_PIN_ENV, TLS_SERVER_NAME_ENV,
+    ClientTlsConfig, DEFAULT_TLS_SERVER_NAME, ServerTlsConfig, TLS_CA_ENV, TLS_CERT_ENV,
+    TLS_ENV_VARS, TLS_KEY_ENV, TLS_MODE_ENV, TLS_PIN_ENV, TLS_SERVER_NAME_ENV, TlsMode,
     cert_sha256_fingerprint, parse_pins,
 };
 pub use transport::{
-    AnyStream, clear_client_tls_cache, connect, connect_stream, connect_stream_with,
+    AnyStream, ScrubSecrets, clear_client_tls_cache, connect, connect_stream, connect_stream_with,
     connect_stream_with_client_config, connect_stream_with_tls, connect_with,
     default_client_tls_built, init_client_tls_from_env, set_default_client_tls,
-    set_default_client_tls_built, ScrubSecrets,
+    set_default_client_tls_built,
 };
 #[cfg(unix)]
 pub use transport::{connect_unix, connect_unix_with};

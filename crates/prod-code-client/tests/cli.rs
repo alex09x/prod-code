@@ -250,6 +250,8 @@ async fn handle_client(
                         sync_rounds: 1,
                         sync_files: 3,
                         sync_bytes: 2048,
+                        snapshots: Vec::new(),
+                        inventory: None,
                     }))
                     .await?;
             }

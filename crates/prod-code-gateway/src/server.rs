@@ -143,6 +143,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         .clone()
         .unwrap_or_else(|| detect_advertise_addr(cli.bind, peers.first().map(String::as_str)));
     *state.advertise.write().await = advertise.clone();
+    state.metrics.set_node(&advertise);
     {
         let mut set = state.peers.write().await;
         for p in &peers {
@@ -157,6 +158,30 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     if let Some(rx) = state.metrics.take_receiver() {
         tokio::spawn(metrics::run_writer(state.metrics.dir().to_path_buf(), rx));
     }
+
+    let initial_node = advertise.clone();
+    let initial_engines = engines.clone();
+    let initial_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let snapshot = metrics::collect_host_snapshot(
+            &initial_node,
+            &initial_state.storage_root,
+            0,
+            0,
+            initial_engines.len(),
+            0,
+        )
+        .await;
+        initial_state.metrics.record_snapshot(snapshot);
+        let inv = tokio::task::spawn_blocking(move || {
+            metrics::collect_toolchain_inventory(&initial_node, &initial_engines)
+        })
+        .await
+        .ok();
+        if let Some(inv) = inv {
+            initial_state.metrics.record_inventory(inv);
+        }
+    });
 
     tokio::spawn(janitor(
         Arc::clone(&state),

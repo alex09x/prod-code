@@ -193,6 +193,7 @@ pub async fn apply_sync_with_metrics(
 
     if let Some(metrics) = metrics {
         let mut ev = metrics::Event::blank("sync");
+        ev.method = "sync".to_string();
         ev.workspace = folder_name.to_string();
         ev.items = (files_updated + files_deleted) as u64;
         ev.bytes = bytes_transferred as u64;
