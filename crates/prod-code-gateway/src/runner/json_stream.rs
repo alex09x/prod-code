@@ -121,7 +121,11 @@ impl JsonStreamAccumulator {
                     },
                     _ => {}
                 }
-                if framed.send(WireMessage::RemoteExecStream(ev)).await.is_err() {
+                if framed
+                    .send(WireMessage::RemoteExecStream(ev))
+                    .await
+                    .is_err()
+                {
                     return Ok(false);
                 }
             }

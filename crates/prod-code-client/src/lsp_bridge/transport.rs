@@ -11,13 +11,13 @@
 use super::encoding::lsp_position_encoding;
 use super::session::resolve_redirect_target;
 use anyhow::Result;
-use futures_util::stream::SplitStream;
 use futures_util::StreamExt;
+use futures_util::stream::SplitStream;
 use prod_code_protocol::{ProdCodeCodec, WireMessage};
 use std::env;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::io::BufReader;
 use tokio_util::codec::Framed;
 
@@ -89,55 +89,50 @@ pub fn spawn_editor_stdout_task(
         let mut redirect_target = None;
         let why = loop {
             match socket_rx.next().await {
-                Some(Ok(msg)) => {
-                    match msg {
-                        WireMessage::LspPayload(json) => {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                                if let Some(encoding) = lsp_position_encoding(&val) {
-                                    position_encoding.store(encoding, Ordering::Release);
-                                }
-                                if val.get("id").is_some() && val.get("method").is_none() {
-                                    if let Some(id) = val.get("id") {
-                                        let mut pending = pending_requests.lock().await;
-                                        pending.retain(|(p_id, _, _)| p_id != id);
-                                    }
+                Some(Ok(msg)) => match msg {
+                    WireMessage::LspPayload(json) => {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                            if let Some(encoding) = lsp_position_encoding(&val) {
+                                position_encoding.store(encoding, Ordering::Release);
+                            }
+                            if val.get("id").is_some() && val.get("method").is_none() {
+                                if let Some(id) = val.get("id") {
+                                    let mut pending = pending_requests.lock().await;
+                                    pending.retain(|(p_id, _, _)| p_id != id);
                                 }
                             }
-                            let json = stdout_files.to_editor(json).await;
-                            trace_message(&stdout_trace, "<-", &json);
-                            let mut stdout = editor_out.lock().await;
-                            if prod_code_client::editor_files::write_frame(&mut *stdout, &json)
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
                         }
-                        WireMessage::Redirect {
-                            target_addr,
-                            reason,
-                        } => {
-                            tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
-                            if let Ok(addr) = resolve_redirect_target(&target_addr) {
-                                redirect_target = Some(addr);
-                                prod_code_mcp::cluster::remember_placement(
-                                    &stdout_identity.name,
-                                    addr,
-                                );
-                            }
-                            continue;
+                        let json = stdout_files.to_editor(json).await;
+                        trace_message(&stdout_trace, "<-", &json);
+                        let mut stdout = editor_out.lock().await;
+                        if prod_code_client::editor_files::write_frame(&mut *stdout, &json)
+                            .await
+                            .is_err()
+                        {
+                            return;
                         }
-                        WireMessage::Pong => {
-                            outstanding_ping.store(false, Ordering::Release);
-                            tracing::trace!("received watchdog pong from gateway");
-                            continue;
-                        }
-                        WireMessage::Disconnect { reason } => {
-                            break format!("closed the session: {reason}");
-                        }
-                        _ => {}
                     }
-                }
+                    WireMessage::Redirect {
+                        target_addr,
+                        reason,
+                    } => {
+                        tracing::info!(%target_addr, ?reason, "received dynamic rebalance redirect from gateway");
+                        if let Ok(addr) = resolve_redirect_target(&target_addr) {
+                            redirect_target = Some(addr);
+                            prod_code_mcp::cluster::remember_placement(&stdout_identity.name, addr);
+                        }
+                        continue;
+                    }
+                    WireMessage::Pong => {
+                        outstanding_ping.store(false, Ordering::Release);
+                        tracing::trace!("received watchdog pong from gateway");
+                        continue;
+                    }
+                    WireMessage::Disconnect { reason } => {
+                        break format!("closed the session: {reason}");
+                    }
+                    _ => {}
+                },
                 Some(Err(err)) => break format!("broke the connection: {err}"),
                 None => break "closed the connection".to_string(),
             }

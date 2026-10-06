@@ -45,7 +45,10 @@ impl SharedOutputSender {
         }
     }
 
-    pub async fn send(&self, message: WireMessage) -> std::result::Result<(), SharedOutputSendError> {
+    pub async fn send(
+        &self,
+        message: WireMessage,
+    ) -> std::result::Result<(), SharedOutputSendError> {
         let deadline = tokio::time::Instant::now() + self.write_budget;
         let frame = SharedOutputFrame { message, deadline };
         match tokio::time::timeout_at(deadline, self.inner.send(frame)).await {

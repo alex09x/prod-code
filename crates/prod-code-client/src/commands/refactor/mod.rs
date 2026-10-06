@@ -15,8 +15,8 @@ pub use ast::*;
 pub use schema::*;
 
 use crate::commands::common::{parse_line_col, run_tool};
-use crate::commands::query::execute_lsp_query;
 use crate::commands::exec::verify_scope;
+use crate::commands::query::execute_lsp_query;
 use crate::workspace::find_workspace_root;
 use anyhow::{Context, Result};
 use prod_code_mcp::verify::VerifyKind;

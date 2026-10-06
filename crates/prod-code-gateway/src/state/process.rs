@@ -206,4 +206,3 @@ impl Drop for ActiveSession<'_> {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
-

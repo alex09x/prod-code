@@ -13,8 +13,8 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig};
 use prod_code_protocol::{
-    supported_protocol_versions, validate_selected_protocol_version, HandshakeRequest,
-    ProdCodeCodec, WireMessage, PROTOCOL_VERSION,
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    validate_selected_protocol_version,
 };
 use std::env;
 use std::net::SocketAddr;

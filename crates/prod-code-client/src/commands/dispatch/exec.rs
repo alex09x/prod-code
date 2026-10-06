@@ -12,7 +12,7 @@ use super::DispatchContext;
 use crate::cli::Commands;
 use crate::commands::bench::{run_benchmark, run_divergent_bench};
 use crate::commands::common::run_tool;
-use crate::commands::exec::{run_exec, run_shadow_cli, run_verify, VerifyArgs};
+use crate::commands::exec::{VerifyArgs, run_exec, run_shadow_cli, run_verify};
 use crate::commands::query::run_diagnostics;
 use crate::commands::refactor::run_fix;
 use crate::validation::*;

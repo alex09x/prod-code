@@ -9,19 +9,17 @@
  */
 
 use super::reconnect::reconnect_editor_session;
-use super::state::{fail_pending_requests, LspStateTracker};
+use super::state::{LspStateTracker, fail_pending_requests};
 use super::sync::keep_checkout_synced;
-use super::transport::{
-    spawn_editor_stdout_task, EditorFrameReceiver, LspTrace, PendingRequests,
-};
+use super::transport::{EditorFrameReceiver, LspTrace, PendingRequests, spawn_editor_stdout_task};
 use futures_util::stream::SplitSink;
 use prod_code_protocol::{ProdCodeCodec, WireMessage};
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
-use std::sync::Arc;
 use tokio::io::Stdout;
 use tokio::sync::Mutex;
 use tokio_util::codec::Framed;

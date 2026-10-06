@@ -181,4 +181,3 @@ pub(crate) async fn rename_with_references_open(
     }
     (resp, opened.len())
 }
-

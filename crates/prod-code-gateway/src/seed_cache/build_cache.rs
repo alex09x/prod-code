@@ -10,8 +10,6 @@
 
 use crate::*;
 
-
-
 /// The parts of a cargo target directory that a new worktree's copy takes from the main copy
 /// when it is seeded: compiled crates, build-script outputs and cargo's fingerprints. A registry
 /// crate has the same source path in every copy, so its fingerprint still matches and it is not
@@ -58,7 +56,10 @@ pub fn seed_fits(what: &str, size: u64, space: Option<DiskSpace>) -> bool {
 /// Copies the seed copy's `target/debug` build cache into the new copy at `to`, when there is
 /// one and it fits (`seed_fits`). Returns the bytes copied, or `None` when there was nothing to
 /// copy or no room for it.
-pub fn seed_build_cache(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<Option<u64>> {
+pub fn seed_build_cache(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<Option<u64>> {
     seed_build_cache_within(from, to, disk_space(to))
 }
 
@@ -99,7 +100,6 @@ pub(crate) fn seed_build_cache_within(
     }
     Ok(Some(size))
 }
-
 
 /// Bytes of every regular file under `dir`.
 pub fn tree_size(dir: &std::path::Path) -> u64 {
@@ -230,4 +230,3 @@ pub fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(
         }
     }
 }
-

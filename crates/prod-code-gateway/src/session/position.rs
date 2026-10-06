@@ -24,7 +24,9 @@ pub enum Flow {
 ///
 /// LSP positions must be non-negative JSON integers. The engine's one-based API also means
 /// that `u32::MAX` cannot be represented, so reject it rather than truncating or overflowing.
-pub fn one_based_position(position: Option<&serde_json::Value>) -> Result<(u32, u32), &'static str> {
+pub fn one_based_position(
+    position: Option<&serde_json::Value>,
+) -> Result<(u32, u32), &'static str> {
     let position = position.ok_or("position is required")?;
     let coordinate = |name| {
         position

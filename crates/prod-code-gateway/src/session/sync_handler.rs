@@ -108,7 +108,9 @@ pub async fn handle_session_sync(
         }
     }
 
-    if req.clean_others && let Some(engine_lock) = &view.workspace.rust_engine {
+    if req.clean_others
+        && let Some(engine_lock) = &view.workspace.rust_engine
+    {
         // The request is the session's complete dirty set: any other
         // overlay this session still holds is stale (reverted or committed).
         let keep: Vec<PathBuf> = req

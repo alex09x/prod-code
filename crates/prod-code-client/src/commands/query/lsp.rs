@@ -155,7 +155,12 @@ pub async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32
     anyhow::bail!("no definition found at {}:{}:{}", file.display(), line, col);
 }
 
-pub async fn run_implementations(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
+pub async fn run_implementations(
+    remote: SocketAddr,
+    file: &Path,
+    line: u32,
+    col: u32,
+) -> Result<()> {
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let file_uri = Url::from_file_path(&abs_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path"))?

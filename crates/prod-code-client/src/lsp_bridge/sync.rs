@@ -43,11 +43,7 @@ pub async fn push_checkout(remote: SocketAddr, root: &Path) -> Result<()> {
 /// file watcher saw a change (a save, a checkout, a generated file), the delta is pushed on a
 /// connection of its own, so the language server session never waits for it (#316). `pushing`
 /// is held for each push, which a save also takes.
-pub async fn keep_checkout_synced(
-    remote: SocketAddr,
-    root: PathBuf,
-    pushing: Arc<Mutex<()>>,
-) {
+pub async fn keep_checkout_synced(remote: SocketAddr, root: PathBuf, pushing: Arc<Mutex<()>>) {
     loop {
         tokio::time::sleep(BRIDGE_SYNC_POLL).await;
         let generation = prod_code_mcp::watch::current_generation(&root);

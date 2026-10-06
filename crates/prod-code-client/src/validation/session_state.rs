@@ -167,7 +167,10 @@ pub fn load_cli_stream_session(
     Ok(state)
 }
 
-pub fn write_cli_stream_session(file: &mut std::fs::File, state: &CliStreamSessionState) -> Result<()> {
+pub fn write_cli_stream_session(
+    file: &mut std::fs::File,
+    state: &CliStreamSessionState,
+) -> Result<()> {
     use std::io::{Seek, Write};
     let bytes = serde_json::to_vec(state)?;
     if bytes.len() > (prod_code_mcp::diagnostics::MAX_STREAM_SESSION_BYTES as usize) * 6 + 64 * 1024

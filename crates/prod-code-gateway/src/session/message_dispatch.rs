@@ -95,7 +95,9 @@ pub async fn on_client_message(
                 }
 
                 // 1-3. Intercept lifecycle: initialize, initialized, shutdown
-                if let Some(flow) = intercept_lifecycle_lsp(method, &id, view, out_tx, translator).await {
+                if let Some(flow) =
+                    intercept_lifecycle_lsp(method, &id, view, out_tx, translator).await
+                {
                     return flow;
                 }
 
@@ -123,17 +125,22 @@ pub async fn on_client_message(
                 }
 
                 // 5a'. Managed assists
-                if let Some(flow) = intercept_assists_for_managed(method, &id, &val, view, out_tx, translator) {
+                if let Some(flow) =
+                    intercept_assists_for_managed(method, &id, &val, view, out_tx, translator)
+                {
                     return flow;
                 }
 
                 // 5b. GoEngine fast path
-                if let Some(flow) = handle_go_lsp(method, &id, &val, view, out_tx, translator).await {
+                if let Some(flow) = handle_go_lsp(method, &id, &val, view, out_tx, translator).await
+                {
                     return flow;
                 }
 
                 // 5c. GenericLspEngine fast path
-                if let Some(flow) = handle_generic_lsp(method, &id, &val, view, out_tx, translator).await {
+                if let Some(flow) =
+                    handle_generic_lsp(method, &id, &val, view, out_tx, translator).await
+                {
                     return flow;
                 }
 

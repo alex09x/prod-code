@@ -41,13 +41,17 @@ pub async fn dispatch_ops(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()>
                         "--pull requires at least one file or path to pull (e.g. `prod-code sync --pull path/to/file.rs` or `prod-code pull <files...>`); to push current changes omit --pull"
                     ),
                 };
-                let root = cx
-                    .cwd_root
-                    .context("Failed to resolve workspace root")?;
+                let root = cx.cwd_root.context("Failed to resolve workspace root")?;
                 let current_dir = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
                 let files: Vec<PathBuf> = files
                     .into_iter()
-                    .map(|f| if f.is_absolute() { f } else { current_dir.join(f) })
+                    .map(|f| {
+                        if f.is_absolute() {
+                            f
+                        } else {
+                            current_dir.join(f)
+                        }
+                    })
                     .collect();
                 run_pull(cx.remote, root, files).await
             } else {
@@ -55,13 +59,17 @@ pub async fn dispatch_ops(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()>
             }
         }
         Commands::Pull { files } => {
-            let root = cx
-                .cwd_root
-                .context("Failed to resolve workspace root")?;
+            let root = cx.cwd_root.context("Failed to resolve workspace root")?;
             let current_dir = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
             let files: Vec<PathBuf> = files
                 .into_iter()
-                .map(|f| if f.is_absolute() { f } else { current_dir.join(f) })
+                .map(|f| {
+                    if f.is_absolute() {
+                        f
+                    } else {
+                        current_dir.join(f)
+                    }
+                })
                 .collect();
             run_pull(cx.remote, root, files).await
         }

@@ -38,4 +38,3 @@ pub struct PendingRequest {
     pub col: u32,
     pub start: Instant,
 }
-

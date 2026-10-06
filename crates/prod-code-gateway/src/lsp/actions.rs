@@ -188,7 +188,9 @@ pub(crate) async fn lsp_code_actions(
 /// refactoring, and LSP applies `documentChanges` in order, so the moves come last, as
 /// rust-analyzer's own server sends them: a rewrite after them would name a path a move vacated
 /// or gave to another file.
-pub(crate) fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serde_json::Value {
+pub(crate) fn workspace_edit_json(
+    outcome: &prod_code_engine_rust::RefactorOutcome,
+) -> serde_json::Value {
     let mut changes = Vec::new();
     for created in &outcome.created {
         let uri = file_uri(&created.path);
@@ -219,4 +221,3 @@ pub(crate) fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutco
     }
     serde_json::json!({ "documentChanges": changes })
 }
-

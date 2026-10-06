@@ -331,7 +331,11 @@ pub(crate) async fn build_own_announce(state: &ServerState, nonce: Option<&str>)
 }
 
 /// Build a peer's discovery announce line from its gossip data with optional challenge nonce echo.
-pub(crate) fn build_peer_announce(entry: &PeerEntry, token: Option<&str>, nonce: Option<&str>) -> String {
+pub(crate) fn build_peer_announce(
+    entry: &PeerEntry,
+    token: Option<&str>,
+    nonce: Option<&str>,
+) -> String {
     use prod_code_protocol::discovery;
     let eng = entry
         .gossip
@@ -366,4 +370,3 @@ pub(crate) fn build_peer_announce(entry: &PeerEntry, token: Option<&str>, nonce:
         nonce,
     )
 }
-

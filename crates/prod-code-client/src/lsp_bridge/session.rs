@@ -11,8 +11,8 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    supported_protocol_versions, validate_selected_protocol_version, HandshakeRequest,
-    ProdCodeCodec, WireMessage, PROTOCOL_VERSION,
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    validate_selected_protocol_version,
 };
 use std::net::SocketAddr;
 use std::path::Path;

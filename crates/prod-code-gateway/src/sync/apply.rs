@@ -209,4 +209,3 @@ pub async fn apply_sync_with_metrics(
         stale_paths,
     }
 }
-

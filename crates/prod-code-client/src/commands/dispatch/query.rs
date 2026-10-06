@@ -233,7 +233,9 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             timeout_secs,
             json,
         } => run_diagnose(cx.remote, filter.as_deref(), timeout_secs, json).await,
-        Commands::Search { query, limit, path } => run_search_cli(cx.remote, query, limit, path).await,
+        Commands::Search { query, limit, path } => {
+            run_search_cli(cx.remote, query, limit, path).await
+        }
         Commands::Slice {
             target,
             line,
@@ -319,9 +321,13 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 Ok(())
             } else {
-                let result =
-                    prod_code_mcp::tools::execute_tool(cx.remote, &root, "code_find_duplicates", args)
-                        .await?;
+                let result = prod_code_mcp::tools::execute_tool(
+                    cx.remote,
+                    &root,
+                    "code_find_duplicates",
+                    args,
+                )
+                .await?;
                 for content in &result.content {
                     let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
                     println!("{text}");

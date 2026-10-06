@@ -24,7 +24,12 @@ pub fn lsp_position_encoding(message: &serde_json::Value) -> Option<u8> {
     }
 }
 
-pub fn lsp_offset(text: &str, target_line: usize, target_col: usize, position_encoding: u8) -> usize {
+pub fn lsp_offset(
+    text: &str,
+    target_line: usize,
+    target_col: usize,
+    position_encoding: u8,
+) -> usize {
     let mut current_line = 0;
     let mut current_col = 0;
     for (offset, ch) in text.char_indices() {

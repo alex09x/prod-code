@@ -134,7 +134,8 @@ pub async fn handle_go_lsp(
                         if let Some(ref r_id) = req_id {
                             resp["id"] = r_id.clone();
                         }
-                        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                        let client_resp =
+                            translator_task.translate_lsp_to_client(&resp.to_string());
                         let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
                     }
                     Err(err) => {
@@ -143,7 +144,9 @@ pub async fn handle_go_lsp(
                             "id": req_id,
                             "error": { "code": -32603, "message": err.to_string() }
                         });
-                        let _ = out_tx_task.send(WireMessage::LspPayload(err_resp.to_string())).await;
+                        let _ = out_tx_task
+                            .send(WireMessage::LspPayload(err_resp.to_string()))
+                            .await;
                     }
                 }
             });
@@ -293,7 +296,9 @@ pub async fn handle_generic_lsp(
                         "id": r_id,
                         "error": { "code": -32603, "message": err.to_string() }
                     });
-                    let _ = out_tx_task.send(WireMessage::LspPayload(err_resp.to_string())).await;
+                    let _ = out_tx_task
+                        .send(WireMessage::LspPayload(err_resp.to_string()))
+                        .await;
                 }
             }
         });

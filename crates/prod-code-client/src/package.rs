@@ -180,17 +180,10 @@ pub async fn fetch_official_checksums(tag: Option<&str>) -> Result<HashMap<Strin
         }
     };
 
-    let url = format!(
-        "https://github.com/{REPOSITORY}/releases/download/{tag_str}/SHA256SUMS"
-    );
+    let url = format!("https://github.com/{REPOSITORY}/releases/download/{tag_str}/SHA256SUMS");
 
     let output = Command::new("curl")
-        .args([
-            "-fsSL",
-            "-H",
-            "User-Agent: prod-code-package-manager",
-            &url,
-        ])
+        .args(["-fsSL", "-H", "User-Agent: prod-code-package-manager", &url])
         .output()
         .with_context(|| format!("failed to download SHA256SUMS from {url}"))?;
 
@@ -236,7 +229,14 @@ pub async fn run_package_status(json: bool) -> Result<()> {
     println!("Local Client:");
     println!("  Path:          {}", current_exe.display());
     println!("  Package Type:  {pkg_type}");
-    println!("  Version:       v{current_version} ({})", if is_up_to_date { "up to date" } else { "update available" });
+    println!(
+        "  Version:       v{current_version} ({})",
+        if is_up_to_date {
+            "up to date"
+        } else {
+            "update available"
+        }
+    );
     println!("  Platform:      {target}");
     println!("  SHA-256:       {local_sha}");
     println!("  Latest Tag:    {latest_tag}");
@@ -270,7 +270,9 @@ pub async fn run_package_verify() -> Result<()> {
         Some(expected) => {
             println!("  Remote: {expected} ({expected_asset})");
             if local_hash.eq_ignore_ascii_case(expected) {
-                println!("\n✓ Package integrity verified: binary matches official release checksum.");
+                println!(
+                    "\n✓ Package integrity verified: binary matches official release checksum."
+                );
                 Ok(())
             } else {
                 println!("\n⚠ Checksum mismatch: binary has been modified or locally built.");
@@ -278,7 +280,10 @@ pub async fn run_package_verify() -> Result<()> {
             }
         }
         None => {
-            println!("Note: Official release manifest contains {} assets.", checksums.len());
+            println!(
+                "Note: Official release manifest contains {} assets.",
+                checksums.len()
+            );
             println!("✓ Local hash computed: {local_hash}");
             Ok(())
         }
@@ -286,11 +291,7 @@ pub async fn run_package_verify() -> Result<()> {
 }
 
 /// Implements `prod-code package install`.
-pub async fn run_package_install(
-    force: bool,
-    version: Option<String>,
-    system: bool,
-) -> Result<()> {
+pub async fn run_package_install(force: bool, version: Option<String>, system: bool) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let target = current_target()?;
 
@@ -331,9 +332,8 @@ pub async fn run_package_install(
     std::fs::create_dir_all(&install_dir)?;
     let target_bin = install_dir.join("prod-code");
 
-    let asset_url = format!(
-        "https://github.com/{REPOSITORY}/releases/download/{tag}/prod-code-{target}"
-    );
+    let asset_url =
+        format!("https://github.com/{REPOSITORY}/releases/download/{tag}/prod-code-{target}");
 
     println!("Downloading release asset from {asset_url}...");
     let temp_file = install_dir.join(format!(".prod-code-pkg-tmp-{}", std::process::id()));
@@ -362,8 +362,9 @@ pub async fn run_package_install(
 
     #[cfg(target_os = "macos")]
     {
-        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY")
-            .unwrap_or_else(|_| "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string());
+        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY").unwrap_or_else(|_| {
+            "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string()
+        });
         let res = Command::new("codesign")
             .args(["-s", &identity, "-f", temp_file.to_str().unwrap()])
             .output();
@@ -374,11 +375,13 @@ pub async fn run_package_install(
         }
     }
 
-    std::fs::rename(&temp_file, &target_bin).with_context(|| {
-        format!("failed to move binary into {}", target_bin.display())
-    })?;
+    std::fs::rename(&temp_file, &target_bin)
+        .with_context(|| format!("failed to move binary into {}", target_bin.display()))?;
 
-    println!("\n✓ Package installed successfully to {}!", target_bin.display());
+    println!(
+        "\n✓ Package installed successfully to {}!",
+        target_bin.display()
+    );
     let _ = Command::new(&target_bin).arg("--version").status();
     println!("Running MCP server instances will hot-reload automatically.");
     Ok(())
@@ -414,11 +417,21 @@ pub async fn run_package_sync(remote: Option<SocketAddr>) -> Result<()> {
     let val: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     if let Some(nodes) = val.get("nodes").and_then(|n| n.as_array()) {
         for node in nodes {
-            let remote = node.get("remote").and_then(|r| r.as_str()).unwrap_or("unknown");
+            let remote = node
+                .get("remote")
+                .and_then(|r| r.as_str())
+                .unwrap_or("unknown");
             let up = node.get("up").and_then(|u| u.as_bool()).unwrap_or(false);
             let platform = node.get("platform").and_then(|p| p.as_str()).unwrap_or("-");
-            let sessions = node.get("active_sessions").and_then(|s| s.as_u64()).unwrap_or(0);
-            let commands = node.get("running_commands").and_then(|c| c.as_array()).map(|a| a.len()).unwrap_or(0);
+            let sessions = node
+                .get("active_sessions")
+                .and_then(|s| s.as_u64())
+                .unwrap_or(0);
+            let commands = node
+                .get("running_commands")
+                .and_then(|c| c.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
 
             if !up {
                 println!("  Node: {remote:<22} 🔴 DOWN ({platform})");
@@ -442,11 +455,17 @@ pub async fn run_package_sync(remote: Option<SocketAddr>) -> Result<()> {
     println!("\nFleet Package Deploy Guidance:");
     println!("  • Ubuntu/Debian nodes (booster, ram9, rama):");
     println!("      curl -fsSL https://prod.codes/install.sh | sh");
-    println!("      or: sudo dpkg -i prod-code_{current_version}_amd64.deb && systemctl --user restart prod-code-gateway");
+    println!(
+        "      or: sudo dpkg -i prod-code_{current_version}_amd64.deb && systemctl --user restart prod-code-gateway"
+    );
     println!("  • RHEL/Fedora/CentOS nodes:");
-    println!("      sudo rpm -Uvh prod-code-{current_version}-1.x86_64.rpm && systemctl --user restart prod-code-gateway");
+    println!(
+        "      sudo rpm -Uvh prod-code-{current_version}-1.x86_64.rpm && systemctl --user restart prod-code-gateway"
+    );
     println!("  • Arch Linux nodes:");
-    println!("      sudo pacman -U prod-code-{current_version}-1-x86_64.pkg.tar.gz && systemctl --user restart prod-code-gateway");
+    println!(
+        "      sudo pacman -U prod-code-{current_version}-1-x86_64.pkg.tar.gz && systemctl --user restart prod-code-gateway"
+    );
     println!("  • macOS node (192.168.2.40):");
     println!("      scripts/deploy-mac-node.sh");
     println!("  • Rule 11 Reminder: Never restart a node while running commands exist.");
@@ -460,7 +479,9 @@ mod tests {
     #[test]
     fn test_detect_package_type() {
         assert_eq!(
-            detect_package_type(Path::new("/opt/homebrew/Cellar/prod-code/0.3.19/bin/prod-code")),
+            detect_package_type(Path::new(
+                "/opt/homebrew/Cellar/prod-code/0.3.19/bin/prod-code"
+            )),
             PackageType::Homebrew
         );
         assert_eq!(
@@ -476,19 +497,23 @@ mod tests {
     #[test]
     fn test_detect_package_type_rpm_and_arch() {
         assert_eq!(
-            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/redhat-release"),
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p
+                == "/etc/redhat-release"),
             PackageType::Rpm
         );
         assert_eq!(
-            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/fedora-release"),
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p
+                == "/etc/fedora-release"),
             PackageType::Rpm
         );
         assert_eq!(
-            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/arch-release"),
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p
+                == "/etc/arch-release"),
             PackageType::ArchLinux
         );
         assert_eq!(
-            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p == "/etc/debian_version"),
+            detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |p| p
+                == "/etc/debian_version"),
             PackageType::Debian
         );
     }

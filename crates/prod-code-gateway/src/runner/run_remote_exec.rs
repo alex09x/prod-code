@@ -109,7 +109,9 @@ pub async fn run_remote_exec_with_ram(
 
     match check_node_disk_headroom(&workspace, storage_root) {
         DiskCheckOutcome::Refuse(err) => {
-            framed.send(WireMessage::RemoteExecResult(fail(err))).await?;
+            framed
+                .send(WireMessage::RemoteExecResult(fail(err)))
+                .await?;
             return Ok(());
         }
         DiskCheckOutcome::Warn(warn) => {
@@ -372,4 +374,3 @@ pub async fn run_remote_exec_with_ram(
 
     Ok(())
 }
-

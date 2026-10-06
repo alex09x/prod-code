@@ -10,13 +10,13 @@
 
 use super::encoding::POSITION_ENCODING_UTF16;
 use super::reconnect::replay_lsp_workspace_state;
-use super::reconnect_handler::{handle_reconnect, ReconnectContext};
+use super::reconnect_handler::{ReconnectContext, handle_reconnect};
 use super::session::open_editor_session;
-use super::state::{fail_pending_requests, LspStateTracker};
+use super::state::{LspStateTracker, fail_pending_requests};
 use super::sync::{keep_checkout_synced, push_checkout};
 use super::transport::{
-    lsp_trace, refuse_lsp, spawn_editor_frame_reader, spawn_editor_stdout_task, trace_message,
-    PendingRequests,
+    PendingRequests, lsp_trace, refuse_lsp, spawn_editor_frame_reader, spawn_editor_stdout_task,
+    trace_message,
 };
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -25,8 +25,8 @@ use std::collections::VecDeque;
 use std::env;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::Mutex;
 
 pub async fn run_lsp_bridge(
@@ -41,7 +41,8 @@ pub async fn run_lsp_bridge(
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
     let (framed, handshake_resp, effective_remote) =
-        match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone(), 0).await {
+        match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone(), 0).await
+        {
             Ok(session) => session,
             Err(err) => return refuse_lsp(&err).await,
         };
@@ -232,10 +233,7 @@ pub async fn run_lsp_bridge(
         };
 
         let client_method = prod_code_client::editor_files::method_of(&json_payload);
-        tracker.record_client_message(
-            &json_payload,
-            position_encoding.load(Ordering::Acquire),
-        );
+        tracker.record_client_message(&json_payload, position_encoding.load(Ordering::Acquire));
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_payload) {
             if let (Some(id), Some(method)) =
                 (val.get("id"), val.get("method").and_then(|m| m.as_str()))

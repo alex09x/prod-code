@@ -306,4 +306,3 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         }
     }
 }
-

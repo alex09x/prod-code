@@ -10,7 +10,6 @@
 
 use crate::*;
 
-
 pub async fn run_exec(
     storage_root: &std::path::Path,
     metrics: &metrics::Metrics,
@@ -360,4 +359,3 @@ pub async fn run_exec_with_ram(
         .await?;
     Ok(())
 }
-

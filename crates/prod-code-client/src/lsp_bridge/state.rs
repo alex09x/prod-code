@@ -235,6 +235,7 @@ pub async fn fail_pending_requests(
                 "message": format!("prod-code lsp: gateway connection lost ({error_msg})"),
             }
         });
-        let _ = prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
+        let _ =
+            prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
     }
 }

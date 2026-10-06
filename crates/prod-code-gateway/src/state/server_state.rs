@@ -10,7 +10,6 @@
 
 use crate::*;
 
-
 pub struct ServerState {
     pub start_time: Instant,
     pub server_pid: u32,
@@ -52,7 +51,6 @@ pub(crate) const AUTH_WAIT: std::time::Duration = std::time::Duration::from_secs
 
 /// What a connection without the cluster's token is told before it is closed.
 pub(crate) const AUTH_REFUSED: &str = "this gateway requires the cluster's connection token: set PROD_CODE_AUTH_TOKEN to it, or PROD_CODE_AUTH_TOKEN_FILE to a file that holds it";
-
 
 /// A peer's latest heartbeat.
 pub struct PeerEntry {
@@ -218,8 +216,6 @@ impl ServerState {
         }
     }
 
-
-
     pub async fn status(&self) -> StatusResponse {
         StatusResponse {
             server_pid: self.server_pid,
@@ -252,4 +248,3 @@ impl ServerState {
         host
     }
 }
-

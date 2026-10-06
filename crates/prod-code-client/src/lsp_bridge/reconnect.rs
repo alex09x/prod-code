@@ -10,9 +10,9 @@
 
 use super::encoding::lsp_position_encoding;
 use super::session::open_editor_session;
-use super::state::{is_idempotent_lsp_request, LspStateTracker};
+use super::state::{LspStateTracker, is_idempotent_lsp_request};
 use super::transport::{
-    trace_message, EditorFrameReceiver, LspTrace, PendingRequests, MAX_DEFERRED_EDITOR_FRAMES,
+    EditorFrameReceiver, LspTrace, MAX_DEFERRED_EDITOR_FRAMES, PendingRequests, trace_message,
 };
 use anyhow::{Context, Result};
 use futures_util::stream::{SplitSink, SplitStream};

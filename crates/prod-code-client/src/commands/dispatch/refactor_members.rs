@@ -269,7 +269,12 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(cx.remote, "code_replace_conditional_with_polymorphism", args).await
+            exec_tool(
+                cx.remote,
+                "code_replace_conditional_with_polymorphism",
+                args,
+            )
+            .await
         }
         Commands::ExtractInterface {
             file,

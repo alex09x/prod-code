@@ -128,7 +128,10 @@ pub fn prune_empty_dirs(root: &std::path::Path, dir: &std::path::Path) -> bool {
 /// Compares the workspace directory with the client's manifest: deletes files the client does
 /// not have, and the directories that leaves empty, and returns `(missing, deleted)` where
 /// `missing` are manifest paths the server lacks or holds with different content.
-pub fn reconcile_manifest(root: &std::path::Path, stamps: &[FileStamp]) -> (Vec<String>, Vec<String>) {
+pub fn reconcile_manifest(
+    root: &std::path::Path,
+    stamps: &[FileStamp],
+) -> (Vec<String>, Vec<String>) {
     let wanted: std::collections::HashMap<&str, &FileStamp> = stamps
         .iter()
         .map(|s| (s.relative_path.as_str(), s))
@@ -334,4 +337,3 @@ pub async fn apply_sync_probe(
         missing,
     }
 }
-

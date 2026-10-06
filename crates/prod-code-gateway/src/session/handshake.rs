@@ -81,8 +81,7 @@ pub async fn handle_handshake(
     // on this node (#332); without one here, the shared engines answer it.
     if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR)
         && editor_proxy::enabled()
-        && let Some(command) =
-            editor_proxy::server_command_for_workspace(engine, &server_workspace)
+        && let Some(command) = editor_proxy::server_command_for_workspace(engine, &server_workspace)
     {
         framed
             .send(WireMessage::HandshakeResponse(HandshakeResponse {

@@ -300,7 +300,10 @@ mod tests {
 
         // A report that cannot be written fails closed with EX_IOERR (74) (#809, #810).
         let unwritable = dir.path().join("missing-dir").join("report");
-        assert_eq!(run(&args(&[unwritable.to_str().unwrap(), "--", "true"])), 74);
+        assert_eq!(
+            run(&args(&[unwritable.to_str().unwrap(), "--", "true"])),
+            74
+        );
     }
 
     #[test]

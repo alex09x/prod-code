@@ -132,7 +132,6 @@ pub fn spawn_pipe_readers(
     readers
 }
 
-
 pub enum DiskCheckOutcome {
     Ok,
     Warn(String),

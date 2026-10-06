@@ -35,7 +35,9 @@ pub(crate) fn lsp_range(line: u32, col: u32, end_line: u32, end_col: u32) -> ser
     })
 }
 
-pub(crate) fn hierarchy_item_json(item: &prod_code_engine_rust::HierarchyItem) -> serde_json::Value {
+pub(crate) fn hierarchy_item_json(
+    item: &prod_code_engine_rust::HierarchyItem,
+) -> serde_json::Value {
     serde_json::json!({
         "name": item.name,
         "kind": lsp_symbol_kind(&item.kind),
@@ -121,4 +123,3 @@ pub(crate) fn hierarchy_query(
         other => anyhow::bail!("unsupported hierarchy method {other}"),
     })
 }
-

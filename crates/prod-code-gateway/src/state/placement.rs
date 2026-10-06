@@ -41,7 +41,6 @@ impl ServerState {
         }
         resp
     }
-
 }
 
 /// The node `req` should be placed on, given the cluster `view`: the one that already holds it,

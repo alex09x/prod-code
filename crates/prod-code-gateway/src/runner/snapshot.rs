@@ -57,7 +57,11 @@ pub fn snapshot_tree(root: &std::path::Path) -> TreeSnapshot {
 }
 
 /// [`snapshot_tree`] with its limits given, so that a test can exceed them cheaply.
-pub(crate) fn snapshot_tree_within(root: &std::path::Path, max_file: u64, mut budget: u64) -> TreeSnapshot {
+pub(crate) fn snapshot_tree_within(
+    root: &std::path::Path,
+    max_file: u64,
+    mut budget: u64,
+) -> TreeSnapshot {
     let mut present = Vec::new();
     walk_files(root, root, &mut present);
     // Walked in a fixed order, so which files fit the budget does not depend on the directory
@@ -277,8 +281,6 @@ pub fn changed_since(
     out
 }
 
-
-
 /// Sends files changed by a remote execution back to the client, or restores the pre-command
 /// snapshot if the client disconnected before receiving them.
 pub async fn send_exec_changes_and_recover(
@@ -305,13 +307,9 @@ pub async fn send_exec_changes_and_recover(
             }))
             .await
         {
-            let restored = restore_after_lost_client(
-                workspace_manager,
-                workspace,
-                before,
-                snapshot_started,
-            )
-            .await;
+            let restored =
+                restore_after_lost_client(workspace_manager, workspace, before, snapshot_started)
+                    .await;
             tracing::info!(
                 workspace = %workspace_str,
                 "🛠️ [EXEC] client left before the changes were sent; {restored} file(s) the command changed restored"

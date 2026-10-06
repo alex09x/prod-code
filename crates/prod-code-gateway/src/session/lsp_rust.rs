@@ -114,9 +114,7 @@ pub async fn handle_rust_lsp(
                     {
                         let mut engine = engine_lock.lock().await;
                         if view.is_single_owner() {
-                            if let Err(e) =
-                                engine.apply_file_change(&file_path, text.to_string())
-                            {
+                            if let Err(e) = engine.apply_file_change(&file_path, text.to_string()) {
                                 tracing::warn!(
                                     error = %e,
                                     file = %file_path.display(),
@@ -178,9 +176,7 @@ pub async fn handle_rust_lsp(
                     {
                         let mut engine = engine_lock.lock().await;
                         if view.is_single_owner() {
-                            if let Err(e) =
-                                engine.apply_file_change(&file_path, text.to_string())
-                            {
+                            if let Err(e) = engine.apply_file_change(&file_path, text.to_string()) {
                                 tracing::warn!(
                                     error = %e,
                                     file = %file_path.display(),
@@ -242,9 +238,7 @@ pub async fn handle_rust_lsp(
                     if let Ok(mut files) = view.direct_edit_open_files.lock() {
                         files.remove(&file_path);
                     }
-                } else if let Err(e) =
-                    engine.clear_session_overlay(view.session_id, &file_path)
-                {
+                } else if let Err(e) = engine.clear_session_overlay(view.session_id, &file_path) {
                     tracing::warn!(
                         error = %e,
                         file = %file_path.display(),
@@ -262,7 +256,9 @@ pub async fn handle_rust_lsp(
                 "id": id,
                 "error": { "code": -32601, "message": format!("{m} is not supported by prod-code for Rust") }
             });
-            let _ = out_tx.send(WireMessage::LspPayload(refused.to_string())).await;
+            let _ = out_tx
+                .send(WireMessage::LspPayload(refused.to_string()))
+                .await;
             return Some(Flow::Next);
         }
         _ => {}

@@ -214,7 +214,18 @@ pub async fn dispatch_refactor_ast(cmd: Commands, cx: &DispatchContext<'_>) -> R
             id,
             to,
             subtype,
-        } => run_assist(cx.remote, &file, line, col, to.as_deref(), Some(&id), subtype).await,
+        } => {
+            run_assist(
+                cx.remote,
+                &file,
+                line,
+                col,
+                to.as_deref(),
+                Some(&id),
+                subtype,
+            )
+            .await
+        }
         Commands::Assists {
             file,
             line,

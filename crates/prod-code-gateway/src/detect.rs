@@ -84,7 +84,13 @@ const SOLIDITY_MARKERS: &[&str] = &[
 const NIM_MARKERS: &[&str] = &["nim.cfg"];
 const D_MARKERS: &[&str] = &["dub.json", "dub.sdl"];
 const FORTRAN_MARKERS: &[&str] = &["fpm.toml"];
-const SQL_MARKERS: &[&str] = &[".sqlfluff", "sqlfluff.cfg", ".sqls.json", "sqls.json", "schema.sql"];
+const SQL_MARKERS: &[&str] = &[
+    ".sqlfluff",
+    "sqlfluff.cfg",
+    ".sqls.json",
+    "sqls.json",
+    "schema.sql",
+];
 const GRAPHQL_MARKERS: &[&str] = &[
     "codegen.yml",
     "codegen.ts",
@@ -112,12 +118,7 @@ const TERRAFORM_MARKERS: &[&str] = &[
     "terraform.tf",
     ".terraform.lock.hcl",
 ];
-const NIX_MARKERS: &[&str] = &[
-    "flake.nix",
-    "default.nix",
-    "shell.nix",
-    "configuration.nix",
-];
+const NIX_MARKERS: &[&str] = &["flake.nix", "default.nix", "shell.nix", "configuration.nix"];
 const MARKDOWN_MARKERS: &[&str] = &["README.md", ".marksman.toml"];
 const YAML_MARKERS: &[&str] = &[
     ".yamllint",
@@ -150,10 +151,7 @@ const DOCKERFILE_MARKERS: &[&str] = &[
 const SVELTE_MARKERS: &[&str] = &["svelte.config.js", "svelte.config.ts"];
 const VUE_MARKERS: &[&str] = &["vue.config.js", "vue.config.ts"];
 const ASSEMBLY_MARKERS: &[&str] = &[".asm-lsp.toml"];
-const POWERSHELL_MARKERS: &[&str] = &[
-    "PSScriptAnalyzerSettings.psd1",
-    "profile.ps1",
-];
+const POWERSHELL_MARKERS: &[&str] = &["PSScriptAnalyzerSettings.psd1", "profile.ps1"];
 const STARLARK_MARKERS: &[&str] = &[
     "BUILD.bazel",
     "WORKSPACE.bazel",
@@ -162,11 +160,7 @@ const STARLARK_MARKERS: &[&str] = &[
     "WORKSPACE",
     "Tiltfile",
 ];
-const HCL_MARKERS: &[&str] = &[
-    "terragrunt.hcl",
-    ".tflint.hcl",
-    "packer.pkr.hcl",
-];
+const HCL_MARKERS: &[&str] = &["terragrunt.hcl", ".tflint.hcl", "packer.pkr.hcl"];
 const TYPST_MARKERS: &[&str] = &["typst.toml"];
 const WAT_MARKERS: &[&str] = &["wat.json"];
 const SYSTEMVERILOG_MARKERS: &[&str] = &["verilator.f", "filelist.f"];
@@ -286,20 +280,20 @@ pub fn has_kotlin_project(root: &Path) -> bool {
         "settings.gradle",
         "settings.gradle.kts",
     ]
-        .iter()
-        .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
-        .any(|text| {
-            text.lines()
-                .filter(|line| {
-                    let line = line.trim_start();
-                    !line.starts_with("//") && !line.starts_with('*')
-                })
-                .any(|line| {
-                    KOTLIN_PLUGIN_MARKERS
-                        .iter()
-                        .any(|marker| line.contains(marker))
-                })
-        })
+    .iter()
+    .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
+    .any(|text| {
+        text.lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                !line.starts_with("//") && !line.starts_with('*')
+            })
+            .any(|line| {
+                KOTLIN_PLUGIN_MARKERS
+                    .iter()
+                    .any(|marker| line.contains(marker))
+            })
+    })
 }
 
 fn has_java_project(root: &Path) -> bool {
@@ -309,11 +303,7 @@ fn has_java_project(root: &Path) -> bool {
         }
         !matches!(*marker, "build.gradle.kts" | "settings.gradle.kts")
             || !has_kotlin_project(root)
-            || [
-                "src/main/java",
-                "src/test/java",
-                "app/src/main/java",
-            ]
+            || ["src/main/java", "src/test/java", "app/src/main/java"]
                 .iter()
                 .any(|relative| root.join(relative).is_dir())
     })
@@ -433,9 +423,9 @@ pub fn has_erlang_project(root: &Path) -> bool {
 pub fn has_fsharp_project(root: &Path) -> bool {
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".fsproj")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".fsproj"))
         })
         .unwrap_or(false)
 }
@@ -457,9 +447,9 @@ pub fn has_nim_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".nimble")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".nimble"))
         })
         .unwrap_or(false)
 }
@@ -481,9 +471,9 @@ pub fn has_sql_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".sql")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".sql"))
         })
         .unwrap_or(false)
 }
@@ -510,9 +500,9 @@ pub fn has_protobuf_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".proto")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".proto"))
         })
         .unwrap_or(false)
 }
@@ -524,9 +514,9 @@ pub fn has_crystal_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".cr")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".cr"))
         })
         .unwrap_or(false)
 }
@@ -589,9 +579,9 @@ pub fn has_racket_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".rkt")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".rkt"))
         })
         .unwrap_or(false)
 }
@@ -618,9 +608,9 @@ pub fn has_nix_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".nix")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".nix"))
         })
         .unwrap_or(false)
 }
@@ -712,9 +702,9 @@ pub fn has_svelte_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".svelte")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".svelte"))
         })
         .unwrap_or(false)
 }
@@ -726,9 +716,9 @@ pub fn has_vue_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".vue")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".vue"))
         })
         .unwrap_or(false)
 }
@@ -785,9 +775,9 @@ pub fn has_hcl_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".hcl")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".hcl"))
         })
         .unwrap_or(false)
 }
@@ -799,9 +789,9 @@ pub fn has_typst_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".typ")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".typ"))
         })
         .unwrap_or(false)
 }
@@ -858,9 +848,9 @@ pub fn has_ballerina_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".bal")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".bal"))
         })
         .unwrap_or(false)
 }
@@ -887,9 +877,9 @@ pub fn has_cue_project(root: &Path) -> bool {
     }
     std::fs::read_dir(root)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".cue")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".cue"))
         })
         .unwrap_or(false)
 }
@@ -1439,11 +1429,7 @@ mod tests {
         let all = detect_all_engines(dir.path());
         assert_eq!(
             all,
-            vec![
-                EngineKind::Rust,
-                EngineKind::Go,
-                EngineKind::TypeScript,
-            ]
+            vec![EngineKind::Rust, EngineKind::Go, EngineKind::TypeScript,]
         );
     }
 
@@ -1498,7 +1484,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(detect_engine(dir_java_kts.path()), EngineKind::Java);
-        assert_eq!(detect_all_engines(dir_java_kts.path()), vec![EngineKind::Java]);
+        assert_eq!(
+            detect_all_engines(dir_java_kts.path()),
+            vec![EngineKind::Java]
+        );
 
         let dir_groovy_gradle = tempdir().unwrap();
         std::fs::write(dir_groovy_gradle.path().join("build.gradle"), "").unwrap();
@@ -1517,7 +1506,11 @@ mod tests {
         assert_eq!(detect_all_engines(dir_php.path()), vec![EngineKind::Php]);
 
         let dir_rb = tempdir().unwrap();
-        std::fs::write(dir_rb.path().join("Gemfile"), "source 'https://rubygems.org'").unwrap();
+        std::fs::write(
+            dir_rb.path().join("Gemfile"),
+            "source 'https://rubygems.org'",
+        )
+        .unwrap();
         assert_eq!(detect_engine(dir_rb.path()), EngineKind::Ruby);
         assert_eq!(detect_all_engines(dir_rb.path()), vec![EngineKind::Ruby]);
 
@@ -1539,7 +1532,10 @@ mod tests {
         let dir_scala = tempdir().unwrap();
         std::fs::write(dir_scala.path().join("build.sbt"), "name := \"test\"").unwrap();
         assert_eq!(detect_engine(dir_scala.path()), EngineKind::Scala);
-        assert_eq!(detect_all_engines(dir_scala.path()), vec![EngineKind::Scala]);
+        assert_eq!(
+            detect_all_engines(dir_scala.path()),
+            vec![EngineKind::Scala]
+        );
 
         let dir_lua = tempdir().unwrap();
         std::fs::write(dir_lua.path().join(".luarc.json"), "{}").unwrap();
@@ -1559,7 +1555,10 @@ mod tests {
         let dir_clj = tempdir().unwrap();
         std::fs::write(dir_clj.path().join("project.clj"), "(defproject p \"0.1\")").unwrap();
         assert_eq!(detect_engine(dir_clj.path()), EngineKind::Clojure);
-        assert_eq!(detect_all_engines(dir_clj.path()), vec![EngineKind::Clojure]);
+        assert_eq!(
+            detect_all_engines(dir_clj.path()),
+            vec![EngineKind::Clojure]
+        );
 
         let dir_jl = tempdir().unwrap();
         std::fs::write(dir_jl.path().join("JuliaProject.toml"), "name = \"Pkg\"").unwrap();
@@ -1594,7 +1593,10 @@ mod tests {
         let dir_sol = tempdir().unwrap();
         std::fs::write(dir_sol.path().join("foundry.toml"), "[profile.default]").unwrap();
         assert_eq!(detect_engine(dir_sol.path()), EngineKind::Solidity);
-        assert_eq!(detect_all_engines(dir_sol.path()), vec![EngineKind::Solidity]);
+        assert_eq!(
+            detect_all_engines(dir_sol.path()),
+            vec![EngineKind::Solidity]
+        );
 
         let dir_nim = tempdir().unwrap();
         std::fs::write(dir_nim.path().join("pkg.nimble"), "version = \"0.1.0\"").unwrap();
@@ -1619,12 +1621,18 @@ mod tests {
         let dir_gql = tempdir().unwrap();
         std::fs::write(dir_gql.path().join("codegen.yml"), "schema: schema.graphql").unwrap();
         assert_eq!(detect_engine(dir_gql.path()), EngineKind::Graphql);
-        assert_eq!(detect_all_engines(dir_gql.path()), vec![EngineKind::Graphql]);
+        assert_eq!(
+            detect_all_engines(dir_gql.path()),
+            vec![EngineKind::Graphql]
+        );
 
         let dir_proto = tempdir().unwrap();
         std::fs::write(dir_proto.path().join("buf.yaml"), "version: v1").unwrap();
         assert_eq!(detect_engine(dir_proto.path()), EngineKind::Protobuf);
-        assert_eq!(detect_all_engines(dir_proto.path()), vec![EngineKind::Protobuf]);
+        assert_eq!(
+            detect_all_engines(dir_proto.path()),
+            vec![EngineKind::Protobuf]
+        );
 
         let dir_cr = tempdir().unwrap();
         std::fs::write(dir_cr.path().join("shard.yml"), "name: shard").unwrap();
@@ -1634,10 +1642,17 @@ mod tests {
         let dir_groovy = tempdir().unwrap();
         std::fs::write(dir_groovy.path().join("Jenkinsfile"), "pipeline {}").unwrap();
         assert_eq!(detect_engine(dir_groovy.path()), EngineKind::Groovy);
-        assert_eq!(detect_all_engines(dir_groovy.path()), vec![EngineKind::Groovy]);
+        assert_eq!(
+            detect_all_engines(dir_groovy.path()),
+            vec![EngineKind::Groovy]
+        );
 
         let dir_ada = tempdir().unwrap();
-        std::fs::write(dir_ada.path().join("default.gpr"), "project Default is end Default;").unwrap();
+        std::fs::write(
+            dir_ada.path().join("default.gpr"),
+            "project Default is end Default;",
+        )
+        .unwrap();
         assert_eq!(detect_engine(dir_ada.path()), EngineKind::Ada);
         assert_eq!(detect_all_engines(dir_ada.path()), vec![EngineKind::Ada]);
 
@@ -1661,75 +1676,312 @@ mod tests {
         }
 
         let matrix = [
-            Case { lang: "Rust", files: &[("Cargo.toml", "[workspace]")], kind: EngineKind::Rust },
-            Case { lang: "Go", files: &[("go.mod", "module test")], kind: EngineKind::Go },
-            Case { lang: "Python", files: &[("pyproject.toml", "[project]")], kind: EngineKind::Python },
-            Case { lang: "TypeScript", files: &[("tsconfig.json", "{}")], kind: EngineKind::TypeScript },
-            Case { lang: "Cpp", files: &[("CMakeLists.txt", "project(test)")], kind: EngineKind::Cpp },
-            Case { lang: "Swift", files: &[("Package.swift", "// swift-tools-version:5.9")], kind: EngineKind::Swift },
-            Case { lang: "Java", files: &[("pom.xml", "<project></project>")], kind: EngineKind::Java },
+            Case {
+                lang: "Rust",
+                files: &[("Cargo.toml", "[workspace]")],
+                kind: EngineKind::Rust,
+            },
+            Case {
+                lang: "Go",
+                files: &[("go.mod", "module test")],
+                kind: EngineKind::Go,
+            },
+            Case {
+                lang: "Python",
+                files: &[("pyproject.toml", "[project]")],
+                kind: EngineKind::Python,
+            },
+            Case {
+                lang: "TypeScript",
+                files: &[("tsconfig.json", "{}")],
+                kind: EngineKind::TypeScript,
+            },
+            Case {
+                lang: "Cpp",
+                files: &[("CMakeLists.txt", "project(test)")],
+                kind: EngineKind::Cpp,
+            },
+            Case {
+                lang: "Swift",
+                files: &[("Package.swift", "// swift-tools-version:5.9")],
+                kind: EngineKind::Swift,
+            },
+            Case {
+                lang: "Java",
+                files: &[("pom.xml", "<project></project>")],
+                kind: EngineKind::Java,
+            },
             Case {
                 lang: "Kotlin",
-                files: &[
-                    (
-                        "build.gradle.kts",
-                        "plugins { kotlin(\"jvm\") version \"2.0.0\" }",
-                    ),
-                ],
+                files: &[(
+                    "build.gradle.kts",
+                    "plugins { kotlin(\"jvm\") version \"2.0.0\" }",
+                )],
                 kind: EngineKind::Kotlin,
             },
-            Case { lang: "Csharp", files: &[("global.json", "{}")], kind: EngineKind::Csharp },
-            Case { lang: "Php", files: &[("composer.json", "{}")], kind: EngineKind::Php },
-            Case { lang: "Ruby", files: &[("Gemfile", "")], kind: EngineKind::Ruby },
-            Case { lang: "Dart", files: &[("pubspec.yaml", "name: test")], kind: EngineKind::Dart },
-            Case { lang: "Zig", files: &[("build.zig", "")], kind: EngineKind::Zig },
-            Case { lang: "Elixir", files: &[("mix.exs", "defmodule M do end")], kind: EngineKind::Elixir },
-            Case { lang: "Scala", files: &[("build.sbt", "")], kind: EngineKind::Scala },
-            Case { lang: "Lua", files: &[(".luarc.json", "{}")], kind: EngineKind::Lua },
-            Case { lang: "Haskell", files: &[("cabal.project", "")], kind: EngineKind::Haskell },
-            Case { lang: "Ocaml", files: &[("dune-project", "(lang dune 3.0)")], kind: EngineKind::Ocaml },
-            Case { lang: "Clojure", files: &[("project.clj", "")], kind: EngineKind::Clojure },
-            Case { lang: "Julia", files: &[("JuliaProject.toml", "")], kind: EngineKind::Julia },
-            Case { lang: "Shell", files: &[(".shellcheckrc", "")], kind: EngineKind::Shell },
-            Case { lang: "R", files: &[("DESCRIPTION", "Package: test")], kind: EngineKind::R },
-            Case { lang: "Erlang", files: &[("rebar.config", "")], kind: EngineKind::Erlang },
-            Case { lang: "Fsharp", files: &[("App.fsproj", "")], kind: EngineKind::Fsharp },
-            Case { lang: "Perl", files: &[("cpanfile", "")], kind: EngineKind::Perl },
-            Case { lang: "Solidity", files: &[("foundry.toml", "")], kind: EngineKind::Solidity },
-            Case { lang: "Nim", files: &[("nim.cfg", "")], kind: EngineKind::Nim },
-            Case { lang: "D", files: &[("dub.json", "{}")], kind: EngineKind::D },
-            Case { lang: "Fortran", files: &[("fpm.toml", "")], kind: EngineKind::Fortran },
-            Case { lang: "Sql", files: &[(".sqlfluff", "")], kind: EngineKind::Sql },
-            Case { lang: "Graphql", files: &[("codegen.yml", "")], kind: EngineKind::Graphql },
-            Case { lang: "Protobuf", files: &[("buf.yaml", "")], kind: EngineKind::Protobuf },
-            Case { lang: "Crystal", files: &[("shard.yml", "")], kind: EngineKind::Crystal },
-            Case { lang: "Groovy", files: &[("Jenkinsfile", "")], kind: EngineKind::Groovy },
-            Case { lang: "Ada", files: &[("default.gpr", "")], kind: EngineKind::Ada },
-            Case { lang: "V", files: &[("v.mod", "")], kind: EngineKind::V },
-            Case { lang: "Racket", files: &[("info.rkt", "")], kind: EngineKind::Racket },
-            Case { lang: "Terraform", files: &[("main.tf", "terraform {}")], kind: EngineKind::Terraform },
-            Case { lang: "Nix", files: &[("flake.nix", "{ description = \"test\"; }")], kind: EngineKind::Nix },
-            Case { lang: "Markdown", files: &[("README.md", "# Test")], kind: EngineKind::Markdown },
-            Case { lang: "Yaml", files: &[(".yamllint", "extends: default")], kind: EngineKind::Yaml },
-            Case { lang: "Toml", files: &[("taplo.toml", "")], kind: EngineKind::Toml },
-            Case { lang: "Json", files: &[(".jsonlintrc", "{}")], kind: EngineKind::Json },
-            Case { lang: "Html", files: &[("index.html", "<!doctype html>")], kind: EngineKind::Html },
-            Case { lang: "Css", files: &[("styles.css", "body {}")], kind: EngineKind::Css },
-            Case { lang: "Dockerfile", files: &[("Dockerfile", "FROM alpine")], kind: EngineKind::Dockerfile },
-            Case { lang: "Svelte", files: &[("svelte.config.js", "export default {};")], kind: EngineKind::Svelte },
-            Case { lang: "Vue", files: &[("vue.config.js", "module.exports = {};")], kind: EngineKind::Vue },
-            Case { lang: "Assembly", files: &[(".asm-lsp.toml", "")], kind: EngineKind::Assembly },
-            Case { lang: "Powershell", files: &[("scripts.ps1", "Write-Output 'hi'")], kind: EngineKind::Powershell },
-            Case { lang: "Starlark", files: &[("BUILD.bazel", "load(':rules.bzl', 'rule')")], kind: EngineKind::Starlark },
-            Case { lang: "Hcl", files: &[("terragrunt.hcl", "include { path = find_in_parent_folders() }")], kind: EngineKind::Hcl },
-            Case { lang: "Typst", files: &[("paper.typ", "#set text(font: 'PT Serif')")], kind: EngineKind::Typst },
-            Case { lang: "Wat", files: &[("main.wat", "(module (func (export \"run\")))")], kind: EngineKind::Wat },
-            Case { lang: "SystemVerilog", files: &[("core.sv", "module cpu; endmodule")], kind: EngineKind::SystemVerilog },
-            Case { lang: "Vhdl", files: &[("alu.vhd", "entity alu is end entity;")], kind: EngineKind::Vhdl },
-            Case { lang: "Ballerina", files: &[("Ballerina.toml", "[package]\nname = \"demo\"")], kind: EngineKind::Ballerina },
-            Case { lang: "Jsonnet", files: &[("service.jsonnet", "local config = {}; config")], kind: EngineKind::Jsonnet },
-            Case { lang: "Cue", files: &[("cue.mod", "module: \"example.com\"")], kind: EngineKind::Cue },
-            Case { lang: "Generic", files: &[], kind: EngineKind::Generic },
+            Case {
+                lang: "Csharp",
+                files: &[("global.json", "{}")],
+                kind: EngineKind::Csharp,
+            },
+            Case {
+                lang: "Php",
+                files: &[("composer.json", "{}")],
+                kind: EngineKind::Php,
+            },
+            Case {
+                lang: "Ruby",
+                files: &[("Gemfile", "")],
+                kind: EngineKind::Ruby,
+            },
+            Case {
+                lang: "Dart",
+                files: &[("pubspec.yaml", "name: test")],
+                kind: EngineKind::Dart,
+            },
+            Case {
+                lang: "Zig",
+                files: &[("build.zig", "")],
+                kind: EngineKind::Zig,
+            },
+            Case {
+                lang: "Elixir",
+                files: &[("mix.exs", "defmodule M do end")],
+                kind: EngineKind::Elixir,
+            },
+            Case {
+                lang: "Scala",
+                files: &[("build.sbt", "")],
+                kind: EngineKind::Scala,
+            },
+            Case {
+                lang: "Lua",
+                files: &[(".luarc.json", "{}")],
+                kind: EngineKind::Lua,
+            },
+            Case {
+                lang: "Haskell",
+                files: &[("cabal.project", "")],
+                kind: EngineKind::Haskell,
+            },
+            Case {
+                lang: "Ocaml",
+                files: &[("dune-project", "(lang dune 3.0)")],
+                kind: EngineKind::Ocaml,
+            },
+            Case {
+                lang: "Clojure",
+                files: &[("project.clj", "")],
+                kind: EngineKind::Clojure,
+            },
+            Case {
+                lang: "Julia",
+                files: &[("JuliaProject.toml", "")],
+                kind: EngineKind::Julia,
+            },
+            Case {
+                lang: "Shell",
+                files: &[(".shellcheckrc", "")],
+                kind: EngineKind::Shell,
+            },
+            Case {
+                lang: "R",
+                files: &[("DESCRIPTION", "Package: test")],
+                kind: EngineKind::R,
+            },
+            Case {
+                lang: "Erlang",
+                files: &[("rebar.config", "")],
+                kind: EngineKind::Erlang,
+            },
+            Case {
+                lang: "Fsharp",
+                files: &[("App.fsproj", "")],
+                kind: EngineKind::Fsharp,
+            },
+            Case {
+                lang: "Perl",
+                files: &[("cpanfile", "")],
+                kind: EngineKind::Perl,
+            },
+            Case {
+                lang: "Solidity",
+                files: &[("foundry.toml", "")],
+                kind: EngineKind::Solidity,
+            },
+            Case {
+                lang: "Nim",
+                files: &[("nim.cfg", "")],
+                kind: EngineKind::Nim,
+            },
+            Case {
+                lang: "D",
+                files: &[("dub.json", "{}")],
+                kind: EngineKind::D,
+            },
+            Case {
+                lang: "Fortran",
+                files: &[("fpm.toml", "")],
+                kind: EngineKind::Fortran,
+            },
+            Case {
+                lang: "Sql",
+                files: &[(".sqlfluff", "")],
+                kind: EngineKind::Sql,
+            },
+            Case {
+                lang: "Graphql",
+                files: &[("codegen.yml", "")],
+                kind: EngineKind::Graphql,
+            },
+            Case {
+                lang: "Protobuf",
+                files: &[("buf.yaml", "")],
+                kind: EngineKind::Protobuf,
+            },
+            Case {
+                lang: "Crystal",
+                files: &[("shard.yml", "")],
+                kind: EngineKind::Crystal,
+            },
+            Case {
+                lang: "Groovy",
+                files: &[("Jenkinsfile", "")],
+                kind: EngineKind::Groovy,
+            },
+            Case {
+                lang: "Ada",
+                files: &[("default.gpr", "")],
+                kind: EngineKind::Ada,
+            },
+            Case {
+                lang: "V",
+                files: &[("v.mod", "")],
+                kind: EngineKind::V,
+            },
+            Case {
+                lang: "Racket",
+                files: &[("info.rkt", "")],
+                kind: EngineKind::Racket,
+            },
+            Case {
+                lang: "Terraform",
+                files: &[("main.tf", "terraform {}")],
+                kind: EngineKind::Terraform,
+            },
+            Case {
+                lang: "Nix",
+                files: &[("flake.nix", "{ description = \"test\"; }")],
+                kind: EngineKind::Nix,
+            },
+            Case {
+                lang: "Markdown",
+                files: &[("README.md", "# Test")],
+                kind: EngineKind::Markdown,
+            },
+            Case {
+                lang: "Yaml",
+                files: &[(".yamllint", "extends: default")],
+                kind: EngineKind::Yaml,
+            },
+            Case {
+                lang: "Toml",
+                files: &[("taplo.toml", "")],
+                kind: EngineKind::Toml,
+            },
+            Case {
+                lang: "Json",
+                files: &[(".jsonlintrc", "{}")],
+                kind: EngineKind::Json,
+            },
+            Case {
+                lang: "Html",
+                files: &[("index.html", "<!doctype html>")],
+                kind: EngineKind::Html,
+            },
+            Case {
+                lang: "Css",
+                files: &[("styles.css", "body {}")],
+                kind: EngineKind::Css,
+            },
+            Case {
+                lang: "Dockerfile",
+                files: &[("Dockerfile", "FROM alpine")],
+                kind: EngineKind::Dockerfile,
+            },
+            Case {
+                lang: "Svelte",
+                files: &[("svelte.config.js", "export default {};")],
+                kind: EngineKind::Svelte,
+            },
+            Case {
+                lang: "Vue",
+                files: &[("vue.config.js", "module.exports = {};")],
+                kind: EngineKind::Vue,
+            },
+            Case {
+                lang: "Assembly",
+                files: &[(".asm-lsp.toml", "")],
+                kind: EngineKind::Assembly,
+            },
+            Case {
+                lang: "Powershell",
+                files: &[("scripts.ps1", "Write-Output 'hi'")],
+                kind: EngineKind::Powershell,
+            },
+            Case {
+                lang: "Starlark",
+                files: &[("BUILD.bazel", "load(':rules.bzl', 'rule')")],
+                kind: EngineKind::Starlark,
+            },
+            Case {
+                lang: "Hcl",
+                files: &[(
+                    "terragrunt.hcl",
+                    "include { path = find_in_parent_folders() }",
+                )],
+                kind: EngineKind::Hcl,
+            },
+            Case {
+                lang: "Typst",
+                files: &[("paper.typ", "#set text(font: 'PT Serif')")],
+                kind: EngineKind::Typst,
+            },
+            Case {
+                lang: "Wat",
+                files: &[("main.wat", "(module (func (export \"run\")))")],
+                kind: EngineKind::Wat,
+            },
+            Case {
+                lang: "SystemVerilog",
+                files: &[("core.sv", "module cpu; endmodule")],
+                kind: EngineKind::SystemVerilog,
+            },
+            Case {
+                lang: "Vhdl",
+                files: &[("alu.vhd", "entity alu is end entity;")],
+                kind: EngineKind::Vhdl,
+            },
+            Case {
+                lang: "Ballerina",
+                files: &[("Ballerina.toml", "[package]\nname = \"demo\"")],
+                kind: EngineKind::Ballerina,
+            },
+            Case {
+                lang: "Jsonnet",
+                files: &[("service.jsonnet", "local config = {}; config")],
+                kind: EngineKind::Jsonnet,
+            },
+            Case {
+                lang: "Cue",
+                files: &[("cue.mod", "module: \"example.com\"")],
+                kind: EngineKind::Cue,
+            },
+            Case {
+                lang: "Generic",
+                files: &[],
+                kind: EngineKind::Generic,
+            },
         ];
 
         for case in matrix {

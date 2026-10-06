@@ -8,7 +8,6 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-
 pub(crate) enum ManagedLsp<'a> {
     Go(&'a prod_code_engine_go::GoEngine),
     Generic(&'a prod_code_engine_generic::GenericLspEngine),
@@ -43,7 +42,10 @@ impl ManagedLsp<'_> {
     /// of a proposed text is not answered with the errors of the text before it (#293), and a
     /// one-shot session still gets the first publication after its didOpen for quick fixes.
     /// When no publication for that text comes, this is an error, not an empty list (#471).
-    pub(crate) async fn diagnostics_for(&self, uri: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub(crate) async fn diagnostics_for(
+        &self,
+        uri: &str,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         match self {
             ManagedLsp::Go(_) => Ok(Vec::new()),
             ManagedLsp::Generic(engine) => {
@@ -61,4 +63,3 @@ impl ManagedLsp<'_> {
 /// How long an answer about a document's diagnostics waits for a publishing server to build the
 /// text last sent. A C++ translation unit with heavy headers takes seconds on a cold server.
 pub(crate) const CURRENT_DIAGNOSTICS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-

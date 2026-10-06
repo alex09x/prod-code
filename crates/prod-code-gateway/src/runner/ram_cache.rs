@@ -10,7 +10,6 @@
 
 use crate::*;
 
-
 pub fn is_ram_cache_enabled_with(enabled: bool, env_val: Option<&str>) -> bool {
     enabled
         || env_val
@@ -272,4 +271,3 @@ pub fn sweep_ram_build_caches(base_dir: &Path) -> usize {
     }
     removed
 }
-
