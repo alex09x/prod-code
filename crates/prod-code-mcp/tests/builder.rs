@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Typed builders (#459), driven through `fixture::builder::preview` against a scripted gateway
 //! and then compiled and run: the generated code has to build the struct with the setters called
 //! in any order, and `build` has to name the field that was never set.

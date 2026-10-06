@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Intent search from the client side (roadmap 8.4): ask the gateway to rank the workspace's
 //! declarations against a question, and render the hits. Shared by the MCP tool `code_search`
 //! and the CLI `prod-code search`.

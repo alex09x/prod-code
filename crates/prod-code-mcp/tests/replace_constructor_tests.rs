@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 use prod_code_mcp::replace_constructor::{
     ReplaceMode, find_go_instantiations, find_python_instantiations, find_rust_instantiations,
     find_ts_instantiations, generate_builder_code, generate_factory_code, parse_go_struct_fields,

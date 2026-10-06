@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Multiple gateways (Phase 5.1, client side): a workspace is placed on one node by
 //! rendezvous hashing over the reachable nodes, the placement is remembered locally so all
 //! sessions of that checkout keep hitting the node whose engine and build cache are warm, and

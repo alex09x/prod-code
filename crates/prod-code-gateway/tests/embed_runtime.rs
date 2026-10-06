@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Loading ONNX Runtime, in a process of its own: once a library is loaded, `ort` keeps it for
 //! the life of the process, so a test in the library's own test binary could not see the load
 //! fail after another test had loaded the real one.

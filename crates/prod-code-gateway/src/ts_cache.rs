@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Cross-worktree TypeScript & JavaScript engine support: shared global `@types/*`
 //! and declaration cache, automated worktree type resolution, and vtsls/tsc coordination (Roadmap 3.5).
 

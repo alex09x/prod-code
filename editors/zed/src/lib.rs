@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! prod-code for Zed: the language servers run on the build nodes, and `prod-code lsp` carries
 //! them to the editor. Each server here is one language's: rust-analyzer, gopls, clangd,
 //! basedpyright, the TypeScript server or sourcekit-lsp, started on the node the checkout is

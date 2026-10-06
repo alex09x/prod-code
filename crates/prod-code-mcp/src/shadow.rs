@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Shadow runs from the client side (roadmap 7.4): send named hypotheses (complete proposed
 //! file contents) to the gateway, which runs a command once per hypothesis in a private shadow
 //! of the workspace; rank the outcomes and describe the winner as a unified diff against the

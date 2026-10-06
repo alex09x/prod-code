@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! #442, run for real: a signature change whose call sites type-check can still change what the
 //! program prints. Each scenario drives the planner (`signature::change`) against a scripted
 //! gateway whose hovers have the shapes rust-analyzer answers with, and then compiles and runs

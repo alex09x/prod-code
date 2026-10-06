@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Malformed LSP response coordinates are evidence failures, never wrapped positions that a
 //! symbol-addressable tool can act on. Healthy servers always send numbers here, so scripted
 //! gateways cover the protocol boundary directly.

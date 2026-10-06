@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Regression test for validating proposed Python files that do not exist on disk (#559).
 //! Proposing Python text for an absent file must route to the Python engine (not rust-analyzer VFS),
 //! return clean/correct diagnostics, leave the proposed file absent on disk, and preserve existing

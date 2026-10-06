@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Replace conditional logic with polymorphism across polyglot languages (Roadmap 7.1.5).
 //!
 //! Fowler's "Replace Conditional with Polymorphism" refactoring replaces complex

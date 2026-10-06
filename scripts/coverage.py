@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+#
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+#
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+
 """Per-file coverage, and a gate that fails when a file is under the bar.
 
 A workspace total hides exactly what matters: one large untested file drags it down while a

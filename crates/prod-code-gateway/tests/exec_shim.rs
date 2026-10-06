@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! The gateway binary's exec shim (#255): it reports the peak memory of the command it runs,
 //! not the high-water mark its parent carried into it across fork, and it passes the command's
 //! exit code or terminating signal on as its own.

@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! What a rename leaves behind: the old name in comments and in the names of the tests that
 //! exercise it. The analyzer renames every reference and nothing else; a doc comment that says
 //! "`Order` is written once" and a test called `order_total_rounds` keep the old name.

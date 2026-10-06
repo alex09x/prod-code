@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! The orchestration that needs a real gateway round trip: `slice` walking dependency edges
 //! across files, `fixture` resolving and building nested types, `run_shadow`/`run_verify`
 //! talking to a remote exec, and the cluster's node-selection network calls.
