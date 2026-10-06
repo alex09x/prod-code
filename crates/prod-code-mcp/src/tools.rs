@@ -322,8 +322,8 @@ pub(crate) use editor_handlers::*;
 
 pub(crate) mod symbol_handlers;
 pub(crate) use symbol_handlers::*;
-pub(crate) mod compile_gate;
-pub(crate) use compile_gate::*;
+pub mod compile_gate;
+pub use compile_gate::*;
 
 /// Tools whose `symbol` is the name of the thing to act on rather than a way of pointing at a
 /// position. They are not symbol-addressable: nothing resolves their `symbol` to a
