@@ -84,8 +84,18 @@ pub fn language_id_for_path(path: &Path) -> &'static str {
         "bal" => "ballerina",
         "jsonnet" | "libsonnet" => "jsonnet",
         "cue" => "cue",
-        _ if matches!(name, "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "Tiltfile") => "starlark",
-        _ if name == "CMakeLists.txt" || path.extension().and_then(|e| e.to_str()) == Some("cmake") => "cmake",
+        _ if matches!(
+            name,
+            "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "Tiltfile"
+        ) =>
+        {
+            "starlark"
+        }
+        _ if name == "CMakeLists.txt"
+            || path.extension().and_then(|e| e.to_str()) == Some("cmake") =>
+        {
+            "cmake"
+        }
         _ if name == "Dockerfile" || name == "Containerfile" => "dockerfile",
         _ if name == "Makefile" || name == "makefile" || name == "GNUmakefile" => "makefile",
         _ => "plaintext",
@@ -168,13 +178,19 @@ mod tests {
         assert_eq!(language_id_for_path(Path::new("src/core.clj")), "clojure");
         assert_eq!(language_id_for_path(Path::new("src/math.jl")), "julia");
         assert_eq!(language_id_for_path(Path::new("src/analysis.r")), "r");
-        assert_eq!(language_id_for_path(Path::new("src/contract.sol")), "solidity");
+        assert_eq!(
+            language_id_for_path(Path::new("src/contract.sol")),
+            "solidity"
+        );
         assert_eq!(language_id_for_path(Path::new("src/query.sql")), "sql");
         assert_eq!(language_id_for_path(Path::new("CMakeLists.txt")), "cmake");
         assert_eq!(language_id_for_path(Path::new("Dockerfile")), "dockerfile");
         assert_eq!(language_id_for_path(Path::new("Makefile")), "makefile");
         assert_eq!(language_id_for_path(Path::new("src/main.fs")), "fsharp");
-        assert_eq!(language_id_for_path(Path::new("scripts/setup.ps1")), "powershell");
+        assert_eq!(
+            language_id_for_path(Path::new("scripts/setup.ps1")),
+            "powershell"
+        );
         assert_eq!(language_id_for_path(Path::new("BUILD.bazel")), "starlark");
         assert_eq!(language_id_for_path(Path::new("rules/def.bzl")), "starlark");
         assert_eq!(language_id_for_path(Path::new("terragrunt.hcl")), "hcl");
@@ -184,7 +200,10 @@ mod tests {
         assert_eq!(language_id_for_path(Path::new("core.sv")), "systemverilog");
         assert_eq!(language_id_for_path(Path::new("alu.vhd")), "vhdl");
         assert_eq!(language_id_for_path(Path::new("main.bal")), "ballerina");
-        assert_eq!(language_id_for_path(Path::new("service.jsonnet")), "jsonnet");
+        assert_eq!(
+            language_id_for_path(Path::new("service.jsonnet")),
+            "jsonnet"
+        );
         assert_eq!(language_id_for_path(Path::new("config.cue")), "cue");
         assert_eq!(language_id_for_path(Path::new("README")), "plaintext");
     }
@@ -192,13 +211,22 @@ mod tests {
     #[test]
     fn engine_groups_partition_mixed_languages() {
         assert_eq!(engine_group_for_path(Path::new("cmd/check/main.go")), "go");
-        assert_eq!(engine_group_for_path(Path::new("scripts/check.py")), "python");
-        assert_eq!(engine_group_for_path(Path::new("Tests/Test.swift")), "swift");
+        assert_eq!(
+            engine_group_for_path(Path::new("scripts/check.py")),
+            "python"
+        );
+        assert_eq!(
+            engine_group_for_path(Path::new("Tests/Test.swift")),
+            "swift"
+        );
         assert_eq!(engine_group_for_path(Path::new("src/main.rs")), "rust");
         assert_eq!(engine_group_for_path(Path::new("include/util.h")), "cpp");
         assert_eq!(engine_group_for_path(Path::new("src/util.cpp")), "cpp");
         assert_eq!(engine_group_for_path(Path::new("src/app.ts")), "typescript");
-        assert_eq!(engine_group_for_path(Path::new("src/app.jsx")), "typescript");
+        assert_eq!(
+            engine_group_for_path(Path::new("src/app.jsx")),
+            "typescript"
+        );
         assert_eq!(engine_group_for_path(Path::new("manifest.json")), "json");
     }
 }

@@ -78,7 +78,9 @@ fn ranking(resp: &SearchResponse) -> String {
         ""
     };
     match resp.dense {
-        None => format!("lexical{graph_note} only: the gateway has no embedding model, so a question sharing no words with the code or its comments finds nothing"),
+        None => format!(
+            "lexical{graph_note} only: the gateway has no embedding model, so a question sharing no words with the code or its comments finds nothing"
+        ),
         Some(d) if d.embedded >= resp.indexed_declarations => {
             format!("ranked by words{graph_note} and by meaning")
         }
@@ -129,13 +131,18 @@ pub fn render(resp: &SearchResponse, query: &str) -> String {
         if !hit.doc.is_empty() {
             out.push_str(&format!("    {}\n", hit.doc));
         }
-        if let Some(reasons) = &hit.rank_reasons && !reasons.is_empty() {
+        if let Some(reasons) = &hit.rank_reasons
+            && !reasons.is_empty()
+        {
             let score_str = hit
                 .score
                 .as_deref()
                 .map(|s| format!(" [score {s}]"))
                 .unwrap_or_default();
-            out.push_str(&format!("    attribution{score_str}: {}\n", reasons.join("; ")));
+            out.push_str(&format!(
+                "    attribution{score_str}: {}\n",
+                reasons.join("; ")
+            ));
         }
     }
     out.trim_end().to_string()

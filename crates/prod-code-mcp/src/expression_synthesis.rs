@@ -74,7 +74,8 @@ pub fn propose_expressions_in_scope(
 
     // 2. Reference / dereference conversions
     for (var_name, var_type) in &in_scope_vars {
-        if clean_target.starts_with('&') && clean_target.trim_start_matches('&').trim() == var_type {
+        if clean_target.starts_with('&') && clean_target.trim_start_matches('&').trim() == var_type
+        {
             candidates.push(ProposedExpression {
                 expression: format!("&{var_name}"),
                 source_variable: var_name.clone(),
@@ -115,7 +116,9 @@ pub fn propose_expressions_in_scope(
                     confidence: 85,
                     rationale: format!("Formats path `{var_name}` as String"),
                 });
-            } else if var_type != "String" && (var_type.contains("id") || var_type.contains("Id") || is_primitive(var_type)) {
+            } else if var_type != "String"
+                && (var_type.contains("id") || var_type.contains("Id") || is_primitive(var_type))
+            {
                 candidates.push(ProposedExpression {
                     expression: format!("{var_name}.to_string()"),
                     source_variable: var_name.clone(),
@@ -166,7 +169,11 @@ pub fn propose_expressions_in_scope(
     // 6. 1-hop accessor chains based on naming heuristics
     let target_lower = clean_target.to_lowercase();
     for var_name in in_scope_vars.keys() {
-        if target_lower.contains("id") || clean_target == "u64" || clean_target == "usize" || clean_target == "String" {
+        if target_lower.contains("id")
+            || clean_target == "u64"
+            || clean_target == "usize"
+            || clean_target == "String"
+        {
             candidates.push(ProposedExpression {
                 expression: format!("{var_name}.id"),
                 source_variable: var_name.clone(),
@@ -218,7 +225,20 @@ fn types_match(a: &str, b: &str) -> bool {
 fn is_primitive(t: &str) -> bool {
     matches!(
         t,
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32" | "f64" | "bool"
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "bool"
     )
 }
 
@@ -230,7 +250,12 @@ fn extract_in_scope_variables(lines: &[&str], current_line_idx: usize) -> BTreeM
     // Look backwards to find enclosing function header
     for i in (scan_start..=current_line_idx.min(lines.len().saturating_sub(1))).rev() {
         let line = lines[i].trim();
-        if (line.starts_with("fn ") || line.starts_with("pub fn ") || line.starts_with("pub async fn ") || line.starts_with("async fn ") || line.starts_with("def ") || line.starts_with("func "))
+        if (line.starts_with("fn ")
+            || line.starts_with("pub fn ")
+            || line.starts_with("pub async fn ")
+            || line.starts_with("async fn ")
+            || line.starts_with("def ")
+            || line.starts_with("func "))
             && line.contains('(')
         {
             // Parse parameters across lines until closing paren
@@ -257,7 +282,11 @@ fn extract_in_scope_variables(lines: &[&str], current_line_idx: usize) -> BTreeM
                         let mut parts = p_trim.split(':');
                         let name = parts.next().unwrap_or("").trim().trim_start_matches("mut ");
                         let ty = parts.next().unwrap_or("").trim();
-                        if !name.is_empty() && name != "self" && name != "&self" && name != "&mut self" {
+                        if !name.is_empty()
+                            && name != "self"
+                            && name != "&self"
+                            && name != "&mut self"
+                        {
                             vars.insert(name.to_string(), ty.to_string());
                         }
                     }
@@ -275,7 +304,11 @@ fn extract_in_scope_variables(lines: &[&str], current_line_idx: usize) -> BTreeM
             if let Some(name_part) = rest.split(['=', ':']).next() {
                 let var_name = name_part.trim();
                 let ty = if line.contains(':') && line.find(':') < line.find('=') {
-                    line.split(':').nth(1).and_then(|s| s.split('=').next()).unwrap_or("").trim()
+                    line.split(':')
+                        .nth(1)
+                        .and_then(|s| s.split('=').next())
+                        .unwrap_or("")
+                        .trim()
                 } else if line.contains("String::new") || line.contains(".to_string()") {
                     "String"
                 } else if line.contains("Vec::new") || line.contains("vec![") {
@@ -348,7 +381,10 @@ fn test_handler(user_id: u64, name: &str, is_admin: bool) {
         assert_eq!(report.candidates[0].expression, "user_id");
 
         let report_str = propose_expressions_in_scope(dir.path(), "main.rs", 5, "String").unwrap();
-        let has_to_string = report_str.candidates.iter().any(|c| c.expression == "name.to_string()");
+        let has_to_string = report_str
+            .candidates
+            .iter()
+            .any(|c| c.expression == "name.to_string()");
         assert!(has_to_string);
     }
 
