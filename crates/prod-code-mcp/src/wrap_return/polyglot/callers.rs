@@ -41,6 +41,7 @@ pub(crate) fn collect_and_rewrite_callers(
 ) -> Result<()> {
     let name = &decl.name;
     let canonical_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let has_semantic_references = !semantic_references.is_empty();
 
     // Traverse workspace files for callers
     for entry in ignore::WalkBuilder::new(root).build().flatten() {
@@ -95,7 +96,7 @@ pub(crate) fn collect_and_rewrite_callers(
 
             // Self-call inside function's own body
             if is_decl_file && at > decl.body_open && at < decl.body_close {
-                if !semantic_references.is_empty() && !semantic_references.remove(&reference_key) {
+                if has_semantic_references && !semantic_references.remove(&reference_key) {
                     continue;
                 }
                 unmatched.push(format!("{site} (a call inside `{name}` itself)"));
@@ -110,13 +111,16 @@ pub(crate) fn collect_and_rewrite_callers(
                 && let Some(cp) = proto_close_paren
                 && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, cp)
             {
+                if has_semantic_references {
+                    semantic_references.remove(&reference_key);
+                }
                 if let Some(ret_start) = other_content[..at].rfind(was) {
                     file_edits.push((ret_start, was.len(), now.to_string()));
                 }
                 continue;
             }
 
-            if !semantic_references.is_empty() && !semantic_references.remove(&reference_key) {
+            if has_semantic_references && !semantic_references.remove(&reference_key) {
                 continue;
             }
 

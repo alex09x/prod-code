@@ -119,11 +119,17 @@ async fn wrap_return_rebases_same_file_callsite_after_signature_rewrite() {
             "src/other.ts",
             "class Other { calculate(value: number) { return value; } }\nexport function other() { return new Other().calculate(5); }\n",
         ),
+        (
+            "src/z_other.ts",
+            "class Another { calculate(value: number) { return value; } }\nexport function another() { return new Another().calculate(10); }\n",
+        ),
     ]);
     let root = ws.root().to_path_buf();
     let file = root.join("src/main.ts");
     let other_file = root.join("src/other.ts");
     let other_before = fs::read_to_string(&other_file).unwrap();
+    let z_other_file = root.join("src/z_other.ts");
+    let z_other_before = fs::read_to_string(&z_other_file).unwrap();
     let gateway = fake_gateway().await;
     let result = wrap_polyglot(
         gateway.addr(),
@@ -153,6 +159,7 @@ async fn wrap_return_rebases_same_file_callsite_after_signature_rewrite() {
         "{updated}; result={result:?}"
     );
     assert_eq!(fs::read_to_string(other_file).unwrap(), other_before);
+    assert_eq!(fs::read_to_string(z_other_file).unwrap(), z_other_before);
 }
 
 #[tokio::test]
