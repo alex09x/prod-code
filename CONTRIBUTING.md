@@ -145,6 +145,9 @@ journalctl --user -u prod-code-gateway -o short-precise --since "-10min"
 ## Style
 
 - Rust 2024 edition, `rustfmt` defaults, clippy clean with `-D warnings`.
+- Source file attribution: new first-party source files and substantively modified files carry the standard prod-code copyright and dual MIT OR Apache-2.0 header.
+- File size and modularity: source files target 100–300 lines (hard ceiling of 400 lines before decomposing into cohesive submodules).
+- Targeted reading: do not dump or scan whole source files (`view_file` without line range, or `cat`) merely to plan or execute a local change. Use `code_definition` (defaults to `body: true`), `code_outline` / `code_symbols`, or narrow 30–60 line slices.
 - Errors carry context (`anyhow::Context`); logs use `tracing` with structured fields.
 - A change that alters behaviour comes with a test that fails without it.
 - Comments explain why, not what; keep them short.
