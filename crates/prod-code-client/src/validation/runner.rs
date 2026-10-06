@@ -12,7 +12,8 @@ use super::session_state::{
     cli_stream_session_dir, cli_stream_session_path, load_cli_stream_session,
     prune_expired_cli_stream_sessions, write_cli_stream_session,
 };
-use crate::{find_workspace_root, run_tool};
+use crate::commands::run_tool;
+use crate::workspace::find_workspace_root;
 use anyhow::{Context, Result};
 use std::env;
 use std::net::SocketAddr;

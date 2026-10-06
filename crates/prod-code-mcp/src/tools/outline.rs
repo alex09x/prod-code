@@ -156,7 +156,11 @@ pub async fn outline_file(
         );
         return Ok(text);
     }
-    if crate::sync::engine_for_file(file_path).is_none() {
+    let engine = crate::sync::engine_for_file(file_path);
+    if !matches!(
+        engine,
+        Some("rust" | "go" | "python" | "typescript" | "cpp" | "swift")
+    ) {
         let kind = extension.map_or_else(
             || "files without an extension".to_string(),
             |e| format!("`.{e}` files"),
