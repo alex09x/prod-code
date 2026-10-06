@@ -599,3 +599,26 @@ fn directory_size_calculation() {
     let total = calculate_directory_size(root);
     assert_eq!(total, 15);
 }
+
+#[test]
+fn command_method_normalization() {
+    use super::event::{command_method, is_compilation_command};
+
+    assert_eq!(
+        command_method("cargo build --release"),
+        "cargo-build-release"
+    );
+    assert_eq!(command_method("cargo test --workspace"), "cargo-test");
+    assert_eq!(command_method("cargo check --all-targets"), "cargo-check");
+    assert_eq!(command_method("cargo clippy"), "cargo-clippy");
+    assert_eq!(command_method("go test -v ./..."), "go-test");
+    assert_eq!(command_method("go vet ./..."), "go-vet");
+    assert_eq!(command_method("golangci-lint run"), "golangci-lint");
+    assert_eq!(command_method("npx --no-install eslint ."), "npx-eslint");
+    assert_eq!(command_method("npx --no-install tsc --noEmit"), "npx-tsc");
+
+    assert!(is_compilation_command("cargo build --release"));
+    assert!(is_compilation_command("cargo test"));
+    assert!(is_compilation_command("npx --no-install tsc --noEmit"));
+    assert!(!is_compilation_command("npx --no-install eslint ."));
+}

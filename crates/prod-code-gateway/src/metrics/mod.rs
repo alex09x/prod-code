@@ -176,6 +176,7 @@ impl Metrics {
             "clang" | "clang++" | "gcc" | "g++" | "cc" | "c++" => "clang",
             "swift" | "swiftc" => "swift",
             "tsc" => "tsc",
+            "npx" if command.split_whitespace().any(|a| a == "tsc") => "tsc",
             "zig" => "zig",
             "javac" => "javac",
             "kotlinc" => "kotlinc",

@@ -150,6 +150,9 @@ pub fn command_method(cmd: &str) -> String {
 
     if base == "cargo" {
         if let Some(sub) = cmd.split_whitespace().nth(1) {
+            if cmd.split_whitespace().any(|a| a == "--release") {
+                return format!("cargo-{sub}-release");
+            }
             return format!("cargo-{sub}");
         }
     } else if base == "go" {
@@ -159,6 +162,12 @@ pub fn command_method(cmd: &str) -> String {
     } else if base == "npm" || base == "pnpm" || base == "yarn" {
         if let Some(sub) = cmd.split_whitespace().nth(1) {
             return format!("{base}-{sub}");
+        }
+    } else if base == "npx" {
+        for part in cmd.split_whitespace().skip(1) {
+            if !part.starts_with('-') {
+                return format!("npx-{part}");
+            }
         }
     }
     base
@@ -186,6 +195,7 @@ pub fn is_compilation_command(cmd: &str) -> bool {
         "clang" | "clang++" | "gcc" | "g++" | "cc" | "c++" => true,
         "swift" | "swiftc" => true,
         "tsc" => true,
+        "npx" => parts.any(|sub| sub == "tsc"),
         "zig" => parts
             .next()
             .is_none_or(|sub| matches!(sub, "build" | "test" | "run")),
