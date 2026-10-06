@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## v0.3.26 — 2026-10-06
+
+### Refactored
+- **Comprehensive Modular Decomposition Across All Crates**:
+  Decomposed 104 monolithic source files exceeding 400 lines across `crates/prod-code-*` into cohesive, focused submodules adhering to the 100–300 lines sweet spot. All production source files in `src/` now strictly respect the 400-line threshold (with the single allowed exception of `commands.rs` for the declarative `clap::Subcommand` enum schema).
+  - `crates/prod-code-testkit`: decomposed `gopls` bridge, workspace, and mock infrastructure.
+  - `crates/prod-code-protocol`: modularized codec, discovery, DNS, transport, TLS, and message serializers.
+  - `crates/prod-code-engine-go`, `crates/prod-code-engine-generic`, `crates/prod-code-engine-rust`: modularized LSP lifecycle, config, and document management.
+  - `crates/prod-code-gateway`: decomposed admission, backend, search, shadow, and language caches.
+  - `crates/prod-code-mcp`: decomposed `parameter_object` (5,791 lines into 26 submodules), `verify` (3,575 lines), `wrap_return` (2,355 lines), `signature`, `signature_go`, `impact`, `sync`, and refactoring handlers.
+
+### Fixed
+- **Polyglot Wrap Return Semantic Reference Persistence** (`crates/prod-code-mcp`):
+  Ensured `collect_and_rewrite_callers` preserves semantic filtering across the entire workspace scan when the analyzer provides references, preventing unintended fallback to lexical matching when the final reference is consumed.
+
 ## v0.3.25 — 2026-10-05
 
 ### Added
