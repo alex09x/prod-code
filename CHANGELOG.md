@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## v0.3.27 — 2026-10-06
+
+### Added
+- **Unified Gateway Metrics, Resource Snapshots & Bounded Retention** (`crates/prod-code-gateway`, `crates/prod-code-protocol`):
+  Unified telemetry collection across all gateway operations (`lsp`, `exec`, `remote_exec`, `sync`, `search`, `shadow`, `read_file`, `place`, `status`) into low-cardinality `OperationMetric` records. Added periodic host and process resource snapshots (`HostSnapshot`) capturing CPU utilization, gateway RSS, host memory available/used, and workspace disk space, along with cached toolchain component inventory (`ToolchainInventory`). Disk persistence writes to daily JSONL files under bounded retention (14-day and 500 MB quota).
+- **Prometheus Scrape Endpoint & Pushgateway Client** (`crates/prod-code-gateway`):
+  Added native Prometheus exposition supporting both pull HTTP scrape endpoint (`GET /metrics` and `/health`) and periodic Pushgateway client with customizable job and instance labels.
+- **Declarative TOML Configuration Support** (`crates/prod-code-gateway`, `gateway.example.toml`):
+  Added automatic discovery and parsing of `gateway.toml` (`--config`, `/etc/prod-code/gateway.toml`, `~/.config/prod-code/gateway.toml`, `~/.prod-code/gateway.toml`, `./gateway.toml`) with strict CLI and environment variable precedence.
+- **Compilation Telemetry & Workspace Storage Sizing** (`crates/prod-code-gateway`):
+  Tracks compilation tool invocations (`rustc`, `go`, `clang`, `swift`, `tsc`), measuring compile durations and classifying failures. Background janitor computes non-blocking workspace directory storage.
+
 ## v0.3.26 — 2026-10-06
 
 ### Refactored

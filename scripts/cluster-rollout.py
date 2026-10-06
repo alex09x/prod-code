@@ -31,19 +31,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Known node IP to friendly alias mapping
 NODE_ALIASES = {
-    "192.168.2.168": "booster",
-    "192.168.2.6": "booster",
+    "192.168.2.6": "ram7",
+    "192.168.2.208": "ram8",
     "192.168.2.143": "ram9",
+    "192.168.2.13": "ram11",
+    "192.168.2.134": "ramx",
+    "192.168.2.168": "booster",
     "192.168.2.190": "rama",
     "192.168.2.40": "macbook",
-    "192.168.2.208": "node-208",
     "192.168.2.242": "studio",
 }
 
 DEFAULT_NODES = [
-    {"ip": "192.168.2.168", "alias": "booster", "arch": "x86_64", "os": "linux"},
+    {"ip": "192.168.2.6", "alias": "ram7", "arch": "x86_64", "os": "linux"},
+    {"ip": "192.168.2.208", "alias": "ram8", "arch": "x86_64", "os": "linux"},
     {"ip": "192.168.2.143", "alias": "ram9", "arch": "x86_64", "os": "linux"},
-    {"ip": "192.168.2.190", "alias": "rama", "arch": "aarch64", "os": "linux"},
+    {"ip": "192.168.2.168", "alias": "booster", "arch": "x86_64", "os": "linux"},
     {"ip": "192.168.2.40", "alias": "macbook", "arch": "aarch64", "os": "darwin"},
 ]
 
