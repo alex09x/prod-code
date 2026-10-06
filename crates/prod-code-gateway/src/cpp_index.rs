@@ -98,10 +98,16 @@ pub fn relocate_shard(
     }
 
     let from_str = from_workspace.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "from_workspace is not valid UTF-8")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "from_workspace is not valid UTF-8",
+        )
     })?;
     let to_str = to_workspace.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "to_workspace is not valid UTF-8")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "to_workspace is not valid UTF-8",
+        )
     })?;
 
     let mut chunks = Vec::new();
@@ -112,7 +118,8 @@ pub fn relocate_shard(
     while offset + 8 <= shard_data.len() {
         let mut tag = [0u8; 4];
         tag.copy_from_slice(&shard_data[offset..offset + 4]);
-        let length = u32::from_le_bytes(shard_data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let length =
+            u32::from_le_bytes(shard_data[offset + 4..offset + 8].try_into().unwrap()) as usize;
         offset += 8;
 
         if offset + length > shard_data.len() {
@@ -129,11 +136,8 @@ pub fn relocate_shard(
         }
 
         if &tag == b"stri" {
-            let (relocated_chunk, orig_strings, relocated_strings) = relocate_string_table(
-                chunk_bytes,
-                from_str,
-                to_str,
-            )?;
+            let (relocated_chunk, orig_strings, relocated_strings) =
+                relocate_string_table(chunk_bytes, from_str, to_str)?;
             orig_strings_table = orig_strings;
             relocated_strings_table = relocated_strings;
             chunks.push(RiffChunk {
@@ -468,15 +472,24 @@ pub fn relocate_compile_commands_content(
                 if let Some(obj) = entry.as_object_mut() {
                     if let Some(dir) = obj.get("directory").and_then(|v| v.as_str()) {
                         let relocated_dir = relocate_arg_token(dir, from_str, to_str);
-                        obj.insert("directory".to_string(), serde_json::Value::String(relocated_dir));
+                        obj.insert(
+                            "directory".to_string(),
+                            serde_json::Value::String(relocated_dir),
+                        );
                     }
                     if let Some(file) = obj.get("file").and_then(|v| v.as_str()) {
                         let relocated_file = relocate_arg_token(file, from_str, to_str);
-                        obj.insert("file".to_string(), serde_json::Value::String(relocated_file));
+                        obj.insert(
+                            "file".to_string(),
+                            serde_json::Value::String(relocated_file),
+                        );
                     }
                     if let Some(output) = obj.get("output").and_then(|v| v.as_str()) {
                         let relocated_output = relocate_arg_token(output, from_str, to_str);
-                        obj.insert("output".to_string(), serde_json::Value::String(relocated_output));
+                        obj.insert(
+                            "output".to_string(),
+                            serde_json::Value::String(relocated_output),
+                        );
                     }
                     if let Some(args) = obj.get_mut("arguments").and_then(|v| v.as_array_mut()) {
                         for arg in args {
@@ -488,7 +501,10 @@ pub fn relocate_compile_commands_content(
                     }
                     if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
                         let relocated_cmd = relocate_command_string(cmd, from_str, to_str);
-                        obj.insert("command".to_string(), serde_json::Value::String(relocated_cmd));
+                        obj.insert(
+                            "command".to_string(),
+                            serde_json::Value::String(relocated_cmd),
+                        );
                     }
                 }
             }
@@ -508,7 +524,6 @@ pub fn relocate_compile_commands_content(
     }
     Ok(out)
 }
-
 
 /// Identifies the primary translation unit path for a shard.
 ///
@@ -581,7 +596,8 @@ fn identify_primary_source(
         if is_under_root(orig_path, from_str) {
             let p = Path::new(orig_path);
             if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                let rel_path = PathBuf::from(relocated.strip_prefix("file://").unwrap_or(relocated));
+                let rel_path =
+                    PathBuf::from(relocated.strip_prefix("file://").unwrap_or(relocated));
                 match ext {
                     "c" | "cc" | "cpp" | "cxx" => source_candidates.push(rel_path),
                     "h" | "hh" | "hpp" | "hxx" => header_candidates.push(rel_path),
@@ -619,7 +635,10 @@ fn identify_primary_source(
 pub fn seed_clangd_index(from: &Path, to: &Path) -> io::Result<Option<u64>> {
     let candidate_dirs = [
         (
-            from.join("build").join(".cache").join("clangd").join("index"),
+            from.join("build")
+                .join(".cache")
+                .join("clangd")
+                .join("index"),
             to.join("build").join(".cache").join("clangd").join("index"),
         ),
         (
@@ -717,12 +736,12 @@ pub fn seed_compile_commands(from: &Path, to: &Path) -> io::Result<Option<u64>> 
         return Ok(None);
     };
 
-    let from_str = from.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "from is not valid UTF-8")
-    })?;
-    let to_str = to.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "to is not valid UTF-8")
-    })?;
+    let from_str = from
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "from is not valid UTF-8"))?;
+    let to_str = to
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "to is not valid UTF-8"))?;
 
     let content = std::fs::read_to_string(source_cdb)?;
     let relocated = relocate_compile_commands_content(&content, from_str, to_str)?;
@@ -751,11 +770,7 @@ pub fn seed_cpp_worktree(from: &Path, to: &Path) -> io::Result<Option<u64>> {
         any = true;
     }
 
-    if any {
-        Ok(Some(total))
-    } else {
-        Ok(None)
-    }
+    if any { Ok(Some(total)) } else { Ok(None) }
 }
 
 #[cfg(test)]
@@ -767,7 +782,11 @@ mod tests {
         let path = "/srv/workspaces/repo/src/main.cpp";
         let digest = clangd_path_digest(path);
         assert_eq!(digest.len(), 16);
-        assert!(digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
+        assert!(
+            digest
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase())
+        );
 
         let shard_name = shard_filename_for_path(Path::new(path)).unwrap();
         assert_eq!(shard_name, format!("main.cpp.{digest}.idx"));
@@ -852,10 +871,19 @@ mod tests {
         assert_eq!(decomp_strings.len(), strings.len());
         assert_eq!(decomp_strings[0], "");
         assert_eq!(decomp_strings[1], "/srv/workspaces/repo--wt-1234");
-        assert_eq!(decomp_strings[2], "/srv/workspaces/repo--wt-1234/src/main.cpp");
-        assert_eq!(decomp_strings[3], "file:///srv/workspaces/repo--wt-1234/src/main.cpp");
+        assert_eq!(
+            decomp_strings[2],
+            "/srv/workspaces/repo--wt-1234/src/main.cpp"
+        );
+        assert_eq!(
+            decomp_strings[3],
+            "file:///srv/workspaces/repo--wt-1234/src/main.cpp"
+        );
         assert_eq!(decomp_strings[4], "/srv/workspaces/repository-deps/include");
-        assert_eq!(decomp_strings[5], "file:///srv/workspaces/repo-deps/include");
+        assert_eq!(
+            decomp_strings[5],
+            "file:///srv/workspaces/repo-deps/include"
+        );
         assert_eq!(decomp_strings[6], "-I/srv/workspaces/repo-deps/include");
         assert_eq!(decomp_strings[7], "compute_magic");
     }
@@ -918,7 +946,9 @@ mod tests {
         // Must resolve to z_main.cpp in the new worktree, NOT a.h!
         assert_eq!(
             resolved_source,
-            Some(PathBuf::from("/srv/workspaces/project--wt-1/src/z_main.cpp"))
+            Some(PathBuf::from(
+                "/srv/workspaces/project--wt-1/src/z_main.cpp"
+            ))
         );
 
         // Derive target shard filename
@@ -943,8 +973,14 @@ mod tests {
 
         assert_eq!(decomp_strings.len(), strings.len());
         assert_eq!(decomp_strings[0], "");
-        assert_eq!(decomp_strings[1], "/srv/workspaces/project--wt-1/include/a.h");
-        assert_eq!(decomp_strings[3], "/srv/workspaces/project--wt-1/src/z_main.cpp");
+        assert_eq!(
+            decomp_strings[1],
+            "/srv/workspaces/project--wt-1/include/a.h"
+        );
+        assert_eq!(
+            decomp_strings[3],
+            "/srv/workspaces/project--wt-1/src/z_main.cpp"
+        );
     }
 
     #[test]
@@ -1032,7 +1068,11 @@ mod tests {
         let shard_name = shard_filename_for_path(&source_file).unwrap();
 
         // Create a minimal synthetic shard for lib.cpp with index 0 sentinel
-        let uncompressed = format!("\0{}\0file://{}\0", source_file.display(), source_file.display());
+        let uncompressed = format!(
+            "\0{}\0file://{}\0",
+            source_file.display(),
+            source_file.display()
+        );
         let mut encoder =
             flate2::write::ZlibEncoder::new(Vec::<u8>::new(), flate2::Compression::default());
         encoder.write_all(uncompressed.as_bytes()).unwrap();
@@ -1080,7 +1120,10 @@ mod tests {
             .join("clangd")
             .join("index");
         let to_shard_path = to_index.join(&expected_to_shard);
-        assert!(to_shard_path.is_file(), "expected shard {expected_to_shard} was not created");
+        assert!(
+            to_shard_path.is_file(),
+            "expected shard {expected_to_shard} was not created"
+        );
 
         let to_gitignore = to_index.join(".gitignore");
         assert!(to_gitignore.is_file());
@@ -1098,8 +1141,14 @@ mod tests {
         let to = "/srv/workspaces/repo--wt-1234";
 
         // Exact match
-        assert_eq!(relocate_path_or_uri("/srv/workspaces/repo", from, to), "/srv/workspaces/repo--wt-1234");
-        assert_eq!(relocate_path_or_uri("/srv/workspaces/repo/", from, to), "/srv/workspaces/repo--wt-1234/");
+        assert_eq!(
+            relocate_path_or_uri("/srv/workspaces/repo", from, to),
+            "/srv/workspaces/repo--wt-1234"
+        );
+        assert_eq!(
+            relocate_path_or_uri("/srv/workspaces/repo/", from, to),
+            "/srv/workspaces/repo--wt-1234/"
+        );
 
         // Child path
         assert_eq!(
@@ -1161,14 +1210,21 @@ mod tests {
             "-I\"/srv/workspaces/repository-deps/include\""
         );
         assert_eq!(
-            relocate_arg_token("-fdebug-prefix-map=/srv/workspaces/repo=/work/build", from, to),
+            relocate_arg_token(
+                "-fdebug-prefix-map=/srv/workspaces/repo=/work/build",
+                from,
+                to
+            ),
             "-fdebug-prefix-map=/srv/workspaces/repo--wt-1234=/work/build"
         );
 
         // Sentinels and non-matching tokens
         assert_eq!(relocate_arg_token("", from, to), "");
         assert_eq!(relocate_arg_token("repo", from, to), "repo");
-        assert_eq!(relocate_arg_token("compute_magic", from, to), "compute_magic");
+        assert_eq!(
+            relocate_arg_token("compute_magic", from, to),
+            "compute_magic"
+        );
     }
 
     #[test]
@@ -1218,15 +1274,30 @@ mod tests {
         assert_eq!(e1["directory"], "/srv/workspaces/repo--wt-1234/build");
         assert_eq!(e1["file"], "/srv/workspaces/repo--wt-1234/src/main.cpp");
         assert_eq!(e1["output"], "/srv/workspaces/repo--wt-1234/build/main.o");
-        assert!(e1["command"].as_str().unwrap().contains("-I/srv/workspaces/repo--wt-1234/include"));
-        assert!(e1["command"].as_str().unwrap().contains("-I/srv/workspaces/repo-deps/include"));
+        assert!(
+            e1["command"]
+                .as_str()
+                .unwrap()
+                .contains("-I/srv/workspaces/repo--wt-1234/include")
+        );
+        assert!(
+            e1["command"]
+                .as_str()
+                .unwrap()
+                .contains("-I/srv/workspaces/repo-deps/include")
+        );
 
         // Entry 2 (sibling dependency unit): MUST BE COMPLETELY UNTOUCHED
         let e2 = &arr[1];
         assert_eq!(e2["directory"], "/srv/workspaces/repository-deps/build");
         assert_eq!(e2["file"], "/srv/workspaces/repository-deps/src/dep.cpp");
-        assert_eq!(e2["arguments"][1], "-I/srv/workspaces/repository-deps/include");
-        assert_eq!(e2["arguments"][3], "/srv/workspaces/repository-deps/src/dep.cpp");
+        assert_eq!(
+            e2["arguments"][1],
+            "-I/srv/workspaces/repository-deps/include"
+        );
+        assert_eq!(
+            e2["arguments"][3],
+            "/srv/workspaces/repository-deps/src/dep.cpp"
+        );
     }
-
 }

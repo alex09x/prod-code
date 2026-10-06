@@ -2695,6 +2695,7 @@ async fn cli_validate_chunk_intercepts() {
             "--session",
             "cli-test-intercept",
             "--reset",
+            "--close",
         ],
     )
     .await;
@@ -3596,9 +3597,10 @@ where
                                 .and_then(|r| r.as_str())
                                 .and_then(|s| s.strip_prefix("__redirect__:"))
                             {
-                                log.lock()
-                                    .expect("log")
-                                    .push((connection, format!("redirect after {method} to {target}")));
+                                log.lock().expect("log").push((
+                                    connection,
+                                    format!("redirect after {method} to {target}"),
+                                ));
                                 let _ = framed
                                     .send(WireMessage::Redirect {
                                         target_addr: target.to_string(),

@@ -11,13 +11,13 @@
 //! Managed language server backend workers (e.g. rust-analyzer on a Linux node) supervised by prod-code gateway.
 
 use anyhow::{Context, Result};
+use prod_code_protocol::ScrubSecrets;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Duration;
-use prod_code_protocol::ScrubSecrets;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, Notify, OwnedMutexGuard, RwLock, broadcast, oneshot};

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use crate::{disk_space, seed_fits, DiskSpace};
+use crate::{DiskSpace, disk_space, seed_fits};
 
 /// The environment variable name used to explicitly configure the shared TypeScript `@types` cache directory.
 pub const TS_TYPES_CACHE_ENV: &str = "PROD_CODE_TS_TYPES_CACHE";
@@ -109,7 +109,10 @@ pub fn is_typescript_project(root: &Path) -> bool {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if matches!(ext, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts") {
+                    if matches!(
+                        ext,
+                        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts"
+                    ) {
                         return true;
                     }
                 }
@@ -316,7 +319,10 @@ static TYPE_FILE_NONCE: AtomicU64 = AtomicU64::new(1);
 /// Operates on the open file handle directly to prevent symlink TOCTOU races (#836).
 fn copy_and_publish_type_file(src: &Path, dst: &Path) -> io::Result<u64> {
     let parent = dst.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination file has no parent directory")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination file has no parent directory",
+        )
     })?;
     ensure_cache_dir(parent)?;
 
@@ -609,11 +615,7 @@ pub fn tree_size_within(dir: &Path, approved_roots: &[&Path]) -> u64 {
     tree_size_inner(dir, &approved, &mut visited)
 }
 
-fn tree_size_inner(
-    dir: &Path,
-    approved_roots: &[PathBuf],
-    visited: &mut VisitedDirs,
-) -> u64 {
+fn tree_size_inner(dir: &Path, approved_roots: &[PathBuf], visited: &mut VisitedDirs) -> u64 {
     let Some(canonical_dir) = approved_target(dir, approved_roots) else {
         return 0;
     };
@@ -974,7 +976,9 @@ mod unix_pruner {
 
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(root_fd, &mut st) } != 0 {
-            unsafe { libc::close(root_fd); }
+            unsafe {
+                libc::close(root_fd);
+            }
             return Ok(0);
         }
 
@@ -983,7 +987,9 @@ mod unix_pruner {
             || (st.st_dev as u64) != expected_meta.dev()
             || (st.st_ino as u64) != expected_meta.ino()
         {
-            unsafe { libc::close(root_fd); }
+            unsafe {
+                libc::close(root_fd);
+            }
             return Ok(0);
         }
 
@@ -1098,7 +1104,8 @@ mod unix_pruner {
 
                 if is_tmp_ts {
                     if mode == libc::S_IFREG {
-                        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                        let modified =
+                            SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
                         let file_size = st.st_size as u64;
                         let name_str = name.to_str().unwrap_or("");
                         let created_at = parse_tmp_ts_timestamp(name_str);
@@ -1146,7 +1153,8 @@ mod unix_pruner {
                         libc::close(child_fd);
                     }
                 } else if mode == libc::S_IFREG {
-                    let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                    let modified =
+                        SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
                     let size = st.st_size as u64;
                     *total_size += size;
                     files.push(CacheEntry {
@@ -1176,7 +1184,9 @@ mod unix_pruner {
             };
             if next_fd < 0 {
                 for fd in fds_to_close {
-                    unsafe { libc::close(fd); }
+                    unsafe {
+                        libc::close(fd);
+                    }
                 }
                 return false;
             }
@@ -1202,7 +1212,9 @@ mod unix_pruner {
         };
 
         for fd in fds_to_close {
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
         }
 
         removed
@@ -1255,36 +1267,45 @@ fn prune_fallback(
         tmp_grace_period: Duration,
         removed: &mut usize,
     ) {
-        let Ok(entries) = fs::read_dir(dir) else { return; };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue; };
-            if file_type.is_symlink() { continue; }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.ends_with(".lock") { continue; }
+            if name_str.ends_with(".lock") {
+                continue;
+            }
             let is_tmp_ts = name_str.starts_with(".tmp-ts-");
-            if name_str.starts_with('.') && !is_tmp_ts { continue; }
+            if name_str.starts_with('.') && !is_tmp_ts {
+                continue;
+            }
 
             if file_type.is_dir() {
                 walk(&path, files, total_size, now, tmp_grace_period, removed);
             } else if file_type.is_file() {
-                let Ok(meta) = fs::metadata(&path) else { continue; };
+                let Ok(meta) = fs::metadata(&path) else {
+                    continue;
+                };
                 let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 let size = meta.len();
                 let created_at = parse_tmp_ts_timestamp(&name_str);
                 let age = match created_at {
-                    Some(ts) => now.duration_since(ts).unwrap_or_else(|_| {
-                        now.duration_since(modified).unwrap_or(Duration::ZERO)
-                    }),
+                    Some(ts) => now
+                        .duration_since(ts)
+                        .unwrap_or_else(|_| now.duration_since(modified).unwrap_or(Duration::ZERO)),
                     None => now.duration_since(modified).unwrap_or(Duration::ZERO),
                 };
 
                 if is_tmp_ts {
-                    let is_locked = fs::OpenOptions::new()
-                        .write(true)
-                        .open(&path)
-                        .is_err();
+                    let is_locked = fs::OpenOptions::new().write(true).open(&path).is_err();
 
                     if !is_locked && age > tmp_grace_period {
                         if fs::remove_file(&path).is_ok() {
@@ -1301,7 +1322,14 @@ fn prune_fallback(
         }
     }
 
-    walk(cache_dir, &mut files, &mut total_size, now, tmp_grace_period, &mut removed);
+    walk(
+        cache_dir,
+        &mut files,
+        &mut total_size,
+        now,
+        tmp_grace_period,
+        &mut removed,
+    );
 
     // Evict files older than max_age
     files.retain(|(path, size, modified)| {
@@ -1355,8 +1383,14 @@ mod tests {
 
         let envs = ts_types_cache_env();
         let custom_str = custom.to_str().unwrap();
-        assert!(envs.iter().any(|(k, v)| k == TS_TYPES_CACHE_ENV && v == custom_str));
-        assert!(envs.iter().any(|(k, v)| k == "TS_TYPES_CACHE" && v == custom_str));
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == TS_TYPES_CACHE_ENV && v == custom_str)
+        );
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "TS_TYPES_CACHE" && v == custom_str)
+        );
 
         unsafe {
             std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -1414,8 +1448,13 @@ mod tests {
 
         coordinate_tsconfig(&tsconfig);
 
-        let updated: serde_json::Value = serde_json::from_str(&fs::read_to_string(&tsconfig).unwrap()).unwrap();
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&tsconfig).unwrap()).unwrap();
         let roots = updated["compilerOptions"]["typeRoots"].as_array().unwrap();
-        assert!(roots.iter().any(|r| r.as_str() == Some("node_modules/@types")));
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.as_str() == Some("node_modules/@types"))
+        );
     }
 }

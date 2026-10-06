@@ -88,7 +88,15 @@ impl SharedWorkspace {
         generic_engine: Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
         backend: Option<Arc<crate::backend::BackendWorker>>,
     ) -> Self {
-        Self::with_base(root, engine, rust_engine, go_engine, generic_engine, backend, None)
+        Self::with_base(
+            root,
+            engine,
+            rust_engine,
+            go_engine,
+            generic_engine,
+            backend,
+            None,
+        )
     }
 
     pub fn with_base(
@@ -103,7 +111,9 @@ impl SharedWorkspace {
         let rust_engines = base_workspace
             .as_ref()
             .map(|b| Arc::clone(&b.rust_engines))
-            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(rust_engine.iter().cloned().collect())));
+            .unwrap_or_else(|| {
+                Arc::new(std::sync::Mutex::new(rust_engine.iter().cloned().collect()))
+            });
         let (rebalance_tx, _) = broadcast::channel(16);
         let rebalance_tx = base_workspace
             .as_ref()
@@ -113,7 +123,9 @@ impl SharedWorkspace {
             .as_ref()
             .map(|base| Arc::clone(&base.engine_load_semaphore))
             .unwrap_or_else(|| {
-                Arc::new(tokio::sync::Semaphore::new(default_max_concurrent_engine_loads()))
+                Arc::new(tokio::sync::Semaphore::new(
+                    default_max_concurrent_engine_loads(),
+                ))
             });
         Self {
             key: WorkspaceKey(root.clone()),
@@ -508,9 +520,7 @@ impl SharedWorkspace {
                 let mut eng = eng_arc.lock().await;
                 eng.detach_worktree(&self.root);
             }
-            if val_attached
-                && let Some(Some(val_eng)) = base.validation.get()
-            {
+            if val_attached && let Some(Some(val_eng)) = base.validation.get() {
                 let mut eng = val_eng.lock().await;
                 eng.detach_worktree(&self.root);
             }
@@ -659,9 +669,10 @@ impl Drop for WorktreeOwner {
         if let Some(entry) = owners.get_mut(&self.root) {
             entry.count = entry.count.saturating_sub(1);
             if let Some(lease) = &entry.direct_edit_lease
-                && lease.session_id == self.session_id {
-                    entry.direct_edit_lease = None;
-                }
+                && lease.session_id == self.session_id
+            {
+                entry.direct_edit_lease = None;
+            }
             if entry.count == 0 {
                 owners.remove(&self.root);
             }
@@ -1493,11 +1504,8 @@ impl WorkspaceManager {
                 for (k, v) in crate::swift_cache::swift_module_cache_env() {
                     config.env.insert(k, v);
                 }
-                match prod_code_engine_generic::GenericLspEngine::spawn(
-                    workspace_root,
-                    config,
-                )
-                .await
+                match prod_code_engine_generic::GenericLspEngine::spawn(workspace_root, config)
+                    .await
                 {
                     Ok(generic_eng) => {
                         tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Swift sourcekit-lsp) active");
@@ -2487,7 +2495,9 @@ impl WorkspaceManager {
                 if let Err(e) = engine.reload_file(&path) {
                     tracing::warn!(error = %e, file = %path.display(), "failed to reload disk text before migrating direct edit");
                 }
-                if let Err(e) = engine.set_session_overlay(lease.session_id, &path, Some(buffer_text)) {
+                if let Err(e) =
+                    engine.set_session_overlay(lease.session_id, &path, Some(buffer_text))
+                {
                     tracing::warn!(error = %e, session = lease.session_id, file = %path.display(), "failed to migrate direct edit to session overlay");
                 }
             }
@@ -3103,8 +3113,7 @@ async fn warm_cmake_compile_commands(workspace_root: &std::path::Path) {
     for (k, v) in crate::compiler_cache_env(workspace_root, crate::on_path("ccache")) {
         cmd.env(k, v);
     }
-    let result = tokio::time::timeout(std::time::Duration::from_secs(180), cmd.output())
-        .await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(180), cmd.output()).await;
     match result {
         Ok(Ok(out)) if out.status.success() => tracing::info!(
             workspace = ?workspace_root,
@@ -4044,15 +4053,21 @@ path = "src/lib.rs"
         manager.insert_ready_for_test(Arc::clone(&ws)).await;
 
         let lease1 = manager.get_or_load(&root, "rust").await.unwrap();
-        let view1 = manager.register_session_view(101, root.clone(), lease1).await;
-        assert!(view1.is_single_owner(), "Dedicated worktree is single owner");
+        let view1 = manager
+            .register_session_view(101, root.clone(), lease1)
+            .await;
+        assert!(
+            view1.is_single_owner(),
+            "Dedicated worktree is single owner"
+        );
 
         let direct_text = "pub const BASE_VAL: u32 = 100;\npub fn direct_added() {}\n".to_string();
         // Fast path: direct edit modifies base Salsa input without session overlays
         {
             let mut eng = engine_arc.lock().await;
             assert!(!eng.has_session_overlays());
-            eng.apply_file_change(&lib_path, direct_text.clone()).unwrap();
+            eng.apply_file_change(&lib_path, direct_text.clone())
+                .unwrap();
             assert!(
                 !eng.has_session_overlays(),
                 "Direct edits must not create session overlays"
@@ -4073,9 +4088,17 @@ path = "src/lib.rs"
         // When a second session joins the same worktree, direct-edit exclusivity must be revoked
         // and view1's direct edits migrated into view1's session overlay in the engine!
         let lease2 = manager.get_or_load(&root, "rust").await.unwrap();
-        let view2 = manager.register_session_view(102, root.clone(), lease2).await;
-        assert!(!view1.is_single_owner(), "view1 exclusivity must be revoked when view2 joins");
-        assert!(!view2.is_single_owner(), "view2 must not have single-owner exclusivity");
+        let view2 = manager
+            .register_session_view(102, root.clone(), lease2)
+            .await;
+        assert!(
+            !view1.is_single_owner(),
+            "view1 exclusivity must be revoked when view2 joins"
+        );
+        assert!(
+            !view2.is_single_owner(),
+            "view2 must not have single-owner exclusivity"
+        );
 
         {
             let mut eng = engine_arc.lock().await;
@@ -4534,7 +4557,11 @@ path = "src/lib.rs"
         assert_eq!(base_ws.reclaimable(manager.admission()), 0);
 
         // Validation view forwards to base validation and keeps worktree attached
-        let wt_val = wt_lease.workspace().validation_view(manager.admission()).await.unwrap();
+        let wt_val = wt_lease
+            .workspace()
+            .validation_view(manager.admission())
+            .await
+            .unwrap();
         assert!(wt_val.base_workspace.is_some());
         assert!(Arc::ptr_eq(
             wt_val.base_workspace.as_ref().unwrap(),
@@ -4545,7 +4572,10 @@ path = "src/lib.rs"
         drop(base_lease);
         assert_eq!(base_ws.active_sessions.load(Ordering::Relaxed), 1);
         let early_evict = manager.evict_idle(Duration::from_secs(0)).await;
-        assert!(early_evict.is_empty(), "base must not be evicted while worktree is active");
+        assert!(
+            early_evict.is_empty(),
+            "base must not be evicted while worktree is active"
+        );
 
         // Dropping worktree lease frees sessions, but attached_worktrees protects base until worktree is evicted
         drop(wt_lease);
@@ -4601,7 +4631,10 @@ path = "src/lib.rs"
         // Overlay is attached and base worktree count is 1
         assert!(base_eng.lock().await.has_worktree(&wt_dir));
         assert_eq!(base_ws.attached_worktrees.load(Ordering::Relaxed), 1);
-        assert_eq!(wt_lease.workspace().active_sessions.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            wt_lease.workspace().active_sessions.load(Ordering::Relaxed),
+            1
+        );
 
         // Unload the worktree workspace while lease is still held (e.g. manifest change during session)
         let unloaded = manager.unload_under(&wt_dir).await;
@@ -4867,9 +4900,18 @@ path = "src/lib.rs"
 
         {
             let mut guard = manager.workspaces.write().await;
-            guard.insert(WorkspaceKey(path_shop), LoadState::Ready(Arc::clone(&ws_shop)));
-            guard.insert(WorkspaceKey(path_shopper), LoadState::Ready(Arc::clone(&ws_shopper)));
-            guard.insert(WorkspaceKey(path_shop_wt), LoadState::Ready(Arc::clone(&ws_shop_wt)));
+            guard.insert(
+                WorkspaceKey(path_shop),
+                LoadState::Ready(Arc::clone(&ws_shop)),
+            );
+            guard.insert(
+                WorkspaceKey(path_shopper),
+                LoadState::Ready(Arc::clone(&ws_shopper)),
+            );
+            guard.insert(
+                WorkspaceKey(path_shop_wt),
+                LoadState::Ready(Arc::clone(&ws_shop_wt)),
+            );
         }
 
         // Rebalance "shop" to node-2:2026
@@ -4883,7 +4925,9 @@ path = "src/lib.rs"
         assert_eq!(target, "node-2:2026");
         assert_eq!(reason.as_deref(), Some("test"));
 
-        let (target_wt, reason_wt) = rx_shop_wt.try_recv().expect("shop worktree must receive redirect");
+        let (target_wt, reason_wt) = rx_shop_wt
+            .try_recv()
+            .expect("shop worktree must receive redirect");
         assert_eq!(target_wt, "node-2:2026");
         assert_eq!(reason_wt.as_deref(), Some("test"));
 

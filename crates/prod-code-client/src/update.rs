@@ -35,8 +35,14 @@ pub fn current_target() -> Result<&'static str> {
     return Ok("aarch64-unknown-linux-gnu");
 
     #[cfg(not(any(
-        all(target_os = "macos", any(target_arch = "aarch64", target_arch = "x86_64")),
-        all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86_64"))
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )
     )))]
     bail!("unsupported platform for binary self-update");
 }
@@ -59,7 +65,9 @@ pub fn is_package_managed(exe: &Path) -> Option<String> {
     if path_str == "/usr/bin/prod-code"
         && (Path::new("/etc/redhat-release").exists() || Path::new("/etc/fedora-release").exists())
     {
-        return Some("RPM package manager. Please run `dnf upgrade prod-code` instead.".to_string());
+        return Some(
+            "RPM package manager. Please run `dnf upgrade prod-code` instead.".to_string(),
+        );
     }
     None
 }
@@ -169,11 +177,7 @@ pub async fn fetch_release_info(specific_tag: Option<&str>) -> Result<serde_json
 }
 
 /// Runs the update command.
-pub async fn run_update(
-    check_only: bool,
-    force: bool,
-    specific_tag: Option<String>,
-) -> Result<()> {
+pub async fn run_update(check_only: bool, force: bool, specific_tag: Option<String>) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let target = current_target()?;
     let current_exe = std::env::current_exe().context("failed to locate current executable")?;
@@ -246,8 +250,9 @@ pub async fn run_update(
     // On macOS, codesign the binary with official identity or fallback to ad-hoc
     #[cfg(target_os = "macos")]
     {
-        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY")
-            .unwrap_or_else(|_| "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string());
+        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY").unwrap_or_else(|_| {
+            "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string()
+        });
         let res = Command::new("codesign")
             .args(["-s", &identity, "-f", temp_download.to_str().unwrap()])
             .output();
@@ -266,7 +271,10 @@ pub async fn run_update(
         )
     })?;
 
-    println!("Successfully updated prod-code to {tag} at {}!", current_exe.display());
+    println!(
+        "Successfully updated prod-code to {tag} at {}!",
+        current_exe.display()
+    );
     println!("Running MCP server sessions will hot-reload automatically.");
     Ok(())
 }
@@ -301,7 +309,12 @@ mod tests {
     #[test]
     fn test_is_package_managed() {
         assert!(is_package_managed(Path::new("/opt/homebrew/bin/prod-code")).is_some());
-        assert!(is_package_managed(Path::new("/usr/local/Cellar/prod-code/0.3.19/bin/prod-code")).is_some());
+        assert!(
+            is_package_managed(Path::new(
+                "/usr/local/Cellar/prod-code/0.3.19/bin/prod-code"
+            ))
+            .is_some()
+        );
         assert!(is_package_managed(Path::new("/Users/alex/.cargo/bin/prod-code")).is_none());
         assert!(is_package_managed(Path::new("/home/user/.local/bin/prod-code")).is_none());
     }

@@ -121,7 +121,10 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
                     "  Root CA Private Key:  {} (mode 0600)",
                     report.ca_key_path.display()
                 );
-                println!("  Node Certificate:     {}", report.node_cert_path.display());
+                println!(
+                    "  Node Certificate:     {}",
+                    report.node_cert_path.display()
+                );
                 println!(
                     "  Node Private Key:     {} (mode 0600)",
                     report.node_key_path.display()
@@ -211,8 +214,9 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
                 format!("failed reading certificate from {}", cert_file.display())
             })?;
             let cert_pin = prod_code_protocol::tls::pki::compute_cert_pin(&cert_bytes)?;
-            let certs = prod_code_protocol::tls::load_certs(&cert_file)
-                .with_context(|| format!("failed parsing certificate at {}", cert_file.display()))?;
+            let certs = prod_code_protocol::tls::load_certs(&cert_file).with_context(|| {
+                format!("failed parsing certificate at {}", cert_file.display())
+            })?;
             let first_cert = certs.first().context("no certificate found in file")?;
 
             println!("Certificate: {}", cert_file.display());
@@ -228,17 +232,23 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
             }
 
             if let Some(ca_path) = ca_cert {
-                let ca_certs = prod_code_protocol::tls::load_certs(&ca_path)
-                    .with_context(|| format!("failed loading CA certs from {}", ca_path.display()))?;
+                let ca_certs =
+                    prod_code_protocol::tls::load_certs(&ca_path).with_context(|| {
+                        format!("failed loading CA certs from {}", ca_path.display())
+                    })?;
                 println!("  CA Certificate: {}", ca_path.display());
-                
+
                 prod_code_protocol::tls::pki::verify_cert_against_ca(
                     first_cert,
                     if certs.len() > 1 { &certs[1..] } else { &[] },
                     &ca_certs,
                     server_name.as_deref(),
-                ).with_context(|| {
-                    format!("certificate trust verification failed against CA {}", ca_path.display())
+                )
+                .with_context(|| {
+                    format!(
+                        "certificate trust verification failed against CA {}",
+                        ca_path.display()
+                    )
                 })?;
                 println!("  [OK] Certificate trust chain and validity period verified against CA.");
             }
@@ -247,16 +257,19 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
                 prod_code_protocol::tls::check_key_permissions(&key_path).with_context(|| {
                     format!("insecure private key permissions on {}", key_path.display())
                 })?;
-                let key = prod_code_protocol::tls::load_private_key(&key_path)
-                    .with_context(|| format!("failed loading private key at {}", key_path.display()))?;
+                let key =
+                    prod_code_protocol::tls::load_private_key(&key_path).with_context(|| {
+                        format!("failed loading private key at {}", key_path.display())
+                    })?;
                 println!("  Private Key: {}", key_path.display());
-                prod_code_protocol::tls::pki::verify_cert_matches_key(first_cert, &key).with_context(|| {
-                    format!(
-                        "private key at {} does not match certificate at {}",
-                        key_path.display(),
-                        cert_file.display()
-                    )
-                })?;
+                prod_code_protocol::tls::pki::verify_cert_matches_key(first_cert, &key)
+                    .with_context(|| {
+                        format!(
+                            "private key at {} does not match certificate at {}",
+                            key_path.display(),
+                            cert_file.display()
+                        )
+                    })?;
                 println!("  [OK] Private key matches certificate public key.");
                 println!("  [OK] Private key permissions (0600) and format verified.");
             }
@@ -317,7 +330,8 @@ mod tests {
         .unwrap();
 
         // 4. Verify with mismatched pin fails
-        let bad_pin = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let bad_pin =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
         assert!(
             run_cert(CertCommands::Verify {
                 cert_file: node_crt.clone(),
@@ -407,4 +421,3 @@ mod tests {
         );
     }
 }
-

@@ -29,6 +29,7 @@
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
+use prod_code_protocol::AnyStream;
 use prod_code_protocol::{
     FileDelta, ProdCodeCodec, ScrubSecrets, ShadowHypothesisResult, ShadowRunRequest,
     ShadowRunResponse, WireMessage,
@@ -39,7 +40,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
-use prod_code_protocol::AnyStream;
 use tokio_util::codec::Framed;
 
 /// Bytes of output kept per hypothesis unless the request says otherwise.
@@ -400,7 +400,9 @@ fn acquire_ram_shadow_root(storage_root: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     };
     let owners = RAM_SHADOW_OWNERS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    let mut owners = owners.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut owners = owners
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if owners.contains_key(&root) {
         return Ok(Some(root));
     }
@@ -1219,7 +1221,9 @@ pub async fn run_overlay(
         }
         return failed(&job.name, format!("cannot stage hypothesis: {e:#}"));
     }
-    tokio::task::spawn_blocking(ensure_sccache_server).await.ok();
+    tokio::task::spawn_blocking(ensure_sccache_server)
+        .await
+        .ok();
     let mut cmd = tokio::process::Command::new("unshare");
     cmd.args(["-Urm", "--propagation", "private", "sh"])
         .arg(&script)
@@ -1748,7 +1752,9 @@ pub async fn run_shadow(
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
-    let (mut effective_shadow_root, mut is_ram, mut fallback_shadow_root) = if overlay && ram_requested {
+    let (mut effective_shadow_root, mut is_ram, mut fallback_shadow_root) = if overlay
+        && ram_requested
+    {
         match acquire_ram_shadow_root(&state.storage_root) {
             Ok(Some(ram_root)) => {
                 let probe_ok = (|| -> std::io::Result<()> {
@@ -1818,16 +1824,20 @@ pub async fn run_shadow(
                 effective_shadow_root = state.shadow_root.clone();
                 is_ram = false;
                 fallback_shadow_root = None;
-                std::fs::create_dir_all(&effective_shadow_root)
-                    .with_context(|| format!("cannot create {}", effective_shadow_root.display()))?;
+                std::fs::create_dir_all(&effective_shadow_root).with_context(|| {
+                    format!("cannot create {}", effective_shadow_root.display())
+                })?;
             } else {
-                return Err(e).with_context(|| format!("cannot create {}", effective_shadow_root.display()));
+                return Err(e)
+                    .with_context(|| format!("cannot create {}", effective_shadow_root.display()));
             }
         }
         if let Some(fallback) = &fallback_shadow_root {
             let _ = std::fs::create_dir_all(fallback);
         }
-        tokio::task::spawn_blocking(ensure_sccache_server).await.ok();
+        tokio::task::spawn_blocking(ensure_sccache_server)
+            .await
+            .ok();
     }
     let names: Vec<String> = req.hypotheses.iter().map(|h| h.name.clone()).collect();
     let count = names.len();
@@ -1900,7 +1910,9 @@ pub async fn run_shadow(
         }
     };
     if overlay {
-        tokio::task::spawn_blocking(ensure_sccache_server).await.ok();
+        tokio::task::spawn_blocking(ensure_sccache_server)
+            .await
+            .ok();
     }
     let results: Vec<ShadowHypothesisResult> = joined
         .into_iter()
@@ -4069,7 +4081,11 @@ mod tests {
     fn test_shadow_default_root_configuration() {
         let storage = Path::new("/srv/workspaces/storage");
         let default = default_root(storage);
-        assert!(default.to_string_lossy().contains(".prod-code-shadow-storage-"));
+        assert!(
+            default
+                .to_string_lossy()
+                .contains(".prod-code-shadow-storage-")
+        );
 
         // Custom shadow root override via PROD_CODE_SHADOW_ROOT
         unsafe {

@@ -156,7 +156,11 @@ pub async fn outline_file(
         );
         return Ok(text);
     }
-    if crate::sync::engine_for_file(file_path).is_none() {
+    let engine = crate::sync::engine_for_file(file_path);
+    if !matches!(
+        engine,
+        Some("rust" | "go" | "python" | "typescript" | "cpp" | "swift")
+    ) {
         let kind = extension.map_or_else(
             || "files without an extension".to_string(),
             |e| format!("`.{e}` files"),
@@ -235,10 +239,10 @@ fn markdown_outline(text: &str, path: &str, options: &OutlineOptions) -> String 
         if level > options.max_depth || title.is_empty() {
             continue;
         }
-        if let Some(kinds) = &options.kinds {
-            if !kinds.iter().any(|k| k.eq_ignore_ascii_case("heading")) {
-                continue;
-            }
+        if let Some(kinds) = &options.kinds
+            && !kinds.iter().any(|k| k.eq_ignore_ascii_case("heading"))
+        {
+            continue;
         }
         headings += 1;
         out.push_str(&format!("  [Heading {level}] {title} (line {})\n", i + 1));
