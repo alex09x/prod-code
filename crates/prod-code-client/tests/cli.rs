@@ -2695,6 +2695,7 @@ async fn cli_validate_chunk_intercepts() {
             "--session",
             "cli-test-intercept",
             "--reset",
+            "--close",
         ],
     )
     .await;
