@@ -1264,6 +1264,8 @@ async fn cluster_probe_server() -> SocketAddr {
                                 sync_rounds: 1,
                                 sync_files: 2,
                                 sync_bytes: 100,
+                                snapshots: Vec::new(),
+                                inventory: None,
                             }))
                             .await;
                     }

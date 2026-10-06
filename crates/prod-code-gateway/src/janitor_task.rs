@@ -36,11 +36,63 @@ pub(crate) async fn janitor(
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
     ticker.tick().await;
     let mut was_short: Option<String> = None;
+    let mut tick_counter: u64 = 0;
     loop {
         ticker.tick().await;
+        tick_counter = tick_counter.wrapping_add(1);
+
         // An engine installed while the daemon runs is picked up here, on a thread that is
         // allowed to block, instead of by the next request that needs the list.
         let _ = tokio::task::spawn_blocking(refresh_available_engines).await;
+
+        // Periodically compute workspaces directory storage bytes
+        let storage_root_dir = state.storage_root.clone();
+        let ws_bytes = tokio::task::spawn_blocking(move || {
+            metrics::snapshot::calculate_directory_size(&storage_root_dir)
+        })
+        .await
+        .unwrap_or(0);
+        metrics::snapshot::update_workspaces_storage_bytes(ws_bytes);
+
+        // Periodic telemetry snapshot collection
+        let node = state.metrics.node();
+        let active_sessions = state.active_sessions.load(Ordering::Relaxed);
+        let workspace_count = state.workspace_manager.loaded_count().await;
+        let engine_count = state.advertised_engines().len();
+        let running_cmds_count = running_commands().len();
+        let snapshot = metrics::collect_host_snapshot(
+            &node,
+            &state.storage_root,
+            active_sessions,
+            workspace_count,
+            engine_count,
+            running_cmds_count,
+        )
+        .await;
+        state.metrics.record_snapshot(snapshot);
+
+        // Bounded retention pruning
+        let pruned = state.metrics.prune_retention(
+            metrics::DEFAULT_METRICS_RETENTION_DAYS,
+            metrics::MAX_METRICS_STORAGE_BYTES,
+        );
+        if pruned > 0 {
+            tracing::info!(pruned, "janitor: cleaned up expired metric logs");
+        }
+
+        // Periodic toolchain inventory collection (every ~hour or when uninitialized)
+        if state.metrics.toolchain_inventory().is_none() || tick_counter.is_multiple_of(60) {
+            let inv_node = node.clone();
+            let inv_engines = state.advertised_engines();
+            let inv = tokio::task::spawn_blocking(move || {
+                metrics::collect_toolchain_inventory(&inv_node, &inv_engines)
+            })
+            .await
+            .ok();
+            if let Some(inv) = inv {
+                state.metrics.record_inventory(inv);
+            }
+        }
         // The memory and disk watchdog (#396): placement already keeps new workspaces off a
         // node that is short; the log says when it starts and stops being short.
         let host = memory::host_resources(&state.storage_root);

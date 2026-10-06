@@ -174,6 +174,12 @@ pub struct MetricsResponse {
     pub sync_rounds: u64,
     pub sync_files: u64,
     pub sync_bytes: u64,
+    /// Historical periodic resource snapshots for gateway and host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshots: Vec<super::telemetry::HostSnapshot>,
+    /// Toolchain and engine component inventory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<super::telemetry::ToolchainInventory>,
 }
 
 /// What drives this client, for usage metrics: `PROD_CODE_AGENT` when set, otherwise

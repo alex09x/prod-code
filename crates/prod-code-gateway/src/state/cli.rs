@@ -106,6 +106,34 @@ pub struct ServerCli {
     /// or a tmpfs directory.
     #[arg(long, env = "PROD_CODE_BUILD_CACHE_DIR")]
     pub build_cache_dir: Option<PathBuf>,
+
+    /// Optional Prometheus HTTP scrape server bind address (e.g. `0.0.0.0:9401`), serving `/metrics`.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_LISTEN")]
+    pub prometheus_listen: Option<SocketAddr>,
+
+    /// Optional Prometheus Pushgateway base URL (e.g. `http://pushgateway:9091`) to push metrics to.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_PUSH_URL")]
+    pub prometheus_push_url: Option<String>,
+
+    /// Push interval in seconds when pushing metrics to Prometheus Pushgateway. Defaults to 15.
+    #[arg(
+        long,
+        env = "PROD_CODE_PROMETHEUS_PUSH_INTERVAL_SECS",
+        default_value_t = 15
+    )]
+    pub prometheus_push_interval_secs: u64,
+
+    /// Prometheus Pushgateway job label. Defaults to `prod-code`.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_JOB", default_value = "prod-code")]
+    pub prometheus_job: String,
+
+    /// Prometheus Pushgateway instance label. Defaults to the gateway advertise address.
+    #[arg(long, env = "PROD_CODE_PROMETHEUS_INSTANCE")]
+    pub prometheus_instance: Option<String>,
+
+    /// Path to gateway TOML configuration file (e.g. `/etc/prod-code/gateway.toml`).
+    #[arg(short = 'c', long, env = "PROD_CODE_CONFIG")]
+    pub config: Option<PathBuf>,
 }
 
 impl ServerCli {
@@ -123,5 +151,156 @@ impl ServerCli {
             Some(days) => days.saturating_mul(86_400),
             None => self.prune_workspace_secs,
         }
+    }
+
+    /// Merges settings from a configuration file into this CLI structure.
+    /// Explicit command-line arguments and environment variables take precedence.
+    pub fn merge_config(
+        &mut self,
+        config: &crate::state::config::GatewayConfigFile,
+        matches: Option<&clap::ArgMatches>,
+    ) {
+        let is_explicit = |id: &str| -> bool {
+            if let Some(m) = matches {
+                m.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
+                    || m.value_source(id) == Some(clap::parser::ValueSource::EnvVariable)
+            } else {
+                false
+            }
+        };
+
+        if !is_explicit("bind")
+            && let Some(bind) = config.server.bind
+        {
+            self.bind = bind;
+        }
+        if !is_explicit("socket_path")
+            && self.socket_path.is_none()
+            && let Some(ref sock) = config.server.socket_path
+        {
+            self.socket_path = Some(sock.clone());
+        }
+        if !is_explicit("storage")
+            && let Some(ref storage) = config.server.storage
+        {
+            self.storage = storage.clone();
+        }
+        if !is_explicit("advertise")
+            && self.advertise.is_none()
+            && let Some(ref adv) = config.server.advertise
+        {
+            self.advertise = Some(adv.clone());
+        }
+        if !is_explicit("peers")
+            && self.peers.is_empty()
+            && let Some(ref peers) = config.server.peers
+        {
+            self.peers = peers.clone();
+        }
+        if !is_explicit("engines")
+            && self.engines.is_empty()
+            && let Some(ref engines) = config.server.engines
+        {
+            self.engines = engines.clone();
+        }
+        if !is_explicit("idle_evict_secs")
+            && let Some(secs) = config.server.idle_evict_secs
+        {
+            self.idle_evict_secs = secs;
+        }
+        if !is_explicit("engine_reserve_mib")
+            && let Some(mib) = config.server.engine_reserve_mib
+        {
+            self.engine_reserve_mib = mib;
+        }
+        if !is_explicit("max_concurrent_engine_loads")
+            && let Some(loads) = config.server.max_concurrent_engine_loads
+        {
+            self.max_concurrent_engine_loads = loads;
+        }
+        if !is_explicit("prune_worktree_secs")
+            && let Some(secs) = config.server.prune_worktree_secs
+        {
+            self.prune_worktree_secs = secs;
+        }
+        if !is_explicit("prune_workspace_secs")
+            && let Some(secs) = config.server.prune_workspace_secs
+        {
+            self.prune_workspace_secs = secs;
+        }
+        if !is_explicit("prune_below_free_percent")
+            && let Some(pct) = config.server.prune_below_free_percent
+        {
+            self.prune_below_free_percent = pct;
+        }
+        if !is_explicit("build_cache_ram")
+            && let Some(ram) = config.server.build_cache_ram
+        {
+            self.build_cache_ram = ram;
+        }
+        if !is_explicit("build_cache_dir")
+            && self.build_cache_dir.is_none()
+            && let Some(ref dir) = config.server.build_cache_dir
+        {
+            self.build_cache_dir = Some(dir.clone());
+        }
+
+        if let Some(ref prom) = config.metrics.prometheus {
+            let prom_disabled =
+                prom.enabled == Some(false) || prom.mode.as_deref() == Some("disabled");
+
+            if prom_disabled {
+                if !is_explicit("prometheus_listen") {
+                    self.prometheus_listen = None;
+                }
+                if !is_explicit("prometheus_push_url") {
+                    self.prometheus_push_url = None;
+                }
+            } else {
+                let mode = prom.mode.as_deref().unwrap_or("");
+                if !is_explicit("prometheus_listen") {
+                    if let Some(listen) = prom.listen {
+                        self.prometheus_listen = Some(listen);
+                    } else if (mode == "scrape" || mode == "both")
+                        && self.prometheus_listen.is_none()
+                    {
+                        self.prometheus_listen = Some("0.0.0.0:9401".parse().unwrap());
+                    }
+                }
+                if !is_explicit("prometheus_push_url")
+                    && let Some(ref url) = prom.push_url
+                {
+                    self.prometheus_push_url = Some(url.clone());
+                }
+                if !is_explicit("prometheus_push_interval_secs")
+                    && let Some(interval) = prom.push_interval_secs
+                {
+                    self.prometheus_push_interval_secs = interval;
+                }
+                if !is_explicit("prometheus_job")
+                    && let Some(ref job) = prom.job
+                {
+                    self.prometheus_job = job.clone();
+                }
+                if !is_explicit("prometheus_instance")
+                    && self.prometheus_instance.is_none()
+                    && let Some(ref inst) = prom.instance
+                {
+                    self.prometheus_instance = Some(inst.clone());
+                }
+            }
+        }
+    }
+
+    /// Parses command-line arguments and merges settings from any configured or default TOML file.
+    pub fn parse_with_config() -> anyhow::Result<Self> {
+        let matches = <Self as clap::CommandFactory>::command().get_matches();
+        let mut cli = <Self as clap::FromArgMatches>::from_arg_matches(&matches)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let config_file = crate::state::config::load_config_file(cli.config.as_deref())?;
+        if let Some(ref cfg) = config_file {
+            cli.merge_config(cfg, Some(&matches));
+        }
+        Ok(cli)
     }
 }

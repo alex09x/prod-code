@@ -327,9 +327,37 @@ pub async fn run_exec_with_ram(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         ev.command = req.command.join(" ");
+        ev.method = metrics::command_method(&ev.command);
+        if metrics::is_compilation_command(&ev.command) {
+            ev.compiler = metrics.resolve_compiler(&ev.command);
+        }
+        if ev.engine.is_empty() || ev.engine == "none" {
+            ev.engine = match ev.method.as_str() {
+                m if m.starts_with("cargo") || m == "rustc" => "rust".to_string(),
+                m if m.starts_with("go") => "go".to_string(),
+                m if m.starts_with("clang") || m.starts_with("gcc") => "cpp".to_string(),
+                m if m.starts_with("swift") => "swift".to_string(),
+                m if m.starts_with("npm")
+                    || m.starts_with("pnpm")
+                    || m.starts_with("yarn")
+                    || m == "tsc" =>
+                {
+                    "typescript".to_string()
+                }
+                m if m.starts_with("python") => "python".to_string(),
+                _ => "none".to_string(),
+            };
+        }
         ev.duration_ms = start.elapsed().as_millis() as u64;
         ev.exit_code = exit_code;
         ev.ok = exit_code == Some(0) && exec_err.is_none();
+        if !ev.ok {
+            let detail = exec_err
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| ev.command.clone());
+            ev.error_class = Some(metrics::classify_error(&detail, exit_code).to_string());
+        }
         metrics.record(ev);
     }
     if req.pull_changes {

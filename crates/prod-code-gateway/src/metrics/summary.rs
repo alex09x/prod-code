@@ -75,6 +75,8 @@ impl Summary {
         node: &str,
         since_secs: u64,
         events_in_memory: u64,
+        snapshots: Vec<prod_code_protocol::HostSnapshot>,
+        inventory: Option<prod_code_protocol::ToolchainInventory>,
     ) -> MetricsResponse {
         let Summary {
             queries,
@@ -131,6 +133,8 @@ impl Summary {
             sync_rounds,
             sync_files,
             sync_bytes,
+            snapshots,
+            inventory,
         }
     }
 }

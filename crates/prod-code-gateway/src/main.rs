@@ -10,10 +10,9 @@
 
 //! The gateway daemon: parse the command line, set logging up, and run the server.
 
-use std::io::IsTerminal;
 use anyhow::Result;
-use clap::Parser;
 use prod_code_gateway::ServerCli;
+use std::io::IsTerminal;
 
 /// The gateway's own messages at `debug`, everything else at `info` — except the analyzer.
 ///
@@ -56,7 +55,8 @@ async fn serve() -> Result<()> {
                 .unwrap_or_else(|_| DEFAULT_LOG_FILTER.into()),
         )
         .init();
-    prod_code_gateway::run(ServerCli::parse()).await
+    let cli = ServerCli::parse_with_config()?;
+    prod_code_gateway::run(cli).await
 }
 
 #[cfg(test)]

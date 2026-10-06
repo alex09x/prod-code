@@ -22,6 +22,7 @@ prod-code-engine-go = { path = "../prod-code-engine-go" }
 prod-code-engine-generic = { path = "../prod-code-engine-generic" }
 anyhow.workspace = true
 clap.workspace = true
+url.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true

@@ -333,9 +333,21 @@ pub async fn run_remote_exec_with_ram(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         ev.command = argv.join(" ");
+        ev.method = metrics::command_method(&ev.command);
+        ev.engine = req.language.as_str().to_string();
+        if metrics::is_compilation_command(&ev.command) {
+            ev.compiler = metrics.resolve_compiler(&ev.command);
+        }
         ev.duration_ms = duration_ms;
         ev.exit_code = exit_code;
         ev.ok = exit_code == Some(0) && exec_err.is_none();
+        if !ev.ok {
+            let detail = exec_err
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| ev.command.clone());
+            ev.error_class = Some(metrics::classify_error(&detail, exit_code).to_string());
+        }
         metrics.record(ev);
     }
 

@@ -143,6 +143,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         .clone()
         .unwrap_or_else(|| detect_advertise_addr(cli.bind, peers.first().map(String::as_str)));
     *state.advertise.write().await = advertise.clone();
+    state.metrics.set_node(&advertise);
     {
         let mut set = state.peers.write().await;
         for p in &peers {
@@ -158,6 +159,30 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         tokio::spawn(metrics::run_writer(state.metrics.dir().to_path_buf(), rx));
     }
 
+    let initial_node = advertise.clone();
+    let initial_engines = engines.clone();
+    let initial_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let snapshot = metrics::collect_host_snapshot(
+            &initial_node,
+            &initial_state.storage_root,
+            0,
+            0,
+            initial_engines.len(),
+            0,
+        )
+        .await;
+        initial_state.metrics.record_snapshot(snapshot);
+        let inv = tokio::task::spawn_blocking(move || {
+            metrics::collect_toolchain_inventory(&initial_node, &initial_engines)
+        })
+        .await
+        .ok();
+        if let Some(inv) = inv {
+            initial_state.metrics.record_inventory(inv);
+        }
+    });
+
     tokio::spawn(janitor(
         Arc::clone(&state),
         cli.idle_evict_secs,
@@ -165,6 +190,38 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         prune_workspace_secs,
         cli.prune_below_free_percent,
     ));
+
+    // Optional Prometheus scrape HTTP server (/metrics)
+    if let Some(prom_listen) = cli.prometheus_listen {
+        let prom_metrics = Arc::clone(&state.metrics);
+        let prom_node = advertise.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                metrics::run_prometheus_server(prom_listen, prom_metrics, prom_node).await
+            {
+                tracing::error!(error = %e, "Prometheus scrape server failed");
+            }
+        });
+    }
+
+    // Optional Prometheus Pushgateway pusher task
+    if let Some(push_url) = cli.prometheus_push_url {
+        let push_metrics = Arc::clone(&state.metrics);
+        let push_job = cli.prometheus_job;
+        let push_instance = cli.prometheus_instance.unwrap_or_else(|| advertise.clone());
+        let push_interval =
+            std::time::Duration::from_secs(cli.prometheus_push_interval_secs.max(1));
+        tokio::spawn(async move {
+            metrics::run_prometheus_push_loop(
+                push_url,
+                push_job,
+                push_instance,
+                push_interval,
+                push_metrics,
+            )
+            .await;
+        });
+    }
 
     #[cfg(unix)]
     let mut socket_cleaner = None;

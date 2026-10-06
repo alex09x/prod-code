@@ -16,6 +16,7 @@ pub mod search;
 pub mod shadow;
 pub mod status;
 pub mod sync;
+pub mod telemetry;
 pub mod wire;
 
 #[cfg(test)]
@@ -44,5 +45,9 @@ pub use status::{
 pub use sync::{
     FileDelta, FileStamp, SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse,
     base64_bytes, content_hash,
+};
+pub use telemetry::{
+    EngineToolchainInfo, HostSnapshot, OperationMetric, TelemetryRecord, ToolchainInventory,
+    ToolchainVersion,
 };
 pub use wire::{EngineKind, PROTOCOL_VERSION, WireMessage};
