@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Signature changes and parameter objects write only complete plans (#446), directly and
 //! through `code_change_signature` / `code_introduce_parameter_object`, with `force` and with
 //! `verify: "compile"`.

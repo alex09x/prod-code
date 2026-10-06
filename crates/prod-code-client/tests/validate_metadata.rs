@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Non-source proposal files get an actionable refusal before the analyzer is asked.
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use serde_json::{Value, json};

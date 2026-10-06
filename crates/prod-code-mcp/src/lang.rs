@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! LSP `languageId` for a file path, shared by the CLI and the MCP tools.
 
 use std::path::Path;

@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Change tracking for long-lived client processes (the MCP server): a recursive filesystem
 //! watcher per workspace root bumps a generation counter on every event, so a query only pays
 //! the pre-flight sync (three git subprocesses, ~100 ms on a large tree) when the tree actually

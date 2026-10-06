@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Reordering Go parameters through a real gopls (#448): the adapter directly, and the public
 //! MCP tool that reaches it through `signature::change_with`.
 //!

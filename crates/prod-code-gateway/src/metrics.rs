@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Usage metrics: every LSP query, exec and sync round is appended as one JSON line to
 //! `<storage>/../metrics/events-YYYY-MM-DD.jsonl` (long-term, importable into ClickHouse) and
 //! kept in a bounded in-memory ring for `MetricsRequest` summaries. A window that reaches back

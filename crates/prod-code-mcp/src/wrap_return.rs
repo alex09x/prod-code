@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Wrapping what a function returns in `Option`, `Result`, `Promise`, or `Pointer`, with callers.
 //!
 //! rust-analyzer's `wrap_return_type_in_option` / `wrap_return_type_in_result` rewrite the

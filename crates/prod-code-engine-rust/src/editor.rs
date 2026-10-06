@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! What an editor asks the in-memory engine for, answered in LSP's own shapes (#310):
 //! completion, signature help, inlay hints, document highlights, code actions, formatting and
 //! the diagnostics the gateway pushes after an edit.

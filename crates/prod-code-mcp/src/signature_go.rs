@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Go parameter reordering and removal through gopls (#448), with the same arguments and report
 //! as [`crate::signature::change_with`], which hands every `.go` file here; so do the MCP tool
 //! and the CLI through it. Nothing here calls back into `change_with`: only its helpers

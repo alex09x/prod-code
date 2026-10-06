@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+#
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+#
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+
 """
 package-deb.py - Builds a standard Debian (.deb) package for prod-code.
 Pure Python standard library implementation: works on macOS and Linux without dpkg.

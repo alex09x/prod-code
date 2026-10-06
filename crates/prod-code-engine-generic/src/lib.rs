@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Pluggable Generic LSP engine for external language servers (Pyright, Ruff, TypeScript, etc.).
 //!
 //! Provides supervised process lifecycle, automatic framing, request/response routing,

@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! The exec shim: the gateway binary started as `prod-code-server --exec-shim REPORT -- COMMAND`
 //! runs COMMAND as its own child, reaps it with `wait4`, and writes what the kernel reported
 //! about it to REPORT (#255).

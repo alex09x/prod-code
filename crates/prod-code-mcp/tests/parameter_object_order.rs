@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Bundling keeps the order a call evaluates its arguments in, or refuses (#436), driven end to
 //! end against a scripted gateway in Python, whose keyword arguments may come in any order. The
 //! rewritten module is run with `python3` where the test runs, and prints what the original did.

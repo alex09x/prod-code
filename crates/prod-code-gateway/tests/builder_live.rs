@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Typed builders (#459) against the real gateway and its rust-analyzer: the declaration is found
 //! through the analyzer's own symbols, the names the builder introduces are looked up at the
 //! insertion point, the builder is checked in the scope it would be inserted into, and the

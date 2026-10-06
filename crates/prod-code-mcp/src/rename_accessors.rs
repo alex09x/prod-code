@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Renaming a field together with its accessors: `timeout` becomes `deadline`, and so do
 //! `timeout()`, `set_timeout()`, `get_timeout()` and `timeout_mut()` in the struct's own `impl`
 //! blocks, with every call.

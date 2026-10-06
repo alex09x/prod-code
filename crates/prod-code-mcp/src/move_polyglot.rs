@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! Polyglot refactor.move across TypeScript/JavaScript, Python, Go, C++, and Swift (Roadmap 7.1.1, Epic #516).
 //!
 //! Relocates top-level declarations (functions, classes, interfaces, types, structs, enums, constants)

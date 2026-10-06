@@ -1,3 +1,13 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
 //! The client side of the wire protocol that `orchestration.rs` never touches: running a
 //! remote command (`exec`), ranking declarations by intent (`search`), reading a file that
 //! lives only on the gateway host (`remote_fs`), and the pooled LSP session that batch features
