@@ -210,3 +210,25 @@ fn engine_support_matches_labelled_entries() {
     assert!(!supports_engine(&status, "go"));
     assert!(!supports_engine(&status, "swif"));
 }
+
+#[test]
+fn test_nested_engine_does_not_misclassify_rust_dirs_with_workspace_as_starlark() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    // In our repository, crates/prod-code-gateway/src has a workspace/ directory.
+    // It must NOT be detected as a nested Starlark project!
+    let engine = nested_engine(root, "crates/prod-code-gateway/src");
+    assert_eq!(
+        engine, None,
+        "crates/prod-code-gateway/src must belong to the Rust root project"
+    );
+
+    let engine2 = nested_engine(root, "crates/prod-code-mcp/src");
+    assert_eq!(
+        engine2, None,
+        "crates/prod-code-mcp/src must belong to the Rust root project"
+    );
+}
