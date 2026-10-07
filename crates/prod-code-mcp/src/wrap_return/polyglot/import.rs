@@ -23,7 +23,6 @@ pub(crate) fn proves_cross_file_import(
     lang: Language,
 ) -> bool {
     let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let decl_name = decl_file.file_name().and_then(|s| s.to_str()).unwrap_or("");
     if decl_stem.is_empty() {
         return false;
     }
@@ -38,16 +37,82 @@ pub(crate) fn proves_cross_file_import(
             caller_path.parent() == decl_file.parent()
         }
         Language::Cpp | Language::C => {
-            caller_path.file_stem() == decl_file.file_stem()
-                || content.lines().any(|l| {
-                    let trimmed = l.trim();
-                    trimmed.starts_with("#include")
-                        && (trimmed.contains(decl_name) || trimmed.contains(decl_stem))
-                })
+            c_cpp_proves_import(content, caller_path, decl_file, fn_name)
         }
         Language::Swift => caller_path.parent() == decl_file.parent(),
         _ => false,
     }
+}
+
+fn c_cpp_proves_import(content: &str, caller_path: &Path, decl_file: &Path, fn_name: &str) -> bool {
+    let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let decl_name = decl_file.file_name().and_then(|s| s.to_str()).unwrap_or("");
+
+    if caller_path.file_stem().and_then(|s| s.to_str()) == Some(decl_stem) {
+        return true;
+    }
+
+    if content.lines().any(|l| {
+        let trimmed = l.trim();
+        trimmed.starts_with("#include")
+            && (trimmed.contains(decl_name) || trimmed.contains(decl_stem))
+    }) {
+        return true;
+    }
+
+    if let Ok(decl_content) = std::fs::read_to_string(decl_file) {
+        let caller_name = caller_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let caller_stem = caller_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+
+        let mut decl_headers = Vec::new();
+        for line in decl_content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("#include") {
+                let spec = extract_specifier(trimmed);
+                if !spec.is_empty() {
+                    decl_headers.push(spec);
+                }
+            }
+        }
+
+        for h in &decl_headers {
+            let h_file = h.rsplit('/').next().unwrap_or(h);
+            let h_stem = h_file
+                .strip_suffix(".h")
+                .or_else(|| h_file.strip_suffix(".hpp"))
+                .or_else(|| h_file.strip_suffix(".hxx"))
+                .unwrap_or(h_file);
+            if (caller_name == h_file || caller_stem == h_stem) && content.contains(fn_name) {
+                return true;
+            }
+        }
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("#include") {
+                let spec = extract_specifier(trimmed);
+                for h in &decl_headers {
+                    let h_file = h.rsplit('/').next().unwrap_or(h);
+                    let h_stem = h_file
+                        .strip_suffix(".h")
+                        .or_else(|| h_file.strip_suffix(".hpp"))
+                        .or_else(|| h_file.strip_suffix(".hxx"))
+                        .unwrap_or(h_file);
+                    if spec == *h || spec.contains(h_file) || spec.contains(h_stem) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 fn extract_specifier(s: &str) -> &str {
@@ -58,6 +123,14 @@ fn extract_specifier(s: &str) -> &str {
             let start = i + 1;
             for (j, end_c) in chars {
                 if end_c == quote {
+                    return &s[start..j];
+                }
+            }
+            return &s[start..];
+        } else if c == '<' {
+            let start = i + 1;
+            for (j, end_c) in chars {
+                if end_c == '>' {
                     return &s[start..j];
                 }
             }

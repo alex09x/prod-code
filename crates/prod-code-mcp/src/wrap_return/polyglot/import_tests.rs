@@ -127,3 +127,45 @@ fn test_python_proves_import() {
         Language::Python,
     ));
 }
+
+#[test]
+fn test_c_cpp_proves_import_via_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let compute_cpp = root.join("compute.cpp");
+    std::fs::write(
+        &compute_cpp,
+        "#include \"api.h\"\nint calculate(int x) { return x * 2; }\n",
+    )
+    .unwrap();
+
+    let api_h = root.join("api.h");
+    let api_content = "int calculate(int x);\n";
+    assert!(proves_cross_file_import(
+        api_content,
+        &api_h,
+        &compute_cpp,
+        "calculate",
+        Language::Cpp,
+    ));
+
+    let client_cpp = root.join("client.cpp");
+    let client_content = "#include \"api.h\"\nvoid run() { calculate(5); }\n";
+    assert!(proves_cross_file_import(
+        client_content,
+        &client_cpp,
+        &compute_cpp,
+        "calculate",
+        Language::Cpp,
+    ));
+
+    let other_cpp = root.join("other.cpp");
+    let other_content = "#include \"other.h\"\nvoid run() { calculate(5); }\n";
+    assert!(!proves_cross_file_import(
+        other_content,
+        &other_cpp,
+        &compute_cpp,
+        "calculate",
+        Language::Cpp,
+    ));
+}

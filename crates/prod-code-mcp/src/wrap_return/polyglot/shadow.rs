@@ -144,8 +144,26 @@ fn params_declare_name(params: &str, name: &str, lang: Language) -> bool {
     false
 }
 
+fn strip_closed_blocks(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if text.as_bytes()[i] == b'{' {
+            if let Some(close) = crate::parameter_object::matching_bracket(text, i) {
+                i = close + 1;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        result.push(ch);
+        i += ch.len_utf8();
+    }
+    result
+}
+
 fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
-    for line in body_prefix.lines() {
+    let active_body = strip_closed_blocks(body_prefix);
+    for line in active_body.lines() {
         let trimmed = line.trim();
         match lang {
             Language::TypeScript | Language::JavaScript => {
@@ -257,6 +275,19 @@ mod tests {
         let content = "function run() {\n    const retry = () => {};\n    retry();\n}\n";
         let call_at = content.find("retry();").unwrap();
         assert!(is_locally_shadowed(
+            content,
+            call_at,
+            "retry",
+            Language::TypeScript
+        ));
+    }
+
+    #[test]
+    fn test_does_not_shadow_from_earlier_closed_block() {
+        let content =
+            "function run() {\n    { const retry = () => {}; retry(); }\n    retry();\n}\n";
+        let call_at = content.rfind("retry();").unwrap();
+        assert!(!is_locally_shadowed(
             content,
             call_at,
             "retry",
