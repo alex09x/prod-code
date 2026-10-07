@@ -18,6 +18,18 @@ use std::path::Path;
 /// (#404). The gateway's `detect_engine` decides the same way.
 pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
     let has = |name: &str| root.join(name).exists();
+    let has_file = |name: &str| root.join(name).is_file();
+    let has_exact_file = |name: &str| {
+        let p = root.join(name);
+        if !p.is_file() {
+            return false;
+        }
+        std::fs::read_dir(root).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name() == name && e.path().is_file())
+        })
+    };
     let has_ext = |extensions: &[&str]| {
         std::fs::read_dir(root).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
@@ -234,12 +246,12 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         || has_ext(&["ps1", "psm1", "psd1"])
     {
         Some("powershell")
-    } else if has("BUILD.bazel")
-        || has("WORKSPACE.bazel")
-        || has("MODULE.bazel")
-        || has("BUILD")
-        || has("WORKSPACE")
-        || has("Tiltfile")
+    } else if has_file("BUILD.bazel")
+        || has_file("WORKSPACE.bazel")
+        || has_file("MODULE.bazel")
+        || has_exact_file("BUILD")
+        || has_exact_file("WORKSPACE")
+        || has_file("Tiltfile")
         || has_ext(&["bzl", "star"])
     {
         Some("starlark")

@@ -228,7 +228,24 @@ pub fn has_powershell_project(root: &Path) -> bool {
 
 /// A Starlark / Bazel project (BUILD.bazel, WORKSPACE, *.bzl, Tiltfile, etc.) at the root.
 pub fn has_starlark_project(root: &Path) -> bool {
-    if STARLARK_MARKERS.iter().any(|m| root.join(m).exists()) {
+    let has_marker = |m: &str| {
+        let p = root.join(m);
+        if !p.is_file() {
+            return false;
+        }
+        if m == "BUILD" || m == "WORKSPACE" {
+            std::fs::read_dir(root)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .any(|e| e.file_name() == m && e.path().is_file())
+                })
+                .unwrap_or(false)
+        } else {
+            true
+        }
+    };
+    if STARLARK_MARKERS.iter().any(|m| has_marker(m)) {
         return true;
     }
     std::fs::read_dir(root)

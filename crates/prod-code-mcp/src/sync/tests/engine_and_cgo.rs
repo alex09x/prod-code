@@ -295,3 +295,22 @@ fn test_expected_engine_follows_manifest() {
     std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
     assert_eq!(expected_engine(temp.path()), Some("rust"));
 }
+
+#[test]
+fn test_starlark_does_not_misclassify_workspace_or_build_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    // A directory named "workspace" or "build" must NOT trigger Starlark detection
+    std::fs::create_dir_all(temp.path().join("workspace")).unwrap();
+    std::fs::create_dir_all(temp.path().join("build")).unwrap();
+    assert_eq!(expected_engine(temp.path()), None);
+
+    // A lowercase file named "workspace" or "build" must NOT trigger Starlark detection
+    let temp2 = tempfile::tempdir().unwrap();
+    std::fs::write(temp2.path().join("workspace"), "# script\n").unwrap();
+    std::fs::write(temp2.path().join("build"), "# script\n").unwrap();
+    assert_eq!(expected_engine(temp2.path()), None);
+
+    // An uppercase file named "WORKSPACE" or "BUILD" DOES trigger Starlark detection
+    std::fs::write(temp2.path().join("WORKSPACE"), "").unwrap();
+    assert_eq!(expected_engine(temp2.path()), Some("starlark"));
+}
