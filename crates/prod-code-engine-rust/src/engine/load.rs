@@ -26,6 +26,19 @@ use crate::load_budget;
 use crate::proc_macro_farm::{self, FarmMetrics};
 use crate::session_overlays::SessionOverlays;
 
+fn ensure_requested_proc_macro_workers(
+    desired_workers: usize,
+    allocated_workers: usize,
+    farm_capacity: usize,
+) -> Result<()> {
+    if desired_workers > 0 && allocated_workers == 0 {
+        anyhow::bail!(
+            "proc-macro worker farm had no capacity after waiting (capacity {farm_capacity}); retry the workspace load or set `proc_macro_srv = \"disabled\"` to opt out explicitly"
+        );
+    }
+    Ok(())
+}
+
 impl RustEngine {
     /// Detect whether a directory contains a Rust workspace manifest (Cargo.toml).
     pub fn is_rust_workspace(path: &Path) -> bool {
@@ -81,6 +94,7 @@ impl RustEngine {
                     desired_workers,
                     std::time::Duration::from_millis(2000),
                 );
+                ensure_requested_proc_macro_workers(desired_workers, workers, farm.capacity())?;
                 if workers == 0 {
                     tracing::warn!(
                         workspace = %workspace_root.display(),
@@ -98,6 +112,7 @@ impl RustEngine {
                     desired_workers,
                     std::time::Duration::from_millis(2000),
                 );
+                ensure_requested_proc_macro_workers(desired_workers, workers, farm.capacity())?;
                 if workers == 0 {
                     tracing::warn!(
                         workspace = %workspace_root.display(),
@@ -165,5 +180,27 @@ impl RustEngine {
     /// Returns current metrics for the node-wide shared proc-macro worker farm.
     pub fn proc_macro_farm_metrics() -> FarmMetrics {
         proc_macro_farm::shared().metrics()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_requested_proc_macro_workers;
+
+    #[test]
+    fn proc_macro_capacity_exhaustion_fails_requested_load_explicitly() {
+        let err = ensure_requested_proc_macro_workers(1, 0, 8).unwrap_err();
+        assert!(err.to_string().contains("no capacity after waiting"));
+        assert!(err.to_string().contains("retry the workspace load"));
+    }
+
+    #[test]
+    fn proc_macro_workers_can_be_explicitly_disabled() {
+        assert!(ensure_requested_proc_macro_workers(0, 0, 8).is_ok());
+    }
+
+    #[test]
+    fn allocated_proc_macro_workers_allow_load() {
+        assert!(ensure_requested_proc_macro_workers(1, 1, 8).is_ok());
     }
 }
