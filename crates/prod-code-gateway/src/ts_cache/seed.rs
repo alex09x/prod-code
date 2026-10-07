@@ -178,10 +178,6 @@ pub fn seed_typescript_worktree_within(
         _ => {}
     }
 
-    // 4. Coordinate tsconfig.json / jsconfig.json in `to`
-    coordinate_tsconfig(&to.join("tsconfig.json"));
-    coordinate_tsconfig(&to.join("jsconfig.json"));
-
     Ok(Some(total_bytes))
 }
 

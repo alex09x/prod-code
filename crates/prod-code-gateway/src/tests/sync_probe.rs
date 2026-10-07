@@ -9,7 +9,7 @@
  */
 
 use super::super::*;
-use prod_code_protocol::{FileDelta, SyncProbeRequest, SyncRequest};
+use prod_code_protocol::{FileDelta, FileStamp, SyncProbeRequest, SyncRequest};
 
 #[tokio::test]
 async fn test_delta_sync_reports_fresh_until_probed() {
@@ -122,4 +122,49 @@ async fn test_sync_probe_seeds_and_reconciles() {
         again.files_deleted, 1,
         "src/lib.rs is not in the manifest any more"
     );
+}
+
+#[tokio::test]
+async fn test_typescript_type_roots_survive_manifest_reconciliation_and_upload() {
+    let storage = tempfile::tempdir().unwrap();
+    let origin = storage.path().join("typescript-repo");
+    std::fs::create_dir_all(&origin).unwrap();
+    let package = b"{}\n";
+    let tsconfig = b"{\"compilerOptions\":{\"typeRoots\":[\"custom_types\"]}}";
+    std::fs::write(origin.join("package.json"), package).unwrap();
+    std::fs::write(origin.join("tsconfig.json"), tsconfig).unwrap();
+
+    let response = apply_sync_probe(
+        storage.path(),
+        &WorkspaceManager::new(),
+        SyncProbeRequest {
+            client_workspace_root: "/tmp/typescript-worktree".to_string(),
+            base_workspace_name: Some("typescript-repo--wt-0001".to_string()),
+            seed_from: Some("typescript-repo".to_string()),
+            files: vec![
+                FileStamp {
+                    relative_path: "package.json".to_string(),
+                    size: package.len() as u64,
+                    hash: content_hash(package),
+                },
+                FileStamp {
+                    relative_path: "tsconfig.json".to_string(),
+                    size: tsconfig.len() as u64,
+                    hash: content_hash(tsconfig),
+                },
+            ],
+        },
+    )
+    .await;
+
+    assert!(!response.missing.iter().any(|path| path == "tsconfig.json"));
+    let workspace = storage.path().join("typescript-repo--wt-0001");
+    let coordinated = std::fs::read_to_string(workspace.join("tsconfig.json")).unwrap();
+    assert!(coordinated.contains("node_modules/@types"));
+
+    crate::sync::sync_fs::write_synced_file(&workspace.join("tsconfig.json"), tsconfig, false)
+        .await
+        .unwrap();
+    let after_upload = std::fs::read_to_string(workspace.join("tsconfig.json")).unwrap();
+    assert!(after_upload.contains("node_modules/@types"));
 }

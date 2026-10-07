@@ -268,7 +268,7 @@ fn test_seed_typescript_worktree_respects_disk_budget() {
 }
 
 #[test]
-fn test_coordinate_tsconfig_typeroots() {
+fn test_seed_typescript_worktree_preserves_client_type_roots() {
     let temp = tempfile::tempdir().unwrap();
     let tsconfig = temp.path().join("tsconfig.json");
 
@@ -289,7 +289,7 @@ fn test_coordinate_tsconfig_typeroots() {
     let content = fs::read_to_string(&tsconfig).unwrap();
     let val: serde_json::Value = serde_json::from_str(&content).unwrap();
     let type_roots = val["compilerOptions"]["typeRoots"].as_array().unwrap();
-    assert!(type_roots.iter().any(|v| v.as_str() == Some("node_modules/@types")));
+    assert_eq!(type_roots.len(), 1);
     assert!(type_roots.iter().any(|v| v.as_str() == Some("./custom_types")));
 }
 

@@ -82,10 +82,18 @@ pub async fn write_synced_file(
         tokio::fs::rename(&temp, target).await
     }
     .await;
-    if written.is_err() {
+    if let Err(error) = written {
         let _ = tokio::fs::remove_file(&temp).await;
+        return Err(error);
     }
-    written
+
+    if matches!(
+        target.file_name().and_then(|name| name.to_str()),
+        Some("tsconfig.json" | "jsconfig.json")
+    ) {
+        crate::ts_cache::seed::coordinate_tsconfig(target);
+    }
+    Ok(())
 }
 
 /// Removes `dir` and every parent left empty by that, up to but not including `root`: a directory
@@ -306,6 +314,11 @@ pub async fn apply_sync_probe(
     })
     .await
     .unwrap_or_default();
+
+    // Coordinate typeRoots only after the client manifest has been reconciled, so this
+    // server-side config change cannot make a matching client file appear missing.
+    crate::ts_cache::seed::coordinate_tsconfig(&target.join("tsconfig.json"));
+    crate::ts_cache::seed::coordinate_tsconfig(&target.join("jsconfig.json"));
 
     if !deleted.is_empty()
         && let Some(ws) = workspace_manager.get_loaded(&target).await
