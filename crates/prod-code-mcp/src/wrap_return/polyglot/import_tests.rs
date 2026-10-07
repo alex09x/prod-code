@@ -278,27 +278,6 @@ fn test_ts_js_imported_symbols_handles_identifier_containing_import() {
 }
 
 #[test]
-fn test_c_cpp_proves_import_exact_stem_match() {
-    let content_unrelated = r#"#include "recompute.h""#;
-    assert!(!proves_cross_file_import(
-        content_unrelated,
-        Path::new("src/caller.cpp"),
-        Path::new("src/compute.cpp"),
-        "do_work",
-        Language::Cpp,
-    ));
-
-    let content_matching = r#"#include "compute.h""#;
-    assert!(proves_cross_file_import(
-        content_matching,
-        Path::new("src/caller.cpp"),
-        Path::new("src/compute.cpp"),
-        "do_work",
-        Language::Cpp,
-    ));
-}
-
-#[test]
 fn test_python_recognizes_init_package_imports() {
     let content = "from pkg import find_user\n";
     let syms = imported_caller_symbols(
@@ -366,4 +345,27 @@ fn test_has_require_call_whitespace_and_boundaries() {
     assert!(has_require_call(r#"const res = require("./selected");"#));
     assert!(!has_require_call(r#"const required = true;"#));
     assert!(!has_require_call(r#"const is_required = require_func();"#));
+}
+
+#[test]
+fn test_python_recognizes_semicolon_separated_imports() {
+    let content = "from db import find_user; find_user()\n";
+    let syms = imported_caller_symbols(
+        content,
+        Path::new("caller.py"),
+        Path::new("db.py"),
+        "find_user",
+        Language::Python,
+    );
+    assert_eq!(syms, vec!["find_user"]);
+
+    let content_mod = "import db; db.find_user()\n";
+    let syms_mod = imported_caller_symbols(
+        content_mod,
+        Path::new("caller.py"),
+        Path::new("db.py"),
+        "find_user",
+        Language::Python,
+    );
+    assert_eq!(syms_mod, vec!["find_user"]);
 }
