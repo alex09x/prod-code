@@ -16,6 +16,11 @@
 
 ## v0.3.26 — 2026-10-06
 
+### Changed
+- **More useful symbol navigation** (`crates/prod-code-mcp`): `code_definition` now returns the symbol body by default; pass `body: false` for a location-only response (#905).
+- **Workspace-root execution and test aliases** (`crates/prod-code-client`, `crates/prod-code-mcp`): `code_exec` accepts the workspace root as its working directory, and `code_test` accepts `test` / `test_filter` and `package` / `crate` aliases. Fallback declaration lookup recognizes `var`, `let`, and `val`; the Claude Code guard resolves project transcripts by session and workspace and denies unverified bypasses (#903).
+- **Faster qualified-symbol lookup** (`crates/prod-code-mcp`): member lookup tries the owning type's outline before broad workspace-symbol search and validates module qualifiers in the fallback path (#898).
+
 ### Refactored
 - **Comprehensive Modular Decomposition Across All Crates**:
   Decomposed 104 monolithic source files exceeding 400 lines across `crates/prod-code-*` into cohesive, focused submodules adhering to the 100–300 lines sweet spot. All production source files in `src/` now strictly respect the 400-line threshold (with the single allowed exception of `commands.rs` for the declarative `clap::Subcommand` enum schema).
