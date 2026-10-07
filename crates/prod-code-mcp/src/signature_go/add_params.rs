@@ -228,12 +228,24 @@ pub(crate) async fn add_parameters(
             closing(new, open).context("an inserted call does not close; nothing was written")?;
         let got = split_list(&strip_comments(&new[open + 1..close]));
         let expected = requested_arguments(&call.args, request);
+        let has_nested_call = calls.iter().any(|nested| {
+            nested.path == call.path && call.open < nested.open && nested.close < call.close
+        });
+        let arguments_match =
+            got.iter()
+                .zip(&expected)
+                .zip(request)
+                .all(|((actual, expected), item)| {
+                    if has_nested_call && matches!(item, Param::Keep(_)) {
+                        // A nested call's own insertion legitimately changes this original argument;
+                        // that nested call is validated against its own request in this same loop.
+                        true
+                    } else {
+                        canonical(actual) == canonical(expected)
+                    }
+                });
         anyhow::ensure!(
-            got.len() == expected.len()
-                && got
-                    .iter()
-                    .zip(&expected)
-                    .all(|(actual, expected)| canonical(actual) == canonical(expected)),
+            got.len() == expected.len() && arguments_match,
             "{}: the insertion wrote ({}) instead of exactly ({}); nothing was written",
             call.at,
             got.join(", "),

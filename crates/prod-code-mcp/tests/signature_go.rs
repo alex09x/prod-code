@@ -536,6 +536,55 @@ async fn typed_literal_parameters_are_added_without_reordering_old_argument_effe
     assert_eq!(go_tests(&fixture), tests_before, "tests ran differently");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn typed_parameters_are_added_to_nested_direct_calls() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/nested\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            "package main\n\nfunc Add(value int) int { return value }\nfunc Use() int { return Add(Add(1)) }\nfunc main() { _ = Use() }\n",
+        ),
+    ]);
+    let before = fixture.run();
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
+    let request = [Param::Keep("value".into()), add("extra", "int", "2")];
+
+    let preview = change_with(
+        remote,
+        &fixture,
+        "lib.go",
+        "Add(value",
+        &request,
+        &Modifiers::default(),
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("nested-call addition preview: {e:#}"));
+    assert!(!preview.applied);
+    let proposed = rewritten(&preview, "lib.go");
+    assert!(
+        proposed.contains("func Add(value int, extra int) int"),
+        "{proposed}"
+    );
+    assert!(proposed.contains("Add(Add(1, 2), 2)"), "{proposed}");
+
+    let applied = change_with(
+        remote,
+        &fixture,
+        "lib.go",
+        "Add(value",
+        &request,
+        &Modifiers::default(),
+        true,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("nested-call addition applies: {e:#}"));
+    assert!(applied.applied);
+    assert_eq!(fixture.run(), before);
+}
+
 /// A primitive result replacement is declaration-only, but its caller proof and remote compiler
 /// verdict are still required for preview and apply. This is deliberately a real gopls scenario:
 /// a scripted result edit would not establish that the declaration/reference coordinates agree.
