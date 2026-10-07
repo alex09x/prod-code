@@ -98,6 +98,29 @@ fn find_matching_open_paren(text: &str, close_paren: usize) -> Option<usize> {
 }
 
 fn params_declare_name(params: &str, name: &str, lang: Language) -> bool {
+    let mut search = params;
+    while let Some(o) = search.find('{') {
+        if let Some(c) = search[o..].find('}') {
+            let inner = &search[o + 1..o + c];
+            for field in inner.split(',') {
+                let field = field.trim();
+                let ident = if let Some((_, local)) = field.split_once(':') {
+                    local.trim()
+                } else {
+                    field
+                };
+                let ident = ident.split('=').next().unwrap_or(ident).trim();
+                let ident = ident.trim_start_matches("mut ").trim();
+                if ident == name {
+                    return true;
+                }
+            }
+            search = &search[o + c + 1..];
+        } else {
+            break;
+        }
+    }
+
     for chunk in params.split(',') {
         let chunk = chunk.trim();
         if chunk.is_empty() {
@@ -110,21 +133,6 @@ fn params_declare_name(params: &str, name: &str, lang: Language) -> bool {
                 let ident = ident.trim_start_matches("mut ").trim();
                 if ident == name {
                     return true;
-                }
-                // Destructured param: { retry } or { orig: retry }
-                if let (Some(o), Some(c)) = (ident.find('{'), ident.rfind('}')) {
-                    if o < c {
-                        for field in ident[o + 1..c].split(',') {
-                            let field = field.trim();
-                            if let Some((_, local)) = field.split_once(':') {
-                                if local.trim() == name {
-                                    return true;
-                                }
-                            } else if field == name {
-                                return true;
-                            }
-                        }
-                    }
                 }
             }
             Language::Go => {
@@ -144,14 +152,84 @@ fn params_declare_name(params: &str, name: &str, lang: Language) -> bool {
     false
 }
 
+fn is_lexical_block(text: &str, open_pos: usize) -> bool {
+    let before = text[..open_pos].trim_end();
+    if before.is_empty() {
+        return true;
+    }
+
+    if before.ends_with('=')
+        || before.ends_with(':')
+        || before.ends_with(',')
+        || before.ends_with('(')
+        || before.ends_with('[')
+    {
+        return false;
+    }
+
+    let line_start = before.rfind('\n').map_or(0, |p| p + 1);
+    let line_before = before[line_start..].trim();
+
+    if line_before.starts_with("const ")
+        || line_before.starts_with("let ")
+        || line_before.starts_with("var ")
+        || line_before.starts_with("val ")
+        || line_before.starts_with("type ")
+        || line_before.starts_with("return ")
+        || line_before == "const"
+        || line_before == "let"
+        || line_before == "var"
+        || line_before == "val"
+        || line_before == "return"
+    {
+        return false;
+    }
+
+    if before.ends_with("=>") {
+        return true;
+    }
+
+    if before.ends_with(';') || before.ends_with('{') || before.ends_with('}') {
+        return true;
+    }
+
+    if before.ends_with(')') {
+        return true;
+    }
+
+    let last_word = before
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next_back()
+        .unwrap_or("");
+    if matches!(
+        last_word,
+        "else" | "do" | "try" | "finally" | "catch" | "unsafe" | "loop" | "select"
+    ) {
+        return true;
+    }
+
+    if line_before.starts_with("if ")
+        || line_before.starts_with("for ")
+        || line_before.starts_with("while ")
+        || line_before.starts_with("switch ")
+        || line_before.starts_with("match ")
+    {
+        return true;
+    }
+
+    line_before.is_empty()
+}
+
 fn strip_closed_blocks(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {
         if text.as_bytes()[i] == b'{' {
-            if let Some(close) = crate::parameter_object::matching_bracket(text, i) {
-                i = close + 1;
-                continue;
+            if is_lexical_block(text, i) {
+                if let Some(close) = crate::parameter_object::matching_bracket(text, i) {
+                    i = close + 1;
+                    continue;
+                }
             }
         }
         let ch = text[i..].chars().next().unwrap();
@@ -163,17 +241,45 @@ fn strip_closed_blocks(text: &str) -> String {
 
 fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
     let active_body = strip_closed_blocks(body_prefix);
+    let mut current_decl: Option<String> = None;
     for line in active_body.lines() {
         let trimmed = line.trim();
-        match lang {
-            Language::TypeScript | Language::JavaScript => {
-                if let Some(rest) = trimmed
+        if let Some(ref mut decl) = current_decl {
+            decl.push(' ');
+            decl.push_str(trimmed);
+            if trimmed.contains(';') || trimmed.contains('=') {
+                if let Some(rest) = decl
                     .strip_prefix("const ")
-                    .or_else(|| trimmed.strip_prefix("let "))
-                    .or_else(|| trimmed.strip_prefix("var "))
+                    .or_else(|| decl.strip_prefix("let "))
+                    .or_else(|| decl.strip_prefix("var "))
                 {
                     if params_declare_name(rest, name, lang) {
                         return true;
+                    }
+                }
+                current_decl = None;
+            }
+            continue;
+        }
+
+        match lang {
+            Language::TypeScript | Language::JavaScript => {
+                if trimmed.starts_with("const ")
+                    || trimmed.starts_with("let ")
+                    || trimmed.starts_with("var ")
+                {
+                    if !trimmed.contains(';') && !trimmed.contains('=') {
+                        current_decl = Some(trimmed.to_string());
+                        continue;
+                    }
+                    if let Some(rest) = trimmed
+                        .strip_prefix("const ")
+                        .or_else(|| trimmed.strip_prefix("let "))
+                        .or_else(|| trimmed.strip_prefix("var "))
+                    {
+                        if params_declare_name(rest, name, lang) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -195,6 +301,17 @@ fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
                 }
             }
             _ => {}
+        }
+    }
+    if let Some(decl) = current_decl {
+        if let Some(rest) = decl
+            .strip_prefix("const ")
+            .or_else(|| decl.strip_prefix("let "))
+            .or_else(|| decl.strip_prefix("var "))
+        {
+            if params_declare_name(rest, name, lang) {
+                return true;
+            }
         }
     }
     false
@@ -246,73 +363,5 @@ fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_locally_shadowed_by_param() {
-        let content = "function run(retry: () => void) {\n    retry();\n}\n";
-        let call_at = content.find("retry();").unwrap();
-        assert!(is_locally_shadowed(
-            content,
-            call_at,
-            "retry",
-            Language::TypeScript
-        ));
-
-        let content_no_shadow = "function run() {\n    retry();\n}\n";
-        let call_at = content_no_shadow.find("retry();").unwrap();
-        assert!(!is_locally_shadowed(
-            content_no_shadow,
-            call_at,
-            "retry",
-            Language::TypeScript
-        ));
-    }
-
-    #[test]
-    fn test_is_locally_shadowed_by_local_var() {
-        let content = "function run() {\n    const retry = () => {};\n    retry();\n}\n";
-        let call_at = content.find("retry();").unwrap();
-        assert!(is_locally_shadowed(
-            content,
-            call_at,
-            "retry",
-            Language::TypeScript
-        ));
-    }
-
-    #[test]
-    fn test_does_not_shadow_from_earlier_closed_block() {
-        let content =
-            "function run() {\n    { const retry = () => {}; retry(); }\n    retry();\n}\n";
-        let call_at = content.rfind("retry();").unwrap();
-        assert!(!is_locally_shadowed(
-            content,
-            call_at,
-            "retry",
-            Language::TypeScript
-        ));
-    }
-
-    #[test]
-    fn test_is_python_shadowed() {
-        let content = "def run(retry):\n    retry()\n";
-        let call_at = content.find("retry()").unwrap();
-        assert!(is_locally_shadowed(
-            content,
-            call_at,
-            "retry",
-            Language::Python
-        ));
-
-        let content_no_shadow = "def run():\n    retry()\n";
-        let call_at = content_no_shadow.find("retry()").unwrap();
-        assert!(!is_locally_shadowed(
-            content_no_shadow,
-            call_at,
-            "retry",
-            Language::Python
-        ));
-    }
-}
+#[path = "shadow_tests.rs"]
+mod tests;
