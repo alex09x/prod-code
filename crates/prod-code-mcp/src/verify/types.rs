@@ -228,8 +228,8 @@ impl VerifyReport {
     }
 }
 
-pub const MAX_FAILURE_OUTPUT_BYTES: usize = 8 * 1024;
-pub const MAX_RENDER_BYTES: usize = 48 * 1024;
+pub const MAX_FAILURE_OUTPUT_BYTES: usize = 4 * 1024;
+pub const MAX_RENDER_BYTES: usize = 24 * 1024;
 
 pub fn truncate_to_boundary(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {

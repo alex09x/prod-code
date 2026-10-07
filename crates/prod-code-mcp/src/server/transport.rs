@@ -182,21 +182,8 @@ where
             ));
             match handle_future.catch_unwind().await {
                 Ok(Ok(Some(resp_val))) => {
-                    let out = match serde_json::to_string(&resp_val) {
-                        Ok(mut s) => {
-                            s.push('\n');
-                            s
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to serialize MCP response");
-                            serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "error": { "code": -32603, "message": format!("Serialization error: {e}") }
-                            })
-                            .to_string()
-                            + "\n"
-                        }
-                    };
+                    let mut out = bound_serialized_response(resp_val, MAX_JSONRPC_FRAME_BYTES);
+                    out.push('\n');
                     if let Err(e) = writer.write_all(out.as_bytes()).await {
                         tracing::error!(error = %e, "Failed writing to stdout");
                         break;
@@ -244,4 +231,79 @@ where
     }
 
     Ok(())
+}
+
+pub const MAX_JSONRPC_FRAME_BYTES: usize = 60 * 1024;
+
+/// Serializes an MCP response value into a single JSON line bounded by `max_frame_bytes` to
+/// avoid crashing client line buffers with "inbound JSON-RPC frame exceeded maximum line length".
+pub(crate) fn bound_serialized_response(
+    mut resp: serde_json::Value,
+    max_frame_bytes: usize,
+) -> String {
+    let Ok(initial) = serde_json::to_string(&resp) else {
+        return serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": -32603, "message": "Failed to serialize response" }
+        })
+        .to_string();
+    };
+    if initial.len() <= max_frame_bytes {
+        return initial;
+    }
+    let marker = "\n[... output truncated to avoid exceeding MCP frame line limits]\n";
+    let text_blocks: Vec<(usize, String)> = resp
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .filter_map(|(i, b)| {
+                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        b.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| (i, s.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (idx, text) in text_blocks {
+        let mut target_len = max_frame_bytes / 2;
+        while target_len > 100 {
+            let mut candidate_text =
+                crate::verify::truncate_to_boundary(&text, target_len).to_string();
+            candidate_text.push_str(marker);
+            if let Some(block) = resp
+                .get_mut("result")
+                .and_then(|r| r.get_mut("content"))
+                .and_then(|c| c.as_array_mut())
+                .and_then(|arr| arr.get_mut(idx))
+            {
+                block["text"] = serde_json::Value::String(candidate_text);
+            }
+            if let Ok(serialized) = serde_json::to_string(&resp)
+                && serialized.len() <= max_frame_bytes
+            {
+                return serialized;
+            }
+            target_len = target_len.saturating_sub(4096);
+        }
+    }
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": resp.get("id"),
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": "[... output truncated to avoid exceeding MCP frame line limits]\n"
+            }],
+            "isError": false
+        }
+    })
+    .to_string()
 }
