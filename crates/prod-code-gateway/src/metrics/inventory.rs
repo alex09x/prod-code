@@ -16,13 +16,18 @@
 //! path or during frequent telemetry snapshots.
 
 use prod_code_protocol::{EngineToolchainInfo, ToolchainInventory, ToolchainVersion};
+use std::collections::HashSet;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+type ToolProbe = (&'static str, &'static [&'static str]);
+type EngineToolProbes = &'static [ToolProbe];
+type EngineProbeTable = &'static [(&'static str, EngineToolProbes)];
+
 /// Known tools to probe per language engine.
-const ENGINE_TOOLS: &[(&str, &[(&str, &[&str])])] = &[
+const ENGINE_TOOLS: EngineProbeTable = &[
     (
         "rust",
         &[("rustc", &["--version"]), ("cargo", &["--version"])],
@@ -70,6 +75,65 @@ const ENGINE_TOOLS: &[(&str, &[(&str, &[&str])])] = &[
     ("protobuf", &[("protoc", &["--version"])]),
 ];
 
+fn normalize_advertised_engine(engine: &str) -> Option<String> {
+    engine
+        .split_whitespace()
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn collect_engine_inventory(
+    advertised_engines: &[String],
+    engine_tools: EngineProbeTable,
+    mut probe: impl FnMut(&str, &[&str]) -> Option<String>,
+) -> Vec<EngineToolchainInfo> {
+    let advertised: HashSet<String> = advertised_engines
+        .iter()
+        .filter_map(|engine| normalize_advertised_engine(engine))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut engines = Vec::new();
+
+    for &(engine, tools) in engine_tools {
+        let engine = engine.to_ascii_lowercase();
+        let is_advertised = advertised.contains(&engine);
+        let mut toolchains = Vec::new();
+        for &(tool, args) in tools {
+            if let Some(version) = probe(tool, args) {
+                toolchains.push(ToolchainVersion {
+                    tool: tool.to_string(),
+                    version,
+                });
+            }
+        }
+
+        let available = is_advertised;
+        if available || !toolchains.is_empty() {
+            seen.insert(engine.clone());
+            engines.push(EngineToolchainInfo {
+                engine,
+                available,
+                toolchains,
+                details: None,
+            });
+        }
+    }
+
+    let mut unprobed: Vec<String> = advertised.difference(&seen).cloned().collect();
+    unprobed.sort();
+    for engine in unprobed {
+        engines.push(EngineToolchainInfo {
+            engine,
+            available: true,
+            toolchains: Vec::new(),
+            details: None,
+        });
+    }
+
+    engines
+}
+
 /// Collects toolchain inventory across the host.
 ///
 /// Blocking: execute only inside `spawn_blocking` or background tasks.
@@ -77,34 +141,7 @@ pub fn collect_toolchain_inventory(
     node: &str,
     advertised_engines: &[String],
 ) -> ToolchainInventory {
-    let mut engines = Vec::new();
-
-    for &(engine, tools) in ENGINE_TOOLS {
-        let is_advertised = advertised_engines.iter().any(|e| {
-            let base = e.split_whitespace().next().unwrap_or(e);
-            base.eq_ignore_ascii_case(engine)
-        });
-
-        let mut toolchain_versions = Vec::new();
-        for &(tool, args) in tools {
-            if let Some(ver) = probe_tool_version(tool, args) {
-                toolchain_versions.push(ToolchainVersion {
-                    tool: tool.to_string(),
-                    version: ver,
-                });
-            }
-        }
-
-        let available = is_advertised || !toolchain_versions.is_empty();
-        if available || !toolchain_versions.is_empty() {
-            engines.push(EngineToolchainInfo {
-                engine: engine.to_string(),
-                available,
-                toolchains: toolchain_versions,
-                details: None,
-            });
-        }
-    }
+    let engines = collect_engine_inventory(advertised_engines, ENGINE_TOOLS, probe_tool_version);
 
     ToolchainInventory {
         ts_ms: std::time::SystemTime::now()
@@ -190,5 +227,29 @@ mod tests {
             assert!(ver.is_some());
             assert!(ver.unwrap().contains("cargo"));
         }
+    }
+
+    #[test]
+    fn metrics_review_probe_does_not_make_engine_available() {
+        let inventory = collect_engine_inventory(&[], ENGINE_TOOLS, |tool, _| {
+            (tool == "python3").then_some("Python 3.13".to_string())
+        });
+        let python = inventory
+            .iter()
+            .find(|engine| engine.engine == "python")
+            .expect("probed Python runtime remains in inventory");
+        assert!(!python.available);
+        assert_eq!(python.toolchains.len(), 1);
+        assert_eq!(python.toolchains[0].tool, "python3");
+    }
+
+    #[test]
+    fn metrics_review_advertised_engine_without_probe_is_included() {
+        let advertised = vec!["php (php-lsp)".to_string(), "PHP".to_string()];
+        let inventory = collect_engine_inventory(&advertised, &[], |_, _| None);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].engine, "php");
+        assert!(inventory[0].available);
+        assert!(inventory[0].toolchains.is_empty());
     }
 }

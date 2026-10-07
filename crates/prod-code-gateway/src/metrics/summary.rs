@@ -13,7 +13,7 @@
 use prod_code_protocol::{ExecMetric, MetricsResponse, QueryMetric};
 use std::collections::BTreeMap;
 
-use super::event::Event;
+use super::event::{Event, command_method};
 
 pub(crate) type Key = (String, String, String, String);
 
@@ -47,12 +47,17 @@ impl Summary {
                 .or_default()
                 .push((ev.duration_ms, ev.ok)),
             "exec" => {
+                let command = if ev.method.is_empty() {
+                    command_method(&ev.command)
+                } else {
+                    ev.method.clone()
+                };
                 let e = execs
                     .entry((
                         ev.agent.clone(),
                         ev.host.clone(),
                         ev.workspace.clone(),
-                        ev.command.clone(),
+                        command,
                     ))
                     .or_default();
                 e.0 += 1;
