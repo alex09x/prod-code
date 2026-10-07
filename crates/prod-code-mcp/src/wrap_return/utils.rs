@@ -46,7 +46,7 @@ pub(crate) fn is_import_export_call_context(text: &str, at: usize, lang: Languag
         || line.starts_with("export{")
         || line.starts_with("export *")
         || line.starts_with("from ")
-        || line.contains("require(")
+        || has_require_call(line)
     {
         return true;
     }
@@ -55,6 +55,27 @@ pub(crate) fn is_import_export_call_context(text: &str, at: usize, lang: Languag
         .rfind("import {")
         .or_else(|| before.rfind("export {"))
         .is_some_and(|start| !before[start..].contains('}'))
+}
+
+pub(crate) fn has_require_call(s: &str) -> bool {
+    let mut search = s;
+    while let Some(pos) = search.find("require") {
+        let before_ok = pos == 0 || {
+            let prev = search[..pos].chars().next_back().unwrap();
+            !prev.is_alphanumeric() && prev != '_' && prev != '$'
+        };
+        let after = &search[pos + "require".len()..];
+        let not_ident = after
+            .chars()
+            .next()
+            .map_or(true, |c| !c.is_alphanumeric() && c != '_' && c != '$');
+        let trimmed = after.trim_start();
+        if before_ok && not_ident && trimmed.starts_with('(') {
+            return true;
+        }
+        search = &search[pos + "require".len()..];
+    }
+    false
 }
 
 /// The return type a function header declares between its parameter list's `)` at `close` and

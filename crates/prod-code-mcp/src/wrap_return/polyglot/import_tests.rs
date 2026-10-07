@@ -333,3 +333,37 @@ fn test_ts_recognizes_index_module_imports() {
     );
     assert_eq!(syms, vec!["find_user"]);
 }
+
+#[test]
+fn test_ts_js_recognizes_require_with_whitespace() {
+    let content = r#"const { retry } = require ("./selected");"#;
+    let syms = imported_caller_symbols(
+        content,
+        Path::new("src/caller.js"),
+        Path::new("src/selected.js"),
+        "retry",
+        Language::JavaScript,
+    );
+    assert_eq!(syms, vec!["retry"]);
+
+    let content_tab = "const { retry: myRetry } = require\t(\"./selected\");";
+    let syms_tab = imported_caller_symbols(
+        content_tab,
+        Path::new("src/caller.js"),
+        Path::new("src/selected.js"),
+        "retry",
+        Language::JavaScript,
+    );
+    assert_eq!(syms_tab, vec!["myRetry"]);
+}
+
+#[test]
+fn test_has_require_call_whitespace_and_boundaries() {
+    use crate::wrap_return::utils::has_require_call;
+    assert!(has_require_call(
+        r#"const { retry } = require ("./selected");"#
+    ));
+    assert!(has_require_call(r#"const res = require("./selected");"#));
+    assert!(!has_require_call(r#"const required = true;"#));
+    assert!(!has_require_call(r#"const is_required = require_func();"#));
+}

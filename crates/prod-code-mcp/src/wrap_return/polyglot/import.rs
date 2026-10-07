@@ -86,6 +86,10 @@ pub(crate) fn imported_caller_symbols(
 mod import_cpp;
 use import_cpp::c_cpp_proves_import;
 
+#[path = "import_python.rs"]
+mod import_python;
+use import_python::python_imported_symbols;
+
 fn extract_specifier(s: &str) -> &str {
     let mut chars = s.char_indices();
     while let Some((i, c)) = chars.next() {
@@ -230,149 +234,64 @@ fn ts_js_imported_symbols(content: &str, decl_stem: &str, fn_name: &str) -> Vec<
         }
     }
     let mut search_idx = 0;
-    while let Some(req_pos) = content[search_idx..].find("require(") {
-        let abs_req_pos = search_idx + req_pos;
-        let rest = &content[abs_req_pos + "require(".len()..];
-        let specifier = extract_specifier(rest);
-        if specifier_matches_stem(specifier, decl_stem) {
-            let line_before = content[..abs_req_pos]
-                .lines()
-                .next_back()
-                .unwrap_or("")
-                .trim();
-            if let Some((lhs, _)) = line_before.split_once('=') {
-                let lhs = lhs.trim();
-                if let (Some(open), Some(close)) = (lhs.find('{'), lhs.rfind('}')) {
-                    if open < close {
-                        let inner = &lhs[open + 1..close];
-                        for item in inner.split(',') {
-                            let item = item.trim();
-                            if let Some((orig, local)) = item.split_once(':') {
-                                if orig.trim() == fn_name {
-                                    symbols.push(local.trim().to_string());
-                                }
-                            } else if item == fn_name {
-                                symbols.push(fn_name.to_string());
-                            }
-                        }
-                    }
-                } else {
-                    let lhs_clean = lhs
-                        .trim_start_matches("const")
-                        .trim_start_matches("let")
-                        .trim_start_matches("var")
-                        .trim_start_matches("import")
-                        .trim();
-                    if !lhs_clean.is_empty()
-                        && lhs_clean
-                            .chars()
-                            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-                    {
-                        symbols.push(fn_name.to_string());
-                    }
-                }
-            }
-        }
-        search_idx = abs_req_pos + "require(".len();
-    }
-    symbols
-}
-
-fn python_imported_symbols(content: &str, decl_stem: &str, fn_name: &str) -> Vec<String> {
-    let mut symbols = Vec::new();
-    let mut lines = content.lines().peekable();
-    while let Some(line) = lines.next() {
-        let code_line = line.split('#').next().unwrap_or("").trim();
-        if code_line.is_empty() {
-            continue;
-        }
-        let mut full_stmt = code_line.to_string();
-        if full_stmt.contains('(') && !full_stmt.contains(')') {
-            while let Some(next_line) = lines.next() {
-                let next_code = next_line.split('#').next().unwrap_or("").trim();
-                if !next_code.is_empty() {
-                    full_stmt.push(' ');
-                    full_stmt.push_str(next_code);
-                }
-                if next_code.contains(')') {
-                    break;
-                }
-            }
-        } else if full_stmt.ends_with('\\') {
-            while full_stmt.ends_with('\\') {
-                full_stmt.pop();
-                if let Some(next_line) = lines.next() {
-                    let next_code = next_line.split('#').next().unwrap_or("").trim();
-                    if !next_code.is_empty() {
-                        full_stmt.push(' ');
-                        full_stmt.push_str(next_code);
-                    }
-                } else {
-                    break;
-                }
-            }
-        }
-
-        let trimmed = full_stmt.trim();
-        if let Some(rest) = trimmed.strip_prefix("from ") {
-            if let Some((mod_part, clause)) = rest.split_once(" import ") {
-                let mod_name = mod_part
-                    .trim()
-                    .rsplit('.')
+    while let Some(req_offset) = content[search_idx..].find("require") {
+        let abs_req_pos = search_idx + req_offset;
+        let before_ok = abs_req_pos == 0 || {
+            let prev = content[..abs_req_pos].chars().next_back().unwrap();
+            !prev.is_alphanumeric() && prev != '_' && prev != '$'
+        };
+        let after = &content[abs_req_pos + "require".len()..];
+        let not_ident = after
+            .chars()
+            .next()
+            .map_or(true, |c| !c.is_alphanumeric() && c != '_' && c != '$');
+        let trimmed = after.trim_start();
+        if before_ok && not_ident && trimmed.starts_with('(') {
+            let paren_open = abs_req_pos + "require".len() + (after.len() - trimmed.len());
+            let rest = &content[paren_open + 1..];
+            let specifier = extract_specifier(rest);
+            if specifier_matches_stem(specifier, decl_stem) {
+                let decl_before = content[..abs_req_pos]
+                    .rsplit(';')
                     .next()
-                    .unwrap_or(mod_part.trim());
-                let mod_stem = mod_name.trim_start_matches('.');
-                let clause = clause
-                    .trim()
-                    .trim_start_matches('(')
-                    .trim_end_matches(')')
+                    .unwrap_or("")
                     .trim();
-
-                if mod_stem == decl_stem {
-                    if clause == "*" {
-                        symbols.push(fn_name.to_string());
-                    } else {
-                        for item in clause.split(',') {
-                            let parts: Vec<&str> = item.split_whitespace().collect();
-                            match parts.as_slice() {
-                                [name] if *name == fn_name => symbols.push(fn_name.to_string()),
-                                [orig, "as", local] if *orig == fn_name => {
-                                    symbols.push((*local).to_string());
+                if let Some((lhs, _)) = decl_before.rsplit_once('=') {
+                    let lhs = lhs.trim();
+                    if let (Some(open), Some(close)) = (lhs.find('{'), lhs.rfind('}')) {
+                        if open < close {
+                            let inner = &lhs[open + 1..close];
+                            for item in inner.split(',') {
+                                let item = item.trim();
+                                if let Some((orig, local)) = item.split_once(':') {
+                                    if orig.trim() == fn_name {
+                                        symbols.push(local.trim().to_string());
+                                    }
+                                } else if item == fn_name {
+                                    symbols.push(fn_name.to_string());
                                 }
-                                _ => {}
                             }
                         }
-                    }
-                } else {
-                    for item in clause.split(',') {
-                        let parts: Vec<&str> = item.split_whitespace().collect();
-                        match parts.as_slice() {
-                            [name] if *name == decl_stem => symbols.push(fn_name.to_string()),
-                            [orig, "as", _local] if *orig == decl_stem => {
-                                symbols.push(fn_name.to_string());
-                            }
-                            _ => {}
+                    } else {
+                        let lhs_clean = lhs
+                            .trim_start_matches("const")
+                            .trim_start_matches("let")
+                            .trim_start_matches("var")
+                            .trim_start_matches("import")
+                            .trim();
+                        if !lhs_clean.is_empty()
+                            && lhs_clean
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+                        {
+                            symbols.push(fn_name.to_string());
                         }
                     }
                 }
             }
-        } else if let Some(rest) = trimmed.strip_prefix("import ") {
-            let rest = rest
-                .trim()
-                .trim_start_matches('(')
-                .trim_end_matches(')')
-                .trim();
-            for entry in rest.split(',') {
-                let (mod_part, _alias) = entry.split_once(" as ").unwrap_or((entry, ""));
-                let mod_name = mod_part
-                    .trim()
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(mod_part.trim());
-                if mod_name == decl_stem {
-                    symbols.push(fn_name.to_string());
-                }
-            }
+            search_idx = paren_open + 1;
+        } else {
+            search_idx = abs_req_pos + "require".len();
         }
     }
     symbols
