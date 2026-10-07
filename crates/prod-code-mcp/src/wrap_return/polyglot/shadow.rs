@@ -329,8 +329,15 @@ fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
         if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
             let indent = line.len() - line.trim_start().len();
             if indent < target_indent {
-                if let (Some(open), Some(close)) = (line.find('('), line.rfind(')')) {
-                    let params = &line[open + 1..close];
+                let mut header = line.to_string();
+                let mut body_start = i + 1;
+                while !header.contains(')') && body_start < lines.len() {
+                    header.push(' ');
+                    header.push_str(lines[body_start].trim());
+                    body_start += 1;
+                }
+                if let (Some(open), Some(close)) = (header.find('('), header.rfind(')')) {
+                    let params = &header[open + 1..close];
                     for p in params.split(',') {
                         let p = p
                             .trim()
@@ -346,7 +353,7 @@ fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
                         }
                     }
                 }
-                for body_line in &lines[i + 1..lines.len() - 1] {
+                for body_line in &lines[body_start..lines.len() - 1] {
                     let b_trimmed = body_line.trim();
                     if let Some((lhs, _)) = b_trimmed.split_once('=') {
                         let var = lhs.trim().split(':').next().unwrap().trim();

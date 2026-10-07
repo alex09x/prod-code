@@ -112,3 +112,15 @@ fn test_is_python_shadowed() {
         Language::Python
     ));
 }
+
+#[test]
+fn test_is_python_shadowed_multiline() {
+    let content = "def run(\n    retry,\n):\n    retry()\n";
+    let call_at = content.find("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::Python
+    ));
+}
