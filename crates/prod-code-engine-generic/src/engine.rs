@@ -73,6 +73,7 @@ pub struct GenericLspEngine {
 impl GenericLspEngine {
     /// Spawn and initialize a generic language server for the workspace.
     pub async fn spawn(workspace_root: &Path, config: GenericLspConfig) -> Result<Self> {
+        let workspace_root = crate::lsp::normalize_workspace_root(workspace_root)?;
         if config.health_probe_interval == Some(Duration::ZERO) {
             anyhow::bail!("language-server health probe interval must be greater than zero");
         }

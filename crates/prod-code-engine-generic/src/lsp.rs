@@ -25,14 +25,34 @@ use std::path::Path;
 use url::Url;
 
 pub(crate) fn workspace_file_uri(path: &Path) -> Result<String> {
-    let absolute_path = if path.is_absolute() {
+    let absolute_path = normalize_workspace_root(path)?;
+    Url::from_directory_path(&absolute_path)
+        .map(|uri| uri.to_string())
+        .map_err(|_| anyhow::anyhow!("invalid workspace directory path"))
+}
+
+pub(crate) fn normalize_workspace_root(path: &Path) -> Result<std::path::PathBuf> {
+    let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()?.join(path)
     };
-    Url::from_directory_path(&absolute_path)
-        .map(|uri| uri.to_string())
-        .map_err(|_| anyhow::anyhow!("invalid workspace directory path"))
+    let mut normalized = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                normalized.push(component.as_os_str());
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if normalized.file_name().is_some() {
+                    normalized.pop();
+                }
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Ok(normalized)
 }
 
 impl GenericLspEngine {
