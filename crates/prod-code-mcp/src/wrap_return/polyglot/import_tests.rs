@@ -207,3 +207,59 @@ fn test_python_proves_import_from_module() {
         Language::Python,
     ));
 }
+
+#[test]
+fn test_ts_js_imported_symbols_tracks_alias() {
+    let content = r#"import { retry as again } from "./selected";"#;
+    let syms = imported_caller_symbols(
+        content,
+        Path::new("repro/caller.ts"),
+        Path::new("repro/selected.ts"),
+        "retry",
+        Language::TypeScript,
+    );
+    assert_eq!(syms, vec!["again"]);
+
+    let content_require = r#"const { retry: again } = require("./selected");"#;
+    let syms_require = imported_caller_symbols(
+        content_require,
+        Path::new("repro/caller.ts"),
+        Path::new("repro/selected.ts"),
+        "retry",
+        Language::TypeScript,
+    );
+    assert_eq!(syms_require, vec!["again"]);
+
+    let content_unrelated = r#"import { unrelated as retry } from "./selected";"#;
+    let syms_unrelated = imported_caller_symbols(
+        content_unrelated,
+        Path::new("repro/caller.ts"),
+        Path::new("repro/selected.ts"),
+        "retry",
+        Language::TypeScript,
+    );
+    assert!(syms_unrelated.is_empty());
+}
+
+#[test]
+fn test_python_imported_symbols_tracks_alias() {
+    let content = "from selected import retry as again\n";
+    let syms = imported_caller_symbols(
+        content,
+        Path::new("repro/caller.py"),
+        Path::new("repro/selected.py"),
+        "retry",
+        Language::Python,
+    );
+    assert_eq!(syms, vec!["again"]);
+
+    let content_unrelated = "from selected import other as retry\n";
+    let syms_unrelated = imported_caller_symbols(
+        content_unrelated,
+        Path::new("repro/caller.py"),
+        Path::new("repro/selected.py"),
+        "retry",
+        Language::Python,
+    );
+    assert!(syms_unrelated.is_empty());
+}

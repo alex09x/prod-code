@@ -15,6 +15,7 @@ use crate::parameter_object::Language;
 /// Proves whether `caller_path` genuinely imports or shares scope with `decl_file` for `fn_name`.
 /// Used when semantic references are empty to prevent cross-file text fallback from rewriting
 /// unrelated local aliases or same-named symbols in other files (#982).
+#[cfg(test)]
 pub(crate) fn proves_cross_file_import(
     content: &str,
     caller_path: &Path,
@@ -22,25 +23,37 @@ pub(crate) fn proves_cross_file_import(
     fn_name: &str,
     lang: Language,
 ) -> bool {
+    !imported_caller_symbols(content, caller_path, decl_file, fn_name, lang).is_empty()
+}
+
+/// Finds the local symbol name(s) under which `decl_file::fn_name` is imported or accessible in `caller_path`.
+/// Returns an empty list if `caller_path` does not import or share scope with `decl_file` for `fn_name`.
+pub(crate) fn imported_caller_symbols(
+    content: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+    fn_name: &str,
+    lang: Language,
+) -> Vec<String> {
     let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if decl_stem.is_empty() {
-        return false;
+        return Vec::new();
     }
 
     match lang {
         Language::TypeScript | Language::JavaScript => {
-            ts_js_proves_import(content, decl_stem, fn_name)
+            ts_js_imported_symbols(content, decl_stem, fn_name)
         }
-        Language::Python => python_proves_import(content, decl_stem, fn_name),
-        Language::Go => {
-            // In Go, files in the same directory share package scope.
-            caller_path.parent() == decl_file.parent()
+        Language::Python => python_imported_symbols(content, decl_stem, fn_name),
+        Language::Go | Language::Swift if caller_path.parent() == decl_file.parent() => {
+            vec![fn_name.to_string()]
         }
-        Language::Cpp | Language::C => {
-            c_cpp_proves_import(content, caller_path, decl_file, fn_name)
+        Language::Cpp | Language::C
+            if c_cpp_proves_import(content, caller_path, decl_file, fn_name) =>
+        {
+            vec![fn_name.to_string()]
         }
-        Language::Swift => caller_path.parent() == decl_file.parent(),
-        _ => false,
+        _ => Vec::new(),
     }
 }
 
@@ -70,16 +83,13 @@ fn c_cpp_proves_import(content: &str, caller_path: &Path, decl_file: &Path, fn_n
             .and_then(|s| s.to_str())
             .unwrap_or("");
 
-        let mut decl_headers = Vec::new();
-        for line in decl_content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("#include") {
-                let spec = extract_specifier(trimmed);
-                if !spec.is_empty() {
-                    decl_headers.push(spec);
-                }
-            }
-        }
+        let decl_headers: Vec<&str> = decl_content
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("#include"))
+            .map(extract_specifier)
+            .filter(|s| !s.is_empty())
+            .collect();
 
         for h in &decl_headers {
             let h_file = h.rsplit('/').next().unwrap_or(h);
@@ -157,10 +167,12 @@ fn specifier_matches_stem(specifier: &str, decl_stem: &str) -> bool {
     mod_stem == decl_stem
 }
 
-fn clause_imports_name(clause: &str, fn_name: &str) -> bool {
+fn clause_imported_symbols(clause: &str, fn_name: &str) -> Vec<String> {
+    let mut symbols = Vec::new();
     let trimmed = clause.trim();
     if trimmed.contains('*') {
-        return true;
+        symbols.push(fn_name.to_string());
+        return symbols;
     }
     if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}')) {
         if open < close {
@@ -168,22 +180,20 @@ fn clause_imports_name(clause: &str, fn_name: &str) -> bool {
             for item in inner.split(',') {
                 let parts: Vec<&str> = item.split_whitespace().collect();
                 match parts.as_slice() {
-                    [name] if *name == fn_name => return true,
-                    [_orig, "as", local] if *local == fn_name => return true,
-                    [orig, "as", _local] if *orig == fn_name => {
-                        // Aliased away to a different name, so calls to fn_name
-                        // do not refer to this imported symbol.
-                        return false;
-                    }
+                    [name] if *name == fn_name => symbols.push(fn_name.to_string()),
+                    [orig, "as", local] if *orig == fn_name => symbols.push((*local).to_string()),
                     _ => {}
                 }
             }
-            return false;
+            return symbols;
         }
     }
     // Default import or bare name: import fn_name from "..."
     let words: Vec<&str> = trimmed.split_whitespace().collect();
-    words.contains(&fn_name)
+    if words.contains(&fn_name) {
+        symbols.push(fn_name.to_string());
+    }
+    symbols
 }
 
 fn split_import_from(s: &str) -> Option<(&str, &str)> {
@@ -215,13 +225,13 @@ fn split_import_from(s: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn ts_js_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
+fn ts_js_imported_symbols(content: &str, decl_stem: &str, fn_name: &str) -> Vec<String> {
+    let mut symbols = Vec::new();
     for part in content.split("import") {
         if let Some((clause, rest)) = split_import_from(part) {
             let specifier = extract_specifier(rest);
-            if specifier_matches_stem(specifier, decl_stem) && clause_imports_name(clause, fn_name)
-            {
-                return true;
+            if specifier_matches_stem(specifier, decl_stem) {
+                symbols.extend(clause_imported_symbols(clause, fn_name));
             }
         }
     }
@@ -244,16 +254,11 @@ fn ts_js_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                         for item in inner.split(',') {
                             let item = item.trim();
                             if let Some((orig, local)) = item.split_once(':') {
-                                let orig = orig.trim();
-                                let local = local.trim();
-                                if orig == fn_name && local != fn_name {
-                                    return false;
-                                }
-                                if local == fn_name {
-                                    return true;
+                                if orig.trim() == fn_name {
+                                    symbols.push(local.trim().to_string());
                                 }
                             } else if item == fn_name {
-                                return true;
+                                symbols.push(fn_name.to_string());
                             }
                         }
                     }
@@ -269,17 +274,18 @@ fn ts_js_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                             .chars()
                             .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
                     {
-                        return true;
+                        symbols.push(fn_name.to_string());
                     }
                 }
             }
         }
         search_idx = abs_req_pos + "require(".len();
     }
-    false
+    symbols
 }
 
-fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
+fn python_imported_symbols(content: &str, decl_stem: &str, fn_name: &str) -> Vec<String> {
+    let mut symbols = Vec::new();
     let mut lines = content.lines().peekable();
     while let Some(line) = lines.next() {
         let code_line = line.split('#').next().unwrap_or("").trim();
@@ -330,25 +336,27 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
 
                 if mod_stem == decl_stem {
                     if clause == "*" {
-                        return true;
-                    }
-                    for item in clause.split(',') {
-                        let parts: Vec<&str> = item.split_whitespace().collect();
-                        match parts.as_slice() {
-                            [name] if *name == fn_name => return true,
-                            [_orig, "as", local] if *local == fn_name => return true,
-                            [orig, "as", _local] if *orig == fn_name => {
-                                return false;
+                        symbols.push(fn_name.to_string());
+                    } else {
+                        for item in clause.split(',') {
+                            let parts: Vec<&str> = item.split_whitespace().collect();
+                            match parts.as_slice() {
+                                [name] if *name == fn_name => symbols.push(fn_name.to_string()),
+                                [orig, "as", local] if *orig == fn_name => {
+                                    symbols.push((*local).to_string());
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 } else {
                     for item in clause.split(',') {
                         let parts: Vec<&str> = item.split_whitespace().collect();
                         match parts.as_slice() {
-                            [name] if *name == decl_stem => return true,
-                            [orig, "as", _local] if *orig == decl_stem => return true,
+                            [name] if *name == decl_stem => symbols.push(fn_name.to_string()),
+                            [orig, "as", _local] if *orig == decl_stem => {
+                                symbols.push(fn_name.to_string());
+                            }
                             _ => {}
                         }
                     }
@@ -368,12 +376,12 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                     .next()
                     .unwrap_or(mod_part.trim());
                 if mod_name == decl_stem {
-                    return true;
+                    symbols.push(fn_name.to_string());
                 }
             }
         }
     }
-    false
+    symbols
 }
 
 #[cfg(test)]
