@@ -85,9 +85,13 @@ fn specifier_matches_stem(specifier: &str, decl_stem: &str) -> bool {
 }
 
 fn clause_imports_name(clause: &str, fn_name: &str) -> bool {
-    if let (Some(open), Some(close)) = (clause.find('{'), clause.rfind('}')) {
+    let trimmed = clause.trim();
+    if trimmed.contains('*') {
+        return true;
+    }
+    if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}')) {
         if open < close {
-            let inner = &clause[open + 1..close];
+            let inner = &trimmed[open + 1..close];
             for item in inner.split(',') {
                 let parts: Vec<&str> = item.split_whitespace().collect();
                 match parts.as_slice() {
@@ -105,7 +109,7 @@ fn clause_imports_name(clause: &str, fn_name: &str) -> bool {
         }
     }
     // Default import or bare name: import fn_name from "..."
-    let words: Vec<&str> = clause.split_whitespace().collect();
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
     words.contains(&fn_name)
 }
 
@@ -119,18 +123,56 @@ fn ts_js_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
             }
         }
     }
-    for part in content.split("require(") {
-        let specifier = extract_specifier(part);
+    let mut search_idx = 0;
+    while let Some(req_pos) = content[search_idx..].find("require(") {
+        let abs_req_pos = search_idx + req_pos;
+        let rest = &content[abs_req_pos + "require(".len()..];
+        let specifier = extract_specifier(rest);
         if specifier_matches_stem(specifier, decl_stem) {
-            let before = content[..content.find(part).unwrap_or(0)].trim_end();
-            if let Some(open) = before.rfind('{') {
-                if let Some(close) = before.rfind('}') {
-                    if open < close && clause_imports_name(&before[open..=close], fn_name) {
+            let line_before = content[..abs_req_pos]
+                .lines()
+                .next_back()
+                .unwrap_or("")
+                .trim();
+            if let Some((lhs, _)) = line_before.split_once('=') {
+                let lhs = lhs.trim();
+                if let (Some(open), Some(close)) = (lhs.find('{'), lhs.rfind('}')) {
+                    if open < close {
+                        let inner = &lhs[open + 1..close];
+                        for item in inner.split(',') {
+                            let item = item.trim();
+                            if let Some((orig, local)) = item.split_once(':') {
+                                let orig = orig.trim();
+                                let local = local.trim();
+                                if orig == fn_name && local != fn_name {
+                                    return false;
+                                }
+                                if local == fn_name {
+                                    return true;
+                                }
+                            } else if item == fn_name {
+                                return true;
+                            }
+                        }
+                    }
+                } else {
+                    let lhs_clean = lhs
+                        .trim_start_matches("const")
+                        .trim_start_matches("let")
+                        .trim_start_matches("var")
+                        .trim_start_matches("import")
+                        .trim();
+                    if !lhs_clean.is_empty()
+                        && lhs_clean
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+                    {
                         return true;
                     }
                 }
             }
         }
+        search_idx = abs_req_pos + "require(".len();
     }
     false
 }
@@ -155,15 +197,25 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                         match parts.as_slice() {
                             [name] if *name == fn_name => return true,
                             [_orig, "as", local] if *local == fn_name => return true,
+                            [orig, "as", _local] if *orig == fn_name => {
+                                return false;
+                            }
                             _ => {}
                         }
                     }
                 }
             }
         } else if let Some(rest) = trimmed.strip_prefix("import ") {
-            let mod_name = rest.trim().rsplit('.').next().unwrap_or(rest.trim());
-            if mod_name == decl_stem {
-                return true;
+            for entry in rest.split(',') {
+                let (mod_part, _alias) = entry.split_once(" as ").unwrap_or((entry, ""));
+                let mod_name = mod_part
+                    .trim()
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(mod_part.trim());
+                if mod_name == decl_stem {
+                    return true;
+                }
             }
         }
     }
@@ -179,6 +231,33 @@ mod tests {
         let content = r#"import { calculate } from "./math";"#;
         assert!(proves_cross_file_import(
             content,
+            Path::new("src/client.ts"),
+            Path::new("src/math.ts"),
+            "calculate",
+            Language::TypeScript,
+        ));
+
+        let content_namespace = r#"import * as math from "./math";"#;
+        assert!(proves_cross_file_import(
+            content_namespace,
+            Path::new("src/client.ts"),
+            Path::new("src/math.ts"),
+            "calculate",
+            Language::TypeScript,
+        ));
+
+        let content_require_obj = r#"const math = require("./math");"#;
+        assert!(proves_cross_file_import(
+            content_require_obj,
+            Path::new("src/client.ts"),
+            Path::new("src/math.ts"),
+            "calculate",
+            Language::TypeScript,
+        ));
+
+        let content_require_destruct = r#"const { calculate } = require("./math");"#;
+        assert!(proves_cross_file_import(
+            content_require_destruct,
             Path::new("src/client.ts"),
             Path::new("src/math.ts"),
             "calculate",
@@ -221,6 +300,15 @@ mod tests {
         let content = "from db import find_user\n";
         assert!(proves_cross_file_import(
             content,
+            Path::new("service.py"),
+            Path::new("db.py"),
+            "find_user",
+            Language::Python,
+        ));
+
+        let content_import_as = "import db as database\n";
+        assert!(proves_cross_file_import(
+            content_import_as,
             Path::new("service.py"),
             Path::new("db.py"),
             "find_user",
