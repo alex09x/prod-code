@@ -10,9 +10,13 @@
 
 use super::line_analyzer::{ParsedLine, is_control_statement, parse_line_def_use};
 use super::parser::{extract_function_parameters, strip_literals_and_comments};
-use super::types::{DataFlowSlice, SliceCompleteness, SliceStatement};
+use super::types::{DataFlowSlice, SliceCompleteness};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
+
+mod render;
+
+use self::render::{SliceRenderInput, format_slice_statements};
 
 /// Slices statements within a function body backwards from a target criterion.
 pub fn slice_intra_function(
@@ -325,72 +329,18 @@ pub fn slice_intra_function(
     };
 
     // Step 5: Build final statements and formatted slice.
-    let mut slice_statements: Vec<SliceStatement> = Vec::new();
-    let mut formatted = String::new();
-
-    let total_lines = parsed_lines.len();
-    let retained_count = retained_indices.len();
-    let reduction_percent = if total_lines > 0 {
-        100.0 - (retained_count as f64 * 100.0 / total_lines as f64)
-    } else {
-        0.0
-    };
-
-    formatted.push_str(&format!(
-        "// === INTRA-FUNCTION DATA-FLOW SLICE: `{}` ({}:{}-{}) ===\n",
-        function_name, file_rel, start_line, end_line
-    ));
-    formatted.push_str(&format!(
-        "// Completeness: {} | Target: line {} | Retained: {}/{} lines ({:.0}% reduction)\n",
-        completeness.label(),
-        target_line,
-        retained_count,
-        total_lines,
-        reduction_percent
-    ));
-    if let SliceCompleteness::Incomplete { ref gap } = completeness {
-        formatted.push_str(&format!("// Missing evidence gap: {gap}\n"));
-    }
-    formatted.push_str(
-        "// ============================================================================\n",
-    );
-
-    let mut prev_idx: Option<usize> = None;
-
-    for &idx in &retained_indices {
-        let pl = &parsed_lines[idx];
-
-        if let Some(prev) = prev_idx {
-            let omitted = idx.saturating_sub(prev + 1);
-            if omitted > 0 {
-                formatted.push_str(&format!(
-                    "{}    // ... [sliced away {} statement(s) not affecting target] ...\n",
-                    pl.indent, omitted
-                ));
-            }
-        }
-        prev_idx = Some(idx);
-
-        let reason = statement_reasons
-            .get(&idx)
-            .cloned()
-            .unwrap_or_else(|| "Retained statement".to_string());
-
-        slice_statements.push(SliceStatement {
-            line: pl.line,
-            text: pl.trimmed.clone(),
-            indent: pl.indent.clone(),
-            reason: reason.clone(),
-            is_control: pl.is_control,
-            defined_vars: pl.defined_vars.clone(),
-            used_vars: pl.used_vars.clone(),
+    let (slice_statements, formatted, total_lines, retained_count, reduction_percent) =
+        format_slice_statements(SliceRenderInput {
+            function_name,
+            file_rel,
+            start_line,
+            end_line,
+            target_line,
+            parsed_lines,
+            retained_indices,
+            statement_reasons,
+            completeness: &completeness,
         });
-
-        formatted.push_str(&format!(
-            "{:<4} | {}    // [{}]\n",
-            pl.line, pl.raw_text, reason
-        ));
-    }
 
     DataFlowSlice {
         function_name: function_name.to_string(),

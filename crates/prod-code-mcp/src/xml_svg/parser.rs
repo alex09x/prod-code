@@ -8,7 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use crate::diagnostics::DiagnosticsReport;
+mod validation;
+pub use validation::validate_xml;
 
 use super::lexer::{XmlParser, is_known_xml_entity};
 
@@ -382,29 +383,5 @@ impl<'a> XmlParser<'a> {
                 format!("unclosed XML tag `<{unclosed}>` opened at line {u_line}, col {u_col}"),
             );
         }
-    }
-}
-
-/// Validates an XML document or SVG vector graphic (#778).
-pub fn validate_xml(shown: &str, text: &str, is_svg: bool) -> DiagnosticsReport {
-    let mut parser = XmlParser::new(shown, text, is_svg);
-    parser.parse();
-    DiagnosticsReport {
-        file: shown.to_string(),
-        errors: parser
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == "error")
-            .count(),
-        warnings: parser
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == "warning")
-            .count(),
-        items: parser.diagnostics,
-        preexisting: Vec::new(),
-        in_derive: Vec::new(),
-        auto_trait: Vec::new(),
-        hallucinations: Vec::new(),
     }
 }
