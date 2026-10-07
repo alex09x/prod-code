@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use super::enclosing::enclosing_polyglot_info;
 use super::find::find_polyglot_decl;
-use super::import::imported_caller_symbols;
+use super::import::{imported_caller_symbols, is_proven_namespace_import};
 use super::restructure::restructure_declaring_file;
 use super::shadow::is_locally_shadowed;
 use crate::parameter_object::Language;
@@ -94,6 +94,32 @@ pub(crate) fn collect_and_rewrite_callers(
                     continue;
                 }
 
+                let before_text = other_content[..at].trim_end();
+                let is_member_access = before_text.ends_with('.')
+                    || before_text.ends_with("?.")
+                    || before_text.ends_with("->");
+                let mut call_start = at;
+                if is_member_access {
+                    let before_dot = if let Some(b) = before_text.strip_suffix("?.") {
+                        b
+                    } else if let Some(b) = before_text.strip_suffix("->") {
+                        b
+                    } else if let Some(b) = before_text.strip_suffix('.') {
+                        b
+                    } else {
+                        before_text
+                    }
+                    .trim_end();
+                    let receiver_start = before_dot
+                        .rfind(|c: char| !is_ident(c))
+                        .map_or(0, |i| i + 1);
+                    let receiver = &before_dot[receiver_start..];
+                    if !is_proven_namespace_import(&other_content, receiver, path, file, lang) {
+                        continue;
+                    }
+                    call_start = receiver_start;
+                }
+
                 let source_path =
                     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
                 let (line_num, col_num) = one_based_lsp_position(&other_content, at);
@@ -166,7 +192,7 @@ pub(crate) fn collect_and_rewrite_callers(
                 match wrapper {
                     Wrapper::Promise => {
                         if caller_is_async {
-                            let before_call = other_content[..at].trim_end();
+                            let before_call = other_content[..call_start].trim_end();
                             if before_call.ends_with("await") {
                                 *propagated += 1;
                             } else {
@@ -177,16 +203,16 @@ pub(crate) fn collect_and_rewrite_callers(
                                     || after_call.starts_with('(')
                                     || after_call.starts_with('!');
                                 if has_postfix {
-                                    file_edits.push((at, 0, "(await ".to_string()));
+                                    file_edits.push((call_start, 0, "(await ".to_string()));
                                     file_edits.push((args_end + 1, 0, ")".to_string()));
                                 } else {
-                                    file_edits.push((at, 0, "await ".to_string()));
+                                    file_edits.push((call_start, 0, "await ".to_string()));
                                 }
                                 *propagated += 1;
                             }
                         } else {
                             let line_text = other_content
-                                [other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
+                                [other_content[..call_start].rfind('\n').map_or(0, |i| i + 1)..]
                                 .lines()
                                 .next()
                                 .unwrap_or("")

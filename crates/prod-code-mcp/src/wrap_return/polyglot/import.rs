@@ -68,6 +68,27 @@ use import_python::python_imported_symbols;
 mod import_ts;
 use import_ts::ts_js_imported_symbols;
 
+pub(crate) fn is_proven_namespace_import(
+    content: &str,
+    receiver: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+    lang: Language,
+) -> bool {
+    if receiver.is_empty() {
+        return false;
+    }
+    match lang {
+        Language::TypeScript | Language::JavaScript => {
+            import_ts::is_ts_js_namespace_import(content, receiver, caller_path, decl_file)
+        }
+        Language::Python => {
+            import_python::is_python_namespace_import(content, receiver, caller_path, decl_file)
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn extract_specifier(s: &str) -> &str {
     let mut chars = s.char_indices();
     while let Some((i, c)) = chars.next() {

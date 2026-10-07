@@ -170,3 +170,20 @@ fn test_index_file_relative_resolution() {
     );
     assert_eq!(syms, vec!["calculate".to_string()]);
 }
+
+#[test]
+fn test_reexport_barrel_resolved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let selected_ts = root.join("selected.ts");
+    std::fs::write(&selected_ts, "export function retry() {}\n").unwrap();
+
+    let index_ts = root.join("index.ts");
+    std::fs::write(&index_ts, "export { retry } from \"./selected\";\n").unwrap();
+
+    let consumer_ts = root.join("consumer.ts");
+    let content = "import { retry } from \"./index\";\n";
+
+    let syms = ts_js_imported_symbols(content, &consumer_ts, &selected_ts, "retry");
+    assert_eq!(syms, vec!["retry".to_string()]);
+}

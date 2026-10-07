@@ -225,3 +225,49 @@ pub(crate) fn python_imported_symbols(
     }
     symbols
 }
+
+pub(crate) fn is_python_namespace_import(
+    content: &str,
+    receiver: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+) -> bool {
+    let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    for line in content.lines() {
+        let code_line = line.split('#').next().unwrap_or("").trim();
+        if let Some(rest) = code_line.strip_prefix("import ") {
+            for entry in rest.split(',') {
+                let (mod_part, alias) = entry.split_once(" as ").unwrap_or((entry, ""));
+                let alias = alias.trim();
+                let mod_part = mod_part.trim();
+                if !alias.is_empty()
+                    && alias == receiver
+                    && py_mod_matches_decl(mod_part, caller_path, decl_file)
+                {
+                    return true;
+                }
+                if alias.is_empty()
+                    && receiver == decl_stem
+                    && py_mod_matches_decl(mod_part, caller_path, decl_file)
+                {
+                    return true;
+                }
+            }
+        } else if let Some(rest) = code_line.strip_prefix("from ") {
+            if let Some((mod_part, clause)) = rest.split_once(" import ") {
+                let (item, alias) = clause.split_once(" as ").unwrap_or((clause, ""));
+                let alias = alias.trim();
+                let item = item.trim();
+                let local_name = if !alias.is_empty() { alias } else { item };
+                if local_name == receiver
+                    && (py_mod_matches_decl(mod_part, caller_path, decl_file)
+                        || (item == decl_stem
+                            && py_mod_matches_pkg(mod_part, caller_path, decl_file)))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
