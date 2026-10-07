@@ -16,6 +16,7 @@ use super::enclosing::enclosing_polyglot_info;
 use super::find::find_polyglot_decl;
 use super::import::proves_cross_file_import;
 use super::restructure::restructure_declaring_file;
+use super::shadow::is_locally_shadowed;
 use crate::parameter_object::Language;
 use crate::wrap_return::types::{PolyglotFuncDecl, Wrapper};
 use crate::wrap_return::utils::{
@@ -129,6 +130,9 @@ pub(crate) fn collect_and_rewrite_callers(
             }
 
             if has_semantic_references && !semantic_references.remove(&reference_key) {
+                continue;
+            }
+            if !has_semantic_references && is_locally_shadowed(&other_content, at, name, lang) {
                 continue;
             }
 

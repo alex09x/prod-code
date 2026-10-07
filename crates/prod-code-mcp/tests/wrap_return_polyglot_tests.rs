@@ -1187,3 +1187,57 @@ export async function run(): Promise<string> {
     );
     assert!(!caller_after.contains("await retry()"));
 }
+
+#[tokio::test]
+async fn test_wrap_return_preserves_shadowed_local_calls_when_references_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let selected_file = root.join("selected.ts");
+    fs::write(
+        &selected_file,
+        r#"export function retry(): string {
+    return "ok";
+}
+"#,
+    )
+    .unwrap();
+
+    let caller_file = root.join("caller.ts");
+    let caller_src = r#"import { retry } from "./selected";
+
+export function runner(retry: () => void) {
+    retry();
+}
+"#;
+    fs::write(&caller_file, caller_src).unwrap();
+    let caller_before = fs::read_to_string(&caller_file).unwrap();
+
+    let gateway = fake_gateway().await;
+    let res = wrap_polyglot(
+        gateway.addr(),
+        root,
+        &selected_file,
+        Some("retry"),
+        None,
+        None,
+        Wrapper::Promise,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "retry");
+    assert_eq!(res.was, "string");
+    assert_eq!(res.now, "Promise<string>");
+    assert_eq!(res.propagated, 0);
+    assert!(res.applied);
+
+    let caller_after = fs::read_to_string(&caller_file).unwrap();
+    assert_eq!(
+        caller_after, caller_before,
+        "caller.ts must not have shadowed parameter call rewritten"
+    );
+    assert!(!caller_after.contains("await retry()"));
+}

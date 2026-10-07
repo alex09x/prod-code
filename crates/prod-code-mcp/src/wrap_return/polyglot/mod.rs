@@ -14,6 +14,7 @@ mod find;
 mod import;
 mod restructure;
 mod returns;
+mod shadow;
 
 pub use enclosing::enclosing_polyglot_info;
 pub use find::find_polyglot_decl;

@@ -113,9 +113,38 @@ fn clause_imports_name(clause: &str, fn_name: &str) -> bool {
     words.contains(&fn_name)
 }
 
+fn split_import_from(s: &str) -> Option<(&str, &str)> {
+    let (mut b_depth, mut p_depth) = (0usize, 0usize);
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => b_depth += 1,
+            '}' => b_depth = b_depth.saturating_sub(1),
+            '(' => p_depth += 1,
+            ')' => p_depth = p_depth.saturating_sub(1),
+            'f' if b_depth == 0 && p_depth == 0 && s[i..].starts_with("from") => {
+                let before_ok = i == 0
+                    || s[..i]
+                        .chars()
+                        .next_back()
+                        .map_or(true, |p| !p.is_alphanumeric() && p != '_' && p != '$');
+                let after = &s[i + 4..];
+                let after_ok = after
+                    .chars()
+                    .next()
+                    .map_or(true, |n| !n.is_alphanumeric() && n != '_' && n != '$');
+                if before_ok && after_ok {
+                    return Some((&s[..i], after));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn ts_js_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
     for part in content.split("import") {
-        if let Some((clause, rest)) = part.split_once("from") {
+        if let Some((clause, rest)) = split_import_from(part) {
             let specifier = extract_specifier(rest);
             if specifier_matches_stem(specifier, decl_stem) && clause_imports_name(clause, fn_name)
             {
@@ -265,114 +294,5 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_ts_js_proves_import_positive() {
-        let content = r#"import { calculate } from "./math";"#;
-        assert!(proves_cross_file_import(
-            content,
-            Path::new("src/client.ts"),
-            Path::new("src/math.ts"),
-            "calculate",
-            Language::TypeScript,
-        ));
-
-        let content_namespace = r#"import * as math from "./math";"#;
-        assert!(proves_cross_file_import(
-            content_namespace,
-            Path::new("src/client.ts"),
-            Path::new("src/math.ts"),
-            "calculate",
-            Language::TypeScript,
-        ));
-
-        let content_require_obj = r#"const math = require("./math");"#;
-        assert!(proves_cross_file_import(
-            content_require_obj,
-            Path::new("src/client.ts"),
-            Path::new("src/math.ts"),
-            "calculate",
-            Language::TypeScript,
-        ));
-
-        let content_require_destruct = r#"const { calculate } = require("./math");"#;
-        assert!(proves_cross_file_import(
-            content_require_destruct,
-            Path::new("src/client.ts"),
-            Path::new("src/math.ts"),
-            "calculate",
-            Language::TypeScript,
-        ));
-
-        let content_multiline = "import {\n  calculate,\n  other,\n} from \"./math\";";
-        assert!(proves_cross_file_import(
-            content_multiline,
-            Path::new("src/client.ts"),
-            Path::new("src/math.ts"),
-            "calculate",
-            Language::TypeScript,
-        ));
-    }
-
-    #[test]
-    fn test_ts_js_proves_import_rejects_unrelated_alias() {
-        let content = r#"import { unrelated as retry } from "./other";"#;
-        assert!(!proves_cross_file_import(
-            content,
-            Path::new("repro/caller.ts"),
-            Path::new("repro/selected.ts"),
-            "retry",
-            Language::TypeScript,
-        ));
-
-        let content_different_mod = r#"import { retry } from "./other";"#;
-        assert!(!proves_cross_file_import(
-            content_different_mod,
-            Path::new("repro/caller.ts"),
-            Path::new("repro/selected.ts"),
-            "retry",
-            Language::TypeScript,
-        ));
-    }
-
-    #[test]
-    fn test_python_proves_import() {
-        let content = "from db import find_user\n";
-        assert!(proves_cross_file_import(
-            content,
-            Path::new("service.py"),
-            Path::new("db.py"),
-            "find_user",
-            Language::Python,
-        ));
-
-        let content_import_as = "import db as database\n";
-        assert!(proves_cross_file_import(
-            content_import_as,
-            Path::new("service.py"),
-            Path::new("db.py"),
-            "find_user",
-            Language::Python,
-        ));
-
-        let content_other = "from other import find_user\n";
-        assert!(!proves_cross_file_import(
-            content_other,
-            Path::new("service.py"),
-            Path::new("db.py"),
-            "find_user",
-            Language::Python,
-        ));
-
-        let content_multiline_paren = "from db import (\n    # comment\n    find_user,\n)\n";
-        assert!(proves_cross_file_import(
-            content_multiline_paren,
-            Path::new("service.py"),
-            Path::new("db.py"),
-            "find_user",
-            Language::Python,
-        ));
-    }
-}
+#[path = "import_tests.rs"]
+mod tests;
