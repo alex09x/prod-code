@@ -25,7 +25,8 @@ pub struct RemoteFiles {
     remote: std::sync::RwLock<SocketAddr>,
     /// The node's absolute paths live under this directory.
     mirror: std::sync::RwLock<PathBuf>,
-    mirror_paths: std::sync::RwLock<prod_code_protocol::path::PathTranslator>,
+    /// Keep each node's mirror translation for documents that remain open across redirects.
+    mirror_paths: std::sync::RwLock<HashMap<SocketAddr, prod_code_protocol::path::PathTranslator>>,
     cache: PathBuf,
     client_root: PathBuf,
     server_root: std::sync::RwLock<PathBuf>,
@@ -51,12 +52,11 @@ impl RemoteFiles {
     /// is `server_root`, mirrored under `cache` (one directory per node).
     pub fn new(remote: SocketAddr, client_root: &Path, server_root: &Path, cache: &Path) -> Self {
         let mirror = cache.join(remote.to_string().replace(':', "_"));
+        let mirror_path =
+            prod_code_protocol::path::PathTranslator::new(&mirror.to_string_lossy(), "/");
         Self {
             remote: std::sync::RwLock::new(remote),
-            mirror_paths: std::sync::RwLock::new(prod_code_protocol::path::PathTranslator::new(
-                &mirror.to_string_lossy(),
-                "/",
-            )),
+            mirror_paths: std::sync::RwLock::new(HashMap::from([(remote, mirror_path)])),
             mirror: std::sync::RwLock::new(mirror),
             cache: cache.to_path_buf(),
             client_root: client_root.to_path_buf(),
@@ -68,19 +68,26 @@ impl RemoteFiles {
     /// translate workspace paths and the per-node external-file cache directory.
     pub fn set_node(&self, remote: SocketAddr, server_root: &Path) {
         let mirror = self.cache.join(remote.to_string().replace(':', "_"));
+        self.mirror_paths
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(remote)
+            .or_insert_with(|| {
+                prod_code_protocol::path::PathTranslator::new(&mirror.to_string_lossy(), "/")
+            });
         *self.remote.write().unwrap_or_else(|p| p.into_inner()) = remote;
         *self.server_root.write().unwrap_or_else(|p| p.into_inner()) = server_root.to_path_buf();
-        *self.mirror_paths.write().unwrap_or_else(|p| p.into_inner()) =
-            prod_code_protocol::path::PathTranslator::new(&mirror.to_string_lossy(), "/");
         *self.mirror.write().unwrap_or_else(|p| p.into_inner()) = mirror;
     }
 
     /// The editor's message with every path of a mirrored copy turned back into the node's.
     pub fn to_node(&self, raw: &str) -> String {
-        self.mirror_paths
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .translate_lsp_to_server(raw)
+        let translators = self.mirror_paths.read().unwrap_or_else(|p| p.into_inner());
+        translators
+            .values()
+            .fold(raw.to_string(), |translated, path| {
+                path.translate_lsp_to_server(&translated)
+            })
     }
 
     /// The node path a `file://` URI of a server's message names, when the editor cannot open

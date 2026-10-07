@@ -143,6 +143,36 @@ async fn a_node_path_is_named_by_its_local_copy_and_back() {
     assert_eq!(files.to_node("{\"id\":1}"), "{\"id\":1}");
 }
 
+#[test]
+fn retarget_keeps_translation_for_an_already_open_mirror_uri() {
+    let checkout = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let old_remote = "127.0.0.1:9401".parse().unwrap();
+    let new_remote = "127.0.0.1:9402".parse().unwrap();
+    let node_file = Path::new("/home/dev/.cargo/registry/src/lib.rs");
+    let files = RemoteFiles::new(
+        old_remote,
+        checkout.path(),
+        Path::new("/srv/workspaces/old-app"),
+        cache.path(),
+    );
+    let old_mirror = files.mirror_path(node_file).unwrap();
+    let message = format!(
+        r#"{{"textDocument":{{"uri":"file://{}"}}}}"#,
+        old_mirror.display()
+    );
+    let expected = format!(
+        r#"{{"textDocument":{{"uri":"file://{}"}}}}"#,
+        node_file.display()
+    );
+
+    assert_eq!(files.to_node(&message), expected);
+
+    files.set_node(new_remote, Path::new("/srv/workspaces/new-app"));
+
+    assert_eq!(files.to_node(&message), expected);
+}
+
 #[tokio::test]
 async fn frames_are_read_whatever_their_headers() {
     let input = b"Content-Length: 2\r\n\r\n{}content-length: 8\r\nContent-Type: x\r\n\r\n{\"id\":1}"
