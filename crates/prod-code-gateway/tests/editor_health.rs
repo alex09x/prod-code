@@ -164,6 +164,7 @@ fn python_command(
                 if ignore_probes { "1" } else { "0" }.to_string(),
             ),
         ],
+        initialization_options: None,
         ready,
     }
 }
@@ -861,4 +862,3 @@ async fn probe_timeout_during_active_traffic_does_not_increment_timeout_streak()
     session.finish().await.expect("clean finish");
     wait_for_exit(pid).await.expect("child exited");
 }
-

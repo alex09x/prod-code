@@ -17,12 +17,16 @@ pub struct ServerCommand {
     pub program: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    pub initialization_options: Option<serde_json::Value>,
     pub ready: ReadySignal,
 }
 
 impl PartialEq for ServerCommand {
     fn eq(&self, other: &Self) -> bool {
-        self.program == other.program && self.args == other.args && self.env == other.env
+        self.program == other.program
+            && self.args == other.args
+            && self.env == other.env
+            && self.initialization_options == other.initialization_options
     }
 }
 
@@ -62,6 +66,7 @@ fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<S
         program: config.command,
         args: config.args,
         env: config.env.into_iter().collect(),
+        initialization_options: config.initialization_options,
         ready: config.ready,
     };
     let command = match engine {
@@ -69,6 +74,7 @@ fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<S
             program: "rust-analyzer".to_string(),
             args: Vec::new(),
             env: Vec::new(),
+            initialization_options: None,
             ready: ReadySignal::Progress,
         },
         "go" => ServerCommand {
@@ -77,6 +83,7 @@ fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<S
                 .into_owned(),
             args: Vec::new(),
             env: Vec::new(),
+            initialization_options: None,
             ready: ReadySignal::Progress,
         },
         "cpp" => from(GenericLspConfig::for_cpp()),
@@ -188,17 +195,47 @@ pub(crate) fn frame(body: &str) -> Vec<u8> {
 /// dropped from `initialize`. That id names a process on the editor's machine; a server that
 /// watches its parent would find it missing here, or find someone else's, and exit.
 pub fn to_server(translator: &PathTranslator, raw: &str) -> String {
+    to_server_with_options(translator, raw, None)
+}
+
+pub fn to_server_with_options(
+    translator: &PathTranslator,
+    raw: &str,
+    server_options: Option<&serde_json::Value>,
+) -> String {
     let translated = translator.translate_lsp_to_server(raw);
-    if !translated.contains("\"processId\"") {
-        return translated;
-    }
     match serde_json::from_str::<serde_json::Value>(&translated) {
         Ok(mut value) if value.get("method").and_then(|m| m.as_str()) == Some("initialize") => {
             if let Some(params) = value.get_mut("params").and_then(|p| p.as_object_mut()) {
-                params.insert("processId".to_string(), serde_json::Value::Null);
+                if params.contains_key("processId") {
+                    params.insert("processId".to_string(), serde_json::Value::Null);
+                }
+                if let Some(server_options) = server_options {
+                    let options = params
+                        .entry("initializationOptions")
+                        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+                    merge_initialization_options(options, server_options);
+                }
             }
             value.to_string()
         }
         _ => translated,
+    }
+}
+
+fn merge_initialization_options(
+    editor_options: &mut serde_json::Value,
+    server_options: &serde_json::Value,
+) {
+    match (editor_options, server_options) {
+        (serde_json::Value::Object(editor), serde_json::Value::Object(server)) => {
+            for (key, value) in server {
+                merge_initialization_options(
+                    editor.entry(key.clone()).or_insert(serde_json::Value::Null),
+                    value,
+                );
+            }
+        }
+        (editor, server) => *editor = server.clone(),
     }
 }

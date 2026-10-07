@@ -20,7 +20,7 @@ use tokio_util::codec::Framed;
 
 use crate::workspace::WatchedChange;
 
-use super::command::{ServerCommand, frame, server_command, to_server};
+use super::command::{ServerCommand, frame, server_command, to_server, to_server_with_options};
 use super::probe::{EditorProxyOptions, WRITE_BUDGET};
 use super::proxy::run_with_options;
 use super::registry::{EditorServers, PendingServerFrame};
@@ -37,6 +37,9 @@ async fn gateway_watchdog_pings_do_not_suppress_post_initialize_health_probes() 
     let root_text = root_path.to_string_lossy().into_owned();
     let probe_marker = root_path.join("health-probe-seen");
     let probe_marker_text = probe_marker.to_string_lossy().into_owned();
+    let initialization_marker = root_path.join("initialization-options-seen");
+    let initialization_marker_text = initialization_marker.to_string_lossy().into_owned();
+    let stub_path = root_path.join("typings").to_string_lossy().into_owned();
     let translator = PathTranslator::new(&root_text, &root_text);
     let script = concat!(
         "import json, sys\n",
@@ -50,6 +53,7 @@ async fn gateway_watchdog_pings_do_not_suppress_post_initialize_health_probes() 
         "        if line.lower().startswith(b'content-length:'): length = int(line.split(b':', 1)[1])\n",
         "    message = json.loads(sys.stdin.buffer.read(length))\n",
         "    if message.get('method') == 'prodCode/healthProbe': open(os.environ['PROBE_MARKER'], 'w').write('seen')\n",
+        "    if message.get('method') == 'initialize': open(os.environ['INIT_MARKER'], 'w').write(json.dumps(message.get('params', {}).get('initializationOptions')))\n",
         "    result = {'capabilities': {}} if message.get('method') == 'initialize' else {}\n",
         "    body = json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}).encode()\n",
         "    sys.stdout.buffer.write(b'Content-Length: %d\\r\\n\\r\\n' % len(body) + body)\n",
@@ -58,7 +62,13 @@ async fn gateway_watchdog_pings_do_not_suppress_post_initialize_health_probes() 
     let command = ServerCommand {
         program: "python3".to_string(),
         args: vec!["-u".to_string(), "-c".to_string(), script.to_string()],
-        env: vec![("PROBE_MARKER".to_string(), probe_marker_text)],
+        env: vec![
+            ("PROBE_MARKER".to_string(), probe_marker_text),
+            ("INIT_MARKER".to_string(), initialization_marker_text),
+        ],
+        initialization_options: Some(serde_json::json!({
+            "python": { "analysis": { "stubPath": stub_path.clone() } }
+        })),
         ready: ReadySignal::Unknown,
     };
     let servers = EditorServers::default();
@@ -108,6 +118,14 @@ async fn gateway_watchdog_pings_do_not_suppress_post_initialize_health_probes() 
         .unwrap();
     assert!(
         matches!(init, WireMessage::LspPayload(payload) if serde_json::from_str::<serde_json::Value>(&payload).unwrap()["id"] == 1)
+    );
+    let received_options: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&initialization_marker).expect("child recorded initialization options"),
+    )
+    .unwrap();
+    assert_eq!(
+        received_options["python"]["analysis"]["stubPath"].as_str(),
+        Some(stub_path.as_str())
     );
 
     // Allow several probe intervals after initialization; the first interval may have
@@ -172,6 +190,31 @@ fn initialize_reaches_the_server_on_its_paths_without_the_editors_process() {
             &hover.replace("/Users/dev/app", "/srv/workspaces/app")
         )
         .unwrap()
+    );
+}
+
+#[test]
+fn server_initialization_options_merge_with_editor_options() {
+    let translator = PathTranslator::new("/client", "/server");
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"initializationOptions":{"python":{"analysis":{"typeCheckingMode":"strict"}}}}}"#;
+    let server_options = serde_json::json!({
+        "python": { "analysis": { "stubPath": "/server/typings" } }
+    });
+
+    let sent: serde_json::Value = serde_json::from_str(&to_server_with_options(
+        &translator,
+        initialize,
+        Some(&server_options),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        sent["params"]["initializationOptions"]["python"]["analysis"]["stubPath"],
+        "/server/typings"
+    );
+    assert_eq!(
+        sent["params"]["initializationOptions"]["python"]["analysis"]["typeCheckingMode"],
+        "strict"
     );
 }
 
