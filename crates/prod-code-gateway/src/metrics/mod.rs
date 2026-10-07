@@ -22,6 +22,9 @@ pub mod summary;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod review_regressions;
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};

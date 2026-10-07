@@ -48,7 +48,7 @@ pub(crate) fn for_each_stored(dir: &Path, from_ms: u64, to_ms: u64, mut f: impl 
                         "read_file" => "read_file",
                         "place" => "place",
                         "status" => "status",
-                        _ => "lsp",
+                        _ => continue,
                     };
                     let mut ev = Event::blank(kind);
                     ev.ts_ms = op.ts_ms;
