@@ -77,10 +77,11 @@ pub(crate) async fn handle_exec(
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let tail_bytes = args
+    let tail_bytes = (args
         .get("tail_bytes")
         .and_then(|v| v.as_u64())
-        .unwrap_or(16 * 1024) as usize;
+        .unwrap_or(16 * 1024) as usize)
+        .min(crate::verify::MAX_RENDER_BYTES);
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
     let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
     let outcome = crate::exec::run_remote(
@@ -141,9 +142,11 @@ pub(crate) async fn handle_exec(
         text.push_str(&format!("[{warning}]\n"));
     }
     text.push_str(&tail.text());
-    Ok(if matches!(exit.exit_code, Some(0)) {
-        McpToolCallResult::text(text)
-    } else {
-        McpToolCallResult::error(text)
-    })
+    Ok(
+        if exit.error.is_none() && !exit.timed_out && exit.exit_code.is_some() {
+            McpToolCallResult::text(text)
+        } else {
+            McpToolCallResult::error(text)
+        },
+    )
 }

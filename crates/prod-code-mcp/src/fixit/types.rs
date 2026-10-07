@@ -80,6 +80,13 @@ impl Fixed {
             out.push_str("\nafter the fixes:\n");
             out.push_str(&after.render(max_items));
         }
+        if out.len() > crate::verify::MAX_RENDER_BYTES {
+            let truncated =
+                crate::verify::truncate_to_boundary(&out, crate::verify::MAX_RENDER_BYTES);
+            let mut capped = truncated.to_string();
+            capped.push_str("\n[... output truncated to avoid exceeding MCP line limits]\n");
+            return capped;
+        }
         out
     }
 

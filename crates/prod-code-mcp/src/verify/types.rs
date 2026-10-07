@@ -173,6 +173,9 @@ impl VerifyReport {
             self.summary()
         ));
         for d in self.diagnostics.iter().take(max_items) {
+            if out.len() >= MAX_RENDER_BYTES {
+                break;
+            }
             out.push_str("  ");
             out.push_str(&d.render());
             out.push('\n');
@@ -184,6 +187,9 @@ impl VerifyReport {
             ));
         }
         for b in self.benches.iter().take(max_items) {
+            if out.len() >= MAX_RENDER_BYTES {
+                break;
+            }
             out.push_str(&format!("  {}  {}", b.name, b.estimate));
             if let Some(range) = &b.range {
                 out.push_str(&format!("  [{range}]"));
@@ -191,10 +197,13 @@ impl VerifyReport {
             out.push('\n');
         }
         for f in self.failures.iter().take(max_items) {
+            if out.len() >= MAX_RENDER_BYTES {
+                break;
+            }
+            let formatted_output = format_failure_output(&f.output, MAX_FAILURE_OUTPUT_BYTES);
             out.push_str(&format!(
                 "--- FAILED {} ---\n{}\n",
-                f.name,
-                f.output.trim_end()
+                f.name, formatted_output
             ));
         }
         if self.failures.len() > max_items {
@@ -205,11 +214,58 @@ impl VerifyReport {
         }
         if !self.ok() && self.diagnostics.is_empty() && self.failures.is_empty() {
             out.push_str("--- output tail ---\n");
-            out.push_str(self.tail.trim_end());
+            let formatted_tail = format_failure_output(&self.tail, MAX_FAILURE_OUTPUT_BYTES);
+            out.push_str(&formatted_tail);
             out.push('\n');
+        }
+        if out.len() > MAX_RENDER_BYTES {
+            let truncated = truncate_to_boundary(&out, MAX_RENDER_BYTES);
+            let mut capped = truncated.to_string();
+            capped.push_str("\n[... output truncated to avoid exceeding MCP line limits]\n");
+            return capped;
         }
         out
     }
+}
+
+pub const MAX_FAILURE_OUTPUT_BYTES: usize = 8 * 1024;
+pub const MAX_RENDER_BYTES: usize = 48 * 1024;
+
+pub fn truncate_to_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut idx = max_bytes;
+        while idx > 0 && !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        &s[..idx]
+    }
+}
+
+pub fn tail_from_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut idx = s.len() - max_bytes;
+        while idx < s.len() && !s.is_char_boundary(idx) {
+            idx += 1;
+        }
+        &s[idx..]
+    }
+}
+
+pub fn format_failure_output(raw: &str, max_bytes: usize) -> String {
+    let trimmed = raw.trim_end();
+    if trimmed.len() <= max_bytes {
+        return trimmed.to_string();
+    }
+    let head_limit = max_bytes / 4;
+    let tail_limit = max_bytes.saturating_sub(head_limit);
+    let head = truncate_to_boundary(trimmed, head_limit);
+    let tail = tail_from_boundary(trimmed, tail_limit);
+    let omitted = trimmed.len().saturating_sub(head.len() + tail.len());
+    format!("{head}\n[... {omitted} bytes truncated ...]\n{tail}")
 }
 
 /// JavaScript package manager, from the lock file (or `packageManager` in package.json).
