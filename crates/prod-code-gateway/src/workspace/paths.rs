@@ -169,7 +169,7 @@ pub fn resolve_server_workspace(
 ) -> PathBuf {
     let target_dir = server_workspace_path(storage_root, client_root, explicit_base_name);
     let _ = std::fs::create_dir_all(&target_dir);
-    target_dir
+    std::fs::canonicalize(&target_dir).unwrap_or(target_dir)
 }
 
 /// The server workspace directory for a client, without creating it.
