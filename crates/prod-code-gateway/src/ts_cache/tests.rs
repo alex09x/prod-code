@@ -10,7 +10,7 @@
 
 use super::*;
 use std::fs;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -103,4 +103,48 @@ fn test_coordinate_tsconfig() {
             .iter()
             .any(|r| r.as_str() == Some("node_modules/@types"))
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_new_cache_entry_survives_pruning_when_source_mtime_is_old() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source.d.ts");
+    let cache = temp.path().join("cache");
+    let cached = cache.join("@types/node/index.d.ts");
+    fs::write(&source, "export declare const value: string;\n").unwrap();
+
+    let old = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_sub(Duration::from_secs(8 * 24 * 60 * 60).as_secs());
+    let times = [
+        libc::timespec {
+            tv_sec: old as libc::time_t,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: old as libc::time_t,
+            tv_nsec: 0,
+        },
+    ];
+    let source_c = std::ffi::CString::new(source.as_os_str().as_bytes()).unwrap();
+    assert_eq!(
+        unsafe { libc::utimensat(libc::AT_FDCWD, source_c.as_ptr(), times.as_ptr(), 0) },
+        0
+    );
+
+    super::fs_ops::copy_and_publish_type_file(&source, &cached).unwrap();
+    super::prune_stale_types_cache_with_grace(
+        &cache,
+        Duration::from_secs(7 * 24 * 60 * 60),
+        u64::MAX,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+
+    assert!(cached.exists(), "freshly published cache entry was pruned");
 }

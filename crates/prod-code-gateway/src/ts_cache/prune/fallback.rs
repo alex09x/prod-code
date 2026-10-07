@@ -88,7 +88,7 @@ pub fn prune_fallback(
                     }
                 } else {
                     *total_size += size;
-                    files.push((path, size, modified));
+                    files.push((path, size, meta.created().unwrap_or(modified)));
                 }
             }
         }
