@@ -236,3 +236,72 @@ fn fixed_render_preserves_outcomes_and_post_fix_report() {
         text.len()
     );
 }
+
+#[test]
+fn fixed_render_caps_huge_outcomes_preserving_after_report() {
+    use crate::fixit::{Fixed, Outcome};
+
+    let before = VerifyReport {
+        kind: VerifyKind::Check,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "check".into()],
+        exit_code: Some(1),
+        timed_out: false,
+        duration_ms: 1000,
+        diagnostics: vec![],
+        tests_passed: 0,
+        tests_failed: 0,
+        failures: vec![],
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+
+    let after = VerifyReport {
+        kind: VerifyKind::Check,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "check".into()],
+        exit_code: Some(0),
+        timed_out: false,
+        duration_ms: 500,
+        diagnostics: vec![],
+        tests_passed: 0,
+        tests_failed: 0,
+        failures: vec![],
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+
+    // 1,000 outcomes would take ~70KB, far exceeding MAX_RENDER_BYTES
+    let outcomes: Vec<Outcome> = (0..1_000)
+        .map(|i| Outcome {
+            file: format!("src/fix_{i}.rs"),
+            line: i as u64,
+            message: format!("some automated fix outcome description {i}"),
+            skipped: None,
+        })
+        .collect();
+
+    let fixed = Fixed {
+        before,
+        outcomes,
+        after: Some(after),
+        note: None,
+    };
+
+    let text = fixed.render(100);
+    assert!(text.contains("more fix outcome(s)"), "{text}");
+    assert!(text.contains("after the fixes:"), "{text}");
+    assert!(text.contains("rust check: OK"), "{text}");
+    assert!(
+        text.len() <= MAX_RENDER_BYTES,
+        "len is {} > {}",
+        text.len(),
+        MAX_RENDER_BYTES
+    );
+}
