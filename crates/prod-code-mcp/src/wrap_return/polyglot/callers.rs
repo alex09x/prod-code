@@ -103,6 +103,16 @@ pub(crate) fn collect_and_rewrite_callers(
                 continue;
             }
 
+            if !has_semantic_references {
+                unmatched.push(format!(
+                    "{site}: analyzer returned no references for `{name}`; refusing to rewrite this name-only match"
+                ));
+                continue;
+            }
+            if !semantic_references.remove(&reference_key) {
+                continue;
+            }
+
             // C++ prototype in header
             let proto_close_paren = other_content[at + name.len()..].find('(').and_then(|open| {
                 crate::parameter_object::matching_bracket(&other_content, at + name.len() + open)
@@ -111,16 +121,9 @@ pub(crate) fn collect_and_rewrite_callers(
                 && let Some(cp) = proto_close_paren
                 && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, cp)
             {
-                if has_semantic_references {
-                    semantic_references.remove(&reference_key);
-                }
                 if let Some(ret_start) = other_content[..at].rfind(was) {
                     file_edits.push((ret_start, was.len(), now.to_string()));
                 }
-                continue;
-            }
-
-            if has_semantic_references && !semantic_references.remove(&reference_key) {
                 continue;
             }
 

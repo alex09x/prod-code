@@ -108,6 +108,50 @@ export async function run() {
 }
 
 #[tokio::test]
+async fn wrap_return_does_not_rewrite_unrelated_alias_when_references_are_empty() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/selected.ts",
+            "export function retry(): string { return \"selected\"; }\n",
+        ),
+        (
+            "src/other.ts",
+            "export function unrelated(): string { return \"other\"; }\n",
+        ),
+        (
+            "src/caller.ts",
+            "import { unrelated as retry } from \"./other\";\nexport async function run(): Promise<string> {\n  const value = retry();\n  return value;\n}\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let selected_file = root.join("src/selected.ts");
+    let caller_file = root.join("src/caller.ts");
+    let selected_before = fs::read_to_string(&selected_file).unwrap();
+    let caller_before = fs::read_to_string(&caller_file).unwrap();
+    let gw = fake_gateway().await;
+
+    let error = wrap_polyglot(
+        gw.addr(),
+        &root,
+        &selected_file,
+        Some("retry"),
+        None,
+        None,
+        Wrapper::Promise,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("no references"));
+    assert_eq!(fs::read_to_string(&selected_file).unwrap(), selected_before);
+    assert_eq!(fs::read_to_string(&caller_file).unwrap(), caller_before);
+}
+
+#[tokio::test]
 async fn wrap_return_rebases_same_file_callsite_after_signature_rewrite() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
