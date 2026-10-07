@@ -37,7 +37,20 @@ pub(crate) fn normalize_workspace_root(path: &Path) -> Result<std::path::PathBuf
     } else {
         std::env::current_dir()?.join(path)
     };
-    Ok(std::fs::canonicalize(absolute)?)
+    if absolute
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Ok(std::fs::canonicalize(absolute)?);
+    }
+
+    let mut normalized = std::path::PathBuf::new();
+    for component in absolute.components() {
+        if !matches!(component, std::path::Component::CurDir) {
+            normalized.push(component.as_os_str());
+        }
+    }
+    Ok(normalized)
 }
 
 impl GenericLspEngine {

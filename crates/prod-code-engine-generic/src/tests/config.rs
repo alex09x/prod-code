@@ -54,6 +54,22 @@ fn workspace_file_uri_resolves_relative_roots() {
 
 #[cfg(unix)]
 #[test]
+fn workspace_root_normalization_preserves_symlink_root_identity() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let alias = temp.path().join("alias");
+    symlink(&target, &alias).unwrap();
+
+    let normalized = crate::lsp::normalize_workspace_root(&alias).unwrap();
+
+    assert_eq!(normalized, alias);
+}
+
+#[cfg(unix)]
+#[test]
 fn workspace_root_normalization_preserves_symlink_parent_semantics() {
     use std::os::unix::fs::symlink;
 
