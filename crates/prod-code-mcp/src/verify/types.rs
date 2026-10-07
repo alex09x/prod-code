@@ -205,6 +205,7 @@ impl VerifyReport {
             }
             out.push('\n');
         }
+        let mut rendered_failures = 0;
         for f in self.failures.iter().take(max_items) {
             if out.len() >= MAX_RENDER_BYTES {
                 break;
@@ -214,11 +215,12 @@ impl VerifyReport {
                 "--- FAILED {} ---\n{}\n",
                 f.name, formatted_output
             ));
+            rendered_failures += 1;
         }
-        if self.failures.len() > max_items {
+        if self.failures.len() > rendered_failures {
             out.push_str(&format!(
                 "... {} more failed test(s)\n",
-                self.failures.len() - max_items
+                self.failures.len() - rendered_failures
             ));
         }
         if !self.ok() && self.diagnostics.is_empty() && self.failures.is_empty() {
@@ -230,6 +232,20 @@ impl VerifyReport {
         if out.len() > MAX_RENDER_BYTES {
             let truncated = truncate_to_boundary(&out, MAX_RENDER_BYTES);
             let mut capped = truncated.to_string();
+            let omitted_failures = self.failures.len().saturating_sub(rendered_failures);
+            if omitted_failures > 0 && !capped.contains("more failed test(s)") {
+                if !capped.ends_with('\n') {
+                    capped.push('\n');
+                }
+                capped.push_str(&format!("... {} more failed test(s)\n", omitted_failures));
+            }
+            let omitted_diags = self.diagnostics.len().saturating_sub(rendered_diags);
+            if omitted_diags > 0 && !capped.contains("more diagnostic(s)") {
+                if !capped.ends_with('\n') {
+                    capped.push('\n');
+                }
+                capped.push_str(&format!("  ... {} more diagnostic(s)\n", omitted_diags));
+            }
             capped.push_str("\n[... output truncated to avoid exceeding MCP line limits]\n");
             return capped;
         }

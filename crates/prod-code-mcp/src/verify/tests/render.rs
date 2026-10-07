@@ -395,3 +395,40 @@ fn verify_render_reserves_budget_for_test_failures_despite_many_diagnostics() {
         text.len()
     );
 }
+
+#[test]
+fn verify_render_reports_failures_omitted_by_byte_budget() {
+    // 10 large failures with max_items = 10; budget breaks after ~6, must report remaining count
+    let failures: Vec<TestFailure> = (0..10)
+        .map(|i| TestFailure {
+            name: format!("tests::test_{i}"),
+            output: "f".repeat(3500),
+        })
+        .collect();
+
+    let report = VerifyReport {
+        kind: VerifyKind::Test,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "test".into()],
+        exit_code: Some(101),
+        timed_out: false,
+        duration_ms: 1000,
+        diagnostics: vec![],
+        tests_passed: 0,
+        tests_failed: 10,
+        failures,
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+
+    let text = report.render(10);
+    assert!(text.contains("more failed test(s)"), "{text}");
+    assert!(
+        text.len() <= MAX_RENDER_BYTES + 500,
+        "len is {}",
+        text.len()
+    );
+}

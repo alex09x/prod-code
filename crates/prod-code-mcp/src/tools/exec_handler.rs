@@ -77,11 +77,14 @@ pub(crate) async fn handle_exec(
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    // Bound unencoded tail bytes to reserve room for worst-case JSON escaping (2x) and
+    // the JSON-RPC response envelope within MAX_JSONRPC_FRAME_BYTES (60KB).
+    const MAX_EXEC_TAIL_BYTES: usize = 20 * 1024;
     let tail_bytes = (args
         .get("tail_bytes")
         .and_then(|v| v.as_u64())
         .unwrap_or(16 * 1024) as usize)
-        .min(crate::verify::MAX_RENDER_BYTES);
+        .min(MAX_EXEC_TAIL_BYTES);
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
     let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
     let outcome = crate::exec::run_remote(
