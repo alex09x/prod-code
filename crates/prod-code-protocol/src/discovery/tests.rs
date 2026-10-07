@@ -24,7 +24,7 @@ fn format_and_parse_round_trips() {
         ("CodeHaus".into(), "go".into(), 1),
     ];
     let line = format_node_line(
-        "192.168.2.168:9400",
+        "192.0.2.168:9400",
         "rust,go,python",
         4200,
         0.0712,
@@ -36,7 +36,7 @@ fn format_and_parse_round_trips() {
         None,
     );
     let node = parse_node_line(&line).expect("should parse");
-    assert_eq!(node.addr, "192.168.2.168:9400".parse().unwrap());
+    assert_eq!(node.addr, "192.0.2.168:9400".parse().unwrap());
     assert_eq!(node.engines, vec!["rust", "go", "python"]);
     assert_eq!(node.rss_mb, 4200);
     assert!((node.load_per_cpu - 0.0712).abs() < 0.001);
@@ -81,7 +81,7 @@ fn workspace_names_with_spaces_and_delimiters_are_safely_preserved() {
 fn authenticated_announcement_round_trips() {
     let token = "secret-cluster-token-12345";
     let line = format_node_line(
-        "192.168.2.100:9400",
+        "192.0.2.100:9400",
         "rust",
         200,
         0.05,
@@ -92,10 +92,10 @@ fn authenticated_announcement_round_trips() {
         &[],
         Some(token),
     );
-    let sender_ip: IpAddr = "192.168.2.100".parse().unwrap();
+    let sender_ip: IpAddr = "192.0.2.100".parse().unwrap();
     let node = parse_node_line_with_auth(&line, Some(token), Some(sender_ip))
         .expect("should accept valid authenticated announcement");
-    assert_eq!(node.addr, "192.168.2.100:9400".parse().unwrap());
+    assert_eq!(node.addr, "192.0.2.100:9400".parse().unwrap());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn forged_announcement_rejected_when_token_configured() {
     let token = "secret-cluster-token-12345";
     // Unauthenticated line (tag = -)
     let unauth_line = format_node_line(
-        "192.168.2.100:9400",
+        "192.0.2.100:9400",
         "rust",
         200,
         0.05,
@@ -114,7 +114,7 @@ fn forged_announcement_rejected_when_token_configured() {
         &[],
         None,
     );
-    let sender_ip: IpAddr = "192.168.2.100".parse().unwrap();
+    let sender_ip: IpAddr = "192.0.2.100".parse().unwrap();
     assert!(
         parse_node_line_with_auth(&unauth_line, Some(token), Some(sender_ip)).is_none(),
         "must reject unauthenticated announce when token is configured"
@@ -122,7 +122,7 @@ fn forged_announcement_rejected_when_token_configured() {
 
     // Forged line with wrong token
     let wrong_token_line = format_node_line(
-        "192.168.2.100:9400",
+        "192.0.2.100:9400",
         "rust",
         200,
         0.05,
@@ -142,7 +142,7 @@ fn forged_announcement_rejected_when_token_configured() {
 #[test]
 fn anti_spoofing_rejects_mismatched_sender_ip() {
     let line = format_node_line(
-        "192.168.2.168:9400",
+        "192.0.2.168:9400",
         "rust",
         200,
         0.05,
@@ -153,15 +153,15 @@ fn anti_spoofing_rejects_mismatched_sender_ip() {
         &[],
         None,
     );
-    // Sender IP is attacker at 192.168.2.99 pretending to advertise 192.168.2.168
-    let attacker_ip: IpAddr = "192.168.2.99".parse().unwrap();
+    // Sender IP is attacker at 192.0.2.99 pretending to advertise 192.0.2.168
+    let attacker_ip: IpAddr = "192.0.2.99".parse().unwrap();
     assert!(
         parse_node_line_with_auth(&line, None, Some(attacker_ip)).is_none(),
         "must reject spoofed sender IP"
     );
 
     // Legitimate sender matching advertised IP is accepted
-    let real_ip: IpAddr = "192.168.2.168".parse().unwrap();
+    let real_ip: IpAddr = "192.0.2.168".parse().unwrap();
     assert!(parse_node_line_with_auth(&line, None, Some(real_ip)).is_some());
 }
 
@@ -198,7 +198,7 @@ fn parse_garbage_returns_none() {
 #[test]
 fn hmac_sha256_mac_computation_and_verification() {
     let token = "test-cluster-secret-key-32bytes!";
-    let data = "192.168.2.168:9400:rust,go:32:128000";
+    let data = "192.0.2.168:9400:rust,go:32:128000";
 
     let tag = compute_auth_tag(token, data);
     assert_eq!(
@@ -216,7 +216,7 @@ fn hmac_sha256_mac_computation_and_verification() {
     // Tampered payload fails
     assert!(!verify_auth_tag(
         token,
-        "192.168.2.168:9400:rust,go:32:128001",
+        "192.0.2.168:9400:rust,go:32:128001",
         &tag
     ));
 
@@ -245,7 +245,7 @@ fn tampering_any_announcement_field_fails_verification() {
     let token = "secret-cluster-token-987654";
     let ws = vec![("my-app".into(), "rust".into(), 1)];
     let valid_line = format_node_line(
-        "192.168.2.168:9400",
+        "192.0.2.168:9400",
         "rust,go",
         1000,
         0.05,
@@ -256,7 +256,7 @@ fn tampering_any_announcement_field_fails_verification() {
         &ws,
         Some(token),
     );
-    let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+    let sender_ip: IpAddr = "192.0.2.168".parse().unwrap();
 
     // 1. Valid line must pass
     assert!(parse_node_line_with_auth(&valid_line, Some(token), Some(sender_ip)).is_some());
@@ -307,12 +307,12 @@ fn tampering_any_announcement_field_fails_verification() {
 #[test]
 fn minimal_node_announcement_satisfies_privacy_and_parses() {
     let token = "privacy-token-secret";
-    let line = format_minimal_node_line("192.168.2.168:9400", "rust,go", Some(token));
-    let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+    let line = format_minimal_node_line("192.0.2.168:9400", "rust,go", Some(token));
+    let sender_ip: IpAddr = "192.0.2.168".parse().unwrap();
     let node = parse_node_line_with_auth(&line, Some(token), Some(sender_ip))
         .expect("minimal announcement should parse and authenticate");
 
-    assert_eq!(node.addr, "192.168.2.168:9400".parse().unwrap());
+    assert_eq!(node.addr, "192.0.2.168:9400".parse().unwrap());
     assert_eq!(node.engines, vec!["rust", "go"]);
     assert_eq!(node.rss_mb, 0);
     assert_eq!(node.load_per_cpu, 0.0);
@@ -341,7 +341,7 @@ fn challenge_nonce_probe_and_reply_verification() {
     // Reply formatting with nonce
     let ws = vec![("secure-project".into(), "rust".into(), 1)];
     let reply_line = format_node_line_with_nonce(
-        "192.168.2.168:9400",
+        "192.0.2.168:9400",
         "rust",
         500,
         0.1,
@@ -353,7 +353,7 @@ fn challenge_nonce_probe_and_reply_verification() {
         Some(token),
         Some(&nonce),
     );
-    let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+    let sender_ip: IpAddr = "192.0.2.168".parse().unwrap();
 
     // Valid reply with matching nonce is accepted
     let node = parse_node_line_with_auth_and_nonce(
@@ -385,7 +385,7 @@ fn challenge_nonce_probe_and_reply_verification() {
 fn replayed_announcement_without_nonce_fails_when_nonce_expected() {
     let token = "test-token-replay";
     let old_line = format_node_line(
-        "192.168.2.168:9400",
+        "192.0.2.168:9400",
         "rust",
         500,
         0.1,
@@ -396,7 +396,7 @@ fn replayed_announcement_without_nonce_fails_when_nonce_expected() {
         &[],
         Some(token),
     );
-    let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+    let sender_ip: IpAddr = "192.0.2.168".parse().unwrap();
     let fresh_nonce = generate_nonce().unwrap();
 
     assert!(
@@ -416,7 +416,7 @@ fn replayed_signed_reply_with_empty_workspaces_fails_without_nonce() {
     let token = "test-token-empty-ws";
     // Node with empty workspaces: ws_csv is "-"
     let empty_ws_reply = format_node_line(
-        "192.168.2.168:9400",
+        "192.0.2.168:9400",
         "rust",
         500,
         0.1,
@@ -427,7 +427,7 @@ fn replayed_signed_reply_with_empty_workspaces_fails_without_nonce() {
         &[],
         Some(token),
     );
-    let sender_ip: IpAddr = "192.168.2.168".parse().unwrap();
+    let sender_ip: IpAddr = "192.0.2.168".parse().unwrap();
     let fresh_nonce = generate_nonce().unwrap();
 
     assert!(

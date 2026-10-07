@@ -71,7 +71,7 @@ async fn explicit_remote_does_not_fall_back_to_remembered_placement() {
     rem.workspaces.insert("subject".to_string(), remembered);
     save_placement(&placement, &rem);
 
-    let explicit_remote: SocketAddr = "192.168.2.168:9400".parse().unwrap();
+    let explicit_remote: SocketAddr = "192.0.2.168:9400".parse().unwrap();
     let picked = pick_node_with(
         &[explicit_remote],
         "subject",

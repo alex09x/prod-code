@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_gateway::workspace::{SharedWorkspace, WorkspaceManager};
 use prod_code_gateway::{ServerState, handle_client};
 use prod_code_protocol::{
-    HandshakeRequest, ReadFileRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage,
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, ReadFileRequest, WireMessage,
 };
 use std::future::Future;
 use std::os::fd::AsRawFd;
@@ -803,7 +803,7 @@ async fn validation_under_memory_pressure_redirects_to_available_cluster_peer() 
     state.workspace_manager = Arc::clone(&manager);
     *state.advertise.write().await = "127.0.0.1:9400".to_string();
 
-    let peer_addr = "192.168.2.168:9400".to_string();
+    let peer_addr = "192.0.2.168:9400".to_string();
     {
         let mut cluster = state.cluster.write().await;
         cluster.insert(
@@ -881,7 +881,10 @@ async fn validation_under_memory_pressure_redirects_to_available_cluster_peer() 
         .expect("wire message");
 
     match response {
-        WireMessage::Redirect { target_addr, reason } => {
+        WireMessage::Redirect {
+            target_addr,
+            reason,
+        } => {
             assert_eq!(target_addr, peer_addr);
             assert!(
                 reason.as_deref().unwrap_or("").contains("memory pressure"),
@@ -921,7 +924,7 @@ async fn validation_under_memory_pressure_falls_back_when_redirect_count_reached
     state.workspace_manager = Arc::clone(&manager);
     *state.advertise.write().await = "127.0.0.1:9400".to_string();
 
-    let peer_addr = "192.168.2.168:9400".to_string();
+    let peer_addr = "192.0.2.168:9400".to_string();
     {
         let mut cluster = state.cluster.write().await;
         cluster.insert(
@@ -1154,7 +1157,8 @@ path = "src/lib.rs"
         let val: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let syms = val.get("result").and_then(|r| r.as_array()).unwrap();
         assert!(
-            syms.iter().any(|s| s.get("name").and_then(|n| n.as_str()) == Some("direct_wire_func")),
+            syms.iter()
+                .any(|s| s.get("name").and_then(|n| n.as_str()) == Some("direct_wire_func")),
             "Query must see direct edit in base Salsa DB"
         );
     } else {
@@ -1281,10 +1285,7 @@ async fn read_file_request_in_active_session_pulls_large_artifact() {
                 "read file returned error: {:?}",
                 read_resp.error
             );
-            assert!(
-                !read_resp.truncated,
-                "read file was truncated unexpectedly"
-            );
+            assert!(!read_resp.truncated, "read file was truncated unexpectedly");
             let bytes = read_resp.content.expect("artifact content");
             assert_eq!(
                 bytes.len(),
@@ -1367,7 +1368,7 @@ async fn editor_session_receives_rebalance_redirect() {
         .workspace_manager
         .trigger_rebalance_by_name(
             &ws_name,
-            "192.168.2.168:9400".to_string(),
+            "192.0.2.168:9400".to_string(),
             Some("test".to_string()),
         )
         .await;
@@ -1381,7 +1382,7 @@ async fn editor_session_receives_rebalance_redirect() {
     assert!(
         matches!(
             &redirect,
-            WireMessage::Redirect { target_addr, .. } if target_addr == "192.168.2.168:9400"
+            WireMessage::Redirect { target_addr, .. } if target_addr == "192.0.2.168:9400"
         ),
         "editor session must receive the destination redirect, got: {redirect:?}"
     );
@@ -1389,4 +1390,3 @@ async fn editor_session_receives_rebalance_redirect() {
     drop(client);
     let _ = server.join().await;
 }
-

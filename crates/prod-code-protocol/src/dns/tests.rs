@@ -81,8 +81,8 @@ fn test_extract_project_name() {
 
 #[test]
 fn test_internal_domain_case_insensitivity_warm_placement() {
-    let node1 = mock_node("192.168.2.10:9400", &[("shop", "rust", 1)]);
-    let node2 = mock_node("192.168.2.20:9400", &[("billing", "go", 2)]);
+    let node1 = mock_node("192.0.2.10:9400", &[("shop", "rust", 1)]);
+    let node2 = mock_node("192.0.2.20:9400", &[("billing", "go", 2)]);
     let nodes = vec![node1, node2];
 
     // Lowercase, uppercase, and mixed-case must all resolve to the exact same warm workspace node
@@ -90,22 +90,22 @@ fn test_internal_domain_case_insensitivity_warm_placement() {
     let upper = resolve_smart_domain("SHOP.CODE.INTERNAL", &nodes, 9400).expect("upper");
     let mixed = resolve_smart_domain("ShOp.CoDe.InTeRnAl:9400", &nodes, 9400).expect("mixed");
 
-    assert_eq!(lower, vec!["192.168.2.10:9400".parse().unwrap()]);
+    assert_eq!(lower, vec!["192.0.2.10:9400".parse().unwrap()]);
     assert_eq!(upper, lower);
     assert_eq!(mixed, lower);
 }
 
 #[test]
 fn test_resolve_project_node_warm_preference() {
-    let node1 = mock_node("192.168.2.10:9400", &[("shop", "rust", 1)]);
-    let node2 = mock_node("192.168.2.20:9400", &[("billing", "go", 2)]);
+    let node1 = mock_node("192.0.2.10:9400", &[("shop", "rust", 1)]);
+    let node2 = mock_node("192.0.2.20:9400", &[("billing", "go", 2)]);
     let nodes = vec![node1, node2];
 
     let resolved_shop = resolve_project_node("shop", &nodes).expect("shop node");
-    assert_eq!(resolved_shop.addr, "192.168.2.10:9400".parse().unwrap());
+    assert_eq!(resolved_shop.addr, "192.0.2.10:9400".parse().unwrap());
 
     let resolved_billing = resolve_project_node("billing", &nodes).expect("billing node");
-    assert_eq!(resolved_billing.addr, "192.168.2.20:9400".parse().unwrap());
+    assert_eq!(resolved_billing.addr, "192.0.2.20:9400".parse().unwrap());
 
     // Unloaded project resolves deterministically via rendezvous hashing
     let resolved_other = resolve_project_node("analytics", &nodes).expect("analytics node");
@@ -115,8 +115,8 @@ fn test_resolve_project_node_warm_preference() {
         .unwrap();
     assert_eq!(resolved_other.addr, rendezvous.addr);
 
-    let unrelated_prefix = mock_node("192.168.2.10:9400", &[("shopping-cart", "rust", 1)]);
-    let worktree = mock_node("192.168.2.20:9400", &[("shop--wt-a1b2", "rust", 1)]);
+    let unrelated_prefix = mock_node("192.0.2.10:9400", &[("shopping-cart", "rust", 1)]);
+    let worktree = mock_node("192.0.2.20:9400", &[("shop--wt-a1b2", "rust", 1)]);
     let nodes = vec![unrelated_prefix, worktree.clone()];
     assert_eq!(
         resolve_project_node("shop", &nodes).unwrap().addr,
@@ -126,21 +126,18 @@ fn test_resolve_project_node_warm_preference() {
 
 #[test]
 fn test_resolve_smart_domain_mapping() {
-    let node1 = mock_node("192.168.2.10:9400", &[("shop", "rust", 1)]);
-    let node2 = mock_node("192.168.2.20:9400", &[("billing", "go", 2)]);
+    let node1 = mock_node("192.0.2.10:9400", &[("shop", "rust", 1)]);
+    let node2 = mock_node("192.0.2.20:9400", &[("billing", "go", 2)]);
     let nodes = vec![node1, node2];
 
     // Direct project domain
     let addrs = resolve_smart_domain("shop.code.internal", &nodes, 9400).expect("resolved");
-    assert_eq!(addrs, vec!["192.168.2.10:9400".parse().unwrap()]);
+    assert_eq!(addrs, vec!["192.0.2.10:9400".parse().unwrap()]);
 
     // Explicit port override
     let addrs_custom_port =
         resolve_smart_domain("shop.code.internal:9443", &nodes, 9400).expect("resolved");
-    assert_eq!(
-        addrs_custom_port,
-        vec!["192.168.2.10:9443".parse().unwrap()]
-    );
+    assert_eq!(addrs_custom_port, vec!["192.0.2.10:9443".parse().unwrap()]);
 
     // Cluster domain returns all nodes
     let cluster_addrs =
@@ -172,7 +169,7 @@ fn test_dns_wire_encode_decode_round_trip() {
 
 #[test]
 fn test_handle_dns_packet_srv_and_a() {
-    let node = mock_node("192.168.2.15:9400", &[("api-gateway", "rust", 1)]);
+    let node = mock_node("192.0.2.15:9400", &[("api-gateway", "rust", 1)]);
     let nodes = vec![node];
 
     // A query
@@ -210,7 +207,7 @@ fn test_handle_dns_packet_srv_and_a() {
 
 #[test]
 fn test_unsupported_qtype_returns_noerror_nodata() {
-    let node = mock_node("192.168.2.15:9400", &[("api-gateway", "rust", 1)]);
+    let node = mock_node("192.0.2.15:9400", &[("api-gateway", "rust", 1)]);
     let nodes = vec![node];
 
     // Query AAAA (type 28) for existing internal name
@@ -261,11 +258,11 @@ fn test_nonexistent_domain_returns_nxdomain() {
 
 #[test]
 fn test_generate_srv_records_weights_and_priority() {
-    let mut node1 = mock_node("192.168.2.11:9400", &[]);
+    let mut node1 = mock_node("192.0.2.11:9400", &[]);
     node1.load_per_cpu = 0.1;
     node1.mem_avail_mb = 64 * 1024; // 64 GB
 
-    let mut node2 = mock_node("192.168.2.12:9400", &[]);
+    let mut node2 = mock_node("192.0.2.12:9400", &[]);
     node2.load_per_cpu = 0.9;
     node2.mem_avail_mb = 16 * 1024; // 16 GB
 
@@ -276,20 +273,20 @@ fn test_generate_srv_records_weights_and_priority() {
     assert_eq!(srvs[0].priority, 10);
     assert_eq!(srvs[0].weight, 64);
     assert_eq!(srvs[0].port, 9400);
-    assert_eq!(srvs[0].target, "node-192-168-2-11.code.internal");
+    assert_eq!(srvs[0].target, "node-192-0-2-11.code.internal");
 
     // Node 2 (high load) has priority 20, weight 16
     assert_eq!(srvs[1].priority, 20);
     assert_eq!(srvs[1].weight, 16);
     assert_eq!(srvs[1].port, 9400);
-    assert_eq!(srvs[1].target, "node-192-168-2-12.code.internal");
+    assert_eq!(srvs[1].target, "node-192-0-2-12.code.internal");
 }
 
 #[test]
 fn test_srv_targets_resolve_to_advertised_nodes() {
-    let node1 = mock_node("192.168.2.10:9400", &[("shop", "rust", 1)]);
-    let node2 = mock_node("192.168.2.20:9401", &[("billing", "go", 2)]);
-    let node3 = mock_node("192.168.2.30:9400", &[]);
+    let node1 = mock_node("192.0.2.10:9400", &[("shop", "rust", 1)]);
+    let node2 = mock_node("192.0.2.20:9401", &[("billing", "go", 2)]);
+    let node3 = mock_node("192.0.2.30:9400", &[]);
     let nodes = vec![node1.clone(), node2.clone(), node3.clone()];
 
     let srv_records = generate_srv_records(&nodes);
@@ -316,7 +313,7 @@ fn test_dns_records_serialization() {
         priority: 10,
         weight: 64,
         port: 9400,
-        target: "node-192-168-2-10.code.internal".to_string(),
+        target: "node-192-0-2-10.code.internal".to_string(),
     };
     let serialized = serde_json::to_string(&srv).expect("serialize srv");
     let deserialized: DnsSrvRecord = serde_json::from_str(&serialized).expect("deserialize srv");
@@ -335,7 +332,7 @@ fn test_non_internal_srv_domain_rejected() {
     assert!(!is_code_internal_domain(attacker_name));
     assert!(!is_srv_service_domain(attacker_name));
 
-    let node1 = mock_node("192.168.2.10:9400", &[]);
+    let node1 = mock_node("192.0.2.10:9400", &[]);
     let nodes = vec![node1];
 
     let attacker_query = format_dns_response(

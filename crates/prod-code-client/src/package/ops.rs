@@ -274,7 +274,7 @@ pub async fn run_package_sync(remote: Option<SocketAddr>) -> Result<()> {
     }
 
     println!("\nFleet Package Deploy Guidance:");
-    println!("  • Ubuntu/Debian nodes (booster, ram9, rama):");
+    println!("  • Ubuntu/Debian nodes:");
     println!("      curl -fsSL https://prod.codes/install.sh | sh");
     println!(
         "      or: sudo dpkg -i prod-code_{current_version}_amd64.deb && systemctl --user restart prod-code-gateway"
@@ -287,7 +287,7 @@ pub async fn run_package_sync(remote: Option<SocketAddr>) -> Result<()> {
     println!(
         "      sudo pacman -U prod-code-{current_version}-1-x86_64.pkg.tar.gz && systemctl --user restart prod-code-gateway"
     );
-    println!("  • macOS node (192.168.2.40):");
+    println!("  • macOS nodes:");
     println!("      scripts/deploy-mac-node.sh");
     println!("  • Rule 11 Reminder: Never restart a node while running commands exist.");
     Ok(())

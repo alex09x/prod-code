@@ -56,7 +56,7 @@ fn a_wire_message_keeps_its_kind_through_a_round_trip() {
 #[test]
 fn redirect_message_round_trips() {
     let msg = WireMessage::Redirect {
-        target_addr: "192.168.2.191:9400".to_string(),
+        target_addr: "192.0.2.191:9400".to_string(),
         reason: Some("engine loaded warm on peer".to_string()),
     };
     let encoded = serde_json::to_string(&msg).expect("encode redirect");

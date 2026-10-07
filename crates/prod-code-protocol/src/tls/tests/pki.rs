@@ -54,7 +54,7 @@ fn pki_init_creates_valid_pki_and_sets_safe_permissions() {
     let report = pki::init_cluster_pki(
         temp.path(),
         Some("prod-code.test.internal"),
-        &["192.168.2.50".parse().unwrap()],
+        &["192.0.2.50".parse().unwrap()],
     )
     .unwrap();
 

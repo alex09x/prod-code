@@ -8,3 +8,7 @@
 *.swp
 __pycache__/
 *.py[cod]
+
+# Internal cluster rollout and operations scripts
+scripts/cluster-rollout*
+scripts/test_cluster_rollout.py

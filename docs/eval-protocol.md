@@ -2,7 +2,7 @@
 
 A standardized, repeatable evaluation matrix for benchmarking `prod-code` across open-source codebases and generating deep technical field reports.
 
-Every evaluation must test all **67 MCP tools** and their corresponding CLI workflows against an idle Linux cluster node (`booster` / AMD EPYC 32 cores, 134 GB RAM).
+Every evaluation must test all **67 MCP tools** and their corresponding CLI workflows against an idle Linux build node (AMD EPYC 32 cores, 134 GB RAM).
 
 ---
 
@@ -14,7 +14,7 @@ Verify remote Salsa graph initialization and synchronization without local CPU/R
 |---|---|---|---|
 | 1 | `code_status` | `prod-code status` | Node health, warm language server daemon, RAM consumption, active worker threads. |
 | 2 | `code_sync` | `prod-code -r <node> sync` | Differential hash transfer time, remote Salsa database hydration latency, client RTT. |
-| 3 | `code_report_issue` | `prod-code report-issue` | Verify diagnostic issue reporter: sanitizes private IPs/hostnames, links KYB incidents. |
+| 3 | `code_report_issue` | `prod-code report-issue` | Verify diagnostic issue reporter: sanitizes private IPs/hostnames, links internal incidents. |
 
 ---
 
@@ -261,7 +261,7 @@ For every refactoring tool tested:
 ## Completed Field Evaluations
 
 1. **[BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep)** (Rust)
-   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 45.4 KB cold sync, 1.02 ms LAN ping, 0% local laptop CPU
    - **Issues Identified & Resolved**:
@@ -270,7 +270,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Can 67 AST Tools Break Ripgrep? Stress-Testing Rust's Fastest Grep on an Idle Cluster Node (prod.codes)](https://prod.codes/blog/can-67-ast-tools-break-ripgrep/)
 
 2. **[quickwit-oss/tantivy](https://github.com/quickwit-oss/tantivy)** (Rust)
-   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 6.77 MB cold sync in 423 ms, 0.96 ms LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 10-crate clean DAG, 7,156 cyclic module paths in `src/`, Type-2 clone clusters in JIT and metrics
@@ -278,7 +278,7 @@ For every refactoring tool tested:
    - **Full Deep-Dive Report**: [7,156 Cyclic Module Paths: Stress-Testing Tantivy's Search Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/7156-cyclic-module-paths-in-tantivy/)
 
 3. **[tokio-rs/tokio](https://github.com/tokio-rs/tokio)** (Rust)
-   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 6.11 MB cold sync in 450 ms, 57 ms warm sync, 633 µs LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 10-crate circular DAG (6 cyclic paths across members), Type-2 clone clusters in stream combinators
@@ -288,7 +288,7 @@ For every refactoring tool tested:
    - **Full Deep-Dive Report**: [Six Circular Dependencies in Tokio: What 67 AST Analyzers Found Inside Rust's Async Engine (prod.codes)](https://prod.codes/blog/six-circular-dependencies-in-tokio/)
 
 4. **[pola-rs/polars](https://github.com/pola-rs/polars)** (Rust)
-   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 29.65 MB cold sync in 2.0s, 145 ms warm sync, 563 µs LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 33-crate DAG (4 circular paths across members), Type-2 clone clusters across `SeriesTrait` implementations in 9 data types
@@ -298,7 +298,7 @@ For every refactoring tool tested:
    - **Full Deep-Dive Report**: [Half a Million Lines of Arrow: What 67 AST Analyzers Found Inside Polars' Query Engine (prod.codes)](https://prod.codes/blog/half-a-million-lines-of-arrow-what-67-ast-analyzers-found-inside-polars/)
 
 5. **[astral-sh/uv](https://github.com/astral-sh/uv)** (Rust)
-   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`) & `booster`
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 36.45 MB cold sync in 1.85s, 234 ms warm sync, 500 µs LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 74-crate DAG (623 dependencies), self-referencing cycle in `uv-preview`, 347 Type-1/Type-2 code clones in test fixtures
@@ -306,7 +306,7 @@ For every refactoring tool tested:
    - **Issues Identified & Resolved**:
      - [#738](https://github.com/alex09x/prod-code/issues/738): `fast-sync drops tracked JSON build inputs larger than 256 KiB breaking builds (uv-python)`
 6. **[bevyengine/bevy](https://github.com/bevyengine/bevy)** (Rust)
-   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 81.0 MB cold sync in 18.2s, 0.0 ms warm sync, 613 µs LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 97-crate DAG (708 dependencies), 2 circular dev-dependency loops (`bevy_math -> bevy_math`, `bevy_remote -> bevy_remote`), 8-module mutual circular import knot in `bevy_ecs`, 204 Type-1 and 633 Type-2 code clones
@@ -315,7 +315,7 @@ For every refactoring tool tested:
      - [#739](https://github.com/alex09x/prod-code/issues/739): `fast-sync drops Cargo examples and tests in directories named state or data`
    - **Full Deep-Dive Report**: [204 Code Clones and Two Self-Loops: Dissecting Bevy's 97-Crate Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/204-code-clones-and-two-self-loops-inside-bevy/)
 7. **[prometheus/prometheus](https://github.com/prometheus/prometheus)** (Go)
-   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 385,511 lines of Go across 736 files, 14.1s cold sync into `gopls` in RAM, 865 µs LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 84-package DAG (524 dependencies), 0 circular package cycles, core foundations `discovery/targetgroup` ($C_a=35$) and `model/labels` ($C_a=32$) with 0.000 instability, 40 Protobuf Varint clone clusters
@@ -325,7 +325,7 @@ For every refactoring tool tested:
    - **Full Deep-Dive Report**: [1,485 Error Checks and Zero Import Cycles: Dissecting Prometheus's 84-Package Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/1485-error-checks-and-zero-cycles-inside-prometheus/)
 
 8. **[kubernetes/kubernetes](https://github.com/kubernetes/kubernetes)** (Go)
-   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 5,384,262 lines of Go across 17,823 files (31,351 total files), 779 internal packages, 737 µs LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 779-package DAG (3,639 dependencies), core foundations `pkg/features` ($C_a=154$), `pkg/api/legacyscheme` ($C_a=138$), and `pkg/apis/core` ($C_a=137$), 900+ Type-2 clone groups across scheduler plugins
@@ -336,7 +336,7 @@ For every refactoring tool tested:
    - **Full Deep-Dive Report**: [5.3 Million Lines of Go and 779 Packages: Dissecting Kubernetes with 67 AST Tools (prod.codes)](https://prod.codes/blog/5-million-lines-of-go-inside-kubernetes/)
 
 9. **[django/django](https://github.com/django/django)** (Python)
-   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`)
+   - **Evaluated on**: a 32-core Linux node
    - **Tool Coverage**: 67 / 67 tools across all 9 suites
    - **Key Metrics**: 526,995 lines of Python across 2,932 files, 654 µs LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 112 modules in `django/core` (832 dependencies), 25 circular module import paths detected in `django::core::checks`, foundational modules `django::core::exceptions` ($C_a=11, I=0.00$), 150+ Type-2 clone groups across serializers, command parsers, and cache backends
@@ -344,7 +344,7 @@ For every refactoring tool tested:
    - **Full Deep-Dive Report**: [Half a Million Lines of Python and 25 Import Cycles: Dissecting Django with 67 AST Tools (prod.codes)](https://prod.codes/blog/half-a-million-lines-of-python-inside-django/)
 
 10. **[psf/black](https://github.com/psf/black)** (Python)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 135,022 lines of Python across 358 files, 930 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Import cycle in `src/black/__init__.py` via `concurrency.py`, 10-line Type-2 clone blocks across 7 Python version feature tables in `src/black/mode.py`
@@ -352,7 +352,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Black Under the Microscope: What 67 AST Tools Found Inside Python's Uncompromising Formatter (prod.codes)](https://prod.codes/blog/black-under-the-microscope-67-ast-tools/)
 
 11. **[tiangolo/fastapi](https://github.com/tiangolo/fastapi)** (Python)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 118,093 lines of Python across 1,166 files, 930 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 135 occurrences of OpenAPI schema response clones in `tests/test_include_router_defaults_overrides.py`, `fastapi/routing.py` APIRouter hierarchy with 866 variables
@@ -360,7 +360,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [FastAPI Under the Microscope: What 67 AST Tools Found Inside Python's Modern Async Framework (prod.codes)](https://prod.codes/blog/fastapi-under-the-microscope-67-ast-tools/)
 
 12. **[pallets/flask](https://github.com/pallets/flask)** (Python)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 18,345 lines of Python across 83 files (1,658 declarations), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Code clone clusters between `src/flask/blueprints.py` (lines 81-94) and `src/flask/app.py` (lines 392-405) on `send_static_file` and cache expiration
@@ -368,56 +368,56 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Flask Under the Microscope: What 67 AST Tools Found Inside Python's Iconic Microframework (prod.codes)](https://prod.codes/blog/flask-under-the-microscope-67-ast-tools/)
 
 13. **[etcd-io/etcd](https://github.com/etcd-io/etcd)** (Go)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 219,982 lines of Go across 1,094 source files (11,320 declarations), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 1,094-package DAG (3,420 dependencies), zero circular dependencies, verified unidirectional layering (`api`, `pkg`, `client`, `server/storage`, `server/etcdserver`)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `(*EtcdServer).MoveLeader` (99.9% reduction from 220K lines to 200 lines in 180 ms), structural search captured 445 error returns across 132 files in 1,226 ms, 3-way RRF semantic search located Raft election handlers in 87 ms across 11,320 declarations, parameter object bundling on `MoveLeader` with compiler safety refusal catching cross-package `LeaderTransferrer` interface mismatch and unexported structs, boolean inversion on `isLeader` with 7 non-call value reference safety refusals, in-memory shadow pre-validation caught syntax error in 0.57s
     - **Full Deep-Dive Report**: [etcd Under the Microscope: What 67 AST Tools Found Inside Cloud-Native Consensus (prod.codes)](https://prod.codes/blog/etcd-under-the-microscope-67-ast-tools/)
 14. **[moby/moby](https://github.com/moby/moby)** (Go)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 387,617 lines of Go across 2,269 source files (20,508 declarations), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 2,269-file DAG, zero circular package dependencies, 224 occurrences of an identical 14-line Protobuf varint decoding loop across BuildKit and fsutil
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `ContainerStart` (99.9% reduction from 387K lines to 250 lines in 190 ms), structural search captured 858 error returns across 285 files in 1.9s, 3-way RRF semantic search located container start and attach streams in 212 ms across 20,508 declarations, boolean inversion on `IsRunning` across 19 files with gopls compiler safety refusal protecting plugin executor interfaces, in-memory shadow pre-validation in 2.00s
     - **Full Deep-Dive Report**: [Moby Under the Microscope: What 67 AST Tools Found Inside Docker's Engine (prod.codes)](https://prod.codes/blog/moby-under-the-microscope-67-ast-tools/)
 15. **[microsoft/TypeScript](https://github.com/microsoft/TypeScript)** (TypeScript)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 264,411 declarations across 31,433 source files, 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Clean modular DAG across 116 packages, 17 occurrences of an identical 10-line modifier traversal generator loop in `packages/typescript/src/ast/factory.generated.ts` (Group #1480), and 332 occurrences across test baselines
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `createSourceFile` (99.9% reduction from 264K declarations to ~120 lines across 3 files), structural search captured 134 error guards matching `throw new Error($$$)` across 18 files in 721.72 ms, 3-way RRF semantic search located `createSourceFile` in 2,088 ms across 264,411 declarations, boolean inversion on `hasProperty` safely halted by compiler refusal due to 10 non-call value references in namespace imports, parameter object bundling on `hasProperty` generated `export interface HasPropertyArgs` with call sites rewritten to `{ map: member, key: "kind" }` and 0 errors, in-memory shadow pre-validation in 5.24s
     - **Full Deep-Dive Report**: [TypeScript Under the Microscope: What 67 AST Tools Found Inside the Compiler (prod.codes)](https://prod.codes/blog/typescript-under-the-microscope-67-ast-tools/)
 16. **[facebook/react](https://github.com/facebook/react)** (JavaScript / Flow / TypeScript)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 115,541 declarations across 4,578 source files (745,980 lines), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Clean 167-module DAG in reconciler, 18 occurrences of an identical 12-line test harness class in `ReactFragment-test.js` (Group #328), and 16 occurrences of a 12-line transition tracing callback in `ReactTransitionTracing-test.js` (Group #17)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `scheduleUpdateOnFiber` in `ReactFiberWorkLoop.js` (99.9% reduction from 745K lines to Fiber/FiberRoot/lanes data structures), structural search captured 156 error guards matching `throw Error($$$)` across 59 files in 1,901 ms, 3-way RRF semantic search located `scheduleUpdateOnFiber` in 341 ms (dense cosine similarity 0.839), parameter object bundling on `retainWhere<T>` in `babel-plugin-react-compiler` safely rejected by language engine because the synthesized interface was missing generic `<T>` scope (`Cannot find name 'T' [2304]`), remote in-memory shadow pre-validation in 840 ms
     - **Full Deep-Dive Report**: [React Under the Microscope: What 67 AST Tools Found Inside the UI Engine (prod.codes)](https://prod.codes/blog/react-under-the-microscope-67-ast-tools/)
 17. **[vercel/next.js](https://github.com/vercel/next.js)** (TypeScript / JavaScript)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 229,297 declarations across 24,309 source files (1,293,158 lines), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 24,309-file multi-package DAG, 13 occurrences of an identical 12-line immediate test helper in `test/e2e/app-dir/actions/fast-set-immediate.external.test.ts:90-101` (Clone Group #484)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `renderToHTMLImpl` in `packages/next/src/server/render.tsx:457` (isolated Document shell, React Fizz streaming, tracing spans, and HTML postProcess), structural search captured 1,254 error assertions matching `throw new Error($$$)` across 306 files in 10,378 ms, semantic search located `renderToHTML` entrypoints in 1,572 ms across 229,297 declarations, AST boolean inversion on `isResSent` -> `isResPending` accurately updated 24 lines across 5 files flipping 5 call-site negations and simplifying pre-existing `!`, in-memory pre-flight validation caught 4 syntax errors in 4.35s while filtering 9 pre-existing diagnostics without touching disk
     - **Full Deep-Dive Report**: [Next.js Under the Microscope: What 67 AST Tools Found Inside the React Framework (prod.codes)](https://prod.codes/blog/nextjs-under-the-microscope-67-ast-tools/)
 18. **[expressjs/express](https://github.com/expressjs/express)** (JavaScript)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 6,037 declarations across 201 source files (21,492 lines), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Prototype delegation chains, Clone Group #150 identified identical 8-line middleware mock fixtures across 6 test suites (`test/express.json.js`, `test/res.sendFile.js`, etc.)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `app.handle` in `lib/application.js:152` (95% reduction from 13.9KB to 711 bytes isolating handler binding, headers, and error logger), structural search captured 10 type assertion sites matching `throw new TypeError($$$)` across 4 files in 37.56 ms, semantic search located `this.router.handle` and `app.handle` in 22 ms across 6,037 declarations, AST boolean inversion on `app.enabled` safely refused mutation due to 22 dynamic value references in untyped JS where `this.enabled` is accessed as a property, remote in-memory pre-flight validation caught invalid JavaScript variable syntax in 0.20s
     - **Full Deep-Dive Report**: [Express Under the Microscope: What 67 AST Tools Found Inside the Node.js Backbone (prod.codes)](https://prod.codes/blog/express-under-the-microscope-67-ast-tools/)
 19. **[redis/redis](https://github.com/redis/redis)** (C)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 76,566 declarations across 844 files (211,529 lines in `src/`), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Multiplexed event architecture, Clone Group #382 identified 5 identical 12-line reply parser validation blocks in `deps/hiredis/hiredis.c:190-296`
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `aeProcessEvents` in `src/ae.c:365` (isolated event dispatch dependencies, traversing to `aeEventLoop` in `src/ae.h` and `aeApiPoll` epoll_wait in `src/ae_epoll.c:89`), structural search captured 454 error reply sites matching `addReplyError($$$)` across 38 files in 4,538 ms, semantic search located `aeProcessEvents` in 196 ms (dense cosine similarity 0.852), AST boolean inversion on `stringmatch` -> `stringmismatch` updated 26 lines across 4 files and safely halted on 1 non-call reference in `src/debug.c:1080` (`stringmatch-test`), remote in-memory pre-flight validation under clangd caught 3 C compilation errors in 0.52s
     - **Full Deep-Dive Report**: [Redis Under the Microscope: What 67 AST Tools Found Inside the In-Memory Engine (prod.codes)](https://prod.codes/blog/redis-under-the-microscope-67-ast-tools/)
 20. **[duckdb/duckdb](https://github.com/duckdb/duckdb)** (C++)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 350,004 declarations across 4,971 files (681,473 lines in `src/`), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Columnar vectorized execution architecture, 5,500+ clone groups across third-party generators (Group #1518 with 33 occurrences and Group #2227 with 25 occurrences in `third_party/utf8proc`)
@@ -425,7 +425,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [DuckDB Under the Microscope: What 67 AST Tools Found Inside the Analytical Engine (prod.codes)](https://prod.codes/blog/duckdb-under-the-microscope-67-ast-tools/)
 
 21. **[git/git](https://github.com/git/git)** (C)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 107,779 declarations across 1,007 files (443,306 lines of C), 650 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Monolithic C DAG (`gitcore`), Clone Group #199 identified 4 occurrences of a 12-line filter situation dispatch block in `list-objects-filter.c:81-412`, Clone Group #173 identified repeated reftable block iterator loops in unit tests
@@ -433,7 +433,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Git Under the Microscope: What 67 AST Tools Found Inside the Core VCS (prod.codes)](https://prod.codes/blog/git-under-the-microscope-67-ast-tools/)
 
 22. **[curl/curl](https://github.com/curl/curl)** (C)
-    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Evaluated on**: a 32-core Linux node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 70,295 declarations across 1,101 files (200,796 lines of C), 610 µs LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Core transfer architecture centered on `Curl_easy` struct handle (in-degree 1,573, graph centrality 4.83), Clone Group #780 identified 17 identical occurrences of global initialization logic across `tests/libtest/lib*.c`, Clone Group #2287 identified 16 occurrences of execution/cleanup scaffolds
@@ -441,7 +441,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [curl Under the Microscope: What 67 AST Tools Found Inside the Ubiquitous Transfer Engine (prod.codes)](https://prod.codes/blog/curl-under-the-microscope-67-ast-tools/)
 
 23. **[apple/swift-algorithms](https://github.com/apple/swift-algorithms)** (Swift)
-    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Evaluated on**: macOS node (Apple Silicon)
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 1,735 declarations across 57 files (13,722 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Generic collection adapter architecture centered on progressive protocol extensions (`Sequence`, `Collection`, `BidirectionalCollection`, `RandomAccessCollection`), Clone Group #314 surfaced 6 identical occurrences of `offsetForward` bounds checking across distinct collection adapters, Clone Group #11 surfaced 3 identical `offsetBackward` implementations
@@ -449,7 +449,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Swift Algorithms Under the Microscope: What 67 AST Tools Found Inside Apple's Sequence Engine (prod.codes)](https://prod.codes/blog/swift-algorithms-under-the-microscope-67-ast-tools/)
 
 24. **[apple/swift-argument-parser](https://github.com/apple/swift-argument-parser)** (Swift)
-    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Evaluated on**: macOS node (Apple Silicon)
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 3,724 declarations across 170 files (30,001 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: CLI command dispatch hierarchy centered on `ParsableCommand` protocol (in-degree 296, graph centrality 4.04), Clone Group #417 and #511 identified identical value unwrapping and `configurationFailure` boilerplate across all 5 core property wrappers (`@Argument`, `@Option`, `@OptionGroup`, `@ParentCommand`, `@Flag`)
@@ -457,7 +457,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Swift Argument Parser Under the Microscope: What 67 AST Tools Found Inside Apple's CLI Framework (prod.codes)](https://prod.codes/blog/swift-argument-parser-under-the-microscope-67-ast-tools/)
 
 25. **[Alamofire/Alamofire](https://github.com/Alamofire/Alamofire)** (Swift)
-    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Evaluated on**: macOS node (Apple Silicon)
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 7,652 declarations across 102 files (39,248 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Core networking pipeline centered on `SessionDelegate` multiplexer and `AFError` typed domain (in-degree 472, centrality 3.31), Clone Group #471 surfaced 25 occurrences of response expectation fulfillment boilerplate across 6 test files, Clone Group #2051 surfaced 10 occurrences of WebSocket disconnect handlers
@@ -465,7 +465,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Alamofire Under the Microscope: What 67 AST Tools Found Inside the Swift Networking Engine (prod.codes)](https://prod.codes/blog/alamofire-under-the-microscope-67-ast-tools/)
 
 26. **[apple/swift-collections](https://github.com/apple/swift-collections)** (Swift)
-    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Evaluated on**: macOS node (Apple Silicon)
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 10,710 declarations across 441 files (70,979 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Core algorithmic collection architecture centered on `Deque` ring buffers (in-degree 270, graph centrality 4.00) and `OrderedSet` / `OrderedDictionary` hash trees (in-degree 396 and 229, centralities 4.18 and 3.92), Clone Group #1165 identified 11 occurrences of nested tree-node traversal scaffolding across persistent hash tree tests
@@ -473,7 +473,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Swift Collections Under the Microscope: What 67 AST Tools Found Inside Apple's Data Structure Engine (prod.codes)](https://prod.codes/blog/swift-collections-under-the-microscope-67-ast-tools/)
 
 27. **[google/guava](https://github.com/google/guava)** (Java)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 795,118 lines of Java across 3,279 files, 0.65 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Core collections and concurrency abstractions evaluated; clone analysis identified 33-occurrence clone patterns across concurrent hash multiset and table implementations
@@ -481,7 +481,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Guava Under the Microscope: What 67 AST Tools Found Inside Google's Core Java Libraries (prod.codes)](https://prod.codes/blog/guava-under-the-microscope-67-ast-tools/)
 
 28. **[spring-projects/spring-boot](https://github.com/spring-projects/spring-boot)** (Java)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 880,132 lines of Java across 8,696 files (448 Gradle modules, 2,790 dependencies), 0.65 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 448-module dependency graph analyzed with `prod-code dependencies`, revealing a completely acyclic DAG (0 cycles). Foundational `starter:spring-boot-starter` has highest afferent coupling (Ca=283, Ce=3, instability 0.01), followed by `core:spring-boot` (Ca=164, Ce=1). Clone analysis (`prod-code duplicates`) scanned 9,192 files (908,509 lines) and isolated 20 clone groups, including 55 occurrences of `isEnabled()` property accessors across autoconfiguration classes, confirming intentional POJO decoupling over fragile base classes.
@@ -489,7 +489,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Spring Boot Under the Microscope: What 67 Remote AST Tools Found Inside the Enterprise Java Standard (prod.codes)](https://prod.codes/blog/spring-boot-under-the-microscope-67-ast-tools/)
 
 29. **[apache/kafka](https://github.com/apache/kafka)** (Java/Scala)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 1,717,457 lines across 6,218 Java and 257 Scala files (64 modules, 82 dependencies), 0.49 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 64-module centralized Gradle build analyzed with `prod-code dependencies`, revealing a completely acyclic DAG (0 circular dependencies). Protocol wire client `clients` sits at the root layer (Ca=6, Ce=0, instability 0.00). Clone analysis (`prod-code duplicates`) scanned 6,653 files (1,748,112 lines) and surfaced 20 clone groups, including Clone Group #60505 (125 occurrences of `equals(Object o)` across protocol and administrative records).
@@ -497,7 +497,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Kafka Under the Microscope: What 67 Remote AST Tools Found Inside the Distributed Event Core (prod.codes)](https://prod.codes/blog/kafka-under-the-microscope-67-ast-tools/)
 
 30. **[netty/netty](https://github.com/netty/netty)** (Java)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 652,153 lines across 3,595 Java source files (4,210 total files tracked, 61 Maven modules, 441 inter-module dependencies), 3.43 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 61-module Maven hierarchy analyzed with `prod-code dependencies`, uncovering an `all -> bom -> all` packaging circular dependency between shaded jar and BOM modules, while foundational core `common` (Ca=45, Ce=3, instability 0.06), `transport` (Ca=44, Ce=4, instability 0.08), and `buffer` (Ca=42, Ce=4, instability 0.09) form a clean, highly stable DAG. Clone analysis (`prod-code duplicates`) scanned 3,614 files (663,381 lines) and isolated 20 clone groups, notably Clone Group #7325 with 510 occurrences of parameterized bitwise operations in unrolled HPACK and QPACK Huffman lookup state machines across `QpackHuffmanDecoder.java` and `HpackHuffmanDecoder.java`.
@@ -505,7 +505,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Netty Under the Microscope: What 67 Remote AST Tools Found Inside Java's High-Throughput I/O Engine (prod.codes)](https://prod.codes/blog/netty-under-the-microscope-67-ast-tools/)
 
 31. **[ktorio/ktor](https://github.com/ktorio/ktor)** (Kotlin)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 295,995 lines of Kotlin across 2,423 source files (3,132 total files tracked, 134 Gradle subprojects, 458 inter-module dependencies), 1.97 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 134-module Gradle Kotlin DSL build analyzed with `prod-code dependencies`, parsing unary plus subproject definitions and modern Gradle TypeSafe Project Accessors. The engine detected 100 circular dependency paths centered around test fixtures cross-referencing concrete engines (`ktor-test-base` <-> `ktor-client-cio`), while foundational core `ktor-serialization` (Ca=28, Ce=2, instability 0.07) and `ktor-utils` (Ca=15, Ce=1, instability 0.06) anchor the graph with zero-instability stability. Clone analysis (`prod-code duplicates`) scanned 2,605 files (303,134 lines) and isolated 20 clone groups, notably Clone Group #10619 with 74 occurrences of coroutine channel feeding pipelines across `EngineTestBase.kt` and `ClientTestBase.kt`.
@@ -513,7 +513,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Ktor Under the Microscope: What 67 Remote AST Tools Found Inside Kotlin's Asynchronous Web Framework (prod.codes)](https://prod.codes/blog/ktor-under-the-microscope-67-ast-tools/)
 
 32. **[Kotlin/kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines)** (Kotlin)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 113,379 lines of Kotlin across 1,039 source files (1,337 total files tracked, 25 Gradle subprojects, 22 inter-module dependencies), 1.97 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 25-module Gradle build analyzed with `prod-code dependencies`, discovering submodules via custom JetBrains `module("...")` helper DSL in `settings.gradle.kts`. The graph forms a clean directed acyclic graph (0 circular dependencies), anchored by foundational core `kotlinx-coroutines-core` (Ca=5, Ce=0, instability 0.00) and `kotlinx-coroutines-debug` (Ca=5, Ce=0, instability 0.00). Clone analysis (`prod-code duplicates`) scanned 1,105 files (116,834 lines) and isolated 20 clone groups, notably Clone Group #1534 with 32 occurrences of test dispatcher execution and lifecycle completion scaffolding across `TestBase.common.kt` and `Tasks.kt`.
@@ -521,7 +521,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Kotlinx.coroutines Under the Microscope: What 67 Remote AST Tools Found Inside Kotlin's Concurrency Runtime (prod.codes)](https://prod.codes/blog/kotlinx-coroutines-under-the-microscope-67-ast-tools/)
 
 33. **[detekt/detekt](https://github.com/detekt/detekt)** (Kotlin)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 132,028 lines of Kotlin across 1,105 source files (1,993 total files tracked, 41 Gradle subprojects, 232 inter-module dependencies), 1.97 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 41-module Gradle build analyzed with `prod-code dependencies`, uncovering 4 circular dependency paths strictly confined to test fixtures (`detekt-api` <-> `detekt-test` <-> `detekt-test-utils`), while foundational production modules `detekt-psi-utils` (Ca=14, Ce=4, instability 0.22) and `detekt-utils` (Ca=6, Ce=0, instability 0.00) enforce clean unidirectional layers. Clone analysis (`prod-code duplicates`) scanned 1,175 files (135,761 lines) and isolated 20 clone groups with 9.4% duplication, notably Clone Group #2627 with 288 occurrences of parameterized test harness boilerplate across `detekt-rules-*` test specifications.
@@ -529,7 +529,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Detekt Under the Microscope: What 67 Remote AST Tools Found Inside Kotlin's Static Code Analyzer (prod.codes)](https://prod.codes/blog/detekt-under-the-microscope-67-ast-tools/)
 
 34. **[arrow-kt/arrow](https://github.com/arrow-kt/arrow)** (Kotlin)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 72,889 lines of Kotlin across 757 source files (985 total files tracked, 38 Gradle subprojects, 86 inter-module dependencies), 1.97 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 38-module Gradle build analyzed with `prod-code dependencies`, uncovering 5 circular dependency paths linking low-level concurrency and utility modules (`arrow-atomic` <-> `arrow-fx-coroutines` <-> `arrow-autoclose` <-> `arrow-exception-utils` <-> `arrow-core`) driven by multiplatform atomic reference requirements, while foundational production modules `arrow-core` (Ca=18, Ce=5, instability 0.22), `arrow-platform` (Ca=7, Ce=0, instability 0.00), and `arrow-optics` (Ca=6, Ce=1, instability 0.14) form clean unidirectional layers. Clone analysis (`prod-code duplicates`) scanned 804 files (74,888 lines) and isolated 20 clone groups with 2.8% duplication, notably Clone Group #2545 with 27 occurrences of parameterized Either monadic law tests and Clone Group #3117 with 14 occurrences of JVM high-arity iterator stepping sequences across `Sequence.kt`.
@@ -537,7 +537,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Arrow Under the Microscope: What 67 Remote AST Tools Found Inside Kotlin's Functional Core (prod.codes)](https://prod.codes/blog/arrow-under-the-microscope-67-ast-tools/)
 
 35. **[dotnet/aspnetcore](https://github.com/dotnet/aspnetcore)** (C#)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 1,757,169 lines of C# across 10,685 source files (17,658 total files tracked, 625 .NET projects, 7,427 inter-project dependencies), 1.55 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 625-project .NET solution analyzed with `prod-code dependencies`, parsing MSBuild project references across multi-target frameworks. Identified 100 circular dependency paths strictly confined to test harness cross-references and benchmark fixtures, while foundational core `Microsoft.AspNetCore.Http.Abstractions` (Ca=340, Ce=7, instability 0.02), `Microsoft.AspNetCore.Http.Features` (Ca=317, Ce=3, instability 0.01), and `Microsoft.AspNetCore.Http` (Ca=292, Ce=11, instability 0.04) establish an inward abstraction gravity DAG where over 50% of the entire repository depends on these zero-instability primitives. Clone analysis (`prod-code duplicates`) scanned 11,383 files (2,233,809 lines) and isolated 20 clone groups with 0.90% duplication, dominated by Roslyn Source Generator verification snapshots (`ValidatableInfoResolver.g.verified.cs`).
@@ -545,7 +545,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [ASP.NET Core Under the Microscope: What 67 Remote AST Tools Found Inside Microsoft's Web Engine (prod.codes)](https://prod.codes/blog/aspnetcore-under-the-microscope-67-ast-tools/)
 
 36. **[dotnet/efcore](https://github.com/dotnet/efcore)** (C#)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 1,749,818 lines of C# across 5,778 source files (6,266 total files tracked, 58 .NET projects, 139 inter-project dependencies), 0.55 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 58-project .NET solution analyzed with `prod-code dependencies`, parsing MSBuild project references across multi-provider packages. Discovered zero circular dependencies (clean directed acyclic graph), anchored by foundational root abstractions `EFCore.Analyzers` (Ca=15, Ce=0, instability 0.00), `Microsoft.Data.Sqlite.Core` (Ca=9, Ce=0, instability 0.00), and `EFCore.Abstractions` (Ca=6, Ce=0, instability 0.00), feeding downward into core relational pipeline engines `EFCore` (Ca=9, Ce=2, instability 0.18) and `EFCore.Relational` (Ca=9, Ce=2, instability 0.18). Clone analysis (`prod-code duplicates`) scanned 5,779 files (1,750,227 lines) and isolated 20 clone groups with 2.0% duplication, dominated by Northwind data specification fixtures (`NorthwindData.Objects.cs`, 1,316 occurrences) and JSON SQL update assertions (`JsonUpdateSqlServerTest.cs`, 277 occurrences).
@@ -553,7 +553,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [EF Core Under the Microscope: What 67 Remote AST Tools Found Inside .NET's Relational Engine (prod.codes)](https://prod.codes/blog/efcore-under-the-microscope-67-ast-tools/)
 
 37. **[dotnet/roslyn](https://github.com/dotnet/roslyn)** (C#)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 6,499,949 lines of C# across 18,176 source files (35,115 total files tracked, 394 .NET projects, 2,103 inter-project dependencies), 0.55 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 394-project self-hosting compiler platform analyzed with `prod-code dependencies`, parsing MSBuild project references across syntax, semantic, workspace, and IDE tiers. Identified 100 circular dependency paths centered around bootstrapping source generators (`CSharpSyntaxGenerator` <-> `Microsoft.CodeAnalysis.Analyzers` <-> `Microsoft.CodeAnalysis.CSharp`), while core compiler engines `Microsoft.CodeAnalysis.CSharp` (Ca=112, Ce=37, instability 0.25) and `Microsoft.CodeAnalysis` (Ca=105, Ce=36, instability 0.26) serve as the architectural gravity center for over 100 downstream projects. Clone analysis (`prod-code duplicates`) scanned 18,140 files (6,495,296 lines) and isolated 20 clone groups with 1.8% duplication, dominated by syntax token sequence assertions across parser regression test suites (Clone Group #258538, 1,500 occurrences).
@@ -561,7 +561,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Roslyn Under the Microscope: What 67 Remote AST Tools Found Inside the C# Compiler (prod.codes)](https://prod.codes/blog/roslyn-under-the-microscope-67-ast-tools/)
 
 38. **[dotnet/BenchmarkDotNet](https://github.com/dotnet/BenchmarkDotNet)** (C#)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 120,810 lines of C# across 1,175 source files (1,556 total files tracked, 29 .NET projects, 55 inter-project dependencies), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 29-project benchmarking framework analyzed with `prod-code dependencies`, parsing MSBuild project references across runtime harnesses, diagnosers, and analyzers. Discovered zero circular dependencies (clean directed acyclic graph), anchored by core engine `BenchmarkDotNet` (Ca=22, Ce=2, instability 0.08) feeding into independent diagnoser modules (`BenchmarkDotNet.Diagnostics.Windows` Ca=5, `BenchmarkDotNet.Diagnostics.dotMemory` Ca=3, `BenchmarkDotNet.Diagnostics.dotTrace` Ca=3) and decoupled analyzers (`BenchmarkDotNet.Analyzers` Ca=3, Ce=0, instability 0.00). Clone analysis (`prod-code duplicates`) scanned 1,192 files (126,437 lines) and isolated 20 clone groups with 3.1% duplication, dominated by synthetic Roslyn diagnostic verification sequences (Clone Group #4278, 85 occurrences) and execution validator test fixtures (Clone Group #2974, 18 occurrences).
@@ -569,7 +569,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [BenchmarkDotNet Under the Microscope: What 67 Remote AST Tools Found Inside the .NET Micro-Benchmarking Engine (prod.codes)](https://prod.codes/blog/benchmarkdotnet-under-the-microscope-67-ast-tools/)
 
 39. **[apache/spark](https://github.com/apache/spark)** (Scala)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 2,047,587 lines of Scala (and 207,298 lines of Java) across 6,448 source files (27,495 total files tracked, 52 Maven/SBT modules), 0.95 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 52-module distributed compute engine analyzed with `prod-code dependencies` across Maven and SBT hierarchies (`pom.xml` and `project/`). Discovered zero circular dependencies (clean directed acyclic graph), anchored by foundational core engine `core` (Ca=41, Ce=3, instability 0.07) feeding into relational Catalyst optimizer expressions `sql/catalyst` (Ca=15, Ce=2, instability 0.12), DataFrame execution platform `sql/core` (Ca=19, Ce=4, instability 0.17), and low-level off-heap memory primitives `common/unsafe` (Ca=8, Ce=1, instability 0.11) and `common/network-common` (Ca=7, Ce=0, instability 0.00). Clone analysis (`prod-code duplicates`) scanned 9,400 files (2,755,888 lines) and isolated 20 clone groups with an exceptionally lean 0.7% duplication ratio, dominated by network RPC/status message serialization boilerplate (Clone Group #29026, 558 occurrences) and high-arity UDF parameter pattern matching from UDF1 to UDF22 in `ToScalaUDF.scala` and `UdfUtils.scala` (Clone Group #6659, 52 occurrences).
@@ -577,7 +577,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Apache Spark Under the Microscope: What 67 Remote AST Tools Found Inside the 2-Million-Line Distributed Engine (prod.codes)](https://prod.codes/blog/spark-under-the-microscope-67-ast-tools/)
 
 40. **[apache/incubator-pekko](https://github.com/apache/incubator-pekko)** (Scala)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 560,022 lines of Scala (and 278,337 lines of Java) across 3,384 source files (4,365 total files tracked, 41 SBT modules), 0.95 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 41-module distributed actor runtime analyzed with `prod-code dependencies` across SBT subproject definitions (`build.sbt`). Discovered zero circular dependencies (clean directed acyclic graph), anchored by foundational root module `actor` (Ca=34, Ce=0, instability 0.00) exporting foundational concurrency primitives, feeding into `stream` (Ca=14, Ce=1, instability 0.07), `actor-typed` (Ca=12, Ce=2, instability 0.14), `cluster` (Ca=9, Ce=2, instability 0.18), `coordination` (Ca=6, Ce=0, instability 0.00), and `remote` (Ca=5, Ce=3, instability 0.38). Clone analysis (`prod-code duplicates`) scanned 3,384 files (838,359 lines) and isolated 20 clone groups with 3.5% duplication, concentrated primarily in generated Protobuf message equality and hashcode stubs across remote and cluster transports (Clone Group #22321, 424 occurrences) and wire envelope serialization builders (Clone Group #19804, 312 occurrences).
@@ -585,7 +585,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Apache Pekko Under the Microscope: What 67 Remote AST Tools Found Inside the High-Throughput Actor Runtime (prod.codes)](https://prod.codes/blog/pekko-under-the-microscope-67-ast-tools/)
 
 41. **[playframework/playframework](https://github.com/playframework/playframework)** (Scala)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 130,537 lines of Scala (and 91,020 lines of Java) across 1,636 source files (2,719 total files tracked, 44 SBT modules), 0.95 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 44-module reactive web framework analyzed with `prod-code dependencies` across SBT subproject definitions (`build.sbt`). Discovered zero circular dependencies (clean directed acyclic graph), anchored by foundational core engine `core/play` (Ca=28, Ce=3, instability 0.10) defining HTTP models, Action pipelines, and routing abstractions, feeding into reactive stream adapters `core/play-streams` (Ca=8, Ce=0, instability 0.00), server abstractions `transport/server/play-server` (Ca=5, Ce=1, instability 0.17), and pluggable server engines (`play-pekko-http-server`, `play-netty-server`). Clone analysis (`prod-code duplicates`) scanned 1,662 files (224,127 lines) and isolated 20 clone groups with 0.9% duplication, concentrated in tuple form mapping unrolling across 22 arity levels in `ObjectMappings.scala` (Clone Groups #2040 and #2227, 15 occurrences each) and reverse route compiler parameter bindings (Clone Group #5188, 15 occurrences).
@@ -593,7 +593,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Play Framework Under the Microscope: What 67 Remote AST Tools Found Inside the High-Velocity Web Engine (prod.codes)](https://prod.codes/blog/playframework-under-the-microscope-67-ast-tools/)
 
 42. **[scalameta/scalameta](https://github.com/scalameta/scalameta)** (Scala)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 105,866 lines of Scala (and 404 lines of Java) across 722 source files (830 total files tracked, 24 SBT modules), 0.95 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: 24-module metaprogramming compiler library analyzed with `prod-code dependencies` across SBT projectmatrix hierarchies (`build.sbt`). Discovered zero circular dependencies (clean directed acyclic graph), anchored by foundational base `scalameta/common2` (Ca=18, Ce=0, instability 0.00) exporting macro helpers and invariants, feeding into syntax tree definitions `scalameta/trees2` (Ca=12, Ce=2, instability 0.14), file abstraction `scalameta/io` (Ca=9, Ce=1, instability 0.10), dialect parser `scalameta/parsers` (Ca=8, Ce=1, instability 0.11), and compiler façade `scalameta/scalameta` (Ca=5, Ce=4, instability 0.44). Clone analysis (`prod-code duplicates`) scanned 724 files (106,448 lines) and isolated 20 clone groups with 2.7% duplication, concentrated in position offset verification suites in `TokensPositionSuite.scala` and `Scala3PositionSuite.scala` (Clone Groups #934 and #4043, 34 and 16 occurrences) and Dotty significant indentation permutation checks (Clone Group #2422, 16 occurrences).
@@ -601,7 +601,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Scalameta Under the Microscope: What 67 Remote AST Tools Found Inside the Scala Metaprogramming Platform (prod.codes)](https://prod.codes/blog/scalameta-under-the-microscope-67-ast-tools/)
 
 43. **[ziglang/zig](https://github.com/ziglang/zig)** (Zig)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 1,357,479 lines of Zig across 2,950 source files (compiler `src/`: 517K LOC, stdlib `lib/std/`: 435K LOC, compiler-rt `lib/compiler/`: 126K LOC, tests `test/`: 133K LOC), 0.44 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Self-hosted compiler and runtime toolchain analyzed with `prod-code dependencies` across root `build.zig` (1,471 lines) and `build.zig.zon`. Discovered zero circular dependencies (clean directed acyclic graph), separating compiler verification from standalone testing targets (`test/standalone`, `test/link`). Clone analysis (`prod-code duplicates`) scanned 5,488 files (1,569,444 lines) and isolated 20 clone groups with 7.0% duplication, dominated by Clone Group #37663 with 2,052 occurrences of 10-line Type-2 parameterized clones in `src/codegen/x86_64/CodeGen.zig` for machine-code lowering and register operand validation.
@@ -609,14 +609,14 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Zig Under the Microscope: What 67 Remote AST Tools Found Inside the Self-Hosted Compiler and Standard Library (prod.codes)](https://prod.codes/blog/zig-under-the-microscope-67-ast-tools/)
 
 44. **[ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)** (Zig)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 363,300 lines of Zig across 807 source files (core `src/`: 347K LOC across 597 files, reusable libs `pkg/`: 14K LOC across 171 files, native macOS app: 271 Swift/Metal files), 0.44 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Terminal emulator core and multiplatform frontend toolchain analyzed with `prod-code dependencies` across root `build.zig` (986 lines) and `build.zig.zon` (linking `libxev`, `vaxis`, `z2d`, `zig_objc`, `uucode`, `zig_wayland`, `zf`). Discovered zero circular dependencies (clean directed acyclic graph) enforcing clear layer boundaries between platform-agnostic terminal state machines and platform-specific window wrappers. Clone analysis (`prod-code duplicates`) scanned 1,061 files (463,342 lines) and isolated 20 clone groups with 3.3% duplication, led by Clone Group #1002 with 107 occurrences of 10-line Type-2 parameterized clones in `src/terminal/formatter.zig` for isolated terminal screen initialization and VT stream escape sequence verification.
     - **Semantic Guards & Refactorings**: Structural search scanned terminal sources finding 215 deterministic error unwinding blocks matching `errdefer $A` in `src/terminal/` across 48 files in 1.28 s, 8,180 resource cleanup blocks matching `defer `, 663 total error-handling unwinds matching `errdefer `, and 766 invariant assertions matching `assert(...)`. AST refactoring evaluated `prod-code extract-function` on `src/terminal/color.zig` (`RGB.eql`), extracting color component equality checking into a dedicated method `fn matchComponents(self: RGB, other: RGB) bool` inside a packed struct, verified with 0 analyzer errors by cluster Zig Language Server (ZLS 0.16.0).
     - **Full Deep-Dive Report**: [Ghostty Under the Microscope: What 67 Remote AST Tools Found Inside the High-Performance Terminal Emulator (prod.codes)](https://prod.codes/blog/ghostty-under-the-microscope-67-ast-tools/)
 45. **[tigerbeetle/tigerbeetle](https://github.com/tigerbeetle/tigerbeetle)** (Zig)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 / 67 tools across all 9 suites
     - **Key Metrics**: 157,003 lines of Zig across 244 source files (core consensus `src/vsr/`: 33.7K LOC across 28 files, LSM storage engine `src/lsm/`: 26.1K LOC across 40 files, deterministic VOPR testing `src/testing/`: 8.8K LOC across 27 files), 0.25 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Distributed financial transactions engine analyzed with `prod-code dependencies` across root `build.zig` (2,683 lines). Discovered zero circular dependencies (clean directed acyclic graph) with foundational root `TigerBeetle` exhibiting afferent coupling Ca=5, Ce=0, and instability 0.00. Clone analysis (`prod-code duplicates`) scanned 402 files (200,336 lines) and isolated 20 clone groups with 0.1% duplication at 10 lines, led by Clone Group #1676 with 22 occurrences of 10-line Type-2 parameterized message frames in `src/vsr/message_header.zig:321-1606` synthesized via comptime type constructors `HeaderFunctionsType(@This())`.
@@ -624,7 +624,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [TigerBeetle Under the Microscope: What 67 Remote AST Tools Found Inside the Distributed Financial Accounting Database (prod.codes)](https://prod.codes/blog/tigerbeetle-under-the-microscope-67-ast-tools/)
 
 46. **[zigtools/zls](https://github.com/zigtools/zls)** (Zig)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Zig dependency graph unsupported
     - **Key Metrics**: 56,190 lines of Zig across 90 source files (core LSP server `src/`: 32.8K LOC across 32 files, feature handlers `src/features/`: 11.2K LOC across 14 files), 0.46 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Zig dependency graph unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 89 files (56,091 lines) and isolated 5 clone groups with 1.1% duplication at 10 lines, concentrated in LSP completion test suites in `tests/lsp_features/completion.zig` (Clone Groups #10, #53, #100, #121 with 13 occurrences each).
@@ -632,7 +632,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [ZLS Under the Microscope: What 67 Remote AST Tools Found Inside the Zig Language Server (prod.codes)](https://prod.codes/blog/zls-under-the-microscope-67-ast-tools/)
 
 47. **[nim-lang/Nim](https://github.com/nim-lang/Nim)** (Nim)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Nim dependency graph unsupported
     - **Key Metrics**: 460,749 lines of Nim across 3,923 source files (self-hosted compiler `compiler/`: 118.8K LOC across 180 files, standard library `lib/`: 134.0K LOC across 316 files, test suite `tests/`: 185.9K LOC across 3,223 files), 0.68 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Nim dependency graph unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 3,948 files (460,749 lines) and isolated 5 clone groups, dominated by allocator stress-test fixture data in `tests/fragmentation/data.nim` (777 occurrences of Type-2 clone chunks), while the core compiler AST passes remain tightly unified.
@@ -640,7 +640,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Nim Under the Microscope: What 67 Remote AST Tools Found Inside the Self-Hosted Metaprogramming Compiler (prod.codes)](https://prod.codes/blog/nim-under-the-microscope-67-ast-tools/)
 
 48. **[status-im/nimbus-eth2](https://github.com/status-im/nimbus-eth2)** (Nim)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Nim dependency graph unsupported
     - **Key Metrics**: 179,711 lines of Nim across 379 source files (core beacon chain `beacon_chain/`: 125.1K LOC across 233 files, consensus tests `tests/`: 48.4K LOC across 129 files, node CLI `ncli/`: 4.6K LOC across 9 files), 0.63 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Nim dependency graph unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 383 files (180,639 lines) and isolated 5 clone groups with 0.4% duplication at 10 lines, dominated by Clone Group #2206 with 19 occurrences of consensus state headers across consecutive Ethereum hard-fork specifications (Phase 0, Altair, Bellatrix, Capella, Deneb, Electra, Fulu).
@@ -648,7 +648,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Nimbus Under the Microscope: What 67 Remote AST Tools Found Inside the Ethereum Consensus Client (prod.codes)](https://prod.codes/blog/nimbus-under-the-microscope-67-ast-tools/)
 
 49. **[nim-lang/nimble](https://github.com/nim-lang/nimble)** (Nim)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Nim dependency graph unsupported; clone threshold is 6 lines, below the 10-line protocol standard
     - **Key Metrics**: 38,910 lines of Nim across 135 source files (core package manager `src/`: 19.9K LOC across 51 files, test suites & fixtures `tests/`: 17.3K LOC across 76 files, vendor: 1.6K LOC), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Nim dependency graph unsupported; clone threshold is 6 lines, below the 10-line protocol standard; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 135 files (38,910 lines) and isolated 5 clone groups with 1.8% duplication at 6 lines (nonstandard; protocol standard is 10 lines), led by Clone Group #121 with 6 occurrences of package initialization fixtures across `tests/tlockfile.nim:265-1056` and Clone Group #519 with 7 occurrences of SAT dependency graph test harness setups across `tests/tsat.nim:92-520`.
@@ -656,25 +656,25 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Nimble Under the Microscope: What 67 Remote AST Tools Found Inside the Nim Package Manager (prod.codes)](https://prod.codes/blog/nimble-under-the-microscope-67-ast-tools/)
 
 50. **[dlang/dmd](https://github.com/dlang/dmd)** (D)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; D dependency graph and code_extract_function unsupported
     - **Key Metrics**: 975,673 lines of D across 5,579 source files (self-hosted compiler `compiler/src/dmd/`: 389.8K LOC across 264 files, runtime `druntime/`: 298.1K LOC across 778 files, test suite `compiler/test/`: 287.7K LOC across 4,537 files), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: D dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 5,579 files (975,673 lines) and isolated clone groups concentrated primarily in compiler runnable test fixtures (`compiler/test/runnable/link13350.d:136-141`, `test4.d`, `interpret.d`), while the compiler frontend AST remains rigorously factored.
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 12,154 invariant assertions across compiler and runtime (5,061 in `compiler/src/dmd/` and 7,093 in `druntime/`, plus 25,033 assertions in compiler tests) enforcing strict contract invariants. Analyzed ImportC dual AST ingestion where `CParser(AST)` directly converts ISO C11 tokens into D AST nodes without intermediate C preprocessor bridges. AST refactoring was attempted but unsupported; no successful extraction is claimed.
 51. **[dlang/phobos](https://github.com/dlang/phobos)** (D)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; D dependency graph and code_extract_function unsupported
     - **Key Metrics**: 366,399 lines of D across 186 source files (core standard library `std/`: 339.3K LOC across 162 files, extensions `etc/`: 23.4K LOC across 18 files, test harness: 3.7K LOC), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: D dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 186 files (366,399 lines) and isolated 5 clone groups with 0.8% duplication at 6 lines, dominated by calendar time-shift and leap-year tabular test cases in `std/datetime/date.d:1786-2067`.
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 33,038 invariant assertion checks distributed across 5,613 embedded `unittest` blocks, embedding formal executable specifications directly into every API declaration. Evaluated design-by-introspection templates including `isInputRange`, `isForwardRange`, and `isBidirectionalRange` validating structural subtyping at compile time. AST refactoring was attempted but unsupported; no successful extraction is claimed.
 52. **[vibe-d/vibe.d](https://github.com/vibe-d/vibe.d)** (D)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; D dependency graph and code_extract_function unsupported
     - **Key Metrics**: 30,151 lines of D across 108 source files (web/REST engine `web/`: 8.8K LOC across 16 files, database drivers `mongodb/` & `redis/`: 11.2K LOC across 28 files, core utils & streams: 10.1K LOC across 64 files), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: D dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 108 files (30,151 lines) and isolated 5 clone groups with 1.2% duplication at 6 lines, led by Clone Group #556 with 7 occurrences of HTTP router setup boilerplate across `web/vibe/web/web.d:292-638`.
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,390 invariant assertions enforcing stream buffer boundaries, protocol state validity, and serialization invariants. Evaluated compile-time declarative REST code generation in `web/vibe/web/rest.d`, where template metaprogramming inspects D `interface` signatures to synthesize both HTTP server routes and type-safe client proxies without runtime reflection. AST refactoring was attempted but unsupported; no successful extraction is claimed.
 53. **[laravel/framework](https://github.com/laravel/framework)** (PHP)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; PHP dependency graph unsupported
     - **Key Metrics**: 573,479 lines of PHP across 3,120 source files (core framework `src/Illuminate/`: 273.2K LOC across 1,706 files, test suites `tests/`: 293.2K LOC across 1,336 files), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: PHP dependency graph unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 3,120 files (573,479 lines) and isolated 5 clone groups with 0.9% duplication at 6 lines, led by repetitive HTTP client mock response assertions in `tests/Http/HttpClientTest.php:2663-4315`.
@@ -682,7 +682,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Laravel Under the Microscope: What 67 Remote AST Tools Found Inside the PHP Web Artisan Framework (prod.codes)](https://prod.codes/blog/laravel-under-the-microscope-67-ast-tools/)
 
 54. **[symfony/symfony](https://github.com/symfony/symfony)** (PHP)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; PHP dependency graph unsupported
     - **Key Metrics**: 2,201,262 lines of PHP across 11,999 source files (modular components `src/Symfony/Component/`: 1.45M LOC, integration bridges `src/Symfony/Bridge/`: 312K LOC, framework bundles: 439K LOC), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: PHP dependency graph unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 11,999 files (2,201,262 lines) and isolated 5 clone groups with 0.4% duplication at 6 lines, dominated by generated container boilerplate in `src/Symfony/Component/DependencyInjection/Dumper/PhpDumper.php:1298-1303` and fixture models.
@@ -690,7 +690,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Symfony Under the Microscope: What 67 Remote AST Tools Found Inside the Enterprise PHP Component Monorepo (prod.codes)](https://prod.codes/blog/symfony-under-the-microscope-67-ast-tools/)
 
 55. **[composer/composer](https://github.com/composer/composer)** (PHP)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; PHP dependency graph unsupported
     - **Key Metrics**: 139,690 lines of PHP across 634 source files (`src/`: 77.2K LOC, `tests/`: 62.4K LOC), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: PHP dependency graph unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 633 files (139,596 lines) identifying 5 clone groups with 1.3% duplication at 6 lines, dominated by JSON manipulator test fixture structures in `tests/Composer/Test/Json/JsonManipulatorTest.php` and classloader loop branching.
@@ -698,7 +698,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Composer Under the Microscope: What 67 Remote AST Tools Found Inside the PHP Dependency Manager (prod.codes)](https://prod.codes/blog/composer-under-the-microscope-67-ast-tools/)
 
 56. **[WordPress/WordPress](https://github.com/WordPress/WordPress)** (PHP)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; PHP dependency graph unsupported
     - **Key Metrics**: 673,853 lines of PHP across 1,899 source files (`wp-includes/`: 483.4K LOC, `wp-admin/`: 131.8K LOC, `wp-content/`: 53.7K LOC), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: PHP dependency graph unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 2,592 files (1,745,090 lines) revealing 5 clone groups with 0.9% duplication at 6 lines, dominated by timezone manual offset tables in `wp-includes/functions.php` and Gutenberg block schema definitions.
@@ -706,43 +706,43 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [WordPress Under the Microscope: What 67 Remote AST Tools Found Inside the Web Publishing Engine (prod.codes)](https://prod.codes/blog/wordpress-under-the-microscope-67-ast-tools/)
 
 57. **[rails/rails](https://github.com/rails/rails)** (Ruby)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Ruby dependency graph and code_extract_function unsupported
     - **Key Metrics**: 573,455 lines of Ruby across 3,478 source files (`activerecord`: 216.4K LOC / 1,176 files, `actionpack`: 82.0K LOC / 352 files, `activesupport`: 80.0K LOC / 531 files, `railties`: 61.1K LOC / 352 files, `actionview`: 53.4K LOC / 209 files), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Ruby dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 3,532 files (586,243 lines) identifying 5 clone groups with 1.2% duplication at 6 lines, dominated by standardized frozen string literal headers and test suite initialization blocks.
     - **Semantic Guards & Refactorings**: Structural search scanned sources identifying 60,253 test assertions across Minitest suites and 1,365 explicit `raise` exception egress points guarding connection states, validations, and routing dispatchers. Evaluated Active Record Relation query engine in `activerecord/lib/active_record/relation.rb`, where lazy query compilation, Arel AST builders, and future result threads decouple query construction from execution. AST refactoring was attempted but unsupported; no successful extraction is claimed.
 58. **[jekyll/jekyll](https://github.com/jekyll/jekyll)** (Ruby)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Ruby dependency graph and code_extract_function unsupported
     - **Key Metrics**: 22,830 lines of Ruby across 162 source files (`lib/`: 10.8K LOC / 89 files, `test/`: 10.4K LOC / 55 files), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Ruby dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 167 files (24,014 lines) identifying 5 clone groups with 0.9% duplication at 6 lines, dominated by fixture site collection setups in `test/test_document.rb`.
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,270 test assertions and 53 explicit `raise` exception boundaries guarding front matter parsing, layout resolution, and destination directory safety. Evaluated 6-stage site compilation pipeline in `lib/jekyll/site.rb` (`reset -> read -> generate -> render -> cleanup -> write`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
 59. **[mastodon/mastodon](https://github.com/mastodon/mastodon)** (Ruby)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Ruby dependency graph and code_extract_function unsupported
     - **Key Metrics**: 189,749 lines of Ruby across 3,278 source files (`app/`: 65.1K LOC / 1,259 files, `spec/`: 100.8K LOC / 1,245 files, `lib/`: 7.6K LOC / 74 files), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Ruby dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 3,650 files (224,427 lines) identifying 5 clone groups with 0.8% duplication at 6 lines, dominated by HTTP status assertion sequences in admin API request specs.
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 8,191 RSpec expectations and 344 explicit `raise` exception egress points guarding cryptographic signatures, signature validation, domain blocks, and Sidekiq retries. Evaluated ActivityPub federation processing pipeline in `app/services/activitypub/process_activity_service.rb`, handling JSON-LD compaction, Linked Data Signatures, and cryptographic actor verification. AST refactoring was attempted but unsupported; no successful extraction is claimed.
 60. **[Homebrew/brew](https://github.com/Homebrew/brew)** (Ruby)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Ruby dependency graph and code_extract_function unsupported
     - **Key Metrics**: 371,069 lines of Ruby across 2,379 source files (`Library/Homebrew/`: 214.3K LOC / 1,416 files, `Library/Homebrew/test/`: 156.2K LOC / 959 files), 0.58 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Ruby dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 2,375 files (370,966 lines) identifying 5 clone groups with 1.1% duplication at 6 lines, dominated by Sorbet and frozen string headers in subcommands.
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 12,415 RSpec expectations and 2,173 typed `raise` exception egress points guarding bottle SHA-256 checksums, architecture compatibility, cellar links, and sandboxing rules. Evaluated package installation pipeline in `Library/Homebrew/formula_installer.rb` (`check_install_sanity -> compute_dependencies -> pour_bottle -> link_keg`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
 61. **[flutter/flutter](https://github.com/flutter/flutter)** (Dart)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Dart dependency graph and code_extract_function unsupported
     - **Key Metrics**: 2,596,204 lines of Dart across 6,554 source files (`packages/flutter/`: 1.41M LOC / 2,900 files, `packages/flutter_tools/`: 480.9K LOC / 982 files, `engine/`: 285.4K LOC / 788 files, `dev/`: 254.8K LOC / 1,516 files, `packages/flutter_localizations/`: 94.6K LOC / 24 files, `packages/flutter_test/`: 42.5K LOC / 114 files), 0.30 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Dart dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 6,554 files (2,596,204 lines) identifying 909 clone groups dominated by vector icon spline path tables (`animated_icons/data/*.g.dart`) and standard `operator ==` identity equality guards.
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 112,706 `expect()` test assertions, 7,616 runtime assertions, and 3,805 `throw` error boundaries guarding tree lifecycle mutations, layout constraints, render object compositing bits, and platform channels. Evaluated 10-phase frame rendering pipeline in `packages/flutter/lib/src/rendering/binding.dart` and `packages/flutter/lib/src/widgets/binding.dart` (`handleBeginFrame -> microtasks -> buildScope -> flushLayout -> flushCompositingBits -> flushPaint -> compositeFrame -> flushSemantics -> finalizeTree -> postFrameCallbacks`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
 62. **[felangel/bloc](https://github.com/felangel/bloc)** (Dart)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Dart dependency graph and code_extract_function unsupported
     - **Key Metrics**: 45,736 lines of Dart across 616 source files (`examples/`: 19.0K LOC / 381 files, `packages/bloc/`: 5.0K LOC / 43 files, `packages/bloc_lint/`: 4.8K LOC / 34 files, `packages/flutter_bloc/`: 4.8K LOC / 20 files, `packages/hydrated_bloc/`: 4.1K LOC / 28 files, `packages/bloc_tools/`: 3.2K LOC / 26 files, `packages/bloc_test/`: 2.2K LOC / 32 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Dart dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 616 files (45,736 lines) identifying clone groups confined entirely to synthetic source fixtures in custom linter tests (`packages/bloc_lint/test/src/rules/`).
     - **Semantic Guards & Refactorings**: Structural search scanned sources finding 1,585 `expect()` test assertions, 10 runtime assertions, and 72 explicit `throw` exception boundaries guarding duplicate event handler registrations (`on<E>`), unregistered event dispatch, and closed emitter invocations. Evaluated reactive event processing loop in `packages/bloc/lib/src/bloc.dart` (`eventController -> transformer -> EventHandler -> emitter -> onTransition -> emit`). AST refactoring was attempted but unsupported; no successful extraction is claimed.
 63. **[cfug/dio](https://github.com/cfug/dio)** (Dart)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Dart dependency graph and code_extract_function unsupported
     - **Key Metrics**: 22,768 lines of Dart across 156 source files (`dio/`: 12.8K LOC / 63 files, `plugins/`: 6.6K LOC / 49 files, `dio_test/`: 1.9K LOC / 18 files, `example_dart/`: 1.2K LOC / 21 files), 0.32 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Dart dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 156 files (22,768 lines) identifying clone groups dominated by `HttpClientAdapter.fetch` interface signatures across platform adapters and shared HTTP client test fixtures.
@@ -750,7 +750,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Dio Under the Microscope: What 67 Remote AST Tools Found Inside the Dart HTTP Client (prod.codes)](https://prod.codes/blog/dio-under-the-microscope-67-ast-tools/)
 
 64. **[dart-lang/sdk](https://github.com/dart-lang/sdk)** (Dart)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Dart dependency graph and code_extract_function unsupported
     - **Key Metrics**: 5,741,847 lines of Dart across 25,732 source files (`pkg/analyzer/`: 1.35M LOC / 1,612 files, `tests/`: 1.08M LOC / 8,291 files, `pkg/analysis_server/`: 631.7K LOC / 2,008 files, `pkg/front_end/`: 502.0K LOC / 5,848 files, `runtime/`: 382.8K LOC / 814 files, `pkg/compiler/`: 283.5K LOC / 1,476 files, `sdk/`: 265.6K LOC / 479 files, `pkg/_fe_analyzer_shared/`: 148.9K LOC / 468 files, `pkg/linter/`: 111.2K LOC / 579 files, `pkg/kernel/`: 99.7K LOC / 142 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Dart dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 25,732 files (5,741,847 lines) identifying clone groups dominated by synthetic language feature compiler tests (`tests/language/`) and analyzer AST visitor traversal dispatch boilerplate.
@@ -758,7 +758,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Dart SDK Under the Microscope: What 67 Remote AST Tools Found Inside the Language Compiler and Analyzer Engine (prod.codes)](https://prod.codes/blog/dart-sdk-under-the-microscope-67-ast-tools/)
 
 65. **[neovim/neovim](https://github.com/neovim/neovim)** (Lua)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Lua dependency graph and code_extract_function unsupported
     - **Key Metrics**: 448,172 lines of Lua across 854 source files (`test/functional/`: 262.5K LOC / 527 files, `runtime/lua/`: 102.1K LOC / 165 files, `src/nvim/`: 30.6K LOC / 7 files, `test/unit/`: 28.4K LOC / 46 files, `src/gen/`: 11.2K LOC / 32 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Lua dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 854 files (448,172 lines) identifying clone groups dominated by RPC test fixtures in `test/functional/` and standardized API argument validation dispatch tables.
@@ -766,7 +766,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Neovim Under the Microscope: What 67 Remote AST Tools Found Inside the Lua Subsystem and Built-in LSP Client (prod.codes)](https://prod.codes/blog/neovim-under-the-microscope-67-ast-tools/)
 
 66. **[openresty/lua-nginx-module](https://github.com/openresty/lua-nginx-module)** (C/Perl; Lua NGINX module)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; C/Perl dependency graph and code_extract_function unsupported
     - **Key Metrics**: 224,672 lines across 434 source files (`t/`: 139.2K LOC / 274 files, `src/`: 64.2K LOC / 129 files, `doc/`: 8.8K LOC / 2 files, `util/`: 687 LOC / 14 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: C/Perl dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 434 files (224,672 lines) identifying clone patterns in NGINX directive registration tables and repetitive Test::Nginx test blocks.
@@ -774,7 +774,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [OpenResty NGINX Module Under the Microscope: What 67 Remote AST Tools Found in the C Implementation and Perl Tests (prod.codes)](https://prod.codes/blog/lua-nginx-module-under-the-microscope-67-ast-tools/)
 
 67. **[luau-lang/luau](https://github.com/luau-lang/luau)** (C++/Luau)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Luau/C++ dependency graph and code_extract_function unsupported
     - **Key Metrics**: 534,195 lines across 1,533 source files (`tests/`: 172.5K LOC / 712 files, `bench/`: 101.2K LOC / 265 files, `Analysis/`: 100.6K LOC / 170 files, `CodeGen/`: 45.9K LOC / 91 files, `VM/`: 30.1K LOC / 60 files, `Ast/`: 16.5K LOC / 18 files, `Compiler/`: 11.5K LOC / 19 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Luau/C++ dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 1,533 files (534,195 lines) identifying clone patterns in synthetic type inference regression tests (`tests/`) and micro-benchmark matrices (`bench/`).
@@ -782,7 +782,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Luau Under the Microscope: What 67 Remote AST Tools Found Inside the Gradual Type Checker and Native CodeGen (prod.codes)](https://prod.codes/blog/luau-under-the-microscope-67-ast-tools/)
 
 68. **[elixir-lang/elixir](https://github.com/elixir-lang/elixir)** (Elixir)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
     - **Key Metrics**: 390,071 lines across 780 source files (`lib/elixir/`: 291.3K LOC / 397 files, `lib/mix/`: 54.0K LOC / 232 files, `lib/ex_unit/`: 19.0K LOC / 42 files, `lib/iex/`: 11.1K LOC / 22 files, `lib/logger/`: 7.1K LOC / 20 files, `lib/eex/`: 2.8K LOC / 12 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 780 files (390,071 lines) identifying clone patterns in test assertion macros and repetitive parser/tokenizer token tables.
@@ -790,7 +790,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Elixir Under the Microscope: What 67 Remote AST Tools Found in AST Traversal and Protocol Utilities (prod.codes)](https://prod.codes/blog/elixir-under-the-microscope-67-ast-tools/)
 
 69. **[phoenixframework/phoenix](https://github.com/phoenixframework/phoenix)** (Elixir)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
     - **Key Metrics**: 100,976 lines across 508 source files (`lib/phoenix/`: 26.6K LOC / 89 files, `test/`: 20.9K LOC / 98 files, `installer/`: 9.5K LOC / 161 files, `guides/`: 11.7K LOC / 60 files, `assets/`: 10.7K LOC / 26 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 508 files (100,976 lines) identifying clone patterns in test support pipelines, controller action test harnesses, and channel test helpers.
@@ -798,7 +798,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Phoenix Under the Microscope: What 67 Remote AST Tools Found Inside the Web Framework and Real-Time Engine (prod.codes)](https://prod.codes/blog/phoenix-under-the-microscope-67-ast-tools/)
 
 70. **[phoenixframework/phoenix_live_view](https://github.com/phoenixframework/phoenix_live_view)** (Elixir)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
     - **Key Metrics**: 142,201 lines across 430 source files (`lib/`: 43.9K LOC / 160 files, `test/`: 31.1K LOC / 74 files, `assets/`: 51.5K LOC / 132 files, `guides/`: 4.5K LOC / 22 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 430 files (142,201 lines) identifying clone patterns in component test harnesses, live view mounting fixtures, and client hook event mocks.
@@ -806,7 +806,7 @@ For every refactoring tool tested:
     - **Full Deep-Dive Report**: [Phoenix LiveView Under the Microscope: What 67 Remote AST Tools Found Inside the Server-Driven UI and Diff Engine (prod.codes)](https://prod.codes/blog/phoenix-live-view-under-the-microscope-67-ast-tools/)
 
 71. **[dashbitco/broadway](https://github.com/dashbitco/broadway)** (Elixir)
-    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400`)
+    - **Evaluated on**: a 32-core remote cluster node
     - **Tool Coverage**: 67 tool calls attempted; Elixir dependency graph and code_extract_function unsupported
     - **Key Metrics**: 10,271 lines across 46 source files (`lib/`: 5.7K LOC / 22 files, `test/`: 3.4K LOC / 11 files, documentation: 864 LOC / 9 files), 0.35 ms LAN ping, 0% local laptop CPU
     - **Architectural Findings**: Elixir dependency graph and code_extract_function unsupported; no dependency graph or clean-DAG result is claimed. Clone analysis (`prod-code duplicates`) scanned 46 files (10,271 lines) identifying clone patterns in test pipeline setup definitions, batcher configuration fixtures, and mock acknowledger callbacks.
