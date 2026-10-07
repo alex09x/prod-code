@@ -322,12 +322,13 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                     .next()
                     .unwrap_or(mod_part.trim());
                 let mod_stem = mod_name.trim_start_matches('.');
+                let clause = clause
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')')
+                    .trim();
+
                 if mod_stem == decl_stem {
-                    let clause = clause
-                        .trim()
-                        .trim_start_matches('(')
-                        .trim_end_matches(')')
-                        .trim();
                     if clause == "*" {
                         return true;
                     }
@@ -339,6 +340,15 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                             [orig, "as", _local] if *orig == fn_name => {
                                 return false;
                             }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    for item in clause.split(',') {
+                        let parts: Vec<&str> = item.split_whitespace().collect();
+                        match parts.as_slice() {
+                            [name] if *name == decl_stem => return true,
+                            [orig, "as", _local] if *orig == decl_stem => return true,
                             _ => {}
                         }
                     }

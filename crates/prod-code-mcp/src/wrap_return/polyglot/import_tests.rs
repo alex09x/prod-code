@@ -169,3 +169,41 @@ fn test_c_cpp_proves_import_via_header() {
         Language::Cpp,
     ));
 }
+
+#[test]
+fn test_python_proves_import_from_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let db_py = root.join("db.py");
+    std::fs::write(&db_py, "def find_user(id):\n    return {}\n").unwrap();
+
+    let client1_py = root.join("client1.py");
+    let content1 = "from . import db\ndef run():\n    return db.find_user(1)\n";
+    assert!(proves_cross_file_import(
+        content1,
+        &client1_py,
+        &db_py,
+        "find_user",
+        Language::Python,
+    ));
+
+    let client2_py = root.join("client2.py");
+    let content2 = "from package import db as my_db\ndef run():\n    return my_db.find_user(1)\n";
+    assert!(proves_cross_file_import(
+        content2,
+        &client2_py,
+        &db_py,
+        "find_user",
+        Language::Python,
+    ));
+
+    let client3_py = root.join("client3.py");
+    let content3 = "from package import other\ndef run():\n    return find_user(1)\n";
+    assert!(!proves_cross_file_import(
+        content3,
+        &client3_py,
+        &db_py,
+        "find_user",
+        Language::Python,
+    ));
+}
