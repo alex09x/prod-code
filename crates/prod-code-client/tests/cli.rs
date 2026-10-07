@@ -4052,10 +4052,10 @@ async fn lsp_auto_reconnects_and_replays_state_on_transient_disconnect() {
     assert!(status.success());
 }
 
-/// A mid-session gateway redirect under `--reconnect` must not push workspace files
-/// before the redirected target's handshake and protocol version are validated.
+/// A plaintext redirected gateway must never receive a handshake or workspace sync,
+/// even when the editor has not enabled transient-disconnect reconnects.
 #[tokio::test]
-async fn lsp_mid_session_redirect_delays_sync_until_target_handshake_validated() {
+async fn lsp_mid_session_redirect_rejects_unauthenticated_target() {
     use tokio::io::AsyncWriteExt;
     let ws = make_workspace();
     let home = tempfile::tempdir().expect("home");
@@ -4090,9 +4090,17 @@ async fn lsp_mid_session_redirect_delays_sync_until_target_handshake_validated()
     .await;
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
-        .args(["lsp", "--remote", &addr1.to_string(), "--reconnect"])
+        .args(["lsp", "--remote", &addr1.to_string()])
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .env("PROD_CODE_TLS_MODE", "auto")
+        .env_remove("PROD_CODE_TLS_CA")
+        .env_remove("PROD_CODE_TLS_PIN")
+        .env_remove("PROD_CODE_TLS_CERT")
+        .env_remove("PROD_CODE_TLS_KEY")
+        .env_remove("PROD_CODE_TLS_SERVER_NAME")
+        .env_remove("PROD_CODE_AUTH_TOKEN")
+        .env_remove("PROD_CODE_AUTH_TOKEN_FILE")
         .current_dir(ws.root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4174,55 +4182,25 @@ async fn lsp_mid_session_redirect_delays_sync_until_target_handshake_validated()
         .await
         .expect("trigger redirect");
 
-    // Give time for reconnect and state replay to complete on gateway 2
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // 5. Send hover request over the reconnected session
-    stdin
-        .write_all(
-            send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "textDocument/hover",
-                "params": {
-                    "textDocument": { "uri": test_uri },
-                    "position": { "line": 0, "character": 7 }
-                }
-            }))
-            .as_bytes(),
-        )
-        .await
-        .expect("hover over reconnected session");
-
-    let hover_resp = read_lsp_message(&mut stdout).await;
-    assert_eq!(hover_resp["id"], 3);
-    assert_eq!(
-        hover_resp["result"]["contents"],
-        "hover from target gateway"
-    );
-
-    // Verify ordering on the redirect target (gateway 2):
-    // The target connection MUST see handshake before any probe or sync event!
-    let target_events = seen2.lock().expect("seen2").clone();
-    let handshake_idx = target_events
-        .iter()
-        .position(|(_, ev)| ev.starts_with("handshake "))
-        .expect("target must receive handshake");
-    let sync_idx = target_events
-        .iter()
-        .position(|(_, ev)| ev.starts_with("probe ") || ev.starts_with("sync "))
-        .expect("target must observe post-handshake sync/probe");
-    assert!(
-        handshake_idx < sync_idx,
-        "redirect target must receive and validate handshake before any sync/probe: {target_events:?}"
-    );
-
+    drop(stdout);
     drop(stdin);
-    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
         .await
-        .expect("child exits on stdin close")
-        .expect("status");
-    assert!(status.success());
+        .expect("client refuses the unauthenticated redirect")
+        .expect("client status");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing gateway redirect without server-authenticated TLS"),
+        "redirect refusal should explain the missing server authentication: {stderr}"
+    );
+    let target_events = seen2.lock().expect("seen2").clone();
+    assert!(
+        target_events.is_empty(),
+        "unauthenticated redirect target must not receive a handshake or workspace sync: {target_events:?}"
+    );
 }
 
 /// When `--watchdog-secs` is set, `prod-code lsp` sends non-blocking idle pings
