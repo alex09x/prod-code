@@ -8,6 +8,107 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use std::path::{Path, PathBuf};
+
+fn strip_py_ext(p: &Path) -> PathBuf {
+    if p.extension().is_some_and(|e| e == "py" || e == "pyi") {
+        p.with_extension("")
+    } else {
+        p.to_path_buf()
+    }
+}
+
+fn py_mod_matches_decl(mod_str: &str, caller_path: &Path, decl_file: &Path) -> bool {
+    let trimmed = mod_str.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let decl_clean = strip_py_ext(decl_file);
+    let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let is_init = decl_stem == "__init__";
+
+    if trimmed.starts_with('.') {
+        let num_dots = trimmed.chars().take_while(|c| *c == '.').count();
+        let sub_mod = &trimmed[num_dots..];
+        let mut base = caller_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_path_buf();
+        for _ in 1..num_dots {
+            base.pop();
+        }
+        if !sub_mod.is_empty() {
+            for part in sub_mod.split('.') {
+                if !part.is_empty() {
+                    base.push(part);
+                }
+            }
+        }
+        if base == decl_clean {
+            return true;
+        }
+        if is_init && decl_clean.parent() == Some(&base) {
+            return true;
+        }
+        false
+    } else {
+        let mod_path_str = trimmed.replace('.', "/");
+        let mod_path = Path::new(&mod_path_str);
+        if decl_clean == mod_path || decl_clean.ends_with(mod_path) {
+            return true;
+        }
+        if is_init {
+            if let Some(parent) = decl_clean.parent() {
+                if parent == mod_path || parent.ends_with(mod_path) {
+                    return true;
+                }
+            }
+        }
+        if caller_path.parent() == decl_file.parent() && trimmed == decl_stem {
+            return true;
+        }
+        false
+    }
+}
+
+fn py_mod_matches_pkg(mod_str: &str, caller_path: &Path, decl_file: &Path) -> bool {
+    let trimmed = mod_str.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let decl_dir = decl_file.parent().unwrap_or_else(|| Path::new(""));
+
+    if trimmed.starts_with('.') {
+        let num_dots = trimmed.chars().take_while(|c| *c == '.').count();
+        let sub_mod = &trimmed[num_dots..];
+        let mut base = caller_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_path_buf();
+        for _ in 1..num_dots {
+            base.pop();
+        }
+        if !sub_mod.is_empty() {
+            for part in sub_mod.split('.') {
+                if !part.is_empty() {
+                    base.push(part);
+                }
+            }
+        }
+        base == decl_dir
+    } else {
+        let mod_path_str = trimmed.replace('.', "/");
+        let mod_path = Path::new(&mod_path_str);
+        if decl_dir == mod_path || decl_dir.ends_with(mod_path) {
+            return true;
+        }
+        if caller_path.parent() == decl_file.parent() {
+            return true;
+        }
+        false
+    }
+}
+
 fn split_semicolon_statements(line: &str) -> Vec<&str> {
     let mut stmts = Vec::new();
     let mut in_quote = None;
@@ -30,9 +131,11 @@ fn split_semicolon_statements(line: &str) -> Vec<&str> {
 
 pub(crate) fn python_imported_symbols(
     content: &str,
-    decl_stem: &str,
+    caller_path: &Path,
+    decl_file: &Path,
     fn_name: &str,
 ) -> Vec<String> {
+    let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let mut symbols = Vec::new();
     let mut lines = content.lines().peekable();
     while let Some(line) = lines.next() {
@@ -71,19 +174,13 @@ pub(crate) fn python_imported_symbols(
             let trimmed = simple_stmt.trim();
             if let Some(rest) = trimmed.strip_prefix("from ") {
                 if let Some((mod_part, clause)) = rest.split_once(" import ") {
-                    let mod_name = mod_part
-                        .trim()
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(mod_part.trim());
-                    let mod_stem = mod_name.trim_start_matches('.');
                     let clause = clause
                         .trim()
                         .trim_start_matches('(')
                         .trim_end_matches(')')
                         .trim();
 
-                    if mod_stem == decl_stem {
+                    if py_mod_matches_decl(mod_part, caller_path, decl_file) {
                         if clause == "*" {
                             symbols.push(fn_name.to_string());
                         } else {
@@ -98,7 +195,7 @@ pub(crate) fn python_imported_symbols(
                                 }
                             }
                         }
-                    } else {
+                    } else if py_mod_matches_pkg(mod_part, caller_path, decl_file) {
                         for item in clause.split(',') {
                             let parts: Vec<&str> = item.split_whitespace().collect();
                             match parts.as_slice() {
@@ -119,12 +216,7 @@ pub(crate) fn python_imported_symbols(
                     .trim();
                 for entry in rest.split(',') {
                     let (mod_part, _alias) = entry.split_once(" as ").unwrap_or((entry, ""));
-                    let mod_name = mod_part
-                        .trim()
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(mod_part.trim());
-                    if mod_name == decl_stem {
+                    if py_mod_matches_decl(mod_part, caller_path, decl_file) {
                         symbols.push(fn_name.to_string());
                     }
                 }

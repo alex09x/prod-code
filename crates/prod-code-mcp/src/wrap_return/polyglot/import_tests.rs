@@ -126,6 +126,24 @@ fn test_python_proves_import() {
         "find_user",
         Language::Python,
     ));
+
+    let content_b_db = "from b.db import find_user\n";
+    assert!(!proves_cross_file_import(
+        content_b_db,
+        Path::new("caller.py"),
+        Path::new("a/db.py"),
+        "find_user",
+        Language::Python,
+    ));
+
+    let content_a_db = "from a.db import find_user\n";
+    assert!(proves_cross_file_import(
+        content_a_db,
+        Path::new("caller.py"),
+        Path::new("a/db.py"),
+        "find_user",
+        Language::Python,
+    ));
 }
 
 #[test]

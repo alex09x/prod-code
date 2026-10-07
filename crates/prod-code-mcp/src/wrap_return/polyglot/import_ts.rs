@@ -98,7 +98,36 @@ fn clean_lhs_binding(lhs: &str) -> &str {
     trimmed
 }
 
-fn clause_imported_symbols(clause: &str, fn_name: &str) -> Vec<String> {
+fn decl_is_default_export(decl_file: &Path, fn_name: &str) -> Option<bool> {
+    let content = std::fs::read_to_string(decl_file).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("export default") {
+            let rest = rest.trim();
+            let after_fn = if let Some(r) = rest.strip_prefix("async") {
+                r.trim()
+            } else {
+                rest
+            };
+            let ident_str = if let Some(r) = after_fn.strip_prefix("function") {
+                r.trim()
+            } else {
+                after_fn
+            };
+            let ident: String = ident_str
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if ident == fn_name {
+                return Some(true);
+            }
+            return Some(false);
+        }
+    }
+    Some(false)
+}
+
+fn clause_imported_symbols(clause: &str, fn_name: &str, decl_file: &Path) -> Vec<String> {
     let mut symbols = Vec::new();
     let mut trimmed = clause.trim();
     if let Some(rest) = trimmed.strip_prefix("type") {
@@ -111,13 +140,20 @@ fn clause_imported_symbols(clause: &str, fn_name: &str) -> Vec<String> {
         return symbols;
     }
     if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        let mut found_named_for_fn = false;
         if open < close {
             let inner = &trimmed[open + 1..close];
             for item in inner.split(',') {
                 let parts: Vec<&str> = item.split_whitespace().collect();
                 match parts.as_slice() {
-                    [name] if *name == fn_name => symbols.push(fn_name.to_string()),
-                    [orig, "as", local] if *orig == fn_name => symbols.push((*local).to_string()),
+                    [name] if *name == fn_name => {
+                        symbols.push(fn_name.to_string());
+                        found_named_for_fn = true;
+                    }
+                    [orig, "as", local] if *orig == fn_name => {
+                        symbols.push((*local).to_string());
+                        found_named_for_fn = true;
+                    }
                     _ => {}
                 }
             }
@@ -128,7 +164,10 @@ fn clause_imported_symbols(clause: &str, fn_name: &str) -> Vec<String> {
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
         {
-            symbols.push(default_part.to_string());
+            let is_default = decl_is_default_export(decl_file, fn_name);
+            if !found_named_for_fn && is_default.unwrap_or(default_part == fn_name) {
+                symbols.push(default_part.to_string());
+            }
         }
         return symbols;
     }
@@ -138,7 +177,10 @@ fn clause_imported_symbols(clause: &str, fn_name: &str) -> Vec<String> {
         .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
         .collect::<String>();
     if !default_ident.is_empty() {
-        symbols.push(default_ident);
+        let is_default = decl_is_default_export(decl_file, fn_name);
+        if is_default.unwrap_or(true) {
+            symbols.push(default_ident);
+        }
     }
     symbols
 }
@@ -214,7 +256,7 @@ pub(crate) fn ts_js_imported_symbols(
         if let Some((clause, rest)) = split_import_from(part) {
             let specifier = extract_specifier(rest);
             if specifier_matches_decl(specifier, caller_path, decl_file) {
-                symbols.extend(clause_imported_symbols(clause, fn_name));
+                symbols.extend(clause_imported_symbols(clause, fn_name, decl_file));
             }
         }
     }

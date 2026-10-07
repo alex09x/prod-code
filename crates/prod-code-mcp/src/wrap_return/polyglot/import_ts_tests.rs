@@ -25,16 +25,27 @@ fn test_default_import_preserves_local_binding() {
 }
 
 #[test]
-fn test_default_import_with_named_clause() {
-    let content = r#"import again, { retry } from "./selected";"#;
+fn test_default_import_rejected_when_fn_is_named_import() {
+    let content = r#"import other, { retry } from "./selected";"#;
     let syms = ts_js_imported_symbols(
         content,
         Path::new("src/caller.ts"),
         Path::new("src/selected.ts"),
         "retry",
     );
-    assert!(syms.contains(&"again".to_string()));
-    assert!(syms.contains(&"retry".to_string()));
+    assert_eq!(syms, vec!["retry".to_string()]);
+}
+
+#[test]
+fn test_default_import_accepted_when_matching_fn_name() {
+    let content = r#"import retry, { other } from "./selected";"#;
+    let syms = ts_js_imported_symbols(
+        content,
+        Path::new("src/caller.ts"),
+        Path::new("src/selected.ts"),
+        "retry",
+    );
+    assert_eq!(syms, vec!["retry".to_string()]);
 }
 
 #[test]
