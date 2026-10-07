@@ -21,6 +21,14 @@ use crate::types::{
     DocumentOwner, InitializationGuard, OrdinaryActivity, PendingRequest, lock_unpoisoned,
     validate_initialize_response,
 };
+use std::path::Path;
+use url::Url;
+
+pub(crate) fn workspace_file_uri(path: &Path) -> Result<String> {
+    Url::from_directory_path(path)
+        .map(|uri| uri.to_string())
+        .map_err(|_| anyhow::anyhow!("invalid workspace directory path"))
+}
 
 impl GenericLspEngine {
     /// Perform the standard LSP initialize handshake.
@@ -31,7 +39,7 @@ impl GenericLspEngine {
             complete: false,
         };
         *self.capabilities.write().await = None;
-        let ws_str = self.workspace_root.to_string_lossy().to_string();
+        let ws_uri = workspace_file_uri(&self.workspace_root)?;
         let ws_name = self
             .workspace_root
             .file_name()
@@ -40,11 +48,11 @@ impl GenericLspEngine {
 
         let mut init_params = serde_json::json!({
             "processId": std::process::id(),
-            "rootUri": format!("file://{}", ws_str),
+            "rootUri": ws_uri.clone(),
             "workspaceFolders": [
                 {
                     "name": ws_name,
-                    "uri": format!("file://{}", ws_str)
+                    "uri": ws_uri
                 }
             ],
             "capabilities": {

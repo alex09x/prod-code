@@ -25,3 +25,13 @@ fn test_which_bin_discovery() {
     assert!(which_bin("cargo").is_ok());
     assert!(which_bin("nonexistent_binary_xyz_123").is_err());
 }
+
+#[test]
+fn workspace_file_uri_escapes_reserved_path_characters() {
+    let root = std::env::temp_dir().join("workspace space #1%25");
+    let uri = crate::lsp::workspace_file_uri(&root).unwrap();
+
+    assert!(!uri.contains(' '));
+    assert!(uri.contains("%23"));
+    assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), root);
+}
