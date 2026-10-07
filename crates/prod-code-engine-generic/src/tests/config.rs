@@ -35,3 +35,14 @@ fn workspace_file_uri_escapes_reserved_path_characters() {
     assert!(uri.contains("%23"));
     assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), root);
 }
+
+#[test]
+fn workspace_file_uri_resolves_relative_roots() {
+    let uri = crate::lsp::workspace_file_uri(std::path::Path::new("."))
+        .expect("relative workspace roots should be accepted");
+
+    assert_eq!(
+        url::Url::parse(&uri).unwrap().to_file_path().unwrap(),
+        std::env::current_dir().unwrap()
+    );
+}

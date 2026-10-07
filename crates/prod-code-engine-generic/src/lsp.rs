@@ -25,7 +25,12 @@ use std::path::Path;
 use url::Url;
 
 pub(crate) fn workspace_file_uri(path: &Path) -> Result<String> {
-    Url::from_directory_path(path)
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Url::from_directory_path(&absolute_path)
         .map(|uri| uri.to_string())
         .map_err(|_| anyhow::anyhow!("invalid workspace directory path"))
 }
