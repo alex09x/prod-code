@@ -178,8 +178,40 @@ fn ts_js_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
 }
 
 fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
-    for line in content.lines() {
-        let trimmed = line.trim();
+    let mut lines = content.lines().peekable();
+    while let Some(line) = lines.next() {
+        let code_line = line.split('#').next().unwrap_or("").trim();
+        if code_line.is_empty() {
+            continue;
+        }
+        let mut full_stmt = code_line.to_string();
+        if full_stmt.contains('(') && !full_stmt.contains(')') {
+            while let Some(next_line) = lines.next() {
+                let next_code = next_line.split('#').next().unwrap_or("").trim();
+                if !next_code.is_empty() {
+                    full_stmt.push(' ');
+                    full_stmt.push_str(next_code);
+                }
+                if next_code.contains(')') {
+                    break;
+                }
+            }
+        } else if full_stmt.ends_with('\\') {
+            while full_stmt.ends_with('\\') {
+                full_stmt.pop();
+                if let Some(next_line) = lines.next() {
+                    let next_code = next_line.split('#').next().unwrap_or("").trim();
+                    if !next_code.is_empty() {
+                        full_stmt.push(' ');
+                        full_stmt.push_str(next_code);
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let trimmed = full_stmt.trim();
         if let Some(rest) = trimmed.strip_prefix("from ") {
             if let Some((mod_part, clause)) = rest.split_once(" import ") {
                 let mod_name = mod_part
@@ -189,7 +221,12 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                     .unwrap_or(mod_part.trim());
                 let mod_stem = mod_name.trim_start_matches('.');
                 if mod_stem == decl_stem {
-                    if clause.trim() == "*" {
+                    let clause = clause
+                        .trim()
+                        .trim_start_matches('(')
+                        .trim_end_matches(')')
+                        .trim();
+                    if clause == "*" {
                         return true;
                     }
                     for item in clause.split(',') {
@@ -206,6 +243,11 @@ fn python_proves_import(content: &str, decl_stem: &str, fn_name: &str) -> bool {
                 }
             }
         } else if let Some(rest) = trimmed.strip_prefix("import ") {
+            let rest = rest
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .trim();
             for entry in rest.split(',') {
                 let (mod_part, _alias) = entry.split_once(" as ").unwrap_or((entry, ""));
                 let mod_name = mod_part
@@ -318,6 +360,15 @@ mod tests {
         let content_other = "from other import find_user\n";
         assert!(!proves_cross_file_import(
             content_other,
+            Path::new("service.py"),
+            Path::new("db.py"),
+            "find_user",
+            Language::Python,
+        ));
+
+        let content_multiline_paren = "from db import (\n    # comment\n    find_user,\n)\n";
+        assert!(proves_cross_file_import(
+            content_multiline_paren,
             Path::new("service.py"),
             Path::new("db.py"),
             "find_user",
