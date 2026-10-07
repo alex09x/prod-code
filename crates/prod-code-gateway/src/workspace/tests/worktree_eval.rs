@@ -74,7 +74,8 @@ fn test_resolve_server_workspace_canonicalizes_symlink_storage_root() {
     let target = server_workspace_path(&storage_alias, client_root, None);
     let resolved = resolve_server_workspace(&storage_alias, client_root, None);
 
-    assert_eq!(resolved, std::fs::canonicalize(target).unwrap());
+    assert_eq!(target, real_storage.join("project"));
+    assert_eq!(resolved, target);
 }
 
 #[test]
