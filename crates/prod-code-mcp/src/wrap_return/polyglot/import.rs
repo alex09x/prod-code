@@ -57,73 +57,9 @@ pub(crate) fn imported_caller_symbols(
     }
 }
 
-fn c_cpp_proves_import(content: &str, caller_path: &Path, decl_file: &Path, fn_name: &str) -> bool {
-    let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let decl_name = decl_file.file_name().and_then(|s| s.to_str()).unwrap_or("");
-
-    if caller_path.file_stem().and_then(|s| s.to_str()) == Some(decl_stem) {
-        return true;
-    }
-
-    if content.lines().any(|l| {
-        let trimmed = l.trim();
-        trimmed.starts_with("#include")
-            && (trimmed.contains(decl_name) || trimmed.contains(decl_stem))
-    }) {
-        return true;
-    }
-
-    if let Ok(decl_content) = std::fs::read_to_string(decl_file) {
-        let caller_name = caller_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let caller_stem = caller_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-
-        let decl_headers: Vec<&str> = decl_content
-            .lines()
-            .map(str::trim)
-            .filter(|l| l.starts_with("#include"))
-            .map(extract_specifier)
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        for h in &decl_headers {
-            let h_file = h.rsplit('/').next().unwrap_or(h);
-            let h_stem = h_file
-                .strip_suffix(".h")
-                .or_else(|| h_file.strip_suffix(".hpp"))
-                .or_else(|| h_file.strip_suffix(".hxx"))
-                .unwrap_or(h_file);
-            if (caller_name == h_file || caller_stem == h_stem) && content.contains(fn_name) {
-                return true;
-            }
-        }
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("#include") {
-                let spec = extract_specifier(trimmed);
-                for h in &decl_headers {
-                    let h_file = h.rsplit('/').next().unwrap_or(h);
-                    let h_stem = h_file
-                        .strip_suffix(".h")
-                        .or_else(|| h_file.strip_suffix(".hpp"))
-                        .or_else(|| h_file.strip_suffix(".hxx"))
-                        .unwrap_or(h_file);
-                    if spec == *h || spec.contains(h_file) || spec.contains(h_stem) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    false
-}
+#[path = "import_cpp.rs"]
+mod import_cpp;
+use import_cpp::c_cpp_proves_import;
 
 fn extract_specifier(s: &str) -> &str {
     let mut chars = s.char_indices();
@@ -225,9 +161,42 @@ fn split_import_from(s: &str) -> Option<(&str, &str)> {
     None
 }
 
+fn is_ident_boundary(c: char) -> bool {
+    !c.is_alphanumeric() && c != '_' && c != '$'
+}
+
+fn find_import_keyword_starts(content: &str) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut search_idx = 0;
+    while let Some(pos) = content[search_idx..].find("import") {
+        let abs_pos = search_idx + pos;
+        let before_ok = if abs_pos == 0 {
+            true
+        } else {
+            content[..abs_pos]
+                .chars()
+                .next_back()
+                .map_or(true, is_ident_boundary)
+        };
+        let after_idx = abs_pos + "import".len();
+        let after_ok = content[after_idx..]
+            .chars()
+            .next()
+            .map_or(true, is_ident_boundary);
+        if before_ok && after_ok {
+            starts.push(abs_pos);
+        }
+        search_idx = after_idx;
+    }
+    starts
+}
+
 fn ts_js_imported_symbols(content: &str, decl_stem: &str, fn_name: &str) -> Vec<String> {
     let mut symbols = Vec::new();
-    for part in content.split("import") {
+    let starts = find_import_keyword_starts(content);
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(content.len());
+        let part = &content[start + "import".len()..end];
         if let Some((clause, rest)) = split_import_from(part) {
             let specifier = extract_specifier(rest);
             if specifier_matches_stem(specifier, decl_stem) {

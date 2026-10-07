@@ -263,3 +263,37 @@ fn test_python_imported_symbols_tracks_alias() {
     );
     assert!(syms_unrelated.is_empty());
 }
+
+#[test]
+fn test_ts_js_imported_symbols_handles_identifier_containing_import() {
+    let content = r#"import { important } from "./selected";"#;
+    let syms = imported_caller_symbols(
+        content,
+        Path::new("src/caller.ts"),
+        Path::new("src/selected.ts"),
+        "important",
+        Language::TypeScript,
+    );
+    assert_eq!(syms, vec!["important"]);
+}
+
+#[test]
+fn test_c_cpp_proves_import_exact_stem_match() {
+    let content_unrelated = r#"#include "recompute.h""#;
+    assert!(!proves_cross_file_import(
+        content_unrelated,
+        Path::new("src/caller.cpp"),
+        Path::new("src/compute.cpp"),
+        "do_work",
+        Language::Cpp,
+    ));
+
+    let content_matching = r#"#include "compute.h""#;
+    assert!(proves_cross_file_import(
+        content_matching,
+        Path::new("src/caller.cpp"),
+        Path::new("src/compute.cpp"),
+        "do_work",
+        Language::Cpp,
+    ));
+}
