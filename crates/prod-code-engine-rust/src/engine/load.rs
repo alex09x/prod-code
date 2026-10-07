@@ -26,15 +26,38 @@ use crate::load_budget;
 use crate::proc_macro_farm::{self, FarmMetrics};
 use crate::session_overlays::SessionOverlays;
 
+/// Indicates that a requested proc-macro allocation could not be obtained.
+/// Gateway loaders must propagate this error instead of starting an unbounded fallback worker.
+#[derive(Debug)]
+pub struct ProcMacroCapacityError {
+    capacity: usize,
+}
+
+impl ProcMacroCapacityError {
+    pub fn new(capacity: usize) -> Self {
+        Self { capacity }
+    }
+}
+
+impl std::fmt::Display for ProcMacroCapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "proc-macro worker farm had no capacity after waiting (capacity {}); retry the workspace load or set `proc_macro_srv = \"disabled\"` to opt out explicitly",
+            self.capacity
+        )
+    }
+}
+
+impl std::error::Error for ProcMacroCapacityError {}
+
 fn ensure_requested_proc_macro_workers(
     desired_workers: usize,
     allocated_workers: usize,
     farm_capacity: usize,
 ) -> Result<()> {
     if desired_workers > 0 && allocated_workers == 0 {
-        anyhow::bail!(
-            "proc-macro worker farm had no capacity after waiting (capacity {farm_capacity}); retry the workspace load or set `proc_macro_srv = \"disabled\"` to opt out explicitly"
-        );
+        return Err(ProcMacroCapacityError::new(farm_capacity).into());
     }
     Ok(())
 }
@@ -185,11 +208,12 @@ impl RustEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_requested_proc_macro_workers;
+    use super::{ProcMacroCapacityError, ensure_requested_proc_macro_workers};
 
     #[test]
     fn proc_macro_capacity_exhaustion_fails_requested_load_explicitly() {
         let err = ensure_requested_proc_macro_workers(1, 0, 8).unwrap_err();
+        assert!(err.downcast_ref::<ProcMacroCapacityError>().is_some());
         assert!(err.to_string().contains("no capacity after waiting"));
         assert!(err.to_string().contains("retry the workspace load"));
     }
