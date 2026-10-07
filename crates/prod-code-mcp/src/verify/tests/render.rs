@@ -305,3 +305,93 @@ fn fixed_render_caps_huge_outcomes_preserving_after_report() {
         MAX_RENDER_BYTES
     );
 }
+
+#[test]
+fn serialized_frame_bounding_preserves_non_tool_responses() {
+    use crate::server::transport::{MAX_JSONRPC_FRAME_BYTES, bound_serialized_response};
+
+    // A tools/list response exceeding 60KB should not be converted to a tool content result
+    let big_tools: Vec<serde_json::Value> = (0..200)
+        .map(|i| {
+            serde_json::json!({
+                "name": format!("tool_{i}"),
+                "description": "x".repeat(400),
+                "inputSchema": { "type": "object" }
+            })
+        })
+        .collect();
+
+    let resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "tools": big_tools
+        }
+    });
+
+    let serialized = bound_serialized_response(resp.clone(), MAX_JSONRPC_FRAME_BYTES);
+    assert!(serialized.contains("tools"));
+    assert!(serialized.contains("tool_0"));
+    assert!(!serialized.contains("output truncated to avoid exceeding MCP frame line limits"));
+}
+
+#[test]
+fn verify_render_reserves_budget_for_test_failures_despite_many_diagnostics() {
+    // Construct 500 verbose diagnostics that would fill MAX_RENDER_BYTES
+    let huge_diagnostics: Vec<crate::verify::Diagnostic> = (0..500)
+        .map(|i| crate::verify::Diagnostic {
+            level: "warning".into(),
+            code: None,
+            message: "w".repeat(500),
+            file: Some(format!("src/warn_{i}.rs")),
+            line: Some(i as u64),
+            column: Some(1),
+        })
+        .collect();
+
+    let failures = vec![
+        TestFailure {
+            name: "tests::acceptance::test_order_matching".into(),
+            output: "assertion failed: `(left == right)`\n  left: `0`\n right: `1`".into(),
+        },
+        TestFailure {
+            name: "tests::unit::test_user_auth".into(),
+            output: "panic at src/auth.rs:42: token expired".into(),
+        },
+    ];
+
+    let report = VerifyReport {
+        kind: VerifyKind::Test,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "test".into()],
+        exit_code: Some(101),
+        timed_out: false,
+        duration_ms: 1200,
+        diagnostics: huge_diagnostics,
+        tests_passed: 10,
+        tests_failed: 2,
+        failures,
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+
+    let text = report.render(40);
+    // Crucial: Test failures MUST be rendered despite verbose compiler diagnostics
+    assert!(
+        text.contains("--- FAILED tests::acceptance::test_order_matching ---"),
+        "{text}"
+    );
+    assert!(
+        text.contains("--- FAILED tests::unit::test_user_auth ---"),
+        "{text}"
+    );
+    assert!(text.contains("more diagnostic(s)"), "{text}");
+    assert!(
+        text.len() <= MAX_RENDER_BYTES + 500,
+        "len is {}",
+        text.len()
+    );
+}

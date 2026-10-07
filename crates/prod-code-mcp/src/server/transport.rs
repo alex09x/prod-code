@@ -251,7 +251,9 @@ pub(crate) fn bound_serialized_response(
     if initial.len() <= max_frame_bytes {
         return initial;
     }
-    let marker = "\n[... output truncated to avoid exceeding MCP frame line limits]\n";
+    // Only apply tool-content truncation to tool-call results (which have `result.content` text blocks).
+    // Non-tool responses (such as `tools/list`, `initialize`, etc.) must not have their response
+    // structure replaced with a tool-call-shaped content array.
     let text_blocks: Vec<(usize, String)> = resp
         .get("result")
         .and_then(|r| r.get("content"))
@@ -272,6 +274,11 @@ pub(crate) fn bound_serialized_response(
         })
         .unwrap_or_default();
 
+    if text_blocks.is_empty() {
+        return initial;
+    }
+
+    let marker = "\n[... output truncated to avoid exceeding MCP frame line limits]\n";
     for (idx, text) in text_blocks {
         let mut target_len = max_frame_bytes / 2;
         while target_len > 100 {

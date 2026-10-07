@@ -172,18 +172,27 @@ impl VerifyReport {
             self.command.join(" "),
             self.summary()
         ));
+        let diag_budget = if self.failures.is_empty() {
+            MAX_RENDER_BYTES
+        } else {
+            // Reserve space for structured test failures so verbose compiler warnings
+            // or diagnostics never crowd out failed-test details and traces.
+            MAX_RENDER_BYTES / 2
+        };
+        let mut rendered_diags = 0;
         for d in self.diagnostics.iter().take(max_items) {
-            if out.len() >= MAX_RENDER_BYTES {
+            if out.len() >= diag_budget {
                 break;
             }
             out.push_str("  ");
             out.push_str(&d.render());
             out.push('\n');
+            rendered_diags += 1;
         }
-        if self.diagnostics.len() > max_items {
+        if self.diagnostics.len() > rendered_diags {
             out.push_str(&format!(
                 "  ... {} more diagnostic(s)\n",
-                self.diagnostics.len() - max_items
+                self.diagnostics.len() - rendered_diags
             ));
         }
         for b in self.benches.iter().take(max_items) {
