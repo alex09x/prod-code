@@ -28,7 +28,9 @@ fn test_which_bin_discovery() {
 
 #[test]
 fn workspace_file_uri_escapes_reserved_path_characters() {
-    let root = std::env::temp_dir().join("workspace space #1%25");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("workspace space #1%25");
+    std::fs::create_dir_all(&root).unwrap();
     let uri = crate::lsp::workspace_file_uri(&root).unwrap();
 
     assert!(!uri.contains(' '));
@@ -38,14 +40,33 @@ fn workspace_file_uri_escapes_reserved_path_characters() {
 
 #[test]
 fn workspace_file_uri_resolves_relative_roots() {
-    let relative_root = std::path::Path::new("./missing/..");
+    let relative_root = std::path::Path::new(".");
     let normalized = crate::lsp::normalize_workspace_root(relative_root).unwrap();
     let uri = crate::lsp::workspace_file_uri(relative_root)
         .expect("relative workspace roots should be accepted");
 
-    assert_eq!(normalized, std::env::current_dir().unwrap());
+    assert_eq!(normalized, std::fs::canonicalize(".").unwrap());
     assert_eq!(
         url::Url::parse(&uri).unwrap().to_file_path().unwrap(),
         normalized
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_root_normalization_preserves_symlink_parent_semantics() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let target_parent = temp.path().join("actual-parent");
+    let target = target_parent.join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let alias = temp.path().join("alias");
+    symlink(&target, &alias).unwrap();
+
+    let normalized = crate::lsp::normalize_workspace_root(&alias.join(".."))
+        .expect("existing symlink parents should resolve");
+
+    assert_eq!(normalized, std::fs::canonicalize(&target_parent).unwrap());
+    assert!(crate::lsp::normalize_workspace_root(&temp.path().join("missing/..")).is_err());
 }
