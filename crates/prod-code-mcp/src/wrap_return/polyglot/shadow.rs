@@ -353,8 +353,29 @@ fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
                         }
                     }
                 }
+                let mut nested_fn_indent: Option<usize> = None;
                 for body_line in &lines[body_start..lines.len() - 1] {
+                    if body_line.trim().is_empty() {
+                        continue;
+                    }
+                    let line_indent = body_line.len() - body_line.trim_start().len();
+                    if let Some(fn_indent) = nested_fn_indent {
+                        if line_indent > fn_indent {
+                            continue;
+                        } else {
+                            nested_fn_indent = None;
+                        }
+                    }
+
                     let b_trimmed = body_line.trim();
+                    if b_trimmed.starts_with("def ")
+                        || b_trimmed.starts_with("async def ")
+                        || b_trimmed.starts_with("class ")
+                    {
+                        nested_fn_indent = Some(line_indent);
+                        continue;
+                    }
+
                     if let Some((lhs, _)) = b_trimmed.split_once('=') {
                         let var = lhs.trim().split(':').next().unwrap().trim();
                         if var == name {

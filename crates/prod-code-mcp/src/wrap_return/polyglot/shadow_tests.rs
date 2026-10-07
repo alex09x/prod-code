@@ -124,3 +124,15 @@ fn test_is_python_shadowed_multiline() {
         Language::Python
     ));
 }
+
+#[test]
+fn test_python_ignores_nested_function_assignments() {
+    let content = "def outer():\n    def inner():\n        retry = 1\n    retry()\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(!is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::Python
+    ));
+}
