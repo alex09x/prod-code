@@ -136,3 +136,53 @@ fn test_python_ignores_nested_function_assignments() {
         Language::Python
     ));
 }
+
+#[test]
+fn test_js_retains_var_in_closed_block() {
+    let content =
+        "function run() {\n    if (cond) {\n        var retry = local;\n    }\n    retry();\n}\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::JavaScript
+    ));
+}
+
+#[test]
+fn test_js_strips_let_in_closed_block() {
+    let content =
+        "function run() {\n    if (cond) {\n        let retry = local;\n    }\n    retry();\n}\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(!is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::JavaScript
+    ));
+}
+
+#[test]
+fn test_js_retains_var_without_initializer_in_closed_block() {
+    let content = "function run() {\n    if (cond) {\n        var retry;\n    }\n    retry();\n}\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::JavaScript
+    ));
+}
+
+#[test]
+fn test_js_retains_var_in_nested_closed_block() {
+    let content = "function run() {\n    if (cond) {\n        while (active) {\n            var retry = 1;\n        }\n    }\n    retry();\n}\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::JavaScript
+    ));
+}
