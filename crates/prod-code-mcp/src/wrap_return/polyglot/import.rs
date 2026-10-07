@@ -39,12 +39,37 @@ pub(crate) fn imported_caller_symbols(
     if decl_stem.is_empty() {
         return Vec::new();
     }
+    let decl_pkg_stem = if decl_stem == "__init__" || decl_stem == "index" {
+        decl_file
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or(decl_stem)
+    } else {
+        decl_stem
+    };
 
     match lang {
         Language::TypeScript | Language::JavaScript => {
-            ts_js_imported_symbols(content, decl_stem, fn_name)
+            let mut syms = ts_js_imported_symbols(content, decl_stem, fn_name);
+            if syms.is_empty() && decl_pkg_stem != decl_stem {
+                syms = ts_js_imported_symbols(content, decl_pkg_stem, fn_name);
+            }
+            syms
         }
-        Language::Python => python_imported_symbols(content, decl_stem, fn_name),
+        Language::Python => {
+            let mut syms = python_imported_symbols(content, decl_stem, fn_name);
+            if syms.is_empty() && decl_pkg_stem != decl_stem {
+                syms = python_imported_symbols(content, decl_pkg_stem, fn_name);
+            }
+            if syms.is_empty()
+                && decl_stem == "__init__"
+                && caller_path.parent() == decl_file.parent()
+            {
+                syms = python_imported_symbols(content, "", fn_name);
+            }
+            syms
+        }
         Language::Go | Language::Swift if caller_path.parent() == decl_file.parent() => {
             vec![fn_name.to_string()]
         }

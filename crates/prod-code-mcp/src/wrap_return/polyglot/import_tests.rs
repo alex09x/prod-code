@@ -297,3 +297,39 @@ fn test_c_cpp_proves_import_exact_stem_match() {
         Language::Cpp,
     ));
 }
+
+#[test]
+fn test_python_recognizes_init_package_imports() {
+    let content = "from pkg import find_user\n";
+    let syms = imported_caller_symbols(
+        content,
+        Path::new("caller.py"),
+        Path::new("pkg/__init__.py"),
+        "find_user",
+        Language::Python,
+    );
+    assert_eq!(syms, vec!["find_user"]);
+
+    let content_rel = "from . import find_user\n";
+    let syms_rel = imported_caller_symbols(
+        content_rel,
+        Path::new("pkg/service.py"),
+        Path::new("pkg/__init__.py"),
+        "find_user",
+        Language::Python,
+    );
+    assert_eq!(syms_rel, vec!["find_user"]);
+}
+
+#[test]
+fn test_ts_recognizes_index_module_imports() {
+    let content = r#"import { find_user } from "./pkg";"#;
+    let syms = imported_caller_symbols(
+        content,
+        Path::new("src/caller.ts"),
+        Path::new("src/pkg/index.ts"),
+        "find_user",
+        Language::TypeScript,
+    );
+    assert_eq!(syms, vec!["find_user"]);
+}
