@@ -37,6 +37,7 @@ pub struct MockGateway {
     pub initializes: Arc<AtomicUsize>,
     pub fail_exec: Arc<AtomicBool>,
     pub custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    pub place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
 }
 
 struct MockState {
@@ -46,6 +47,7 @@ struct MockState {
     initializes: Arc<AtomicUsize>,
     fail_exec: Arc<AtomicBool>,
     custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
 }
 
 impl MockGateway {
@@ -67,6 +69,7 @@ impl MockGateway {
         let initializes = Arc::new(AtomicUsize::new(0));
         let fail_exec = Arc::new(AtomicBool::new(false));
         let custom_exec = Arc::new(std::sync::Mutex::new(None));
+        let place_request_os = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let state = Arc::new(MockState {
             protocol_version,
@@ -75,6 +78,7 @@ impl MockGateway {
             initializes: Arc::clone(&initializes),
             fail_exec: Arc::clone(&fail_exec),
             custom_exec: Arc::clone(&custom_exec),
+            place_request_os: Arc::clone(&place_request_os),
         });
 
         tokio::spawn(async move {
@@ -96,6 +100,7 @@ impl MockGateway {
             initializes,
             fail_exec,
             custom_exec,
+            place_request_os,
         }
     }
 }
@@ -181,6 +186,7 @@ async fn handle_client(
                     .await?;
             }
             WireMessage::PlaceRequest(req) => {
+                state.place_request_os.lock().unwrap().push(req.os.clone());
                 framed
                     .send(WireMessage::PlaceResponse(PlaceResponse {
                         node: Some(local_addr.to_string()),
@@ -566,7 +572,13 @@ async fn cli_reports_cluster_as_json() {
 
 #[tokio::test]
 async fn cli_rebalances_cluster_workload_and_reports_as_json() {
-    let ws = make_workspace();
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/cgo-rebalance\n\ngo 1.20\n"),
+        (
+            "cgo.go",
+            "package main\n/*\n#cgo LDFLAGS: -framework Cocoa\n*/\nimport \"C\"\nfunc main() {}\n",
+        ),
+    ]);
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
     let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
     assert!(out.status.success(), "{}", stderr_of(&out));
@@ -584,6 +596,10 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
     let out_text = run_cli(&ws, gw.addr, &["cluster", "--rebalance"]).await;
     assert!(out_text.status.success(), "{}", stderr_of(&out_text));
     assert!(stdout_of(&out_text).contains("Active workload rebalanced to"));
+    assert_eq!(
+        *gw.place_request_os.lock().unwrap(),
+        vec![Some("macos".to_string()), Some("macos".to_string())]
+    );
 }
 
 #[tokio::test]

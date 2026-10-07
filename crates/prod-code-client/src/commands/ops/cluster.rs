@@ -132,6 +132,7 @@ pub async fn cluster_snapshot(
     nodes: &[SocketAddr],
     workspace_name: &str,
     engine: Option<&str>,
+    required_os: Option<&str>,
     rebalance: bool,
 ) -> serde_json::Value {
     let mut gossip = serde_json::Value::Null;
@@ -160,9 +161,14 @@ pub async fn cluster_snapshot(
     let mut rebalance_info = None;
     if rebalance {
         for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
-            if let Ok(resp) =
-                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true)
-                    .await
+            if let Ok(resp) = prod_code_mcp::cluster::ask_placement_opt(
+                seed,
+                workspace_name,
+                engine,
+                required_os,
+                true,
+            )
+            .await
             {
                 if let Some(target) = resp
                     .node
@@ -201,20 +207,34 @@ pub async fn run_cluster(
     nodes: &[SocketAddr],
     workspace_name: &str,
     engine: Option<&str>,
+    workspace_root: Option<&std::path::Path>,
     json: bool,
     rebalance: bool,
 ) -> Result<()> {
+    let required_os = if engine == Some("go") {
+        workspace_root
+            .and_then(prod_code_mcp::sync::macos_only_cgo)
+            .map(|_| "macos")
+    } else {
+        None
+    };
     if json {
-        let snapshot = cluster_snapshot(nodes, workspace_name, engine, rebalance).await;
+        let snapshot =
+            cluster_snapshot(nodes, workspace_name, engine, required_os, rebalance).await;
         println!("{}", serde_json::to_string_pretty(&snapshot)?);
         return Ok(());
     }
     let mut rebalanced_target = None;
     if rebalance {
         for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
-            if let Ok(resp) =
-                prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, None, true)
-                    .await
+            if let Ok(resp) = prod_code_mcp::cluster::ask_placement_opt(
+                seed,
+                workspace_name,
+                engine,
+                required_os,
+                true,
+            )
+            .await
             {
                 if let Some(target) = resp
                     .node
