@@ -187,3 +187,48 @@ fn test_reexport_barrel_resolved() {
     let syms = ts_js_imported_symbols(content, &consumer_ts, &selected_ts, "retry");
     assert_eq!(syms, vec!["retry".to_string()]);
 }
+
+#[test]
+fn test_reexport_barrel_unrelated_symbol_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let selected_ts = root.join("selected.ts");
+    std::fs::write(&selected_ts, "export function other() {}\n").unwrap();
+
+    let another_ts = root.join("another.ts");
+    std::fs::write(&another_ts, "export function retry() {}\n").unwrap();
+
+    let index_ts = root.join("index.ts");
+    std::fs::write(
+        &index_ts,
+        "export { other } from \"./selected\";\nexport { retry } from \"./another\";\n",
+    )
+    .unwrap();
+
+    let consumer_ts = root.join("consumer.ts");
+    let content = "import { retry } from \"./index\";\n";
+
+    let syms = ts_js_imported_symbols(content, &consumer_ts, &selected_ts, "retry");
+    assert!(syms.is_empty());
+}
+
+#[test]
+fn test_reexport_barrel_aliased_symbol() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let selected_ts = root.join("selected.ts");
+    std::fs::write(&selected_ts, "export function retry() {}\n").unwrap();
+
+    let index_ts = root.join("index.ts");
+    std::fs::write(
+        &index_ts,
+        "export { retry as runAgain } from \"./selected\";\n",
+    )
+    .unwrap();
+
+    let consumer_ts = root.join("consumer.ts");
+    let content = "import { runAgain } from \"./index\";\n";
+
+    let syms = ts_js_imported_symbols(content, &consumer_ts, &selected_ts, "retry");
+    assert_eq!(syms, vec!["runAgain".to_string()]);
+}

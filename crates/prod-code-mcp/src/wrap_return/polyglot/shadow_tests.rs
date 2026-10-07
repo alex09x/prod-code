@@ -210,3 +210,27 @@ fn test_js_does_not_hoist_var_from_nested_function_in_block() {
         Language::JavaScript
     ));
 }
+
+#[test]
+fn test_python_local_from_import_shadows() {
+    let content = "async def run():\n    from other import retry\n    retry()\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::Python
+    ));
+}
+
+#[test]
+fn test_python_local_import_as_shadows() {
+    let content = "def run():\n    import other as retry\n    retry()\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::Python
+    ));
+}

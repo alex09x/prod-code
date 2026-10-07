@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 
 use super::enclosing::enclosing_polyglot_info;
 use super::find::find_polyglot_decl;
-use super::import::{imported_caller_symbols, is_proven_namespace_import};
+use super::import::{
+    find_dotted_receiver_span, imported_caller_symbols, is_proven_namespace_import,
+};
 use super::restructure::restructure_declaring_file;
 use super::shadow::is_locally_shadowed;
 use crate::parameter_object::Language;
@@ -110,14 +112,14 @@ pub(crate) fn collect_and_rewrite_callers(
                         before_text
                     }
                     .trim_end();
-                    let receiver_start = before_dot
-                        .rfind(|c: char| !is_ident(c))
-                        .map_or(0, |i| i + 1);
-                    let receiver = &before_dot[receiver_start..];
+                    let (rel_start, receiver) = find_dotted_receiver_span(before_dot);
                     if !is_proven_namespace_import(&other_content, receiver, path, file, lang) {
                         continue;
                     }
-                    call_start = receiver_start;
+                    let receiver_abs_start = (before_dot.as_ptr() as usize
+                        - other_content.as_ptr() as usize)
+                        + rel_start;
+                    call_start = receiver_abs_start;
                 }
 
                 let source_path =

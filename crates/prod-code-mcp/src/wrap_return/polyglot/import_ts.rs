@@ -16,7 +16,7 @@ use crate::parameter_object::Language;
 
 #[path = "import_ts_reexport.rs"]
 mod import_ts_reexport;
-use import_ts_reexport::{file_reexports_decl, resolve_reexport_file};
+use import_ts_reexport::{barrel_exports_symbol_from_decl, resolve_reexport_file};
 
 #[path = "import_ts_cjs.rs"]
 mod import_ts_cjs;
@@ -46,21 +46,12 @@ pub(crate) fn resolve_relative_path(base_dir: &Path, rel_spec: &str) -> PathBuf 
     path
 }
 
-pub(crate) fn specifier_matches_decl(
+pub(crate) fn direct_specifier_matches_decl(
     specifier: &str,
     caller_path: &Path,
     decl_file: &Path,
 ) -> bool {
-    specifier_matches_decl_depth(specifier, caller_path, decl_file, 0)
-}
-
-pub(crate) fn specifier_matches_decl_depth(
-    specifier: &str,
-    caller_path: &Path,
-    decl_file: &Path,
-    depth: usize,
-) -> bool {
-    if specifier.is_empty() || depth > 5 {
+    if specifier.is_empty() {
         return false;
     }
     let trimmed = specifier.trim();
@@ -88,13 +79,6 @@ pub(crate) fn specifier_matches_decl_depth(
         {
             return true;
         }
-        if let Some(target_file) = resolve_reexport_file(caller_dir, trimmed) {
-            if let Ok(target_content) = std::fs::read_to_string(&target_file) {
-                if file_reexports_decl(&target_content, &target_file, decl_file, depth + 1) {
-                    return true;
-                }
-            }
-        }
         false
     } else {
         let mod_file = trimmed.rsplit('/').next().unwrap_or(trimmed);
@@ -108,6 +92,14 @@ pub(crate) fn specifier_matches_decl_depth(
             .unwrap_or(mod_file);
         mod_stem == decl_stem || mod_stem == decl_pkg_stem
     }
+}
+
+pub(crate) fn specifier_matches_decl(
+    specifier: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+) -> bool {
+    direct_specifier_matches_decl(specifier, caller_path, decl_file)
 }
 
 pub(crate) fn clean_lhs_binding(lhs: &str) -> &str {
@@ -291,6 +283,45 @@ pub(crate) fn is_ts_js_namespace_import(
     is_ts_js_require_namespace(content, receiver, caller_path, decl_file, &mask)
 }
 
+fn barrel_imported_symbols(
+    clause: &str,
+    barrel_file: &Path,
+    decl_file: &Path,
+    fn_name: &str,
+) -> Vec<String> {
+    let mut symbols = Vec::new();
+    let mut trimmed = clause.trim();
+    if let Some(rest) = trimmed.strip_prefix("type") {
+        if rest.starts_with(char::is_whitespace) {
+            trimmed = rest.trim();
+        }
+    }
+    if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if open < close {
+            let inner = &trimmed[open + 1..close];
+            for item in inner.split(',') {
+                let parts: Vec<&str> = item.split_whitespace().collect();
+                match parts.as_slice() {
+                    [name] => {
+                        if barrel_exports_symbol_from_decl(barrel_file, name, decl_file, fn_name, 0)
+                        {
+                            symbols.push((*name).to_string());
+                        }
+                    }
+                    [orig, "as", local] => {
+                        if barrel_exports_symbol_from_decl(barrel_file, orig, decl_file, fn_name, 0)
+                        {
+                            symbols.push((*local).to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    symbols
+}
+
 pub(crate) fn ts_js_imported_symbols(
     content: &str,
     caller_path: &Path,
@@ -300,13 +331,21 @@ pub(crate) fn ts_js_imported_symbols(
     let mut symbols = Vec::new();
     let mask = lexical_code_mask(content, Language::TypeScript);
     let starts = find_import_keyword_starts(content, &mask);
+    let caller_dir = caller_path.parent().unwrap_or_else(|| Path::new(""));
     for (i, &start) in starts.iter().enumerate() {
         let end = starts.get(i + 1).copied().unwrap_or(content.len());
         let part = &content[start + "import".len()..end];
         if let Some((clause, rest)) = split_import_from(part) {
             let specifier = extract_specifier(rest);
-            if specifier_matches_decl(specifier, caller_path, decl_file) {
+            if direct_specifier_matches_decl(specifier, caller_path, decl_file) {
                 symbols.extend(clause_imported_symbols(clause, fn_name, decl_file));
+            } else if let Some(target_file) = resolve_reexport_file(caller_dir, specifier.trim()) {
+                symbols.extend(barrel_imported_symbols(
+                    clause,
+                    &target_file,
+                    decl_file,
+                    fn_name,
+                ));
             }
         }
     }

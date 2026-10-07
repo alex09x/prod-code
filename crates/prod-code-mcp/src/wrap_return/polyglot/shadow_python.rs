@@ -67,14 +67,50 @@ pub(crate) fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
                         continue;
                     }
 
-                    if let Some((lhs, _)) = b_trimmed.split_once('=') {
-                        let var = lhs.trim().split(':').next().unwrap().trim();
-                        if var == name {
-                            return true;
-                        }
+                    if line_binds_python_name(b_trimmed, name) {
+                        return true;
                     }
                 }
                 break;
+            }
+        }
+    }
+    false
+}
+
+fn line_binds_python_name(line: &str, name: &str) -> bool {
+    let code = line.split('#').next().unwrap_or("").trim();
+    for stmt in code.split(';') {
+        let s = stmt.trim();
+        if let Some(rest) = s.strip_prefix("from ") {
+            if let Some((_mod, clause)) = rest.split_once(" import ") {
+                let clause = clause.trim().trim_start_matches('(').trim_end_matches(')');
+                for item in clause.split(',') {
+                    let local = if let Some((_, alias)) = item.split_once(" as ") {
+                        alias.trim()
+                    } else {
+                        item.trim()
+                    };
+                    if local == name {
+                        return true;
+                    }
+                }
+            }
+        } else if let Some(rest) = s.strip_prefix("import ") {
+            for item in rest.split(',') {
+                let local = if let Some((_, alias)) = item.split_once(" as ") {
+                    alias.trim()
+                } else {
+                    item.trim().split('.').next().unwrap_or("").trim()
+                };
+                if local == name {
+                    return true;
+                }
+            }
+        } else if let Some((lhs, _)) = s.split_once('=') {
+            let var = lhs.trim().split(':').next().unwrap().trim();
+            if var == name {
+                return true;
             }
         }
     }

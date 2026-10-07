@@ -247,7 +247,7 @@ pub(crate) fn is_python_namespace_import(
                     return true;
                 }
                 if alias.is_empty()
-                    && receiver == decl_stem
+                    && (receiver == mod_part || receiver == decl_stem)
                     && py_mod_matches_decl(mod_part, caller_path, decl_file)
                 {
                     return true;

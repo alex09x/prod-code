@@ -89,6 +89,37 @@ pub(crate) fn is_proven_namespace_import(
     }
 }
 
+pub(crate) fn find_dotted_receiver_span<'a>(before_dot: &'a str) -> (usize, &'a str) {
+    let bytes = before_dot.as_bytes();
+    let mut i = before_dot.len();
+    let mut start = before_dot.len();
+    while i > 0 {
+        let ident_end = i;
+        while i > 0 {
+            let ch = before_dot[..i].chars().next_back().unwrap();
+            if crate::wrap_return::utils::is_ident(ch) {
+                i -= ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if i == ident_end {
+            break;
+        }
+        start = i;
+        if i > 0 && bytes[i - 1] == b'.' && (i < 2 || bytes[i - 2] != b'.') {
+            i -= 1;
+        } else if i >= 2 && &bytes[i - 2..i] == b"::" {
+            i -= 2;
+        } else if i >= 2 && &bytes[i - 2..i] == b"->" {
+            i -= 2;
+        } else {
+            break;
+        }
+    }
+    (start, &before_dot[start..])
+}
+
 pub(crate) fn extract_specifier(s: &str) -> &str {
     let mut chars = s.char_indices();
     while let Some((i, c)) = chars.next() {
