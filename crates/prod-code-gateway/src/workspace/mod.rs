@@ -26,8 +26,8 @@ mod tests;
 
 pub use manager::{RECLAIM_MIN_IDLE, WorkspaceManager};
 pub use paths::{
-    resolve_server_workspace, sanitize_identifier, server_workspace_path, split_worktree_base,
-    worktree_suffix,
+    extract_workspace_identifier, resolve_server_workspace, sanitize_identifier,
+    server_workspace_path, split_worktree_base, worktree_suffix,
 };
 pub use prune::{
     LAST_USED_MARKER, free_and_total_bytes, free_share, prune_stale_main_workspace_dirs,
