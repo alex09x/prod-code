@@ -139,3 +139,17 @@ fn test_rust_caller_migration() {
     assert!(out.contains("r: &impl Measure"));
     assert!(out.contains("other: &Rect"));
 }
+
+#[test]
+fn test_rust_mutable_caller_migration_preserves_mutability() {
+    let rust = r#"fn update(shape: &mut Shape) {
+    let _area = shape.area();
+}
+"#;
+    let methods = vec!["area".to_string()];
+    let (out, migrations) =
+        migrate_caller_annotations(rust, "Shape", "IShape", &methods, Language::Rust);
+
+    assert_eq!(migrations.len(), 1, "{out}");
+    assert!(out.contains("shape: &mut impl IShape"), "{out}");
+}
