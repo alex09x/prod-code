@@ -5034,8 +5034,26 @@ async fn code_exec_reports_the_exit_status_and_output_tail() {
     )
     .await
     .expect("exec runs");
-    assert!(failed.is_error);
+    assert!(!failed.is_error);
     assert!(text_of(&failed).contains("exit code 1"));
+    assert!(text_of(&failed).contains("boom"));
+
+    let signal_remote = mock_gateway(Script {
+        exec_stderr: b"killed\n".to_vec(),
+        exec_exit: None,
+        ..Script::default()
+    })
+    .await;
+    let signal_res = execute_tool(
+        signal_remote,
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({ "argv": ["killme"] }),
+    )
+    .await
+    .expect("exec runs");
+    assert!(signal_res.is_error);
+    assert!(text_of(&signal_res).contains("killed by signal"));
 }
 
 #[tokio::test]

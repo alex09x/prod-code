@@ -172,44 +172,125 @@ impl VerifyReport {
             self.command.join(" "),
             self.summary()
         ));
+        let diag_budget = if self.failures.is_empty() {
+            MAX_RENDER_BYTES
+        } else {
+            // Reserve space for structured test failures so verbose compiler warnings
+            // or diagnostics never crowd out failed-test details and traces.
+            MAX_RENDER_BYTES / 2
+        };
+        let mut rendered_diags = 0;
         for d in self.diagnostics.iter().take(max_items) {
+            if out.len() >= diag_budget {
+                break;
+            }
             out.push_str("  ");
             out.push_str(&d.render());
             out.push('\n');
+            rendered_diags += 1;
         }
-        if self.diagnostics.len() > max_items {
+        if self.diagnostics.len() > rendered_diags {
             out.push_str(&format!(
                 "  ... {} more diagnostic(s)\n",
-                self.diagnostics.len() - max_items
+                self.diagnostics.len() - rendered_diags
             ));
         }
         for b in self.benches.iter().take(max_items) {
+            if out.len() >= MAX_RENDER_BYTES {
+                break;
+            }
             out.push_str(&format!("  {}  {}", b.name, b.estimate));
             if let Some(range) = &b.range {
                 out.push_str(&format!("  [{range}]"));
             }
             out.push('\n');
         }
+        let mut rendered_failures = 0;
         for f in self.failures.iter().take(max_items) {
+            if out.len() >= MAX_RENDER_BYTES {
+                break;
+            }
+            let formatted_output = format_failure_output(&f.output, MAX_FAILURE_OUTPUT_BYTES);
             out.push_str(&format!(
                 "--- FAILED {} ---\n{}\n",
-                f.name,
-                f.output.trim_end()
+                f.name, formatted_output
             ));
+            rendered_failures += 1;
         }
-        if self.failures.len() > max_items {
+        if self.failures.len() > rendered_failures {
             out.push_str(&format!(
                 "... {} more failed test(s)\n",
-                self.failures.len() - max_items
+                self.failures.len() - rendered_failures
             ));
         }
         if !self.ok() && self.diagnostics.is_empty() && self.failures.is_empty() {
             out.push_str("--- output tail ---\n");
-            out.push_str(self.tail.trim_end());
+            let formatted_tail = format_failure_output(&self.tail, MAX_FAILURE_OUTPUT_BYTES);
+            out.push_str(&formatted_tail);
             out.push('\n');
+        }
+        if out.len() > MAX_RENDER_BYTES {
+            let truncated = truncate_to_boundary(&out, MAX_RENDER_BYTES);
+            let mut capped = truncated.to_string();
+            let omitted_failures = self.failures.len().saturating_sub(rendered_failures);
+            if omitted_failures > 0 && !capped.contains("more failed test(s)") {
+                if !capped.ends_with('\n') {
+                    capped.push('\n');
+                }
+                capped.push_str(&format!("... {} more failed test(s)\n", omitted_failures));
+            }
+            let omitted_diags = self.diagnostics.len().saturating_sub(rendered_diags);
+            if omitted_diags > 0 && !capped.contains("more diagnostic(s)") {
+                if !capped.ends_with('\n') {
+                    capped.push('\n');
+                }
+                capped.push_str(&format!("  ... {} more diagnostic(s)\n", omitted_diags));
+            }
+            capped.push_str("\n[... output truncated to avoid exceeding MCP line limits]\n");
+            return capped;
         }
         out
     }
+}
+
+pub const MAX_FAILURE_OUTPUT_BYTES: usize = 4 * 1024;
+pub const MAX_RENDER_BYTES: usize = 24 * 1024;
+
+pub fn truncate_to_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut idx = max_bytes;
+        while idx > 0 && !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        &s[..idx]
+    }
+}
+
+pub fn tail_from_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut idx = s.len() - max_bytes;
+        while idx < s.len() && !s.is_char_boundary(idx) {
+            idx += 1;
+        }
+        &s[idx..]
+    }
+}
+
+pub fn format_failure_output(raw: &str, max_bytes: usize) -> String {
+    let trimmed = raw.trim_end();
+    if trimmed.len() <= max_bytes {
+        return trimmed.to_string();
+    }
+    let head_limit = max_bytes / 4;
+    let tail_limit = max_bytes.saturating_sub(head_limit);
+    let head = truncate_to_boundary(trimmed, head_limit);
+    let tail = tail_from_boundary(trimmed, tail_limit);
+    let omitted = trimmed.len().saturating_sub(head.len() + tail.len());
+    format!("{head}\n[... {omitted} bytes truncated ...]\n{tail}")
 }
 
 /// JavaScript package manager, from the lock file (or `packageManager` in package.json).

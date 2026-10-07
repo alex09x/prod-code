@@ -56,29 +56,77 @@ pub struct Fixed {
 
 impl Fixed {
     pub fn render(&self, max_items: usize) -> String {
-        let mut out = self.before.render(max_items);
+        let after_rendered = self
+            .after
+            .as_ref()
+            .map(|after| {
+                let text = after.render(max_items);
+                const MAX_AFTER_BYTES: usize = 8 * 1024;
+                if text.len() > MAX_AFTER_BYTES {
+                    let truncated = crate::verify::truncate_to_boundary(&text, MAX_AFTER_BYTES);
+                    format!(
+                        "\nafter the fixes:\n{truncated}\n[... post-fix output truncated ...]\n"
+                    )
+                } else {
+                    format!("\nafter the fixes:\n{text}")
+                }
+            })
+            .unwrap_or_default();
+
+        let after_len = after_rendered.len();
+        let fix_budget = crate::verify::MAX_RENDER_BYTES.saturating_sub(after_len);
+
+        let mut fix_summary = String::new();
         let applied = self.outcomes.iter().filter(|o| o.skipped.is_none()).count();
         match &self.note {
-            Some(note) => out.push_str(&format!("\n{note}\n")),
-            None => out.push_str(&format!(
+            Some(note) => fix_summary.push_str(&format!("\n{note}\n")),
+            None => fix_summary.push_str(&format!(
                 "\nmachine-applicable fixes: {applied} applied, {} skipped\n",
                 self.outcomes.len() - applied
             )),
         }
-        for o in &self.outcomes {
-            match &o.skipped {
+        for (i, o) in self.outcomes.iter().enumerate() {
+            let line = match &o.skipped {
                 // A linter's own fix mode rewrites whole files, with no line to name.
-                None if o.line == 0 => out.push_str(&format!("  fixed {}\n", o.file)),
-                None => out.push_str(&format!("  fixed {}:{}: {}\n", o.file, o.line, o.message)),
-                Some(why) => out.push_str(&format!(
-                    "  skipped {}:{}: {} ({why})\n",
-                    o.file, o.line, o.message
-                )),
+                None if o.line == 0 => format!("  fixed {}\n", o.file),
+                None => format!("  fixed {}:{}: {}\n", o.file, o.line, o.message),
+                Some(why) => format!("  skipped {}:{}: {} ({why})\n", o.file, o.line, o.message),
+            };
+            const MORE_MARKER_ESTIMATE: usize = 60;
+            if fix_summary.len() + line.len() + MORE_MARKER_ESTIMATE > fix_budget {
+                let remaining = self.outcomes.len() - i;
+                fix_summary.push_str(&format!("  ... {remaining} more fix outcome(s)\n"));
+                break;
             }
+            fix_summary.push_str(&line);
         }
-        if let Some(after) = &self.after {
-            out.push_str("\nafter the fixes:\n");
-            out.push_str(&after.render(max_items));
+
+        const PRE_FIX_TRUNCATED_MARKER: &str = "\n[... pre-fix diagnostics truncated ...]\n";
+        let reserved = fix_summary.len() + after_rendered.len();
+        let before_budget = crate::verify::MAX_RENDER_BYTES
+            .saturating_sub(reserved)
+            .saturating_sub(PRE_FIX_TRUNCATED_MARKER.len());
+        let before_rendered = self.before.render(max_items);
+        let before_text = if before_budget == 0 {
+            String::new()
+        } else if before_rendered.len() > before_budget {
+            let mut truncated =
+                crate::verify::truncate_to_boundary(&before_rendered, before_budget).to_string();
+            truncated.push_str(PRE_FIX_TRUNCATED_MARKER);
+            truncated
+        } else {
+            before_rendered
+        };
+
+        let mut out = before_text;
+        out.push_str(&fix_summary);
+        out.push_str(&after_rendered);
+        if out.len() > crate::verify::MAX_RENDER_BYTES {
+            let truncated =
+                crate::verify::truncate_to_boundary(&out, crate::verify::MAX_RENDER_BYTES);
+            let mut capped = truncated.to_string();
+            capped.push_str("\n[... output truncated to avoid exceeding MCP line limits]\n");
+            return capped;
         }
         out
     }

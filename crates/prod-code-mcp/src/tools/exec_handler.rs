@@ -77,10 +77,14 @@ pub(crate) async fn handle_exec(
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let tail_bytes = args
+    // Bound unencoded tail bytes to reserve room for worst-case JSON escaping (2x) and
+    // the JSON-RPC response envelope within MAX_JSONRPC_FRAME_BYTES (60KB).
+    const MAX_EXEC_TAIL_BYTES: usize = 20 * 1024;
+    let tail_bytes = (args
         .get("tail_bytes")
         .and_then(|v| v.as_u64())
-        .unwrap_or(16 * 1024) as usize;
+        .unwrap_or(16 * 1024) as usize)
+        .min(MAX_EXEC_TAIL_BYTES);
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
     let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
     let outcome = crate::exec::run_remote(
@@ -141,9 +145,11 @@ pub(crate) async fn handle_exec(
         text.push_str(&format!("[{warning}]\n"));
     }
     text.push_str(&tail.text());
-    Ok(if matches!(exit.exit_code, Some(0)) {
-        McpToolCallResult::text(text)
-    } else {
-        McpToolCallResult::error(text)
-    })
+    Ok(
+        if exit.error.is_none() && !exit.timed_out && exit.exit_code.is_some() {
+            McpToolCallResult::text(text)
+        } else {
+            McpToolCallResult::error(text)
+        },
+    )
 }
