@@ -186,3 +186,27 @@ fn test_js_retains_var_in_nested_closed_block() {
         Language::JavaScript
     ));
 }
+
+#[test]
+fn test_js_does_not_hoist_var_from_nested_function() {
+    let content = "function run() {\n    function helper() {\n        var retry = local;\n    }\n    retry();\n}\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(!is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::JavaScript
+    ));
+}
+
+#[test]
+fn test_js_does_not_hoist_var_from_nested_function_in_block() {
+    let content = "function run() {\n    if (cond) {\n        function helper() {\n            var retry = local;\n        }\n    }\n    retry();\n}\n";
+    let call_at = content.rfind("retry()").unwrap();
+    assert!(!is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::JavaScript
+    ));
+}

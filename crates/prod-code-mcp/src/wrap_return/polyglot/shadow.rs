@@ -250,9 +250,12 @@ fn strip_closed_blocks(text: &str, lang: Language) -> String {
         if text.as_bytes()[i] == b'{' {
             if is_lexical_block(text, i) {
                 if let Some(close) = crate::parameter_object::matching_bracket(text, i) {
-                    if matches!(lang, Language::TypeScript | Language::JavaScript) {
+                    if matches!(lang, Language::TypeScript | Language::JavaScript)
+                        && is_ordinary_js_block(text, i)
+                    {
                         let inner = &text[i + 1..close];
-                        let vars = extract_var_decls(inner);
+                        let non_fn_inner = strip_function_blocks(inner);
+                        let vars = extract_var_decls(&non_fn_inner);
                         if !vars.is_empty() {
                             result.push('\n');
                             result.push_str(&vars);
@@ -352,6 +355,10 @@ fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
 #[path = "shadow_python.rs"]
 mod shadow_python;
 use shadow_python::is_python_shadowed;
+
+#[path = "shadow_js.rs"]
+mod shadow_js;
+use shadow_js::{is_ordinary_js_block, strip_function_blocks};
 
 #[cfg(test)]
 #[path = "shadow_tests.rs"]
