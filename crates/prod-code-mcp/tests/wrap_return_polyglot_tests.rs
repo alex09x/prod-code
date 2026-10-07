@@ -1123,3 +1123,67 @@ async fn test_wrap_return_custom_already_wrapped_refusal() {
 
     assert!(err.to_string().contains("already returns a `Response`"));
 }
+
+#[tokio::test]
+async fn test_wrap_return_preserves_unrelated_alias_calls_when_references_empty() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "repro/selected.ts",
+            r#"export function retry(): string {
+    return "selected";
+}
+"#,
+        ),
+        (
+            "repro/other.ts",
+            r#"export function unrelated(): string {
+    return "other";
+}
+"#,
+        ),
+        (
+            "repro/caller.ts",
+            r#"import { unrelated as retry } from "./other";
+export async function run(): Promise<string> {
+    const value = retry();
+    return value;
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let selected_file = root.join("repro/selected.ts");
+    let caller_file = root.join("repro/caller.ts");
+    let caller_before = fs::read_to_string(&caller_file).unwrap();
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &selected_file,
+        Some("retry"),
+        None,
+        None,
+        Wrapper::Promise,
+        None,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "retry");
+    assert_eq!(res.was, "string");
+    assert_eq!(res.now, "Promise<string>");
+    assert_eq!(res.propagated, 0);
+    assert!(res.applied);
+
+    let caller_after = fs::read_to_string(&caller_file).unwrap();
+    assert_eq!(
+        caller_after, caller_before,
+        "caller.ts must remain completely untouched"
+    );
+    assert!(!caller_after.contains("await retry()"));
+}

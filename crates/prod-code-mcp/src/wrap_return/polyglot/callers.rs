@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use super::enclosing::enclosing_polyglot_info;
 use super::find::find_polyglot_decl;
+use super::import::proves_cross_file_import;
 use super::restructure::restructure_declaring_file;
 use crate::parameter_object::Language;
 use crate::wrap_return::types::{PolyglotFuncDecl, Wrapper};
@@ -59,6 +60,13 @@ pub(crate) fn collect_and_rewrite_callers(
         let is_decl_file =
             std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) == canonical_file;
         let rel_path = display(root, path);
+
+        if !is_decl_file
+            && !has_semantic_references
+            && !proves_cross_file_import(&other_content, path, file, name, lang)
+        {
+            continue;
+        }
 
         let mut file_edits: Vec<(usize, usize, String)> = Vec::new();
 
