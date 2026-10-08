@@ -12,11 +12,11 @@ use super::super::*;
 use super::common::peer;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HostResources, LoadedWorkspaceInfo, PROTOCOL_VERSION, PlaceRequest, WireMessage,
+    HostResources, LoadedWorkspaceInfo, NodeGossip, PROTOCOL_VERSION, PlaceRequest, WireMessage,
 };
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
@@ -193,6 +193,60 @@ fn congested_node_rebalances_active_workspace_when_requested() {
     assert_eq!(rebalanced.node.as_deref(), Some("quiet:9400"));
     assert!(rebalanced.reason.contains("rebalanced from congested:9400"));
     assert!(rebalanced.reason.contains("active, 2 sessions"));
+}
+
+#[tokio::test]
+async fn active_placement_preview_returns_target_without_redirecting_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let manager = Arc::new(crate::workspace::WorkspaceManager::new());
+    let workspace = Arc::new(crate::workspace::SharedWorkspace::new(
+        root.clone(),
+        "rust".to_string(),
+        None,
+        None,
+        None,
+        None,
+    ));
+    workspace.active_sessions.store(1, Ordering::Relaxed);
+    let mut redirects = workspace.rebalance_tx.subscribe();
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let mut state = crate::state::ServerState::new(temp.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    *state.advertise.write().await = "busy:9400".to_string();
+    state.engine_allowlist = vec!["rust".to_string()];
+    state.active_sessions.store(10, Ordering::Relaxed);
+    let quiet = peer("quiet:9400", "macos aarch64", &["rust (ra_ap_ide)"], 0.1);
+    let gossip = NodeGossip {
+        addr: quiet.addr.clone(),
+        status: quiet.status,
+        workspaces: quiet.workspaces,
+        peers: Vec::new(),
+        sent_at_ms: 0,
+    };
+    state.cluster.write().await.insert(
+        gossip.addr.clone(),
+        crate::state::PeerEntry {
+            gossip,
+            last_seen: Instant::now(),
+        },
+    );
+
+    let response = state
+        .preview_place(&PlaceRequest {
+            workspace_name: "repo".to_string(),
+            engine: Some("rust".to_string()),
+            os: Some("macos".to_string()),
+            rebalance_active: true,
+        })
+        .await;
+    assert_eq!(response.node.as_deref(), Some("quiet:9400"));
+    assert!(matches!(
+        redirects.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 }
 
 /// Idle engines go after `--idle-evict-secs`, or after five minutes while memory is short,

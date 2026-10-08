@@ -139,6 +139,16 @@ pub async fn handle_client(
                 state.metrics.record(ev);
                 framed.send(WireMessage::PlaceResponse(resp)).await?;
             }
+            WireMessage::PlacePreviewRequest(req) => {
+                let start = std::time::Instant::now();
+                let resp = state.preview_place(&req).await;
+                let mut ev = metrics::Event::blank("place");
+                ev.method = "place".to_string();
+                ev.duration_ms = start.elapsed().as_millis() as u64;
+                ev.ok = resp.node.is_some();
+                state.metrics.record(ev);
+                framed.send(WireMessage::PlacePreviewResponse(resp)).await?;
+            }
             WireMessage::MetricsRequest(req) => {
                 let start = std::time::Instant::now();
                 let node = state.advertise.read().await.clone();

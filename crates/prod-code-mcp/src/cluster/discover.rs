@@ -81,6 +81,34 @@ pub async fn ask_placement_opt(
     }
 }
 
+/// Previews an active rebalance without causing the gateway to redirect current sessions.
+pub async fn ask_placement_preview(
+    addr: SocketAddr,
+    workspace_name: &str,
+    engine: Option<&str>,
+    os: Option<&str>,
+) -> Result<PlaceResponse> {
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))
+        .await
+        .map_err(|_| anyhow!("connect timed out"))??;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed
+        .send(WireMessage::PlacePreviewRequest(PlaceRequest {
+            workspace_name: workspace_name.to_string(),
+            engine: engine.map(String::from),
+            os: os.map(String::from),
+            rebalance_active: true,
+        }))
+        .await?;
+    match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {
+        Ok(Some(Ok(WireMessage::PlacePreviewResponse(resp)))) => Ok(resp),
+        Ok(Some(Ok(other))) => Err(anyhow!("unexpected reply: {other:?}")),
+        Ok(Some(Err(e))) => Err(anyhow!("decode error: {e}")),
+        Ok(None) => Err(anyhow!("connection closed")),
+        Err(_) => Err(anyhow!("placement preview timed out")),
+    }
+}
+
 pub(crate) fn cluster_cache_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".local/share/prod_code/cluster.json"))
