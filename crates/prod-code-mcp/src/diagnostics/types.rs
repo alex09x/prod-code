@@ -196,7 +196,7 @@ impl DiagnosticsReport {
         }
         if !self.auto_trait.is_empty() {
             out.push_str(&format!(
-                "  ({} unproven Send/Sync/Unpin bound(s) are not counted: rust-analyzer does not \
+                "  ({} unproven bound(s) or analyzer limitation(s) are not counted: rust-analyzer does not \
                  always prove what rustc does; `cargo check` or `verify: \"compile\"` decides)\n",
                 self.auto_trait.len()
             ));

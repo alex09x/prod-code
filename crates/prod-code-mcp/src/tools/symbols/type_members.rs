@@ -200,6 +200,24 @@ pub(crate) async fn type_members(
             }
         }
     }
+    if members.is_empty() {
+        if let Some(alias_target) = super::alias::find_type_alias_target(root, type_name, hint) {
+            let mut alias_owner = owner.to_vec();
+            if let Some(last) = alias_owner.last_mut() {
+                *last = &alias_target;
+            }
+            if let Ok(mut alias_members) =
+                Box::pin(type_members(remote, root, &alias_owner, member, None)).await
+            {
+                if !alias_members.is_empty() {
+                    for m in &mut alias_members {
+                        m.container = Some(owner.join("::"));
+                    }
+                    return Ok(alias_members);
+                }
+            }
+        }
+    }
     if let Some(h) = hint {
         let h_abs = if h.is_absolute() {
             h.to_path_buf()

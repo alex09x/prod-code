@@ -276,11 +276,13 @@ pub(crate) async fn collect_multi_target_references(
                 let has_no_def = found_def
                     .as_ref()
                     .is_none_or(|f| f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object());
+                let is_swift = path.extension().and_then(|e| e.to_str()) == Some("swift")
+                    || declaration.extension().and_then(|e| e.to_str()) == Some("swift");
                 if !is_declaration_file && has_no_def && writes_call(&text, name) {
                     if !unindexed_callers.contains(&path) {
                         unindexed_callers.push(path.clone());
                     }
-                    if imports_declaration(&text, declaration, name) {
+                    if is_swift || imports_declaration(&text, declaration, name) {
                         seen_files.insert(norm_path.clone());
                         let use_line = (index + 1) as u64;
                         let use_col = (col + 1) as u64;
