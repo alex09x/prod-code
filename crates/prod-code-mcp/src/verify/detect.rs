@@ -29,9 +29,126 @@ pub fn file_contains(root: &Path, name: &str, needle: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn skip_zig_trivia(bytes: &[u8], mut offset: usize) -> usize {
+    loop {
+        while bytes
+            .get(offset)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            offset += 1;
+        }
+        if bytes.get(offset..offset.saturating_add(2)) != Some(b"//") {
+            return offset;
+        }
+        while bytes.get(offset).is_some_and(|byte| *byte != b'\n') {
+            offset += 1;
+        }
+    }
+}
+
+fn zig_test_step_is_declared(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes.get(offset..offset.saturating_add(2)) == Some(b"//")
+            || bytes.get(offset..offset.saturating_add(2)) == Some(b"\\\\")
+        {
+            while bytes.get(offset).is_some_and(|byte| *byte != b'\n') {
+                offset += 1;
+            }
+            continue;
+        }
+        if bytes.get(offset..offset.saturating_add(3)) == Some(b"c\\\\") {
+            while bytes.get(offset).is_some_and(|byte| *byte != b'\n') {
+                offset += 1;
+            }
+            continue;
+        }
+        if bytes[offset] == b'"' {
+            offset += 1;
+            while offset < bytes.len() {
+                if bytes[offset] == b'\\' {
+                    offset = (offset + 2).min(bytes.len());
+                } else if bytes[offset] == b'"' {
+                    offset += 1;
+                    break;
+                } else {
+                    offset += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[offset] == b'\'' {
+            offset += 1;
+            while offset < bytes.len() {
+                if bytes[offset] == b'\\' {
+                    offset = (offset + 2).min(bytes.len());
+                } else if bytes[offset] == b'\'' {
+                    offset += 1;
+                    break;
+                } else {
+                    offset += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[offset] != b'.' {
+            offset += 1;
+            continue;
+        }
+
+        let mut cursor = skip_zig_trivia(bytes, offset + 1);
+        let step_start = cursor;
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            cursor += 1;
+        }
+        if &bytes[step_start..cursor] != b"step"
+            || bytes
+                .get(cursor)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            offset += 1;
+            continue;
+        }
+
+        cursor = skip_zig_trivia(bytes, cursor);
+        if bytes.get(cursor) != Some(&b'(') {
+            offset += 1;
+            continue;
+        }
+        cursor = skip_zig_trivia(bytes, cursor + 1);
+        if bytes.get(cursor) != Some(&b'"') {
+            offset += 1;
+            continue;
+        }
+        let name_start = cursor + 1;
+        let Some(name_end) = bytes[name_start..].iter().position(|byte| *byte == b'"') else {
+            return false;
+        };
+        let name_end = name_start + name_end;
+        cursor = skip_zig_trivia(bytes, name_end + 1);
+        if &bytes[name_start..name_end] == b"test" && bytes.get(cursor) == Some(&b',') {
+            return true;
+        }
+        offset += 1;
+    }
+    false
+}
+
+fn has_zig_test_step(root: &Path) -> bool {
+    std::fs::read_to_string(root.join("build.zig"))
+        .is_ok_and(|source| zig_test_step_is_declared(&source))
+}
+
 /// Detects the tooling of the checkout at `root` from its manifests and lock files.
 pub fn detect_tools(root: &Path) -> ProjectTools {
-    let mut tools = ProjectTools::default();
+    let mut tools = ProjectTools {
+        zig_test_step: has_zig_test_step(root),
+        ..ProjectTools::default()
+    };
     tools.java_gradle_wrapper = root.join("gradlew").is_file();
     tools.java_gradle = !root.join("pom.xml").exists()
         && [

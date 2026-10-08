@@ -281,7 +281,7 @@ fn test_polyglot_plan_commands() {
 }
 
 #[test]
-fn test_universal_verification_matrix_all_languages() {
+fn test_universal_verification_matrix_plans_supported_languages_and_refuses_targetless_zig() {
     let languages = [
         "rust",
         "go",
@@ -342,6 +342,14 @@ fn test_universal_verification_matrix_all_languages() {
         assert!(!check.is_empty(), "Language {lang} check command is empty");
 
         let test_cmd = plan_command(lang, VerifyKind::Test, None);
+        if lang == "zig" {
+            let error = test_cmd.expect_err("targetless Zig test planning must fail closed");
+            assert!(
+                error.to_string().contains("test step"),
+                "Zig planning error should explain the missing target: {error}"
+            );
+            continue;
+        }
         assert!(
             test_cmd.is_ok(),
             "Language {lang} failed to plan test command: {:?}",

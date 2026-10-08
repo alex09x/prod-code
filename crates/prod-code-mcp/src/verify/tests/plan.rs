@@ -187,10 +187,7 @@ fn plans_and_summary() {
         plan_command("zig", VerifyKind::Check, None).unwrap(),
         vec!["zig", "build"]
     );
-    assert_eq!(
-        plan_command("zig", VerifyKind::Test, Some("foo")).unwrap(),
-        vec!["zig", "test", "--test-filter", "foo"]
-    );
+    assert!(plan_command("zig", VerifyKind::Test, Some("foo")).is_err());
     assert_eq!(
         plan_command("elixir", VerifyKind::Check, None).unwrap(),
         vec!["mix", "compile"]
@@ -241,6 +238,58 @@ fn plans_and_summary() {
         "rust test: FAILED (exit 101) in 1.5s; 2 passed, 1 failed"
     );
     assert!(report.render(10).contains("--- FAILED a::bad ---\nboom"));
+}
+
+#[test]
+fn zig_build_projects_use_a_test_plan() {
+    let root = tempfile::tempdir().unwrap();
+    let build_file = root.path().join("build.zig");
+    std::fs::write(
+        &build_file,
+        "const test_step = b.step(\"test\", \"Run tests\");",
+    )
+    .unwrap();
+    let tools = detect_tools(root.path());
+
+    assert!(tools.zig_test_step);
+    assert_eq!(
+        plan_command_with(&tools, "zig", VerifyKind::Test, None).unwrap(),
+        vec!["zig", "build", "test"]
+    );
+    assert!(plan_command_with(&tools, "zig", VerifyKind::Test, Some("foo")).is_err());
+
+    std::fs::write(
+        &build_file,
+        "const install_step = b.step(\"install\", \"Install\");",
+    )
+    .unwrap();
+    let tools = detect_tools(root.path());
+    assert!(!tools.zig_test_step);
+    let error = plan_command_with(&tools, "zig", VerifyKind::Test, None).unwrap_err();
+    assert!(error.to_string().contains("test step"));
+
+    std::fs::write(
+        &build_file,
+        "// const test_step = b.step(\"test\", \"comment only\");",
+    )
+    .unwrap();
+    assert!(!detect_tools(root.path()).zig_test_step);
+
+    std::fs::write(
+        &build_file,
+        "const s =\n    \\\\.step(\"test\", \"string only\")\n;",
+    )
+    .unwrap();
+    assert!(!detect_tools(root.path()).zig_test_step);
+
+    std::fs::write(
+        &build_file,
+        "const s =\n    c\\\\.step(\"test\", \"c string only\")\n;",
+    )
+    .unwrap();
+    assert!(!detect_tools(root.path()).zig_test_step);
+
+    assert!(plan_command_with(&ProjectTools::default(), "zig", VerifyKind::Test, None).is_err());
 }
 
 #[test]
