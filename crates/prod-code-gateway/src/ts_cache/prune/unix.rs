@@ -22,6 +22,7 @@ pub struct CacheEntry {
     pub rel_components: Vec<std::ffi::CString>,
     pub file_name: std::ffi::CString,
     pub size: u64,
+    // Retention age uses cache publication/change time, not the copied source mtime.
     pub modified: SystemTime,
 }
 
@@ -236,7 +237,7 @@ unsafe fn collect_dir(
                 }
             } else if mode == libc::S_IFREG {
                 let modified =
-                    SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_ctime.max(0) as u64);
                 let size = st.st_size as u64;
                 *total_size += size;
                 files.push(CacheEntry {

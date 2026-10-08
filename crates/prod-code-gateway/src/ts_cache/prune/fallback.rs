@@ -66,7 +66,10 @@ pub fn prune_fallback(
                 let Ok(meta) = fs::metadata(&path) else {
                     continue;
                 };
-                let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let modified_time = meta.modified().ok();
+                let modified = modified_time.unwrap_or(SystemTime::UNIX_EPOCH);
+                let retention_time =
+                    super::non_unix_retention_time(meta.created().ok(), modified_time);
                 let size = meta.len();
                 let created_at = parse_tmp_ts_timestamp(&name_str);
                 let age = match created_at {
@@ -88,7 +91,7 @@ pub fn prune_fallback(
                     }
                 } else {
                     *total_size += size;
-                    files.push((path, size, modified));
+                    files.push((path, size, retention_time));
                 }
             }
         }

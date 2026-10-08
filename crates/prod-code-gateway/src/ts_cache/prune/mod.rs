@@ -11,6 +11,8 @@
 use std::io;
 use std::path::Path;
 use std::time::Duration;
+#[cfg(any(not(unix), test))]
+use std::time::SystemTime;
 
 use super::env::ts_types_cache_dir;
 
@@ -21,6 +23,14 @@ pub mod timestamp;
 mod unix;
 
 pub use timestamp::{TMP_TS_GRACE_PERIOD, parse_tmp_ts_timestamp};
+
+#[cfg(any(not(unix), test))]
+pub(crate) fn non_unix_retention_time(
+    created: Option<SystemTime>,
+    modified: Option<SystemTime>,
+) -> SystemTime {
+    modified.or(created).unwrap_or(SystemTime::UNIX_EPOCH)
+}
 
 /// Evicts stale type files from the shared TypeScript types cache based on age and max capacity.
 /// Uses secure directory-handle-relative traversal and O_NOFOLLOW to eliminate symlink TOCTOU.
@@ -53,5 +63,24 @@ pub fn prune_stale_types_cache_with_grace(
     #[cfg(not(unix))]
     {
         fallback::prune_fallback(cache_dir, max_age, max_size_bytes, tmp_grace_period)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::non_unix_retention_time;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn test_new_cache_entry_fallback_prefers_publication_mtime() {
+        let created = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let published = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+
+        assert_eq!(
+            non_unix_retention_time(Some(created), Some(published)),
+            published
+        );
+        assert_eq!(non_unix_retention_time(Some(created), None), created);
+        assert_eq!(non_unix_retention_time(None, None), SystemTime::UNIX_EPOCH);
     }
 }
