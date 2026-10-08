@@ -196,23 +196,44 @@ impl GoEngine {
     }
 
     /// Notify `gopls` that a document was opened in an editor or worktree.
+    /// If the document is already open, deduplicate by sending `textDocument/didChange`
+    /// instead of a duplicate `didOpen` that churns gopls package loading and triggers re-indexing.
     pub async fn did_open(&self, file_uri: &str, text: &str) -> Result<()> {
-        self.send_notification(
-            "textDocument/didOpen",
-            serde_json::json!({
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "go",
-                    "version": 1,
-                    "text": text
-                }
-            }),
-        )
-        .await
+        let is_open = {
+            let mut open = self.open_files.write().await;
+            if let Some(version) = open.get_mut(file_uri) {
+                *version = version.wrapping_add(1);
+                Some(*version)
+            } else {
+                open.insert(file_uri.to_string(), 1);
+                None
+            }
+        };
+
+        if let Some(version) = is_open {
+            self.did_change(file_uri, text, version).await
+        } else {
+            self.send_notification(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": file_uri,
+                        "languageId": "go",
+                        "version": 1,
+                        "text": text
+                    }
+                }),
+            )
+            .await
+        }
     }
 
     /// Notify `gopls` of an unsaved text buffer update.
     pub async fn did_change(&self, file_uri: &str, text: &str, version: i32) -> Result<()> {
+        {
+            let mut open = self.open_files.write().await;
+            open.insert(file_uri.to_string(), version);
+        }
         self.send_notification(
             "textDocument/didChange",
             serde_json::json!({
@@ -230,6 +251,10 @@ impl GoEngine {
 
     /// Notify `gopls` that a document was closed.
     pub async fn did_close(&self, file_uri: &str) -> Result<()> {
+        {
+            let mut open = self.open_files.write().await;
+            open.remove(file_uri);
+        }
         self.send_notification(
             "textDocument/didClose",
             serde_json::json!({

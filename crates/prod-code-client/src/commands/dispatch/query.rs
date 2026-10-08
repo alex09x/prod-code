@@ -148,10 +148,21 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             }
         },
         Commands::Symbols { target } => {
-            if Path::new(&target).is_file() {
+            let target_path = Path::new(&target);
+            let resolved_file = if target_path.is_file() {
+                Some(target_path.to_path_buf())
+            } else if let Ok(cwd) = env::current_dir()
+                && let Some(root) = find_workspace_root(&cwd)
+                && root.join(target_path).is_file()
+            {
+                Some(root.join(target_path))
+            } else {
+                None
+            };
+            if let Some(file) = resolved_file {
                 run_symbols(
                     cx.remote,
-                    Path::new(&target),
+                    &file,
                     &prod_code_mcp::tools::OutlineOptions::all(usize::MAX, false, "pass --locals"),
                 )
                 .await

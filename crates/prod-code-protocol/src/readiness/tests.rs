@@ -138,7 +138,8 @@ fn the_pyright_line_and_the_index_queries_are_recognised() {
     assert!(pyright_found_sources("No source files found."));
     assert!(!pyright_found_sources("Found pyproject.toml"));
     assert!(needs_index("workspace/symbol") && needs_index("textDocument/references"));
-    assert!(!needs_index("textDocument/hover") && !needs_index("textDocument/definition"));
+    assert!(needs_index("textDocument/documentSymbol") && needs_index("textDocument/definition"));
+    assert!(!needs_index("textDocument/hover"));
 }
 
 #[test]

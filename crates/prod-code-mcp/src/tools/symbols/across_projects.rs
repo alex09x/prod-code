@@ -43,6 +43,38 @@ pub(crate) async fn symbol_search_across_projects(
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
     let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
+    let name = bare_symbol_name(query);
+    let named = |hits: &[SymbolHit]| {
+        hits.iter()
+            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
+    };
+
+    // Fast-path for explicit file hints: if the caller pointed at a specific source file
+    // that contains the symbol name, check its outline first (#1033, #1036).
+    if let Some(hint_path) = hint
+        && hint_path.is_file()
+        && read_name_scan_text(hint_path).is_some_and(|text| names_word(&text, name))
+    {
+        let node = match tokio::time::timeout_at(
+            deadline,
+            crate::cluster::route_for_path(remote, root, hint_path.to_str()),
+        )
+        .await
+        {
+            Ok(Ok(n)) => n,
+            _ => remote,
+        };
+        if let Ok(Ok(decls)) = tokio::time::timeout_at(
+            deadline,
+            declarations_in(node, root, &[hint_path.to_path_buf()], name),
+        )
+        .await
+            && named(&decls)
+        {
+            return Ok(decls);
+        }
+    }
+
     let mut hits = match tokio::time::timeout_at(
         deadline,
         workspace_symbol_search(remote, root, query, hint, limit),
@@ -57,11 +89,6 @@ pub(crate) async fn symbol_search_across_projects(
             );
             return Ok(Vec::new());
         }
-    };
-    let name = bare_symbol_name(query);
-    let named = |hits: &[SymbolHit]| {
-        hits.iter()
-            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
     };
     if named(&hits) {
         return Ok(hits);
@@ -80,14 +107,10 @@ pub(crate) async fn symbol_search_across_projects(
                 Ok(Err(_)) => remote,
                 Err(_) => return Ok(hits),
             };
-            let files = if hint.is_file() {
-                read_name_scan_text(hint)
-                    .is_some_and(|text| names_word(&text, name))
-                    .then(|| hint.to_path_buf())
-                    .into_iter()
-                    .collect()
-            } else {
+            let files = if hint.is_dir() {
                 files_naming(hint, engine, name, deadline)
+            } else {
+                Vec::new()
             };
             if !files.is_empty()
                 && let Ok(Ok(decls)) =

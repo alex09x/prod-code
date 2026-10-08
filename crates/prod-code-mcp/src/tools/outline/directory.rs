@@ -44,7 +44,12 @@ pub async fn outline_directory(
         }
         // Only source files a language server outlines: a manifest or a README is not asked
         // for, since a server that was handed one could answer with a made-up outline (#247).
-        if crate::sync::engine_for_file(&entry.path()).is_some() {
+        if let Some(engine) = crate::sync::engine_for_file(&entry.path())
+            && !matches!(
+                engine,
+                "markdown" | "yaml" | "toml" | "json" | "html" | "css"
+            )
+        {
             entries.push(entry);
         } else {
             skipped += 1;
