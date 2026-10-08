@@ -40,10 +40,10 @@ pub(crate) fn scan_rust(
         }
 
         let before_type = text[..pos].trim_end();
-        let (has_ref, has_mut, type_start) = if let Some(r) = before_type.strip_suffix("&mut") {
-            (true, true, pos - (before_type.len() - r.len()))
-        } else if let Some(r) = before_type.strip_suffix('&') {
-            (true, false, pos - (before_type.len() - r.len()))
+        let (has_ref, has_mut, type_start) = if before_type.ends_with("&mut") {
+            (true, true, before_type.len() - "&mut".len())
+        } else if before_type.ends_with('&') {
+            (true, false, before_type.len() - '&'.len_utf8())
         } else {
             (false, false, pos)
         };
