@@ -69,7 +69,7 @@ pub async fn move_item(
         std::fs::read_to_string(target)
             .with_context(|| format!("cannot read {}", target.display()))?
     } else {
-        String::new()
+        initial_file_header(target, target_lang)
     };
 
     let (name, decl_start, decl_end) = if let Ok(symbols) =
@@ -99,12 +99,7 @@ pub async fn move_item(
         carry_imports_polyglot(&source_text, &item, &target_text, file, target, lang, root);
 
     let target_new = if target_with_carried.trim().is_empty() {
-        let header = initial_file_header(target, lang);
-        if header.is_empty() {
-            format!("{}\n", item.trim())
-        } else {
-            format!("{header}{}\n", item.trim())
-        }
+        format!("{}\n", item.trim())
     } else {
         crate::move_item::append_item(&target_with_carried, &item)
     };

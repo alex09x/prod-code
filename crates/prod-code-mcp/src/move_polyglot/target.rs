@@ -132,7 +132,12 @@ pub(crate) fn initial_file_header(target: &Path, lang: Language) -> String {
                                 for line in content.lines() {
                                     let t = line.trim();
                                     if let Some(rest) = t.strip_prefix("package ") {
-                                        let name = rest.trim();
+                                        let name = rest
+                                            .split("//")
+                                            .next()
+                                            .unwrap_or(rest)
+                                            .trim()
+                                            .trim_end_matches(';');
                                         if !name.is_empty() {
                                             return Some(name.to_string());
                                         }
