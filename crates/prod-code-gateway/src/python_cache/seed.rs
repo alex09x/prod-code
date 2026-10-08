@@ -18,7 +18,7 @@ use prod_code_protocol::transport::ScrubSecrets;
 use crate::{DiskSpace, disk_space, seed_fits};
 
 use super::detect::{find_venv_stubs, is_python_project};
-use super::env::{ensure_cache_dir, python_stub_cache_dir};
+use super::env::{ensure_cache_dir, ensure_mypypath_view, python_stub_cache_dir};
 use super::fingerprint::python_stub_cache_namespace;
 use super::merge::{merge_stubs, tree_size};
 
@@ -101,6 +101,8 @@ pub fn seed_python_worktree_within(
             let merged = merge_stubs(&stub_dir, &dst_stub)?;
             total_bytes += merged;
         }
+
+        ensure_mypypath_view(&cache_dir)?;
     }
 
     // 3. Establish `to/typings` symlink pointing to this dependency-version cache view.
@@ -140,6 +142,7 @@ pub fn seed_python_worktree_within(
             // Keep a worktree's real typings directory available while merging its declarations.
             let merged = merge_stubs(&to_typings, &cache_dir)?;
             total_bytes += merged;
+            ensure_mypypath_view(&cache_dir)?;
         }
         _ => {}
     }
