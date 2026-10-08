@@ -38,7 +38,7 @@ pub(crate) async fn symbol_search_across_projects(
     hint: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
-    if query.trim().is_empty() || query.contains(char::is_whitespace) {
+    if query.trim().is_empty() {
         return Ok(Vec::new());
     }
     let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
@@ -345,15 +345,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn whitespace_query_fast_bails_without_hitting_network() {
+    async fn whitespace_only_query_fast_bails_without_hitting_network() {
         let dummy_addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let dummy_path = Path::new("/dummy");
         let result =
-            symbol_search_across_projects(dummy_addr, dummy_path, "by value", None, 30).await;
+            symbol_search_across_projects(dummy_addr, dummy_path, "   \t \n  ", None, 30).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
 
-        let result2 = symbol_search_across_projects(dummy_addr, dummy_path, "  ", None, 30).await;
+        let result2 = symbol_search_across_projects(dummy_addr, dummy_path, "", None, 30).await;
         assert!(result2.is_ok());
         assert!(result2.unwrap().is_empty());
     }
