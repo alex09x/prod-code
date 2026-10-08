@@ -46,6 +46,44 @@ fn render_truncates_large_failure_output() {
 }
 
 #[test]
+fn verify_render_keeps_failure_details_after_oversized_diagnostic() {
+    use super::super::types::Diagnostic;
+
+    let report = VerifyReport {
+        kind: VerifyKind::Test,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "test".into()],
+        exit_code: Some(101),
+        timed_out: false,
+        duration_ms: 1200,
+        diagnostics: vec![Diagnostic {
+            level: "error".into(),
+            code: None,
+            message: "oversized diagnostic ".repeat(1500),
+            file: Some("src/lib.rs".into()),
+            line: Some(1),
+            column: Some(1),
+        }],
+        tests_passed: 0,
+        tests_failed: 1,
+        failures: vec![TestFailure {
+            name: "tests::must_be_visible".into(),
+            output: "assertion failed".into(),
+        }],
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+
+    let text = report.render(10);
+    assert!(text.contains("--- FAILED tests::must_be_visible ---"));
+    assert!(text.contains("diagnostic truncated"));
+    assert!(text.len() <= MAX_RENDER_BYTES + 500);
+}
+
+#[test]
 fn render_caps_total_output_with_many_failures() {
     let failures: Vec<TestFailure> = (0..20)
         .map(|i| TestFailure {
