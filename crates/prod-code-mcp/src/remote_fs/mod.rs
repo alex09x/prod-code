@@ -223,15 +223,29 @@ pub fn workspace_relative_path(root: &Path, file_path: &str) -> Option<PathBuf> 
     if let Ok(rel) = path.strip_prefix(&root_canon) {
         return Some(rel.to_path_buf());
     }
-    let components: Vec<_> = path.components().collect();
-    for i in 0..components.len() {
-        if matches!(components[i], std::path::Component::Normal(_)) {
-            let subpath: PathBuf = components[i..].iter().collect();
-            let candidate = root.join(&subpath);
-            if candidate.is_file() {
-                if let Ok(canon) = std::fs::canonicalize(&candidate) {
-                    if canon.starts_with(&root_canon) {
-                        return Some(subpath);
+    // Only strip positively identified remote mirror workspace paths (under a known storage/workspaces directory)
+    const MIRROR_MARKERS: &[&str] = &[
+        "/prod-code-storage/workspaces/",
+        "/prod-code/workspaces/",
+        "/srv/workspaces/",
+    ];
+    for marker in MIRROR_MARKERS {
+        if let Some(pos) = file_path.find(marker) {
+            let after_marker = &file_path[pos + marker.len()..];
+            // after_marker starts with "<workspace_dir>/<relative_path>"
+            if let Some((_ws_dir, rel_str)) = after_marker.split_once('/') {
+                let rel = PathBuf::from(rel_str);
+                if !rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    let candidate = root.join(&rel);
+                    if candidate.is_file() {
+                        if let Ok(canon) = std::fs::canonicalize(&candidate) {
+                            if canon.starts_with(&root_canon) {
+                                return Some(rel);
+                            }
+                        }
                     }
                 }
             }

@@ -90,6 +90,7 @@ pub(crate) async fn incoming_calls(
     root: &Path,
     language: &str,
     sym: &Symbol,
+    deadline: Option<tokio::time::Instant>,
 ) -> Incoming {
     let abs = root.join(&sym.file);
     let Ok(uri) = Url::from_file_path(&abs).map(|u| u.to_string()) else {
@@ -97,7 +98,16 @@ pub(crate) async fn incoming_calls(
     };
     let position = serde_json::json!({ "line": sym.line.saturating_sub(1), "character": sym.col.saturating_sub(1) });
     let prepare = "textDocument/prepareCallHierarchy";
-    let query_timeout = std::time::Duration::from_secs(30);
+    let query_timeout = match deadline {
+        Some(dl) => {
+            let now = tokio::time::Instant::now();
+            if now >= dl {
+                return Incoming::Failed("impact BFS deadline expired".to_string());
+            }
+            std::cmp::min(std::time::Duration::from_secs(30), dl - now)
+        }
+        None => std::time::Duration::from_secs(30),
+    };
     let items = match tokio::time::timeout(
         query_timeout,
         session.query(
@@ -131,8 +141,18 @@ pub(crate) async fn incoming_calls(
     let method = "callHierarchy/incomingCalls";
     let mut out: Vec<(Symbol, bool)> = Vec::new();
     for item in items {
+        let per_item_timeout = match deadline {
+            Some(dl) => {
+                let now = tokio::time::Instant::now();
+                if now >= dl {
+                    break;
+                }
+                std::cmp::min(std::time::Duration::from_secs(30), dl - now)
+            }
+            None => std::time::Duration::from_secs(30),
+        };
         let incoming = match tokio::time::timeout(
-            query_timeout,
+            per_item_timeout,
             session.query(&abs, method, serde_json::json!({ "item": item })),
         )
         .await

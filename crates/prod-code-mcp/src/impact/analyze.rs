@@ -136,33 +136,15 @@ pub async fn analyze(
             .await
         {
             Ok(serde_json::Value::Array(symbols)) => symbols,
-            // The protocol's "no result": it does not say the file has no functions.
-            Ok(serde_json::Value::Null) => {
-                let error =
-                    "textDocument/documentSymbol answered null, so its functions are unknown"
-                        .to_string();
-                note(
-                    &mut incomplete,
-                    Gap::Symbols {
-                        file: file.clone(),
-                        error,
-                    },
-                );
-                continue;
-            }
-            Ok(other) => {
-                let error = unreadable("textDocument/documentSymbol", &other);
-                note(
-                    &mut incomplete,
-                    Gap::Symbols {
-                        file: file.clone(),
-                        error,
-                    },
-                );
-                continue;
-            }
-            Err(e) => {
-                let error = format!("{e:#}");
+            res => {
+                let error = match res {
+                    Ok(serde_json::Value::Null) => {
+                        "textDocument/documentSymbol answered null, so its functions are unknown"
+                            .to_string()
+                    }
+                    Ok(other) => unreadable("textDocument/documentSymbol", &other),
+                    Err(e) => format!("{e:#}"),
+                };
                 note(
                     &mut incomplete,
                     Gap::Symbols {
@@ -213,7 +195,7 @@ pub async fn analyze(
     let mut origins: Vec<(Symbol, bool)> = Vec::with_capacity(changed.len());
     for sym in &changed {
         let sym_file_lang = file_language(root, &sym.file).unwrap_or(&language);
-        match test_name(root, sym_file_lang, &sym.name, &sym.file, sym.line, false) {
+        let is_test = match test_name(root, sym_file_lang, &sym.name, &sym.file, sym.line, false) {
             Ok(Some(name)) => {
                 let test = Symbol {
                     name,
@@ -225,9 +207,9 @@ pub async fn analyze(
                     changed: sym.clone(),
                     hops: 0,
                 });
-                origins.push((sym.clone(), true));
+                true
             }
-            Ok(None) => origins.push((sym.clone(), false)),
+            Ok(None) => false,
             Err(error) => {
                 note(
                     &mut incomplete,
@@ -236,9 +218,10 @@ pub async fn analyze(
                         error,
                     },
                 );
-                origins.push((sym.clone(), false));
+                false
             }
-        }
+        };
+        origins.push((sym.clone(), is_test));
     }
 
     // Walk incoming calls breadth-first from each changed function on its own, so every test
@@ -257,14 +240,14 @@ pub async fn analyze(
         if first_lang != "rust"
             && let Ok(first_session) = session_pool.session_for_file(&first_abs).await
         {
-            let mut answer = incoming_calls(first_session, root, first_lang, first).await;
+            let mut answer = incoming_calls(first_session, root, first_lang, first, None).await;
             for _ in 0..COLD_RETRIES {
                 if matches!(&answer, Incoming::Callers(found) if !found.is_empty()) {
                     break;
                 }
                 tokio::time::sleep(COLD_WAIT).await;
                 if let Ok(first_session) = session_pool.session_for_file(&first_abs).await {
-                    answer = incoming_calls(first_session, root, first_lang, first).await;
+                    answer = incoming_calls(first_session, root, first_lang, first, None).await;
                 }
             }
             cache.insert(key(first), answer);
@@ -272,34 +255,37 @@ pub async fn analyze(
     }
     const IMPACT_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
     let bfs_start = tokio::time::Instant::now();
+    let deadline = bfs_start + IMPACT_BUDGET;
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
     let mut timed_out = false;
+    let check_budget = |incomplete: &mut Vec<Gap>| -> bool {
+        let elapsed = bfs_start.elapsed();
+        if elapsed < IMPACT_BUDGET {
+            return false;
+        }
+        let (elapsed_ms, budget_ms) =
+            (elapsed.as_millis() as u64, IMPACT_BUDGET.as_millis() as u64);
+        note(
+            incomplete,
+            Gap::Timeout {
+                elapsed_ms,
+                budget_ms,
+            },
+        );
+        true
+    };
     for (origin, origin_is_test) in &origins {
         if *origin_is_test {
             continue;
         }
-        if bfs_start.elapsed() >= IMPACT_BUDGET {
-            note(
-                &mut incomplete,
-                Gap::Timeout {
-                    elapsed_ms: bfs_start.elapsed().as_millis() as u64,
-                    budget_ms: IMPACT_BUDGET.as_millis() as u64,
-                },
-            );
+        if check_budget(&mut incomplete) {
             break;
         }
         let mut seen: HashSet<(String, u32, u32)> = HashSet::from([key(origin)]);
         let mut queue: VecDeque<(Symbol, bool, usize)> =
             VecDeque::from([(origin.clone(), *origin_is_test, 0)]);
         while let Some((sym, is_test, level)) = queue.pop_front() {
-            if bfs_start.elapsed() >= IMPACT_BUDGET {
-                note(
-                    &mut incomplete,
-                    Gap::Timeout {
-                        elapsed_ms: bfs_start.elapsed().as_millis() as u64,
-                        budget_ms: IMPACT_BUDGET.as_millis() as u64,
-                    },
-                );
+            if check_budget(&mut incomplete) {
                 timed_out = true;
                 break;
             }
@@ -308,7 +294,7 @@ pub async fn analyze(
                 let incoming = match session_pool.session_for_file(&sym_abs).await {
                     Ok(sym_session) => {
                         let sym_lang = file_language(root, &sym.file).unwrap_or(&language);
-                        incoming_calls(sym_session, root, sym_lang, &sym).await
+                        incoming_calls(sym_session, root, sym_lang, &sym, Some(deadline)).await
                     }
                     Err(e) => Incoming::Failed(format!("{e:#}")),
                 };
