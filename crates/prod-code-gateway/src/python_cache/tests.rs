@@ -152,3 +152,75 @@ fn test_parse_tmp_stub_timestamp() {
     assert!(parse_tmp_stub_timestamp(".tmp-stub-active-worker-2").is_none());
     assert!(parse_tmp_stub_timestamp(".tmp-stub-1-1-ffffffffffffffffffffffffffffffff").is_none());
 }
+
+#[cfg(unix)]
+#[test]
+fn test_remove_entry_rejects_mismatched_inode() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let file_path = temp.path().join("stub.pyi");
+    fs::write(&file_path, b"content").unwrap();
+
+    let meta = fs::metadata(&file_path).unwrap();
+    let old_ino = meta.ino();
+    let dev = meta.dev();
+
+    let c_root = std::ffi::CString::new(temp.path().as_os_str().as_bytes()).unwrap();
+    let root_fd = unsafe { libc::open(c_root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    assert!(root_fd >= 0);
+
+    let entry = prune::unix::CacheEntry {
+        rel_components: Vec::new(),
+        file_name: std::ffi::CString::new("stub.pyi").unwrap(),
+        size: 7,
+        modified: SystemTime::now(),
+        ino: old_ino + 1, // Intentional mismatched inode!
+        dev,
+    };
+
+    let removed = prune::unix::remove_entry(root_fd, &entry);
+    assert!(!removed, "entry with mismatched inode must not be removed");
+    assert!(file_path.is_file(), "file must still exist on disk");
+
+    unsafe {
+        libc::close(root_fd);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_remove_entry_removes_matching_inode() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let file_path = temp.path().join("stub.pyi");
+    fs::write(&file_path, b"content").unwrap();
+
+    let meta = fs::metadata(&file_path).unwrap();
+    let ino = meta.ino();
+    let dev = meta.dev();
+
+    let c_root = std::ffi::CString::new(temp.path().as_os_str().as_bytes()).unwrap();
+    let root_fd = unsafe { libc::open(c_root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    assert!(root_fd >= 0);
+
+    let entry = prune::unix::CacheEntry {
+        rel_components: Vec::new(),
+        file_name: std::ffi::CString::new("stub.pyi").unwrap(),
+        size: 7,
+        modified: SystemTime::now(),
+        ino,
+        dev,
+    };
+
+    let removed = prune::unix::remove_entry(root_fd, &entry);
+    assert!(removed, "entry with matching inode must be removed");
+    assert!(!file_path.exists(), "file must have been unlinked");
+
+    unsafe {
+        libc::close(root_fd);
+    }
+}

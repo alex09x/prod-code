@@ -574,3 +574,57 @@ fn test_prune_stale_stub_cache_never_unlinks_locked_temp_file_even_if_old() {
     assert_eq!(evicted_after, 1, "abandoned temp file must be unlinked once lock is released");
     assert!(!locked_tmp.exists(), "abandoned temp file must be cleaned up");
 }
+
+#[cfg(unix)]
+#[test]
+fn pruning_does_not_remove_a_locked_stub_entry() {
+    use std::os::unix::io::AsRawFd;
+
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+
+    let locked_stub = cache_dir.join("locked.pyi");
+    fs::write(&locked_stub, vec![1u8; 1000]).unwrap();
+
+    // Backdate locked_stub so it is eligible for eviction
+    let long_ago = std::time::SystemTime::now() - Duration::from_secs(3600 * 48);
+    let sec = long_ago
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as libc::time_t;
+    let times = [
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
+    ];
+    let c_path = std::ffi::CString::new(locked_stub.to_str().unwrap()).unwrap();
+    unsafe {
+        libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
+    }
+
+    // Acquire publisher target lock: .lock-locked.pyi
+    let lock_path = cache_dir.join(".lock-locked.pyi");
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .unwrap();
+    let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
+    assert_eq!(ret, 0);
+
+    // Prune with max_size_bytes 100 - locked_stub would be evicted if not locked
+    let evicted = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600), 100).unwrap();
+    assert_eq!(evicted, 0, "locked stub entry must not be evicted");
+    assert!(locked_stub.is_file(), "locked stub entry must remain");
+
+    // Release lock
+    drop(lock_file);
+}
+
