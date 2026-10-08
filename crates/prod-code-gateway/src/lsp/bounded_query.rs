@@ -104,6 +104,9 @@ where
                 {
                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
                 }
+                if let Err(e) = engine.ensure_fresh_for_path(file_path) {
+                    tracing::warn!(error = %e, file = %file_path.display(), "failed to ensure engine freshness");
+                }
                 if file_path.is_dir() {
                     engine.snapshot_for(file_path)
                 } else {

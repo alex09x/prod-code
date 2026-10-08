@@ -11,13 +11,10 @@
 //! Worktree attachments, file reloading, and Salsa database text mutation.
 
 use anyhow::Result;
-use ra_ap_load_cargo::worktree::Overlay;
 use ra_ap_paths::AbsPathBuf;
-use ra_ap_project_model::{ProjectManifest, ProjectWorkspace};
 use std::path::Path;
 
 use super::RustEngine;
-use crate::config::ProdCodeConfig;
 use crate::vfs::{is_rust_source, normalize_vfs_path};
 
 impl RustEngine {
@@ -83,49 +80,24 @@ impl RustEngine {
     /// Attaches a worktree copy of this workspace. Reference-counted so multiple workspaces
     /// or validation sessions sharing the same worktree root keep it attached until all release it.
     pub fn attach_worktree(&mut self, copy_root: &Path) -> Result<()> {
-        if let Some(count) = self.worktree_attachments.get_mut(copy_root) {
-            *count += 1;
+        let is_attached = self.worktree_attachments.contains_key(copy_root);
+        let stale = is_attached && self.is_worktree_stale(copy_root);
+
+        if is_attached && !stale {
+            if let Some(count) = self.worktree_attachments.get_mut(copy_root) {
+                *count += 1;
+            }
             return Ok(());
         }
 
-        let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
-        let base_abs = AbsPathBuf::assert_utf8(self.workspace_root.clone());
-        let overlay = Overlay {
-            worktree_root: copy_abs.clone(),
-            base_root: base_abs,
-        };
-        let config = ProdCodeConfig::load(copy_root);
-        let cargo_config = config.cargo_config();
-        let mut workspace = match self.worktrees.workspace_of_copy(&overlay) {
-            Some(ws) => ws,
-            None => {
-                let manifest = ProjectManifest::discover_single(&copy_abs).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Manifest discovery failed for copy {}: {e}",
-                        copy_root.display()
-                    )
-                })?;
-                ProjectWorkspace::load(manifest, &cargo_config, &|_| {}).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Workspace load failed for copy {}: {e}",
-                        copy_root.display()
-                    )
-                })?
-            }
-        };
-        let db = self.host.raw_database_mut();
-        let mut vfs = self
-            .vfs
-            .write()
-            .map_err(|e| anyhow::anyhow!("VFS lock: {e}"))?;
-        if config.rust.build_scripts {
-            self.worktrees
-                .inherit_build_scripts(&vfs, &mut workspace, &overlay);
+        self.reload_worktree(copy_root)?;
+
+        if let Some(count) = self.worktree_attachments.get_mut(copy_root) {
+            *count += 1;
+        } else {
+            self.worktree_attachments.insert(copy_root.to_path_buf(), 1);
         }
-        self.worktrees.add(db, &mut vfs, workspace, overlay);
-        self.changes += 1;
-        self.worktree_attachments.insert(copy_root.to_path_buf(), 1);
-        tracing::info!(copy = %copy_root.display(), "Attached worktree overlay to shared RustEngine");
+        tracing::info!(copy = %copy_root.display(), stale, "Attached worktree overlay to shared RustEngine");
         Ok(())
     }
 
@@ -137,6 +109,7 @@ impl RustEngine {
                 return false;
             }
             self.worktree_attachments.remove(copy_root);
+            self.worktree_manifest_mtimes.remove(copy_root);
         }
         let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
         let db = self.host.raw_database_mut();
