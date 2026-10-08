@@ -111,6 +111,28 @@ fn commonjs_callable_import_uses_the_local_binding() {
 }
 
 #[test]
+fn named_import_alias_does_not_prove_an_unrelated_member_receiver() {
+    let source = "import { retry as again } from \"./selected\";\nother.again();\n";
+    assert_eq!(
+        super::imported_caller_symbols(
+            source,
+            Path::new("src/caller.ts"),
+            Path::new("src/selected.ts"),
+            "retry",
+            Language::TypeScript,
+        ),
+        vec!["again"]
+    );
+    assert!(!super::is_proven_namespace_import(
+        source,
+        "other",
+        Path::new("src/caller.ts"),
+        Path::new("src/selected.ts"),
+        Language::TypeScript,
+    ));
+}
+
+#[test]
 fn go_cross_package_import_proves_its_qualified_call() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("go.mod"), "module example.com/app\n").unwrap();
