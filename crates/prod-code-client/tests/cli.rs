@@ -38,6 +38,7 @@ pub struct MockGateway {
     pub fail_exec: Arc<AtomicBool>,
     pub custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
     pub place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    pub place_request_active: Arc<std::sync::Mutex<Vec<bool>>>,
     pub reported_platform: Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -49,6 +50,7 @@ struct MockState {
     fail_exec: Arc<AtomicBool>,
     custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
     place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    place_request_active: Arc<std::sync::Mutex<Vec<bool>>>,
     reported_platform: Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -72,6 +74,7 @@ impl MockGateway {
         let fail_exec = Arc::new(AtomicBool::new(false));
         let custom_exec = Arc::new(std::sync::Mutex::new(None));
         let place_request_os = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let place_request_active = Arc::new(std::sync::Mutex::new(Vec::new()));
         let reported_platform = Arc::new(std::sync::Mutex::new(None));
 
         let state = Arc::new(MockState {
@@ -82,6 +85,7 @@ impl MockGateway {
             fail_exec: Arc::clone(&fail_exec),
             custom_exec: Arc::clone(&custom_exec),
             place_request_os: Arc::clone(&place_request_os),
+            place_request_active: Arc::clone(&place_request_active),
             reported_platform: Arc::clone(&reported_platform),
         });
 
@@ -105,6 +109,7 @@ impl MockGateway {
             fail_exec,
             custom_exec,
             place_request_os,
+            place_request_active,
             reported_platform,
         }
     }
@@ -192,6 +197,11 @@ async fn handle_client(
             }
             WireMessage::PlaceRequest(req) => {
                 state.place_request_os.lock().unwrap().push(req.os.clone());
+                state
+                    .place_request_active
+                    .lock()
+                    .unwrap()
+                    .push(req.rebalance_active);
                 framed
                     .send(WireMessage::PlaceResponse(PlaceResponse {
                         node: Some(local_addr.to_string()),
@@ -605,7 +615,16 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
     assert!(stdout_of(&out_text).contains("Active workload rebalanced to"));
     assert_eq!(
         *gw.place_request_os.lock().unwrap(),
-        vec![Some("macos".to_string()), Some("macos".to_string())]
+        vec![
+            Some("macos".to_string()),
+            Some("macos".to_string()),
+            Some("macos".to_string()),
+            Some("macos".to_string())
+        ]
+    );
+    assert_eq!(
+        *gw.place_request_active.lock().unwrap(),
+        vec![false, true, false, true]
     );
 }
 
@@ -630,6 +649,7 @@ async fn cli_does_not_cache_or_report_a_linux_rebalance_for_macos_cgo() {
         *gw.place_request_os.lock().unwrap(),
         vec![Some("macos".to_string())]
     );
+    assert_eq!(*gw.place_request_active.lock().unwrap(), vec![false]);
 }
 
 #[tokio::test]
