@@ -23,7 +23,7 @@
 
 ### Refactored
 - **Comprehensive Modular Decomposition Across All Crates**:
-  Decomposed 104 monolithic source files exceeding 400 lines across `crates/prod-code-*` into cohesive, focused submodules adhering to the 100–300 lines sweet spot. The only production source files in `src/` still over 400 lines are `commands.rs`, which contains the declarative `clap::Subcommand` schema, and `extract_function_polyglot/tokenize.rs`, whose size comes from the language keyword and built-in/global-name lookup tables.
+  Decomposed 104 monolithic source files exceeding 400 lines across `crates/prod-code-*` into cohesive, focused submodules. At the v0.3.26 release, several large production files still exceeded 400 lines, including `extract_function_polyglot/tokenize.rs` (991 lines), `extract_field/polyglot/target.rs` (504), and `dataflow/slice.rs` (409); the decomposition was substantial progress, not completion of the compact-source target.
   - `crates/prod-code-testkit`: decomposed `gopls` bridge, workspace, and mock infrastructure.
   - `crates/prod-code-protocol`: modularized codec, discovery, DNS, transport, TLS, and message serializers.
   - `crates/prod-code-engine-go`, `crates/prod-code-engine-generic`, `crates/prod-code-engine-rust`: modularized LSP lifecycle, config, and document management.
