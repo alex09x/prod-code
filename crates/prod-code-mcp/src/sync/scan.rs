@@ -8,9 +8,10 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use crate::sync::entry::{fits_sync, is_executable};
+use crate::sync::entry::fits_sync;
 use crate::sync::filter_path::{is_filesystem_root, is_synced_git_path};
 use crate::sync::git::{collect_git_dirty_files, git_listed_files};
+use crate::sync::read::read_file_or_contained_symlink;
 use crate::sync::relevance::is_relevant_code_or_manifest_file;
 use crate::sync::types::{
     MAX_FILE_SIZE, MAX_JSON_CONFIG_SIZE, MAX_NON_GIT_WORKSPACE_BYTES, MAX_NON_GIT_WORKSPACE_FILES,
@@ -18,94 +19,6 @@ use crate::sync::types::{
 use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use std::path::Path;
-
-#[cfg(unix)]
-pub(crate) fn verify_fd_containment(file: &std::fs::File, canonical_root: &Path) -> Result<bool> {
-    use std::os::unix::io::AsRawFd;
-    let fd = file.as_raw_fd();
-
-    #[cfg(target_os = "macos")]
-    {
-        let mut buf = vec![0u8; libc::PATH_MAX as usize];
-        if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr() as *mut libc::c_char) } != -1
-        {
-            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-            if let Ok(path_str) = std::str::from_utf8(&buf[..len]) {
-                return Ok(Path::new(path_str).starts_with(canonical_root));
-            }
-        }
-        Ok(false)
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(link) = std::fs::read_link(format!("/proc/self/fd/{fd}")) {
-            return Ok(link.starts_with(canonical_root));
-        }
-        Ok(false)
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = fd;
-        let _ = canonical_root;
-        anyhow::bail!("File descriptor containment verification is not supported on this platform");
-    }
-}
-
-/// Securely opens and reads a regular file without following symlinks to eliminate symlink TOCTOU.
-/// Rejects symlinks at opening via `O_NOFOLLOW` and reads directly from the verified file handle.
-pub(crate) fn read_regular_file_secure(
-    path: &Path,
-    canonical_root: &Path,
-) -> Result<Option<(Vec<u8>, bool)>> {
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        let _ = canonical_root;
-        anyhow::bail!("Secure file reading is unsupported on non-Unix platforms");
-    }
-
-    #[cfg(unix)]
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-
-        let mut file = match options.open(path) {
-            Ok(f) => f,
-            Err(err) => {
-                if err.raw_os_error() == Some(libc::ELOOP) {
-                    return Ok(None);
-                }
-                return Ok(None);
-            }
-        };
-
-        let metadata = match file.metadata() {
-            Ok(m) => m,
-            Err(_) => return Ok(None),
-        };
-
-        if !metadata.file_type().is_file() {
-            return Ok(None);
-        }
-
-        if !verify_fd_containment(&file, canonical_root)? {
-            return Ok(None);
-        }
-
-        let mut content = Vec::new();
-        use std::io::Read;
-        if file.read_to_end(&mut content).is_err() {
-            return Ok(None);
-        }
-
-        let is_exec = is_executable(&metadata);
-        Ok(Some((content, is_exec)))
-    }
-}
 
 /// Scan workspace directory and generate FileDelta list, filtering out build artifacts and VCS.
 ///
@@ -138,17 +51,6 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
     let mut deltas = Vec::new();
 
     if target_dir.is_file() {
-        if let Ok(sym_meta) = target_dir.symlink_metadata() {
-            if sym_meta.file_type().is_symlink() {
-                return Ok(deltas);
-            }
-        }
-        let Ok(canonical) = std::fs::canonicalize(&target_dir) else {
-            return Ok(deltas);
-        };
-        if !canonical.starts_with(&canonical_root) {
-            return Ok(deltas);
-        }
         let rel_path = target_dir
             .strip_prefix(&canonical_root)
             .unwrap_or(&target_dir)
@@ -159,8 +61,8 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
         if is_relevant_code_or_manifest_file(&rel_path)
             || (listed_by_git && is_synced_git_path(&rel_path))
         {
-            if let Some((content, is_exec)) =
-                read_regular_file_secure(&target_dir, &canonical_root)?
+            if let Some((content, is_exec, _)) =
+                read_file_or_contained_symlink(&target_dir, &canonical_root, &rel_path)?
             {
                 deltas.push(FileDelta {
                     relative_path: rel_path,
@@ -178,20 +80,14 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
                 continue;
             }
             let full_path = canonical_root.join(&rel_path);
-            let Ok(sym_meta) = full_path.symlink_metadata() else {
-                continue; // listed by git, deleted on disk
-            };
-            if sym_meta.file_type().is_symlink() {
-                continue;
-            }
-            if !fits_sync(&rel_path, &sym_meta) {
-                continue;
-            }
-            let Some((content, is_executable)) =
-                read_regular_file_secure(&full_path, &canonical_root)?
+            let Some((content, is_executable, meta)) =
+                read_file_or_contained_symlink(&full_path, &canonical_root, &rel_path)?
             else {
                 continue;
             };
+            if !fits_sync(&rel_path, &meta) {
+                continue;
+            }
             deltas.push(FileDelta {
                 relative_path: rel_path,
                 content: Some(content),
@@ -321,30 +217,6 @@ pub(crate) fn walk_dir(
         };
 
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        // Security: reject symlinks and symlinked targets pointing outside the workspace root
-        if entry
-            .file_type()
-            .map_or(true, |ft| ft.is_symlink() || !ft.is_file())
-        {
-            continue;
-        }
-        if let Ok(sym_meta) = path.symlink_metadata() {
-            if sym_meta.file_type().is_symlink() {
-                continue;
-            }
-        }
-        if let Ok(canonical) = std::fs::canonicalize(path) {
-            if !canonical.starts_with(canonical_root) || !canonical.is_file() {
-                continue;
-            }
-        } else {
-            continue;
-        }
-
         let rel_path = path
             .strip_prefix(canonical_root)
             .unwrap_or(path)
@@ -355,29 +227,28 @@ pub(crate) fn walk_dir(
             continue;
         }
 
-        if let Ok(metadata) = entry.metadata()
-            && rel_path.ends_with(".json")
-            && metadata.len() > MAX_JSON_CONFIG_SIZE
-        {
+        let Some((content, is_executable, meta)) =
+            read_file_or_contained_symlink(path, canonical_root, &rel_path)?
+        else {
+            continue;
+        };
+
+        if rel_path.ends_with(".json") && meta.len() > MAX_JSON_CONFIG_SIZE {
             continue;
         }
 
-        if let Some((content, is_executable)) = read_regular_file_secure(path, canonical_root)? {
-            total_bytes += content.len();
-            deltas.push(FileDelta {
-                relative_path: rel_path,
-                content: Some(content),
-                is_executable,
-            });
-            if deltas.len() > MAX_NON_GIT_WORKSPACE_FILES
-                || total_bytes > MAX_NON_GIT_WORKSPACE_BYTES
-            {
-                anyhow::bail!(
-                    "non-git workspace exceeds safety limits ({} files, {} bytes); use a git checkout or specify a narrower subpath",
-                    deltas.len(),
-                    total_bytes
-                );
-            }
+        total_bytes += content.len();
+        deltas.push(FileDelta {
+            relative_path: rel_path,
+            content: Some(content),
+            is_executable,
+        });
+        if deltas.len() > MAX_NON_GIT_WORKSPACE_FILES || total_bytes > MAX_NON_GIT_WORKSPACE_BYTES {
+            anyhow::bail!(
+                "non-git workspace exceeds safety limits ({} files, {} bytes); use a git checkout or specify a narrower subpath",
+                deltas.len(),
+                total_bytes
+            );
         }
     }
 

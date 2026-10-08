@@ -9,10 +9,10 @@
  */
 
 use crate::sync::cache::{load_sync_cache, save_sync_cache};
-use crate::sync::entry::sync_file_entry;
+use crate::sync::entry::{fits_sync, sync_file_entry};
+use crate::sync::read::read_file_or_contained_symlink;
 use crate::sync::relevance::is_relevant_code_or_manifest_file;
-use crate::sync::scan::read_regular_file_secure;
-use crate::sync::types::{MAX_FILE_SIZE, MAX_JSON_CONFIG_SIZE, SyncCache};
+use crate::sync::types::SyncCache;
 use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -264,22 +264,14 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
             if cache.files.remove(rel_path).is_some() {
                 cache_modified = true;
             }
-        } else if let Ok(sym_meta) = full_path.symlink_metadata() {
-            if sym_meta.file_type().is_symlink() {
-                continue;
-            }
-            let size = sym_meta.len();
-            if size > MAX_FILE_SIZE {
-                continue;
-            }
-            if rel_path.ends_with(".json") && size > MAX_JSON_CONFIG_SIZE {
+        } else if let Some((content, is_executable, meta)) =
+            read_file_or_contained_symlink(&full_path, root, rel_path)?
+        {
+            if !fits_sync(rel_path, &meta) {
                 continue;
             }
 
-            let Some((content, is_executable)) = read_regular_file_secure(&full_path, root)? else {
-                continue;
-            };
-            let entry = sync_file_entry(&sym_meta, &content);
+            let entry = sync_file_entry(&meta, &content);
             if cache.files.get(rel_path) == Some(&entry) {
                 // File was already synced and has not changed.
                 continue;

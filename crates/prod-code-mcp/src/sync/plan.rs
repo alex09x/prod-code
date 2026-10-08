@@ -12,7 +12,8 @@ use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
 use crate::sync::entry::{fits_sync, is_executable, sync_file_entry};
 use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path};
 use crate::sync::git::{changed_paths, git_head, git_listed_paths, git_output};
-use crate::sync::scan::{read_regular_file_secure, scan_workspace_files};
+use crate::sync::read::read_file_or_contained_symlink;
+use crate::sync::scan::scan_workspace_files;
 use crate::sync::types::{RELEVANCE_VERSION, SyncCache, SyncPlan};
 use anyhow::{Context, Result};
 use prod_code_protocol::FileDelta;
@@ -109,21 +110,15 @@ pub fn prepare_workspace_sync_for(
         }
 
         let full_path = canonical_root.join(&relative_path);
-        let Ok(sym_meta) = full_path.symlink_metadata() else {
-            continue;
-        };
-        if sym_meta.file_type().is_symlink() {
-            continue;
-        }
-        if !fits_sync(&relative_path, &sym_meta) {
-            continue;
-        }
-
-        let Some((content, is_exec)) = read_regular_file_secure(&full_path, &canonical_root)?
+        let Some((content, is_exec, meta)) =
+            read_file_or_contained_symlink(&full_path, &canonical_root, &relative_path)?
         else {
             continue;
         };
-        let entry = sync_file_entry(&sym_meta, &content);
+        if !fits_sync(&relative_path, &meta) {
+            continue;
+        }
+        let entry = sync_file_entry(&meta, &content);
         if state.files.get(&relative_path) == Some(&entry) {
             continue;
         }
@@ -150,13 +145,18 @@ pub fn prepare_workspace_sync_for(
     let listed = git_listed_paths(&canonical_root, &lost);
     for rel in lost {
         let full_path = canonical_root.join(&rel);
-        match full_path.symlink_metadata() {
-            Ok(sym_meta) => {
-                if sym_meta.file_type().is_symlink()
-                    || !listed.contains(&rel)
-                    || !is_synced_git_path(&rel)
-                    || !fits_sync(&rel, &sym_meta)
-                {
+        if !listed.contains(&rel) || !is_synced_git_path(&rel) {
+            state.files.remove(&rel);
+            files.push(FileDelta {
+                relative_path: rel,
+                content: None,
+                is_executable: false,
+            });
+            continue;
+        }
+        match read_file_or_contained_symlink(&full_path, &canonical_root, &rel) {
+            Ok(Some((content, is_executable, meta))) => {
+                if !fits_sync(&rel, &meta) {
                     state.files.remove(&rel);
                     files.push(FileDelta {
                         relative_path: rel,
@@ -165,30 +165,28 @@ pub fn prepare_workspace_sync_for(
                     });
                     continue;
                 }
-                let Some((content, is_executable)) =
-                    read_regular_file_secure(&full_path, &canonical_root)?
-                else {
-                    state.resend.insert(rel);
-                    continue;
-                };
                 state
                     .files
-                    .insert(rel.clone(), sync_file_entry(&sym_meta, &content));
+                    .insert(rel.clone(), sync_file_entry(&meta, &content));
                 files.push(FileDelta {
                     relative_path: rel,
                     content: Some(content),
                     is_executable,
                 });
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                state.files.remove(&rel);
-                files.push(FileDelta {
-                    relative_path: rel,
-                    content: None,
-                    is_executable: false,
-                });
+            Ok(None) => {
+                if full_path.exists() {
+                    state.resend.insert(rel);
+                } else {
+                    state.files.remove(&rel);
+                    files.push(FileDelta {
+                        relative_path: rel,
+                        content: None,
+                        is_executable: false,
+                    });
+                }
             }
-            Err(err) => return Err(err.into()),
+            Err(err) => return Err(err),
         }
     }
 

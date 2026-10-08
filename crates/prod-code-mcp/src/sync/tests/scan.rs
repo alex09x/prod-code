@@ -338,3 +338,84 @@ ignore = ["ignored_subdir", "*.ignored"]
     );
     assert!(!deltas.iter().any(|d| d.relative_path.ends_with(".ignored")));
 }
+
+#[test]
+fn test_scan_workspace_files_preserves_contained_symlinks_and_rejects_external() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let ws_root = ws.path();
+    let external = tempfile::tempdir().expect("external tempdir");
+    let ext_file = external.path().join("secret.swift");
+    std::fs::write(&ext_file, "secret-external-bytes").unwrap();
+
+    let src = ws_root.join("Sources");
+    let tests = ws_root.join("Tests");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tests).unwrap();
+
+    let orig_file = src.join("Command.swift");
+    std::fs::write(&orig_file, "struct Command {}\n").unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(&orig_file, tests.join("LinkedCommand.swift")).unwrap();
+        symlink(&ext_file, tests.join("Escaped.swift")).unwrap();
+
+        let deltas = scan_workspace_files(ws_root, None).expect("scan");
+        let linked = deltas
+            .iter()
+            .find(|d| d.relative_path == "Tests/LinkedCommand.swift");
+        assert!(linked.is_some(), "contained symlink must be materialized");
+        assert_eq!(
+            linked.unwrap().content.as_deref(),
+            Some(b"struct Command {}\n".as_slice())
+        );
+
+        let escaped = deltas
+            .iter()
+            .find(|d| d.relative_path == "Tests/Escaped.swift");
+        assert!(escaped.is_none(), "external symlink must not be included");
+        for d in &deltas {
+            if let Some(content) = &d.content {
+                assert_ne!(content.as_slice(), b"secret-external-bytes");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_contained_symlink_and_regular_file_reject_oversized_before_read() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let ws_root = ws.path();
+    let src = ws_root.join("Sources");
+    std::fs::create_dir_all(&src).unwrap();
+
+    let huge_file = src.join("huge.swift");
+    let f = std::fs::File::create(&huge_file).unwrap();
+    // Sparse file exceeding MAX_FILE_SIZE (10 MiB)
+    f.set_len(crate::sync::types::MAX_FILE_SIZE + 1024).unwrap();
+    drop(f);
+
+    #[cfg(unix)]
+    {
+        use crate::sync::read::read_file_or_contained_symlink;
+        use std::os::unix::fs::symlink;
+        let sym = src.join("huge_sym.swift");
+        symlink(&huge_file, &sym).unwrap();
+
+        let canon_ws = std::fs::canonicalize(ws_root).unwrap();
+        let res_sym = read_file_or_contained_symlink(&sym, &canon_ws, "Sources/huge_sym.swift")
+            .expect("read should not error");
+        assert!(
+            res_sym.is_none(),
+            "oversized symlink target must be rejected before reading"
+        );
+
+        let res_file = read_file_or_contained_symlink(&huge_file, &canon_ws, "Sources/huge.swift")
+            .expect("read should not error");
+        assert!(
+            res_file.is_none(),
+            "oversized regular file must be rejected before reading"
+        );
+    }
+}

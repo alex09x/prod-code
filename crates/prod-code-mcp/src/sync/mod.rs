@@ -16,6 +16,7 @@ pub mod git;
 pub mod plan;
 pub mod pull;
 pub mod push;
+pub(crate) mod read;
 pub mod relevance;
 pub mod scan;
 pub mod types;
