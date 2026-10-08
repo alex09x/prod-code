@@ -33,8 +33,8 @@ pub use pick::{pick_node, pick_node_with};
 pub use placement::{remember_placement, remembered_node};
 pub use rebalance::{evaluate_cluster_rebalance, evaluate_cluster_rebalance_with};
 pub use routing::{
-    PROBE_TIMEOUT, checkout_node_in, nested_engine, route_for_checkout, route_for_path, route_in,
-    set_routing,
+    PROBE_TIMEOUT, checkout_node_in, known_cluster_nodes, nested_engine, route_for_checkout,
+    route_for_path, route_in, set_routing,
 };
 pub use selection::{
     choose_best_node, choose_quietest, is_alive, rendezvous_order, runs_os, supports_engine,

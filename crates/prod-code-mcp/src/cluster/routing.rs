@@ -37,6 +37,11 @@ pub fn set_routing(nodes: Vec<SocketAddr>, workspace: String) {
     let _ = ROUTING.set(Routing { nodes, workspace });
 }
 
+/// The known cluster nodes configured for this session, if any.
+pub fn known_cluster_nodes() -> Option<Vec<SocketAddr>> {
+    ROUTING.get().map(|r| r.nodes.clone())
+}
+
 /// The node for a request about `path` in the checkout at `root`: `default` when the path
 /// belongs to the checkout's own project, otherwise a node that serves the engine of the
 /// nested project the path is in (a SwiftPM package or Xcode project under a Rust repository

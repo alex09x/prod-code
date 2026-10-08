@@ -120,7 +120,14 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
             .find(|w| w.name == req.workspace_name)
             .map(|w| (w.sessions == 0, w.sessions))
             .unwrap_or((true, 0));
-        let can_move = idle || req.rebalance_active;
+        let has_pressure = pressure(h).is_some();
+        let congested = score(h) >= 0.80;
+        let can_move = idle
+            || req.rebalance_active
+            || (has_pressure && roomy_exists)
+            || (congested
+                && quietest
+                    .is_some_and(|q| score(q) < score(h) * 0.50 && (score(h) - score(q)) >= 0.40));
         if let Some(q) = quietest
             && can_move
             && q.addr != h.addr
