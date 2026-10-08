@@ -183,11 +183,16 @@ fn external_dependency_source_with_same_suffix_is_not_mapped_to_workspace() {
     assert_eq!(workspace_relative_path(&root, ext_str), None);
     assert!(is_external(&root, ext_str));
 
-    // A valid remote mirror path does map to the workspace relative path
-    let mirror_path = "/home/alex09x/prod-code-storage/workspaces/my-ws/src/lib.rs";
+    // A valid remote mirror path for this workspace does map to the workspace relative path
+    let mirror_path = "/mirror/prod-code-storage/workspaces/workspace/src/lib.rs";
     assert_eq!(
         workspace_relative_path(&root, mirror_path),
         Some(PathBuf::from("src/lib.rs"))
     );
     assert!(!is_external(&root, mirror_path));
+
+    // A mirror path for a different workspace sharing a suffix is not mapped to this workspace
+    let other_ws = "/srv/workspaces/other-project/src/lib.rs";
+    assert_eq!(workspace_relative_path(&root, other_ws), None);
+    assert!(is_external(&root, other_ws));
 }

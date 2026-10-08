@@ -229,11 +229,25 @@ pub fn workspace_relative_path(root: &Path, file_path: &str) -> Option<PathBuf> 
         "/prod-code/workspaces/",
         "/srv/workspaces/",
     ];
+    let identity = crate::sync::workspace_identity(root);
+    let ws_name = root.file_name().and_then(|n| n.to_str()).unwrap_or("");
     for marker in MIRROR_MARKERS {
         if let Some(pos) = file_path.find(marker) {
             let after_marker = &file_path[pos + marker.len()..];
             // after_marker starts with "<workspace_dir>/<relative_path>"
-            if let Some((_ws_dir, rel_str)) = after_marker.split_once('/') {
+            if let Some((ws_dir, rel_str)) = after_marker.split_once('/') {
+                let matches_ws = ws_dir == identity.name
+                    || identity.base.as_deref().is_some_and(|b| ws_dir == b)
+                    || (!ws_name.is_empty() && ws_dir == ws_name)
+                    || ws_dir.starts_with(&format!("{}--wt-", identity.name))
+                    || identity
+                        .base
+                        .as_deref()
+                        .is_some_and(|b| ws_dir.starts_with(&format!("{b}--wt-")))
+                    || (!ws_name.is_empty() && ws_dir.starts_with(&format!("{ws_name}--wt-")));
+                if !matches_ws {
+                    continue;
+                }
                 let rel = PathBuf::from(rel_str);
                 if !rel
                     .components()

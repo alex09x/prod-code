@@ -300,6 +300,10 @@ pub async fn analyze(
                 };
                 slot.insert(incoming);
             }
+            if check_budget(&mut incomplete) {
+                timed_out = true;
+                break;
+            }
             let found = match &cache[&key(&sym)] {
                 Incoming::Callers(found) => found.clone(),
                 // A test is selected whatever calls it, and module-level test code (a test

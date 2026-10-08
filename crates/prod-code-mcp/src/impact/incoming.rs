@@ -145,7 +145,7 @@ pub(crate) async fn incoming_calls(
             Some(dl) => {
                 let now = tokio::time::Instant::now();
                 if now >= dl {
-                    break;
+                    return Incoming::Failed("incomingCalls budget timed out".to_string());
                 }
                 std::cmp::min(std::time::Duration::from_secs(30), dl - now)
             }
