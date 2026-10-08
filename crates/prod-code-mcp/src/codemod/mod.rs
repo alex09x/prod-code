@@ -25,7 +25,7 @@ mod tests;
 pub use execute::{run_codemod, run_structural_search};
 pub use matcher::{find_structural_matches_in_source, rewrite_source};
 pub use scope::resolve_workspace_scope;
-pub use source::tokenize_source;
+pub use source::{tokenize_source, tokenize_source_for_lang};
 pub use types::{
     CODE_EXTENSIONS, CodemodMatch, CodemodOutcome, CodemodRule, CompiledPattern, PatternToken,
     ReplacementToken, SourceToken, StructuralMatchItem, StructuralSearchResult, TokenKind,
