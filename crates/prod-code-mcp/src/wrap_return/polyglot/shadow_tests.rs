@@ -234,3 +234,53 @@ fn test_python_local_import_as_shadows() {
         Language::Python
     ));
 }
+
+#[test]
+fn test_object_literal_property_does_not_shadow_imported_binding() {
+    let content = "async function run() {\n    const handlers = { retry };\n    retry();\n}\n";
+    let call_at = content.rfind("retry();").unwrap();
+    assert!(!is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::TypeScript
+    ));
+}
+
+#[test]
+fn test_nested_function_declaration_shadows_imported_binding() {
+    let content = "async function run() {\n    function retry() {}\n    retry();\n}\n";
+    let declaration_at = content.find("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        declaration_at,
+        "retry",
+        Language::TypeScript
+    ));
+    let call_at = content.rfind("retry();").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::TypeScript
+    ));
+}
+
+#[test]
+fn test_expression_arrow_parameter_shadows_imported_binding() {
+    let content = "function run() {\n    const callback = (retry) => retry();\n    retry();\n}\n";
+    let call_at = content.find("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        call_at,
+        "retry",
+        Language::TypeScript
+    ));
+    let outer_call_at = content.rfind("retry()").unwrap();
+    assert!(!is_locally_shadowed(
+        content,
+        outer_call_at,
+        "retry",
+        Language::TypeScript
+    ));
+}

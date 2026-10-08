@@ -44,9 +44,11 @@ pub(crate) fn imported_caller_symbols(
             ts_js_imported_symbols(content, caller_path, decl_file, fn_name)
         }
         Language::Python => python_imported_symbols(content, caller_path, decl_file, fn_name),
-        Language::Go | Language::Swift if caller_path.parent() == decl_file.parent() => {
+        Language::Go if caller_path.parent() == decl_file.parent() => {
             vec![fn_name.to_string()]
         }
+        Language::Go => go_imported_symbols(content, caller_path, decl_file, fn_name),
+        Language::Swift if caller_path.parent() == decl_file.parent() => vec![fn_name.to_string()],
         Language::Cpp | Language::C
             if c_cpp_proves_import(content, caller_path, decl_file, fn_name) =>
         {
@@ -60,6 +62,10 @@ pub(crate) fn imported_caller_symbols(
 mod import_cpp;
 use import_cpp::c_cpp_proves_import;
 
+#[path = "import_go.rs"]
+mod import_go;
+use import_go::{go_imported_symbols, is_go_namespace_import};
+
 #[path = "import_python.rs"]
 mod import_python;
 use import_python::python_imported_symbols;
@@ -67,6 +73,10 @@ use import_python::python_imported_symbols;
 #[path = "import_ts.rs"]
 mod import_ts;
 use import_ts::ts_js_imported_symbols;
+
+#[cfg(test)]
+#[path = "review_import_tests.rs"]
+mod review_import_tests;
 
 pub(crate) fn is_proven_namespace_import(
     content: &str,
@@ -85,6 +95,7 @@ pub(crate) fn is_proven_namespace_import(
         Language::Python => {
             import_python::is_python_namespace_import(content, receiver, caller_path, decl_file)
         }
+        Language::Go => is_go_namespace_import(content, receiver, caller_path, decl_file),
         _ => false,
     }
 }

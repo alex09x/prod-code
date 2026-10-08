@@ -192,10 +192,11 @@ fn test_c_cpp_proves_import_via_header() {
 fn test_python_proves_import_from_module() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    let db_py = root.join("db.py");
+    let db_py = root.join("package/db.py");
+    std::fs::create_dir_all(db_py.parent().unwrap()).unwrap();
     std::fs::write(&db_py, "def find_user(id):\n    return {}\n").unwrap();
 
-    let client1_py = root.join("client1.py");
+    let client1_py = root.join("package/client1.py");
     let content1 = "from . import db\ndef run():\n    return db.find_user(1)\n";
     assert!(proves_cross_file_import(
         content1,
