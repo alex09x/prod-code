@@ -111,8 +111,13 @@ pub(crate) async fn handle_references(
         out.push_str(&note);
     }
 
+    let build_index = args
+        .get("build_index")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if all_locs.is_empty()
-        && let Some((built, note)) = build_swift_index(remote, workspace_root, &file_path).await
+        && let Some((built, note)) =
+            build_swift_index(remote, workspace_root, &file_path, build_index).await
     {
         out.push_str(&note);
         out.push('\n');

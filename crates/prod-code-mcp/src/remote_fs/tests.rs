@@ -164,3 +164,35 @@ fn bounded_source_reader_stops_after_one_truncation_byte() {
     assert_eq!(bytes.len(), MAX_SOURCE_BYTES as usize);
     assert_eq!(read.get() as u64, MAX_SOURCE_BYTES + 1);
 }
+
+#[test]
+fn external_dependency_source_with_same_suffix_is_not_mapped_to_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("workspace");
+    let ws_src = root.join("src");
+    std::fs::create_dir_all(&ws_src).unwrap();
+    std::fs::write(ws_src.join("lib.rs"), "pub fn workspace_code() {}\n").unwrap();
+
+    let external_dep = temp
+        .path()
+        .join("cargo/registry/src/tokio-1.0.0/src/lib.rs");
+    std::fs::create_dir_all(external_dep.parent().unwrap()).unwrap();
+    std::fs::write(&external_dep, "pub fn dependency_code() {}\n").unwrap();
+
+    let ext_str = external_dep.to_str().unwrap();
+    assert_eq!(workspace_relative_path(&root, ext_str), None);
+    assert!(is_external(&root, ext_str));
+
+    // A valid remote mirror path for this workspace does map to the workspace relative path
+    let mirror_path = "/mirror/prod-code-storage/workspaces/workspace/src/lib.rs";
+    assert_eq!(
+        workspace_relative_path(&root, mirror_path),
+        Some(PathBuf::from("src/lib.rs"))
+    );
+    assert!(!is_external(&root, mirror_path));
+
+    // A mirror path for a different workspace sharing a suffix is not mapped to this workspace
+    let other_ws = "/srv/workspaces/other-project/src/lib.rs";
+    assert_eq!(workspace_relative_path(&root, other_ws), None);
+    assert!(is_external(&root, other_ws));
+}

@@ -73,17 +73,16 @@ pub(crate) async fn lead(
         Ok((ws, reservation)) => {
             reservation.release_after_settling();
             let mut guard = manager.workspaces.write().await;
-            if !matches!(guard.get(&key), Some(LoadState::Loading(t)) if t.same_channel(&tx)) {
-                drop(guard);
-                let reason =
-                    "the workspace was unloaded while its engine was loading; retry the request";
-                let _ = tx.send(Err(reason.to_string()));
-                let _ = leader.send(Err(anyhow::anyhow!(reason)));
-                return;
+            let can_install = match guard.get(&key) {
+                Some(LoadState::Loading(t)) => t.same_channel(&tx),
+                None => true,
+                _ => false,
+            };
+            if can_install {
+                guard.insert(key, LoadState::Ready(Arc::clone(&ws)));
             }
-            let session = (!leader.is_closed()).then(|| WorkspaceLease::acquire(Arc::clone(&ws)));
-            guard.insert(key, LoadState::Ready(Arc::clone(&ws)));
             drop(guard);
+            let session = (!leader.is_closed()).then(|| WorkspaceLease::acquire(Arc::clone(&ws)));
             if let Some(session) = session {
                 let _ = leader.send(Ok(session));
             }

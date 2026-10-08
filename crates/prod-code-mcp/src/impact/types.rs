@@ -111,6 +111,8 @@ pub enum Gap {
         callers: usize,
         limit: usize,
     },
+    /// The impact analysis traversal reached the global time budget.
+    Timeout { elapsed_ms: u64, budget_ms: u64 },
 }
 
 impl Gap {
@@ -140,6 +142,12 @@ impl Gap {
             } => format!(
                 "{} ({}:{}) has {callers} callers, exceeding the fan-in limit of {limit}; stopped to avoid dispatcher explosion",
                 symbol.name, symbol.file, symbol.line
+            ),
+            Gap::Timeout {
+                elapsed_ms,
+                budget_ms,
+            } => format!(
+                "the impact analysis traversal reached its time budget ({elapsed_ms}ms >= {budget_ms}ms); returning accumulated callers and tests"
             ),
         }
     }

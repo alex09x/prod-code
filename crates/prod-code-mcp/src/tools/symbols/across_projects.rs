@@ -128,7 +128,7 @@ pub(crate) async fn symbol_search_across_projects(
     let has_relevant_hits = hits.iter().any(|hit| match_rank(&hit.name, query) < 4);
     let mut anchors = projects_naming(root, name, deadline);
     if anchors.is_empty() {
-        if has_relevant_hits || !hits.is_empty() {
+        if has_relevant_hits {
             return Ok(hits);
         }
         for anchor in nested_project_anchors(root, deadline) {

@@ -15,7 +15,17 @@ use std::path::Path;
 pub(crate) fn resolve_file_path(workspace_root: &Path, path_str: &str) -> std::path::PathBuf {
     let p = std::path::PathBuf::from(path_str);
     if p.is_absolute() {
-        p
+        if p.exists() {
+            p
+        } else {
+            let rel = path_str.trim_start_matches('/');
+            let in_ws = workspace_root.join(rel);
+            if in_ws.exists() || !p.starts_with(workspace_root) {
+                in_ws
+            } else {
+                p
+            }
+        }
     } else {
         workspace_root.join(p)
     }

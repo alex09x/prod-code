@@ -90,6 +90,7 @@ pub(crate) async fn incoming_calls(
     root: &Path,
     language: &str,
     sym: &Symbol,
+    deadline: Option<tokio::time::Instant>,
 ) -> Incoming {
     let abs = root.join(&sym.file);
     let Ok(uri) = Url::from_file_path(&abs).map(|u| u.to_string()) else {
@@ -97,16 +98,29 @@ pub(crate) async fn incoming_calls(
     };
     let position = serde_json::json!({ "line": sym.line.saturating_sub(1), "character": sym.col.saturating_sub(1) });
     let prepare = "textDocument/prepareCallHierarchy";
-    let items = match session
-        .query(
+    let query_timeout = match deadline {
+        Some(dl) => {
+            let now = tokio::time::Instant::now();
+            if now >= dl {
+                return Incoming::Failed("impact BFS deadline expired".to_string());
+            }
+            std::cmp::min(std::time::Duration::from_secs(30), dl - now)
+        }
+        None => std::time::Duration::from_secs(30),
+    };
+    let items = match tokio::time::timeout(
+        query_timeout,
+        session.query(
             &abs,
             prepare,
             serde_json::json!({ "textDocument": { "uri": uri }, "position": position }),
-        )
-        .await
+        ),
+    )
+    .await
     {
-        Ok(items) => items,
-        Err(e) => return Incoming::Failed(format!("{e:#}")),
+        Ok(Ok(items)) => items,
+        Ok(Err(e)) => return Incoming::Failed(format!("{e:#}")),
+        Err(_) => return Incoming::Failed("prepareCallHierarchy timed out".to_string()),
     };
     let items = match items {
         serde_json::Value::Null => return Incoming::NoItem,
@@ -127,12 +141,25 @@ pub(crate) async fn incoming_calls(
     let method = "callHierarchy/incomingCalls";
     let mut out: Vec<(Symbol, bool)> = Vec::new();
     for item in items {
-        let incoming = match session
-            .query(&abs, method, serde_json::json!({ "item": item }))
-            .await
+        let per_item_timeout = match deadline {
+            Some(dl) => {
+                let now = tokio::time::Instant::now();
+                if now >= dl {
+                    return Incoming::Failed("incomingCalls budget timed out".to_string());
+                }
+                std::cmp::min(std::time::Duration::from_secs(30), dl - now)
+            }
+            None => std::time::Duration::from_secs(30),
+        };
+        let incoming = match tokio::time::timeout(
+            per_item_timeout,
+            session.query(&abs, method, serde_json::json!({ "item": item })),
+        )
+        .await
         {
-            Ok(incoming) => incoming,
-            Err(e) => return Incoming::Failed(format!("{e:#}")),
+            Ok(Ok(incoming)) => incoming,
+            Ok(Err(e)) => return Incoming::Failed(format!("{e:#}")),
+            Err(_) => return Incoming::Failed("incomingCalls timed out".to_string()),
         };
         let edges = match incoming {
             // The protocol's "no calls", after an item was found.

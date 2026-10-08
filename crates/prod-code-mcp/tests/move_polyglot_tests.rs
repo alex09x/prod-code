@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::move_item::move_item;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -162,18 +162,9 @@ def execute():
     let main_file = root.join("pkg/main.py");
     let gw = fake_gateway().await;
 
-    let res = move_item(
-        gw.addr(),
-        &root,
-        &utils_file,
-        1,
-        5,
-        &ops_file,
-        true,
-        false,
-    )
-    .await
-    .unwrap();
+    let res = move_item(gw.addr(), &root, &utils_file, 1, 5, &ops_file, true, false)
+        .await
+        .unwrap();
 
     assert_eq!(res.symbol, "helper");
     assert!(res.applied);
@@ -227,8 +218,10 @@ class Order:
     assert!(res.applied);
 
     let item_content = fs::read_to_string(&item_file).unwrap();
-    assert!(item_content.contains("@dataclass
-class Item:"));
+    assert!(item_content.contains(
+        "@dataclass
+class Item:"
+    ));
 
     let models_content = fs::read_to_string(&models_file).unwrap();
     assert!(!models_content.contains("class Item:"));
@@ -258,18 +251,9 @@ func Compute(x int) int {
     let math_file = root.join("calc/math.go");
     let gw = fake_gateway().await;
 
-    let res = move_item(
-        gw.addr(),
-        &root,
-        &calc_file,
-        3,
-        6,
-        &math_file,
-        true,
-        false,
-    )
-    .await
-    .unwrap();
+    let res = move_item(gw.addr(), &root, &calc_file, 3, 6, &math_file, true, false)
+        .await
+        .unwrap();
 
     assert_eq!(res.symbol, "Add");
     assert!(res.applied);
@@ -301,7 +285,7 @@ int compute(int x) {
     ]);
     let root = ws.root().to_path_buf();
     let calc_file = root.join("src/calc.cpp");
-    let helpers_file = root.join("src/helpers.cpp");
+    let helpers_file = root.join("src/helpers.hpp");
     let gw = fake_gateway().await;
 
     let res = move_item(
@@ -388,18 +372,9 @@ async fn test_move_collision_rejected() {
     let b_file = root.join("src/b.ts");
     let gw = fake_gateway().await;
 
-    let err = move_item(
-        gw.addr(),
-        &root,
-        &a_file,
-        1,
-        17,
-        &b_file,
-        false,
-        false,
-    )
-    .await
-    .unwrap_err();
+    let err = move_item(gw.addr(), &root, &a_file, 1, 17, &b_file, false, false)
+        .await
+        .unwrap_err();
 
     assert!(err.to_string().contains("already declares `foo`"));
 }
@@ -438,5 +413,8 @@ func (c *Calc) Add(a, b int) int {
     .await
     .unwrap_err();
 
-    assert!(err.to_string().contains("is a method with a receiver; move it with `code_move_method`"));
+    assert!(
+        err.to_string()
+            .contains("is a method with a receiver; move it with `code_move_method`")
+    );
 }

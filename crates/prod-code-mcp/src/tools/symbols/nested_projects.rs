@@ -179,7 +179,11 @@ pub(crate) fn projects_naming(
     let mut projects = std::collections::HashSet::new();
     let mut anchors = Vec::new();
     for path in source_files(root)
-        .filter(|path| crate::sync::engine_for_file(path).is_some_and(|e| Some(e) != root_engine))
+        .filter(|path| {
+            crate::sync::engine_for_file(path).is_some_and(|e| {
+                Some(e) != root_engine || crate::sync::engine_project(root, path).0.is_some()
+            })
+        })
         .take(MAX_SCANNED_FILES)
     {
         if tokio::time::Instant::now() >= deadline {

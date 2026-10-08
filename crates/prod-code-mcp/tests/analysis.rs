@@ -218,7 +218,7 @@ async fn a_swift_reference_search_builds_the_packages_index_once() {
             gateway.addr(),
             &root,
             "code_references",
-            serde_json::json!({ "path": "Sources/App/Session.swift", "line": 1, "character": 20 }),
+            serde_json::json!({ "path": "Sources/App/Session.swift", "line": 1, "character": 20, "build_index": true }),
         )
     };
 
@@ -227,6 +227,46 @@ async fn a_swift_reference_search_builds_the_packages_index_once() {
     assert!(first.contains("Sources/App/Use.swift"), "{first}");
     let _ = ask().await.expect("the search runs again");
     assert_eq!(builds.load(Ordering::SeqCst), 1, "one build per process");
+}
+
+#[tokio::test]
+async fn swift_reference_search_without_build_index_does_not_build() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version:5.9\n"),
+        (
+            "Sources/App/Session.swift",
+            "public final class Session {}\n",
+        ),
+        ("Sources/App/Use.swift", "let session = Session()\n"),
+    ]);
+    let builds = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&builds);
+    let lsp: Answer = Arc::new(|method, _| match method {
+        "textDocument/references" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    });
+    let exec: ExecAnswer = Arc::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        (b"Build complete!\n".to_vec(), Vec::new(), Some(0))
+    });
+    let gateway = ExecGateway::start(lsp, exec).await;
+    let res = prod_code_mcp::tools::execute_tool(
+        gateway.addr(),
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "Sources/App/Session.swift", "line": 1, "character": 20 }),
+    )
+    .await
+    .expect("the search runs");
+    let text = text_of(&res);
+    assert!(text.contains("pass `build_index: true`"), "{text}");
+    assert_eq!(
+        builds.load(Ordering::SeqCst),
+        0,
+        "must not invoke build without opt-in"
+    );
 }
 
 /// A package whose build fails says why, instead of an empty answer that reads like "nothing
@@ -258,7 +298,7 @@ async fn a_swift_reference_search_says_why_the_index_could_not_be_built() {
             gateway.addr(),
             &ws.root(),
             "code_references",
-            serde_json::json!({ "path": "Sources/App/Session.swift", "line": 1, "character": 20 }),
+            serde_json::json!({ "path": "Sources/App/Session.swift", "line": 1, "character": 20, "build_index": true }),
         )
         .await
         .expect("the search runs"),
@@ -623,7 +663,9 @@ async fn analyze_proactively_warns_when_signature_change_leaves_unadjusted_sibli
     assert!(site.is_sibling);
 
     let rendered = report.render();
-    assert!(rendered.contains("signature warnings (unadjusted call sites before full compilation):"));
+    assert!(
+        rendered.contains("signature warnings (unadjusted call sites before full compilation):")
+    );
     assert!(rendered.contains("`helper` signature changed in src/lib.rs:1:8"));
     assert!(rendered.contains("old: pub fn helper(x: i32) -> i32"));
     assert!(rendered.contains("new: pub fn helper(x: i32, extra: bool) -> i32"));
@@ -631,7 +673,9 @@ async fn analyze_proactively_warns_when_signature_change_leaves_unadjusted_sibli
     assert!(rendered.contains("• [sibling] src/sibling.rs:2:5 in `caller`"));
 
     let ci = report.ci_summary(None, "no tests affected");
-    assert!(ci.contains("⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:"));
+    assert!(
+        ci.contains("⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:")
+    );
     assert!(ci.contains("[sibling] `src/sibling.rs:2:5` in `caller`"));
 }
 
@@ -1997,7 +2041,11 @@ async fn prune_commit_isolates_index_and_preserves_ambient_staged_work() {
     )
     .await
     .expect_err("dirty touched file must be refused");
-    assert!(err.to_string().contains("touched file(s) have uncommitted changes"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("touched file(s) have uncommitted changes"),
+        "{err}"
+    );
 }
 
 /// [`prune_orphans_opts`] with `commit: true` functions in linked Git worktrees where `<root>/.git`
@@ -2034,7 +2082,13 @@ async fn prune_commit_works_in_linked_worktree() {
     let wt_dir = tmp.path().join("linked_worktree");
     run_git(
         &main_repo,
-        &["worktree", "add", wt_dir.to_str().unwrap(), "-b", "wt-test-branch"],
+        &[
+            "worktree",
+            "add",
+            wt_dir.to_str().unwrap(),
+            "-b",
+            "wt-test-branch",
+        ],
     );
 
     // Verify .git in worktree is a file, not a directory
@@ -2090,7 +2144,9 @@ async fn prune_commit_works_in_linked_worktree() {
     .expect("prune in linked worktree succeeds");
 
     assert!(pruned.applied);
-    let commit_sha = pruned.git_commit.expect("commit was created in linked worktree");
+    let commit_sha = pruned
+        .git_commit
+        .expect("commit was created in linked worktree");
     assert!(!commit_sha.is_empty());
 
     // Verify HEAD in worktree matches created commit
@@ -3074,12 +3130,27 @@ async fn find_dead_code_reachability_detects_circular_dead_cycle() {
     .expect("reachability scan runs");
 
     let dead_names: Vec<&str> = reach_report.dead.iter().map(|d| d.name.as_str()).collect();
-    assert!(dead_names.contains(&"cycle_a"), "cycle_a is dead: {dead_names:?}");
-    assert!(dead_names.contains(&"cycle_b"), "cycle_b is dead: {dead_names:?}");
-    assert!(!dead_names.contains(&"main"), "main is entry point: {dead_names:?}");
-    assert!(!dead_names.contains(&"active"), "active is reached: {dead_names:?}");
+    assert!(
+        dead_names.contains(&"cycle_a"),
+        "cycle_a is dead: {dead_names:?}"
+    );
+    assert!(
+        dead_names.contains(&"cycle_b"),
+        "cycle_b is dead: {dead_names:?}"
+    );
+    assert!(
+        !dead_names.contains(&"main"),
+        "main is entry point: {dead_names:?}"
+    );
+    assert!(
+        !dead_names.contains(&"active"),
+        "active is reached: {dead_names:?}"
+    );
 
-    let summary = reach_report.reachability.as_ref().expect("reachability summary exists");
+    let summary = reach_report
+        .reachability
+        .as_ref()
+        .expect("reachability summary exists");
     assert_eq!(summary.roots_count, 1); // main
     assert_eq!(summary.reachable_count, 2); // main, active
     assert_eq!(summary.unreachable_count, 2); // cycle_a, cycle_b
@@ -3146,7 +3217,11 @@ async fn reachability_preserves_unverified_symbols_under_contract_435() {
 
     // helper_fn is reachable from unverified_fn, which is conservatively protected.
     // Therefore, NEITHER is marked dead.
-    assert!(report.dead.is_empty(), "unverified dependencies are preserved: {:?}", report.dead);
+    assert!(
+        report.dead.is_empty(),
+        "unverified dependencies are preserved: {:?}",
+        report.dead
+    );
     assert_eq!(report.unverified.len(), 1);
     assert_eq!(report.unverified[0].name.as_deref(), Some("unverified_fn"));
 }
@@ -3224,7 +3299,10 @@ async fn analyze_mixed_repo_attributes_javascript_functions_and_nested_declarati
         .expect("analysis runs");
 
     assert_eq!(report.language, "go");
-    assert_eq!(report.changed_files, vec!["extension/background.js".to_string()]);
+    assert_eq!(
+        report.changed_files,
+        vec!["extension/background.js".to_string()]
+    );
     let changed_names: Vec<&str> = report.changed.iter().map(|s| s.name.as_str()).collect();
     assert!(
         changed_names.contains(&"handleTabCreated"),
@@ -3279,42 +3357,51 @@ async fn analyze_mixed_repo_handles_unsupported_language_without_claiming_outsid
                 while let Some(Ok(msg)) = framed.next().await {
                     match msg {
                         WireMessage::SyncProbeRequest(req) => {
-                            let _ = framed.send(WireMessage::SyncProbeResponse(SyncProbeResponse {
-                                server_workspace_root: req.client_workspace_root,
-                                seeded: false,
-                                files_deleted: 0,
-                                missing: Vec::new(),
-                            })).await;
+                            let _ = framed
+                                .send(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                                    server_workspace_root: req.client_workspace_root,
+                                    seeded: false,
+                                    files_deleted: 0,
+                                    missing: Vec::new(),
+                                }))
+                                .await;
                         }
                         WireMessage::SyncRequest(req) => {
-                            let _ = framed.send(WireMessage::SyncResponse(SyncResponse {
-                                server_workspace_root: req.client_workspace_root,
-                                files_updated: 0,
-                                files_deleted: 0,
-                                bytes_transferred: 0,
-                                duration_ms: 0,
-                                workspace_was_fresh: false,
-                                stale_paths: Vec::new(),
-                            })).await;
+                            let _ = framed
+                                .send(WireMessage::SyncResponse(SyncResponse {
+                                    server_workspace_root: req.client_workspace_root,
+                                    files_updated: 0,
+                                    files_deleted: 0,
+                                    bytes_transferred: 0,
+                                    duration_ms: 0,
+                                    workspace_was_fresh: false,
+                                    stale_paths: Vec::new(),
+                                }))
+                                .await;
                         }
                         WireMessage::HandshakeRequest(req) => {
                             if req.preferred_engine.as_deref() == Some("typescript") {
-                                let _ = framed.send(WireMessage::Disconnect {
-                                    reason: "engine typescript is not served by this node".to_string(),
-                                }).await;
+                                let _ = framed
+                                    .send(WireMessage::Disconnect {
+                                        reason: "engine typescript is not served by this node"
+                                            .to_string(),
+                                    })
+                                    .await;
                                 return;
                             }
-                            let _ = framed.send(WireMessage::HandshakeResponse(HandshakeResponse {
-                                protocol_version: PROTOCOL_VERSION,
-                                server_pid: std::process::id(),
-                                session_id: 1,
-                                server_workspace_root: req.client_workspace_root,
-                                detected_engine: "go".to_string(),
-                                stale_paths: Vec::new(),
-                                engine_age_ms: None,
-                                index_gated: false,
-                                capabilities: None,
-                            })).await;
+                            let _ = framed
+                                .send(WireMessage::HandshakeResponse(HandshakeResponse {
+                                    protocol_version: PROTOCOL_VERSION,
+                                    server_pid: std::process::id(),
+                                    session_id: 1,
+                                    server_workspace_root: req.client_workspace_root,
+                                    detected_engine: "go".to_string(),
+                                    stale_paths: Vec::new(),
+                                    engine_age_ms: None,
+                                    index_gated: false,
+                                    capabilities: None,
+                                }))
+                                .await;
                         }
                         _ => {}
                     }
@@ -3338,7 +3425,9 @@ async fn analyze_mixed_repo_handles_unsupported_language_without_claiming_outsid
         Gap::Symbols { file, error } => {
             assert_eq!(file, "extension/background.js");
             assert!(
-                error.contains("refused") || error.contains("engine typescript is not served") || error.contains("closed"),
+                error.contains("refused")
+                    || error.contains("engine typescript is not served")
+                    || error.contains("closed"),
                 "expected engine error in gap: {error}"
             );
         }

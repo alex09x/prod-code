@@ -70,6 +70,9 @@ pub async fn read_source(
     if p.is_absolute() {
         if let Some(local_path) = absolute_checkout_source_path(root, &root_canon, p)? {
             read_local_source_file(&local_path)
+        } else if let Some(rel) = workspace_relative_path(root, &path) {
+            let local_path = root.join(rel);
+            read_local_source_file(&local_path)
         } else {
             read_remote_file(remote, &path, 0).await
         }
@@ -203,12 +206,77 @@ fn resolve_relative_checkout_path(root: &Path, root_canon: &Path, p: &Path) -> R
     Ok(candidate)
 }
 
+/// Finds the relative path inside `root` that corresponds to `file_path`, even if `file_path`
+/// is a remote mirror path on the gateway host (e.g. `/.../prod-code-storage/workspaces/ws/...`).
+pub fn workspace_relative_path(root: &Path, file_path: &str) -> Option<PathBuf> {
+    let path = Path::new(file_path);
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(rel) = path.strip_prefix(root) {
+        return Some(rel.to_path_buf());
+    }
+    if let Ok(rel) = path.strip_prefix(&root_canon) {
+        return Some(rel.to_path_buf());
+    }
+    // Only strip positively identified remote mirror workspace paths (under a known storage/workspaces directory)
+    const MIRROR_MARKERS: &[&str] = &[
+        "/prod-code-storage/workspaces/",
+        "/prod-code/workspaces/",
+        "/srv/workspaces/",
+    ];
+    let identity = crate::sync::workspace_identity(root);
+    let ws_name = root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    for marker in MIRROR_MARKERS {
+        if let Some(pos) = file_path.find(marker) {
+            let after_marker = &file_path[pos + marker.len()..];
+            // after_marker starts with "<workspace_dir>/<relative_path>"
+            if let Some((ws_dir, rel_str)) = after_marker.split_once('/') {
+                let matches_ws = ws_dir == identity.name
+                    || identity.base.as_deref().is_some_and(|b| ws_dir == b)
+                    || (!ws_name.is_empty() && ws_dir == ws_name)
+                    || ws_dir.starts_with(&format!("{}--wt-", identity.name))
+                    || identity
+                        .base
+                        .as_deref()
+                        .is_some_and(|b| ws_dir.starts_with(&format!("{b}--wt-")))
+                    || (!ws_name.is_empty() && ws_dir.starts_with(&format!("{ws_name}--wt-")));
+                if !matches_ws {
+                    continue;
+                }
+                let rel = PathBuf::from(rel_str);
+                if !rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    let candidate = root.join(&rel);
+                    if candidate.is_file() {
+                        if let Ok(canon) = std::fs::canonicalize(&candidate) {
+                            if canon.starts_with(&root_canon) {
+                                return Some(rel);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Whether a location's file lies outside the checkout at `root` (a path the client cannot
 /// open itself).
 pub fn is_external(root: &Path, file_path: &str) -> bool {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let path = Path::new(file_path);
     if !path.is_absolute() {
+        return false;
+    }
+    if workspace_relative_path(&root, file_path).is_some() {
         return false;
     }
     let path_canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());

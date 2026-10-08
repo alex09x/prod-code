@@ -137,9 +137,14 @@ pub(crate) async fn handle_callers(
     };
     let mut found = tree().await?;
     let mut note = None;
+    let build_index = args
+        .get("build_index")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if incoming
         && found.as_ref().is_some_and(|t| t.nodes.is_empty())
-        && let Some((built, text)) = build_swift_index(remote, workspace_root, &file_path).await
+        && let Some((built, text)) =
+            build_swift_index(remote, workspace_root, &file_path, build_index).await
     {
         note = Some(text);
         if built {
@@ -190,15 +195,9 @@ pub(crate) async fn build_swift_index(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
+    opt_in_build: bool,
 ) -> Option<(bool, String)> {
     let package = swift_package_of(root, file)?;
-    if !swift_indexes_built()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(package.clone())
-    {
-        return None;
-    }
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let subdir = package
         .strip_prefix(&canonical_root)
@@ -209,6 +208,21 @@ pub(crate) async fn build_swift_index(
         || "the package".to_string(),
         |dir| format!("the package in {dir}"),
     );
+    if !opt_in_build {
+        return Some((
+            false,
+            format!(
+                "sourcekit-lsp finds uses in other files only through a build's index: run `prod-code check` or pass `build_index: true` to build the package index for {package_named}."
+            ),
+        ));
+    }
+    if !swift_indexes_built()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(package.clone())
+    {
+        return None;
+    }
     let node = crate::cluster::route_for_path(remote, root, package.to_str())
         .await
         .unwrap_or(remote);

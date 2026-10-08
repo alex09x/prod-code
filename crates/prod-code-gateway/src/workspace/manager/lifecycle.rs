@@ -140,20 +140,25 @@ impl WorkspaceManager {
     /// the old workspace keep it until they end. Returns how many were dropped.
     pub async fn unload_under(&self, prefix: &Path) -> usize {
         let mut unloaded = Vec::new();
-        let count = {
+        {
             let mut guard = self.workspaces.write().await;
-            let keys: Vec<WorkspaceKey> = guard
-                .keys()
-                .filter(|key| key.0.starts_with(prefix))
-                .cloned()
+            let ready_keys: Vec<WorkspaceKey> = guard
+                .iter()
+                .filter_map(|(key, state)| {
+                    if key.0.starts_with(prefix) && matches!(state, LoadState::Ready(_)) {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
                 .collect();
-            for key in &keys {
+            for key in &ready_keys {
                 if let Some(LoadState::Ready(ws)) = guard.remove(key) {
                     unloaded.push(ws);
                 }
             }
-            keys.len()
-        };
+        }
+        let count = unloaded.len();
         release(unloaded).await;
         count
     }

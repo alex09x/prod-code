@@ -168,7 +168,7 @@ pub(crate) fn parse_node_short_message(
 ) -> Option<Option<AssertionEvidence>> {
     let header = stripped.iter().position(|l| {
         let l = l.trim();
-        l.starts_with("AssertionError") && l.ends_with("Expected values to be strictly equal:")
+        l.starts_with("AssertionError") && l.contains("Expected values to be strictly")
     })?;
     Some(
         node_short_pair(stripped, header).map(|(at, line, actual, expected)| {
