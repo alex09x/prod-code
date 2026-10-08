@@ -36,7 +36,7 @@ pub fn plan_command_with(
     filter: Option<&str>,
 ) -> Result<Vec<String>> {
     let filter = filter.filter(|f| !f.is_empty());
-    if language == "zig" && kind == VerifyKind::Test && tools.zig_build && filter.is_some() {
+    if language == "zig" && kind == VerifyKind::Test && tools.zig_test_step && filter.is_some() {
         return Err(anyhow!(
             "Zig build test steps do not support the generic test-name filter; rerun without a filter"
         ));
@@ -160,7 +160,7 @@ pub fn plan_command_with(
             }
             c
         }
-        ("zig", VerifyKind::Test) if tools.zig_build => strs(&["zig", "build", "test"]),
+        ("zig", VerifyKind::Test) if tools.zig_test_step => strs(&["zig", "build", "test"]),
         ("zig", VerifyKind::Test) => {
             return Err(anyhow!(
                 "Zig test planning needs a build.zig test step or an explicit source target"

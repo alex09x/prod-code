@@ -243,15 +243,51 @@ fn plans_and_summary() {
 #[test]
 fn zig_build_projects_use_a_test_plan() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("build.zig"), "").unwrap();
+    let build_file = root.path().join("build.zig");
+    std::fs::write(
+        &build_file,
+        "const test_step = b.step(\"test\", \"Run tests\");",
+    )
+    .unwrap();
     let tools = detect_tools(root.path());
 
-    assert!(tools.zig_build);
+    assert!(tools.zig_test_step);
     assert_eq!(
         plan_command_with(&tools, "zig", VerifyKind::Test, None).unwrap(),
         vec!["zig", "build", "test"]
     );
     assert!(plan_command_with(&tools, "zig", VerifyKind::Test, Some("foo")).is_err());
+
+    std::fs::write(
+        &build_file,
+        "const install_step = b.step(\"install\", \"Install\");",
+    )
+    .unwrap();
+    let tools = detect_tools(root.path());
+    assert!(!tools.zig_test_step);
+    let error = plan_command_with(&tools, "zig", VerifyKind::Test, None).unwrap_err();
+    assert!(error.to_string().contains("test step"));
+
+    std::fs::write(
+        &build_file,
+        "// const test_step = b.step(\"test\", \"comment only\");",
+    )
+    .unwrap();
+    assert!(!detect_tools(root.path()).zig_test_step);
+
+    std::fs::write(
+        &build_file,
+        "const s =\n    \\\\.step(\"test\", \"string only\")\n;",
+    )
+    .unwrap();
+    assert!(!detect_tools(root.path()).zig_test_step);
+
+    std::fs::write(
+        &build_file,
+        "const s =\n    c\\\\.step(\"test\", \"c string only\")\n;",
+    )
+    .unwrap();
+    assert!(!detect_tools(root.path()).zig_test_step);
 
     assert!(plan_command_with(&ProjectTools::default(), "zig", VerifyKind::Test, None).is_err());
 }
