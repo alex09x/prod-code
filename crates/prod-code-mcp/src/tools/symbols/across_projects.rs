@@ -9,10 +9,8 @@
  */
 
 use super::matching::{bare_symbol_name, match_rank};
-use super::nested_projects::{
-    MAX_NESTED_PROJECTS, nested_project_anchors, projects_naming, source_files,
-};
 pub(crate) use super::nested_projects::{names_word, read_name_scan_text};
+use super::nested_projects::{nested_project_anchors, projects_naming, source_files};
 use super::search::{workspace_symbol_search, workspace_symbol_search_auxiliary};
 use super::types::{
     MalformedLspCoordinate, SymbolHit, is_malformed_lsp_coordinate, lsp_position, symbol_kind_name,
@@ -40,6 +38,9 @@ pub(crate) async fn symbol_search_across_projects(
     hint: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
     let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
     let name = bare_symbol_name(query);
     let named = |hits: &[SymbolHit]| {
@@ -127,11 +128,11 @@ pub(crate) async fn symbol_search_across_projects(
     let has_relevant_hits = hits.iter().any(|hit| match_rank(&hit.name, query) < 4);
     let mut anchors = projects_naming(root, name, deadline);
     if anchors.is_empty() {
-        if has_relevant_hits {
+        if has_relevant_hits || !hits.is_empty() {
             return Ok(hits);
         }
         for anchor in nested_project_anchors(root, deadline) {
-            if anchors.len() >= MAX_NESTED_PROJECTS {
+            if anchors.len() >= 3 {
                 break;
             }
             if !anchors
@@ -150,10 +151,10 @@ pub(crate) async fn symbol_search_across_projects(
             );
             break;
         }
-        // Per-project query timeout: bound to at most 3s to prevent any single
+        // Per-project query timeout: bound to at most 1500ms to prevent any single
         // slow/unresponsive nested LSP server from consuming the entire search budget.
         let project_deadline =
-            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(3));
+            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_millis(1500));
         let node = match tokio::time::timeout_at(
             project_deadline,
             crate::cluster::route_for_path(remote, root, anchor.to_str()),
@@ -337,4 +338,23 @@ pub(crate) fn collect_named(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn whitespace_only_query_fast_bails_without_hitting_network() {
+        let dummy_addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let dummy_path = Path::new("/dummy");
+        let result =
+            symbol_search_across_projects(dummy_addr, dummy_path, "   \t \n  ", None, 30).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+
+        let result2 = symbol_search_across_projects(dummy_addr, dummy_path, "", None, 30).await;
+        assert!(result2.is_ok());
+        assert!(result2.unwrap().is_empty());
+    }
 }

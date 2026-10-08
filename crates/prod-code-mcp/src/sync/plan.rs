@@ -11,7 +11,7 @@
 use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
 use crate::sync::entry::{fits_sync, is_executable, sync_file_entry};
 use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path};
-use crate::sync::git::{changed_paths, git_head, git_listed_paths};
+use crate::sync::git::{changed_paths, git_head, git_listed_paths, git_output};
 use crate::sync::scan::{read_regular_file_secure, scan_workspace_files};
 use crate::sync::types::{RELEVANCE_VERSION, SyncCache, SyncPlan};
 use anyhow::{Context, Result};
@@ -67,6 +67,27 @@ pub fn prepare_workspace_sync_for(
             let exists = canonical_root.join(reverted).is_file();
             changes.insert(reverted.clone(), !exists);
         }
+    }
+    // On a full sync, ensure any clean tracked files not yet populated in the cache
+    // (e.g. from an earlier subpath sync or cache reset) are included in changes so
+    // state.files and the gateway mirror manifest are complete.
+    if subpath.is_none()
+        && let Ok(output) = git_output(&canonical_root, ["ls-files", "-z"])
+    {
+        let mut tracked_set = HashSet::new();
+        for path in output.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+            let rel = String::from_utf8_lossy(path);
+            if !state.files.contains_key(rel.as_ref())
+                && !changes.contains_key(rel.as_ref())
+                && is_synced_git_path(rel.as_ref())
+            {
+                changes.insert(rel.to_string(), false);
+            }
+            tracked_set.insert(rel.into_owned());
+        }
+        state
+            .files
+            .retain(|path, _| tracked_set.contains(path) || current_dirty.contains(path));
     }
     let filter = SyncPathFilter::new(&canonical_root, subpath)?;
     let mut files = Vec::new();

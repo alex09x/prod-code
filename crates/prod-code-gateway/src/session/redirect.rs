@@ -81,6 +81,8 @@ pub async fn check_cluster_redirects(
                     && n.addr != own_addr
                     && cluster_supports_engine(&n.status, engine)
                     && n.workspaces.iter().any(|w| w.name == ws_name)
+                    && n.status.host.pressure().is_none()
+                    && n.status.congestion_score() < 1.0
             }) {
                 tracing::info!(
                     workspace = ws_name,

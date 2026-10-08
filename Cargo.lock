@@ -2049,6 +2049,8 @@ dependencies = [
  "prod-code-mcp",
  "prod-code-protocol",
  "prod-code-testkit",
+ "rcgen",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tempfile",

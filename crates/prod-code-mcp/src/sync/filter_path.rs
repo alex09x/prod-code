@@ -101,9 +101,7 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         }
         if matches!(
             dir.as_ref(),
-            "crates"
-                | "packages"
-                | "src"
+            "src"
                 | "server"
                 | "client"
                 | "internal"
@@ -124,7 +122,10 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         {
             under_code_dir = true;
         }
-        if matches!(dir.as_ref(), "target" | "node_modules" | "__pycache__") {
+        if matches!(dir.as_ref(), "node_modules" | "__pycache__") {
+            return false;
+        }
+        if !under_code_dir && dir.as_ref() == "target" {
             return false;
         }
         if !under_code_dir
