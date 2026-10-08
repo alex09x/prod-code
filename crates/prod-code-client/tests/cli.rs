@@ -38,6 +38,7 @@ pub struct MockGateway {
     pub fail_exec: Arc<AtomicBool>,
     pub custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
     pub place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    pub reported_platform: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct MockState {
@@ -48,6 +49,7 @@ struct MockState {
     fail_exec: Arc<AtomicBool>,
     custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
     place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    reported_platform: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl MockGateway {
@@ -70,6 +72,7 @@ impl MockGateway {
         let fail_exec = Arc::new(AtomicBool::new(false));
         let custom_exec = Arc::new(std::sync::Mutex::new(None));
         let place_request_os = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reported_platform = Arc::new(std::sync::Mutex::new(None));
 
         let state = Arc::new(MockState {
             protocol_version,
@@ -79,6 +82,7 @@ impl MockGateway {
             fail_exec: Arc::clone(&fail_exec),
             custom_exec: Arc::clone(&custom_exec),
             place_request_os: Arc::clone(&place_request_os),
+            reported_platform: Arc::clone(&reported_platform),
         });
 
         tokio::spawn(async move {
@@ -101,6 +105,7 @@ impl MockGateway {
             fail_exec,
             custom_exec,
             place_request_os,
+            reported_platform,
         }
     }
 }
@@ -199,6 +204,7 @@ async fn handle_client(
                     .await?;
             }
             WireMessage::StatusRequest => {
+                let platform = state.reported_platform.lock().unwrap().clone();
                 framed
                     .send(WireMessage::StatusResponse(StatusResponse {
                         server_pid: std::process::id(),
@@ -211,7 +217,7 @@ async fn handle_client(
                         active_queries: 0,
                         load_average_millis: Some(200),
                         cpu_count: Some(4),
-                        platform: None,
+                        platform,
                         running_commands: vec![prod_code_protocol::RunningCommand {
                             workspace: "test-ws--wt-1a2b".to_string(),
                             command: "cargo test --workspace".to_string(),
@@ -580,6 +586,7 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
         ),
     ]);
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
     let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
     assert!(out.status.success(), "{}", stderr_of(&out));
     let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out))
@@ -599,6 +606,29 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
     assert_eq!(
         *gw.place_request_os.lock().unwrap(),
         vec![Some("macos".to_string()), Some("macos".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn cli_does_not_cache_or_report_a_linux_rebalance_for_macos_cgo() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/cgo-rebalance\n\ngo 1.20\n"),
+        (
+            "cgo.go",
+            "package main\n/*\n#cgo LDFLAGS: -framework Cocoa\n*/\nimport \"C\"\nfunc main() {}\n",
+        ),
+    ]);
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.reported_platform.lock().unwrap() = Some("linux x86_64".to_string());
+
+    let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    assert!(snapshot["rebalanced"].is_null(), "{snapshot}");
+    assert!(snapshot["placed_on"].is_null(), "{snapshot}");
+    assert_eq!(
+        *gw.place_request_os.lock().unwrap(),
+        vec![Some("macos".to_string())]
     );
 }
 

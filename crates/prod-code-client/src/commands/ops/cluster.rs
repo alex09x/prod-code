@@ -175,6 +175,9 @@ pub async fn cluster_snapshot(
                     .as_deref()
                     .and_then(|a| a.parse::<SocketAddr>().ok())
                 {
+                    if !rebalance_target_satisfies_os(target, required_os).await {
+                        continue;
+                    }
                     prod_code_mcp::cluster::remember_placement(workspace_name, target);
                     rebalance_info = Some(serde_json::json!({
                         "target": target.to_string(),
@@ -241,6 +244,9 @@ pub async fn run_cluster(
                     .as_deref()
                     .and_then(|a| a.parse::<SocketAddr>().ok())
                 {
+                    if !rebalance_target_satisfies_os(target, required_os).await {
+                        continue;
+                    }
                     prod_code_mcp::cluster::remember_placement(workspace_name, target);
                     rebalanced_target = Some((target, resp.reason));
                     break;
@@ -343,4 +349,13 @@ pub async fn run_cluster(
         None => println!("Placed on:           (not yet)"),
     }
     Ok(())
+}
+
+async fn rebalance_target_satisfies_os(target: SocketAddr, required_os: Option<&str>) -> bool {
+    let Some(required_os) = required_os else {
+        return true;
+    };
+    prod_code_mcp::cluster::node_status(target)
+        .await
+        .is_ok_and(|status| prod_code_mcp::cluster::runs_os(&status, required_os))
 }
