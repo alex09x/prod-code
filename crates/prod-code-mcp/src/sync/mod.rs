@@ -32,13 +32,14 @@ pub use engine::{
     engine_for_file, engine_project, expected_engine, is_in_dependency_dir, macos_only_cgo,
     other_checkout,
 };
-pub use filter_path::{is_fixture_path, is_synced_git_path};
+pub use filter_path::{is_filesystem_root, is_fixture_path, is_synced_git_path};
 pub use plan::{commit_workspace_sync, prepare_workspace_sync, prepare_workspace_sync_for};
 pub use pull::{apply_pulled_files, apply_pulled_files_for, pull_remote_files};
 pub use push::{gateway_node, push_workspace_sync};
 pub use relevance::is_relevant_code_or_manifest_file;
 pub use scan::{collect_dirty_files, collect_dirty_files_incremental, scan_workspace_files};
 pub use types::{
-    MAX_FILE_SIZE, MAX_JSON_CONFIG_SIZE, MAX_LIBRARY_SIZE, RELEVANCE_VERSION, SYNC_BATCH_BYTES,
-    SyncCache, SyncFileEntry, SyncOutcome, SyncPlan, WorkspaceIdentity,
+    MAX_FILE_SIZE, MAX_JSON_CONFIG_SIZE, MAX_LIBRARY_SIZE, MAX_NON_GIT_WORKSPACE_BYTES,
+    MAX_NON_GIT_WORKSPACE_FILES, RELEVANCE_VERSION, SYNC_BATCH_BYTES, SyncCache, SyncFileEntry,
+    SyncOutcome, SyncPlan, WorkspaceIdentity,
 };

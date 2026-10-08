@@ -10,6 +10,7 @@
 
 pub mod dispatch;
 pub mod failover;
+pub mod rebalance;
 pub mod transport;
 
 #[cfg(test)]

@@ -55,6 +55,12 @@ impl SyncPathFilter {
     }
 }
 
+/// Returns true if `path` resolves to a filesystem root (such as `/` on Unix or drive root on Windows).
+pub fn is_filesystem_root(path: &Path) -> bool {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canonical.parent().is_none() || canonical.as_os_str().is_empty() || canonical == Path::new("/")
+}
+
 /// Returns true if `path` is within a recognized test fixtures or testdata directory.
 pub fn is_fixture_path(path: &Path) -> bool {
     path.components().any(|c| {

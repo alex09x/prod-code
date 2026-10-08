@@ -95,3 +95,27 @@ fn serialized_frame_bounding_falls_back_to_null_id_when_request_id_is_oversized(
     assert_eq!(bounded["id"], serde_json::Value::Null);
     assert_eq!(bounded["error"]["code"], -32000);
 }
+
+#[tokio::test]
+async fn cluster_rebalance_tick_ignores_filesystem_root() {
+    let mut remote: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+    let initial_remote = remote;
+    crate::server::rebalance::handle_cluster_rebalance_tick(&mut remote, std::path::Path::new("/"))
+        .await;
+    assert_eq!(
+        remote, initial_remote,
+        "filesystem root must never trigger rebalance"
+    );
+}
+
+#[tokio::test]
+async fn cluster_rebalance_tick_ignores_unbounded_non_git_manifestless_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut remote: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+    let initial_remote = remote;
+    crate::server::rebalance::handle_cluster_rebalance_tick(&mut remote, temp.path()).await;
+    assert_eq!(
+        remote, initial_remote,
+        "manifestless non-git root must not trigger rebalance"
+    );
+}
