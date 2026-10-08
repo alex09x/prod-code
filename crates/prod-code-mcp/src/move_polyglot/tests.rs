@@ -258,3 +258,21 @@ fn go_move_carries_imports_after_initial_package_header() {
         "package pkg\n\nimport \"fmt\"\n\nfunc Helper() { fmt.Println(\"hi\") }\n"
     );
 }
+
+#[test]
+fn go_move_selects_regular_package_when_external_test_package_exists() {
+    let temp = tempfile::tempdir().unwrap();
+    let pkg_dir = temp.path().join("pkg");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(pkg_dir.join("a_test.go"), "package pkg_test\n").unwrap();
+    std::fs::write(pkg_dir.join("a.go"), "package pkg\n").unwrap();
+
+    let regular_target = pkg_dir.join("b.go");
+    let test_target = pkg_dir.join("b_test.go");
+
+    let reg_header = super::target::initial_file_header(&regular_target, Language::Go);
+    assert_eq!(reg_header, "package pkg\n\n");
+
+    let test_header = super::target::initial_file_header(&test_target, Language::Go);
+    assert_eq!(test_header, "package pkg_test\n\n");
+}
