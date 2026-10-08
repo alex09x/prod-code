@@ -14,18 +14,26 @@
 //! changed since the last successful sync. A safety interval forces a sync anyway, in case the
 //! watcher dropped events.
 
+use crate::config::{IgnoreSnapshot, is_config_or_ignore_file, load_config};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 /// Force a sync at least this often even without observed changes.
 pub const MAX_SYNC_AGE: Duration = Duration::from_secs(60);
 
-struct Tracked {
+struct WatchState {
+    root: PathBuf,
     generation: Arc<AtomicU64>,
+    filter_dirty: Arc<AtomicBool>,
+    snapshot: RwLock<Arc<IgnoreSnapshot>>,
+}
+
+struct Tracked {
+    state: Arc<WatchState>,
     synced_generation: u64,
     last_sync: Option<Instant>,
     _watcher: Option<RecommendedWatcher>,
@@ -36,31 +44,49 @@ fn registry() -> &'static Mutex<HashMap<PathBuf, Tracked>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn ignored(path: &Path, root: &Path) -> bool {
-    let Ok(rel) = path.strip_prefix(root) else {
-        return false;
-    };
-    rel.components().any(|c| {
-        let name = c.as_os_str().to_string_lossy();
-        name == "target" || name == "node_modules" || name == ".prod-code-last-used"
-    })
-}
-
-fn start_watcher(root: &Path, generation: Arc<AtomicU64>) -> Option<RecommendedWatcher> {
-    let root_owned = root.to_path_buf();
+fn start_watcher(state: Arc<WatchState>) -> Option<RecommendedWatcher> {
+    let root = state.root.clone();
+    let state_for_watcher = Arc::clone(&state);
     let mut watcher =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
             Ok(event) => {
-                if event.paths.is_empty() || event.paths.iter().any(|p| !ignored(p, &root_owned)) {
-                    generation.fetch_add(1, Ordering::Relaxed);
+                if event.paths.is_empty() {
+                    state_for_watcher.generation.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                let snapshot = {
+                    let guard = state_for_watcher
+                        .snapshot
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner());
+                    Arc::clone(&*guard)
+                };
+                let mut should_bump = false;
+                for path in &event.paths {
+                    if let Ok(rel) = path.strip_prefix(&root)
+                        && is_config_or_ignore_file(rel)
+                    {
+                        state_for_watcher
+                            .filter_dirty
+                            .store(true, Ordering::Release);
+                        should_bump = true;
+                        break;
+                    }
+                    if !snapshot.is_ignored(path) {
+                        should_bump = true;
+                        break;
+                    }
+                }
+                if should_bump {
+                    state_for_watcher.generation.fetch_add(1, Ordering::Relaxed);
                 }
             }
             Err(_) => {
-                generation.fetch_add(1, Ordering::Relaxed);
+                state_for_watcher.generation.fetch_add(1, Ordering::Relaxed);
             }
         })
         .ok()?;
-    watcher.watch(root, RecursiveMode::Recursive).ok()?;
+    watcher.watch(&state.root, RecursiveMode::Recursive).ok()?;
     Some(watcher)
 }
 
@@ -71,18 +97,34 @@ pub fn current_generation(root: &Path) -> u64 {
     let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
     let tracked = registry.entry(root.clone()).or_insert_with(|| {
         let generation = Arc::new(AtomicU64::new(1));
-        let watcher = start_watcher(&root, Arc::clone(&generation));
-        Tracked {
+        let filter_dirty = Arc::new(AtomicBool::new(false));
+        let config = load_config(&root);
+        let snapshot = RwLock::new(Arc::new(IgnoreSnapshot::build(&root, &config.watch)));
+        let state = Arc::new(WatchState {
+            root: root.clone(),
             generation,
+            filter_dirty,
+            snapshot,
+        });
+        let watcher = start_watcher(Arc::clone(&state));
+        Tracked {
+            state,
             synced_generation: 0,
             last_sync: None,
             _watcher: watcher,
         }
     });
+
     if tracked._watcher.is_none() {
-        tracked.generation.fetch_add(1, Ordering::Relaxed);
+        tracked.state.generation.fetch_add(1, Ordering::Relaxed);
+    } else if tracked.state.filter_dirty.swap(false, Ordering::AcqRel) {
+        let config = load_config(&root);
+        let new_snapshot = Arc::new(IgnoreSnapshot::build(&root, &config.watch));
+        if let Ok(mut w) = tracked.state.snapshot.write() {
+            *w = new_snapshot;
+        }
     }
-    tracked.generation.load(Ordering::Relaxed)
+    tracked.state.generation.load(Ordering::Relaxed)
 }
 
 /// Whether a pre-flight sync is due for `root` at `generation` (as returned by
@@ -112,6 +154,7 @@ pub fn mark_synced(root: &Path, generation: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::WatchConfig;
 
     #[test]
     fn generation_advances_on_change_and_sync_is_due_once() {
@@ -139,11 +182,21 @@ mod tests {
     }
 
     #[test]
-    fn build_directories_are_ignored() {
+    fn build_directories_and_vcs_are_ignored() {
         let root = Path::new("/w");
-        assert!(ignored(Path::new("/w/target/debug/x"), root));
-        assert!(ignored(Path::new("/w/node_modules/x/y.js"), root));
-        assert!(!ignored(Path::new("/w/src/main.rs"), root));
-        assert!(!ignored(Path::new("/w/.git/HEAD"), root));
+        let config = WatchConfig::default();
+        let snapshot = IgnoreSnapshot::build(root, &config);
+
+        assert!(snapshot.is_ignored(Path::new("/w/target/debug/x")));
+        assert!(snapshot.is_ignored(Path::new("/w/node_modules/x/y.js")));
+        assert!(snapshot.is_ignored(Path::new("/w/.git/HEAD")));
+        assert!(snapshot.is_ignored(Path::new("/w/.git/index")));
+        assert!(snapshot.is_ignored(Path::new("/w/.idea/workspace.xml")));
+        assert!(snapshot.is_ignored(Path::new("/w/.vscode/settings.json")));
+        assert!(snapshot.is_ignored(Path::new("/w/.gemini/tmp.log")));
+        assert!(snapshot.is_ignored(Path::new("/w/.codex/cache.json")));
+        assert!(snapshot.is_ignored(Path::new("/w/.claude/desktop.json")));
+
+        assert!(!snapshot.is_ignored(Path::new("/w/src/main.rs")));
     }
 }
