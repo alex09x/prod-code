@@ -22,6 +22,7 @@ pub mod staging;
 pub mod tail_buffer;
 pub mod types;
 
+pub use in_place::run_in_place;
 pub use overlay::run_overlay;
 pub use root::{
     ShadowRootOwner, default_root, overlay_unavailable, ram_shadow_root, remove_shadow_dir,
