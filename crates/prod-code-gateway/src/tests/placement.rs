@@ -141,3 +141,45 @@ fn a_macos_node_takes_only_what_needs_macos_or_what_nothing_else_serves() {
     down.nodes[0].alive = false;
     assert_eq!(place(&down, Some("go"), None).as_deref(), Some("mac:9400"));
 }
+
+#[test]
+fn active_workspace_on_pressured_or_congested_holder_moves_to_roomy_quiet_node() {
+    let mut view = ClusterResponse {
+        this_node: "node1:9400".to_string(),
+        nodes: vec![
+            peer("node1:9400", "linux x86_64", &["rust (ra_ap_ide)"], 1.8),
+            peer("node2:9400", "linux x86_64", &["rust (ra_ap_ide)"], 0.2),
+        ],
+    };
+    // node1 holds active sessions for "subject"
+    view.nodes[0].workspaces.push(LoadedWorkspaceInfo {
+        name: "subject".to_string(),
+        engine: "rust".to_string(),
+        sessions: 5,
+    });
+
+    let place_req = |v: &ClusterResponse| {
+        place_in(
+            &PlaceRequest {
+                workspace_name: "subject".to_string(),
+                engine: Some("rust".to_string()),
+                os: None,
+                rebalance_active: false,
+            },
+            v.clone(),
+        )
+    };
+
+    // 1. Congestion rebalance: score 1.8 vs 0.2 moves to node2 even with active sessions
+    let resp = place_req(&view);
+    assert_eq!(resp.node.as_deref(), Some("node2:9400"));
+    assert!(resp.reason.contains("rebalanced from"));
+
+    // 2. Resource pressure: node1 has memory pressure (> 85% used)
+    view.nodes[0].status.load_average_millis = Some(400); // low load but hard memory pressure
+    view.nodes[0].status.host.memory_total_bytes = Some(100 * 1024 * 1024);
+    view.nodes[0].status.host.memory_available_bytes = Some(10 * 1024 * 1024); // 90% used
+    let resp = place_req(&view);
+    assert_eq!(resp.node.as_deref(), Some("node2:9400"));
+    assert!(resp.reason.contains("moved from"));
+}

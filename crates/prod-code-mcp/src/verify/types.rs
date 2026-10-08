@@ -113,6 +113,19 @@ impl VerifyReport {
         self.exit_code == Some(0) && !self.timed_out
     }
 
+    pub fn is_toolchain_msrv_rejection(&self) -> bool {
+        if self.ok() {
+            return false;
+        }
+        let matches_msrv = |s: &str| {
+            s.contains("is not supported by the following packages")
+                || s.contains("requires at least rustc")
+                || s.contains("requires rustc")
+                || s.contains("package requires rustc")
+        };
+        self.diagnostics.iter().any(|d| matches_msrv(&d.message)) || matches_msrv(&self.tail)
+    }
+
     pub fn errors(&self) -> usize {
         self.diagnostics
             .iter()

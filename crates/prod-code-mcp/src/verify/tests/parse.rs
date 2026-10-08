@@ -321,3 +321,28 @@ fn benchmark_results_are_read_from_criterion_libtest_and_go() {
         "{text}"
     );
 }
+
+#[test]
+fn test_toolchain_msrv_rejection_detection() {
+    let mut report = VerifyReport {
+        kind: VerifyKind::Test,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "test".into()],
+        exit_code: Some(101),
+        timed_out: false,
+        duration_ms: 1200,
+        diagnostics: vec![],
+        tests_passed: 0,
+        tests_failed: 0,
+        failures: vec![],
+        tail: "error: rustc 1.88.0 is not supported by the following packages:\n  tokio-util@0.7.13 requires at least rustc 1.90.0".into(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+    assert!(report.is_toolchain_msrv_rejection());
+
+    report.exit_code = Some(0);
+    assert!(!report.is_toolchain_msrv_rejection());
+}

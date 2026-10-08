@@ -46,6 +46,8 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
         || msg.contains("capacity admission")
         || msg.contains("no space left on device")
         || msg.contains("short of disk")
+        || msg.contains("pre-flight workspace sync failed")
+        || msg.contains("sync probe response")
 }
 
 /// Run a 250ms UDP discovery probe (multicast + unicast to the old address) and return
@@ -57,15 +59,21 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
 /// 3. Among those (or all candidates if none has it), pick the one with the most available memory
 ///    and the lowest load.
 pub async fn rediscover_node(old: SocketAddr, workspace_root: &Path) -> Option<SocketAddr> {
-    let seeds = vec![old];
-    let nodes =
-        tokio::task::spawn_blocking(move || prod_code_protocol::discovery::discover(&seeds))
-            .await
-            .ok()?;
-
-    if nodes.is_empty() {
-        return None;
+    let mut seeds = vec![old];
+    if let Some(known) = crate::cluster::known_cluster_nodes() {
+        for n in known {
+            if !seeds.contains(&n) {
+                seeds.push(n);
+            }
+        }
     }
+    let nodes = {
+        let seeds_clone = seeds.clone();
+        tokio::task::spawn_blocking(move || prod_code_protocol::discovery::discover(&seeds_clone))
+            .await
+            .ok()
+            .unwrap_or_default()
+    };
 
     // Detect required engine and OS for this workspace.
     let (subproject, detected_engine) = crate::sync::engine_project(workspace_root, workspace_root);
@@ -80,6 +88,28 @@ pub async fn rediscover_node(old: SocketAddr, workspace_root: &Path) -> Option<S
         _ => None,
     };
     let needs_macos = detected_engine == Some("swift") || macos_cgo.is_some();
+
+    if nodes.is_empty() {
+        // Fallback: query known cluster nodes over TCP
+        let mut candidates = Vec::new();
+        for seed in seeds {
+            if seed == old {
+                continue;
+            }
+            if let Ok(st) = crate::cluster::node_status(seed).await {
+                if needs_macos && !crate::cluster::runs_os(&st, "macos") {
+                    continue;
+                }
+                if let Some(engine) = detected_engine {
+                    if !crate::cluster::supports_engine(&st, engine) {
+                        continue;
+                    }
+                }
+                candidates.push((seed, st.congestion_score()));
+            }
+        }
+        return crate::cluster::choose_best_node(&candidates);
+    }
 
     // Log what we found.
     for n in &nodes {

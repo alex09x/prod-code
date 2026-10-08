@@ -29,7 +29,8 @@ async fn wait_for_message<T>(
     what: &str,
     pick: impl Fn(WireMessage) -> Option<T>,
 ) -> Result<T> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let timeout_secs = if what.contains("probe") { 30 } else { 180 };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {

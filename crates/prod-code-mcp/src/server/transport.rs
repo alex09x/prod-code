@@ -148,6 +148,7 @@ where
                 Err(e) => {
                     let err_resp = serde_json::json!({
                         "jsonrpc": "2.0",
+                        "id": serde_json::Value::Null,
                         "error": { "code": -32700, "message": format!("Parse error: {e}") }
                     });
                     if let Ok(mut out) = serde_json::to_string(&err_resp) {
@@ -182,6 +183,7 @@ where
                     tracing::error!(error = %e, "MCP request handler internal error");
                     let err_resp = serde_json::json!({
                         "jsonrpc": "2.0",
+                        "id": req_id.unwrap_or(serde_json::Value::Null),
                         "error": { "code": -32603, "message": format!("Internal error: {e}") }
                     });
                     if let Ok(mut out) = serde_json::to_string(&err_resp) {

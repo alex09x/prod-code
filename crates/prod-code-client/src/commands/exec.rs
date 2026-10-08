@@ -36,7 +36,13 @@ pub struct VerifyArgs {
 }
 
 /// Typed remote verification: check / lint / test with parsed diagnostics.
-pub async fn run_verify(remote: SocketAddr, kind: VerifyKind, args: VerifyArgs) -> Result<()> {
+pub async fn run_verify(
+    remote: SocketAddr,
+    remotes: &[SocketAddr],
+    placement_key: Option<&str>,
+    kind: VerifyKind,
+    args: VerifyArgs,
+) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let scope = verify_scope(&cwd, args.path.as_deref())?;
@@ -49,34 +55,117 @@ pub async fn run_verify(remote: SocketAddr, kind: VerifyKind, args: VerifyArgs) 
                 .with_context(|| format!("--env takes KEY=VALUE, got `{pair}`"))
         })
         .collect::<Result<Vec<_>>>()?;
-    let report = prod_code_mcp::verify::run_verify_with(
-        remote,
-        &root,
-        Some(&scope),
-        kind,
-        args.filter.as_deref(),
-        args.timeout_secs,
-        &env,
-        |event| {
-            if args.events
-                && let Ok(line) = serde_json::to_string(&event)
-            {
-                println!("{line}");
-            }
-        },
-    )
-    .await?;
-    if args.events {
-        println!(
-            "{}",
-            serde_json::json!({ "event": "report", "report": report })
-        );
-    } else if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", report.render(200));
+
+    let mut candidates = vec![remote];
+    for &r in remotes {
+        if !candidates.contains(&r) {
+            candidates.push(r);
+        }
     }
-    std::process::exit(if report.ok() { 0 } else { 1 });
+    if candidates.len() <= 1 {
+        if let Some(known) = prod_code_mcp::cluster::known_cluster_nodes() {
+            for r in known {
+                if !candidates.contains(&r) {
+                    candidates.push(r);
+                }
+            }
+        }
+    }
+
+    let mut last_msrv_report = None;
+    let mut last_err = None;
+
+    for (idx, &current_remote) in candidates.iter().enumerate() {
+        let result = prod_code_mcp::verify::run_verify_with(
+            current_remote,
+            &root,
+            Some(&scope),
+            kind,
+            args.filter.as_deref(),
+            args.timeout_secs,
+            &env,
+            |event| {
+                if args.events
+                    && let Ok(line) = serde_json::to_string(&event)
+                {
+                    println!("{line}");
+                }
+            },
+        )
+        .await;
+
+        match result {
+            Ok(report) => {
+                if report.is_toolchain_msrv_rejection() && idx + 1 < candidates.len() {
+                    tracing::warn!(
+                        remote = %current_remote,
+                        "remote toolchain rejected by workspace MSRV; trying next candidate"
+                    );
+                    last_msrv_report = Some((current_remote, report));
+                    continue;
+                }
+
+                if current_remote != remote {
+                    if let Some(key) = placement_key {
+                        prod_code_mcp::cluster::remember_placement(key, current_remote);
+                    }
+                }
+
+                if args.events {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "event": "report", "report": report })
+                    );
+                } else if args.json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print!("{}", report.render(200));
+                    if report.is_toolchain_msrv_rejection() {
+                        eprintln!(
+                            "\nHint: The workspace requires a newer Rust toolchain than available on {current_remote}. Specify a compatible node with `--remote <addr>` or update the node's toolchain."
+                        );
+                    }
+                }
+                std::process::exit(if report.ok() { 0 } else { 1 });
+            }
+            Err(e) => {
+                if prod_code_mcp::server::failover::is_retryable_connection_error("verify", &e)
+                    && idx + 1 < candidates.len()
+                {
+                    tracing::warn!(
+                        remote = %current_remote,
+                        error = %e,
+                        "verify connection or pre-flight failed on candidate; trying next candidate"
+                    );
+                    last_err = Some(e);
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    if let Some((failed_remote, report)) = last_msrv_report {
+        if args.events {
+            println!(
+                "{}",
+                serde_json::json!({ "event": "report", "report": report })
+            );
+        } else if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", report.render(200));
+            eprintln!(
+                "\nHint: The workspace requires a newer Rust toolchain than available on cluster nodes (tested {failed_remote}). Specify a compatible node with `--remote <addr>` or update the node's toolchain."
+            );
+        }
+        std::process::exit(1);
+    }
+
+    if let Some(err) = last_err {
+        return Err(err);
+    }
+    Ok(())
 }
 
 pub async fn run_shadow_cli(

@@ -136,6 +136,8 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
         } => {
             run_verify(
                 cx.remote,
+                cx.remotes,
+                Some(cx.placement_key),
                 VerifyKind::Check,
                 VerifyArgs {
                     filter: None,
@@ -165,6 +167,8 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
         } => {
             run_verify(
                 cx.remote,
+                cx.remotes,
+                Some(cx.placement_key),
                 VerifyKind::Lint,
                 VerifyArgs {
                     filter: None,
@@ -187,6 +191,8 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
         } => {
             run_verify(
                 cx.remote,
+                cx.remotes,
+                Some(cx.placement_key),
                 VerifyKind::Test,
                 VerifyArgs {
                     filter,
@@ -209,6 +215,8 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
         } => {
             run_verify(
                 cx.remote,
+                cx.remotes,
+                Some(cx.placement_key),
                 VerifyKind::Bench,
                 VerifyArgs {
                     filter,
