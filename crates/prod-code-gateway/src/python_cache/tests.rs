@@ -11,6 +11,7 @@
 use super::*;
 use crate::DiskSpace;
 use std::fs;
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -222,5 +223,177 @@ fn test_remove_entry_removes_matching_inode() {
 
     unsafe {
         libc::close(root_fd);
+    }
+}
+
+#[test]
+fn test_mypypath_view_exposes_stub_only_packages_by_import_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let requests_stubs = cache_dir.join("requests-stubs");
+    fs::create_dir_all(&requests_stubs).unwrap();
+    fs::write(
+        requests_stubs.join("__init__.pyi"),
+        "def get(url: str): ...\n",
+    )
+    .unwrap();
+
+    let mypy_dir = ensure_mypypath_view(&cache_dir).unwrap();
+    assert_eq!(mypy_dir, cache_dir.join(".mypypath"));
+
+    // Verify requests-stubs is exposed under the requests import name for Mypy
+    let requests_import = mypy_dir.join("requests");
+    assert!(
+        requests_import.exists(),
+        "requests import package must exist in .mypypath"
+    );
+    assert!(
+        requests_import.join("__init__.pyi").is_file(),
+        "requests/__init__.pyi must be accessible through the mypy view"
+    );
+
+    let envs = python_stub_cache_env_for_dir(&cache_dir);
+    let mypy_val = envs
+        .iter()
+        .find(|(k, _)| k == "MYPYPATH")
+        .map(|(_, v)| v.as_str());
+    assert_eq!(mypy_val, Some(mypy_dir.to_str().unwrap()));
+
+    let typings_val = envs
+        .iter()
+        .find(|(k, _)| k == "TYPINGS_PATH")
+        .map(|(_, v)| v.as_str());
+    assert_eq!(typings_val, Some(cache_dir.to_str().unwrap()));
+
+    assert!(
+        cache_dir
+            .join("requests-stubs")
+            .join("__init__.pyi")
+            .is_file()
+    );
+}
+
+#[test]
+fn test_seed_python_worktree_exposes_mypypath_view() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let custom_cache = temp.path().join("shared-stubs-mypypath");
+    unsafe {
+        std::env::set_var(PYTHON_STUB_CACHE_ENV, &custom_cache);
+    }
+
+    let from = temp.path().join("origin");
+    let to = temp.path().join("worktree");
+    fs::create_dir_all(&from).unwrap();
+    fs::write(from.join("setup.py"), "# setup\n").unwrap();
+
+    let sp = from
+        .join(".venv")
+        .join("lib")
+        .join("python3.11")
+        .join("site-packages");
+    let req_stubs = sp.join("requests-stubs");
+    fs::create_dir_all(&req_stubs).unwrap();
+    fs::write(req_stubs.join("__init__.pyi"), "def get(url: str): ...\n").unwrap();
+
+    seed_python_worktree(&from, &to).unwrap();
+
+    let envs = python_stub_cache_env_for_workspace(&to);
+    let mypypath = envs
+        .iter()
+        .find(|(k, _)| k == "MYPYPATH")
+        .map(|(_, v)| v.as_str())
+        .expect("MYPYPATH must be present");
+
+    let mypy_dir = Path::new(mypypath);
+    assert!(
+        mypy_dir.join("requests").join("__init__.pyi").is_file(),
+        "requests import package must exist under MYPYPATH"
+    );
+
+    // Verify workspace typings has the PEP 561 view
+    let to_typings = to.join("typings");
+    assert!(
+        to_typings
+            .join("requests-stubs")
+            .join("__init__.pyi")
+            .is_file(),
+        "typings must preserve PEP 561 requests-stubs for Pyright"
+    );
+
+    unsafe {
+        std::env::remove_var(PYTHON_STUB_CACHE_ENV);
+    }
+}
+
+#[test]
+fn test_mypypath_view_copy_fallback_populates_packages() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let req_stubs = cache_dir.join("requests-stubs");
+    let sub = req_stubs.join("adapters");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(req_stubs.join("__init__.pyi"), "def get(): ...\n").unwrap();
+    fs::write(sub.join("mod.pyi"), "class HTTPAdapter: ...\n").unwrap();
+    fs::write(cache_dir.join("top_level.pyi"), "# top level\n").unwrap();
+
+    let mypy_dir = cache_dir.join(".mypypath_copy");
+    fs::create_dir_all(&mypy_dir).unwrap();
+
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("requests".to_string(), "requests-stubs".to_string());
+    let direct_files = vec!["top_level.pyi".to_string()];
+
+    env::populate_mypypath_view_copy(&cache_dir, &mypy_dir, &map, &direct_files).unwrap();
+
+    let req = mypy_dir.join("requests");
+    assert!(req.join("__init__.pyi").is_file());
+    assert!(req.join("adapters").join("mod.pyi").is_file());
+    assert!(mypy_dir.join("top_level.pyi").is_file());
+}
+
+#[test]
+fn test_mypypath_view_fallback_on_unready_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = temp.path().join("cache");
+    let mypy = cache.join(".mypypath");
+    fs::create_dir_all(&mypy).unwrap();
+    fs::write(mypy.join("partial.pyi"), "# incomplete").unwrap();
+
+    let envs = python_stub_cache_env_for_dir(&cache);
+    let val = envs.iter().find(|(k, _)| k == "MYPYPATH");
+    assert_eq!(val.map(|(_, v)| v.as_str()), Some(cache.to_str().unwrap()));
+}
+
+#[test]
+fn test_seed_python_worktree_propagates_mypypath_error() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let cache = temp.path().join("cache");
+    unsafe {
+        std::env::set_var(PYTHON_STUB_CACHE_ENV, &cache);
+    }
+
+    let (from, to) = (temp.path().join("from"), temp.path().join("to"));
+    let p_stubs = from.join(".venv/lib/python3.11/site-packages/p-stubs");
+    fs::create_dir_all(&p_stubs).unwrap();
+    fs::write(from.join("setup.py"), "#").unwrap();
+    fs::write(p_stubs.join("__init__.pyi"), "x: int\n").unwrap();
+
+    let (ns, _) = fingerprint::python_stub_cache_namespace(
+        &from,
+        &to,
+        &[p_stubs],
+        &[],
+        &from.join("typings"),
+        &to.join("typings"),
+    );
+    let target = cache.join(ns);
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join(".mypypath"), "blocker").unwrap();
+
+    assert!(seed_python_worktree(&from, &to).is_err());
+    unsafe {
+        std::env::remove_var(PYTHON_STUB_CACHE_ENV);
     }
 }

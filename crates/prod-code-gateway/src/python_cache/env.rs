@@ -179,11 +179,168 @@ pub fn python_stub_cache_env_for_workspace(workspace: &Path) -> Vec<(String, Str
     python_stub_cache_env_for_dir(&workspace.join("typings"))
 }
 
-fn python_stub_cache_env_for_dir(dir: &Path) -> Vec<(String, String)> {
+pub fn python_stub_cache_env_for_dir(dir: &Path) -> Vec<(String, String)> {
     let dir_str = dir.to_string_lossy().into_owned();
+    let mypypath = mypypath_view_for_dir(dir).to_string_lossy().into_owned();
     vec![
         (PYTHON_STUB_CACHE_ENV.to_string(), dir_str.clone()),
-        ("MYPYPATH".to_string(), dir_str.clone()),
+        ("MYPYPATH".to_string(), mypypath),
         ("TYPINGS_PATH".to_string(), dir_str),
     ]
+}
+
+fn mypypath_view_for_dir(dir: &Path) -> PathBuf {
+    let mypy_dir = dir.join(".mypypath");
+    if is_mypypath_view_ready(&mypy_dir) {
+        return mypy_dir;
+    }
+
+    if has_stub_packages(dir) {
+        if let Ok(view) = ensure_mypypath_view(dir) {
+            if is_mypypath_view_ready(&view) {
+                return view;
+            }
+        }
+    }
+
+    dir.to_path_buf()
+}
+
+fn is_mypypath_view_ready(mypy_dir: &Path) -> bool {
+    mypy_dir.join(".ready").is_file()
+}
+
+fn has_stub_packages(dir: &Path) -> bool {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with("-stubs") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Creates or updates an MYPYPATH-compatible view within `cache_dir`, exposing
+/// PEP 561 stub packages (`*-stubs`) under their canonical Python import names
+/// without modifying the PEP 561 layout used by Pyright.
+pub fn ensure_mypypath_view(cache_dir: &Path) -> io::Result<PathBuf> {
+    let mypy_dir = cache_dir.join(".mypypath");
+    ensure_cache_dir(&mypy_dir)?;
+
+    let entries = fs::read_dir(cache_dir)?;
+
+    let mut import_map: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut direct_files: Vec<String> = Vec::new();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if file_type.is_dir() || file_type.is_symlink() {
+            if let Some(import_name) = name_str.strip_suffix("-stubs") {
+                import_map
+                    .entry(import_name.to_string())
+                    .or_insert_with(|| name_str.to_string());
+            } else {
+                import_map.insert(name_str.to_string(), name_str.to_string());
+            }
+        } else if file_type.is_file() && name_str.ends_with(".pyi") {
+            direct_files.push(name_str.to_string());
+        }
+    }
+
+    let ready_marker = mypy_dir.join(".ready");
+    let _ = fs::remove_file(&ready_marker);
+
+    #[cfg(unix)]
+    {
+        for (import_name, target_entry) in &import_map {
+            let link_path = mypy_dir.join(import_name);
+            let target_rel = Path::new("..").join(target_entry);
+
+            let need_create = match fs::read_link(&link_path) {
+                Ok(existing) => existing != target_rel,
+                Err(_) => true,
+            };
+
+            if need_create {
+                let _ = fs::remove_file(&link_path);
+                let _ = fs::remove_dir_all(&link_path);
+                std::os::unix::fs::symlink(&target_rel, &link_path)?;
+            }
+        }
+
+        for file_name in &direct_files {
+            let link_path = mypy_dir.join(file_name);
+            let target_rel = Path::new("..").join(file_name);
+
+            let need_create = match fs::read_link(&link_path) {
+                Ok(existing) => existing != target_rel,
+                Err(_) => true,
+            };
+
+            if need_create {
+                let _ = fs::remove_file(&link_path);
+                std::os::unix::fs::symlink(&target_rel, &link_path)?;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        populate_mypypath_view_copy(cache_dir, &mypy_dir, &import_map, &direct_files)?;
+    }
+
+    fs::write(&ready_marker, b"ready")?;
+    Ok(mypy_dir)
+}
+
+#[allow(dead_code)]
+pub(crate) fn populate_mypypath_view_copy(
+    cache_dir: &Path,
+    mypy_dir: &Path,
+    import_map: &std::collections::BTreeMap<String, String>,
+    direct_files: &[String],
+) -> io::Result<()> {
+    for (import_name, target_entry) in import_map {
+        let link_path = mypy_dir.join(import_name);
+        let target = cache_dir.join(target_entry);
+        copy_dir_recursive(&target, &link_path)?;
+    }
+    for file_name in direct_files {
+        let link_path = mypy_dir.join(file_name);
+        let target = cache_dir.join(file_name);
+        fs::copy(&target, &link_path)?;
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
 }
