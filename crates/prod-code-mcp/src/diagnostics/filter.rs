@@ -88,6 +88,15 @@ pub fn set_aside_preexisting(
 /// Rust prelude macros (assert_eq!, vec!) in test/detached modules (#950).
 pub fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
     let rust = report.file.ends_with(".rs");
+    let disabled_prelude = text.contains("no_implicit_prelude") || text.contains("no_std");
+    let is_test = report.file.contains("test")
+        || report.file.ends_with("_test.rs")
+        || report.file.ends_with("_tests.rs")
+        || report.file.contains("/tests/")
+        || text.contains("#[cfg(test)]")
+        || text.contains("#[test]")
+        || text.contains("mod tests");
+    let prelude_limitation = rust && is_test && !disabled_prelude;
     let items = std::mem::take(&mut report.items);
     for d in items {
         let line = text
@@ -98,7 +107,7 @@ pub fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
             report.in_derive.push(d);
         } else if rust && d.code.as_deref() == Some("E0277") && is_auto_trait_bound(&d.message) {
             report.auto_trait.push(d);
-        } else if rust && is_unresolved_prelude_macro(&d.message) {
+        } else if prelude_limitation && is_unresolved_prelude_macro(&d.message) {
             report.auto_trait.push(d);
         } else {
             report.items.push(d);
@@ -106,7 +115,7 @@ pub fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
     }
     let preexisting = std::mem::take(&mut report.preexisting);
     for d in preexisting {
-        if rust && is_unresolved_prelude_macro(&d.message) {
+        if prelude_limitation && is_unresolved_prelude_macro(&d.message) {
             report.auto_trait.push(d);
         } else {
             report.preexisting.push(d);

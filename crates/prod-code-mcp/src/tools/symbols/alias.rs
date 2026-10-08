@@ -49,29 +49,40 @@ pub fn extract_alias_target(text: &str, alias: &str) -> Option<String> {
         if !trimmed.contains(alias) {
             continue;
         }
-        // Match `AgentTracker as IdentityState`
-        if let Some(as_pos) = trimmed.find(&format!("as {alias}")) {
-            let before = trimmed[..as_pos].trim_end();
-            let ident_start = before.rfind(|c: char| !is_ident(c)).map_or(0, |i| i + 1);
-            let target = &before[ident_start..];
-            if !target.is_empty() && target != alias {
-                return Some(target.to_string());
+        // Match `AgentTracker as IdentityState` with identifier boundary
+        let as_pattern = format!("as {alias}");
+        if let Some(as_pos) = trimmed.find(&as_pattern) {
+            let after_alias = &trimmed[as_pos + as_pattern.len()..];
+            let boundary_ok = after_alias.chars().next().map_or(true, |c| !is_ident(c));
+            if boundary_ok {
+                let before = trimmed[..as_pos].trim_end();
+                let ident_start = before.rfind(|c: char| !is_ident(c)).map_or(0, |i| i + 1);
+                let target = &before[ident_start..];
+                if !target.is_empty() && target != alias {
+                    return Some(target.to_string());
+                }
             }
         }
-        // Match `type IdentityState = AgentTracker;`
-        if (trimmed.starts_with("type ") || trimmed.starts_with("pub type "))
-            && trimmed.contains(&format!("type {alias}"))
-            && let Some((_, rhs)) = trimmed.split_once('=')
+        // Match `type IdentityState = AgentTracker;` with identifier boundary
+        let type_pattern = format!("type {alias}");
+        if (trimmed.starts_with("type ")
+            || trimmed.starts_with("pub type ")
+            || trimmed.starts_with("pub(crate) type "))
+            && let Some(type_pos) = trimmed.find(&type_pattern)
         {
-            let rhs = rhs
-                .trim()
-                .split([';', '<', ' ', '\t'])
-                .next()
-                .unwrap_or("")
-                .trim();
-            let target = rhs.rsplit("::").next().unwrap_or(rhs).trim();
-            if !target.is_empty() && target != alias {
-                return Some(target.to_string());
+            let after_alias = &trimmed[type_pos + type_pattern.len()..];
+            let boundary_ok = after_alias.chars().next().map_or(true, |c| !is_ident(c));
+            if boundary_ok && let Some((_, rhs)) = trimmed.split_once('=') {
+                let rhs = rhs
+                    .trim()
+                    .split([';', '<', ' ', '\t'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                let target = rhs.rsplit("::").next().unwrap_or(rhs).trim();
+                if !target.is_empty() && target != alias {
+                    return Some(target.to_string());
+                }
             }
         }
     }

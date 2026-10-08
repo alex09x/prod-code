@@ -91,14 +91,90 @@ fn test_unresolved_prelude_macros_filter() {
 }
 
 #[test]
+fn test_unresolved_prelude_macro_preserved_when_prelude_disabled() {
+    let mut report = DiagnosticsReport {
+        file: "crates/prod-code-gateway/src/metrics/tests.rs".to_string(),
+        errors: 1,
+        warnings: 0,
+        items: vec![DocDiagnostic {
+            severity: "error".to_string(),
+            code: Some("unresolved-macro-call".to_string()),
+            message: "cannot find macro `assert_eq!` in this scope".to_string(),
+            line: 10,
+            col: 5,
+            source: Some("rust-analyzer".to_string()),
+            note: None,
+            end: None,
+        }],
+        preexisting: Vec::new(),
+        in_derive: Vec::new(),
+        auto_trait: Vec::new(),
+        hallucinations: Vec::new(),
+    };
+
+    set_aside_derive_expansions(
+        &mut report,
+        "#![no_implicit_prelude]\nfn check() { assert_eq!(1, 1); }",
+    );
+    assert_eq!(
+        report.errors, 1,
+        "Unresolved prelude macro must remain an error when prelude is disabled"
+    );
+    assert!(
+        report.auto_trait.is_empty(),
+        "Must not be set aside as analyzer limitation"
+    );
+
+    let mut report_non_test = DiagnosticsReport {
+        file: "crates/prod-code-gateway/src/metrics/collector.rs".to_string(),
+        errors: 1,
+        warnings: 0,
+        items: vec![DocDiagnostic {
+            severity: "error".to_string(),
+            code: Some("unresolved-macro-call".to_string()),
+            message: "cannot find macro `vec!` in this scope".to_string(),
+            line: 12,
+            col: 5,
+            source: Some("rust-analyzer".to_string()),
+            note: None,
+            end: None,
+        }],
+        preexisting: Vec::new(),
+        in_derive: Vec::new(),
+        auto_trait: Vec::new(),
+        hallucinations: Vec::new(),
+    };
+    set_aside_derive_expansions(&mut report_non_test, "pub fn collect() { vec![1]; }");
+    assert_eq!(
+        report_non_test.errors, 1,
+        "Unresolved macro in ordinary production module must not be suppressed"
+    );
+    assert!(report_non_test.auto_trait.is_empty());
+}
+
+#[test]
 fn test_extract_type_alias_target() {
     let code = "pub use super::agent_tracker::{AgentOwners, AgentTracker as IdentityState};";
     let target = extract_alias_target(code, "IdentityState");
     assert_eq!(target.as_deref(), Some("AgentTracker"));
 
+    // Prefix match must not match longer identifier
+    let target_prefix = extract_alias_target(code, "Identity");
+    assert_eq!(
+        target_prefix, None,
+        "Querying 'Identity' must not match 'IdentityState'"
+    );
+
     let code2 = "type IdentityState = super::agent_tracker::AgentTracker;";
     let target2 = extract_alias_target(code2, "IdentityState");
     assert_eq!(target2.as_deref(), Some("AgentTracker"));
+
+    let code_extended = "type IdentityStateExtended = super::agent_tracker::AgentTracker;";
+    let target_ext = extract_alias_target(code_extended, "IdentityState");
+    assert_eq!(
+        target_ext, None,
+        "Querying 'IdentityState' must not match 'IdentityStateExtended'"
+    );
 
     let code3 = "pub type ClientContext = ClientContextImpl<DefaultConfig>;";
     let target3 = extract_alias_target(code3, "ClientContext");
