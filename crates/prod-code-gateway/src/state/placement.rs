@@ -41,6 +41,13 @@ impl ServerState {
         }
         resp
     }
+
+    /// Computes the destination for an active rebalance without redirecting current sessions.
+    pub async fn preview_place(&self, req: &PlaceRequest) -> PlaceResponse {
+        let mut preview = req.clone();
+        preview.rebalance_active = true;
+        place_in(&preview, self.cluster_view().await)
+    }
 }
 
 /// The node `req` should be placed on, given the cluster `view`: the one that already holds it,

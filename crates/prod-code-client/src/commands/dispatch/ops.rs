@@ -27,7 +27,15 @@ pub async fn dispatch_ops(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()>
         } => run_lsp_bridge(cx.remote, cx.lsp_engine, reconnect, watchdog_secs).await,
         Commands::Status { .. } => unreachable!("handled before placement"),
         Commands::Cluster { json, rebalance } => {
-            run_cluster(cx.remotes, cx.placement_key, cx.cwd_engine, json, rebalance).await
+            run_cluster(
+                cx.remotes,
+                cx.placement_key,
+                cx.cwd_engine,
+                cx.cwd_root,
+                json,
+                rebalance,
+            )
+            .await
         }
         Commands::Resolve { domain, json } => run_resolve(&domain, json).await,
         Commands::Metrics { since, json } => run_metrics(cx.remotes, since, json).await,

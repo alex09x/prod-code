@@ -165,7 +165,20 @@ async fn run_cli() -> Result<()> {
 
     if let Some(Commands::Cluster { json, rebalance }) = cli.command {
         startup.report();
-        return run_cluster(&remotes, &placement_key, cwd_engine, json, rebalance).await;
+        let cluster_root = cwd_root.as_deref().map(|root| {
+            cwd_subproject
+                .as_deref()
+                .map_or_else(|| root.to_path_buf(), |subproject| root.join(subproject))
+        });
+        return run_cluster(
+            &remotes,
+            &placement_key,
+            cwd_engine,
+            cluster_root.as_deref(),
+            json,
+            rebalance,
+        )
+        .await;
     }
     if let Some(Commands::Resolve { domain, json }) = cli.command {
         startup.report();

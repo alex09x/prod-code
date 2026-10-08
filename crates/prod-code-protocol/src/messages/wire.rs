@@ -74,6 +74,10 @@ pub enum WireMessage {
     /// A client asks any node where a workspace should live.
     PlaceRequest(PlaceRequest),
     PlaceResponse(PlaceResponse),
+    /// A client previews where an active workspace would move without sending redirects.
+    /// Older gateways reject this distinct message instead of treating it as an active request.
+    PlacePreviewRequest(PlaceRequest),
+    PlacePreviewResponse(PlaceResponse),
     /// Usage metrics of one node (who asked what, how often, how fast).
     MetricsRequest(MetricsRequest),
     MetricsResponse(MetricsResponse),

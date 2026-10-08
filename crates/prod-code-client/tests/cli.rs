@@ -37,6 +37,10 @@ pub struct MockGateway {
     pub initializes: Arc<AtomicUsize>,
     pub fail_exec: Arc<AtomicBool>,
     pub custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    pub place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    pub place_request_active: Arc<std::sync::Mutex<Vec<Option<bool>>>>,
+    pub supports_place_preview: Arc<AtomicBool>,
+    pub reported_platform: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct MockState {
@@ -46,6 +50,10 @@ struct MockState {
     initializes: Arc<AtomicUsize>,
     fail_exec: Arc<AtomicBool>,
     custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    place_request_os: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    place_request_active: Arc<std::sync::Mutex<Vec<Option<bool>>>>,
+    supports_place_preview: Arc<AtomicBool>,
+    reported_platform: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl MockGateway {
@@ -67,6 +75,10 @@ impl MockGateway {
         let initializes = Arc::new(AtomicUsize::new(0));
         let fail_exec = Arc::new(AtomicBool::new(false));
         let custom_exec = Arc::new(std::sync::Mutex::new(None));
+        let place_request_os = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let place_request_active = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let supports_place_preview = Arc::new(AtomicBool::new(true));
+        let reported_platform = Arc::new(std::sync::Mutex::new(None));
 
         let state = Arc::new(MockState {
             protocol_version,
@@ -75,6 +87,10 @@ impl MockGateway {
             initializes: Arc::clone(&initializes),
             fail_exec: Arc::clone(&fail_exec),
             custom_exec: Arc::clone(&custom_exec),
+            place_request_os: Arc::clone(&place_request_os),
+            place_request_active: Arc::clone(&place_request_active),
+            supports_place_preview: Arc::clone(&supports_place_preview),
+            reported_platform: Arc::clone(&reported_platform),
         });
 
         tokio::spawn(async move {
@@ -96,6 +112,10 @@ impl MockGateway {
             initializes,
             fail_exec,
             custom_exec,
+            place_request_os,
+            place_request_active,
+            supports_place_preview,
+            reported_platform,
         }
     }
 }
@@ -181,6 +201,12 @@ async fn handle_client(
                     .await?;
             }
             WireMessage::PlaceRequest(req) => {
+                state.place_request_os.lock().unwrap().push(req.os.clone());
+                state
+                    .place_request_active
+                    .lock()
+                    .unwrap()
+                    .push(Some(req.rebalance_active));
                 framed
                     .send(WireMessage::PlaceResponse(PlaceResponse {
                         node: Some(local_addr.to_string()),
@@ -192,7 +218,21 @@ async fn handle_client(
                     }))
                     .await?;
             }
+            WireMessage::PlacePreviewRequest(req) => {
+                if !state.supports_place_preview.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                state.place_request_os.lock().unwrap().push(req.os.clone());
+                state.place_request_active.lock().unwrap().push(None);
+                framed
+                    .send(WireMessage::PlacePreviewResponse(PlaceResponse {
+                        node: Some(local_addr.to_string()),
+                        reason: "preview to local mock".to_string(),
+                    }))
+                    .await?;
+            }
             WireMessage::StatusRequest => {
+                let platform = state.reported_platform.lock().unwrap().clone();
                 framed
                     .send(WireMessage::StatusResponse(StatusResponse {
                         server_pid: std::process::id(),
@@ -205,7 +245,7 @@ async fn handle_client(
                         active_queries: 0,
                         load_average_millis: Some(200),
                         cpu_count: Some(4),
-                        platform: None,
+                        platform,
                         running_commands: vec![prod_code_protocol::RunningCommand {
                             workspace: "test-ws--wt-1a2b".to_string(),
                             command: "cargo test --workspace".to_string(),
@@ -566,8 +606,15 @@ async fn cli_reports_cluster_as_json() {
 
 #[tokio::test]
 async fn cli_rebalances_cluster_workload_and_reports_as_json() {
-    let ws = make_workspace();
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/cgo-rebalance\n\ngo 1.20\n"),
+        (
+            "cgo.go",
+            "package main\n/*\n#cgo LDFLAGS: -framework Cocoa\n*/\nimport \"C\"\nfunc main() {}\n",
+        ),
+    ]);
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
     let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
     assert!(out.status.success(), "{}", stderr_of(&out));
     let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out))
@@ -584,6 +631,64 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
     let out_text = run_cli(&ws, gw.addr, &["cluster", "--rebalance"]).await;
     assert!(out_text.status.success(), "{}", stderr_of(&out_text));
     assert!(stdout_of(&out_text).contains("Active workload rebalanced to"));
+    assert_eq!(
+        *gw.place_request_os.lock().unwrap(),
+        vec![
+            Some("macos".to_string()),
+            Some("macos".to_string()),
+            Some("macos".to_string()),
+            Some("macos".to_string())
+        ]
+    );
+    assert_eq!(
+        *gw.place_request_active.lock().unwrap(),
+        vec![None, Some(true), None, Some(true)]
+    );
+}
+
+#[tokio::test]
+async fn cli_does_not_cache_or_report_a_linux_rebalance_for_macos_cgo() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/cgo-rebalance\n\ngo 1.20\n"),
+        (
+            "cgo.go",
+            "package main\n/*\n#cgo LDFLAGS: -framework Cocoa\n*/\nimport \"C\"\nfunc main() {}\n",
+        ),
+    ]);
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.reported_platform.lock().unwrap() = Some("linux x86_64".to_string());
+
+    let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    assert!(snapshot["rebalanced"].is_null(), "{snapshot}");
+    assert!(snapshot["placed_on"].is_null(), "{snapshot}");
+    assert_eq!(
+        *gw.place_request_os.lock().unwrap(),
+        vec![Some("macos".to_string())]
+    );
+    assert_eq!(*gw.place_request_active.lock().unwrap(), vec![None]);
+}
+
+#[tokio::test]
+async fn cli_does_not_active_rebalance_through_a_gateway_without_preview_support() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/cgo-rebalance\n\ngo 1.20\n"),
+        (
+            "cgo.go",
+            "package main\n/*\n#cgo LDFLAGS: -framework Cocoa\n*/\nimport \"C\"\nfunc main() {}\n",
+        ),
+    ]);
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    gw.supports_place_preview.store(false, Ordering::SeqCst);
+
+    let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    assert!(snapshot["rebalanced"].is_null(), "{snapshot}");
+    assert!(snapshot["placed_on"].is_null(), "{snapshot}");
+    assert!(gw.place_request_os.lock().unwrap().is_empty());
+    assert!(gw.place_request_active.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
