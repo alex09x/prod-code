@@ -232,3 +232,36 @@ fn test_reexport_barrel_aliased_symbol() {
     let syms = ts_js_imported_symbols(content, &consumer_ts, &selected_ts, "retry");
     assert_eq!(syms, vec!["runAgain".to_string()]);
 }
+
+#[test]
+fn test_reexport_barrel_default_as_named() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let selected_ts = root.join("selected.ts");
+    std::fs::write(&selected_ts, "export default function retry() {}\n").unwrap();
+
+    let index_ts = root.join("index.ts");
+    std::fs::write(
+        &index_ts,
+        "export { default as retry } from \"./selected\";\n",
+    )
+    .unwrap();
+
+    let consumer_ts = root.join("consumer.ts");
+    let content = "import { retry } from \"./index\";\n";
+
+    let syms = ts_js_imported_symbols(content, &consumer_ts, &selected_ts, "retry");
+    assert_eq!(syms, vec!["retry".to_string()]);
+}
+
+#[test]
+fn test_cjs_callable_local_binding() {
+    let content = "const again = require(\"./selected\");\nagain();\n";
+    let syms = ts_js_imported_symbols(
+        content,
+        Path::new("consumer.js"),
+        Path::new("selected.js"),
+        "retry",
+    );
+    assert_eq!(syms, vec!["again".to_string()]);
+}

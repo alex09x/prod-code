@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::decl_is_default_export;
 use super::direct_specifier_matches_decl;
 use super::extract_specifier;
 use super::resolve_relative_path;
@@ -102,6 +103,11 @@ pub(crate) fn barrel_exports_symbol_from_decl(
         for source_symbol in source_symbols {
             if direct_specifier_matches_decl(specifier, barrel_file, decl_file) {
                 if source_symbol == decl_fn {
+                    return true;
+                }
+                if source_symbol == "default"
+                    && decl_is_default_export(decl_file, decl_fn).unwrap_or(false)
+                {
                     return true;
                 }
             } else if let Some(sub_barrel) = resolve_reexport_file(barrel_dir, specifier) {

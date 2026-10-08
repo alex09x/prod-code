@@ -106,7 +106,7 @@ pub(crate) fn ts_js_require_symbols(
                                     .chars()
                                     .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
                             {
-                                symbols.push(fn_name.to_string());
+                                symbols.push(lhs_clean.to_string());
                             }
                         }
                     }

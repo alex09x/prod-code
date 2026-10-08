@@ -114,7 +114,7 @@ pub(crate) fn clean_lhs_binding(lhs: &str) -> &str {
     trimmed
 }
 
-fn decl_is_default_export(decl_file: &Path, fn_name: &str) -> Option<bool> {
+pub(crate) fn decl_is_default_export(decl_file: &Path, fn_name: &str) -> Option<bool> {
     let content = std::fs::read_to_string(decl_file).ok()?;
     for line in content.lines() {
         let trimmed = line.trim();
