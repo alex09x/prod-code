@@ -15,6 +15,7 @@ pub mod caller_migration;
 pub mod cluster;
 pub mod codemod;
 pub mod compile_check;
+pub mod config;
 pub mod dataflow;
 pub mod dead_code;
 pub mod dependencies;

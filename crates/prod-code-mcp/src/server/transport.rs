@@ -217,7 +217,7 @@ where
     Ok(())
 }
 
-pub const MAX_JSONRPC_FRAME_BYTES: usize = 60 * 1024;
+pub const MAX_JSONRPC_FRAME_BYTES: usize = 512 * 1024;
 
 /// Serializes an MCP response value into a single JSON line bounded by `max_frame_bytes` to
 /// avoid crashing client line buffers with "inbound JSON-RPC frame exceeded maximum line length".
