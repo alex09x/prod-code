@@ -32,7 +32,9 @@ impl RustEngine {
         if let ProjectWorkspaceKind::Cargo { cargo, .. } = &base.kind {
             paths.push(PathBuf::from(cargo.manifest_path().as_str()));
             for pkg in cargo.packages() {
-                paths.push(PathBuf::from(cargo[pkg].manifest.as_str()));
+                if cargo[pkg].is_local {
+                    paths.push(PathBuf::from(cargo[pkg].manifest.as_str()));
+                }
             }
         }
         for cfg in [
@@ -41,10 +43,7 @@ impl RustEngine {
             "rust-toolchain.toml",
             "rust-toolchain",
         ] {
-            let p = ws_root.join(cfg);
-            if std::fs::metadata(p.as_str()).is_ok() {
-                paths.push(PathBuf::from(p.as_str()));
-            }
+            paths.push(PathBuf::from(ws_root.join(cfg).as_str()));
         }
         paths.sort();
         paths.dedup();
@@ -68,10 +67,7 @@ impl RustEngine {
             "rust-toolchain.toml",
             "rust-toolchain",
         ] {
-            let p = copy_root.join(cfg);
-            if std::fs::metadata(&p).is_ok() {
-                paths.push(p);
-            }
+            paths.push(copy_root.join(cfg));
         }
         paths.sort();
         paths.dedup();
@@ -209,6 +205,12 @@ impl RustEngine {
 
     /// Reload the worktree or base workspace if their manifests are stale.
     pub fn ensure_fresh_for_path(&mut self, path: &Path) -> Result<bool> {
+        let mut reloaded = false;
+        if self.is_base_stale() {
+            self.reload_base()?;
+            reloaded = true;
+        }
+
         let norm = normalize_vfs_path(path, &self.workspace_root);
         let abs = AbsPathBuf::assert_utf8(norm);
         let target_worktree = {
@@ -222,7 +224,7 @@ impl RustEngine {
                 self.reload_worktree(&worktree_root)?;
                 return Ok(true);
             }
-            return Ok(false);
+            return Ok(reloaded);
         }
         let matching_copy = self
             .worktree_attachments
@@ -234,12 +236,8 @@ impl RustEngine {
                 self.reload_worktree(&copy_root)?;
                 return Ok(true);
             }
-            return Ok(false);
+            return Ok(reloaded);
         }
-        if self.is_base_stale() {
-            self.reload_base()?;
-            return Ok(true);
-        }
-        Ok(false)
+        Ok(reloaded)
     }
 }
