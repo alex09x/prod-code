@@ -233,6 +233,14 @@ fn macos_only_cgo_is_found_unless_linux_skips_the_file() {
         macos_only_cgo(go_module("vendor/x/proc.go", LIBPROC).path()),
         None
     );
+    assert_eq!(
+        macos_only_cgo(go_module("target/debug/proc.go", LIBPROC).path()),
+        None
+    );
+    assert_eq!(
+        macos_only_cgo(go_module("node_modules/pkg/proc.go", LIBPROC).path()),
+        None
+    );
 }
 
 #[test]
