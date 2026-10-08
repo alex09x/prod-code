@@ -10,7 +10,7 @@
 
 use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
 use crate::sync::entry::{fits_sync, is_executable, sync_file_entry};
-use crate::sync::filter_path::{SyncPathFilter, is_synced_git_path};
+use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path};
 use crate::sync::git::{changed_paths, git_head, git_listed_paths};
 use crate::sync::scan::{read_regular_file_secure, scan_workspace_files};
 use crate::sync::types::{RELEVANCE_VERSION, SyncCache, SyncPlan};
@@ -36,6 +36,12 @@ pub fn prepare_workspace_sync_for(
     subpath: Option<&Path>,
 ) -> Result<SyncPlan> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if is_filesystem_root(&canonical_root) {
+        anyhow::bail!(
+            "refusing to sync filesystem root: {}",
+            canonical_root.display()
+        );
+    }
     let mut state = load_sync_cache_for(&canonical_root, node);
     if state.filter_version != RELEVANCE_VERSION && subpath.is_none() {
         state.base_commit_sha = None;
@@ -188,6 +194,9 @@ fn prepare_non_git_workspace_sync(
     subpath: Option<&Path>,
     mut state: SyncCache,
 ) -> Result<SyncPlan> {
+    if is_filesystem_root(root) {
+        anyhow::bail!("refusing to sync filesystem root: {}", root.display());
+    }
     if state.filter_version != RELEVANCE_VERSION {
         state.files.clear();
         state.filter_version = RELEVANCE_VERSION;

@@ -287,3 +287,23 @@ fn test_scan_workspace_files_rejects_git_listed_symlinks_in_commitless_repo() {
         }
     }
 }
+
+#[test]
+fn test_is_filesystem_root_identifies_root_paths() {
+    assert!(is_filesystem_root(Path::new("/")));
+    assert!(is_filesystem_root(Path::new("")));
+    assert!(!is_filesystem_root(Path::new("/tmp")));
+    assert!(!is_filesystem_root(Path::new("src")));
+}
+
+#[test]
+fn test_scan_workspace_files_rejects_filesystem_root() {
+    let err = scan_workspace_files(Path::new("/"), None).unwrap_err();
+    assert!(err.to_string().contains("filesystem root"), "{err}");
+}
+
+#[test]
+fn test_prepare_workspace_sync_rejects_filesystem_root() {
+    let err = prepare_workspace_sync(Path::new("/"), None).unwrap_err();
+    assert!(err.to_string().contains("filesystem root"), "{err}");
+}

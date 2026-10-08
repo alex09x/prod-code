@@ -9,10 +9,12 @@
  */
 
 use crate::sync::entry::{fits_sync, is_executable};
-use crate::sync::filter_path::is_synced_git_path;
+use crate::sync::filter_path::{is_filesystem_root, is_synced_git_path};
 use crate::sync::git::{collect_git_dirty_files, git_listed_files};
 use crate::sync::relevance::is_relevant_code_or_manifest_file;
-use crate::sync::types::{MAX_FILE_SIZE, MAX_JSON_CONFIG_SIZE};
+use crate::sync::types::{
+    MAX_FILE_SIZE, MAX_JSON_CONFIG_SIZE, MAX_NON_GIT_WORKSPACE_BYTES, MAX_NON_GIT_WORKSPACE_FILES,
+};
 use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use std::path::Path;
@@ -111,6 +113,12 @@ pub(crate) fn read_regular_file_secure(
 /// walked and filtered by [`is_relevant_code_or_manifest_file`].
 pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<FileDelta>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if is_filesystem_root(&canonical_root) {
+        anyhow::bail!(
+            "refusing to scan filesystem root: {}",
+            canonical_root.display()
+        );
+    }
     let target_dir = match subpath {
         Some(sub) => {
             if sub.is_absolute() {
@@ -245,6 +253,16 @@ pub(crate) fn walk_dir(
     canonical_root: &Path,
     deltas: &mut Vec<FileDelta>,
 ) -> Result<()> {
+    if is_filesystem_root(canonical_root) {
+        anyhow::bail!(
+            "refusing to scan filesystem root: {}",
+            canonical_root.display()
+        );
+    }
+    let mut total_bytes: usize = deltas
+        .iter()
+        .map(|d| d.content.as_ref().map_or(0, |c| c.len()))
+        .sum();
     let mut builder = ignore::WalkBuilder::new(target_dir);
     builder
         .hidden(true)
@@ -350,11 +368,21 @@ pub(crate) fn walk_dir(
         }
 
         if let Some((content, is_executable)) = read_regular_file_secure(path, canonical_root)? {
+            total_bytes += content.len();
             deltas.push(FileDelta {
                 relative_path: rel_path,
                 content: Some(content),
                 is_executable,
             });
+            if deltas.len() > MAX_NON_GIT_WORKSPACE_FILES
+                || total_bytes > MAX_NON_GIT_WORKSPACE_BYTES
+            {
+                anyhow::bail!(
+                    "non-git workspace exceeds safety limits ({} files, {} bytes); use a git checkout or specify a narrower subpath",
+                    deltas.len(),
+                    total_bytes
+                );
+            }
         }
     }
 

@@ -16,6 +16,8 @@ pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MiB per source file limit
 pub const MAX_LIBRARY_SIZE: u64 = 128 * 1024 * 1024;
 pub const SYNC_BATCH_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_JSON_CONFIG_SIZE: u64 = 8 * 1024 * 1024; // 8 MiB for .json configs/metadata
+pub const MAX_NON_GIT_WORKSPACE_FILES: usize = 10_000;
+pub const MAX_NON_GIT_WORKSPACE_BYTES: usize = 256 * 1024 * 1024; // 256 MiB total
 pub const RELEVANCE_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

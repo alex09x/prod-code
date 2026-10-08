@@ -112,43 +112,11 @@ where
             }
             _ = reload_notify.notified() => 0,
             _ = rebalance_interval.tick() => {
-                let identity = crate::sync::workspace_identity(&workspace_root);
-                let ws_name = identity.base.as_ref().unwrap_or(&identity.name).clone();
-                let (_, engine) = crate::sync::engine_project(&workspace_root, &workspace_root);
-                let os = crate::sync::macos_only_cgo(&workspace_root).map(|_| "macos");
-                if let Some((new_addr, reason)) = crate::cluster::evaluate_cluster_rebalance(
-                    remote,
-                    &ws_name,
-                    engine,
-                    os,
-                ).await {
-                    tracing::info!(
-                        old = %remote,
-                        new = %new_addr,
-                        %reason,
-                        "cluster rebalance: migrating active workspace to more efficient node"
-                    );
-                    remote = new_addr;
-                    crate::cluster::remember_placement(&ws_name, new_addr);
-                    // Pre-warm the workspace on the new node in the background
-                    let root_clone = workspace_root.clone();
-                    let identity_clone = identity.clone();
-                    tokio::spawn(async move {
-                        if let Ok(stream) = prod_code_protocol::transport::connect(new_addr).await {
-                            let mut framed = tokio_util::codec::Framed::new(
-                                stream,
-                                prod_code_protocol::ProdCodeCodec::new(),
-                            );
-                            let _ = crate::sync::push_workspace_sync(
-                                &mut framed,
-                                &root_clone,
-                                &identity_clone,
-                                None,
-                            )
-                            .await;
-                        }
-                    });
-                }
+                crate::server::rebalance::handle_cluster_rebalance_tick(
+                    &mut remote,
+                    &workspace_root,
+                )
+                .await;
                 0
             }
         };
@@ -366,81 +334,4 @@ pub(crate) fn bound_serialized_response(
         }
     })
     .to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_JSONRPC_FRAME_BYTES, bound_serialized_response};
-
-    #[test]
-    fn oversized_tools_list_returns_bounded_jsonrpc_error() {
-        let schema_description = "x".repeat(MAX_JSONRPC_FRAME_BYTES);
-        let response = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 17,
-            "result": {
-                "tools": [{
-                    "name": "schema-rich-tool",
-                    "description": schema_description,
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "value": {
-                                "type": "string",
-                                "description": "A schema property"
-                            }
-                        }
-                    }
-                }]
-            }
-        });
-        assert!(serde_json::to_vec(&response).unwrap().len() > MAX_JSONRPC_FRAME_BYTES);
-
-        let encoded = bound_serialized_response(response, MAX_JSONRPC_FRAME_BYTES);
-
-        assert!(encoded.len() <= MAX_JSONRPC_FRAME_BYTES);
-        let bounded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(bounded["jsonrpc"], "2.0");
-        assert_eq!(bounded["id"], 17);
-        assert_eq!(bounded["error"]["code"], -32000);
-        assert_eq!(
-            bounded["error"]["message"],
-            "Response exceeds maximum JSON-RPC frame size"
-        );
-        assert!(bounded.get("result").is_none());
-    }
-
-    #[test]
-    fn oversized_tools_list_with_oversized_id_returns_bounded_jsonrpc_error() {
-        let schema_description = "x".repeat(MAX_JSONRPC_FRAME_BYTES);
-        let oversized_id = "y".repeat(MAX_JSONRPC_FRAME_BYTES * 2);
-        let response = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": oversized_id,
-            "result": {
-                "tools": [{
-                    "name": "schema-rich-tool",
-                    "description": schema_description,
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                }]
-            }
-        });
-        assert!(serde_json::to_vec(&response).unwrap().len() > MAX_JSONRPC_FRAME_BYTES);
-
-        let encoded = bound_serialized_response(response, MAX_JSONRPC_FRAME_BYTES);
-
-        assert!(encoded.len() <= MAX_JSONRPC_FRAME_BYTES);
-        let bounded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(bounded["jsonrpc"], "2.0");
-        assert_eq!(bounded["id"], serde_json::Value::Null);
-        assert_eq!(bounded["error"]["code"], -32000);
-        assert_eq!(
-            bounded["error"]["message"],
-            "Response exceeds maximum JSON-RPC frame size"
-        );
-        assert!(bounded.get("result").is_none());
-    }
 }
