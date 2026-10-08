@@ -284,3 +284,23 @@ fn test_expression_arrow_parameter_shadows_imported_binding() {
         Language::TypeScript
     ));
 }
+
+#[test]
+fn test_multiline_conditional_arrow_parameter_shadows_imported_binding() {
+    let content = "function run() {\n    const callback = retry => condition\n        ? retry() : null;\n    retry();\n}\n";
+    let local_call = content.find("retry()").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        local_call,
+        "retry",
+        Language::TypeScript
+    ));
+
+    let outer_call = content.rfind("retry()").unwrap();
+    assert!(!is_locally_shadowed(
+        content,
+        outer_call,
+        "retry",
+        Language::TypeScript
+    ));
+}

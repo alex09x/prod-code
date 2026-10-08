@@ -54,6 +54,22 @@ fn typescript_multiline_reexport_proves_the_forwarded_symbol() {
 }
 
 #[test]
+fn typescript_reexport_waits_for_module_specifier_on_next_line() {
+    let root = tempfile::tempdir().unwrap();
+    let selected = root.path().join("selected.ts");
+    let barrel = root.path().join("index.ts");
+    std::fs::write(&selected, "export function retry() {}\n").unwrap();
+    std::fs::write(&barrel, "export { retry } from\n  \"./selected\";\n").unwrap();
+
+    let caller = root.path().join("caller.ts");
+    let source = "import { retry } from \"./index\";\nretry();\n";
+    assert_eq!(
+        super::imported_caller_symbols(source, &caller, &selected, "retry", Language::TypeScript,),
+        vec!["retry"]
+    );
+}
+
+#[test]
 fn typescript_reexport_keyword_is_not_taken_from_an_identifier() {
     let root = tempfile::tempdir().unwrap();
     let selected = root.path().join("codec.ts");

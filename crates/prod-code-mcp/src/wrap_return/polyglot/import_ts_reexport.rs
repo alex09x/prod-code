@@ -124,7 +124,9 @@ fn reexport_statements(content: &str) -> Vec<String> {
             pending.push(' ');
             pending.push_str(line);
         }
-        if from_keyword(&pending).is_some() {
+        if let Some(from_at) = from_keyword(&pending)
+            && !extract_specifier(&pending[from_at + "from".len()..]).is_empty()
+        {
             statements.push(std::mem::take(&mut pending));
         } else if line.ends_with(';') {
             pending.clear();

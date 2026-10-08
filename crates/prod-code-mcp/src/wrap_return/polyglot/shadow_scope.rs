@@ -227,7 +227,7 @@ fn arrow_expression_finished(prefix: &str) -> bool {
     let mut quote = None;
     let mut escaped = false;
     let mut expression_started = false;
-    for ch in prefix.chars() {
+    for (index, ch) in prefix.char_indices() {
         if let Some(active) = quote {
             if escaped {
                 escaped = false;
@@ -253,7 +253,11 @@ fn arrow_expression_finished(prefix: &str) -> bool {
             _ => {}
         }
         if stack.is_empty() {
-            if matches!(ch, ',' | ';') || (ch == '\n' && expression_started) {
+            if matches!(ch, ',' | ';')
+                || (ch == '\n'
+                    && expression_started
+                    && !line_break_continues_expression(prefix, index))
+            {
                 return true;
             }
             if !ch.is_whitespace() {
@@ -262,4 +266,22 @@ fn arrow_expression_finished(prefix: &str) -> bool {
         }
     }
     false
+}
+
+fn line_break_continues_expression(prefix: &str, newline_at: usize) -> bool {
+    let before = prefix[..newline_at].trim_end();
+    let after = prefix[newline_at + 1..].trim_start();
+    let continues_after = [
+        "?", ":", ".", "?.", "??", "||", "&&", "+", "-", "*", "/", "%", "|", "&", "^", "=", "<",
+        ">", "(", "[",
+    ]
+    .iter()
+    .any(|operator| after.starts_with(operator));
+    let continues_before = [
+        "?", ":", ".", "?.", "??", "||", "&&", "+", "-", "*", "/", "%", "|", "&", "^", "=", "<",
+        ">",
+    ]
+    .iter()
+    .any(|operator| before.ends_with(operator));
+    continues_after || continues_before
 }
