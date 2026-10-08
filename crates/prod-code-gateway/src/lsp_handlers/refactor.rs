@@ -67,18 +67,11 @@ pub(crate) fn lsp_safe_delete(
     let session_id = view.session_id;
     let is_single_owner = view.is_single_owner();
     tokio::task::spawn(async move {
-        let outcome = {
-            let mut engine = engine_arc.lock_owned().await;
-            tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays()
-                    && let Err(e) = engine.activate_session(session_id) {
-                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                    }
-                engine.safe_delete(&fp_clone, line, col)
-            })
-            .await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!("safe delete task failed: {e}")))
-        };
+        let outcome = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
+            let fp = fp_clone.clone();
+            move |snapshot| snapshot.safe_delete(&fp, line, col)
+        })
+        .await;
         let ms = query_start.elapsed().as_secs_f64() * 1000.0;
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let resp = match outcome {
@@ -254,18 +247,12 @@ pub(crate) fn lsp_rename(
     let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
-        let outcome = {
-            let mut engine = engine_arc.lock_owned().await;
-            tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays()
-                    && let Err(e) = engine.activate_session(session_id) {
-                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                    }
-                engine.rename(&fp_clone, line, col, &new_name)
-            })
-            .await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!("rename task failed: {e}")))
-        };
+        let outcome = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
+            let fp = fp_clone.clone();
+            let nn = new_name.clone();
+            move |snapshot| snapshot.rename(&fp, line, col, &nn)
+        })
+        .await;
         let ms = query_start.elapsed().as_secs_f64() * 1000.0;
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let resp = match outcome {
@@ -347,26 +334,22 @@ pub(crate) fn lsp_assists(
     let is_single_owner = view.is_single_owner();
 
     tokio::task::spawn(async move {
-        let result = {
-            let mut engine = engine_arc.lock_owned().await;
-            tokio::task::spawn_blocking(move || {
-                if !is_single_owner && engine.has_session_overlays()
-                    && let Err(e) = engine.activate_session(session_id) {
-                        tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                    }
+        let result = execute_bounded_query(&engine_arc, session_id, &fp_clone, is_single_owner, {
+            let fp = fp_clone.clone();
+            let aid = assist_id.clone();
+            move |snapshot| {
                 if apply {
-                    engine
-                        .apply_assist(&fp_clone, line, col, end, &assist_id, subtype)
+                    snapshot
+                        .apply_assist(&fp, line, col, end, &aid, subtype)
                         .map(|r| r.map(|outcome| workspace_edit_json(&outcome)))
                 } else {
-                    engine
-                        .list_assists(&fp_clone, line, col, end)
+                    snapshot
+                        .list_assists(&fp, line, col, end)
                         .map(|list| Ok(serde_json::json!(list)))
                 }
-            })
-            .await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!("assist task failed: {e}")))
-        };
+            }
+        })
+        .await;
         let ms = query_start.elapsed().as_secs_f64() * 1000.0;
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let resp = match result {

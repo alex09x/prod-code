@@ -151,6 +151,90 @@ fn a_module_rename_by_the_analyzer_lands_whole_in_the_checkout() {
     prod_code_mcp::sync::clear_sync_cache(&root);
 }
 
+/// Renaming a test function inside `#[cfg(test)]` succeeds without hanging and lands whole.
+#[tokio::test]
+async fn a_rust_test_function_rename_lands_in_the_checkout() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        "src/lib.rs",
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn test_initial_metric() {}\n}\n",
+    );
+    let engine = prod_code_engine_rust::RustEngine::load(&root).unwrap();
+    let engine_lock = Arc::new(tokio::sync::Mutex::new(engine));
+
+    let (raw_tx, mut rx) = rapidfire::mpsc::bounded(16);
+    let out_tx = SharedOutputSender::new(raw_tx, Duration::from_secs(5));
+    let root_str = root.to_string_lossy();
+    let translator = PathTranslator::new(&root_str, &root_str);
+    let workspace = Arc::new(crate::workspace::shared::SharedWorkspace::new(
+        root.clone(),
+        "rust".to_string(),
+        Some(Arc::clone(&engine_lock)),
+        None,
+        None,
+        None,
+    ));
+    let view = SessionView {
+        session_id: 1,
+        worktree_root: root.clone(),
+        workspace: Arc::clone(&workspace),
+        accounted: Arc::clone(&workspace),
+        is_single_owner: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        direct_edit_open_files: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        lease: None,
+        owner: None,
+    };
+
+    // `test_initial_metric` is at line 4, col 8 (0-based LSP position: line 3, char 7).
+    let params = serde_json::json!({
+        "textDocument": { "uri": format!("file://{}", root.join("src/lib.rs").display()) },
+        "position": { "line": 3, "character": 7 },
+        "newName": "test_updated_metric"
+    });
+
+    lsp_rename(
+        &out_tx,
+        &translator,
+        &view,
+        &Some(serde_json::json!(100)),
+        &params,
+        &engine_lock,
+    );
+
+    let frame = tokio::time::timeout(Duration::from_secs(90), rx.recv())
+        .await
+        .expect("rename responded within timeout")
+        .expect("channel yielded response");
+
+    let WireMessage::LspPayload(payload) = frame.message else {
+        panic!("expected WireMessage::LspPayload");
+    };
+    let val: serde_json::Value = serde_json::from_str(&payload).expect("valid LSP JSON");
+    assert_eq!(val["id"], 100);
+    assert!(val.get("error").is_none(), "LSP returned error: {val:?}");
+    let result = &val["result"];
+    prod_code_mcp::refactor::apply_workspace_edit(&root, result).unwrap();
+
+    let read = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    assert!(read.contains("fn test_updated_metric()"));
+    assert!(!read.contains("fn test_initial_metric()"));
+
+    // Verify engine lock is released and usable concurrently
+    assert!(engine_lock.try_lock().is_ok());
+
+    prod_code_mcp::sync::clear_sync_cache(&root);
+}
+
 #[cfg(test)]
 mod analyzer_panic_tests {
     use super::*;
