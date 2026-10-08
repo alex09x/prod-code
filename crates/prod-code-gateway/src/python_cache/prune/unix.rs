@@ -23,6 +23,8 @@ pub struct CacheEntry {
     pub file_name: std::ffi::CString,
     pub size: u64,
     pub modified: SystemTime,
+    pub ino: u64,
+    pub dev: u64,
 }
 
 pub fn prune_unix(
@@ -245,6 +247,8 @@ unsafe fn collect_dir(
                     file_name: name.to_owned(),
                     size,
                     modified,
+                    ino: st.st_ino as u64,
+                    dev: st.st_dev as u64,
                 });
             }
         }
@@ -253,7 +257,32 @@ unsafe fn collect_dir(
     }
 }
 
-fn remove_entry(root_fd: libc::c_int, entry: &CacheEntry) -> bool {
+struct FdGuard(libc::c_int);
+
+impl Drop for FdGuard {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+}
+
+struct TargetLockGuard(libc::c_int);
+
+impl Drop for TargetLockGuard {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            unsafe {
+                libc::flock(self.0, libc::LOCK_UN);
+                libc::close(self.0);
+            }
+        }
+    }
+}
+
+pub(crate) fn remove_entry(root_fd: libc::c_int, entry: &CacheEntry) -> bool {
     let mut current_fd = root_fd;
     let mut fds_to_close = Vec::new();
 
@@ -266,19 +295,41 @@ fn remove_entry(root_fd: libc::c_int, entry: &CacheEntry) -> bool {
             )
         };
         if next_fd < 0 {
-            for fd in fds_to_close {
-                unsafe {
-                    libc::close(fd);
-                }
-            }
             return false;
         }
-        fds_to_close.push(next_fd);
+        fds_to_close.push(FdGuard(next_fd));
         current_fd = next_fd;
     }
 
+    let file_bytes = entry.file_name.as_bytes();
+    let mut lock_name = Vec::with_capacity(6 + file_bytes.len() + 1);
+    lock_name.extend_from_slice(b".lock-");
+    lock_name.extend_from_slice(file_bytes);
+    let lock_c_name = match std::ffi::CString::new(lock_name) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let lock_fd = unsafe {
+        libc::openat(
+            current_fd,
+            lock_c_name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o666,
+        )
+    };
+    if lock_fd < 0 {
+        return false;
+    }
+    let _lock_guard = TargetLockGuard(lock_fd);
+
+    let locked = unsafe { libc::flock(lock_fd, libc::LOCK_EX | libc::LOCK_NB) == 0 };
+    if !locked {
+        return false;
+    }
+
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    let is_reg = unsafe {
+    let is_same_file = unsafe {
         libc::fstatat(
             current_fd,
             entry.file_name.as_ptr(),
@@ -286,21 +337,15 @@ fn remove_entry(root_fd: libc::c_int, entry: &CacheEntry) -> bool {
             libc::AT_SYMLINK_NOFOLLOW,
         ) == 0
             && (st.st_mode & libc::S_IFMT) == libc::S_IFREG
+            && (st.st_ino as u64) == entry.ino
+            && (st.st_dev as u64) == entry.dev
     };
 
-    let removed = if is_reg {
+    if is_same_file {
         unsafe { libc::unlinkat(current_fd, entry.file_name.as_ptr(), 0) == 0 }
     } else {
         false
-    };
-
-    for fd in fds_to_close {
-        unsafe {
-            libc::close(fd);
-        }
     }
-
-    removed
 }
 
 unsafe fn is_temp_file_locked(dir_fd: libc::c_int, name: *const libc::c_char) -> bool {

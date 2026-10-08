@@ -18,7 +18,7 @@ use super::env::python_stub_cache_dir;
 mod fallback;
 pub mod timestamp;
 #[cfg(unix)]
-mod unix;
+pub(crate) mod unix;
 
 pub use timestamp::{TMP_STUB_GRACE_PERIOD, parse_tmp_stub_timestamp};
 
