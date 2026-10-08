@@ -338,6 +338,23 @@ async fn the_first_symbol_search_of_a_fresh_gopls_finds_the_function() {
         .unwrap();
     let uri = format!("file://{}", dir.path().join("store.go").to_string_lossy());
     engine.did_open(&uri, store).await.unwrap();
+    assert_eq!(engine.open_files.read().await.get(&uri), Some(&1));
+
+    // Verify documentSymbol is answered reliably with index gating
+    let doc_symbols = engine
+        .send_request(
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await
+        .unwrap();
+    let syms = doc_symbols["result"].as_array().map(Vec::len).unwrap_or(0);
+    assert!(syms >= 1, "{doc_symbols}");
+
+    // Repeated did_open deduplicates to did_change instead of duplicate didOpen
+    engine.did_open(&uri, store).await.unwrap();
+    assert_eq!(engine.open_files.read().await.get(&uri), Some(&2));
+
     let answer = engine
         .send_request("workspace/symbol", serde_json::json!({ "query": "Total" }))
         .await
@@ -345,4 +362,7 @@ async fn the_first_symbol_search_of_a_fresh_gopls_finds_the_function() {
     let hits = answer["result"].as_array().map(Vec::len).unwrap_or(0);
     assert!(hits >= 1, "{answer}");
     assert_eq!(engine.busy(), None);
+
+    engine.did_close(&uri).await.unwrap();
+    assert!(!engine.open_files.read().await.contains_key(&uri));
 }

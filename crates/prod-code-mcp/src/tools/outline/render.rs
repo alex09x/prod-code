@@ -118,6 +118,8 @@ pub fn render_outline_with(
                 "  ({skipped_locals} local variable(s) hidden; {} to list them)\n",
                 options.hint
             ));
+        } else if listed == 0 {
+            out.push_str("  (no outline symbols available)\n");
         }
     } else {
         out.push_str("No outline symbols available.");

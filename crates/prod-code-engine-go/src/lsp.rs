@@ -22,6 +22,9 @@ use crate::types::{
     validate_initialize_response,
 };
 
+mod document;
+mod queries;
+
 /// gopls v0.23.0 sends a complete diagnostic report with an empty discriminator (#475).
 /// Canonicalize only that shape. Missing/malformed items and unchanged reports still reach the
 /// client unchanged so its strict evidence checks can reject them; errors are never hidden.
@@ -193,129 +196,5 @@ impl GoEngine {
             &Arc::downgrade(&self.is_alive),
         )
         .await
-    }
-
-    /// Notify `gopls` that a document was opened in an editor or worktree.
-    pub async fn did_open(&self, file_uri: &str, text: &str) -> Result<()> {
-        self.send_notification(
-            "textDocument/didOpen",
-            serde_json::json!({
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "go",
-                    "version": 1,
-                    "text": text
-                }
-            }),
-        )
-        .await
-    }
-
-    /// Notify `gopls` of an unsaved text buffer update.
-    pub async fn did_change(&self, file_uri: &str, text: &str, version: i32) -> Result<()> {
-        self.send_notification(
-            "textDocument/didChange",
-            serde_json::json!({
-                "textDocument": {
-                    "uri": file_uri,
-                    "version": version
-                },
-                "contentChanges": [
-                    { "text": text }
-                ]
-            }),
-        )
-        .await
-    }
-
-    /// Notify `gopls` that a document was closed.
-    pub async fn did_close(&self, file_uri: &str) -> Result<()> {
-        self.send_notification(
-            "textDocument/didClose",
-            serde_json::json!({
-                "textDocument": {
-                    "uri": file_uri
-                }
-            }),
-        )
-        .await
-    }
-
-    /// Query symbol definition.
-    pub async fn definition(
-        &self,
-        file_uri: &str,
-        line: u32,
-        col: u32,
-    ) -> Result<Option<serde_json::Value>> {
-        let resp = self
-            .send_request(
-                "textDocument/definition",
-                serde_json::json!({
-                    "textDocument": { "uri": file_uri },
-                    "position": { "line": line, "character": col }
-                }),
-            )
-            .await?;
-
-        Ok(resp.get("result").cloned())
-    }
-
-    /// Query hover documentation and type signatures.
-    pub async fn hover(
-        &self,
-        file_uri: &str,
-        line: u32,
-        col: u32,
-    ) -> Result<Option<serde_json::Value>> {
-        let resp = self
-            .send_request(
-                "textDocument/hover",
-                serde_json::json!({
-                    "textDocument": { "uri": file_uri },
-                    "position": { "line": line, "character": col }
-                }),
-            )
-            .await?;
-
-        Ok(resp.get("result").cloned())
-    }
-
-    /// Query all references to a symbol across the Go workspace.
-    pub async fn references(
-        &self,
-        file_uri: &str,
-        line: u32,
-        col: u32,
-    ) -> Result<serde_json::Value> {
-        let resp = self
-            .send_request(
-                "textDocument/references",
-                serde_json::json!({
-                    "textDocument": { "uri": file_uri },
-                    "position": { "line": line, "character": col },
-                    "context": { "includeDeclaration": true }
-                }),
-            )
-            .await?;
-
-        Ok(resp.get("result").cloned().unwrap_or(serde_json::json!([])))
-    }
-
-    /// Query document symbols outline.
-    pub async fn document_symbols(&self, file_uri: &str) -> Result<serde_json::Value> {
-        let resp = self
-            .send_request(
-                "textDocument/documentSymbol",
-                serde_json::json!({
-                    "textDocument": { "uri": file_uri }
-                }),
-            )
-            .await?;
-
-        if let Some(err) = resp.get("error") {
-            anyhow::bail!("gopls documentSymbol failed: {err}");
-        }
-        Ok(resp.get("result").cloned().unwrap_or(serde_json::json!([])))
     }
 }
