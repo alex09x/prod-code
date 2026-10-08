@@ -66,7 +66,10 @@ fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<S
         program: config.command,
         args: config.args,
         env: config.env.into_iter().collect(),
-        initialization_options: config.initialization_options,
+        initialization_options: server_initialization_options(
+            engine,
+            config.initialization_options,
+        ),
         ready: config.ready,
     };
     let command = match engine {
@@ -184,6 +187,13 @@ fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<S
             || prod_code_engine_generic::which_bin(&command.program).is_ok()
     };
     installed.then_some(command)
+}
+
+pub(super) fn server_initialization_options(
+    engine: &str,
+    options: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if engine == "python" { options } else { None }
 }
 
 /// `body` as one LSP frame.
