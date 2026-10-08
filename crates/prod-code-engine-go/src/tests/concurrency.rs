@@ -16,8 +16,7 @@ use super::fake_server::fake_engine;
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_did_open_and_close_on_same_uri_preserves_strict_lsp_ordering() {
-    let (dir, engine) = fake_engine(None, Duration::from_secs(5)).await;
-    let seen_file = dir.path().join("seen");
+    let (_dir, engine) = fake_engine(None, Duration::from_secs(5)).await;
     let uri = "file:///workspace/test.go";
 
     // Spawn 10 concurrent did_open calls for the exact same URI.
@@ -34,10 +33,16 @@ async fn concurrent_did_open_and_close_on_same_uri_preserves_strict_lsp_ordering
         task.await.expect("join").expect("did_open success");
     }
 
-    // Read recorded LSP notifications from the fake server
-    let seen = std::fs::read_to_string(&seen_file).expect("read seen file");
-    let methods: Vec<&str> = seen
-        .lines()
+    // Synchronize with the fake server via prodCode/seen to guarantee all preceding
+    // notification frames have been read and processed into the server's seen list.
+    let barrier = engine
+        .send_request("prodCode/seen", serde_json::json!({}))
+        .await
+        .expect("fake server barrier");
+    let seen_arr = barrier["result"].as_array().expect("array of seen methods");
+    let methods: Vec<&str> = seen_arr
+        .iter()
+        .filter_map(|v| v.as_str())
         .filter(|m| m.starts_with("textDocument/did"))
         .collect();
 
@@ -69,10 +74,17 @@ async fn concurrent_did_open_and_close_on_same_uri_preserves_strict_lsp_ordering
     res_close.expect("join").expect("did_close success");
     res_open.expect("join").expect("did_open success");
 
-    // Read the updated notifications log from the fake server
-    let seen_after = std::fs::read_to_string(&seen_file).expect("read seen file");
+    // Barrier after concurrent close/open ensures child process has consumed both frames
+    let barrier_after = engine
+        .send_request("prodCode/seen", serde_json::json!({}))
+        .await
+        .expect("fake server barrier after close/open");
+    let seen_after = barrier_after["result"]
+        .as_array()
+        .expect("array of seen methods after close/open");
     let all_methods: Vec<&str> = seen_after
-        .lines()
+        .iter()
+        .filter_map(|v| v.as_str())
         .filter(|m| m.starts_with("textDocument/did"))
         .collect();
 
