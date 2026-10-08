@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::parser::validate_xml;
+use super::validate_xml;
 
 #[test]
 fn valid_svg_passes_with_zero_errors() {

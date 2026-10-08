@@ -9,9 +9,11 @@
  */
 
 use super::call_matching::{collect_candidate_files, find_matching_call_params, sync_cpp_headers};
-use super::matching::{find_matching_caller_vars, find_matching_return, find_matching_vars};
+use super::matching::find_matching_vars;
 use super::sites::display;
 use crate::parameter_object::Language;
+use crate::type_migration::matching::returns::find_matching_caller_vars;
+use crate::type_migration::matching::returns::find_matching_return;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
