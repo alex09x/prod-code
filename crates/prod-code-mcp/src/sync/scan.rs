@@ -263,6 +263,9 @@ pub(crate) fn walk_dir(
         .iter()
         .map(|d| d.content.as_ref().map_or(0, |c| c.len()))
         .sum();
+    let config = crate::config::load_config(canonical_root);
+    let snapshot = crate::config::IgnoreSnapshot::build(canonical_root, &config.watch);
+
     let mut builder = ignore::WalkBuilder::new(target_dir);
     builder
         .hidden(true)
@@ -271,9 +274,19 @@ pub(crate) fn walk_dir(
         .git_exclude(true)
         .parents(true)
         .max_filesize(Some(MAX_FILE_SIZE))
-        .filter_entry(|entry| {
-            let name = entry.file_name().to_string_lossy();
+        .filter_entry(move |entry| {
             let path = entry.path();
+            if snapshot.is_ignored(path) {
+                return false;
+            }
+            let name = entry.file_name().to_string_lossy();
+            if matches!(
+                name.as_ref(),
+                "vendor" | "results" | "samples" | "artifacts" | "dogfood-output" | "state"
+            ) {
+                return false;
+            }
+
             let is_under_code = path.components().any(|c| {
                 if let std::path::Component::Normal(p) = c {
                     matches!(p.to_string_lossy().as_ref(), "crates" | "packages" | "src")
@@ -298,24 +311,6 @@ pub(crate) fn walk_dir(
                 return false;
             }
 
-            if name == ".git"
-                || name == "target"
-                || name == "node_modules"
-                || name == "vendor"
-                || name == "dist"
-                || name == "build"
-                || name == "results"
-                || name == "samples"
-                || name == "__pycache__"
-                || name == "artifacts"
-                || name == "dogfood-output"
-                || name == "state"
-                || name == ".idea"
-                || name == ".vscode"
-                || name == ".DS_Store"
-            {
-                return false;
-            }
             true
         });
 

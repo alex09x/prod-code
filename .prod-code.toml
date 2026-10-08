@@ -1,0 +1,12 @@
+# prod-code configuration for workspace watching and indexing
+
+[watch]
+ignore = [
+    "fixtures/multi-lang-corpus",
+    "target",
+    "*.log",
+]
+use_gitignore = true
+
+[mcp]
+max_frame_bytes = 524288
