@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use crate::sync::file_write::write_synced_file;
 use crate::*;
 
 pub async fn apply_sync(
@@ -85,8 +86,13 @@ pub async fn apply_sync_with_metrics(
                 } else {
                     workspace::WatchedChange::Created
                 };
-                if let Err(e) =
-                    write_synced_file(&target_path, &content_bytes, delta.is_executable).await
+                if let Err(e) = write_synced_file(
+                    &server_workspace,
+                    &target_path,
+                    &content_bytes,
+                    delta.is_executable,
+                )
+                .await
                 {
                     tracing::warn!(error = %e, file = %target_path.display(), "sync write failed; the client sends it again");
                     failed.push(delta.relative_path);
@@ -114,6 +120,7 @@ pub async fn apply_sync_with_metrics(
             }
             None => {
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
+                    let _ = crate::sync::config_meta::forget(&server_workspace, &target_path).await;
                     files_deleted += 1;
                     watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
                     prune_empty_parents(&server_workspace, target_path.parent());

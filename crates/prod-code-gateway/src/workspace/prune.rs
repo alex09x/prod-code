@@ -168,6 +168,7 @@ pub async fn prune_stale_worktree_dirs(
         }
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {
+                crate::sync::config_meta::remove_workspace(&path);
                 tracing::info!(
                     workspace = %path.display(),
                     idle_hours = idle.as_secs() / 3600,
@@ -198,6 +199,7 @@ pub async fn prune_stale_main_workspace_dirs(
     };
     let now = SystemTime::now();
     let all_paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    crate::sync::config_meta::prune_orphans(storage_root);
 
     for path in &all_paths {
         if !path.is_dir() {
@@ -256,6 +258,7 @@ pub async fn prune_stale_main_workspace_dirs(
 
         match std::fs::remove_dir_all(path) {
             Ok(()) => {
+                crate::sync::config_meta::remove_workspace(path);
                 tracing::info!(
                     workspace = %path.display(),
                     idle_hours = idle.as_secs() / 3600,

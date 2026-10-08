@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+pub use crate::sync::file_write::write_synced_file;
 use crate::*;
 
 /// Writes a file a client synced so that a failed write, such as on a full disk, leaves the old
@@ -52,48 +53,6 @@ pub async fn safe_sync_target(server_workspace: &Path, relative: &str) -> std::i
     }
 
     Ok(server_workspace.join(relative_path))
-}
-
-pub async fn write_synced_file(
-    target: &std::path::Path,
-    content: &[u8],
-    executable: bool,
-) -> std::io::Result<()> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    if let Some(parent) = target.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temp = target.with_file_name(format!(
-        ".{name}.prod-code-sync-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let written = async {
-        tokio::fs::write(&temp, content).await?;
-        #[cfg(unix)]
-        if executable {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755)).await?;
-        }
-        tokio::fs::rename(&temp, target).await
-    }
-    .await;
-    if let Err(error) = written {
-        let _ = tokio::fs::remove_file(&temp).await;
-        return Err(error);
-    }
-
-    if matches!(
-        target.file_name().and_then(|name| name.to_str()),
-        Some("tsconfig.json" | "jsconfig.json")
-    ) {
-        crate::ts_cache::seed::coordinate_tsconfig(target);
-    }
-    Ok(())
 }
 
 /// Removes `dir` and every parent left empty by that, up to but not including `root`: a directory
@@ -153,17 +112,25 @@ pub fn reconcile_manifest(
         match wanted.get(rel.as_str()) {
             None => {
                 if std::fs::remove_file(path).is_ok() {
+                    let _ = crate::sync::config_meta::forget_sync(root, path);
                     deleted.push(rel.clone());
                 }
             }
             Some(stamp) => {
                 seen.insert(stamp.relative_path.as_str());
-                let same = std::fs::metadata(path)
-                    .map(|m| m.len() == stamp.size)
-                    .unwrap_or(false)
-                    && std::fs::read(path)
-                        .map(|bytes| content_hash(&bytes) == stamp.hash)
-                        .unwrap_or(false);
+                let same = std::fs::read(path).is_ok_and(|bytes| {
+                    let server_size = bytes.len() as u64;
+                    let server_hash = content_hash(&bytes);
+                    (server_size == stamp.size && server_hash == stamp.hash)
+                        || crate::sync::config_meta::matches(
+                            root,
+                            path,
+                            stamp.size,
+                            stamp.hash,
+                            server_size,
+                            server_hash,
+                        )
+                });
                 if !same {
                     missing.push(rel.clone());
                 }
@@ -205,6 +172,9 @@ pub async fn apply_sync_probe(
             let (from, to) = (seed_dir.clone(), target.clone());
             match tokio::task::spawn_blocking(move || {
                 let files = copy_tree(&from, &to)?;
+                if let Err(error) = crate::sync::config_meta::copy_workspace(&from, &to) {
+                    tracing::warn!(error = %error, "failed to seed coordinated config metadata");
+                }
                 let started = Instant::now();
                 let cache = seed_build_cache(&from, &to).unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "seeding the build cache failed");
@@ -306,8 +276,18 @@ pub async fn apply_sync_probe(
 
     let root = target.clone();
     let stamps = req.files;
+    let config_stamps: Vec<FileStamp> = stamps
+        .iter()
+        .filter(|stamp| {
+            matches!(
+                stamp.relative_path.as_str(),
+                "tsconfig.json" | "jsconfig.json"
+            )
+        })
+        .cloned()
+        .collect();
     let manifest_len = stamps.len();
-    let (missing, deleted) = tokio::task::spawn_blocking(move || {
+    let (mut missing, deleted) = tokio::task::spawn_blocking(move || {
         let reconciled = reconcile_manifest(&root, &stamps);
         workspace::forget_stale_paths(&root);
         reconciled
@@ -316,9 +296,26 @@ pub async fn apply_sync_probe(
     .unwrap_or_default();
 
     // Coordinate typeRoots only after the client manifest has been reconciled, so this
-    // server-side config change cannot make a matching client file appear missing.
-    crate::ts_cache::seed::coordinate_tsconfig(&target.join("tsconfig.json"));
-    crate::ts_cache::seed::coordinate_tsconfig(&target.join("jsconfig.json"));
+    // server-side config change cannot make a matching client file appear missing. The writer
+    // records the client and coordinated hashes together so later probes can recognize this copy.
+    for stamp in config_stamps {
+        if missing.contains(&stamp.relative_path) {
+            continue;
+        }
+        let config_path = target.join(&stamp.relative_path);
+        let Ok(content) = tokio::fs::read(&config_path).await else {
+            continue;
+        };
+        if content.len() as u64 != stamp.size || content_hash(&content) != stamp.hash {
+            continue;
+        }
+        if let Err(error) = write_synced_file(&target, &config_path, &content, false).await {
+            tracing::warn!(error = %error, path = %config_path.display(), "failed to coordinate TypeScript config after manifest reconciliation");
+            missing.push(stamp.relative_path);
+        }
+    }
+    missing.sort();
+    missing.dedup();
 
     if !deleted.is_empty()
         && let Some(ws) = workspace_manager.get_loaded(&target).await
