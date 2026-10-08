@@ -9,6 +9,8 @@
  */
 
 pub mod apply;
+pub(crate) mod config_meta;
+pub mod file_write;
 pub mod source_pull;
 pub mod sync_fs;
 

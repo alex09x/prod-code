@@ -134,26 +134,32 @@ async fn test_typescript_type_roots_survive_manifest_reconciliation_and_upload()
     std::fs::write(origin.join("package.json"), package).unwrap();
     std::fs::write(origin.join("tsconfig.json"), tsconfig).unwrap();
 
+    let request = |config: &[u8], seed_from: Option<&str>, workspace_name: &str| SyncProbeRequest {
+        client_workspace_root: "/tmp/typescript-worktree".to_string(),
+        base_workspace_name: Some(workspace_name.to_string()),
+        seed_from: seed_from.map(str::to_string),
+        files: vec![
+            FileStamp {
+                relative_path: "package.json".to_string(),
+                size: package.len() as u64,
+                hash: content_hash(package),
+            },
+            FileStamp {
+                relative_path: "tsconfig.json".to_string(),
+                size: config.len() as u64,
+                hash: content_hash(config),
+            },
+        ],
+    };
+
     let response = apply_sync_probe(
         storage.path(),
         &WorkspaceManager::new(),
-        SyncProbeRequest {
-            client_workspace_root: "/tmp/typescript-worktree".to_string(),
-            base_workspace_name: Some("typescript-repo--wt-0001".to_string()),
-            seed_from: Some("typescript-repo".to_string()),
-            files: vec![
-                FileStamp {
-                    relative_path: "package.json".to_string(),
-                    size: package.len() as u64,
-                    hash: content_hash(package),
-                },
-                FileStamp {
-                    relative_path: "tsconfig.json".to_string(),
-                    size: tsconfig.len() as u64,
-                    hash: content_hash(tsconfig),
-                },
-            ],
-        },
+        request(
+            tsconfig,
+            Some("typescript-repo"),
+            "typescript-repo--wt-0001",
+        ),
     )
     .await;
 
@@ -162,9 +168,101 @@ async fn test_typescript_type_roots_survive_manifest_reconciliation_and_upload()
     let coordinated = std::fs::read_to_string(workspace.join("tsconfig.json")).unwrap();
     assert!(coordinated.contains("node_modules/@types"));
 
-    crate::sync::sync_fs::write_synced_file(&workspace.join("tsconfig.json"), tsconfig, false)
-        .await
-        .unwrap();
+    crate::sync::file_write::write_synced_file_for_workspace(
+        &workspace,
+        &workspace.join("tsconfig.json"),
+        tsconfig,
+        false,
+    )
+    .await
+    .unwrap();
     let after_upload = std::fs::read_to_string(workspace.join("tsconfig.json")).unwrap();
     assert!(after_upload.contains("node_modules/@types"));
+    let parsed: serde_json::Value = serde_json::from_str(&after_upload).unwrap();
+    assert_eq!(
+        parsed["compilerOptions"]["typeRoots"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let repeated = apply_sync_probe(
+        storage.path(),
+        &WorkspaceManager::new(),
+        request(tsconfig, None, "typescript-repo--wt-0001"),
+    )
+    .await;
+    assert!(repeated.missing.is_empty());
+
+    let changed_config =
+        b"{\"compilerOptions\":{\"typeRoots\":[\"custom_types\"],\"strict\":true}}";
+    let changed = apply_sync_probe(
+        storage.path(),
+        &WorkspaceManager::new(),
+        request(changed_config, None, "typescript-repo--wt-0001"),
+    )
+    .await;
+    assert!(changed.missing.iter().any(|path| path == "tsconfig.json"));
+
+    crate::sync::file_write::write_synced_file_for_workspace(
+        &origin,
+        &origin.join("tsconfig.json"),
+        tsconfig,
+        false,
+    )
+    .await
+    .unwrap();
+    let new_worktree = apply_sync_probe(
+        storage.path(),
+        &WorkspaceManager::new(),
+        request(
+            tsconfig,
+            Some("typescript-repo"),
+            "typescript-repo--wt-0002",
+        ),
+    )
+    .await;
+    assert!(new_worktree.missing.is_empty());
+    let seeded_config = storage
+        .path()
+        .join("typescript-repo--wt-0002/tsconfig.json");
+    assert!(
+        std::fs::read_to_string(seeded_config)
+            .unwrap()
+            .contains("node_modules/@types")
+    );
+}
+
+#[tokio::test]
+async fn test_typescript_config_remains_complete_when_stamp_write_fails() {
+    let storage = tempfile::tempdir().unwrap();
+    let workspace = storage.path().join("typescript-repo");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        storage.path().join(crate::sync::config_meta::METADATA_DIR),
+        b"block metadata directory",
+    )
+    .unwrap();
+
+    let config = workspace.join("tsconfig.json");
+    let content = b"{\"compilerOptions\":{\"typeRoots\":[\"custom_types\"]}}";
+    let result = crate::sync::file_write::write_synced_file_for_workspace(
+        &workspace, &config, content, false,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "the config was committed but the write was reported as failed: {result:?}"
+    );
+
+    let stored = std::fs::read(&config).unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&stored).unwrap();
+    assert!(
+        parsed["compilerOptions"]["typeRoots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|root| root == "node_modules/@types")
+    );
 }

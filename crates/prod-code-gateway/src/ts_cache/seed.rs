@@ -11,6 +11,8 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{DiskSpace, disk_space, seed_fits};
 
@@ -183,40 +185,59 @@ pub fn seed_typescript_worktree_within(
 
 /// Ensures `typeRoots` in `tsconfig.json` or `jsconfig.json` includes `"node_modules/@types"`
 /// if custom `typeRoots` are configured, preventing custom typeRoots from hiding shared types.
+#[cfg(test)]
 pub(crate) fn coordinate_tsconfig(config_path: &Path) {
-    if !config_path.is_file() {
-        return;
+    if let Err(error) = coordinate_tsconfig_file(config_path) {
+        tracing::warn!(error = %error, path = %config_path.display(), "failed to coordinate TypeScript config atomically");
     }
-    let Ok(content) = fs::read_to_string(config_path) else {
-        return;
-    };
-    let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
-    };
+}
 
-    let Some(obj) = val.as_object_mut() else {
-        return;
-    };
-
+pub(crate) fn coordinate_tsconfig_content(content: &[u8]) -> Option<Vec<u8>> {
+    let mut val = serde_json::from_slice::<serde_json::Value>(content).ok()?;
+    let obj = val.as_object_mut()?;
     let compiler_options = obj
         .entry("compilerOptions")
         .or_insert_with(|| serde_json::json!({}));
-
-    if let Some(opts) = compiler_options.as_object_mut() {
-        if let Some(type_roots) = opts.get_mut("typeRoots").and_then(|tr| tr.as_array_mut()) {
-            let has_node_modules_types = type_roots.iter().any(|v| {
-                v.as_str().map_or(false, |s| {
-                    s == "node_modules/@types"
-                        || s == "./node_modules/@types"
-                        || s.ends_with("/node_modules/@types")
-                })
-            });
-            if !has_node_modules_types {
-                type_roots.push(serde_json::Value::String("node_modules/@types".to_string()));
-                if let Ok(updated) = serde_json::to_string_pretty(&val) {
-                    let _ = fs::write(config_path, updated);
-                }
-            }
-        }
+    let type_roots = compiler_options
+        .as_object_mut()?
+        .get_mut("typeRoots")?
+        .as_array_mut()?;
+    let has_node_modules_types = type_roots.iter().any(|value| {
+        value.as_str().is_some_and(|root| {
+            root == "node_modules/@types"
+                || root == "./node_modules/@types"
+                || root.ends_with("/node_modules/@types")
+        })
+    });
+    if has_node_modules_types {
+        return None;
     }
+    type_roots.push(serde_json::Value::String("node_modules/@types".to_string()));
+    serde_json::to_vec_pretty(&val).ok()
+}
+
+#[cfg(test)]
+pub(crate) fn coordinate_tsconfig_file(config_path: &Path) -> io::Result<bool> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let content = fs::read(config_path)?;
+    let Some(updated) = coordinate_tsconfig_content(&content) else {
+        return Ok(false);
+    };
+    let temp = config_path.with_file_name(format!(
+        ".{}.prod-code-coordinate-{}-{}",
+        config_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("tsconfig"),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        fs::write(&temp, updated)?;
+        fs::rename(&temp, config_path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result.map(|()| true)
 }
