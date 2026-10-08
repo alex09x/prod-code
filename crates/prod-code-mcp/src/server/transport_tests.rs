@@ -32,7 +32,42 @@ fn serialized_frame_bounding_with_escape_heavy_output() {
 }
 
 #[test]
-fn serialized_frame_bounding_preserves_non_tool_responses() {
+fn serialized_frame_bounding_returns_error_for_oversized_non_tool_responses() {
+    use crate::server::transport::{MAX_JSONRPC_FRAME_BYTES, bound_serialized_response};
+
+    // An oversized tools/list response cannot be represented as a bounded tool content result.
+    let big_tools: Vec<serde_json::Value> = (0..200)
+        .map(|i| {
+            serde_json::json!({
+                "name": format!("tool_{i}"),
+                "description": "x".repeat(400),
+                "inputSchema": { "type": "object" }
+            })
+        })
+        .collect();
+
+    let resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "tools": big_tools
+        }
+    });
+
+    let serialized = bound_serialized_response(resp.clone(), MAX_JSONRPC_FRAME_BYTES);
+    assert!(serialized.len() <= MAX_JSONRPC_FRAME_BYTES);
+    let bounded: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(bounded["jsonrpc"], "2.0");
+    assert_eq!(bounded["id"], 1);
+    assert_eq!(bounded["error"]["code"], -32000);
+    assert_eq!(
+        bounded["error"]["message"],
+        "Response exceeds maximum JSON-RPC frame size"
+    );
+}
+
+#[test]
+fn serialized_frame_bounding_falls_back_to_null_id_when_request_id_is_oversized() {
     use crate::server::transport::{MAX_JSONRPC_FRAME_BYTES, bound_serialized_response};
 
     let big_tools: Vec<serde_json::Value> = (0..200)
@@ -44,14 +79,19 @@ fn serialized_frame_bounding_preserves_non_tool_responses() {
             })
         })
         .collect();
-    let response = serde_json::json!({
+
+    let resp = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 1,
-        "result": { "tools": big_tools }
+        "id": "a".repeat(MAX_JSONRPC_FRAME_BYTES * 2),
+        "result": {
+            "tools": big_tools
+        }
     });
 
-    let serialized = bound_serialized_response(response, MAX_JSONRPC_FRAME_BYTES);
-    assert!(serialized.contains("tools"));
-    assert!(serialized.contains("tool_0"));
-    assert!(!serialized.contains("output truncated to avoid exceeding MCP frame line limits"));
+    let serialized = bound_serialized_response(resp, MAX_JSONRPC_FRAME_BYTES);
+    assert!(serialized.len() <= MAX_JSONRPC_FRAME_BYTES);
+    let bounded: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(bounded["jsonrpc"], "2.0");
+    assert_eq!(bounded["id"], serde_json::Value::Null);
+    assert_eq!(bounded["error"]["code"], -32000);
 }

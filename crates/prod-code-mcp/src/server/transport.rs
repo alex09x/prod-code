@@ -159,6 +159,22 @@ where
             if trimmed.is_empty() {
                 continue;
             }
+            if trimmed.len() > MAX_JSONRPC_FRAME_BYTES {
+                let err_resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": serde_json::Value::Null,
+                    "error": {
+                        "code": -32600,
+                        "message": "Request exceeds maximum JSON-RPC frame size"
+                    }
+                });
+                if let Ok(mut out) = serde_json::to_string(&err_resp) {
+                    out.push('\n');
+                    let _ = writer.write_all(out.as_bytes()).await;
+                    let _ = writer.flush().await;
+                }
+                continue;
+            }
             let req_json = match serde_json::from_str::<serde_json::Value>(trimmed) {
                 Ok(v) => v,
                 Err(e) => {
@@ -275,7 +291,28 @@ pub(crate) fn bound_serialized_response(
         .unwrap_or_default();
 
     if text_blocks.is_empty() {
-        return initial;
+        let err_resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
+            "error": {
+                "code": -32000,
+                "message": "Response exceeds maximum JSON-RPC frame size"
+            }
+        });
+        if let Ok(serialized) = serde_json::to_string(&err_resp)
+            && serialized.len() <= max_frame_bytes
+        {
+            return serialized;
+        }
+        return serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": serde_json::Value::Null,
+            "error": {
+                "code": -32000,
+                "message": "Response exceeds maximum JSON-RPC frame size"
+            }
+        })
+        .to_string();
     }
 
     let marker = "\n[... output truncated to avoid exceeding MCP frame line limits]\n";
@@ -301,7 +338,7 @@ pub(crate) fn bound_serialized_response(
             target_len = target_len.saturating_sub(4096);
         }
     }
-    serde_json::json!({
+    let fallback = serde_json::json!({
         "jsonrpc": "2.0",
         "id": resp.get("id"),
         "result": {
@@ -311,6 +348,99 @@ pub(crate) fn bound_serialized_response(
             }],
             "isError": false
         }
+    });
+    if let Ok(serialized) = serde_json::to_string(&fallback)
+        && serialized.len() <= max_frame_bytes
+    {
+        return serialized;
+    }
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": serde_json::Value::Null,
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": "[... output truncated to avoid exceeding MCP frame line limits]\n"
+            }],
+            "isError": false
+        }
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_JSONRPC_FRAME_BYTES, bound_serialized_response};
+
+    #[test]
+    fn oversized_tools_list_returns_bounded_jsonrpc_error() {
+        let schema_description = "x".repeat(MAX_JSONRPC_FRAME_BYTES);
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 17,
+            "result": {
+                "tools": [{
+                    "name": "schema-rich-tool",
+                    "description": schema_description,
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "value": {
+                                "type": "string",
+                                "description": "A schema property"
+                            }
+                        }
+                    }
+                }]
+            }
+        });
+        assert!(serde_json::to_vec(&response).unwrap().len() > MAX_JSONRPC_FRAME_BYTES);
+
+        let encoded = bound_serialized_response(response, MAX_JSONRPC_FRAME_BYTES);
+
+        assert!(encoded.len() <= MAX_JSONRPC_FRAME_BYTES);
+        let bounded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(bounded["jsonrpc"], "2.0");
+        assert_eq!(bounded["id"], 17);
+        assert_eq!(bounded["error"]["code"], -32000);
+        assert_eq!(
+            bounded["error"]["message"],
+            "Response exceeds maximum JSON-RPC frame size"
+        );
+        assert!(bounded.get("result").is_none());
+    }
+
+    #[test]
+    fn oversized_tools_list_with_oversized_id_returns_bounded_jsonrpc_error() {
+        let schema_description = "x".repeat(MAX_JSONRPC_FRAME_BYTES);
+        let oversized_id = "y".repeat(MAX_JSONRPC_FRAME_BYTES * 2);
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": oversized_id,
+            "result": {
+                "tools": [{
+                    "name": "schema-rich-tool",
+                    "description": schema_description,
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }]
+            }
+        });
+        assert!(serde_json::to_vec(&response).unwrap().len() > MAX_JSONRPC_FRAME_BYTES);
+
+        let encoded = bound_serialized_response(response, MAX_JSONRPC_FRAME_BYTES);
+
+        assert!(encoded.len() <= MAX_JSONRPC_FRAME_BYTES);
+        let bounded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(bounded["jsonrpc"], "2.0");
+        assert_eq!(bounded["id"], serde_json::Value::Null);
+        assert_eq!(bounded["error"]["code"], -32000);
+        assert_eq!(
+            bounded["error"]["message"],
+            "Response exceeds maximum JSON-RPC frame size"
+        );
+        assert!(bounded.get("result").is_none());
+    }
 }
