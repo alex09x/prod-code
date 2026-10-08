@@ -83,11 +83,8 @@ impl RemoteFiles {
     /// The editor's message with every path of a mirrored copy turned back into the node's.
     pub fn to_node(&self, raw: &str) -> String {
         let translators = self.mirror_paths.read().unwrap_or_else(|p| p.into_inner());
-        translators
-            .values()
-            .fold(raw.to_string(), |translated, path| {
-                path.translate_lsp_to_server(&translated)
-            })
+        let translators: Vec<_> = translators.values().collect();
+        translate_lsp_to_server_from_original(raw, &translators)
     }
 
     /// The node path a `file://` URI of a server's message names, when the editor cannot open
@@ -222,6 +219,30 @@ impl RemoteFiles {
     }
 }
 
+fn translate_lsp_to_server_from_original(
+    raw: &str,
+    translators: &[&prod_code_protocol::path::PathTranslator],
+) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return raw.to_string();
+    };
+    let changed = prod_code_protocol::path::map_lsp_locations(&mut value, &mut |location| {
+        translators.iter().find_map(|translator| {
+            let translated = if location.starts_with("file:") {
+                translator.to_server_uri(location)
+            } else {
+                translator.to_server_path(location)
+            };
+            (translated != location).then_some(translated)
+        })
+    });
+    if changed {
+        value.to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
 /// Writes a copy that is read-only, safely verifying it does not traverse outside the mirror root.
 pub fn write_read_only(mirror_root: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if !path.starts_with(mirror_root) {
@@ -261,4 +282,32 @@ pub fn write_read_only(mirror_root: &Path, path: &Path, bytes: &[u8]) -> std::io
     #[cfg(unix)]
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::translate_lsp_to_server_from_original;
+    use prod_code_protocol::path::PathTranslator;
+
+    #[test]
+    fn old_mirror_uri_under_next_node_cache_is_translated_once() {
+        let cache = tempfile::tempdir().unwrap();
+        let node_a_root = cache.path().join("127.0.0.1_9401");
+        let node_b_root = cache.path().join("127.0.0.1_9402");
+        let server_path = node_b_root.join("external.rs");
+        let mirrored_path = node_a_root.join(server_path.strip_prefix("/").unwrap());
+        let uri = url::Url::from_file_path(&mirrored_path)
+            .unwrap()
+            .to_string();
+        let payload = serde_json::json!({"uri": uri}).to_string();
+        let node_a = PathTranslator::new(&node_a_root.to_string_lossy(), "/");
+        let node_b = PathTranslator::new(&node_b_root.to_string_lossy(), "/");
+
+        let translated = translate_lsp_to_server_from_original(&payload, &[&node_a, &node_b]);
+        let value: serde_json::Value = serde_json::from_str(&translated).unwrap();
+        assert_eq!(
+            value["uri"],
+            url::Url::from_file_path(&server_path).unwrap().to_string()
+        );
+    }
 }
