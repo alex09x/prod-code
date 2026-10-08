@@ -307,3 +307,34 @@ fn test_prepare_workspace_sync_rejects_filesystem_root() {
     let err = prepare_workspace_sync(Path::new("/"), None).unwrap_err();
     assert!(err.to_string().contains("filesystem root"), "{err}");
 }
+
+#[test]
+fn test_scan_workspace_files_respects_prod_code_toml_ignores() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let ws_root = ws.path();
+
+    std::fs::write(
+        ws_root.join(".prod-code.toml"),
+        r#"
+[watch]
+ignore = ["ignored_subdir", "*.ignored"]
+"#,
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(ws_root.join("src")).unwrap();
+    std::fs::write(ws_root.join("src/lib.rs"), "pub fn ok() {}\n").unwrap();
+
+    std::fs::create_dir_all(ws_root.join("ignored_subdir")).unwrap();
+    std::fs::write(ws_root.join("ignored_subdir/skip.rs"), "pub fn skip() {}\n").unwrap();
+    std::fs::write(ws_root.join("src/test.ignored"), "should be skipped\n").unwrap();
+
+    let deltas = scan_workspace_files(ws_root, None).expect("scan");
+    assert!(deltas.iter().any(|d| d.relative_path == "src/lib.rs"));
+    assert!(
+        !deltas
+            .iter()
+            .any(|d| d.relative_path.contains("ignored_subdir"))
+    );
+    assert!(!deltas.iter().any(|d| d.relative_path.ends_with(".ignored")));
+}
