@@ -9,12 +9,19 @@
  */
 
 use super::types::{SourceToken, TokenKind};
+use crate::parameter_object::Language;
 
 /// Tokenize source code into structural tokens with byte spans, ignoring comments and whitespace.
 pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
+    tokenize_source_for_lang(source, None)
+}
+
+/// Tokenize source code for an optional target language into structural tokens with byte spans.
+pub fn tokenize_source_for_lang(source: &str, lang: Option<Language>) -> Vec<SourceToken> {
     let mut tokens = Vec::new();
     let bytes = source.as_bytes();
     let mut i = 0;
+    let is_python = matches!(lang, Some(Language::Python));
 
     while i < bytes.len() {
         let b = bytes[i];
@@ -25,8 +32,8 @@ pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
             continue;
         }
 
-        // Single-line comment `//`
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        // Single-line comment `//` (not in Python where `//` is floor division)
+        if !is_python && b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             i += 2;
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
@@ -43,8 +50,8 @@ pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
             continue;
         }
 
-        // Multi-line comment `/* ... */`
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+        // Multi-line comment `/* ... */` (not in Python)
+        if !is_python && b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
             i += 2;
             while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
                 i += 1;

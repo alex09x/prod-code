@@ -16,6 +16,9 @@ use anyhow::{Context, Result};
 
 use crate::extract_field::helpers::{display, is_ident, is_in_literal_or_comment, mentions};
 use crate::extract_field::polyglot::constructors::find_constructors;
+use crate::extract_field::polyglot::expression_boundaries::{
+    has_complete_expression_boundaries, requires_complete_expression_boundaries,
+};
 use crate::extract_field::polyglot::parsers::{has_member_named, parse_locals};
 use crate::extract_field::polyglot::target::discover_target;
 use crate::extract_field::rust::extract;
@@ -73,6 +76,15 @@ pub async fn extract_polyglot(
     anyhow::ensure!(to > from, "the selection is empty");
     let expression = text[from..to].trim().to_string();
     anyhow::ensure!(!expression.is_empty(), "the selection is only whitespace");
+    let selected = from + (text[from..to].len() - text[from..to].trim_start().len());
+    let selected_end = selected + expression.len();
+    let requires_boundaries = requires_complete_expression_boundaries(&expression, lang);
+    if requires_boundaries {
+        anyhow::ensure!(
+            has_complete_expression_boundaries(&text, selected, selected_end, &expression, lang),
+            "the selected expression does not cover a complete expression"
+        );
+    }
 
     let target = discover_target(&text, lang, from, to)?;
     let owner = target.owner;
@@ -211,8 +223,6 @@ pub async fn extract_polyglot(
     };
 
     let replaced = if replace_all {
-        let lead = text[from..to].len() - text[from..to].trim_start().len();
-        let selected = from + lead;
         own_edits.push((selected, expression.len(), recv_expr.clone()));
         let mut count = 1;
         let mut at = body_open;
@@ -220,6 +230,12 @@ pub async fn extract_polyglot(
             let hit = at + i;
             let after = hit + expression.len();
             if hit == selected {
+                at = after;
+                continue;
+            }
+            if requires_boundaries
+                && !has_complete_expression_boundaries(&text, hit, after, &expression, lang)
+            {
                 at = after;
                 continue;
             }
@@ -241,8 +257,7 @@ pub async fn extract_polyglot(
         }
         count
     } else {
-        let lead = text[from..to].len() - text[from..to].trim_start().len();
-        own_edits.push((from + lead, expression.len(), recv_expr));
+        own_edits.push((selected, expression.len(), recv_expr));
         1
     };
 
