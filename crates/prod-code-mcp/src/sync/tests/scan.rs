@@ -338,3 +338,47 @@ ignore = ["ignored_subdir", "*.ignored"]
     );
     assert!(!deltas.iter().any(|d| d.relative_path.ends_with(".ignored")));
 }
+
+#[test]
+fn test_scan_workspace_files_preserves_contained_symlinks_and_rejects_external() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let ws_root = ws.path();
+    let external = tempfile::tempdir().expect("external tempdir");
+    let ext_file = external.path().join("secret.swift");
+    std::fs::write(&ext_file, "secret-external-bytes").unwrap();
+
+    let src = ws_root.join("Sources");
+    let tests = ws_root.join("Tests");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tests).unwrap();
+
+    let orig_file = src.join("Command.swift");
+    std::fs::write(&orig_file, "struct Command {}\n").unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(&orig_file, tests.join("LinkedCommand.swift")).unwrap();
+        symlink(&ext_file, tests.join("Escaped.swift")).unwrap();
+
+        let deltas = scan_workspace_files(ws_root, None).expect("scan");
+        let linked = deltas
+            .iter()
+            .find(|d| d.relative_path == "Tests/LinkedCommand.swift");
+        assert!(linked.is_some(), "contained symlink must be materialized");
+        assert_eq!(
+            linked.unwrap().content.as_deref(),
+            Some(b"struct Command {}\n".as_slice())
+        );
+
+        let escaped = deltas
+            .iter()
+            .find(|d| d.relative_path == "Tests/Escaped.swift");
+        assert!(escaped.is_none(), "external symlink must not be included");
+        for d in &deltas {
+            if let Some(content) = &d.content {
+                assert_ne!(content.as_slice(), b"secret-external-bytes");
+            }
+        }
+    }
+}

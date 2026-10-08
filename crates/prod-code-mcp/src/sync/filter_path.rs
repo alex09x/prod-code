@@ -91,6 +91,7 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
     }
     let path = Path::new(rel_path);
     let mut under_code_dir = false;
+    let mut under_pkg_dir = false;
     for component in path.parent().into_iter().flat_map(Path::components) {
         let std::path::Component::Normal(dir) = component else {
             continue;
@@ -98,6 +99,9 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         let dir = dir.to_string_lossy();
         if dir == ".git" {
             return false;
+        }
+        if matches!(dir.as_ref(), "crates" | "packages") {
+            under_pkg_dir = true;
         }
         if matches!(
             dir.as_ref(),
@@ -129,6 +133,7 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
             return false;
         }
         if !under_code_dir
+            && !under_pkg_dir
             && matches!(
                 dir.as_ref(),
                 "dist"

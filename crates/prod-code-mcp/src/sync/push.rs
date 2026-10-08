@@ -11,7 +11,7 @@
 use crate::sync::cache::{PROBED_NODES, clear_sync_cache_for, resend_lost_files};
 use crate::sync::entry::{sync_batches, sync_file_entry};
 use crate::sync::plan::{commit_workspace_sync, prepare_workspace_sync_for};
-use crate::sync::scan::read_regular_file_secure;
+use crate::sync::read::read_file_or_contained_symlink;
 use crate::sync::types::WorkspaceIdentity;
 use crate::sync::types::{RoundResult, SYNC_BATCH_BYTES, SyncOutcome};
 use anyhow::{Context, Result};
@@ -166,13 +166,11 @@ async fn push_sync_round(
         for missing_rel in &keep {
             if !existing.contains(missing_rel) {
                 let full = canonical_root.join(missing_rel);
-                if let Ok(Some((content, is_exec))) =
-                    read_regular_file_secure(&full, &canonical_root)
+                if let Ok(Some((content, is_exec, meta))) =
+                    read_file_or_contained_symlink(&full, &canonical_root)
                 {
-                    if let Ok(sym_meta) = full.symlink_metadata() {
-                        let entry = sync_file_entry(&sym_meta, &content);
-                        plan.state.files.insert(missing_rel.clone(), entry);
-                    }
+                    let entry = sync_file_entry(&meta, &content);
+                    plan.state.files.insert(missing_rel.clone(), entry);
                     plan.files.push(FileDelta {
                         relative_path: missing_rel.clone(),
                         content: Some(content),
