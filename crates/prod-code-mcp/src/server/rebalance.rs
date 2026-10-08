@@ -27,7 +27,11 @@ pub(crate) async fn handle_cluster_rebalance_tick(remote: &mut SocketAddr, works
 
     let identity = crate::sync::workspace_identity(workspace_root);
     let ws_name = identity.base.as_ref().unwrap_or(&identity.name).clone();
-    let os = crate::sync::macos_only_cgo(workspace_root).map(|_| "macos");
+    let os = if engine == Some("go") {
+        crate::sync::macos_only_cgo(workspace_root).map(|_| "macos")
+    } else {
+        None
+    };
     if let Some((new_addr, reason)) =
         crate::cluster::evaluate_cluster_rebalance(*remote, &ws_name, engine, os).await
     {

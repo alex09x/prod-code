@@ -119,3 +119,27 @@ async fn cluster_rebalance_tick_ignores_unbounded_non_git_manifestless_dir() {
         "manifestless non-git root must not trigger rebalance"
     );
 }
+
+#[tokio::test]
+async fn cluster_rebalance_tick_skips_cgo_check_on_rust_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"dummy\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let target_dir = temp.path().join("target/debug");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    std::fs::write(
+        target_dir.join("proc.go"),
+        "package proc\n// #include <libproc.h>\nimport \"C\"\n",
+    )
+    .unwrap();
+
+    // Directly verify that macos_only_cgo ignores the target/ directory
+    assert_eq!(crate::sync::macos_only_cgo(temp.path()), None);
+
+    // Verify detected engine is rust, so rebalance tick passes os = None
+    let (_, engine) = crate::sync::engine_project(temp.path(), temp.path());
+    assert_eq!(engine, Some("rust"));
+}

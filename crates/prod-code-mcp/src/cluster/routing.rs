@@ -93,7 +93,11 @@ pub async fn checkout_node_in(
         return Ok(default);
     }
     let (_, engine) = crate::sync::engine_project(root, root);
-    let os = crate::sync::macos_only_cgo(root).map(|_| "macos");
+    let os = if engine == Some("go") {
+        crate::sync::macos_only_cgo(root).map(|_| "macos")
+    } else {
+        None
+    };
     pick_node_with(nodes, &name, engine, os, placement_file).await
 }
 

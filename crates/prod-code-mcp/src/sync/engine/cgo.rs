@@ -26,6 +26,25 @@ const APPLE_ONLY_HEADERS: &[&str] = &[
 /// module is judged by the files seen by then.
 const MACOS_CGO_SCAN_LIMIT: usize = 4000;
 
+/// Maximum number of directories [`macos_only_cgo`] traverses to avoid unbounded filesystem walks.
+const MACOS_CGO_DIR_SCAN_LIMIT: usize = 1000;
+
+/// Directories that should never be searched for Go module source files.
+fn is_ignored_dir(name: &str) -> bool {
+    name.starts_with(['.', '_'])
+        || matches!(
+            name,
+            "vendor"
+                | "testdata"
+                | "target"
+                | "node_modules"
+                | "build"
+                | "dist"
+                | "out"
+                | "DerivedData"
+        )
+}
+
 /// Why the Go project at `root` builds only on macOS: the first `.go` file (relative path) whose
 /// cgo preamble includes a macOS-only header or links a framework, and what it names. A file that
 /// Linux skips anyway, by a `//go:build` line Linux does not satisfy or a `_darwin.go` name, does
@@ -34,7 +53,12 @@ const MACOS_CGO_SCAN_LIMIT: usize = 4000;
 pub fn macos_only_cgo(root: &Path) -> Option<(String, String)> {
     let mut dirs = vec![root.to_path_buf()];
     let mut read = 0;
+    let mut dirs_scanned = 0;
     while let Some(dir) = dirs.pop() {
+        dirs_scanned += 1;
+        if dirs_scanned > MACOS_CGO_DIR_SCAN_LIMIT {
+            return None;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -47,8 +71,7 @@ pub fn macos_only_cgo(root: &Path) -> Option<(String, String)> {
                 continue;
             };
             if kind.is_dir() {
-                if !name.starts_with(['.', '_']) && !matches!(name.as_ref(), "vendor" | "testdata")
-                {
+                if !is_ignored_dir(&name) {
                     dirs.push(entry.path());
                 }
                 continue;
