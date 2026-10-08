@@ -115,6 +115,9 @@ pub enum Commands {
         /// --symbol) (#375).
         #[arg(long = "in", value_name = "DIR")]
         also_in: Vec<PathBuf>,
+        /// Explicitly build the package index (e.g. for SwiftPM) if needed to find cross-file references.
+        #[arg(long, default_value_t = false)]
+        build_index: bool,
     },
     /// Who calls the function at a position: prod-code callers <file> <line> <col>, or --symbol NAME
     Callers {
@@ -131,6 +134,9 @@ pub enum Commands {
         /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
         #[arg(long, default_value_t = 1)]
         depth: usize,
+        /// Explicitly build the package index (e.g. for SwiftPM) if needed to find cross-file callers.
+        #[arg(long, default_value_t = false)]
+        build_index: bool,
     },
     /// What the function at a position calls: prod-code callees <file> <line> <col>, or --symbol NAME
     Callees {

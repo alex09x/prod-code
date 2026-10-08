@@ -51,9 +51,18 @@ pub fn has_complete_expression_boundaries(text: &str, start: usize, end: usize) 
     let left_ok = left.is_none_or(|c| matches!(c, '(' | '[' | '{' | ',' | ':' | '=' | ';'))
         || before.ends_with("return")
         || before.ends_with("=>");
-    let after = text[end..].trim_start();
-    let right = after.chars().next();
-    let right_ok = right.is_none_or(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | ':'));
+    let after_slice = &text[end..];
+    let horiz_ws = after_slice
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .map(|c| c.len_utf8())
+        .sum::<usize>();
+    let rest = &after_slice[horiz_ws..];
+    let right = rest.chars().next();
+    let right_ok = right
+        .is_none_or(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | ':' | '\n' | '\r'))
+        || rest.starts_with("//")
+        || rest.starts_with('#');
     left_ok && right_ok
 }
 

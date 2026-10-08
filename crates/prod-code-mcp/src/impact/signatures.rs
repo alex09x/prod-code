@@ -8,7 +8,10 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use std::path::Path;
+
 use super::diff::Hunk;
+use super::types::Symbol;
 
 pub(crate) fn normalize_signature(lines: &[&str], language: &str) -> String {
     let mut parts = Vec::new();
@@ -330,4 +333,35 @@ pub(crate) fn find_function_in_text(
         }
     }
     best.map(|(line, _)| line)
+}
+
+pub(crate) fn check_adjusted_signature(
+    root: &Path,
+    file: &str,
+    base: Option<&str>,
+    file_hunks: &[Hunk],
+    text: &str,
+    name: &str,
+    file_lang: &str,
+    sl: u32,
+    sym: &Symbol,
+) -> Option<(Symbol, String, String, u32, u32)> {
+    let current_lines: Vec<&str> = text.lines().collect();
+    let (sig_start, sig_end, curr_sig) =
+        extract_signature_span(&current_lines, sl, name, file_lang)?;
+    if !file_hunks.iter().any(|h| h.touches(sig_start, sig_end)) {
+        return None;
+    }
+    let base_ref = base.unwrap_or("HEAD");
+    let base_bytes = super::diff::git(root, &["show", &format!("{base_ref}:{file}")]).ok()?;
+    let base_text = std::str::from_utf8(&base_bytes).ok()?;
+    let base_lines: Vec<&str> = base_text.lines().collect();
+    let mapped = base_line_for_new_line(file_hunks, sl)?;
+    let base_line = find_function_in_text(&base_lines, name, file_lang, mapped)?;
+    let (_, _, base_sig) = extract_signature_span(&base_lines, base_line, name, file_lang)?;
+    if base_sig != curr_sig {
+        Some((sym.clone(), base_sig, curr_sig, sig_start, sig_end))
+    } else {
+        None
+    }
 }

@@ -15,13 +15,39 @@ use std::path::{Path, PathBuf};
 use url::Url;
 
 use super::call_sites::check_signature_warnings;
-use super::diff::{Change, diff_hunks, git};
+use super::diff::{Change, diff_hunks};
 use super::incoming::{Incoming, incoming_calls, note, test_name, unreadable};
 use super::pool::SessionPool;
-use super::signatures::{base_line_for_new_line, extract_signature_span, find_function_in_text};
+use super::signatures::check_adjusted_signature;
 use super::symbols::{collect_functions, is_source_file};
 use super::test_cmd::{file_language, test_command_for_tests};
 use super::types::{COLD_RETRIES, COLD_WAIT, Gap, ImpactReport, IndexBuild, Reach, Symbol};
+
+async fn swift_index_build(remote: SocketAddr, root: &Path) -> Option<IndexBuild> {
+    let command = vec![
+        "swift".to_string(),
+        "build".to_string(),
+        "--build-tests".to_string(),
+    ];
+    let outcome = crate::exec::run_remote(
+        remote,
+        root,
+        None,
+        command.clone(),
+        Vec::new(),
+        900,
+        false,
+        |_, _| {},
+    )
+    .await;
+    Some(IndexBuild {
+        command: command.join(" "),
+        ok: outcome
+            .as_ref()
+            .is_ok_and(|o| o.exit.exit_code == Some(0) && !o.exit.timed_out),
+        duration_ms: outcome.as_ref().map_or(0, |o| o.exit.duration_ms),
+    })
+}
 
 /// Runs the analysis against the checkout at `root` placed on `remote`.
 pub async fn analyze(
@@ -35,32 +61,8 @@ pub async fn analyze(
         .to_string();
     let tools = crate::verify::detect_tools(root);
     let changes = diff_hunks(root, base)?;
-    // sourcekit-lsp 5 finds a caller in another file only through the index store a build
-    // leaves; without one every answer is empty and reads like "nothing calls this" (#166).
     let index = if language == "swift" && !changes.is_empty() {
-        let command = vec![
-            "swift".to_string(),
-            "build".to_string(),
-            "--build-tests".to_string(),
-        ];
-        let outcome = crate::exec::run_remote(
-            remote,
-            root,
-            None,
-            command.clone(),
-            Vec::new(),
-            900,
-            false,
-            |_, _| {},
-        )
-        .await;
-        Some(IndexBuild {
-            command: command.join(" "),
-            ok: outcome
-                .as_ref()
-                .is_ok_and(|o| o.exit.exit_code == Some(0) && !o.exit.timed_out),
-            duration_ms: outcome.as_ref().map_or(0, |o| o.exit.duration_ms),
-        })
+        swift_index_build(remote, root).await
     } else {
         None
     };
@@ -189,27 +191,10 @@ pub async fn analyze(
                     changed.push(sym.clone());
                 }
 
-                let current_lines: Vec<&str> = text.lines().collect();
-                if let Some((sig_start, sig_end, curr_sig)) =
-                    extract_signature_span(&current_lines, *sl, name, file_lang)
-                    && file_hunks.iter().any(|h| h.touches(sig_start, sig_end))
-                {
-                    let base_ref = base.unwrap_or("HEAD");
-                    if let Ok(base_bytes) = git(root, &["show", &format!("{base_ref}:{file}")])
-                        && let Ok(base_text) = std::str::from_utf8(&base_bytes)
-                    {
-                        let base_lines: Vec<&str> = base_text.lines().collect();
-                        if let Some(base_line) =
-                            base_line_for_new_line(file_hunks, *sl).and_then(|mapped| {
-                                find_function_in_text(&base_lines, name, file_lang, mapped)
-                            })
-                            && let Some((_, _, base_sig)) =
-                                extract_signature_span(&base_lines, base_line, name, file_lang)
-                            && base_sig != curr_sig
-                        {
-                            adjusted_signatures.push((sym, base_sig, curr_sig, sig_start, sig_end));
-                        }
-                    }
+                if let Some(adj) = check_adjusted_signature(
+                    root, file, base, file_hunks, &text, name, file_lang, *sl, &sym,
+                ) {
+                    adjusted_signatures.push(adj);
                 }
             }
         }
@@ -285,15 +270,39 @@ pub async fn analyze(
             cache.insert(key(first), answer);
         }
     }
+    const IMPACT_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+    let bfs_start = tokio::time::Instant::now();
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
+    let mut timed_out = false;
     for (origin, origin_is_test) in &origins {
         if *origin_is_test {
             continue;
+        }
+        if bfs_start.elapsed() >= IMPACT_BUDGET {
+            note(
+                &mut incomplete,
+                Gap::Timeout {
+                    elapsed_ms: bfs_start.elapsed().as_millis() as u64,
+                    budget_ms: IMPACT_BUDGET.as_millis() as u64,
+                },
+            );
+            break;
         }
         let mut seen: HashSet<(String, u32, u32)> = HashSet::from([key(origin)]);
         let mut queue: VecDeque<(Symbol, bool, usize)> =
             VecDeque::from([(origin.clone(), *origin_is_test, 0)]);
         while let Some((sym, is_test, level)) = queue.pop_front() {
+            if bfs_start.elapsed() >= IMPACT_BUDGET {
+                note(
+                    &mut incomplete,
+                    Gap::Timeout {
+                        elapsed_ms: bfs_start.elapsed().as_millis() as u64,
+                        budget_ms: IMPACT_BUDGET.as_millis() as u64,
+                    },
+                );
+                timed_out = true;
+                break;
+            }
             if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key(&sym)) {
                 let sym_abs = root.join(&sym.file);
                 let incoming = match session_pool.session_for_file(&sym_abs).await {
@@ -361,6 +370,9 @@ pub async fn analyze(
                     queue.push_back((caller, caller_is_test, level + 1));
                 }
             }
+        }
+        if timed_out {
+            break;
         }
     }
 

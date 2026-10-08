@@ -116,6 +116,17 @@ impl Move {
             for d in &self.diagnostics {
                 out.push_str(&format!("  {d}\n"));
             }
+            if self
+                .diagnostics
+                .iter()
+                .any(|d| d.contains(&self.to) && d.contains("in this scope"))
+            {
+                out.push_str(&format!(
+                    "\nnames it cannot see from `{}`: the item used something private to `{}`. \
+                     Move that too, or widen it to `pub(crate)`, and run this again.\n",
+                    self.to_module, self.from_module
+                ));
+            }
         }
         if self.applied {
             out.push_str(&format!(

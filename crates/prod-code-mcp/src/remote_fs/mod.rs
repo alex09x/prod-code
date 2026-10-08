@@ -70,6 +70,9 @@ pub async fn read_source(
     if p.is_absolute() {
         if let Some(local_path) = absolute_checkout_source_path(root, &root_canon, p)? {
             read_local_source_file(&local_path)
+        } else if let Some(rel) = workspace_relative_path(root, &path) {
+            let local_path = root.join(rel);
+            read_local_source_file(&local_path)
         } else {
             read_remote_file(remote, &path, 0).await
         }
@@ -203,12 +206,49 @@ fn resolve_relative_checkout_path(root: &Path, root_canon: &Path, p: &Path) -> R
     Ok(candidate)
 }
 
+/// Finds the relative path inside `root` that corresponds to `file_path`, even if `file_path`
+/// is a remote mirror path on the gateway host (e.g. `/.../prod-code-storage/workspaces/ws/...`).
+pub fn workspace_relative_path(root: &Path, file_path: &str) -> Option<PathBuf> {
+    let path = Path::new(file_path);
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(rel) = path.strip_prefix(root) {
+        return Some(rel.to_path_buf());
+    }
+    if let Ok(rel) = path.strip_prefix(&root_canon) {
+        return Some(rel.to_path_buf());
+    }
+    let components: Vec<_> = path.components().collect();
+    for i in 0..components.len() {
+        if matches!(components[i], std::path::Component::Normal(_)) {
+            let subpath: PathBuf = components[i..].iter().collect();
+            let candidate = root.join(&subpath);
+            if candidate.is_file() {
+                if let Ok(canon) = std::fs::canonicalize(&candidate) {
+                    if canon.starts_with(&root_canon) {
+                        return Some(subpath);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Whether a location's file lies outside the checkout at `root` (a path the client cannot
 /// open itself).
 pub fn is_external(root: &Path, file_path: &str) -> bool {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let path = Path::new(file_path);
     if !path.is_absolute() {
+        return false;
+    }
+    if workspace_relative_path(&root, file_path).is_some() {
         return false;
     }
     let path_canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());

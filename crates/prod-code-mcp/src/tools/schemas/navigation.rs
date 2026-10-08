@@ -22,7 +22,8 @@ pub fn navigation_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line number" },
                     "character": { "type": "integer", "description": "1-based column/character number" },
-                    "depth": { "type": "integer", "description": "Levels to walk (default 1, the direct ones; at most 6). Deeper levels come as an indented tree; a function already shown is marked instead of expanded again" }
+                    "depth": { "type": "integer", "description": "Levels to walk (default 1, the direct ones; at most 6). Deeper levels come as an indented tree; a function already shown is marked instead of expanded again" },
+                    "build_index": { "type": "boolean", "description": "Opt-in to building the package index (e.g. for SwiftPM checkouts) if cross-file callers require a build; default false" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -129,6 +130,10 @@ pub fn navigation_tools() -> Vec<McpTool> {
                     "limit": {
                         "type": "integer",
                         "description": "Optional display truncation limit (default: 0 for all). Caps the number of reference lines rendered in the output text to keep agent context windows bounded for heavily-referenced symbols. Internal AST refactoring tools always receive the complete reference set."
+                    },
+                    "build_index": {
+                        "type": "boolean",
+                        "description": "Opt-in to building the package index (e.g. for SwiftPM checkouts) if cross-file references require a build; default false"
                     }
                 },
                 "required": ["path", "line", "character"]

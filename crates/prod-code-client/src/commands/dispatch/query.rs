@@ -17,6 +17,16 @@ use anyhow::{Context, Result};
 use std::env;
 use std::path::Path;
 
+fn file_pos_json(
+    file: Option<std::path::PathBuf>,
+    line: Option<u32>,
+    col: Option<u32>,
+) -> Result<serde_json::Value> {
+    let (file, line, col) = position(file, line, col)?;
+    let file = std::fs::canonicalize(&file).unwrap_or(file);
+    Ok(serde_json::json!({ "path": file.to_string_lossy(), "line": line, "character": col }))
+}
+
 pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()> {
     match cmd {
         Commands::Def {
@@ -32,19 +42,9 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
                 run_tool(cx.remote, "code_definition", args).await
             }
             None if body => {
-                let (file, line, col) = position(file, line, col)?;
-                let file = std::fs::canonicalize(&file).unwrap_or(file);
-                run_tool(
-                    cx.remote,
-                    "code_definition",
-                    serde_json::json!({
-                        "path": file.to_string_lossy(),
-                        "line": line,
-                        "character": col,
-                        "body": true,
-                    }),
-                )
-                .await
+                let mut args = file_pos_json(file, line, col)?;
+                args["body"] = serde_json::json!(true);
+                run_tool(cx.remote, "code_definition", args).await
             }
             None => {
                 let (file, line, col) = position(file, line, col)?;
@@ -69,19 +69,15 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             col,
             symbol,
             also_in,
+            build_index,
         } => {
             let mut args = match symbol {
                 Some(symbol) => symbol_args(&symbol, file),
-                None => {
-                    let (file, line, col) = position(file, line, col)?;
-                    let file = std::fs::canonicalize(&file).unwrap_or(file);
-                    serde_json::json!({
-                        "path": file.to_string_lossy(),
-                        "line": line,
-                        "character": col,
-                    })
-                }
+                None => file_pos_json(file, line, col)?,
             };
+            if build_index {
+                args["build_index"] = serde_json::json!(true);
+            }
             if !also_in.is_empty() {
                 args["also_in"] = also_in
                     .into_iter()
@@ -99,7 +95,25 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             col,
             symbol,
             depth,
-        } => run_call_tree(cx.remote, "code_callers", file, line, col, symbol, depth).await,
+            build_index,
+        } => {
+            let mut args = match symbol {
+                Some(symbol) => {
+                    let mut args = symbol_args(&symbol, file);
+                    args["depth"] = serde_json::json!(depth);
+                    args
+                }
+                None => {
+                    let mut args = file_pos_json(file, line, col)?;
+                    args["depth"] = serde_json::json!(depth);
+                    args
+                }
+            };
+            if build_index {
+                args["build_index"] = serde_json::json!(true);
+            }
+            run_tool(cx.remote, "code_callers", args).await
+        }
         Commands::Callees {
             file,
             line,
@@ -132,19 +146,9 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
                 run_tool(cx.remote, "code_supertypes", args).await
             }
             None => {
-                let (file, line, col) = position(file, line, col)?;
-                let file = std::fs::canonicalize(&file).unwrap_or(file);
-                run_tool(
-                    cx.remote,
-                    "code_supertypes",
-                    serde_json::json!({
-                        "path": file.to_string_lossy(),
-                        "line": line,
-                        "character": col,
-                        "depth": depth,
-                    }),
-                )
-                .await
+                let mut args = file_pos_json(file, line, col)?;
+                args["depth"] = serde_json::json!(depth);
+                run_tool(cx.remote, "code_supertypes", args).await
             }
         },
         Commands::Symbols { target } => {

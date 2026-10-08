@@ -94,6 +94,14 @@ impl Pruned {
         } else {
             out.push_str(&body);
         }
+        if self.removed.is_empty() {
+            out.push_str(if self.unverified.is_empty() {
+                "\nnothing to prune\n"
+            } else {
+                "\nnothing proven orphaned; what could not be checked was kept\n"
+            });
+            return out;
+        }
         if self.diagnostics.is_empty() {
             out.push_str("\nthe analyzer accepts the result: 0 errors\n");
         } else {
@@ -102,15 +110,16 @@ impl Pruned {
                 out.push_str(&format!("  {d}\n"));
             }
         }
-        out.push_str(if self.applied {
-            "\n[applied]\n"
-        } else {
-            "\nnothing was written (pass `apply` to prune)\n"
-        });
-
         if let Some(commit) = &self.git_commit {
-            out.push_str(&format!("\nCreated Git commit: {commit}\n"));
-        } else if let Some(patch) = &self.git_patch {
+            out.push_str(&format!(
+                "\n[committed: {commit}] created Git commit with author Alexander Panasenko <alex@prod.codes>\n"
+            ));
+        } else if self.applied {
+            out.push_str("\n[applied]\n");
+        } else {
+            out.push_str("\nnothing was written (pass `apply` to prune)\n");
+        }
+        if let Some(patch) = &self.git_patch {
             out.push_str("\n--- Git Commit Patch ---\n");
             out.push_str(patch);
         }

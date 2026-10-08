@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::range::outlined_range;
 
@@ -28,28 +28,47 @@ pub(crate) async fn definition_body(
     line: u32,
     col: u32,
 ) -> Result<String> {
-    let path = crate::remote_fs::uri_to_path(uri);
-    let external = crate::remote_fs::is_external(root, &path);
-    let text = if external {
-        let (bytes, _) = crate::remote_fs::read_remote_file(remote, &path, 0).await?;
-        String::from_utf8_lossy(&bytes).into_owned()
-    } else {
-        std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?
+    let path_str = crate::remote_fs::uri_to_path(uri);
+    let resolved_local = crate::remote_fs::workspace_relative_path(root, &path_str)
+        .map(|rel| root.join(rel))
+        .or_else(|| {
+            let p = Path::new(&path_str);
+            if p.is_absolute() && p.starts_with(root) {
+                Some(p.to_path_buf())
+            } else {
+                None
+            }
+        });
+    let (text, local_path) = match resolved_local {
+        Some(local) if local.exists() => {
+            let text = std::fs::read_to_string(&local)
+                .with_context(|| format!("reading {}", local.display()))?;
+            (text, Some(local))
+        }
+        _ => {
+            let external = crate::remote_fs::is_external(root, &path_str);
+            let text = if external {
+                let (bytes, _) = crate::remote_fs::read_remote_file(remote, &path_str, 0).await?;
+                String::from_utf8_lossy(&bytes).into_owned()
+            } else {
+                std::fs::read_to_string(&path_str).with_context(|| format!("reading {path_str}"))?
+            };
+            let local = if !external {
+                Some(PathBuf::from(&path_str))
+            } else {
+                None
+            };
+            (text, local)
+        }
     };
     let lines: Vec<&str> = text.lines().collect();
-    anyhow::ensure!(!lines.is_empty(), "{path} is empty");
+    anyhow::ensure!(!lines.is_empty(), "{path_str} is empty");
     let start = (line as usize).saturating_sub(1).min(lines.len() - 1);
-    let outlined = if external {
-        None
-    } else {
-        outlined_range(
-            remote,
-            root,
-            Path::new(&path),
-            start,
-            col.saturating_sub(1) as usize,
-        )
-        .await
+    let outlined = match &local_path {
+        Some(local) => {
+            outlined_range(remote, root, local, start, col.saturating_sub(1) as usize).await
+        }
+        None => None,
     };
     let (first, last) = match outlined {
         Some((first, last)) if last >= start => (first.min(start), last),
