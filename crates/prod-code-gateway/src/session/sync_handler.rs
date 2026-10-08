@@ -9,6 +9,7 @@
  */
 
 use super::shared_output::SharedOutputSender;
+use crate::sync::file_write::write_synced_file_for_workspace;
 use crate::*;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -35,8 +36,13 @@ pub async fn handle_session_sync(
                 } else {
                     workspace::WatchedChange::Created
                 };
-                if let Err(e) =
-                    write_synced_file(&target_path, content_bytes, delta.is_executable).await
+                if let Err(e) = write_synced_file_for_workspace(
+                    &view.workspace.root,
+                    &target_path,
+                    content_bytes,
+                    delta.is_executable,
+                )
+                .await
                 {
                     tracing::warn!(
                         error = %e,
@@ -78,6 +84,8 @@ pub async fn handle_session_sync(
             }
             None => {
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
+                    let _ =
+                        crate::sync::config_meta::forget(&view.workspace.root, &target_path).await;
                     files_deleted += 1;
                     watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
                     prune_empty_parents(&view.workspace.root, target_path.parent());
