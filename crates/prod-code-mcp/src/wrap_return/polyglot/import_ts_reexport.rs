@@ -35,6 +35,116 @@ pub(crate) fn resolve_reexport_file(caller_dir: &Path, rel_spec: &str) -> Option
     None
 }
 
+fn without_line_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (i, ch) in line.char_indices() {
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active {
+                quote = None;
+            }
+        } else if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+        } else if line[i..].starts_with("//") {
+            return &line[..i];
+        }
+    }
+    line
+}
+
+fn from_keyword(statement: &str) -> Option<usize> {
+    let bytes = statement.as_bytes();
+    let mut brace_depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            _ => {}
+        }
+        if brace_depth == 0 && bytes[i..].starts_with(b"from") {
+            let before_is_ident = i > 0
+                && (bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b'$');
+            let after = i + "from".len();
+            let after_is_ident = bytes
+                .get(after)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'$');
+            if !before_is_ident && !after_is_ident {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn reexport_statements(content: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut pending = String::new();
+    let mut lines = content.lines().peekable();
+    while let Some(raw_line) = lines.next() {
+        let line = without_line_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if pending.is_empty() {
+            if !line.starts_with("export") {
+                continue;
+            }
+            pending.push_str(line);
+        } else if line.starts_with("export") {
+            pending.clear();
+            pending.push_str(line);
+        } else {
+            pending.push(' ');
+            pending.push_str(line);
+        }
+        if let Some(from_at) = from_keyword(&pending)
+            && !extract_specifier(&pending[from_at + "from".len()..]).is_empty()
+        {
+            statements.push(std::mem::take(&mut pending));
+        } else if line.ends_with(';') {
+            pending.clear();
+        } else if line.ends_with('}') {
+            let next_is_from = lines
+                .clone()
+                .map(without_line_comment)
+                .map(str::trim)
+                .find(|next| !next.is_empty())
+                .is_some_and(|next| next.starts_with("from "));
+            if !next_is_from {
+                pending.clear();
+            }
+        }
+    }
+    statements
+}
+
 pub(crate) fn barrel_exports_symbol_from_decl(
     barrel_file: &Path,
     exported_symbol: &str,
@@ -50,19 +160,15 @@ pub(crate) fn barrel_exports_symbol_from_decl(
     };
     let barrel_dir = barrel_file.parent().unwrap_or_else(|| Path::new(""));
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("export") || !trimmed.contains("from") {
+    for statement in reexport_statements(&content) {
+        let Some(from_at) = from_keyword(&statement) else {
             continue;
-        }
-        let specifier = extract_specifier(trimmed);
+        };
+        let before_from = statement[..from_at].trim();
+        let specifier = extract_specifier(&statement[from_at + "from".len()..]);
         if specifier.is_empty() {
             continue;
         }
-        let before_from = match trimmed.split_once("from") {
-            Some((before, _)) => before.trim(),
-            None => continue,
-        };
         let clause = match before_from.strip_prefix("export") {
             Some(c) => c.trim(),
             None => continue,

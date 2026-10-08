@@ -102,9 +102,6 @@ fn py_mod_matches_pkg(mod_str: &str, caller_path: &Path, decl_file: &Path) -> bo
         if decl_dir == mod_path || decl_dir.ends_with(mod_path) {
             return true;
         }
-        if caller_path.parent() == decl_file.parent() {
-            return true;
-        }
         false
     }
 }
@@ -129,14 +126,8 @@ fn split_semicolon_statements(line: &str) -> Vec<&str> {
     stmts
 }
 
-pub(crate) fn python_imported_symbols(
-    content: &str,
-    caller_path: &Path,
-    decl_file: &Path,
-    fn_name: &str,
-) -> Vec<String> {
-    let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let mut symbols = Vec::new();
+fn python_simple_statements(content: &str) -> Vec<String> {
+    let mut statements = Vec::new();
     let mut lines = content.lines().peekable();
     while let Some(line) = lines.next() {
         let code_line = line.split('#').next().unwrap_or("").trim();
@@ -169,56 +160,72 @@ pub(crate) fn python_imported_symbols(
                 }
             }
         }
+        statements.extend(
+            split_semicolon_statements(&full_stmt)
+                .into_iter()
+                .map(str::trim)
+                .filter(|statement| !statement.is_empty())
+                .map(str::to_string),
+        );
+    }
+    statements
+}
 
-        for simple_stmt in split_semicolon_statements(&full_stmt) {
-            let trimmed = simple_stmt.trim();
-            if let Some(rest) = trimmed.strip_prefix("from ") {
-                if let Some((mod_part, clause)) = rest.split_once(" import ") {
-                    let clause = clause
-                        .trim()
-                        .trim_start_matches('(')
-                        .trim_end_matches(')')
-                        .trim();
+pub(crate) fn python_imported_symbols(
+    content: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+    fn_name: &str,
+) -> Vec<String> {
+    let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let mut symbols = Vec::new();
+    for trimmed in python_simple_statements(content) {
+        if let Some(rest) = trimmed.strip_prefix("from ") {
+            if let Some((mod_part, clause)) = rest.split_once(" import ") {
+                let clause = clause
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')')
+                    .trim();
 
-                    if py_mod_matches_decl(mod_part, caller_path, decl_file) {
-                        if clause == "*" {
-                            symbols.push(fn_name.to_string());
-                        } else {
-                            for item in clause.split(',') {
-                                let parts: Vec<&str> = item.split_whitespace().collect();
-                                match parts.as_slice() {
-                                    [name] if *name == fn_name => symbols.push(fn_name.to_string()),
-                                    [orig, "as", local] if *orig == fn_name => {
-                                        symbols.push((*local).to_string());
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    } else if py_mod_matches_pkg(mod_part, caller_path, decl_file) {
+                if py_mod_matches_decl(mod_part, caller_path, decl_file) {
+                    if clause == "*" {
+                        symbols.push(fn_name.to_string());
+                    } else {
                         for item in clause.split(',') {
                             let parts: Vec<&str> = item.split_whitespace().collect();
                             match parts.as_slice() {
-                                [name] if *name == decl_stem => symbols.push(fn_name.to_string()),
-                                [orig, "as", _local] if *orig == decl_stem => {
-                                    symbols.push(fn_name.to_string());
+                                [name] if *name == fn_name => symbols.push(fn_name.to_string()),
+                                [orig, "as", local] if *orig == fn_name => {
+                                    symbols.push((*local).to_string());
                                 }
                                 _ => {}
                             }
                         }
                     }
-                }
-            } else if let Some(rest) = trimmed.strip_prefix("import ") {
-                let rest = rest
-                    .trim()
-                    .trim_start_matches('(')
-                    .trim_end_matches(')')
-                    .trim();
-                for entry in rest.split(',') {
-                    let (mod_part, _alias) = entry.split_once(" as ").unwrap_or((entry, ""));
-                    if py_mod_matches_decl(mod_part, caller_path, decl_file) {
-                        symbols.push(fn_name.to_string());
+                } else if py_mod_matches_pkg(mod_part, caller_path, decl_file) {
+                    for item in clause.split(',') {
+                        let parts: Vec<&str> = item.split_whitespace().collect();
+                        match parts.as_slice() {
+                            [name] if *name == decl_stem => symbols.push(fn_name.to_string()),
+                            [orig, "as", _local] if *orig == decl_stem => {
+                                symbols.push(fn_name.to_string());
+                            }
+                            _ => {}
+                        }
                     }
+                }
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("import ") {
+            let rest = rest
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .trim();
+            for entry in rest.split(',') {
+                let (mod_part, _alias) = entry.split_once(" as ").unwrap_or((entry, ""));
+                if py_mod_matches_decl(mod_part, caller_path, decl_file) {
+                    symbols.push(fn_name.to_string());
                 }
             }
         }
@@ -233,9 +240,8 @@ pub(crate) fn is_python_namespace_import(
     decl_file: &Path,
 ) -> bool {
     let decl_stem = decl_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    for line in content.lines() {
-        let code_line = line.split('#').next().unwrap_or("").trim();
-        if let Some(rest) = code_line.strip_prefix("import ") {
+    for statement in python_simple_statements(content) {
+        if let Some(rest) = statement.strip_prefix("import ") {
             for entry in rest.split(',') {
                 let (mod_part, alias) = entry.split_once(" as ").unwrap_or((entry, ""));
                 let alias = alias.trim();
@@ -253,18 +259,27 @@ pub(crate) fn is_python_namespace_import(
                     return true;
                 }
             }
-        } else if let Some(rest) = code_line.strip_prefix("from ") {
+        } else if let Some(rest) = statement.strip_prefix("from ") {
             if let Some((mod_part, clause)) = rest.split_once(" import ") {
-                let (item, alias) = clause.split_once(" as ").unwrap_or((clause, ""));
-                let alias = alias.trim();
-                let item = item.trim();
-                let local_name = if !alias.is_empty() { alias } else { item };
-                if local_name == receiver
-                    && (py_mod_matches_decl(mod_part, caller_path, decl_file)
-                        || (item == decl_stem
-                            && py_mod_matches_pkg(mod_part, caller_path, decl_file)))
-                {
-                    return true;
+                let clause = clause
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')')
+                    .trim();
+                let matches_module = py_mod_matches_decl(mod_part, caller_path, decl_file)
+                    || py_mod_matches_pkg(mod_part, caller_path, decl_file);
+                if matches_module {
+                    for item in clause.split(',') {
+                        let parts: Vec<&str> = item.split_whitespace().collect();
+                        let binding = match parts.as_slice() {
+                            [name] if *name == decl_stem => Some(*name),
+                            [original, "as", local] if *original == decl_stem => Some(*local),
+                            _ => None,
+                        };
+                        if binding == Some(receiver) {
+                            return true;
+                        }
+                    }
                 }
             }
         }

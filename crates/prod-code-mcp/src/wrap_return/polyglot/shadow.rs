@@ -16,6 +16,12 @@ pub(crate) fn is_locally_shadowed(content: &str, at: usize, name: &str, lang: La
     if lang == Language::Python {
         return is_python_shadowed(content, at, name);
     }
+    if is_js_function_declaration_name(content, at, name, lang) {
+        return true;
+    }
+    if is_shadowed_by_expression_arrow(content, at, name, lang) {
+        return true;
+    }
 
     // Check if `at` itself is inside a parameter list of a function header:
     if let Some(open_p) = content[..at].rfind('(') {
@@ -82,76 +88,12 @@ pub(crate) fn is_locally_shadowed(content: &str, at: usize, name: &str, lang: La
     false
 }
 
-fn find_matching_open_paren(text: &str, close_paren: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (idx, c) in text[..=close_paren].char_indices().rev() {
-        if c == ')' {
-            depth += 1;
-        } else if c == '(' {
-            depth -= 1;
-            if depth == 0 {
-                return Some(idx);
-            }
-        }
-    }
-    None
-}
-
-fn params_declare_name(params: &str, name: &str, lang: Language) -> bool {
-    let mut search = params;
-    while let Some(o) = search.find('{') {
-        if let Some(c) = search[o..].find('}') {
-            let inner = &search[o + 1..o + c];
-            for field in inner.split(',') {
-                let field = field.trim();
-                let ident = if let Some((_, local)) = field.split_once(':') {
-                    local.trim()
-                } else {
-                    field
-                };
-                let ident = ident.split('=').next().unwrap_or(ident).trim();
-                let ident = ident.trim_start_matches("mut ").trim();
-                if ident == name {
-                    return true;
-                }
-            }
-            search = &search[o + c + 1..];
-        } else {
-            break;
-        }
-    }
-
-    for chunk in params.split(',') {
-        let chunk = chunk.trim();
-        if chunk.is_empty() {
-            continue;
-        }
-        match lang {
-            Language::TypeScript | Language::JavaScript | Language::Swift | Language::Rust => {
-                let ident = chunk.split(':').next().unwrap_or(chunk);
-                let ident = ident.split('=').next().unwrap_or(ident).trim();
-                let ident = ident.trim_start_matches("mut ").trim();
-                let ident = ident.trim_end_matches(';').trim();
-                if ident == name {
-                    return true;
-                }
-            }
-            Language::Go => {
-                let words: Vec<&str> = chunk.split_whitespace().collect();
-                if words.first() == Some(&name) {
-                    return true;
-                }
-            }
-            _ => {
-                let words: Vec<&str> = chunk.split_whitespace().collect();
-                if words.contains(&name) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
+#[path = "shadow_scope.rs"]
+mod shadow_scope;
+use shadow_scope::{
+    declaration_declares_name, find_matching_open_paren, is_js_function_declaration_name,
+    is_shadowed_by_expression_arrow, js_function_declaration_has_name, params_declare_name,
+};
 
 fn is_lexical_block(text: &str, open_pos: usize) -> bool {
     let before = text[..open_pos].trim_end();
@@ -288,7 +230,7 @@ fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
                     .or_else(|| decl.strip_prefix("let "))
                     .or_else(|| decl.strip_prefix("var "))
                 {
-                    if params_declare_name(rest, name, lang) {
+                    if declaration_declares_name(rest, name, lang) {
                         return true;
                     }
                 }
@@ -299,6 +241,9 @@ fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
 
         match lang {
             Language::TypeScript | Language::JavaScript => {
+                if js_function_declaration_has_name(trimmed, name) {
+                    return true;
+                }
                 if trimmed.starts_with("const ")
                     || trimmed.starts_with("let ")
                     || trimmed.starts_with("var ")
@@ -312,7 +257,7 @@ fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
                         .or_else(|| trimmed.strip_prefix("let "))
                         .or_else(|| trimmed.strip_prefix("var "))
                     {
-                        if params_declare_name(rest, name, lang) {
+                        if declaration_declares_name(rest, name, lang) {
                             return true;
                         }
                     }
@@ -321,7 +266,7 @@ fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
             Language::Rust => {
                 if let Some(rest) = trimmed.strip_prefix("let ") {
                     let rest = rest.trim_start_matches("mut ").trim();
-                    if params_declare_name(rest, name, lang) {
+                    if declaration_declares_name(rest, name, lang) {
                         return true;
                     }
                 }
@@ -344,7 +289,7 @@ fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
             .or_else(|| decl.strip_prefix("let "))
             .or_else(|| decl.strip_prefix("var "))
         {
-            if params_declare_name(rest, name, lang) {
+            if declaration_declares_name(rest, name, lang) {
                 return true;
             }
         }
