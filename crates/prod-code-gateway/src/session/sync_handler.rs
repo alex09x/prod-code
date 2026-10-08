@@ -178,16 +178,16 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let storage = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let outside = storage.path();
         let root = storage.path().join("ws");
         std::fs::create_dir_all(&root).unwrap();
-        symlink(outside.path(), root.join("linked")).unwrap();
+        symlink(outside, root.join("linked")).unwrap();
 
-        let victim = outside.path().join("victim.txt");
+        let victim = outside.join("victim.txt");
         std::fs::write(&victim, b"keep").unwrap();
-        let absolute_write = outside.path().join("absolute-escape.txt");
+        let absolute_write = outside.join("absolute-escape.txt");
         let parent_write = storage.path().join("parent-escape.txt");
-        let symlink_write = outside.path().join("symlink-escape.txt");
+        let symlink_write = outside.join("symlink-escape.txt");
 
         let workspace = Arc::new(workspace::SharedWorkspace::new(
             root.clone(),
