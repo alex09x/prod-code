@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::extract_function::binding::read_after_but_not_returned;
+use crate::extract_function::binding::{read_after_but_not_returned, uncaptured_enclosing_locals};
 use crate::extract_function::rewrite::{
     apply_edits, errors_in, indent_at, rename_placeholder, with_arguments,
 };
@@ -208,6 +208,13 @@ pub async fn process_and_validate_duplicates(
     let mut accepted: Vec<(PathBuf, usize, usize, String)> = Vec::new();
     let mut result = build(&[], &accepted);
     let mut diagnostics = errors_in(remote, root, &result).await?;
+    let orig_text = std::fs::read_to_string(file).unwrap_or_default();
+    let uncaptured = uncaptured_enclosing_locals(&orig_text, start, &result[0].1, function);
+    for var in &uncaptured {
+        diagnostics.push(format!(
+            "cannot find value `{var}` in this scope: local variable from enclosing function was not captured in extracted function"
+        ));
+    }
     let base_clean = diagnostics.is_empty();
     let mut kept: Vec<usize> = Vec::new();
     for (n, (duplicate, target)) in found.iter_mut().enumerate() {
@@ -285,7 +292,7 @@ pub async fn process_and_validate_duplicates(
     if !with_parameters {
         parameters.clear();
     }
-    if found.iter().any(|(d, _)| d.replaced) {
+    if found.iter().any(|(d, _)| d.replaced) && uncaptured.is_empty() {
         diagnostics = Vec::new();
     }
 

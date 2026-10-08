@@ -115,6 +115,21 @@ pub(crate) fn starts_use(row: &str) -> bool {
     row.starts_with("use ")
 }
 
+/// Finds the byte offset of `bare` as an identifier token on `row`, checking word boundaries (#887, #888).
+pub fn find_identifier_on_line(row: &str, bare: &str) -> Option<usize> {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    for (idx, _) in row.match_indices(bare) {
+        let before_ok = idx == 0 || !row[..idx].chars().next_back().is_some_and(is_ident);
+        let after_idx = idx + bare.len();
+        let after_ok =
+            after_idx >= row.len() || !row[after_idx..].chars().next().is_some_and(is_ident);
+        if before_ok && after_ok {
+            return Some(idx);
+        }
+    }
+    None
+}
+
 /// Whether `name` is the identifier at the 1-based line/column of `path` (false when the
 /// file cannot be read).
 pub(crate) fn identifier_at(
@@ -136,7 +151,10 @@ pub(crate) fn identifier_at(
         .map(|(i, _)| i)
         .unwrap_or(row.len());
     let bare = name.split(['(', '<']).next().unwrap_or(name);
-    row[start..].starts_with(bare)
+    if row[start..].starts_with(bare) {
+        return true;
+    }
+    find_identifier_on_line(row, bare).is_some()
 }
 
 /// The files a workspace edit rewrites, as (path, whole new content). The gateway answers a

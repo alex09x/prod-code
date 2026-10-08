@@ -82,3 +82,127 @@ pub fn read_after_but_not_returned(
         .filter(|name| !returned.contains(name))
         .find(|name| mentions(after, name))
 }
+
+/// Finds local variables and parameters from the enclosing function that are referenced in the
+/// extracted helper but are neither declared as parameters nor bound internally (#958).
+pub fn uncaptured_enclosing_locals(
+    text: &str,
+    start: usize,
+    extracted: &str,
+    function_span: Option<(usize, usize)>,
+) -> Vec<String> {
+    let Some((body_open, _)) = crate::introduce_variable::enclosing_body(text, start) else {
+        return Vec::new();
+    };
+    let mut enclosing_scope = std::collections::BTreeSet::new();
+    if start > body_open {
+        for name in bound_names(&text[body_open..start]) {
+            enclosing_scope.insert(name);
+        }
+    }
+    if let Some(fn_idx) = text[..body_open].rfind("fn ") {
+        if let Some((_, list_open, list_close)) = crate::signature::param_span(text, fn_idx + 3) {
+            let param_text = &text[list_open..list_close];
+            for param in param_text.split(',') {
+                if let Some((name_part, _)) = param.split_once(':') {
+                    let name = name_part.trim().trim_start_matches("mut ").trim();
+                    if !name.is_empty() && !matches!(name, "self" | "&self" | "&mut self") {
+                        enclosing_scope.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let (fn_start, fn_end) = match function_span {
+        Some((s, e)) => (s, e),
+        None => {
+            let Some(pos) = extracted.rfind("fn ") else {
+                return Vec::new();
+            };
+            let Some(open) = extracted[pos..].find('{').map(|i| pos + i) else {
+                return Vec::new();
+            };
+            let Some(close) = crate::parameter_object::matching_bracket(extracted, open) else {
+                return Vec::new();
+            };
+            (pos, close + 1)
+        }
+    };
+    if fn_start >= extracted.len() || fn_end > extracted.len() {
+        return Vec::new();
+    }
+    let fn_text = &extracted[fn_start..fn_end];
+    let mut declared_params = std::collections::BTreeSet::new();
+    if let Some(fn_kw) = fn_text.find("fn ") {
+        if let Some((_, list_open, list_close)) = crate::signature::param_span(fn_text, fn_kw + 3) {
+            let param_text = &fn_text[list_open..list_close];
+            for param in param_text.split(',') {
+                if let Some((name_part, _)) = param.split_once(':') {
+                    let name = name_part.trim().trim_start_matches("mut ").trim();
+                    if !name.is_empty() && !matches!(name, "self" | "&self" | "&mut self") {
+                        declared_params.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let body_start = fn_text.find('{').map_or(0, |i| i + 1);
+    let body = &fn_text[body_start..];
+    let internal_locals: std::collections::BTreeSet<String> =
+        bound_names(body).into_iter().collect();
+
+    let mut uncaptured = Vec::new();
+    for token in super::tokens::tokens(body) {
+        if token.0 == super::tokens::Token::Word {
+            let word = &body[token.1..token.2];
+            if enclosing_scope.contains(word)
+                && !declared_params.contains(word)
+                && !internal_locals.contains(word)
+            {
+                uncaptured.push(word.to_string());
+            }
+        } else if token.0 == super::tokens::Token::Str {
+            let str_val = &body[token.1..token.2];
+            for word in format_string_interpolations(str_val) {
+                if enclosing_scope.contains(&word)
+                    && !declared_params.contains(&word)
+                    && !internal_locals.contains(&word)
+                {
+                    uncaptured.push(word);
+                }
+            }
+        }
+    }
+    uncaptured.sort();
+    uncaptured.dedup();
+    uncaptured
+}
+
+fn format_string_interpolations(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                i += 2;
+                continue;
+            }
+            if let Some(close) = s[i + 1..].find('}') {
+                let inside = &s[i + 1..i + 1 + close];
+                let var = inside.split(':').next().unwrap_or("").trim();
+                let mut chars = var.chars();
+                if chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                    && chars.all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    out.push(var.to_string());
+                }
+                i += 1 + close + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}

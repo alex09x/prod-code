@@ -10,7 +10,10 @@
 
 use super::across_projects::symbol_search_across_projects;
 use super::matching::{bare_symbol_name, no_symbol_message, qualifier_matches, single_candidate};
-use super::sources::{identifier_at, is_extension_declaration, is_use_declaration, remote_sources};
+use super::sources::{
+    find_identifier_on_line, identifier_at, is_extension_declaration, is_use_declaration,
+    remote_sources, source_text,
+};
 use super::type_members::type_members;
 use super::types::SymbolHit;
 use super::unindexed::{find_unindexed_declarations, unindexed_declarations, unindexed_members};
@@ -63,7 +66,12 @@ pub async fn resolve_symbol(
             if !eligible.is_empty() {
                 eligible
             } else {
-                anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
+                let stdlib_hits = find_stdlib_or_usage_hits(root, symbol, qualifiers, name, hint);
+                if !stdlib_hits.is_empty() {
+                    stdlib_hits
+                } else {
+                    anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
+                }
             }
         }
     } else {
@@ -92,19 +100,24 @@ pub async fn resolve_symbol(
     // An explicit owner is not enough when the index or outline is stale. Qualified lookup
     // must point at the requested name in readable source, not merely rank that hit lower.
     let exact = if qualifier.is_some() {
-        let verified: Vec<SymbolHit> = exact
-            .into_iter()
-            .filter(|hit| {
+        let mut verified: Vec<SymbolHit> = Vec::new();
+        for mut hit in exact {
+            let bare = bare_symbol_name(&hit.name);
+            let raw_bare = bare.split(['(', '<']).next().unwrap_or(bare);
+            let matches_exact =
                 identifier_at(&hit.path, &remote_texts, hit.line, hit.col, &hit.name)
-                    || identifier_at(
-                        &hit.path,
-                        &remote_texts,
-                        hit.line,
-                        hit.col,
-                        bare_symbol_name(&hit.name),
-                    )
-            })
-            .collect();
+                    || identifier_at(&hit.path, &remote_texts, hit.line, hit.col, bare);
+            if matches_exact {
+                if let Some(text) = source_text(&hit.path, &remote_texts)
+                    && let Some(row) = text.lines().nth(hit.line.saturating_sub(1) as usize)
+                    && let Some(col_idx) = find_identifier_on_line(row, raw_bare)
+                {
+                    let char_col = row[..col_idx].chars().count() as u32 + 1;
+                    hit.col = char_col;
+                }
+                verified.push(hit);
+            }
+        }
         anyhow::ensure!(
             !verified.is_empty(),
             "no verified symbol named `{symbol}`: the index or outline positions do not match readable current source; refresh the project index or supply a current source position"
@@ -188,4 +201,60 @@ pub async fn resolve_symbol(
         declarations
     };
     single_candidate(root, symbol, &ties)
+}
+
+/// Resolves standard library symbols (e.g. `std::process::Command`) or workspace usages when
+/// not indexed by `workspace/symbol` (#935).
+pub(crate) fn find_stdlib_or_usage_hits(
+    root: &Path,
+    symbol: &str,
+    qualifiers: &[&str],
+    name: &str,
+    hint: Option<&Path>,
+) -> Vec<SymbolHit> {
+    let mut hits = Vec::new();
+    let is_stdlib = matches!(qualifiers.first().copied(), Some("std" | "core" | "alloc"));
+    if !is_stdlib && !symbol.contains("::") {
+        return hits;
+    }
+    let mut files_to_check = Vec::new();
+    if let Some(h) = hint {
+        let p = if h.is_absolute() {
+            h.to_path_buf()
+        } else {
+            root.join(h)
+        };
+        if p.is_file() {
+            files_to_check.push(p);
+        }
+    }
+    for file in files_to_check
+        .into_iter()
+        .chain(super::nested_projects::source_files(root).take(200))
+    {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        if !text.contains(name) {
+            continue;
+        }
+        for (idx, line) in text.lines().enumerate() {
+            if line.contains(symbol)
+                || (line.contains(name) && qualifiers.iter().any(|q| line.contains(q)))
+            {
+                if let Some(col) = find_identifier_on_line(line, name) {
+                    hits.push(SymbolHit {
+                        path: file.clone(),
+                        name: name.to_string(),
+                        kind: "Struct",
+                        container: Some(qualifiers.join("::")),
+                        line: idx as u32 + 1,
+                        col: line[..col].chars().count() as u32 + 1,
+                    });
+                    return hits;
+                }
+            }
+        }
+    }
+    hits
 }

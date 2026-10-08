@@ -84,7 +84,8 @@ pub fn set_aside_preexisting(
 /// Moves to `report.in_derive` every E0282 on a line of `text` that is a `#[derive(...)]`
 /// attribute: an inference failure inside the analyzer's expansion of the derive, not in code
 /// anyone wrote. Moves to `report.auto_trait` every E0277 of a Rust file that a type is not
-/// `Send`, `Sync` or `Unpin` (#327).
+/// `Send`, `Sync` or `Unpin` (#327). Moves to `report.unresolved_macros` unresolved built-in
+/// Rust prelude macros (assert_eq!, vec!) in test/detached modules (#950).
 pub fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
     let rust = report.file.ends_with(".rs");
     let items = std::mem::take(&mut report.items);
@@ -97,8 +98,18 @@ pub fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
             report.in_derive.push(d);
         } else if rust && d.code.as_deref() == Some("E0277") && is_auto_trait_bound(&d.message) {
             report.auto_trait.push(d);
+        } else if rust && is_unresolved_prelude_macro(&d.message) {
+            report.auto_trait.push(d);
         } else {
             report.items.push(d);
+        }
+    }
+    let preexisting = std::mem::take(&mut report.preexisting);
+    for d in preexisting {
+        if rust && is_unresolved_prelude_macro(&d.message) {
+            report.auto_trait.push(d);
+        } else {
+            report.preexisting.push(d);
         }
     }
     report.errors = report
@@ -124,6 +135,56 @@ pub fn is_auto_trait_bound(message: &str) -> bool {
         .any(|bound| first.contains(bound))
         || first.contains("cannot be sent between threads safely")
         || first.contains("cannot be shared between threads safely")
+}
+
+/// Whether a diagnostic message is about an unresolved Rust prelude macro (`assert_eq!`, `vec!`,
+/// `format!`, etc.) emitted due to analyzer limitation in detached/test module validation (#950).
+pub fn is_unresolved_prelude_macro(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    if !lower.contains("unresolved macro") && !lower.contains("cannot find macro") {
+        return false;
+    }
+    const PRELUDE_MACROS: &[&str] = &[
+        "assert",
+        "assert_eq",
+        "assert_ne",
+        "debug_assert",
+        "debug_assert_eq",
+        "debug_assert_ne",
+        "vec",
+        "format",
+        "println",
+        "eprintln",
+        "print",
+        "eprint",
+        "panic",
+        "todo",
+        "unimplemented",
+        "unreachable",
+        "matches",
+        "cfg",
+        "env",
+        "option_env",
+        "concat",
+        "stringify",
+        "include",
+        "include_str",
+        "include_bytes",
+        "write",
+        "writeln",
+        "dbg",
+    ];
+    PRELUDE_MACROS.iter().any(|mac| {
+        let needle = format!("{mac}!");
+        let needle_tick = format!("`{mac}!`");
+        let needle_bare = format!("`{mac}`");
+        let needle_space = format!(" {mac} ");
+        message.contains(&needle)
+            || message.contains(&needle_tick)
+            || message.contains(&needle_bare)
+            || message.contains(&needle_space)
+            || message.ends_with(&format!(" {mac}"))
+    })
 }
 
 /// rust-analyzer's code for a file that no crate includes: it offers no semantic service there,

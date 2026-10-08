@@ -11,6 +11,7 @@
 //! Workspace symbol resolution, search across projects, and LSP coordinate translation.
 
 pub mod across_projects;
+pub mod alias;
 pub mod matching;
 pub mod nested_projects;
 pub mod resolve;
@@ -26,6 +27,8 @@ pub use types::SymbolHit;
 
 #[allow(unused_imports)]
 pub(crate) use across_projects::*;
+#[allow(unused_imports)]
+pub(crate) use alias::*;
 #[allow(unused_imports)]
 pub(crate) use matching::*;
 #[allow(unused_imports)]
