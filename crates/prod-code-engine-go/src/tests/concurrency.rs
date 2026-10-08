@@ -69,10 +69,30 @@ async fn concurrent_did_open_and_close_on_same_uri_preserves_strict_lsp_ordering
     res_close.expect("join").expect("did_close success");
     res_open.expect("join").expect("did_open success");
 
-    // Verify open_files state is consistent with whether file is open
+    // Read the updated notifications log from the fake server
+    let seen_after = std::fs::read_to_string(&seen_file).expect("read seen file");
+    let all_methods: Vec<&str> = seen_after
+        .lines()
+        .filter(|m| m.starts_with("textDocument/did"))
+        .collect();
+
+    let last_method = *all_methods.last().expect("last notification");
     let final_version = engine.open_files.read().await.get(uri).copied();
-    assert!(
-        final_version.is_some(),
-        "document reopened or remained open with valid version"
-    );
+
+    // Verify open_files state strictly matches the last serialized notification
+    match last_method {
+        "textDocument/didClose" => {
+            assert!(
+                final_version.is_none(),
+                "didClose was the last notification, so document must be closed in open_files: {all_methods:?}"
+            );
+        }
+        "textDocument/didOpen" | "textDocument/didChange" => {
+            assert!(
+                final_version.is_some(),
+                "open/change was the last notification, so document must be open in open_files: {all_methods:?}"
+            );
+        }
+        other => panic!("unexpected last notification: {other}"),
+    }
 }
