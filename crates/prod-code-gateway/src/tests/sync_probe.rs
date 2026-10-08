@@ -168,7 +168,7 @@ async fn test_typescript_type_roots_survive_manifest_reconciliation_and_upload()
     let coordinated = std::fs::read_to_string(workspace.join("tsconfig.json")).unwrap();
     assert!(coordinated.contains("node_modules/@types"));
 
-    crate::sync::file_write::write_synced_file(
+    crate::sync::file_write::write_synced_file_for_workspace(
         &workspace,
         &workspace.join("tsconfig.json"),
         tsconfig,
@@ -205,7 +205,7 @@ async fn test_typescript_type_roots_survive_manifest_reconciliation_and_upload()
     .await;
     assert!(changed.missing.iter().any(|path| path == "tsconfig.json"));
 
-    crate::sync::file_write::write_synced_file(
+    crate::sync::file_write::write_synced_file_for_workspace(
         &origin,
         &origin.join("tsconfig.json"),
         tsconfig,
@@ -247,9 +247,14 @@ async fn test_typescript_config_remains_complete_when_stamp_write_fails() {
 
     let config = workspace.join("tsconfig.json");
     let content = b"{\"compilerOptions\":{\"typeRoots\":[\"custom_types\"]}}";
-    let result =
-        crate::sync::file_write::write_synced_file(&workspace, &config, content, false).await;
-    assert!(result.is_err());
+    let result = crate::sync::file_write::write_synced_file_for_workspace(
+        &workspace, &config, content, false,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "the config was committed but the write was reported as failed: {result:?}"
+    );
 
     let stored = std::fs::read(&config).unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&stored).unwrap();

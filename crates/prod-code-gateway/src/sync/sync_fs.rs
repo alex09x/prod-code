@@ -309,7 +309,14 @@ pub async fn apply_sync_probe(
         if content.len() as u64 != stamp.size || content_hash(&content) != stamp.hash {
             continue;
         }
-        if let Err(error) = write_synced_file(&target, &config_path, &content, false).await {
+        if let Err(error) = crate::sync::file_write::write_synced_file_for_workspace(
+            &target,
+            &config_path,
+            &content,
+            false,
+        )
+        .await
+        {
             tracing::warn!(error = %error, path = %config_path.display(), "failed to coordinate TypeScript config after manifest reconciliation");
             missing.push(stamp.relative_path);
         }

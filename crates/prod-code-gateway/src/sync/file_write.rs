@@ -13,7 +13,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use prod_code_protocol::content_hash;
 
 pub async fn write_synced_file(
+    target: &std::path::Path,
+    content: &[u8],
+    executable: bool,
+) -> std::io::Result<()> {
+    write_synced_file_impl(None, target, content, executable).await
+}
+
+pub(crate) async fn write_synced_file_for_workspace(
     workspace_root: &std::path::Path,
+    target: &std::path::Path,
+    content: &[u8],
+    executable: bool,
+) -> std::io::Result<()> {
+    write_synced_file_impl(Some(workspace_root), target, content, executable).await
+}
+
+async fn write_synced_file_impl(
+    workspace_root: Option<&std::path::Path>,
     target: &std::path::Path,
     content: &[u8],
     executable: bool,
@@ -55,23 +72,51 @@ pub async fn write_synced_file(
         return Err(error);
     }
 
-    if matches!(
-        target.file_name().and_then(|name| name.to_str()),
-        Some("tsconfig.json" | "jsconfig.json")
-    ) {
-        let metadata = crate::sync::config_meta::record(
-            workspace_root,
-            target,
-            content.len() as u64,
-            content_hash(content),
-            coordinated_content.len() as u64,
-            content_hash(&coordinated_content),
-        );
-        if coordinated_content == content {
-            crate::sync::config_meta::forget(workspace_root, target).await?;
+    if let Some(workspace_root) = workspace_root
+        && matches!(
+            target.file_name().and_then(|name| name.to_str()),
+            Some("tsconfig.json" | "jsconfig.json")
+        )
+    {
+        let metadata_result = if coordinated_content == content {
+            crate::sync::config_meta::forget(workspace_root, target).await
         } else {
-            metadata.await?;
+            crate::sync::config_meta::record(
+                workspace_root,
+                target,
+                content.len() as u64,
+                content_hash(content),
+                coordinated_content.len() as u64,
+                content_hash(&coordinated_content),
+            )
+            .await
+        };
+        if let Err(error) = metadata_result {
+            tracing::warn!(
+                error = %error,
+                file = %target.display(),
+                "sync metadata update failed after config file was committed"
+            );
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn write_synced_file_preserves_public_three_argument_api() {
+        let temp = tempfile::tempdir().unwrap();
+        let root_target = temp.path().join("root.rs");
+        crate::write_synced_file(&root_target, b"pub fn root() {}\n", false)
+            .await
+            .unwrap();
+        assert!(root_target.is_file());
+
+        let sync_fs_target = temp.path().join("sync_fs.rs");
+        crate::sync_fs::write_synced_file(&sync_fs_target, b"pub fn sync_fs() {}\n", false)
+            .await
+            .unwrap();
+        assert!(sync_fs_target.is_file());
+    }
 }
