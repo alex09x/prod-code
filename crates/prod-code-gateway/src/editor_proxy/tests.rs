@@ -20,7 +20,10 @@ use tokio_util::codec::Framed;
 
 use crate::workspace::WatchedChange;
 
-use super::command::{ServerCommand, frame, server_command, to_server, to_server_with_options};
+use super::command::{
+    ServerCommand, frame, server_command, server_initialization_options, to_server,
+    to_server_with_options,
+};
 use super::probe::{EditorProxyOptions, WRITE_BUDGET};
 use super::proxy::run_with_options;
 use super::registry::{EditorServers, PendingServerFrame};
@@ -215,6 +218,21 @@ fn server_initialization_options_merge_with_editor_options() {
     assert_eq!(
         sent["params"]["initializationOptions"]["python"]["analysis"]["typeCheckingMode"],
         "strict"
+    );
+}
+
+#[test]
+fn generic_server_defaults_do_not_override_typescript_or_java_editor_options() {
+    let options = Some(serde_json::json!({
+        "typescript": { "includeInlayParameterNameHints": "all" },
+        "java": { "autobuild": { "enabled": false } }
+    }));
+
+    assert!(server_initialization_options("typescript", options.clone()).is_none());
+    assert!(server_initialization_options("java", options.clone()).is_none());
+    assert_eq!(
+        server_initialization_options("python", options.clone()),
+        options
     );
 }
 
