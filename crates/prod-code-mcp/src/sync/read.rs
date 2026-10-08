@@ -50,11 +50,13 @@ pub(crate) fn verify_fd_containment(file: &std::fs::File, canonical_root: &Path)
 pub(crate) fn read_regular_file_secure(
     path: &Path,
     canonical_root: &Path,
+    relative_path: &str,
 ) -> Result<Option<(Vec<u8>, bool)>> {
     #[cfg(not(unix))]
     {
         let _ = path;
         let _ = canonical_root;
+        let _ = relative_path;
         anyhow::bail!("Secure file reading is unsupported on non-Unix platforms");
     }
 
@@ -84,13 +86,25 @@ pub(crate) fn read_regular_file_secure(
             return Ok(None);
         }
 
+        if !crate::sync::entry::fits_sync(relative_path, &metadata) {
+            return Ok(None);
+        }
+
         if !verify_fd_containment(&file, canonical_root)? {
             return Ok(None);
         }
 
-        let mut content = Vec::new();
+        let limit = crate::sync::entry::size_limit(relative_path);
+        let mut content = Vec::with_capacity(std::cmp::min(metadata.len(), limit) as usize);
         use std::io::Read;
-        if file.read_to_end(&mut content).is_err() {
+        if (&mut file)
+            .take(limit + 1)
+            .read_to_end(&mut content)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        if content.len() as u64 > limit {
             return Ok(None);
         }
 
@@ -104,6 +118,7 @@ pub(crate) fn read_regular_file_secure(
 pub(crate) fn read_file_or_contained_symlink(
     path: &Path,
     canonical_root: &Path,
+    relative_path: &str,
 ) -> Result<Option<(Vec<u8>, bool, std::fs::Metadata)>> {
     let sym_meta = match path.symlink_metadata() {
         Ok(m) => m,
@@ -112,10 +127,13 @@ pub(crate) fn read_file_or_contained_symlink(
     if sym_meta.file_type().is_symlink() {
         if let Ok(canonical_target) = std::fs::canonicalize(path) {
             if canonical_target.starts_with(canonical_root) && canonical_target.is_file() {
-                if let Some((content, is_exec)) =
-                    read_regular_file_secure(&canonical_target, canonical_root)?
-                {
-                    if let Ok(target_meta) = canonical_target.metadata() {
+                if let Ok(target_meta) = canonical_target.metadata() {
+                    if !crate::sync::entry::fits_sync(relative_path, &target_meta) {
+                        return Ok(None);
+                    }
+                    if let Some((content, is_exec)) =
+                        read_regular_file_secure(&canonical_target, canonical_root, relative_path)?
+                    {
                         return Ok(Some((content, is_exec, target_meta)));
                     }
                 }
@@ -123,7 +141,12 @@ pub(crate) fn read_file_or_contained_symlink(
         }
         Ok(None)
     } else if sym_meta.file_type().is_file() {
-        if let Some((content, is_exec)) = read_regular_file_secure(path, canonical_root)? {
+        if !crate::sync::entry::fits_sync(relative_path, &sym_meta) {
+            return Ok(None);
+        }
+        if let Some((content, is_exec)) =
+            read_regular_file_secure(path, canonical_root, relative_path)?
+        {
             return Ok(Some((content, is_exec, sym_meta)));
         }
         Ok(None)

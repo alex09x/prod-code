@@ -265,7 +265,7 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
                 cache_modified = true;
             }
         } else if let Some((content, is_executable, meta)) =
-            read_file_or_contained_symlink(&full_path, root)?
+            read_file_or_contained_symlink(&full_path, root, rel_path)?
         {
             let size = meta.len();
             if size > MAX_FILE_SIZE {

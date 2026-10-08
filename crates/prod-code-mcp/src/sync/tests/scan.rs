@@ -382,3 +382,40 @@ fn test_scan_workspace_files_preserves_contained_symlinks_and_rejects_external()
         }
     }
 }
+
+#[test]
+fn test_contained_symlink_and_regular_file_reject_oversized_before_read() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let ws_root = ws.path();
+    let src = ws_root.join("Sources");
+    std::fs::create_dir_all(&src).unwrap();
+
+    let huge_file = src.join("huge.swift");
+    let f = std::fs::File::create(&huge_file).unwrap();
+    // Sparse file exceeding MAX_FILE_SIZE (10 MiB)
+    f.set_len(crate::sync::types::MAX_FILE_SIZE + 1024).unwrap();
+    drop(f);
+
+    #[cfg(unix)]
+    {
+        use crate::sync::read::read_file_or_contained_symlink;
+        use std::os::unix::fs::symlink;
+        let sym = src.join("huge_sym.swift");
+        symlink(&huge_file, &sym).unwrap();
+
+        let canon_ws = std::fs::canonicalize(ws_root).unwrap();
+        let res_sym = read_file_or_contained_symlink(&sym, &canon_ws, "Sources/huge_sym.swift")
+            .expect("read should not error");
+        assert!(
+            res_sym.is_none(),
+            "oversized symlink target must be rejected before reading"
+        );
+
+        let res_file = read_file_or_contained_symlink(&huge_file, &canon_ws, "Sources/huge.swift")
+            .expect("read should not error");
+        assert!(
+            res_file.is_none(),
+            "oversized regular file must be rejected before reading"
+        );
+    }
+}

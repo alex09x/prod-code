@@ -111,7 +111,7 @@ pub fn prepare_workspace_sync_for(
 
         let full_path = canonical_root.join(&relative_path);
         let Some((content, is_exec, meta)) =
-            read_file_or_contained_symlink(&full_path, &canonical_root)?
+            read_file_or_contained_symlink(&full_path, &canonical_root, &relative_path)?
         else {
             continue;
         };
@@ -154,7 +154,7 @@ pub fn prepare_workspace_sync_for(
             });
             continue;
         }
-        match read_file_or_contained_symlink(&full_path, &canonical_root) {
+        match read_file_or_contained_symlink(&full_path, &canonical_root, &rel) {
             Ok(Some((content, is_executable, meta))) => {
                 if !fits_sync(&rel, &meta) {
                     state.files.remove(&rel);

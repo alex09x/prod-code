@@ -62,7 +62,7 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
             || (listed_by_git && is_synced_git_path(&rel_path))
         {
             if let Some((content, is_exec, _)) =
-                read_file_or_contained_symlink(&target_dir, &canonical_root)?
+                read_file_or_contained_symlink(&target_dir, &canonical_root, &rel_path)?
             {
                 deltas.push(FileDelta {
                     relative_path: rel_path,
@@ -81,7 +81,7 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
             }
             let full_path = canonical_root.join(&rel_path);
             let Some((content, is_executable, meta)) =
-                read_file_or_contained_symlink(&full_path, &canonical_root)?
+                read_file_or_contained_symlink(&full_path, &canonical_root, &rel_path)?
             else {
                 continue;
             };
@@ -217,12 +217,6 @@ pub(crate) fn walk_dir(
         };
 
         let path = entry.path();
-        let Some((content, is_executable, meta)) =
-            read_file_or_contained_symlink(path, canonical_root)?
-        else {
-            continue;
-        };
-
         let rel_path = path
             .strip_prefix(canonical_root)
             .unwrap_or(path)
@@ -232,6 +226,12 @@ pub(crate) fn walk_dir(
         if !is_relevant_code_or_manifest_file(&rel_path) {
             continue;
         }
+
+        let Some((content, is_executable, meta)) =
+            read_file_or_contained_symlink(path, canonical_root, &rel_path)?
+        else {
+            continue;
+        };
 
         if rel_path.ends_with(".json") && meta.len() > MAX_JSON_CONFIG_SIZE {
             continue;

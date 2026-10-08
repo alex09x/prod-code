@@ -167,7 +167,7 @@ async fn push_sync_round(
             if !existing.contains(missing_rel) {
                 let full = canonical_root.join(missing_rel);
                 if let Ok(Some((content, is_exec, meta))) =
-                    read_file_or_contained_symlink(&full, &canonical_root)
+                    read_file_or_contained_symlink(&full, &canonical_root, missing_rel)
                 {
                     let entry = sync_file_entry(&meta, &content);
                     plan.state.files.insert(missing_rel.clone(), entry);
