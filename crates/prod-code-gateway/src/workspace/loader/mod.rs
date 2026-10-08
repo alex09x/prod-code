@@ -126,7 +126,7 @@ pub(crate) async fn load_as_leader(
     tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
 
     let (rust_engine, go_engine, generic_engine, backend) = if engine == "rust" {
-        let (re, be) = rust::load_rust(workspace_root, &manager.rust_loader).await;
+        let (re, be) = rust::load_rust(workspace_root, &manager.rust_loader).await?;
         (re, None, None, be)
     } else if engine == "go" {
         let (ge, be) = go::load_go(workspace_root).await;
