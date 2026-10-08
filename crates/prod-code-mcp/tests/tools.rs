@@ -7339,6 +7339,73 @@ async fn code_references_finds_struct_field_by_bare_symbol_name() {
 }
 
 #[tokio::test]
+async fn code_references_resolves_unexported_go_symbol_without_hint() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/test\n\ngo 1.22\n"),
+        (
+            "internal/web/workspace_agent_state.go",
+            "package web\n\nfunc restoreWorkspaceAgentStates() bool {\n    return true\n}\n\nfunc Run() {\n    restoreWorkspaceAgentStates()\n}\n",
+        ),
+    ]);
+    let target = ws.path("internal/web/workspace_agent_state.go");
+    let remote = scripted_gateway(Arc::new(move |method, _params| {
+        match method {
+            // gopls workspace/symbol returns empty for unexported symbols
+            "workspace/symbol" => serde_json::json!([]),
+            "textDocument/references" => answers::locations(&target, &[(7, 4)]),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    let start = std::time::Instant::now();
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "symbol": "restoreWorkspaceAgentStates", "include_declarations": true }),
+    )
+    .await
+    .expect("resolves unexported Go symbol without path hint");
+
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    assert!(text_of(&result).contains("Found 1 reference(s)"));
+}
+
+#[tokio::test]
+async fn code_symbols_falls_back_to_nested_projects_on_fuzzy_search() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn root_entry() {}\n"),
+        ("scripts/cleaner.py", "def invalidate_cache():\n    pass\n"),
+    ]);
+    let cleaner_file = ws.path("scripts/cleaner.py");
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "cache invalidation" => {
+            serde_json::json!([answers::symbol("invalidate_cache", 12, &cleaner_file, 1, 4)])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_symbols",
+        serde_json::json!({ "query": "cache invalidation" }),
+    )
+    .await
+    .expect("symbols succeeds via nested project fallback");
+
+    let text = text_of(&res);
+    assert!(text.contains("invalidate_cache"), "{text}");
+    assert!(text.contains("scripts/cleaner.py:1:4"), "{text}");
+}
+
+#[tokio::test]
 async fn code_definition_body_returns_symbol_body_without_dropping_connection() {
     let ws = Workspace::new(&[
         (

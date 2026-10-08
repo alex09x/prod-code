@@ -72,13 +72,13 @@ pub async fn resolve_symbol(
             .into_iter()
             .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         if exact.is_empty() {
-            let members = unindexed_members(remote, root, name, hint).await?;
-            if !members.is_empty() {
-                members
+            let unindexed_hits = find_unindexed_declarations(root, name, hint).await;
+            if !unindexed_hits.is_empty() {
+                unindexed_hits
             } else {
-                let unindexed_hits = find_unindexed_declarations(root, name, hint).await;
-                if !unindexed_hits.is_empty() {
-                    unindexed_hits
+                let members = unindexed_members(remote, root, name, hint).await?;
+                if !members.is_empty() {
+                    members
                 } else {
                     let unindexed = unindexed_declarations(remote, root, name).await;
                     anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));

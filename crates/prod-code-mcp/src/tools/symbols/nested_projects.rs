@@ -54,40 +54,6 @@ pub(crate) fn source_files(dir: &Path) -> impl Iterator<Item = std::path::PathBu
         .map(ignore::DirEntry::into_path)
 }
 
-/// One source file of each project in the checkout besides the root's, with the project's
-/// directory (relative) and engine: a nested project of another language, or a loose file of
-/// one, as `engine_project` places them (#247, #318).
-pub(crate) fn nested_project_anchors(
-    root: &Path,
-    deadline: tokio::time::Instant,
-) -> Vec<(std::path::PathBuf, String, &'static str)> {
-    let mut seen_dirs = std::collections::HashSet::new();
-    let mut projects = std::collections::HashSet::new();
-    let mut anchors = Vec::new();
-    for path in source_files(root) {
-        if tokio::time::Instant::now() >= deadline {
-            return anchors;
-        }
-        let Some(engine) = crate::sync::engine_for_file(&path) else {
-            continue;
-        };
-        // One look per directory and language: its files belong to the same project.
-        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        if !seen_dirs.insert((dir, engine)) {
-            continue;
-        }
-        if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
-            && projects.insert((subpath.clone(), engine))
-        {
-            anchors.push((path, subpath, engine));
-            if anchors.len() >= MAX_NESTED_PROJECTS {
-                return anchors;
-            }
-        }
-    }
-    anchors
-}
-
 /// A source file of the project at `dir` in its main language (shortest path under `src`
 /// first), used to make an LSP server load the project before a workspace-level query.
 pub(crate) fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
@@ -138,4 +104,98 @@ pub(crate) fn representative_source_file(dir: &Path) -> Option<std::path::PathBu
         }
     }
     best.map(|(_, _, p)| p)
+}
+
+/// Maximum bytes read from any one source while searching for names synchronously.
+pub(crate) const MAX_NAME_SCAN_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Whether `text` has `name` as a whole word.
+pub(crate) fn names_word(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    text.split(|c: char| !is_word(c))
+        .any(|word| word.eq_ignore_ascii_case(name))
+}
+
+/// Reads only the prefix needed for bounded symbol-name discovery. Large generated sources do
+/// not get to exceed the overall search budget through one unbounded synchronous read.
+pub(crate) fn read_name_scan_text(path: &Path) -> Option<String> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_NAME_SCAN_FILE_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// One source file of each project in the checkout besides the root's, with the project's
+/// directory (relative) and engine: a nested project of another language, or a loose file of
+/// one, as `engine_project` places them (#247, #318).
+pub(crate) fn nested_project_anchors(
+    root: &Path,
+    deadline: tokio::time::Instant,
+) -> Vec<(std::path::PathBuf, String, &'static str)> {
+    let mut seen_dirs = std::collections::HashSet::new();
+    let mut projects = std::collections::HashSet::new();
+    let mut anchors = Vec::new();
+    for path in source_files(root) {
+        if tokio::time::Instant::now() >= deadline {
+            return anchors;
+        }
+        let Some(engine) = crate::sync::engine_for_file(&path) else {
+            continue;
+        };
+        // One look per directory and language: its files belong to the same project.
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        if !seen_dirs.insert((dir, engine)) {
+            continue;
+        }
+        if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
+            && projects.insert((subpath.clone(), engine))
+        {
+            anchors.push((path, subpath, engine));
+            if anchors.len() >= MAX_NESTED_PROJECTS {
+                return anchors;
+            }
+        }
+    }
+    anchors
+}
+
+/// One file of each nested project whose sources name `name`, in path order: the projects to
+/// ask first (#358). A walk that takes the first projects it meets spent every slot on a C++
+/// dependency and loose scripts while the declaration sat in a Swift package after them.
+pub(crate) fn projects_naming(
+    root: &Path,
+    name: &str,
+    deadline: tokio::time::Instant,
+) -> Vec<(std::path::PathBuf, String, &'static str)> {
+    let root_engine = crate::sync::expected_engine(root);
+    let mut projects = std::collections::HashSet::new();
+    let mut anchors = Vec::new();
+    for path in source_files(root)
+        .filter(|path| crate::sync::engine_for_file(path).is_some_and(|e| Some(e) != root_engine))
+        .take(MAX_SCANNED_FILES)
+    {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        if !read_name_scan_text(&path).is_some_and(|text| names_word(&text, name)) {
+            continue;
+        }
+        if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
+            && projects.insert((subpath.clone(), engine))
+        {
+            anchors.push((path, subpath, engine));
+            if anchors.len() >= MAX_NESTED_PROJECTS {
+                break;
+            }
+        }
+    }
+    anchors
 }

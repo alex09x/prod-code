@@ -285,3 +285,42 @@ fn eval_ranking_on_this_repository() {
         );
     }
 }
+
+#[test]
+fn multi_term_query_ranks_promptly_without_hanging() {
+    let mut index = WorkspaceIndex::default();
+    index.files.insert(
+        "crates/prod-code-client/src/sync/pull.rs".to_string(),
+        FileEntry {
+            stamp: (0, 0),
+            generation: 0,
+            decls: index_decls(
+                "crates/prod-code-client/src/sync/pull.rs",
+                "/// Pulls remote files and rejects truncated response before building or applying workspace delta.\npub fn pull_remote_files() {}\n",
+            ),
+        },
+    );
+    index.files.insert(
+        "crates/prod-code-client/src/sync/delta.rs".to_string(),
+        FileEntry {
+            stamp: (0, 0),
+            generation: 0,
+            decls: index_decls(
+                "crates/prod-code-client/src/sync/delta.rs",
+                "/// Applies workspace delta.\npub fn apply_delta() {}\n",
+            ),
+        },
+    );
+    index.rebuild_graph();
+
+    let started = Instant::now();
+    let hits = rank(
+        &index,
+        "pull remote files reject truncated response before building or applying workspace delta",
+        10,
+        Some("crates"),
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(!hits.is_empty(), "expected hits for multi-term query");
+    assert_eq!(hits[0].name, "pull_remote_files");
+}

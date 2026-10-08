@@ -16,8 +16,11 @@ use url::Url;
 use crate::tools::execute_lsp_query;
 use crate::tools::symbols::{MAX_SCANNED_FILES, names_word, source_files};
 
+/// The most time multi-target references discovery can take before returning accumulated references.
+pub(crate) const MULTI_TARGET_REF_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// The most places in the checkout asked for their definition when looking for a use.
-pub(crate) const MAX_USES_ASKED: usize = 40;
+pub(crate) const MAX_USES_ASKED: usize = 12;
 
 /// The most places in one file asked: a file no target compiles answers none of them, and a name
 /// that resolves elsewhere in a file means the same elsewhere through the rest of it.
@@ -126,10 +129,20 @@ pub(crate) async fn collect_multi_target_references(
     let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
     let mut asked = 0usize;
     let mut checkout_use_note = None;
+    let deadline = tokio::time::Instant::now() + MULTI_TARGET_REF_BUDGET;
+    let is_unexported_go =
+        language == "go" && name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
+    let decl_parent = declaration.parent();
     let candidates = source_files(workspace_root)
         .filter(|path| engine_can_reference(crate::sync::engine_for_file(path), language))
         .take(MAX_SCANNED_FILES);
     for path in candidates {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        if is_unexported_go && path.parent() != decl_parent {
+            continue;
+        }
         let is_declaration_file = path == declaration;
         let norm_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if seen_files.contains(&norm_path) && (!is_declaration_file || !initial_was_empty) {
@@ -175,6 +188,9 @@ pub(crate) async fn collect_multi_target_references(
             .collect();
 
         for (index, col) in file_uses.into_iter().take(MAX_USES_ASKED_PER_FILE) {
+            if tokio::time::Instant::now() >= deadline {
+                return checkout_use_note;
+            }
             asked += 1;
             if asked > MAX_USES_ASKED {
                 return checkout_use_note;
@@ -183,15 +199,19 @@ pub(crate) async fn collect_multi_target_references(
                 "textDocument": { "uri": &uri_str },
                 "position": { "line": index, "character": col }
             });
-            let found_def = execute_lsp_query(
-                remote,
-                workspace_root,
-                &path,
-                "textDocument/definition",
-                params,
+            let found_def = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                execute_lsp_query(
+                    remote,
+                    workspace_root,
+                    &path,
+                    "textDocument/definition",
+                    params,
+                ),
             )
             .await
-            .ok();
+            .ok()
+            .and_then(|r| r.ok());
 
             if let Some(ref found) = found_def
                 && definition_is(found, &declared, decl_line.saturating_sub(1))
@@ -205,12 +225,15 @@ pub(crate) async fn collect_multi_target_references(
                     "position": { "line": index, "character": col },
                     "context": { "includeDeclaration": include_decl }
                 });
-                if let Ok(target_refs) = execute_lsp_query(
-                    remote,
-                    workspace_root,
-                    &path,
-                    "textDocument/references",
-                    ref_params,
+                if let Ok(Ok(target_refs)) = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    execute_lsp_query(
+                        remote,
+                        workspace_root,
+                        &path,
+                        "textDocument/references",
+                        ref_params,
+                    ),
                 )
                 .await
                 {

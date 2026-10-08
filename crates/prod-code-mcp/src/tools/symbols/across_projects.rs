@@ -10,8 +10,9 @@
 
 use super::matching::{bare_symbol_name, match_rank};
 use super::nested_projects::{
-    MAX_NESTED_PROJECTS, MAX_SCANNED_FILES, nested_project_anchors, source_files,
+    MAX_NESTED_PROJECTS, nested_project_anchors, projects_naming, source_files,
 };
+pub(crate) use super::nested_projects::{names_word, read_name_scan_text};
 use super::search::{workspace_symbol_search, workspace_symbol_search_auxiliary};
 use super::types::{
     MalformedLspCoordinate, SymbolHit, is_malformed_lsp_coordinate, lsp_position, symbol_kind_name,
@@ -28,9 +29,6 @@ pub(crate) const SYMBOL_SEARCH_BUDGET: std::time::Duration = std::time::Duration
 
 /// The most files of a project read for the declarations of a name its server has no index of.
 pub(crate) const MAX_OUTLINED_FILES: usize = 8;
-
-/// Maximum bytes read from any one source while searching for names synchronously.
-pub(crate) const MAX_NAME_SCAN_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// `workspace/symbol` in the checkout's project and, when that knows no symbol of the name and
 /// no hint names a project, in the checkout's nested projects of other languages too (#318):
@@ -152,10 +150,12 @@ pub(crate) async fn symbol_search_across_projects(
             );
             break;
         }
-        // Its own node: the checkout's may not serve its language (a Swift file needs a macOS
-        // node, a Go module is placed on Linux).
+        // Per-project query timeout: bound to at most 3s to prevent any single
+        // slow/unresponsive nested LSP server from consuming the entire search budget.
+        let project_deadline =
+            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(3));
         let node = match tokio::time::timeout_at(
-            deadline,
+            project_deadline,
             crate::cluster::route_for_path(remote, root, anchor.to_str()),
         )
         .await
@@ -165,9 +165,9 @@ pub(crate) async fn symbol_search_across_projects(
             Err(_) => {
                 tracing::warn!(
                     query,
-                    "symbol search route_for_path reached budget; returning accumulated hits"
+                    "symbol search route_for_path reached budget; continuing to next project"
                 );
-                break;
+                continue;
             }
         };
 
@@ -176,7 +176,7 @@ pub(crate) async fn symbol_search_across_projects(
         }
 
         let search_fut = workspace_symbol_search_auxiliary(node, root, query, Some(&anchor), limit);
-        let found = match tokio::time::timeout_at(deadline, search_fut).await {
+        let found = match tokio::time::timeout_at(project_deadline, search_fut).await {
             Ok(Ok(found)) => found,
             Ok(Err(err)) => {
                 tracing::debug!(
@@ -192,31 +192,34 @@ pub(crate) async fn symbol_search_across_projects(
             Err(_) => {
                 tracing::warn!(
                     query,
-                    "nested workspace_symbol_search reached budget; returning accumulated hits"
+                    "nested workspace_symbol_search reached budget; continuing to next project"
                 );
-                break;
+                Vec::new()
             }
         };
         let named_here = found
             .iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         hits.extend(found);
-        if !named_here && tokio::time::Instant::now() < deadline {
+        if !named_here && tokio::time::Instant::now() < project_deadline {
             // sourcekit-lsp has no index for Swift files a package does not build, and answers
             // `workspace/symbol` with nothing: their outlines still name what they declare.
-            let files = files_naming(&root.join(&subpath), engine, name, deadline);
+            let files = files_naming(&root.join(&subpath), engine, name, project_deadline);
             if !files.is_empty() {
-                match tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name))
-                    .await
+                match tokio::time::timeout_at(
+                    project_deadline,
+                    declarations_in(node, root, &files, name),
+                )
+                .await
                 {
                     Ok(Ok(decls)) => hits.extend(decls),
                     Ok(Err(e)) => return Err(e),
                     Err(_) => {
                         tracing::warn!(
                             query,
-                            "declarations_in reached budget; returning accumulated hits"
+                            "declarations_in reached project budget; continuing to next project"
                         );
-                        break;
+                        continue;
                     }
                 }
             }
@@ -260,63 +263,6 @@ pub(crate) fn files_naming(
         .map(|(_, p)| p)
         .take(MAX_OUTLINED_FILES)
         .collect()
-}
-
-/// Whether `text` has `name` as a whole word.
-pub(crate) fn names_word(text: &str, name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    text.split(|c: char| !is_word(c))
-        .any(|word| word.eq_ignore_ascii_case(name))
-}
-
-/// Reads only the prefix needed for bounded symbol-name discovery. Large generated sources do
-/// not get to exceed the overall search budget through one unbounded synchronous read.
-pub(crate) fn read_name_scan_text(path: &Path) -> Option<String> {
-    use std::io::Read;
-
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(MAX_NAME_SCAN_FILE_BYTES)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// One file of each nested project whose sources name `name`, in path order: the projects to
-/// ask first (#358). A walk that takes the first projects it meets spent every slot on a C++
-/// dependency and loose scripts while the declaration sat in a Swift package after them.
-pub(crate) fn projects_naming(
-    root: &Path,
-    name: &str,
-    deadline: tokio::time::Instant,
-) -> Vec<(std::path::PathBuf, String, &'static str)> {
-    let root_engine = crate::sync::expected_engine(root);
-    let mut projects = std::collections::HashSet::new();
-    let mut anchors = Vec::new();
-    for path in source_files(root)
-        .filter(|path| crate::sync::engine_for_file(path).is_some_and(|e| Some(e) != root_engine))
-        .take(MAX_SCANNED_FILES)
-    {
-        if tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        if !read_name_scan_text(&path).is_some_and(|text| names_word(&text, name)) {
-            continue;
-        }
-        if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
-            && projects.insert((subpath.clone(), engine))
-        {
-            anchors.push((path, subpath, engine));
-            if anchors.len() >= MAX_NESTED_PROJECTS {
-                break;
-            }
-        }
-    }
-    anchors
 }
 
 /// The declarations called `name` in the outlines of `files`.

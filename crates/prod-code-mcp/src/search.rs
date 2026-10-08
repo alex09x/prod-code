@@ -48,8 +48,12 @@ pub async fn search(
             client_host: Some(prod_code_protocol::client_host()),
         }))
         .await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        match framed.next().await {
+        let msg = tokio::time::timeout_at(deadline, framed.next())
+            .await
+            .map_err(|_| anyhow::anyhow!("gateway search timed out after 30s"))?;
+        match msg {
             Some(Ok(WireMessage::SearchResponse(resp))) => {
                 let _ = framed
                     .send(WireMessage::Disconnect {

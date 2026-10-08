@@ -205,6 +205,20 @@ pub(crate) fn graph_rank<'a>(
         return Vec::new();
     }
     let terms_lower: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+    let term_matching_targets: std::collections::HashSet<String> = graph
+        .mentions
+        .values()
+        .flat_map(|targets| targets.iter())
+        .filter(|t| terms_lower.iter().any(|term| t.eq_ignore_ascii_case(term)))
+        .cloned()
+        .collect();
+    let term_matching_referrers: std::collections::HashSet<String> = graph
+        .referenced_by
+        .values()
+        .flat_map(|referrers| referrers.iter())
+        .filter(|r| terms_lower.iter().any(|term| r.eq_ignore_ascii_case(term)))
+        .cloned()
+        .collect();
     let mut scored: Vec<(&'a Declaration, f64, String)> = Vec::new();
     for doc in docs {
         let d = &doc.decl;
@@ -228,20 +242,16 @@ pub(crate) fn graph_rank<'a>(
 
         let mut neighbor_matches = 0.0;
         if let Some(targets) = graph.mentions.get(&d.name) {
-            for target in targets {
-                for term in &terms_lower {
-                    if target.eq_ignore_ascii_case(term) {
-                        neighbor_matches += 1.0;
-                    }
+            for target in &term_matching_targets {
+                if targets.contains(target) {
+                    neighbor_matches += 1.0;
                 }
             }
         }
         if let Some(referrers) = graph.referenced_by.get(&d.name) {
-            for referrer in referrers {
-                for term in &terms_lower {
-                    if referrer.eq_ignore_ascii_case(term) {
-                        neighbor_matches += 0.8;
-                    }
+            for referrer in &term_matching_referrers {
+                if referrers.contains(referrer) {
+                    neighbor_matches += 0.8;
                 }
             }
         }
@@ -291,17 +301,14 @@ pub(crate) fn lexical<'a>(
     // Document frequency per term, over declarations rather than files.
     let mut df: HashMap<&str, usize> = HashMap::new();
     for (name, container, signature, doc) in docs.iter().map(|d| &d.fields) {
-        let mut present: Vec<&str> = Vec::new();
-        for t in name.iter().chain(container).chain(signature).chain(doc) {
-            if !present.contains(&t.as_str()) {
-                present.push(t.as_str());
-            }
-        }
-        for t in present {
-            for term in terms {
-                if term == t {
-                    *df.entry(term.as_str()).or_insert(0) += 1;
-                }
+        for term in terms {
+            let t = term.as_str();
+            if name.iter().any(|w| w == t)
+                || container.iter().any(|w| w == t)
+                || signature.iter().any(|w| w == t)
+                || doc.iter().any(|w| w == t)
+            {
+                *df.entry(t).or_insert(0) += 1;
             }
         }
     }
