@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use crate::sync::file_write::write_synced_file;
+use crate::sync::file_write::write_synced_file_for_workspace;
 use crate::*;
 
 pub async fn apply_sync(
@@ -86,7 +86,7 @@ pub async fn apply_sync_with_metrics(
                 } else {
                     workspace::WatchedChange::Created
                 };
-                if let Err(e) = write_synced_file(
+                if let Err(e) = write_synced_file_for_workspace(
                     &server_workspace,
                     &target_path,
                     &content_bytes,
