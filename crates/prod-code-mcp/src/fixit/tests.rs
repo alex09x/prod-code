@@ -156,3 +156,143 @@ fn the_report_says_what_was_fixed_skipped_and_left() {
     );
     assert!(!text.contains("machine-applicable fixes"), "{text}");
 }
+
+#[test]
+fn fixed_render_preserves_outcomes_and_post_fix_report() {
+    use crate::fixit::{Fixed, Outcome};
+    use crate::verify::{MAX_RENDER_BYTES, VerifyKind, VerifyReport};
+
+    let huge_diagnostics: Vec<crate::verify::Diagnostic> = (0..500)
+        .map(|i| crate::verify::Diagnostic {
+            level: "error".into(),
+            code: None,
+            message: "x".repeat(1000),
+            file: Some(format!("src/lib_{i}.rs")),
+            line: Some(i as u64),
+            column: Some(1),
+        })
+        .collect();
+    let before = VerifyReport {
+        kind: VerifyKind::Check,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "check".into()],
+        exit_code: Some(1),
+        timed_out: false,
+        duration_ms: 1000,
+        diagnostics: huge_diagnostics,
+        tests_passed: 0,
+        tests_failed: 0,
+        failures: vec![],
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+    let after = VerifyReport {
+        kind: VerifyKind::Check,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "check".into()],
+        exit_code: Some(0),
+        timed_out: false,
+        duration_ms: 500,
+        diagnostics: vec![],
+        tests_passed: 0,
+        tests_failed: 0,
+        failures: vec![],
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+    let outcomes = vec![
+        Outcome {
+            file: "src/fix1.rs".into(),
+            line: 42,
+            message: "unused variable `x`".into(),
+            skipped: None,
+        },
+        Outcome {
+            file: "src/fix2.rs".into(),
+            line: 88,
+            message: "unneeded return statement".into(),
+            skipped: None,
+        },
+    ];
+    let fixed = Fixed {
+        before,
+        outcomes,
+        after: Some(after),
+        note: None,
+    };
+
+    let text = fixed.render(100);
+    assert!(text.contains("fixed src/fix1.rs:42: unused variable `x`"));
+    assert!(text.contains("fixed src/fix2.rs:88: unneeded return statement"));
+    assert!(text.contains("after the fixes:"));
+    assert!(text.contains("rust check: OK"));
+    assert!(text.contains("pre-fix diagnostics truncated"));
+    assert!(text.len() <= MAX_RENDER_BYTES + 500);
+}
+
+#[test]
+fn fixed_render_caps_huge_outcomes_preserving_after_report() {
+    use crate::fixit::{Fixed, Outcome};
+    use crate::verify::{MAX_RENDER_BYTES, VerifyKind, VerifyReport};
+
+    let before = VerifyReport {
+        kind: VerifyKind::Check,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "check".into()],
+        exit_code: Some(1),
+        timed_out: false,
+        duration_ms: 1000,
+        diagnostics: vec![],
+        tests_passed: 0,
+        tests_failed: 0,
+        failures: vec![],
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+    let after = VerifyReport {
+        kind: VerifyKind::Check,
+        language: "rust".into(),
+        command: vec!["cargo".into(), "check".into()],
+        exit_code: Some(0),
+        timed_out: false,
+        duration_ms: 500,
+        diagnostics: vec![],
+        tests_passed: 0,
+        tests_failed: 0,
+        failures: vec![],
+        tail: String::new(),
+        fixes: vec![],
+        benches: vec![],
+        usage: None,
+        platform: None,
+    };
+    let outcomes: Vec<Outcome> = (0..1_000)
+        .map(|i| Outcome {
+            file: format!("src/fix_{i}.rs"),
+            line: i as u64,
+            message: format!("some automated fix outcome description {i}"),
+            skipped: None,
+        })
+        .collect();
+    let fixed = Fixed {
+        before,
+        outcomes,
+        after: Some(after),
+        note: None,
+    };
+
+    let text = fixed.render(100);
+    assert!(text.contains("more fix outcome(s)"));
+    assert!(text.contains("after the fixes:"));
+    assert!(text.contains("rust check: OK"));
+    assert!(text.len() <= MAX_RENDER_BYTES);
+}

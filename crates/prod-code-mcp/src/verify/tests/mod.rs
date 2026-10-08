@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod diagnostic_budget;
 mod matrix;
 mod parse;
 mod plan;

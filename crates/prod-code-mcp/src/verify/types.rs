@@ -179,22 +179,8 @@ impl VerifyReport {
             // or diagnostics never crowd out failed-test details and traces.
             MAX_RENDER_BYTES / 2
         };
-        let mut rendered_diags = 0;
-        for d in self.diagnostics.iter().take(max_items) {
-            if out.len() >= diag_budget {
-                break;
-            }
-            out.push_str("  ");
-            out.push_str(&d.render());
-            out.push('\n');
-            rendered_diags += 1;
-        }
-        if self.diagnostics.len() > rendered_diags {
-            out.push_str(&format!(
-                "  ... {} more diagnostic(s)\n",
-                self.diagnostics.len() - rendered_diags
-            ));
-        }
+        let rendered_diags =
+            super::render::append_diagnostics(&mut out, &self.diagnostics, max_items, diag_budget);
         for b in self.benches.iter().take(max_items) {
             if out.len() >= MAX_RENDER_BYTES {
                 break;

@@ -13,6 +13,7 @@ pub mod execute;
 pub mod go_shadow;
 pub mod parse;
 pub mod plan;
+mod render;
 pub mod types;
 
 #[cfg(test)]
