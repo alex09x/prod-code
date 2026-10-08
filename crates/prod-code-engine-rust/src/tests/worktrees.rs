@@ -345,3 +345,76 @@ fn test_worktree_reloads_when_cargo_manifest_changes() {
         diags_after
     );
 }
+
+#[test]
+fn test_worktree_reloads_when_worktree_only_member_manifest_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let base_dir = temp.path().join("base");
+    std::fs::create_dir_all(base_dir.join("src")).unwrap();
+    std::fs::write(
+        base_dir.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"core_pkg\"]\n",
+    )
+    .unwrap();
+    let core_dir = base_dir.join("core_pkg");
+    std::fs::create_dir_all(core_dir.join("src")).unwrap();
+    std::fs::write(
+        core_dir.join("Cargo.toml"),
+        "[package]\nname = \"core-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(core_dir.join("src/lib.rs"), "pub fn core_fn() {}\n").unwrap();
+
+    let mut engine = RustEngine::load(&base_dir).unwrap();
+
+    // Create worktree copy
+    let wt_dir = temp.path().join("base--wt-test");
+    std::fs::create_dir_all(wt_dir.join("core_pkg/src")).unwrap();
+    std::fs::write(
+        wt_dir.join("core_pkg/Cargo.toml"),
+        "[package]\nname = \"core-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(wt_dir.join("core_pkg/src/lib.rs"), "pub fn core_fn() {}\n").unwrap();
+
+    // Worktree has an extra workspace member not present in base
+    let extra_dir = wt_dir.join("extra_pkg");
+    std::fs::create_dir_all(extra_dir.join("src")).unwrap();
+    let extra_manifest = extra_dir.join("Cargo.toml");
+    std::fs::write(
+        &extra_manifest,
+        "[package]\nname = \"extra-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let extra_lib = extra_dir.join("src/lib.rs");
+    std::fs::write(&extra_lib, "pub fn extra_fn() {}\n").unwrap();
+
+    std::fs::write(
+        wt_dir.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"core_pkg\", \"extra_pkg\"]\n",
+    )
+    .unwrap();
+
+    engine.attach_worktree(&wt_dir).expect("attach worktree");
+    assert!(!engine.is_worktree_stale(&wt_dir));
+
+    // Now modify ONLY the worktree-only member's manifest (extra_pkg/Cargo.toml)
+    // without touching root Cargo.toml or Cargo.lock
+    std::fs::write(
+        &extra_manifest,
+        "[package]\nname = \"extra-pkg\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+
+    assert!(
+        engine.is_worktree_stale(&wt_dir),
+        "Worktree must be detected as stale after worktree-only member manifest is modified"
+    );
+
+    let reloaded = engine.ensure_fresh_for_path(&extra_lib).unwrap();
+    assert!(reloaded, "ensure_fresh_for_path must reload worktree");
+    assert!(
+        !engine.is_worktree_stale(&wt_dir),
+        "Worktree must not be stale after reload"
+    );
+}
