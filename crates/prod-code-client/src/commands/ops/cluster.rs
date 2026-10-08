@@ -337,14 +337,13 @@ async fn ask_rebalance_target(
     required_os: Option<&str>,
 ) -> Option<(SocketAddr, String)> {
     if required_os.is_some() {
-        // Older gateways ignore the OS field. Probe without moving active sessions first so an
-        // incompatible placement can be rejected before the gateway sends Redirects.
-        let preview = prod_code_mcp::cluster::ask_placement_opt(
+        // Only gateways that understand this side-effect-free preview can safely rebalance
+        // OS-constrained active sessions during a rolling upgrade.
+        let preview = prod_code_mcp::cluster::ask_placement_preview(
             seed,
             workspace_name,
             engine,
             required_os,
-            false,
         )
         .await
         .ok()?;
