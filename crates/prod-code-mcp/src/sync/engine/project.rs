@@ -43,8 +43,28 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     }
     let existing_file = dir.is_file();
     let proposed_file = missing_path && engine_for_file(&dir).is_some();
-    let file = (existing_file || proposed_file).then(|| dir.clone());
-    if file.is_some() {
+    let file = (existing_file || proposed_file)
+        .then(|| dir.clone())
+        .or_else(|| {
+            if dir.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&dir)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file()
+                        && let Some(engine) = engine_for_file(&path)
+                        && !matches!(
+                            engine,
+                            "markdown" | "yaml" | "toml" | "json" | "html" | "css"
+                        )
+                    {
+                        return Some(path);
+                    }
+                }
+            }
+            None
+        });
+    if existing_file || proposed_file {
         dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
     }
     let file_dir = dir.clone();

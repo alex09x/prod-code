@@ -77,9 +77,7 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
             }
             if matches!(
                 s.as_ref(),
-                "crates"
-                    | "packages"
-                    | "src"
+                "src"
                     | "server"
                     | "client"
                     | "internal"
@@ -91,13 +89,11 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                     | "include"
                     | "lib"
                     | "examples"
-                    | "example"
                     | "tests"
                     | "test"
                     | "fixtures"
                     | "testdata"
                     | "benches"
-                    | "bench"
             ) {
                 under_code_dir = true;
             }
@@ -129,7 +125,7 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
             {
                 return false;
             }
-            if under_code_dir && matches!(s.as_ref(), "target" | "node_modules" | "__pycache__") {
+            if under_code_dir && matches!(s.as_ref(), "node_modules" | "__pycache__") {
                 return false;
             }
         }

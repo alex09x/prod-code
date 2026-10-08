@@ -188,4 +188,35 @@ version = "0.2.2"
             "benches/state/bench_state.rs"
         ));
     }
+
+    #[test]
+    fn nested_target_directories_under_source_are_relevant() {
+        // Issue #959: a module inside a nested target directory under src/ is relevant source
+        assert!(is_relevant_code_or_manifest_file(
+            "crates/example/src/parser/target/python.rs"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "crates/example/src/parser/target/python.rs"
+        ));
+        assert!(is_relevant_code_or_manifest_file(
+            "src/compiler/target/arm.rs"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "src/compiler/target/arm.rs"
+        ));
+
+        // Actual build artifact target directories must still be excluded
+        assert!(!is_relevant_code_or_manifest_file(
+            "target/debug/build/foo.rs"
+        ));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            "target/debug/build/foo.rs"
+        ));
+        assert!(!is_relevant_code_or_manifest_file(
+            "crates/example/target/debug/build/foo.rs"
+        ));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            "crates/example/target/debug/build/foo.rs"
+        ));
+    }
 }
