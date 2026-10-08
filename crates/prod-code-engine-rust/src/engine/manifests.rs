@@ -51,14 +51,29 @@ impl RustEngine {
     }
 
     /// Collect manifest paths for a worktree copy root.
-    pub(crate) fn collect_worktree_manifest_paths(&self, copy_root: &Path) -> Vec<PathBuf> {
+    pub(crate) fn collect_worktree_manifest_paths(
+        &self,
+        copy_root: &Path,
+        workspace: Option<&ProjectWorkspace>,
+    ) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         paths.push(copy_root.join("Cargo.lock"));
         paths.push(copy_root.join("Cargo.toml"));
-        let base_paths = self.collect_base_manifest_paths();
-        for bp in base_paths {
-            if let Ok(rel) = bp.strip_prefix(&self.workspace_root) {
-                paths.push(copy_root.join(rel));
+        if let Some(ws) = workspace {
+            if let ProjectWorkspaceKind::Cargo { cargo, .. } = &ws.kind {
+                paths.push(PathBuf::from(cargo.manifest_path().as_str()));
+                for pkg in cargo.packages() {
+                    if cargo[pkg].is_local {
+                        paths.push(PathBuf::from(cargo[pkg].manifest.as_str()));
+                    }
+                }
+            }
+        } else {
+            let base_paths = self.collect_base_manifest_paths();
+            for bp in base_paths {
+                if let Ok(rel) = bp.strip_prefix(&self.workspace_root) {
+                    paths.push(copy_root.join(rel));
+                }
             }
         }
         for cfg in [
@@ -85,8 +100,12 @@ impl RustEngine {
     }
 
     /// Record modification times for a worktree's manifests.
-    pub(crate) fn record_worktree_manifests(&mut self, copy_root: &Path) {
-        let paths = self.collect_worktree_manifest_paths(copy_root);
+    pub(crate) fn record_worktree_manifests(
+        &mut self,
+        copy_root: &Path,
+        workspace: Option<&ProjectWorkspace>,
+    ) {
+        let paths = self.collect_worktree_manifest_paths(copy_root, workspace);
         let mut map = HashMap::new();
         for p in paths {
             let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
@@ -185,6 +204,8 @@ impl RustEngine {
                 })?
             }
         };
+        self.changes += 1;
+        self.record_worktree_manifests(copy_root, Some(&workspace));
         {
             let db = self.host.raw_database_mut();
             let mut vfs = self
@@ -197,8 +218,6 @@ impl RustEngine {
             }
             self.worktrees.add(db, &mut vfs, workspace, overlay);
         }
-        self.changes += 1;
-        self.record_worktree_manifests(copy_root);
         tracing::info!(copy = %copy_root.display(), "Reloaded worktree overlay in shared RustEngine");
         Ok(())
     }
