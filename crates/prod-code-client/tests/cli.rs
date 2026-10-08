@@ -4052,10 +4052,344 @@ async fn lsp_auto_reconnects_and_replays_state_on_transient_disconnect() {
     assert!(status.success());
 }
 
-/// A mid-session gateway redirect under `--reconnect` must not push workspace files
-/// before the redirected target's handshake and protocol version are validated.
+async fn recording_tls_gateway_with<F>(
+    answer: F,
+    server_tls: prod_code_protocol::ServerTlsConfig,
+) -> (SocketAddr, Seen)
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let answer = Arc::new(answer);
+    let seen: Seen = Arc::default();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind TLS gateway");
+    let addr = listener.local_addr().expect("TLS gateway address");
+    let server_config = server_tls.build().expect("build TLS gateway config");
+    let log = Arc::clone(&seen);
+    tokio::spawn(async move {
+        let mut connections = 0;
+        while let Ok((socket, _)) = listener.accept().await {
+            connections += 1;
+            let (answer, log, connection) = (Arc::clone(&answer), Arc::clone(&log), connections);
+            let server_config = Arc::clone(&server_config);
+            tokio::spawn(async move {
+                let Ok(stream) =
+                    prod_code_protocol::tls::upgrade_server_stream(socket, server_config).await
+                else {
+                    return;
+                };
+                let mut framed = Framed::new(
+                    prod_code_protocol::AnyStream::TlsServer(stream),
+                    ProdCodeCodec::new(),
+                );
+                while let Some(Ok(message)) = framed.next().await {
+                    let (event, reply) = match message {
+                        WireMessage::SyncProbeRequest(request) => (
+                            format!("probe {}", request.base_workspace_name.unwrap_or_default()),
+                            Some(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                                server_workspace_root: request.client_workspace_root,
+                                seeded: false,
+                                files_deleted: 0,
+                                missing: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::SyncRequest(request) => (
+                            format!(
+                                "sync {}",
+                                request
+                                    .files
+                                    .iter()
+                                    .map(|file| file.relative_path.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            Some(WireMessage::SyncResponse(SyncResponse {
+                                server_workspace_root: request.client_workspace_root,
+                                files_updated: request.files.len(),
+                                files_deleted: 0,
+                                bytes_transferred: 0,
+                                duration_ms: 1,
+                                workspace_was_fresh: false,
+                                stale_paths: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::HandshakeRequest(request) => (
+                            format!(
+                                "handshake {} engine={} purpose={}",
+                                request.base_workspace_name.unwrap_or_default(),
+                                request.preferred_engine.unwrap_or_default(),
+                                request.purpose.unwrap_or_default()
+                            ),
+                            Some(WireMessage::HandshakeResponse(HandshakeResponse {
+                                protocol_version: PROTOCOL_VERSION,
+                                server_pid: std::process::id(),
+                                session_id: connection as u64,
+                                server_workspace_root: request.client_workspace_root,
+                                detected_engine: "rust".to_string(),
+                                stale_paths: Vec::new(),
+                                engine_age_ms: None,
+                                index_gated: false,
+                                capabilities: None,
+                            })),
+                        ),
+                        WireMessage::LspPayload(json) => {
+                            let value: serde_json::Value =
+                                serde_json::from_str(&json).unwrap_or_default();
+                            let method = value["method"].as_str().unwrap_or_default().to_string();
+                            let result = if method == "initialize" {
+                                answer(&value)
+                                    .or_else(|| Some(serde_json::json!({ "capabilities": {} })))
+                            } else if value.get("id").is_none() {
+                                None
+                            } else {
+                                answer(&value)
+                            };
+                            if let Some(target) = result
+                                .as_ref()
+                                .and_then(|result| result.as_str())
+                                .and_then(|result| result.strip_prefix("__redirect__:"))
+                            {
+                                log.lock().expect("TLS gateway log").push((
+                                    connection,
+                                    format!("redirect after {method} to {target}"),
+                                ));
+                                let _ = framed
+                                    .send(WireMessage::Redirect {
+                                        target_addr: target.to_string(),
+                                        reason: Some("rebalance".to_string()),
+                                    })
+                                    .await;
+                                break;
+                            }
+                            let reply = result.map(|result| {
+                                WireMessage::LspPayload(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": value["id"],
+                                        "result": result
+                                    })
+                                    .to_string(),
+                                )
+                            });
+                            (format!("lsp {method}"), reply)
+                        }
+                        WireMessage::Ping => ("ping".to_string(), Some(WireMessage::Pong)),
+                        WireMessage::Disconnect { .. } => break,
+                        _ => ("other".to_string(), None),
+                    };
+                    log.lock()
+                        .expect("TLS gateway log")
+                        .push((connection, event));
+                    if let Some(reply) = reply
+                        && framed.send(reply).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// An authenticated redirect reconnects even when transient reconnects are disabled,
+/// and only the TLS-authenticated target receives the post-handshake workspace probe.
 #[tokio::test]
-async fn lsp_mid_session_redirect_delays_sync_until_target_handshake_validated() {
+async fn lsp_mid_session_redirect_reconnects_to_authenticated_target_without_flag() {
+    use tokio::io::AsyncWriteExt;
+
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let mut ca_params = rcgen::CertificateParams::default();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_key = rcgen::KeyPair::generate().expect("CA key");
+    let ca_cert = ca_params.self_signed(&ca_key).expect("CA cert");
+    let server_params = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+        .expect("server certificate params");
+    let server_key = rcgen::KeyPair::generate().expect("server key");
+    let server_cert = server_params
+        .signed_by(&server_key, &ca_cert, &ca_key)
+        .expect("server certificate");
+    let ca_path = home.path().join("test-ca.pem");
+    std::fs::write(&ca_path, ca_cert.pem()).expect("write test CA");
+    let server_tls = prod_code_protocol::ServerTlsConfig::new(
+        vec![rustls_pki_types::CertificateDer::from(
+            server_cert.der().to_vec(),
+        )],
+        rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
+            server_key.serialize_der(),
+        )),
+    );
+
+    let (target_addr, target_events) = recording_tls_gateway_with(
+        |value| {
+            if value["method"] == "textDocument/hover" {
+                Some(serde_json::json!({ "contents": "hover from trusted target" }))
+            } else {
+                None
+            }
+        },
+        server_tls.clone(),
+    )
+    .await;
+    let target_addr_string = target_addr.to_string();
+    let (initial_addr, _) = recording_tls_gateway_with(
+        move |value| {
+            if value["method"] == "prod-code/dropOnce" {
+                Some(serde_json::json!(format!(
+                    "__redirect__:{target_addr_string}"
+                )))
+            } else {
+                None
+            }
+        },
+        server_tls,
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &initial_addr.to_string()])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .env("PROD_CODE_TLS_MODE", "auto")
+        .env("PROD_CODE_TLS_CA", &ca_path)
+        .env("PROD_CODE_TLS_SERVER_NAME", "localhost")
+        .env_remove("PROD_CODE_TLS_PIN")
+        .env_remove("PROD_CODE_TLS_CERT")
+        .env_remove("PROD_CODE_TLS_KEY")
+        .env_remove("PROD_CODE_AUTH_TOKEN")
+        .env_remove("PROD_CODE_AUTH_TOKEN_FILE")
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn LSP client");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialize");
+    let init_response = read_lsp_message(&mut stdout).await;
+    assert_eq!(init_response["id"], 1);
+
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("initialized");
+    let uri = format!("file://{}/src/lib.rs", ws.root().display());
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "rust",
+                        "version": 1,
+                        "text": "pub fn hello_world() {}\n"
+                    }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("didOpen");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "prod-code/dropOnce",
+                "params": {}
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("trigger redirect");
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let seen = target_events.lock().expect("target log").clone();
+            if seen.iter().any(|(_, event)| event.starts_with("probe ")) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("authenticated target receives the post-handshake workspace probe");
+
+    stdin
+        .write_all(
+            send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 7 }
+                }
+            }))
+            .as_bytes(),
+        )
+        .await
+        .expect("hover after authenticated redirect");
+    let hover_response = read_lsp_message(&mut stdout).await;
+    assert_eq!(hover_response["id"], 3);
+    assert_eq!(
+        hover_response["result"]["contents"],
+        "hover from trusted target"
+    );
+
+    let seen = target_events.lock().expect("target log").clone();
+    let handshake_index = seen
+        .iter()
+        .position(|(_, event)| event.starts_with("handshake "))
+        .expect("target must receive handshake");
+    let probe_index = seen
+        .iter()
+        .position(|(_, event)| event.starts_with("probe "))
+        .expect("target must receive a workspace probe");
+    assert!(handshake_index < probe_index, "{seen:?}");
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("child exits on stdin close")
+        .expect("child status");
+    assert!(status.success());
+}
+
+/// A plaintext redirected gateway must never receive a handshake or workspace sync,
+/// even when the editor has not enabled transient-disconnect reconnects.
+#[tokio::test]
+async fn lsp_mid_session_redirect_rejects_unauthenticated_target() {
     use tokio::io::AsyncWriteExt;
     let ws = make_workspace();
     let home = tempfile::tempdir().expect("home");
@@ -4090,9 +4424,17 @@ async fn lsp_mid_session_redirect_delays_sync_until_target_handshake_validated()
     .await;
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
-        .args(["lsp", "--remote", &addr1.to_string(), "--reconnect"])
+        .args(["lsp", "--remote", &addr1.to_string()])
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .env("PROD_CODE_TLS_MODE", "auto")
+        .env_remove("PROD_CODE_TLS_CA")
+        .env_remove("PROD_CODE_TLS_PIN")
+        .env_remove("PROD_CODE_TLS_CERT")
+        .env_remove("PROD_CODE_TLS_KEY")
+        .env_remove("PROD_CODE_TLS_SERVER_NAME")
+        .env_remove("PROD_CODE_AUTH_TOKEN")
+        .env_remove("PROD_CODE_AUTH_TOKEN_FILE")
         .current_dir(ws.root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4174,55 +4516,25 @@ async fn lsp_mid_session_redirect_delays_sync_until_target_handshake_validated()
         .await
         .expect("trigger redirect");
 
-    // Give time for reconnect and state replay to complete on gateway 2
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // 5. Send hover request over the reconnected session
-    stdin
-        .write_all(
-            send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "textDocument/hover",
-                "params": {
-                    "textDocument": { "uri": test_uri },
-                    "position": { "line": 0, "character": 7 }
-                }
-            }))
-            .as_bytes(),
-        )
-        .await
-        .expect("hover over reconnected session");
-
-    let hover_resp = read_lsp_message(&mut stdout).await;
-    assert_eq!(hover_resp["id"], 3);
-    assert_eq!(
-        hover_resp["result"]["contents"],
-        "hover from target gateway"
-    );
-
-    // Verify ordering on the redirect target (gateway 2):
-    // The target connection MUST see handshake before any probe or sync event!
-    let target_events = seen2.lock().expect("seen2").clone();
-    let handshake_idx = target_events
-        .iter()
-        .position(|(_, ev)| ev.starts_with("handshake "))
-        .expect("target must receive handshake");
-    let sync_idx = target_events
-        .iter()
-        .position(|(_, ev)| ev.starts_with("probe ") || ev.starts_with("sync "))
-        .expect("target must observe post-handshake sync/probe");
-    assert!(
-        handshake_idx < sync_idx,
-        "redirect target must receive and validate handshake before any sync/probe: {target_events:?}"
-    );
-
+    drop(stdout);
     drop(stdin);
-    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
         .await
-        .expect("child exits on stdin close")
-        .expect("status");
-    assert!(status.success());
+        .expect("client refuses the unauthenticated redirect")
+        .expect("client status");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing gateway redirect without server-authenticated TLS"),
+        "redirect refusal should explain the missing server authentication: {stderr}"
+    );
+    let target_events = seen2.lock().expect("seen2").clone();
+    assert!(
+        target_events.is_empty(),
+        "unauthenticated redirect target must not receive a handshake or workspace sync: {target_events:?}"
+    );
 }
 
 /// When `--watchdog-secs` is set, `prod-code lsp` sends non-blocking idle pings

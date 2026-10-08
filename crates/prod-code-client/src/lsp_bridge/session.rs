@@ -25,6 +25,33 @@ pub fn resolve_redirect_target(target: &str) -> Result<SocketAddr> {
         .context("redirect address resolved to no socket addresses")
 }
 
+async fn connect_to_redirect_target(remote: SocketAddr) -> Result<prod_code_protocol::AnyStream> {
+    let client_tls = match prod_code_protocol::transport::default_client_tls_built() {
+        Some(cached) => cached,
+        None => prod_code_protocol::ClientTlsConfig::from_env()?
+            .map(prod_code_protocol::ClientTlsConfig::build)
+            .transpose()?,
+    }
+    .context(
+        "refusing gateway redirect without server-authenticated TLS; configure a trusted CA or certificate pin",
+    )?;
+    let token = prod_code_protocol::transport::auth_token();
+    let stream = prod_code_protocol::transport::connect_stream_with_client_config(
+        remote,
+        token.as_deref(),
+        Some(client_tls),
+    )
+    .await
+    .with_context(|| {
+        format!("failed to establish authenticated TLS to redirected gateway {remote}")
+    })?;
+    anyhow::ensure!(
+        matches!(&stream, prod_code_protocol::AnyStream::TlsClient(_)),
+        "refusing unauthenticated plaintext connection to redirected gateway {remote}"
+    );
+    Ok(stream)
+}
+
 pub async fn open_editor_session(
     mut remote: SocketAddr,
     engine: Option<&str>,
@@ -40,9 +67,13 @@ pub async fn open_editor_session(
     let supported_versions = supported_protocol_versions();
     let mut redirect_count = initial_redirect_count;
     loop {
-        let stream = prod_code_protocol::transport::connect(remote)
-            .await
-            .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+        let stream = if redirect_count > 0 {
+            connect_to_redirect_target(remote).await?
+        } else {
+            prod_code_protocol::transport::connect(remote)
+                .await
+                .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?
+        };
         let mut framed = Framed::new(stream, ProdCodeCodec::new());
         if redirect_count == 0 {
             let generation = prod_code_mcp::watch::current_generation(cwd);

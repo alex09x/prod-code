@@ -33,3 +33,5 @@ tempfile.workspace = true
 
 [dev-dependencies]
 prod-code-testkit = { path = "../prod-code-testkit" }
+rcgen.workspace = true
+rustls-pki-types.workspace = true

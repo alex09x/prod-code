@@ -135,7 +135,7 @@ pub async fn run_lsp_bridge(
                 closed = &mut closed_rx => match closed {
                     Ok((why, redirect_target)) => {
                         let is_redirect = redirect_target.is_some();
-                        if reconnect {
+                        if reconnect || is_redirect {
                             let reconnect_remote = redirect_target.unwrap_or(remote);
                             handle_reconnect(
                                 &mut ctx,
