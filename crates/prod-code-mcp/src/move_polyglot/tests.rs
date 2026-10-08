@@ -213,3 +213,66 @@ async fn cpp_move_to_implementation_file_refuses_before_writing() {
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
     assert!(!target.exists());
 }
+
+#[test]
+fn go_move_to_new_file_initializes_package_header() {
+    let temp = tempfile::tempdir().unwrap();
+    let pkg_dir = temp.path().join("pkg");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    let target = pkg_dir.join("b.go");
+
+    std::fs::write(pkg_dir.join("a.go"), "package pkg\n\nfunc A() {}\n").unwrap();
+
+    let header = super::target::initial_file_header(&target, Language::Go);
+    assert_eq!(header, "package pkg\n\n");
+}
+
+#[test]
+fn go_move_carries_imports_after_initial_package_header() {
+    let temp = tempfile::tempdir().unwrap();
+    let pkg_dir = temp.path().join("pkg");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    let source = pkg_dir.join("a.go");
+    let target = pkg_dir.join("b.go");
+    std::fs::write(
+        &source,
+        "package pkg\n\nimport \"fmt\"\n\nfunc Helper() { fmt.Println(\"hi\") }\n",
+    )
+    .unwrap();
+
+    let target_header = super::target::initial_file_header(&target, Language::Go);
+    let item = "func Helper() { fmt.Println(\"hi\") }\n";
+    let (target_with_carried, _notes) = super::imports::carry_imports_polyglot(
+        "package pkg\n\nimport \"fmt\"\n\nfunc Helper() { fmt.Println(\"hi\") }\n",
+        item,
+        &target_header,
+        &source,
+        &target,
+        Language::Go,
+        temp.path(),
+    );
+    assert!(target_with_carried.starts_with("package pkg\n\nimport \"fmt\"\n"));
+    let target_new = crate::move_item::append_item(&target_with_carried, item);
+    assert_eq!(
+        target_new,
+        "package pkg\n\nimport \"fmt\"\n\nfunc Helper() { fmt.Println(\"hi\") }\n"
+    );
+}
+
+#[test]
+fn go_move_selects_regular_package_when_external_test_package_exists() {
+    let temp = tempfile::tempdir().unwrap();
+    let pkg_dir = temp.path().join("pkg");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(pkg_dir.join("a_test.go"), "package pkg_test\n").unwrap();
+    std::fs::write(pkg_dir.join("a.go"), "package pkg\n").unwrap();
+
+    let regular_target = pkg_dir.join("b.go");
+    let test_target = pkg_dir.join("b_test.go");
+
+    let reg_header = super::target::initial_file_header(&regular_target, Language::Go);
+    assert_eq!(reg_header, "package pkg\n\n");
+
+    let test_header = super::target::initial_file_header(&test_target, Language::Go);
+    assert_eq!(test_header, "package pkg_test\n\n");
+}

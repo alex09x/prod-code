@@ -119,29 +119,66 @@ pub fn check_target_collision(target_text: &str, name: &str, lang: Language) -> 
 pub(crate) fn initial_file_header(target: &Path, lang: Language) -> String {
     match lang {
         Language::Go => {
+            let is_test_target = target
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.ends_with("_test.go"));
             let pkg = target
                 .parent()
                 .and_then(|dir| {
                     if let Ok(entries) = std::fs::read_dir(dir) {
+                        let mut regular_pkg = None;
+                        let mut test_pkg = None;
                         for e in entries.flatten() {
                             let p = e.path();
                             if p.extension().is_some_and(|ext| ext == "go")
                                 && p != target
                                 && let Ok(content) = std::fs::read_to_string(&p)
                             {
+                                let is_test_file = p
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .is_some_and(|name| name.ends_with("_test.go"));
                                 for line in content.lines() {
                                     let t = line.trim();
                                     if let Some(rest) = t.strip_prefix("package ") {
-                                        let name = rest.trim();
+                                        let name = rest
+                                            .split("//")
+                                            .next()
+                                            .unwrap_or(rest)
+                                            .trim()
+                                            .trim_end_matches(';');
                                         if !name.is_empty() {
-                                            return Some(name.to_string());
+                                            if is_test_file {
+                                                if test_pkg.is_none() {
+                                                    test_pkg = Some(name.to_string());
+                                                }
+                                            } else {
+                                                regular_pkg = Some(name.to_string());
+                                                break;
+                                            }
                                         }
                                     }
                                 }
+                                if !is_test_target && regular_pkg.is_some() {
+                                    break;
+                                }
                             }
                         }
+                        if is_test_target {
+                            test_pkg.or(regular_pkg)
+                        } else {
+                            regular_pkg.or_else(|| {
+                                test_pkg
+                                    .as_deref()
+                                    .and_then(|tp| tp.strip_suffix("_test"))
+                                    .map(str::to_string)
+                            })
+                        }
+                    } else {
+                        None
                     }
-                    dir.file_name().map(|n| n.to_string_lossy().into_owned())
+                    .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
                 })
                 .unwrap_or_else(|| "main".to_string());
             format!("package {pkg}\n\n")
