@@ -43,6 +43,7 @@ pub struct GoEngine {
     pub(crate) next_probe_id: Arc<AtomicU64>,
     pub(crate) health_probe_pending: Arc<StdMutex<Option<HealthProbePending>>>,
     pub(crate) open_files: Arc<RwLock<HashMap<String, i32>>>,
+    pub(crate) file_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pub(crate) _health_probe: Option<HealthProbeTask>,
     pub(crate) _child: Arc<StdMutex<Child>>,
 }
@@ -186,6 +187,7 @@ impl GoEngine {
             next_probe_id,
             health_probe_pending,
             open_files: Arc::new(RwLock::new(HashMap::new())),
+            file_locks: Arc::new(Mutex::new(HashMap::new())),
             _health_probe: None,
             _child: child,
         };
