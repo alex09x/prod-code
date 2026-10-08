@@ -53,6 +53,15 @@ async fn test_engine_allowlist_narrows_advertised_engines() {
 }
 
 #[test]
+fn test_engine_allowlist_does_not_advertise_unavailable_engines() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut state = ServerState::new(temp.path().to_path_buf());
+    state.engine_allowlist = vec!["__missing_engine_for_test__".to_string()];
+
+    assert!(state.advertised_engines().is_empty());
+}
+
+#[test]
 fn test_engine_detection() {
     use prod_code_protocol::messages::EngineKind;
 

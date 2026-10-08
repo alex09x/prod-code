@@ -116,11 +116,7 @@ impl ServerState {
                 self.serves_engine(name)
             })
             .collect();
-        if !filtered.is_empty() {
-            filtered
-        } else {
-            self.engine_allowlist.clone()
-        }
+        filtered
     }
 
     /// This node's heartbeat.
