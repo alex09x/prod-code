@@ -86,6 +86,7 @@ fn python_command(root: &Path, name: &str, source: &str, pid_file: &Path) -> Ser
             "EDITOR_PID_FILE".to_string(),
             pid_file.to_string_lossy().into_owned(),
         )],
+        initialization_options: None,
         ready: prod_code_protocol::readiness::ReadySignal::default(),
     }
 }
@@ -791,6 +792,7 @@ async fn real_gopls_keeps_initialize_open_hover_watch_and_disconnect_intact() {
             ),
             ("GOPLS".to_string(), gopls.program),
         ],
+        initialization_options: None,
         ready: gopls.ready,
     };
     let servers = Arc::new(EditorServers::default());

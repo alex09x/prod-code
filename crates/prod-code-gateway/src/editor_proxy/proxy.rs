@@ -24,7 +24,7 @@ use tokio_util::codec::Framed;
 use super::child::{
     OwnedChild, TaskAbortGuard, finish_task, write_editor_messages, write_server_frames,
 };
-use super::command::{ServerCommand, to_server};
+use super::command::{ServerCommand, to_server_with_options};
 use super::probe::{
     CHANNEL_CAPACITY, EditorProxyOptions, HEALTH_PROBE_ID_PREFIX, HealthProbePending,
     NEXT_HEALTH_PROBE_NAMESPACE, ProbeState, record_liveness,
@@ -270,7 +270,11 @@ where
                     record_liveness(&ordinary_epoch, &last_activity, &probe_state);
                     let deadline = Instant::now() + options.write_budget;
                     if to_server_tx.try_send(PendingServerFrame {
-                        body: to_server(&translator, &raw),
+                        body: to_server_with_options(
+                            &translator,
+                            &raw,
+                            command.initialization_options.as_ref(),
+                        ),
                         deadline,
                     }).is_err() {
                         break;
