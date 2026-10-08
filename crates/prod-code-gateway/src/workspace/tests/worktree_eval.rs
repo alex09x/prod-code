@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use crate::workspace::loader::LoadState;
 use crate::workspace::manager::WorkspaceManager;
-use crate::workspace::paths::{resolve_server_workspace, split_worktree_base, worktree_suffix};
+use crate::workspace::paths::{
+    resolve_server_workspace, server_workspace_path, split_worktree_base, worktree_suffix,
+};
 use crate::workspace::shared::SharedWorkspace;
 use crate::workspace::types::WorkspaceKey;
 
@@ -55,6 +57,25 @@ fn test_resolve_server_workspace_generic_worktree_mapping() {
     let res4 = resolve_server_workspace(storage, std_repo, None);
     assert_eq!(res4, storage.join("payment-gateway"));
     assert!(res4.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_resolve_server_workspace_canonicalizes_symlink_storage_root() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let real_storage = temp.path().join("real-storage");
+    std::fs::create_dir_all(&real_storage).unwrap();
+    let storage_alias = temp.path().join("storage-alias");
+    symlink(&real_storage, &storage_alias).unwrap();
+    let client_root = "/home/dev/workspace/project";
+
+    let target = server_workspace_path(&storage_alias, client_root, None);
+    let resolved = resolve_server_workspace(&storage_alias, client_root, None);
+
+    assert_eq!(target, real_storage.join("project"));
+    assert_eq!(resolved, target);
 }
 
 #[test]

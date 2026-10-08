@@ -169,7 +169,7 @@ pub fn resolve_server_workspace(
 ) -> PathBuf {
     let target_dir = server_workspace_path(storage_root, client_root, explicit_base_name);
     let _ = std::fs::create_dir_all(&target_dir);
-    target_dir
+    server_workspace_path(storage_root, client_root, explicit_base_name)
 }
 
 /// The server workspace directory for a client, without creating it.
@@ -182,5 +182,7 @@ pub fn server_workspace_path(
         Some(name) if !name.trim().is_empty() => sanitize_identifier(name.trim()),
         _ => extract_workspace_identifier(client_root),
     };
-    storage_root.join(candidate_name)
+    let canonical_storage_root =
+        std::fs::canonicalize(storage_root).unwrap_or_else(|_| storage_root.to_path_buf());
+    canonical_storage_root.join(candidate_name)
 }
