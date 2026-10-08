@@ -345,6 +345,9 @@ pub enum CppBuild {
 /// The build, lint and test tooling detected in a checkout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectTools {
+    /// The checkout has a Zig build script whose test step can run the project suite.
+    #[serde(skip)]
+    pub(crate) zig_build: bool,
     /// The Java project uses Gradle rather than Maven.
     pub java_gradle: bool,
     /// Whether the Java Gradle project provides its wrapper script.
@@ -364,6 +367,7 @@ pub struct ProjectTools {
 impl Default for ProjectTools {
     fn default() -> Self {
         Self {
+            zig_build: false,
             java_gradle: false,
             java_gradle_wrapper: false,
             package_manager: PackageManager::Npm,

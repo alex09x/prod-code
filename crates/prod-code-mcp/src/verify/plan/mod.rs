@@ -36,6 +36,11 @@ pub fn plan_command_with(
     filter: Option<&str>,
 ) -> Result<Vec<String>> {
     let filter = filter.filter(|f| !f.is_empty());
+    if language == "zig" && kind == VerifyKind::Test && tools.zig_build && filter.is_some() {
+        return Err(anyhow!(
+            "Zig build test steps do not support the generic test-name filter; rerun without a filter"
+        ));
+    }
     let pm = tools.package_manager;
     let py: Vec<String> = match &tools.python {
         PythonRuntime::Uv => strs(&["uv", "run", "python"]),
@@ -154,6 +159,12 @@ pub fn plan_command_with(
                 c.extend(strs(&["-k", f]));
             }
             c
+        }
+        ("zig", VerifyKind::Test) if tools.zig_build => strs(&["zig", "build", "test"]),
+        ("zig", VerifyKind::Test) => {
+            return Err(anyhow!(
+                "Zig test planning needs a build.zig test step or an explicit source target"
+            ));
         }
         ("go", VerifyKind::Lint) => strs(&["sh", "-c", GO_LINT_SCRIPT, "sh", "./..."]),
         ("cpp", VerifyKind::Lint) => strs(&["sh", "-c", &clang_tidy_script(tools.cpp, false)?]),

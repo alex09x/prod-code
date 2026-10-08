@@ -124,7 +124,11 @@ find . -type f \( -name '*.php' -o -name '*.phtml' \) -print0 | xargs -0 -n1 php
         ("dart", VerifyKind::Check) => vec!["dart", "analyze"],
         ("dart", VerifyKind::Test) => vec!["dart", "test"],
         ("zig", VerifyKind::Check) => vec!["zig", "build"],
-        ("zig", VerifyKind::Test) => vec!["zig", "test"],
+        ("zig", VerifyKind::Test) => {
+            return Err(anyhow!(
+                "Zig test planning needs a build.zig test step or an explicit source target"
+            ));
+        }
         ("elixir", VerifyKind::Check) => vec!["mix", "compile"],
         ("elixir", VerifyKind::Test) => vec!["mix", "test"],
         ("scala", VerifyKind::Check) => vec!["sbt", "compile"],
@@ -250,10 +254,6 @@ find . -type f \( -name '*.asm' -o -name '*.nasm' -o -name '*.s' -o -name '*.S' 
             }
             ("dart", VerifyKind::Test) => {
                 cmd.push("--name".to_string());
-                cmd.push(filter.to_string());
-            }
-            ("zig", VerifyKind::Test) => {
-                cmd.push("--test-filter".to_string());
                 cmd.push(filter.to_string());
             }
             ("elixir", VerifyKind::Test) => {

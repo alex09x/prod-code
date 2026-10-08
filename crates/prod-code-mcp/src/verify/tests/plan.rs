@@ -187,10 +187,7 @@ fn plans_and_summary() {
         plan_command("zig", VerifyKind::Check, None).unwrap(),
         vec!["zig", "build"]
     );
-    assert_eq!(
-        plan_command("zig", VerifyKind::Test, Some("foo")).unwrap(),
-        vec!["zig", "test", "--test-filter", "foo"]
-    );
+    assert!(plan_command("zig", VerifyKind::Test, Some("foo")).is_err());
     assert_eq!(
         plan_command("elixir", VerifyKind::Check, None).unwrap(),
         vec!["mix", "compile"]
@@ -241,6 +238,22 @@ fn plans_and_summary() {
         "rust test: FAILED (exit 101) in 1.5s; 2 passed, 1 failed"
     );
     assert!(report.render(10).contains("--- FAILED a::bad ---\nboom"));
+}
+
+#[test]
+fn zig_build_projects_use_a_test_plan() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("build.zig"), "").unwrap();
+    let tools = detect_tools(root.path());
+
+    assert!(tools.zig_build);
+    assert_eq!(
+        plan_command_with(&tools, "zig", VerifyKind::Test, None).unwrap(),
+        vec!["zig", "build", "test"]
+    );
+    assert!(plan_command_with(&tools, "zig", VerifyKind::Test, Some("foo")).is_err());
+
+    assert!(plan_command_with(&ProjectTools::default(), "zig", VerifyKind::Test, None).is_err());
 }
 
 #[test]

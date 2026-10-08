@@ -31,7 +31,10 @@ pub fn file_contains(root: &Path, name: &str, needle: &str) -> bool {
 
 /// Detects the tooling of the checkout at `root` from its manifests and lock files.
 pub fn detect_tools(root: &Path) -> ProjectTools {
-    let mut tools = ProjectTools::default();
+    let mut tools = ProjectTools {
+        zig_build: root.join("build.zig").is_file(),
+        ..ProjectTools::default()
+    };
     tools.java_gradle_wrapper = root.join("gradlew").is_file();
     tools.java_gradle = !root.join("pom.xml").exists()
         && [
