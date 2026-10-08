@@ -11,7 +11,6 @@
 use super::shared_output::SharedOutputSender;
 use crate::sync::file_write::write_synced_file_for_workspace;
 use crate::*;
-use std::path::PathBuf;
 use std::time::Instant;
 
 pub async fn handle_session_sync(
@@ -25,9 +24,22 @@ pub async fn handle_session_sync(
     let mut bytes_transferred = 0;
     let mut watched = Vec::new();
     let mut failed: Vec<String> = Vec::new();
+    let mut safe_paths = Vec::with_capacity(req.files.len());
 
     for delta in &req.files {
-        let target_path = view.workspace.root.join(&delta.relative_path);
+        let target_path = match safe_sync_target(&view.workspace.root, &delta.relative_path).await {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    file = %delta.relative_path,
+                    "session sync rejected unsafe path"
+                );
+                failed.push(delta.relative_path.clone());
+                continue;
+            }
+        };
+        safe_paths.push(target_path.clone());
         match &delta.content {
             Some(content_bytes) => {
                 bytes_transferred += content_bytes.len();
@@ -121,13 +133,8 @@ pub async fn handle_session_sync(
     {
         // The request is the session's complete dirty set: any other
         // overlay this session still holds is stale (reverted or committed).
-        let keep: Vec<PathBuf> = req
-            .files
-            .iter()
-            .map(|delta| view.workspace.root.join(&delta.relative_path))
-            .collect();
         let mut engine = engine_lock.lock().await;
-        match engine.retain_session_overlays(view.session_id, &keep) {
+        match engine.retain_session_overlays(view.session_id, &safe_paths) {
             Ok(dropped) if dropped > 0 => tracing::info!(
                 session = view.session_id,
                 dropped,
@@ -167,4 +174,97 @@ pub async fn handle_session_sync(
             stale_paths,
         }))
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_sync_rejects_absolute_parent_and_symlink_paths() {
+        use std::os::unix::fs::symlink;
+
+        let storage = tempfile::tempdir().unwrap();
+        let outside = storage.path();
+        let root = storage.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        symlink(outside, root.join("linked")).unwrap();
+
+        let victim = outside.join("victim.txt");
+        std::fs::write(&victim, b"keep").unwrap();
+        let absolute_write = outside.join("absolute-escape.txt");
+        let parent_write = storage.path().join("parent-escape.txt");
+        let symlink_write = outside.join("symlink-escape.txt");
+
+        let workspace = Arc::new(workspace::SharedWorkspace::new(
+            root.clone(),
+            "generic-lsp".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        let manager = workspace::WorkspaceManager::new();
+        let lease = workspace::WorkspaceLease::acquire(workspace);
+        let view = manager.register_session_view(1, root, lease).await;
+        let (raw_tx, mut raw_rx) = rapidfire::mpsc::bounded(8);
+        let out_tx = SharedOutputSender::new(raw_tx, std::time::Duration::from_secs(1));
+
+        handle_session_sync(
+            SyncRequest {
+                client_workspace_root: "/tmp/ws".to_string(),
+                files: vec![
+                    FileDelta {
+                        relative_path: "../parent-escape.txt".to_string(),
+                        content: Some(b"parent".to_vec()),
+                        is_executable: false,
+                    },
+                    FileDelta {
+                        relative_path: absolute_write.to_string_lossy().into_owned(),
+                        content: Some(b"absolute".to_vec()),
+                        is_executable: false,
+                    },
+                    FileDelta {
+                        relative_path: "linked/symlink-escape.txt".to_string(),
+                        content: Some(b"symlink".to_vec()),
+                        is_executable: false,
+                    },
+                    FileDelta {
+                        relative_path: "../victim.txt".to_string(),
+                        content: None,
+                        is_executable: false,
+                    },
+                ],
+                clean_others: false,
+                base_workspace_name: Some("ws".to_string()),
+            },
+            &view,
+            &out_tx,
+        )
+        .await;
+
+        let response = raw_rx.recv().await.unwrap().message;
+        let WireMessage::SyncResponse(response) = response else {
+            panic!("expected sync response");
+        };
+        assert_eq!(response.files_updated, 0);
+        assert_eq!(response.files_deleted, 0);
+        for rejected in [
+            "../parent-escape.txt",
+            absolute_write.to_str().unwrap(),
+            "linked/symlink-escape.txt",
+            "../victim.txt",
+        ] {
+            assert!(
+                response.stale_paths.iter().any(|path| path == rejected),
+                "invalid path should be retried: {rejected:?}; stale paths: {:?}",
+                response.stale_paths
+            );
+        }
+        assert!(!parent_write.exists());
+        assert!(!absolute_write.exists());
+        assert!(!symlink_write.exists());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    }
 }
