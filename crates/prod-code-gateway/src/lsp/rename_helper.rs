@@ -33,6 +33,7 @@ pub(crate) fn is_project_config_file(rel_path: &str) -> bool {
             | "go.mod"
             | "go.work"
             | "Cargo.toml"
+            | "Cargo.lock"
             | "rust-toolchain.toml"
             | "prod-code.toml"
     ) || name.starts_with("requirements")

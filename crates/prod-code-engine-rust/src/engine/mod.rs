@@ -29,6 +29,7 @@ use crate::types::{
 use crate::vfs::normalize_vfs_path;
 
 pub mod load;
+pub mod manifests;
 pub mod priming;
 pub mod sessions;
 pub mod worktree;
@@ -40,6 +41,9 @@ pub struct RustEngine {
     pub(crate) vfs: Arc<std::sync::RwLock<Vfs>>,
     pub worktrees: Worktrees,
     pub(crate) worktree_attachments: HashMap<PathBuf, usize>,
+    pub(crate) worktree_manifest_mtimes:
+        HashMap<PathBuf, HashMap<PathBuf, Option<std::time::SystemTime>>>,
+    pub(crate) base_manifest_mtimes: HashMap<PathBuf, Option<std::time::SystemTime>>,
     pub(crate) overlays: SessionOverlays,
     /// `main` or `validation`, for the logs.
     pub(crate) label: &'static str,

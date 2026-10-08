@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -63,6 +64,8 @@ pub struct SharedWorkspace {
     pub validation_attached: AtomicBool,
     /// Broadcast channel for active session dynamic rebalancing redirects.
     pub rebalance_tx: broadcast::Sender<(String, Option<String>)>,
+    /// Recorded modification timestamps for project manifests when loaded.
+    pub manifest_mtimes: HashMap<PathBuf, Option<std::time::SystemTime>>,
 }
 
 impl SharedWorkspace {
@@ -113,6 +116,23 @@ impl SharedWorkspace {
                     default_max_concurrent_engine_loads(),
                 ))
             });
+        let mut manifest_mtimes = HashMap::new();
+        for cfg in [
+            "Cargo.lock",
+            "Cargo.toml",
+            "go.mod",
+            "go.work",
+            "go.sum",
+            "package.json",
+            "tsconfig.json",
+            "pyproject.toml",
+            "setup.py",
+            "uv.lock",
+        ] {
+            let p = root.join(cfg);
+            let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+            manifest_mtimes.insert(p, mtime);
+        }
         Self {
             key: WorkspaceKey(root.clone()),
             root,
@@ -137,6 +157,7 @@ impl SharedWorkspace {
             unloaded: AtomicBool::new(false),
             validation_attached: AtomicBool::new(false),
             rebalance_tx,
+            manifest_mtimes,
         }
     }
 
@@ -190,9 +211,48 @@ impl SharedWorkspace {
     }
 
     /// Whether the next session asking for `engine` may be handed this workspace: it was loaded
-    /// for that engine and its language server is still running.
+    /// for that engine, has not been unloaded, and its manifests/language server remain fresh.
     pub(crate) fn reusable_for(&self, engine: &str) -> bool {
-        self.engine == engine && !self.has_dead_server()
+        if self.engine != engine || self.has_dead_server() {
+            return false;
+        }
+        if self.unloaded.load(Ordering::SeqCst) {
+            return false;
+        }
+        if self.has_stale_manifests() {
+            return false;
+        }
+        true
+    }
+
+    /// Whether this workspace's dependency manifests or lockfiles have changed on disk.
+    pub fn has_stale_manifests(&self) -> bool {
+        if self.unloaded.load(Ordering::SeqCst) {
+            return true;
+        }
+        if let Some(ref base) = self.base_workspace
+            && base.has_stale_manifests()
+        {
+            return true;
+        }
+        if let Some(ref eng_arc) = self.rust_engine
+            && let Ok(eng) = eng_arc.try_lock()
+        {
+            if self.base_workspace.is_some() {
+                if eng.is_worktree_stale(&self.root) {
+                    return true;
+                }
+            } else if eng.is_base_stale() {
+                return true;
+            }
+        }
+        for (path, recorded_mtime) in &self.manifest_mtimes {
+            let current = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+            if current != *recorded_mtime {
+                return true;
+            }
+        }
+        false
     }
 
     /// Tells this workspace's language servers (gopls, or the generic server and the C/C++

@@ -187,17 +187,21 @@ impl RustEngine {
         let host = AnalysisHost::with_database(db);
         tracing::info!(?workspace_root, "Cargo workspace warm and ready in RAM");
 
-        Ok(Self {
+        let mut this = Self {
             workspace_root: workspace_root.to_path_buf(),
             host,
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
             worktrees,
             worktree_attachments: HashMap::new(),
+            worktree_manifest_mtimes: HashMap::new(),
+            base_manifest_mtimes: HashMap::new(),
             overlays: SessionOverlays::default(),
             label: "main",
             changes: 0,
             _proc_macro_farm_permit: farm_permit,
-        })
+        };
+        this.record_base_manifests();
+        Ok(this)
     }
 
     /// Returns current metrics for the node-wide shared proc-macro worker farm.

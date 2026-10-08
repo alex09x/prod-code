@@ -84,6 +84,7 @@ impl SharedWorkspace {
                 unloaded: AtomicBool::new(false),
                 validation_attached: AtomicBool::new(!is_main),
                 rebalance_tx: self.rebalance_tx.clone(),
+                manifest_mtimes: self.manifest_mtimes.clone(),
             }));
         }
         self.base_validation_view(admission).await
@@ -121,6 +122,7 @@ impl SharedWorkspace {
             unloaded: AtomicBool::new(false),
             validation_attached: AtomicBool::new(false),
             rebalance_tx: self.rebalance_tx.clone(),
+            manifest_mtimes: self.manifest_mtimes.clone(),
         }))
     }
 
@@ -284,6 +286,7 @@ impl SharedWorkspace {
             unloaded: AtomicBool::new(false),
             validation_attached: AtomicBool::new(false),
             rebalance_tx: self.rebalance_tx.clone(),
+            manifest_mtimes: self.manifest_mtimes.clone(),
         }))
     }
 }

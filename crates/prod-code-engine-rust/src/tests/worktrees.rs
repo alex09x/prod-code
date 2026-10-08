@@ -252,3 +252,96 @@ fn test_worktree_file_id_for_path_isolation() {
     assert!(snap_base.file_id_for_path(&wt1_private_file).is_none());
     assert!(snap_base.file_id_for_path(&wt2_private_file).is_none());
 }
+
+#[test]
+fn test_worktree_reloads_when_cargo_manifest_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let base_dir = temp.path().join("base");
+    std::fs::create_dir_all(base_dir.join("src")).unwrap();
+    std::fs::write(
+        base_dir.join("Cargo.toml"),
+        "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(base_dir.join("src/lib.rs"), "pub fn base_fn() {}\n").unwrap();
+
+    let mut engine = RustEngine::load(&base_dir).unwrap();
+
+    let wt_dir = temp.path().join("base--wt-test");
+    std::fs::create_dir_all(wt_dir.join("src")).unwrap();
+    std::fs::write(
+        wt_dir.join("Cargo.toml"),
+        "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let wt_lib = wt_dir.join("src/lib.rs");
+    std::fs::write(&wt_lib, "pub fn wt_fn() {}\n").unwrap();
+
+    engine.attach_worktree(&wt_dir).expect("first attach");
+    assert!(!engine.is_worktree_stale(&wt_dir));
+
+    let dep_dir = temp.path().join("dep_crate");
+    std::fs::create_dir_all(dep_dir.join("src")).unwrap();
+    std::fs::write(
+        dep_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dep_dir.join("src/lib.rs"),
+        "pub fn dep_fn() -> u32 { 100 }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        &wt_lib,
+        "use dep_crate::dep_fn;\npub fn wt_fn() -> u32 { dep_fn() }\n",
+    )
+    .unwrap();
+    engine.reload_file(&wt_lib).unwrap();
+    let diags_before = {
+        let snap_before = engine.snapshot_for(&wt_dir);
+        snap_before.diagnostics(&wt_lib).unwrap()
+    };
+    assert!(
+        diags_before.iter().any(|d| d.code.contains("unresolved")
+            || d.message.contains("dep_crate")
+            || d.code == "E0432"),
+        "Diagnostics must report unresolved import before dependency is added: {:?}",
+        diags_before
+    );
+
+    let dep_path = dep_dir.to_str().unwrap().replace('\\', "/");
+    std::fs::write(
+        wt_dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"base-pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndep-crate = {{ path = \"{dep_path}\" }}\n"
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        engine.is_worktree_stale(&wt_dir),
+        "Worktree must be detected as stale after Cargo.toml edit"
+    );
+
+    let reloaded = engine.ensure_fresh_for_path(&wt_lib).unwrap();
+    assert!(
+        reloaded,
+        "ensure_fresh_for_path must report that reload occurred"
+    );
+    assert!(
+        !engine.is_worktree_stale(&wt_dir),
+        "Worktree must not be stale after reload"
+    );
+
+    let snap_after = engine.snapshot_for(&wt_dir);
+    let diags_after = snap_after.diagnostics(&wt_lib).unwrap();
+    assert!(
+        !diags_after.iter().any(|d| d.code == "E0432"
+            || d.message.contains("dep_crate")
+            || d.code.contains("unresolved")),
+        "Diagnostics must resolve dep_crate after manifest reload: {:?}",
+        diags_after
+    );
+}
