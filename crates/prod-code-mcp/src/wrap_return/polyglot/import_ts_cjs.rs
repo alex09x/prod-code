@@ -60,7 +60,7 @@ pub(crate) fn ts_js_require_symbols(
                 let specifier = extract_specifier(inside);
                 if specifier_matches_decl(specifier, caller_path, decl_file) {
                     let decl_before = content[..abs_req_pos]
-                        .rsplit(';')
+                        .rsplit(|c| c == ';' || c == '\n')
                         .next()
                         .unwrap_or("")
                         .trim();
@@ -164,7 +164,7 @@ pub(crate) fn is_ts_js_require_namespace(
                 let specifier = extract_specifier(inside);
                 if specifier_matches_decl(specifier, caller_path, decl_file) {
                     let decl_before = content[..abs_req_pos]
-                        .rsplit(';')
+                        .rsplit(|c| c == ';' || c == '\n')
                         .next()
                         .unwrap_or("")
                         .trim();

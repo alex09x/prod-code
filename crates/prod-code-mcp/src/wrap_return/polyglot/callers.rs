@@ -113,14 +113,15 @@ pub(crate) fn collect_and_rewrite_callers(
                     }
                     .trim_end();
                     let (rel_start, receiver) = find_dotted_receiver_span(before_dot);
-                    if is_proven_namespace_import(&other_content, receiver, path, file, lang) {
-                        let receiver_abs_start = (before_dot.as_ptr() as usize
-                            - other_content.as_ptr() as usize)
-                            + rel_start;
-                        call_start = receiver_abs_start;
-                    } else if !is_decl_file && !has_semantic_references {
+                    let is_namespace =
+                        is_proven_namespace_import(&other_content, receiver, path, file, lang);
+                    if !is_namespace && !is_decl_file && !has_semantic_references {
                         continue;
                     }
+                    let receiver_abs_start = (before_dot.as_ptr() as usize
+                        - other_content.as_ptr() as usize)
+                        + rel_start;
+                    call_start = receiver_abs_start;
                 }
 
                 let source_path =
