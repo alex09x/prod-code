@@ -2,7 +2,39 @@
 
 ## [Unreleased]
 
-## v0.3.27 — 2026-10-06
+## v0.3.28 — 2026-10-08
+
+### Fixed
+- **Rust Type Alias & Re-Export Resolution** (`crates/prod-code-mcp`):
+  Added `find_type_alias_target` and `extract_alias_target` in `alias.rs` with exact right-hand identifier boundary enforcement to resolve member references through type aliases and re-exports (`type Alias = Target;`, `as Alias`) in `code_references` (#1025).
+- **Enclosing Local Variable Capture Validation in Function Extraction** (`crates/prod-code-mcp`):
+  Added `uncaptured_enclosing_locals` in `binding.rs` to detect and reject Rust extractions where enclosing local variables or parameters are referenced in the helper or formatted string interpolations (`{var}`) without being declared as parameters or bound internally (#958).
+- **Context-Aware Prelude Macro Filtering in Test Modules** (`crates/prod-code-mcp`):
+  Routed unresolved Rust prelude macros (`assert_eq!`, `vec!`, `format!`, etc.) to `auto_trait` as analyzer limitations strictly in test module contexts, while preserving genuine user errors when prelude is explicitly disabled via `#![no_implicit_prelude]` or `#![no_std]` (#950).
+- **Standard Library Symbol Resolution Fallback** (`crates/prod-code-mcp`):
+  Added `find_stdlib_or_usage_hits` in `resolve.rs` to discover occurrences and usages across workspace files when `workspace/symbol` index lacks `std::*`, `core::*`, or `alloc::*` symbols (#935).
+- **Swift Identifier Coordinate & Call-Site Resolution** (`crates/prod-code-mcp`):
+  Aligned symbol columns with `find_identifier_on_line` to resolve Swift outline/index position discrepancies (#887, #888), and permitted Swift call sites discovered via `writes_call` without requiring file-level import statements (#885).
+- **Opt-In SwiftPM Index Builds** (`crates/prod-code-mcp`, `crates/prod-code-client`):
+  Required explicit `build_index: true` (or `--build-index`) before launching SwiftPM package index builds for references, preventing unintended compilation runs on read-only queries (#933).
+- **Workspace-Relative Path & Leading Slash Trimming** (`crates/prod-code-mcp`):
+  Trimmed leading slashes when resolving outline file paths against workspace root (#913), and mapped remote server mirror URLs in `definition_body` to local checkouts with workspace identity validation (#979).
+- **In-Flight Loading Workspace Preservation** (`crates/prod-code-gateway`):
+  Preserved in-flight `LoadState::Loading` workspaces during `unload_under` and permitted loader leader fulfillment (#911).
+- **Nested Cargo Package Discovery** (`crates/prod-code-mcp`):
+  Discovered nested Cargo packages sharing the root engine in `projects_naming` and fell back to nested anchors on fuzzy matches (#889).
+- **Bounded Impact BFS Traversal** (`crates/prod-code-mcp`):
+  Added 30s query timeout on incoming calls and a 60s traversal budget with deadline propagation across hierarchy items (#1021).
+- **Cluster Probe Bounds & Overload Failover** (`crates/prod-code-client`, `crates/prod-code-protocol`):
+  Bounded workspace TCP probe timeout to 5 seconds (#999) and added automatic cluster node failover on congested or overloaded gateways (#1022).
+- **Toolchain MSRV & Argument Parsing** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Preserved toolchain MSRV for external crate dependencies (#941) and fixed argument delimiter parsing in `code_exec` (#948).
+- **Attribute Order Preservation** (`crates/prod-code-mcp`):
+  Preserved attribute and derive order during AST transformations (#962).
+- **Contained Symlink Mirroring & Bounded Sync Reads** (`crates/prod-code-mcp`):
+  Safely preserved tracked contained symlinks in remote workspace mirror with `fits_sync` checks prior to reading and bounded buffer sizes (#1003).
+- **Go Move Package Declaration Initialization** (`crates/prod-code-mcp`):
+  Ensured package declarations are initialized when moving Go files to new target directories (#1007).
 
 ### Added
 - **Unified Gateway Metrics, Resource Snapshots & Bounded Retention** (`crates/prod-code-gateway`, `crates/prod-code-protocol`):

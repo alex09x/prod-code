@@ -10,7 +10,7 @@ unfinished languages or sub-items remains partial. The acceptance contract is in
 separate from implementation and verification. The full item-by-item review and outstanding
 requirements are in [ROADMAP-AUDIT.md](ROADMAP-AUDIT.md).
 
-**Where it stands** (v0.3.26, 2026-10-06): 67 MCP tools, a cluster of three Linux nodes and a
+**Where it stands** (v0.3.28, 2026-10-08): 67 MCP tools, a cluster of three Linux nodes and a
 macOS node for Swift and macOS-only Go. Advanced semantic intelligence tools (structural AST pattern search, type-directed expression synthesis, code clone harvesting, architectural dependency & cycle inspection) completed in Phase 9. Native packaging (.pkg, .dmg, .deb), cryptographic verification,
 fleet parity sync, and Zed editor LSP integration shipped in Phase 9.5. The historical coverage run recorded 910 tests and
 at least 80% of regions per file; those figures are evidence for that revision, not a guarantee
