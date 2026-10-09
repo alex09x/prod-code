@@ -25,12 +25,14 @@
   Discovered nested Cargo packages sharing the root engine in `projects_naming` and fell back to nested anchors on fuzzy matches (#889).
 - **Bounded Impact BFS Traversal** (`crates/prod-code-mcp`):
   Added 30s query timeout on incoming calls and a 60s traversal budget with deadline propagation across hierarchy items (#1021).
-- **Cluster Probe Bounds & Overload Failover** (`crates/prod-code-client`, `crates/prod-code-protocol`):
-  Bounded workspace TCP probe timeout to 5 seconds (#999) and added automatic cluster node failover on congested or overloaded gateways (#1022).
-- **Toolchain MSRV & Argument Parsing** (`crates/prod-code-gateway`, `crates/prod-code-client`):
-  Preserved toolchain MSRV for external crate dependencies (#941) and fixed argument delimiter parsing in `code_exec` (#948).
-- **Attribute Order Preservation** (`crates/prod-code-mcp`):
-  Preserved attribute and derive order during AST transformations (#962).
+- **Fast Sync Probe Timeout** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Reduced preflight workspace sync probe response timeout from 180s to 30s to fail fast instead of hanging on stalled syncs (#999).
+- **Session Placement Under Memory Pressure & Congestion** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Evaluated node memory and load pressure during placement to migrate or route active sessions away from congested nodes to quiet nodes, avoiding capacity refusals during symbol lookups (#941).
+- **JSON-RPC Error Response ID Preservation** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Ensured `id` field is always populated in JSON-RPC error frames so clients do not treat errors as protocol violations or close the transport (#948).
+- **Cluster Toolchain MSRV Selection & Candidate Failover** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  Added compiler MSRV rejection detection and automatic failover across cluster candidate remotes for check, lint, test, and benchmark runs when a node's default compiler is below workspace requirements (#962, #1022).
 - **Contained Symlink Mirroring & Bounded Sync Reads** (`crates/prod-code-mcp`):
   Safely preserved tracked contained symlinks in remote workspace mirror with `fits_sync` checks prior to reading and bounded buffer sizes (#1003).
 - **Go Move Package Declaration Initialization** (`crates/prod-code-mcp`):
