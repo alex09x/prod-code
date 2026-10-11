@@ -156,48 +156,49 @@ write("architecture-overview.svg", s)
 # ==============================================================================
 # 2. Dual-Engine Shadow Validation Pipeline
 # ==============================================================================
-W, H = 960, 400
+W, H = 960, 420
 s = head(W, H, "Dual-engine shadow validation: speculative edits tested without cache poisoning",
          "Dry-run proposals evaluated in isolated RAM-disk workspace · Primary Salsa DB stays clean and warm")
 
+# Panels
 s.append(panel(16, 56, 260, 200, "speculative edit proposals"))
+s.append(panel(336, 56, 370, 200, "gateway workspace engines"))
+s.append(panel(766, 56, 178, 200, "outcome & writeback"))
+
+# Left boxes
 s.append(box(30, 90, 232, 38, "multi-file proposal", "code_validate_edits", fill="white", stroke=INK))
 s.append(box(30, 136, 232, 42, "shadow-run hypotheses", "3+ candidate bug fixes in RAM", fill=PURPLE_FILL, stroke=PURPLE))
 s.append(box(30, 186, 232, 38, "unlinked file check", "fails validation on unlinked", fill="white", stroke=GRID, size=10))
 
-s.append(arrow(276, 110, 336, 110, "proposal diff", NET, "n"))
-s.append(arrow(276, 156, 336, 156, "parallel runs", NET, "n"))
-
-# Middle: Gateway Engines
-s.append(panel(336, 56, 370, 200, "gateway workspace engines"))
-
-# Primary Engine Box
+# Middle boxes
 s.append(box(350, 86, 342, 60, "primary Salsa DB (rust-analyzer)", "serves all references, callers, definitions, slices\nWARM: unaffected by speculative proposals", fill=RING_FILL, stroke=RING))
 s.append(f"<text x='521' y='160' text-anchor='middle' fill='{RING}' font-weight='bold' font-size='10'>ISOLATED: ZERO CRATE RE-INFER DELAY (saves 21s)</text>")
-
-# Shadow Engine Box
 s.append(box(350, 172, 342, 66, "shadow engine (in-memory /dev/shm)", "applies proposed overlay in RAM disk · runs diagnostics\nchecks JSON, Markdown, SVG · no disk writes", fill=OK_FILL, stroke=OK))
 
-s.append(arrow(706, 116, 766, 116, "query result", INK, "a"))
-s.append(arrow(706, 205, 766, 205, "winner diff", OK, "g"))
-
-# Right: Developer Verification
-s.append(panel(766, 56, 178, 200, "outcome & writeback"))
+# Right boxes
 s.append(box(780, 90, 150, 48, "clean query", "instant sub-ms RTT", fill="white", stroke=INK))
 s.append(box(780, 150, 150, 48, "winner selected", "highest pass rate", fill=OK_FILL, stroke=OK))
 s.append(box(780, 206, 150, 36, "write local diff", "files applied safely", fill="white", stroke=INK))
 
+# Inter-panel arrows (drawn on top of panels)
+s.append(arrow(276, 110, 336, 110, "proposal", NET, "n", size=10))
+s.append(arrow(276, 156, 336, 156, "hypotheses", NET, "n", size=10))
+s.append(arrow(706, 116, 766, 116, "query", INK, "a", size=10))
+s.append(arrow(706, 205, 766, 205, "winner", OK, "g", size=10))
+
+# Stat callouts
 y = 280
-for x, val, label in [
-    (28, "21 seconds", "saved per query (no crate re-infer)"),
-    (280, "0.4 seconds", "per shadow-run candidate fix"),
-    (540, "3+ hypotheses", "evaluated concurrently in RAM"),
-    (780, "Refusal gate", "blocks compile regressions (force overrides)"),
+for x, val, label, sublabel in [
+    (28, "21 seconds", "saved per query", "no crate re-infer"),
+    (260, "0.4 seconds", "per candidate fix", "in RAM disk"),
+    (500, "3+ hypotheses", "evaluated in RAM", "concurrently"),
+    (740, "Refusal gate", "blocks regressions", "force can override"),
 ]:
     s.append(f"<text x='{x}' y='{y}' fill='{INK}' font-weight='bold' font-size='14'>{esc(val)}</text>")
     s.append(f"<text x='{x}' y='{y + 16}' fill='{MUTED}' font-size='11'>{esc(label)}</text>")
+    s.append(f"<text x='{x}' y='{y + 30}' fill='{MUTED}' font-size='10'>{esc(sublabel)}</text>")
 
-s.append(para(28, 320, "Validating proposed file edits directly inside a shared language server invalidates warm compiler caches, triggering expensive crate re-inference (over 20s in large repositories). prod-code isolates speculative edits in dedicated RAM-disk shadow engines. Edits that introduce diagnostics or syntax errors are refused in memory without touching disk or primary state, while callers retain the option to force-apply.", 125))
+s.append(para(28, 340, "Validating proposed file edits directly inside a shared language server invalidates warm compiler caches, triggering expensive crate re-inference (over 20s in large repositories). prod-code isolates speculative edits in dedicated RAM-disk shadow engines. Edits that introduce diagnostics or syntax errors are refused in memory without touching disk or primary state, while callers retain the option to force-apply.", 125))
 
 write("shadow-validation-pipeline.svg", s)
 
@@ -208,33 +209,26 @@ W, H = 960, 460
 s = head(W, H, "Production cluster: 9 nodes, 355 cores, language-aware routing",
          "Decentralized UDP gossip (:9401) · Automatic node placement · Specialized Darwin routing")
 
-# Left: Client Request Dispatch
+# Panels
 s.append(panel(16, 56, 250, 250, "client dispatch"))
+s.append(panel(310, 56, 634, 250, "9-node cluster fleet (355 CPU cores total)"))
+
+# Left boxes
 s.append(box(30, 90, 222, 44, "client request", "code_check / test / def / slice", fill="white", stroke=INK))
 s.append(box(30, 146, 222, 54, "rendezvous placement", "highest-random-weight ordering\nremembers placement locally", fill=PURPLE_FILL, stroke=PURPLE))
 s.append(box(30, 212, 222, 44, "nested path router", "e.g. path: 'swift/Package.swift'\nroutes to Swift-capable node", fill=NET_FILL, stroke=NET))
 
-s.append(arrow(266, 173, 310, 173, "RPC route", NET, "n"))
-
-# Center: 9 Node Fleet
-s.append(panel(310, 56, 634, 250, "9-node cluster fleet (355 CPU cores total)"))
-
-# Node 1
+# Center boxes
 s.append(box(324, 86, 290, 50, "128c Linux aarch64 (Ampere Altra)", "Heavy Polyglot: Rust, Go, C++, Python\nload: 0.05/cpu · 10GbE LAN", fill=RING_FILL, stroke=RING))
-
-# Node 2-7
 s.append(box(624, 86, 306, 50, "192c Linux x86_64 (Zen 5 & Zen 4)", "6 Nodes × 32 Cores · NVMe storage & RAM\nHigh-throughput compilation & parallel tests", fill=NET_FILL, stroke=NET))
-
-# Node 8-9 macOS
 s.append(box(324, 146, 290, 50, "35c macOS Apple Silicon (M-series)", "Mac Studio (24c) + MacBook Pro (11c)\nDedicated: Swift, sourcekit-lsp, xcodebuild", fill=PURPLE_FILL, stroke=PURPLE))
-
-# Gossip Mesh Box
 s.append(box(624, 146, 306, 50, "decentralized UDP gossip (:9401)", "heartbeats every 5s · load, memory, status\nzero master SPOF · instant failover", fill=AMBER_FILL, stroke=AMBER))
-
-# Telemetry Box
 s.append(box(324, 206, 606, 44, "observability: Prometheus (:9401/metrics) · Pushgateway (:9091) · VictoriaMetrics & Grafana", "Events logged to events-YYYY-MM-DD.jsonl · p50/p95 latency audit via `prod-code metrics`", fill="white", stroke=GRID, bold=False, size=10))
 
 s.append(f"<text x='627' y='278' text-anchor='middle' fill='{MUTED}' font-size='10'>Sequential cluster binary rollout via scripts/cluster-rollout.py</text>")
+
+# Arrow drawn on top of panels
+s.append(arrow(266, 173, 310, 173, "RPC", NET, "n", size=10))
 
 y = 335
 for x, val, label in [
