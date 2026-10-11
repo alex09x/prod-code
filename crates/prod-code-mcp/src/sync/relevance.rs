@@ -67,6 +67,8 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
         return true;
     }
 
+    let is_code_or_manifest = is_code_source_or_manifest_file(path);
+
     // 1. Check directory components for non-code / build / data trees
     let mut under_code_dir = false;
     for component in path.components() {
@@ -94,6 +96,9 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                     | "fixtures"
                     | "testdata"
                     | "benches"
+                    | "benchmarks"
+                    | "benchmark"
+                    | "bench"
             ) {
                 under_code_dir = true;
             }
@@ -110,18 +115,18 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                         | "__pycache__"
                         | "artifacts"
                         | "dogfood-output"
-                        | "data"
-                        | "dataset"
-                        | "datasets"
-                        | "corpus"
-                        | "traces"
-                        | "state"
-                        | "research"
-                        | "benchmarks"
-                        | "benchmark"
                         | ".idea"
                         | ".vscode"
                 )
+            {
+                return false;
+            }
+            if !under_code_dir
+                && matches!(
+                    s.as_ref(),
+                    "data" | "dataset" | "datasets" | "corpus" | "traces" | "state" | "research"
+                )
+                && !is_code_or_manifest
             {
                 return false;
             }
@@ -156,6 +161,33 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
     }
 
     // 4. Code & manifest extensions
+    if is_code_or_manifest {
+        return true;
+    }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let ext_lower = ext.to_lowercase();
+        matches!(
+            ext_lower.as_str(),
+            "xml"
+                | "svg"
+                | "cmake"
+                | "yaml"
+                | "yml"
+                | "json"
+                | "html"
+                | "htm"
+                | "css"
+                | "scss"
+                | "sass"
+                | "less"
+        )
+    } else {
+        false
+    }
+}
+
+/// Returns true if the path points to a programming language source code file or manifest.
+fn is_code_source_or_manifest_file(path: &Path) -> bool {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_lowercase();
         matches!(
@@ -257,23 +289,10 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "sh"
                 | "bash"
                 | "zsh"
-                | "html"
-                | "htm"
-                | "css"
-                | "scss"
-                | "sass"
-                | "less"
-                | "xml"
-                | "svg"
-                | "cmake"
                 | "toml"
-                | "lock" // Cargo.lock, yarn.lock, poetry.lock: pin what the server builds
-                | "yaml"
-                | "yml"
-                | "json"
+                | "lock"
         )
     } else {
-        // Files without extension: manifests and scripts
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         matches!(
             file_name,

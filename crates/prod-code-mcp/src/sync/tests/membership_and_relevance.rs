@@ -219,4 +219,69 @@ version = "0.2.2"
             "crates/example/target/debug/build/foo.rs"
         ));
     }
+
+    #[test]
+    fn benchmarks_and_nested_schema_manifests_are_relevant_and_synced() {
+        // Issue #1063: benchmarks/benches/schema/Cargo.toml and src/*.rs must be synced
+        assert!(is_relevant_code_or_manifest_file(
+            "benchmarks/benches/schema/Cargo.toml"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "benchmarks/benches/schema/Cargo.toml"
+        ));
+        assert!(is_relevant_code_or_manifest_file(
+            "benchmarks/benches/schema/src/lib.rs"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "benchmarks/benches/schema/src/lib.rs"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "benchmarks/benches/schema/README.md"
+        ));
+    }
+
+    #[test]
+    fn python_packages_under_datasets_and_research_are_relevant_and_synced() {
+        // Issue #1064: tracked code files in directories named datasets/data/research must be synced
+        assert!(is_relevant_code_or_manifest_file(
+            "qis/datasets/__init__.py"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "qis/datasets/__init__.py"
+        ));
+        assert!(is_relevant_code_or_manifest_file(
+            "qis/datasets/synthetic.py"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "qis/datasets/synthetic.py"
+        ));
+        assert!(is_relevant_code_or_manifest_file(
+            "qis/datasets/tests/synthetic_test.py"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "qis/datasets/tests/synthetic_test.py"
+        ));
+        assert!(is_relevant_code_or_manifest_file(
+            "research/models/transformer.py"
+        ));
+        assert!(crate::sync::filter_path::is_synced_git_path(
+            "research/models/transformer.py"
+        ));
+
+        // Non-code data dumps in datasets/research must still be excluded unless in fixtures
+        assert!(!is_relevant_code_or_manifest_file("data/prices.csv"));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            "data/prices.csv"
+        ));
+        assert!(!is_relevant_code_or_manifest_file("research/bench.jsonl"));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            "research/bench.jsonl"
+        ));
+        assert!(!is_relevant_code_or_manifest_file(
+            "qis/datasets/raw_dump.csv"
+        ));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            "qis/datasets/raw_dump.csv"
+        ));
+    }
 }

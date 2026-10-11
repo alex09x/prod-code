@@ -119,6 +119,9 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
                 | "fixtures"
                 | "testdata"
                 | "benches"
+                | "benchmarks"
+                | "benchmark"
+                | "bench"
                 | "examples"
                 | "include"
                 | "lib"
@@ -149,8 +152,6 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
                     | "traces"
                     | "state"
                     | "research"
-                    | "benchmarks"
-                    | "benchmark"
             )
         {
             return false;
