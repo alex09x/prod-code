@@ -922,7 +922,7 @@ async fn tools_call_times_out_with_typed_error_under_budget() {
 /// Issue #1065: caller-supplied `timeout_secs` governs tool execution and is not clamped to 150s.
 #[test]
 fn resolve_tool_call_timeout_honors_caller_override_or_defaults_to_mcp_ceiling() {
-    use prod_code_mcp::{resolve_tool_call_timeout, MCP_TOOL_CALL_TIMEOUT};
+    use prod_code_mcp::{MAX_TOOL_CALL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, resolve_tool_call_timeout};
 
     // Default when omitted
     assert_eq!(
@@ -950,6 +950,12 @@ fn resolve_tool_call_timeout_honors_caller_override_or_defaults_to_mcp_ceiling()
     assert_eq!(
         resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 2400 })),
         std::time::Duration::from_secs(2405)
+    );
+
+    // Extreme timeouts are safely clamped to MAX_TOOL_CALL_TIMEOUT (24 hours)
+    assert_eq!(
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": u64::MAX })),
+        MAX_TOOL_CALL_TIMEOUT
     );
 
     // Invalid non-integer types safely fall back to default

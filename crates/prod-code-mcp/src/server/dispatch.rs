@@ -21,15 +21,19 @@ use crate::tools::{execute_tool, list_tools};
 /// Server-safe default timeout for MCP tool call execution when `timeout_secs` is omitted.
 pub const MCP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(150);
 
+/// Upper ceiling for MCP tool call execution to prevent unbounded resource hold (24 hours).
+pub const MAX_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
 /// Resolve effective tool call execution timeout from arguments.
-/// When caller provides `timeout_secs` (> 0), that timeout governs execution with a small margin.
+/// When caller provides `timeout_secs` (> 0), that timeout governs execution with a small margin,
+/// clamped to `MAX_TOOL_CALL_TIMEOUT` (24h).
 /// Otherwise falls back to `MCP_TOOL_CALL_TIMEOUT` (150s).
 pub fn resolve_tool_call_timeout(arguments: &serde_json::Value) -> std::time::Duration {
     arguments
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
         .filter(|&s| s > 0)
-        .map(|s| std::time::Duration::from_secs(s.saturating_add(5)))
+        .map(|s| std::time::Duration::from_secs(s.saturating_add(5)).min(MAX_TOOL_CALL_TIMEOUT))
         .unwrap_or(MCP_TOOL_CALL_TIMEOUT)
 }
 
