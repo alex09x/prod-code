@@ -127,8 +127,18 @@ export PROD_CODE_REMOTE="<gateway-node-ip>:9400"
 Подробные инструкции по настройке TLS-сертификатов и развертыванию шлюзов приведены в [`README.md`](../README.md).
 
 ### 2. Подключение к AI-агентам (Claude Code, OpenAI Codex, Antigravity)
-Добавьте сервер в ваш MCP-конфиг (`~/.config/claude/claude_desktop_config.json` или конфигурацию агента):
 
+Для **Claude Code**:
+```bash
+claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=<gateway-node-ip>:9400 -- prod-code mcp
+```
+
+Для **OpenAI Codex CLI**:
+```bash
+codex mcp add prod-code --env PROD_CODE_REMOTE=<gateway-node-ip>:9400 -- prod-code mcp
+```
+
+Для **Google Antigravity** / **Gemini CLI** (в `~/.gemini/config/mcp_config.json` или проектном `.mcp.json`):
 ```json
 {
   "mcpServers": {
