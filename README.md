@@ -47,6 +47,11 @@ tests complement those scenarios. The required coverage floor is 80% of regions 
 
 ## Architecture
 
+![Architecture: developer workstation to 9-node cluster, Salsa DB per worktree](docs/img/architecture-overview.svg)
+
+<details>
+<summary>Click to view Mermaid flowchart and component mapping</summary>
+
 ```mermaid
 flowchart TD
     subgraph ClientHost["Developer Workstation (Laptop / Desktop)"]
@@ -65,19 +70,19 @@ flowchart TD
 
     subgraph GatewayCluster["Production Cluster (9 nodes · 355 CPU cores)"]
         subgraph LinuxAarch64["128-Core aarch64 (Ampere Altra)"]
-            NodeRama["Linux aarch64 build node (128 cpus)\nRust, Go, C++, Python, TS, Java, Kotlin"]
+            LinuxArmNode["Linux aarch64 build node (128 cpus)\nRust, Go, C++, Python, TS, Java, Kotlin"]
         end
 
         subgraph LinuxX86["High-Throughput x86_64 Nodes (192 cpus)"]
-            NodeRam11["Zen 5 build node (32 cpus)"]
-            NodeRamX["Zen 4 build node + telemetry (32 cpus)"]
-            NodeRam9["Polyglot build node (32 cpus)"]
-            NodeZFS["Storage & build nodes (96 cpus)"]
+            LinuxX86Node1["Zen 5 build node (32 cpus)"]
+            LinuxX86Node2["Zen 4 build node + telemetry (32 cpus)"]
+            LinuxX86Node3["Polyglot build node (32 cpus)"]
+            LinuxX86Storage["Storage & build nodes (96 cpus)"]
         end
 
         subgraph MacNodes["Apple Silicon macOS Nodes (35 cpus)"]
-            NodeStudio["macOS build node (24 cpus) · Swift, Go"]
-            NodeMacbook["macOS build node (11 cpus) · Swift"]
+            MacNodeStudio["macOS build node (24 cpus) · Swift, Go"]
+            MacNodeBook["macOS build node (11 cpus) · Swift"]
         end
 
         subgraph GatewayInternals["Gateway Architecture (per node)"]
@@ -92,10 +97,12 @@ flowchart TD
     Telemetry --> Monitoring["Prometheus + VictoriaMetrics + Grafana"]
 ```
 
+</details>
+
 `prod-code` separates the lightweight developer interface from heavy language intelligence and compilation:
 
 1. **Mirroring over Mounting**: Workspaces synchronize fast Base64 diffs over 10 GbE LAN instead of network-mounting filesystems (NFS/SSHFS), keeping filesystem operations local and fast.
-2. **One Analyzer per Worktree**: Salsa databases and child language servers run isolated per worktree (`<repo>--wt-<hash>`), eliminating cache contamination between concurrent agent sessions.
+2. **Worktree Isolation**: Rust worktree mirrors attach isolated overlays to a shared base compiler database (`SharedWorkspace::with_base`), while child language servers run isolated per-process, avoiding cross-session state corruption.
 3. **Dual-Engine Shadow Validation**: Code edits are verified on dedicated shadow engines in memory before writing to disk, ensuring speculative proposals cannot invalidate warm primary caches.
 4. **Polyglot Cluster Gossip**: Nodes discover each other via UDP gossip on `:9401`, evaluate load and memory pressure, and route requests to capable nodes (including automatic rerouting of Swift subprojects to macOS nodes).
 
@@ -112,33 +119,29 @@ Run commands with `cargo +1.95.0` to use that toolchain without changing your de
 
 ## Install
 
-### Package Managers & Direct Download
+### Direct Download & Packages
 
 Choose your preferred installation method for the `prod-code` CLI:
 
 ```sh
-# Homebrew (macOS & Linux)
-brew tap alex09x/tap
-brew install prod-code
-
 # Direct shell installer (detects OS and architecture)
 curl -fsSL https://prod.codes/install.sh | sh
 
 # Debian / Ubuntu (.deb)
-curl -fsSLO https://github.com/alex09x/prod-code/releases/latest/download/prod-code_amd64.deb
-sudo dpkg -i prod-code_amd64.deb
+curl -fsSLO https://github.com/alex09x/prod-code/releases/latest/download/prod-code_0.3.29_amd64.deb
+sudo dpkg -i prod-code_0.3.29_amd64.deb
 
 # RHEL / Fedora / Rocky Linux (.rpm)
-sudo rpm -i https://github.com/alex09x/prod-code/releases/latest/download/prod-code.x86_64.rpm
+sudo rpm -i https://github.com/alex09x/prod-code/releases/latest/download/prod-code-0.3.29-1.x86_64.rpm
 
-# Arch Linux (.pkg.tar.zst)
-sudo pacman -U https://github.com/alex09x/prod-code/releases/latest/download/prod-code-x86_64.pkg.tar.zst
+# Arch Linux (.pkg.tar.gz)
+sudo pacman -U https://github.com/alex09x/prod-code/releases/latest/download/prod-code-0.3.29-1-x86_64.pkg.tar.gz
 
 # Build from source
 cargo install --path crates/prod-code-client
 ```
 
-Native notarized macOS installers (`.pkg` and `.dmg`) and standalone binaries for `x86_64` and `aarch64` (Linux & macOS) are available on [GitHub Releases](https://github.com/alex09x/prod-code/releases/latest).
+Native notarized macOS installers (`prod-code-0.3.29-arm64.pkg` and `.dmg`) and standalone binaries for Linux (`x86_64`, `aarch64`) and macOS (`arm64` Apple Silicon) are available on [GitHub Releases](https://github.com/alex09x/prod-code/releases/latest).
 
 ### In-Place Self-Updater
 
@@ -367,12 +370,12 @@ what is missing (0.4 s instead of ~7 s for a 10 MB repository). After that the c
 watermark per node and sends a diff. Content travels base64, which took a 10.8 MB first sync
 from 8.1 s to 0.76 s. The MCP server watches the tree and syncs only when something changed.
 
-**One analyzer per worktree, never shared.** Salsa holds one state of one workspace keyed by
-file path, so two worktrees served from one database answer each other's questions. Every git
-worktree gets its own server workspace and its own database, named `<repo>--wt-<hash>`. The
-cost is the first load; the engine then stays resident until it has been idle for thirty
-minutes (`--idle-evict-secs`), and worktree directories are pruned after seven days
-(`--prune-worktree-days`).
+**Worktree isolation with shared base analysis.** Each git worktree receives its own server
+workspace directory named `<repo>--wt-<hash>`. In Rust, worktrees attach isolated session overlays
+to a shared base compiler database (`SharedWorkspace::with_base`), keeping memory usage bounded
+while preventing cross-session bleed. Child language servers run isolated per-process. The engine
+stays resident until idle for thirty minutes (`--idle-evict-secs`), and worktree directories are
+pruned after seven days (`--prune-worktree-days` or `prune_worktree_secs = 604800`).
 
 **Proposals are checked on a second analyzer.** Validating an edit opens the proposed text in the
 analyzer and closes it again; in the analyzer every other query uses, a proposal that changes
@@ -380,6 +383,8 @@ what a widely imported file declares made the next query re-infer the crate (21 
 `references` after a dry run). Validation sessions run on a second engine for the same
 workspace, fed by every sync like the first, so a dry run never reaches anyone else's query. It
 costs the memory of one more database per workspace that has been validated.
+
+![Dual-engine shadow validation: speculative edits tested without cache poisoning](docs/img/shadow-validation-pipeline.svg)
 
 **Builds and tests run on the node**, in the workspace's own `target/`, which stays warm
 between runs. Files a command changes are written back into your checkout.
@@ -392,6 +397,8 @@ nested project of another language — `code_test {path: "swift"}` in a Rust rep
 SwiftPM package under `swift/` — goes to a node that serves that language, placed under its own
 key so the checkout's own placement stays. Nodes given with `--remote` on the command line are
 used as given, without asking the cluster.
+
+![Production cluster: 9 nodes, 355 cores, language-aware routing](docs/img/cluster-topology.svg)
 
 ```
 $ prod-code cluster
@@ -473,8 +480,8 @@ engines = ["rust", "go", "cpp", "python", "typescript"]
 # Unload idle engines after this many seconds (0 disables, default: 1800)
 idle_evict_secs = 1800
 
-# Retain git worktree mirrors for this many days (default: 7)
-prune_worktree_days = 7
+# Retain git worktree mirrors for this many seconds (default: 3600; 604800 = 7 days)
+prune_worktree_secs = 604800
 
 # RAM-disk build cache (/dev/shm) for high-throughput compilation
 build_cache_ram = false
@@ -521,25 +528,25 @@ The client and gateway respect the following environment variables:
 | `PROD_CODE_AUTH_TOKEN` | Client / Gateway | Shared bearer authentication token for secure RPC connections across untrusted networks. |
 | `PROD_CODE_ENGINES` | Gateway | Comma-separated list of engines the node is permitted to serve (e.g. `swift` on macOS nodes, `rust,go` on Linux). |
 | `PROD_CODE_SIGN_IDENTITY` | Gateway (macOS) | Developer ID / ad-hoc signing identity for macOS gateway daemons to preserve Local Network permissions across updates. |
-| `PROD_CODE_LOCAL` | Client | When set to `1` or `true`, forces local execution mode, bypassing remote gateways. |
+| `PROD_CODE_LOCAL` | Build Hook | Optional escape hatch bypassing the local-build guard hook (`prod-code-local-build-guard.py`) for commands that must compile locally. |
 
 ## Operating & Fleet Management
 
-**Automated Cluster Rollout.** Deploy zero-downtime updates across multi-node clusters using our rollout scripts:
+**Cluster Rollout.** Deploy binary updates across the cluster using the rollout script:
 
 ```sh
-# Rolling upgrade across all nodes with canary staging and parallel downloads
-python3 scripts/cluster-rollout.py --release 0.3.29
+# Copy local binary to cluster nodes, restart systemd service, and verify versions
+python3 scripts/cluster-rollout.py --version 0.3.29
 
 # Or run the shell orchestrator
-scripts/cluster-rollout.sh 0.3.29
+scripts/cluster-rollout.sh --version 0.3.29
 ```
 
-The rollout script verifies SHA-256 package checksums, upgrades a canary node, verifies health checks (`GET http://<node>:9401/health`), and performs a sequential rolling restart across remaining nodes.
+The script locates the compiled binary locally, copies it via `scp` to each node sequentially, restarts the `prod-code-gateway` service, and checks `systemctl is-active` and `prod-code-server --version` to verify the deployment.
 
 **Prometheus & VictoriaMetrics Telemetry.** Gateways export native metrics for Grafana dashboards:
 - **HTTP Scrape Endpoint**: `http://<node>:9401/metrics` exposes Prometheus exposition format metrics (CPU, RSS memory, cache hit rates, query latencies, active Salsa engines).
-- **Health Probes**: `http://<node>:9401/health` returns `200 OK` when the node is ready to accept workspace traffic.
+- **Health Probes**: `http://<node>:9401/health` returns `200 OK` as an HTTP listener liveness probe.
 - **Pushgateway**: Configure `mode = "push"` or `mode = "both"` in `gateway.toml` to stream telemetry directly to a central Prometheus Pushgateway.
 - **Event Audit Ledger**: Every query, command, and sync round appends an audit event to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`. Analyze aggregate latency and usage across the cluster with `prod-code metrics [--since SECS]`.
 

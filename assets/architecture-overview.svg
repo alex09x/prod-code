@@ -1,0 +1,57 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 960 420' width='960' height='420' font-family='JetBrains Mono, SFMono-Regular, Menlo, monospace' font-size='12'>
+<defs>
+<marker id='a' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='#1f2328'/></marker>
+<marker id='n' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='#1d4ed8'/></marker>
+<marker id='r' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='#c0392b'/></marker>
+<marker id='g' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='#2e7d32'/></marker>
+</defs>
+<rect width='960' height='420' fill='white'/>
+<text x='16' y='24' font-size='15' font-weight='bold' fill='#1f2328'>Architecture: developer workstation to 9-node cluster, Salsa DB per worktree</text>
+<text x='16' y='42' fill='#6a737d'>Mirroring over mounting · Base64 delta sync · In-memory shadow validation · Gossip routing</text>
+<rect x='16' y='56' width='310' height='260' rx='10' fill='#f6f8fa' stroke='#d0d7de'/><text x='28' y='76' fill='#1f2328' font-weight='bold' font-size='13'>developer workstation (0% CPU load)</text>
+<rect x='28' y='86' width='134' height='40' rx='6' fill='#f3e8ff' stroke='#6f42c1' stroke-width='1.5'/><text x='95.0' y='104.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>AI agents</text><text x='95.0' y='119.0' text-anchor='middle' fill='#6a737d' font-size='10'>Claude, Codex, AGY</text>
+<rect x='174' y='86' width='138' height='40' rx='6' fill='white' stroke='#1f2328' stroke-width='1.5'/><text x='243.0' y='104.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>editors &amp; CLI</text><text x='243.0' y='119.0' text-anchor='middle' fill='#6a737d' font-size='10'>Zed, VSCode, Neovim</text>
+<line x1='95' y1='126' x2='95' y2='146' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<line x1='243' y1='126' x2='243' y2='146' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<rect x='28' y='146' width='134' height='42' rx='6' fill='#e8efff' stroke='#1d4ed8' stroke-width='1.5'/><text x='95.0' y='165.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>prod-code mcp</text><text x='95.0' y='180.0' text-anchor='middle' fill='#6a737d' font-size='10'>67 tools · hot reload</text>
+<rect x='174' y='146' width='138' height='42' rx='6' fill='#e8efff' stroke='#1d4ed8' stroke-width='1.5'/><text x='243.0' y='165.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>prod-code lsp</text><text x='243.0' y='180.0' text-anchor='middle' fill='#6a737d' font-size='10'>stdio LSP bridge</text>
+<line x1='95' y1='188' x2='160' y2='208' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<line x1='243' y1='188' x2='180' y2='208' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<rect x='28' y='208' width='284' height='48' rx='6' fill='white' stroke='#1f2328' stroke-width='1.5'/><text x='170.0' y='230.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>fast mirror &amp; sync engine</text><text x='170.0' y='245.0' text-anchor='middle' fill='#6a737d' font-size='10'>Base64 diffs · watermarks · stdlib cache</text>
+<text x='170' y='276' text-anchor='middle' fill='#6a737d' font-size='10'>0.76s cold sync (10.8 MB) · sub-ms edits</text>
+<rect x='340' y='66' width='160' height='240' rx='10' fill='#e8efff' stroke='#1d4ed8' stroke-dasharray='4 3'/>
+<text x='420' y='88' text-anchor='middle' fill='#1d4ed8' font-weight='bold'>10 GbE LAN mesh</text>
+<line x1='312' y1='232' x2='514' y2='232' stroke='#1d4ed8' stroke-width='1.5' marker-end='url(#n)'/><text x='413.0' y='225' text-anchor='middle' fill='#1d4ed8' font-size='11'>Base64 delta</text>
+<line x1='514' y1='166' x2='312' y2='166' stroke='#1d4ed8' stroke-width='1.5' marker-end='url(#n)'/><text x='413.0' y='159' text-anchor='middle' fill='#1d4ed8' font-size='11'>AST responses</text>
+<text x='420' y='125' text-anchor='middle' fill='#1d4ed8' font-size='10'>RPC: :9400</text>
+<text x='420' y='140' text-anchor='middle' fill='#1d4ed8' font-size='10'>Gossip: :9401 UDP</text>
+<text x='420' y='198' text-anchor='middle' fill='#6a737d' font-size='10'>rendezvous hashing</text>
+<text x='420' y='212' text-anchor='middle' fill='#6a737d' font-size='10'>failover on dead node</text>
+<text x='420' y='265' text-anchor='middle' fill='#1d4ed8' font-weight='bold' font-size='11'>&lt; 1 ms RTT</text>
+<text x='420' y='280' text-anchor='middle' fill='#6a737d' font-size='10'>direct socket buffers</text>
+<rect x='514' y='56' width='430' height='260' rx='10' fill='#f6f8fa' stroke='#d0d7de'/><text x='526' y='76' fill='#1f2328' font-weight='bold' font-size='13'>cluster gateway node (1 of 9 · 355 cpus total)</text>
+<rect x='526' y='86' width='120' height='38' rx='6' fill='#fef3c7' stroke='#b45309' stroke-width='1.5'/><text x='586.0' y='103.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>gossip router</text><text x='586.0' y='118.0' text-anchor='middle' fill='#6a737d' font-size='10'>UDP broadcast</text>
+<line x1='646' y1='105' x2='676' y2='105' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<rect x='676' y='86' width='134' height='38' rx='6' fill='white' stroke='#1f2328' stroke-width='1.5'/><text x='743.0' y='103.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>worktree mirror</text><text x='743.0' y='118.0' text-anchor='middle' fill='#6a737d' font-size='10'>&lt;repo&gt;--wt-&lt;hash&gt;</text>
+<line x1='810' y1='105' x2='836' y2='105' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<rect x='836' y='86' width='94' height='38' rx='6' fill='#fef3c7' stroke='#b45309' stroke-width='1.5'/><text x='883.0' y='103.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>metrics</text><text x='883.0' y='118.0' text-anchor='middle' fill='#6a737d' font-size='10'>Prometheus</text>
+<line x1='743' y1='124' x2='600' y2='150' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<line x1='743' y1='124' x2='743' y2='150' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<line x1='743' y1='124' x2='870' y2='150' stroke='#1f2328' stroke-width='1.5' marker-end='url(#a)'/>
+<rect x='526' y='150' width='140' height='52' rx='6' fill='#fdecea' stroke='#c0392b' stroke-width='1.5'/><text x='596.0' y='174.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>primary Salsa DB</text><text x='596.0' y='189.0' text-anchor='middle' fill='#6a737d' font-size='10'>rust-analyzer in-proc</text>
+<rect x='676' y='150' width='134' height='52' rx='6' fill='#e8f5e9' stroke='#2e7d32' stroke-width='1.5'/><text x='743.0' y='174.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>shadow engine</text><text x='743.0' y='189.0' text-anchor='middle' fill='#6a737d' font-size='10'>in-memory /dev/shm</text>
+<rect x='820' y='150' width='110' height='52' rx='6' fill='white' stroke='#1f2328' stroke-width='1.5'/><text x='875.0' y='174.0' text-anchor='middle' fill='#1f2328' font-size='11' font-weight='bold'>remote exec</text><text x='875.0' y='189.0' text-anchor='middle' fill='#6a737d' font-size='10'>cargo / go / pytest</text>
+<text x='596' y='218' text-anchor='middle' fill='#6a737d' font-size='10'>answers all queries</text>
+<text x='743' y='218' text-anchor='middle' fill='#2e7d32' font-size='10'>0 cache poison</text>
+<text x='875' y='218' text-anchor='middle' fill='#6a737d' font-size='10'>warm target/</text>
+<rect x='526' y='234' width='404' height='36' rx='6' fill='white' stroke='#d0d7de' stroke-width='1.5'/><text x='728.0' y='250.0' text-anchor='middle' fill='#1f2328' font-size='10' font-weight='normal'>fleet topology: 128c aarch64 (Altra) + 192c x86_64 (Zen4/5) + 35c macOS (M-series)</text><text x='728.0' y='265.0' text-anchor='middle' fill='#6a737d' font-size='10'>Swift PM auto-routed to macOS · polyglot on Linux · 30m idle evict · 7d prune</text>
+<text x='28' y='345' fill='#1f2328' font-weight='bold' font-size='14'>0.76 s</text>
+<text x='28' y='361' fill='#6a737d' font-size='11'>cold sync (10.8 MB)</text>
+<text x='240' y='345' fill='#1f2328' font-weight='bold' font-size='14'>&lt; 1 ms</text>
+<text x='240' y='361' fill='#6a737d' font-size='11'>LAN round trip latency</text>
+<text x='460' y='345' fill='#1f2328' font-weight='bold' font-size='14'>355 cpus</text>
+<text x='460' y='361' fill='#6a737d' font-size='11'>across 9 cluster nodes</text>
+<text x='680' y='345' fill='#1f2328' font-weight='bold' font-size='14'>0% CPU</text>
+<text x='680' y='361' fill='#6a737d' font-size='11'>developer laptop offload</text>
+<text x='28' y='388' fill='#6a737d' font-size='11'>Workspaces synchronize over 10 GbE LAN using incremental Base64 diffs rather than slow network mounts (NFS/SSHFS). Each git</text><text x='28' y='404' fill='#6a737d' font-size='11'>worktree owns an isolated in-process Salsa compiler database (&lt;repo&gt;--wt-&lt;hash&gt;) with zero cross-session cache contamination.</text><text x='28' y='420' fill='#6a737d' font-size='11'>Edits are pre-checked on a dedicated RAM-disk shadow engine before disk writes. The cluster gossip mesh auto-routes requests to</text><text x='28' y='436' fill='#6a737d' font-size='11'>the quietest capable node, steering Apple Swift workloads to macOS Apple Silicon nodes and polyglot builds to high-throughput</text><text x='28' y='452' fill='#6a737d' font-size='11'>128-core Linux nodes.</text>
+</svg>
