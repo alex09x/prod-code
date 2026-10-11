@@ -164,13 +164,16 @@ Register `prod-code` once; every repository accessed by your agent gains remote 
 
 ```sh
 # Claude Code
-claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
+claude mcp add --scope user prod-code -e "PROD_CODE_REMOTE=192.0.2.10:9400" -- prod-code mcp
 
 # OpenAI Codex CLI
-codex mcp add prod-code --env PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
+codex mcp add prod-code --env "PROD_CODE_REMOTE=192.0.2.10:9400" -- prod-code mcp
+
+# Gemini CLI
+gemini mcp add -s user prod-code prod-code mcp -e "PROD_CODE_REMOTE=192.0.2.10:9400"
 ```
 
-For **Google Antigravity** / **Gemini CLI**, add the server definition to `~/.gemini/config/mcp_config.json`:
+For **Google Antigravity**, add the server definition to `~/.gemini/config/mcp_config.json` (or use `~/.gemini/settings.json` for Gemini CLI):
 
 ```json
 {
@@ -654,7 +657,8 @@ mirror stays current, why tools take a symbol instead of a position, validating 
 writing it, where the milliseconds went, and running candidate fixes in overlay shadows.
 
 In this repository: [`ROADMAP.md`](ROADMAP.md) for what is built and what is not,
-[`CHANGELOG.md`](CHANGELOG.md) for what each release changed, and
+[`CHANGELOG.md`](CHANGELOG.md) for what each release changed,
+[`docs/release-v0.3.29.md`](docs/release-v0.3.29.md) for the v0.3.29 architectural release overview and cluster offloading benchmarks, and
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for how a change gets made here (an issue and a pull
 request with the commands that reproduce it; checks run on the build nodes, there is no
 hosted CI).
