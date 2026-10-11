@@ -232,3 +232,52 @@ fn test_nested_engine_does_not_misclassify_rust_dirs_with_workspace_as_starlark(
         "crates/prod-code-mcp/src must belong to the Rust root project"
     );
 }
+
+#[tokio::test]
+async fn test_route_in_routes_swift_test_directory_to_swift_node() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"r\"\n").unwrap();
+    std::fs::create_dir_all(root.join("swift/Tests/TakoTests")).unwrap();
+    std::fs::write(root.join("swift/Package.swift"), "").unwrap();
+
+    let rust = node_serving(&["rust", "go"]).await;
+    let swift = node_serving(&["swift (sourcekit-lsp)"]).await;
+    let nodes = [rust, swift];
+
+    let routed = route_in(&nodes, "mixed", rust, &root, "swift/Tests/TakoTests", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        routed, swift,
+        "swift test directory must route to swift node"
+    );
+}
+
+#[tokio::test]
+async fn test_route_in_routes_root_swift_project_away_from_incompatible_default_node() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    std::fs::create_dir_all(root.join("Sources/App")).unwrap();
+    std::fs::write(root.join("Package.swift"), "").unwrap();
+
+    let rust = node_serving(&["rust", "go"]).await;
+    let swift = node_serving(&["swift (sourcekit-lsp)"]).await;
+    let nodes = [rust, swift];
+
+    let routed = route_in(&nodes, "swift-repo", rust, &root, "Sources/App", None)
+        .await
+        .unwrap();
+    assert_eq!(routed, swift, "root swift repo must route to swift node");
+}
+
+#[tokio::test]
+async fn test_single_node_refuses_when_it_does_not_serve_requested_engine() {
+    let rust = node_serving(&["rust", "go"]).await;
+    let err =
+        crate::cluster::pick::pick_node_with(&[rust], "swift-repo", Some("swift"), None, None)
+            .await
+            .expect_err("single rust node must refuse swift engine");
+    let text = format!("{err:#}");
+    assert!(text.contains("no reachable gateway serves swift"), "{text}");
+}

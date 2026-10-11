@@ -41,7 +41,18 @@ pub async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let mut remote = remote;
-    let mut result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args.clone()).await;
+    let timeout = prod_code_mcp::resolve_tool_call_timeout(&args);
+    let mut result = tokio::time::timeout(
+        timeout,
+        prod_code_mcp::tools::execute_tool(remote, &root, tool, args.clone()),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "{tool} timed out after {}s; pass a file path hint or check gateway connectivity",
+            timeout.as_secs()
+        )
+    })?;
     if let Err(ref e) = result
         && prod_code_mcp::is_retryable_connection_error(tool, e)
         && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
@@ -50,7 +61,17 @@ pub async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -
         let identity = prod_code_mcp::sync::workspace_identity(&root);
         let name = identity.base.unwrap_or(identity.name);
         prod_code_mcp::cluster::remember_placement(&name, new_addr);
-        result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args).await;
+        result = tokio::time::timeout(
+            timeout,
+            prod_code_mcp::tools::execute_tool(remote, &root, tool, args),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{tool} timed out after {}s on failover node; check gateway connectivity",
+                timeout.as_secs()
+            )
+        })?;
     }
     let result = result?;
     for content in &result.content {
@@ -108,5 +129,35 @@ pub fn truncate(s: &str, n: usize) -> String {
     } else {
         let cut: String = s.chars().take(n.saturating_sub(1)).collect();
         format!("{cut}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_run_tool_times_out_with_actionable_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+
+        let err = run_tool(
+            addr,
+            "code_definition",
+            serde_json::json!({
+                "symbol": "NonExistent",
+                "timeout_millis": 50
+            }),
+        )
+        .await
+        .expect_err("must time out");
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timed out"), "{msg}");
+        assert!(msg.contains("check gateway connectivity"), "{msg}");
     }
 }

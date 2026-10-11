@@ -140,8 +140,36 @@ pub(crate) async fn pooled_query_with_budget(
         for attempt in 0..2 {
             let mut target_remote = remote;
             let ws_identity = workspace_identity(&root);
-            if let Some(remembered) = crate::cluster::remembered_node(&ws_identity.name) {
-                target_remote = remembered;
+            let (subpath, mut file_engine) = engine_project(&root, file);
+            if let Some(own) = crate::sync::engine_for_file(file)
+                && file_engine == crate::sync::expected_engine(&root)
+                && Some(own) != file_engine
+            {
+                file_engine = Some(own);
+            }
+            let key = match (&subpath, file_engine) {
+                (Some(_), Some(eng)) => format!("{}#{eng}", ws_identity.name),
+                (_, Some(eng)) if Some(eng) != crate::sync::expected_engine(&root) => {
+                    format!("{}#{eng}", ws_identity.name)
+                }
+                _ => ws_identity.name.clone(),
+            };
+            if let Some(remembered) = crate::cluster::remembered_node(&key) {
+                if match file_engine {
+                    Some(eng) => crate::cluster::default_serves(remembered, eng).await,
+                    None => true,
+                } {
+                    target_remote = remembered;
+                }
+            } else if key == ws_identity.name
+                && let Some(remembered) = crate::cluster::remembered_node(&ws_identity.name)
+            {
+                if match file_engine {
+                    Some(eng) => crate::cluster::default_serves(remembered, eng).await,
+                    None => true,
+                } {
+                    target_remote = remembered;
+                }
             }
             if let Some(ref current) = session {
                 if current.remote != target_remote {
