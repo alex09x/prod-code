@@ -15,6 +15,10 @@
   there. Agents reach it as MCP tools, editors as a drop-in language server.
 </p>
 
+<p align="center">
+  <img src="assets/architecture.png" alt="prod-code: Distributed Remote Code Intelligence Platform" width="100%">
+</p>
+
 </div>
 
 ---
