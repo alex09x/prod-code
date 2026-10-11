@@ -20,8 +20,18 @@ pub async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()>
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let mut remote = remote;
-    let mut result =
-        prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args.clone()).await;
+    let timeout = prod_code_mcp::resolve_tool_call_timeout(&args);
+    let mut result = tokio::time::timeout(
+        timeout,
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args.clone()),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "code_references timed out after {}s; pass a file path hint or check gateway connectivity",
+            timeout.as_secs()
+        )
+    })?;
     if let Err(ref e) = result
         && prod_code_mcp::is_retryable_connection_error("code_references", e)
         && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
@@ -30,7 +40,17 @@ pub async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()>
         let identity = prod_code_mcp::sync::workspace_identity(&root);
         let name = identity.base.unwrap_or(identity.name);
         prod_code_mcp::cluster::remember_placement(&name, new_addr);
-        result = prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args).await;
+        result = tokio::time::timeout(
+            timeout,
+            prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "code_references timed out after {}s on failover node; check gateway connectivity",
+                timeout.as_secs()
+            )
+        })?;
     }
     let result = result?;
     let mut has_refs = false;

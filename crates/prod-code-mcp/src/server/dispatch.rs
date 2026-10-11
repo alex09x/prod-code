@@ -29,6 +29,13 @@ pub const MAX_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// clamped to `MAX_TOOL_CALL_TIMEOUT` (24h).
 /// Otherwise falls back to `MCP_TOOL_CALL_TIMEOUT` (150s).
 pub fn resolve_tool_call_timeout(arguments: &serde_json::Value) -> std::time::Duration {
+    if let Some(ms) = arguments
+        .get("timeout_millis")
+        .and_then(|v| v.as_u64())
+        .filter(|&m| m > 0)
+    {
+        return std::time::Duration::from_millis(ms).min(MAX_TOOL_CALL_TIMEOUT);
+    }
     arguments
         .get("timeout_secs")
         .and_then(|v| v.as_u64())

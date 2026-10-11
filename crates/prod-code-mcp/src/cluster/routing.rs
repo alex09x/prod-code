@@ -115,7 +115,8 @@ pub async fn route_in(
     path: &str,
     placement_file: Option<&Path>,
 ) -> Result<SocketAddr> {
-    let Some(engine) = nested_engine(root, path) else {
+    let engine = nested_engine(root, path).or_else(|| engine_for_path(root, path));
+    let Some(engine) = engine else {
         return Ok(default);
     };
     if default_serves(default, engine).await {
@@ -143,8 +144,45 @@ pub fn nested_engine(root: &Path, path: &str) -> Option<&'static str> {
     }
 }
 
+/// The engine required by `path` under `root`: checks nested subprojects, path manifests,
+/// file extensions, directory contents, and the root project's expected engine.
+pub fn engine_for_path(root: &Path, path: &str) -> Option<&'static str> {
+    if let Some(engine) = nested_engine(root, path) {
+        return Some(engine);
+    }
+    let p = Path::new(path);
+    let hint = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.join(p)
+    };
+    if let (_, Some(engine)) = crate::sync::engine_project(root, &hint) {
+        return Some(engine);
+    }
+    if let Some(engine) = crate::sync::engine_for_file(&hint) {
+        return Some(engine);
+    }
+    if hint.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&hint)
+    {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file()
+                && let Some(engine) = crate::sync::engine_for_file(&p)
+                && !matches!(
+                    engine,
+                    "markdown" | "yaml" | "toml" | "json" | "html" | "css"
+                )
+            {
+                return Some(engine);
+            }
+        }
+    }
+    crate::sync::expected_engine(root)
+}
+
 /// Whether `node` lists `engine`.
-async fn default_serves(node: SocketAddr, engine: &str) -> bool {
+pub async fn default_serves(node: SocketAddr, engine: &str) -> bool {
     node_status(node)
         .await
         .is_ok_and(|status| supports_engine(&status, engine))
