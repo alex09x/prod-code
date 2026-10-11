@@ -45,9 +45,18 @@ def head(W, H, title, sub=None):
 
 def box(x, y, w, h, text, sub=None, fill="white", stroke=INK, bold=True, size=11):
     t = f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='6' fill='{fill}' stroke='{stroke}' stroke-width='1.5'/>"
-    t += f"<text x='{x + w / 2}' y='{y + h / 2 + (-2 if sub else 4)}' text-anchor='middle' fill='{INK}' font-size='{size}' font-weight='{'bold' if bold else 'normal'}'>{esc(text)}</text>"
-    if sub:
-        t += f"<text x='{x + w / 2}' y='{y + h / 2 + 13}' text-anchor='middle' fill='{MUTED}' font-size='10'>{esc(sub)}</text>"
+    sub_lines = [line.strip() for line in sub.split('\n')] if sub else []
+    if not sub_lines:
+        t += f"<text x='{x + w / 2}' y='{y + h / 2 + 4}' text-anchor='middle' fill='{INK}' font-size='{size}' font-weight='{'bold' if bold else 'normal'}'>{esc(text)}</text>"
+    elif len(sub_lines) == 1:
+        t += f"<text x='{x + w / 2}' y='{y + h / 2 - 2}' text-anchor='middle' fill='{INK}' font-size='{size}' font-weight='{'bold' if bold else 'normal'}'>{esc(text)}</text>"
+        t += f"<text x='{x + w / 2}' y='{y + h / 2 + 12}' text-anchor='middle' fill='{MUTED}' font-size='9.5'>{esc(sub_lines[0])}</text>"
+    else:
+        start_y = y + (h - (12 + len(sub_lines) * 12)) / 2 + 10
+        t += f"<text x='{x + w / 2}' y='{start_y}' text-anchor='middle' fill='{INK}' font-size='{size}' font-weight='{'bold' if bold else 'normal'}'>{esc(text)}</text>"
+        for i, s_line in enumerate(sub_lines):
+            line_y = start_y + 13 + i * 12
+            t += f"<text x='{x + w / 2}' y='{line_y}' text-anchor='middle' fill='{MUTED}' font-size='9'>{esc(s_line)}</text>"
     return t
 
 def panel(x, y, w, h, title, fill=PANEL):
@@ -74,8 +83,8 @@ def write(name: str, s: Sequence[str]) -> None:
 # ==============================================================================
 # 1. Architecture Overview (Ringfire style)
 # ==============================================================================
-W, H = 960, 420
-s = head(W, H, "Architecture: developer workstation to 9-node cluster, Salsa DB per worktree",
+W, H = 960, 480
+s = head(W, H, "Architecture: developer workstation to 9-node cluster, isolated worktree overlays",
          "Mirroring over mounting · Base64 delta sync · In-memory shadow validation · Gossip routing")
 
 # Left: Workstation Panel
@@ -119,15 +128,15 @@ s.append(arrow(743, 124, 600, 150))
 s.append(arrow(743, 124, 743, 150))
 s.append(arrow(743, 124, 870, 150))
 
-s.append(box(526, 150, 140, 52, "primary Salsa DB", "rust-analyzer in-proc", fill=RING_FILL, stroke=RING))
-s.append(box(676, 150, 134, 52, "shadow engine", "in-memory /dev/shm", fill=OK_FILL, stroke=OK))
+s.append(box(526, 150, 140, 52, "primary Salsa DB", "rust-analyzer in-proc\nshared base engine", fill=RING_FILL, stroke=RING))
+s.append(box(676, 150, 134, 52, "shadow engine", "in-memory /dev/shm\nisolated RAM-disk", fill=OK_FILL, stroke=OK))
 s.append(box(820, 150, 110, 52, "remote exec", "cargo / go / pytest", fill="white", stroke=INK))
 
 s.append(f"<text x='596' y='218' text-anchor='middle' fill='{MUTED}' font-size='10'>answers all queries</text>")
 s.append(f"<text x='743' y='218' text-anchor='middle' fill='{OK}' font-size='10'>0 cache poison</text>")
 s.append(f"<text x='875' y='218' text-anchor='middle' fill='{MUTED}' font-size='10'>warm target/</text>")
 
-s.append(box(526, 234, 404, 36, "fleet topology: 128c aarch64 (Altra) + 192c x86_64 (Zen4/5) + 35c macOS (M-series)", "Swift PM auto-routed to macOS · polyglot on Linux · 30m idle evict · 7d prune", fill="white", stroke=GRID, bold=False, size=10))
+s.append(box(526, 234, 404, 38, "fleet topology: 128c Altra + 192c Zen4/5 + 35c M-series", "Swift PM routed to macOS · polyglot on Linux · 30m evict · 7d prune", fill="white", stroke=GRID, bold=False, size=10))
 
 # Bottom Stat Callouts & Paragraph
 y = 345
@@ -140,14 +149,14 @@ for x, val, label in [
     s.append(f"<text x='{x}' y='{y}' fill='{INK}' font-weight='bold' font-size='14'>{esc(val)}</text>")
     s.append(f"<text x='{x}' y='{y + 16}' fill='{MUTED}' font-size='11'>{esc(label)}</text>")
 
-s.append(para(28, 388, "Workspaces synchronize over 10 GbE LAN using incremental Base64 diffs rather than slow network mounts (NFS/SSHFS). Each git worktree owns an isolated in-process Salsa compiler database (<repo>--wt-<hash>) with zero cross-session cache contamination. Edits are pre-checked on a dedicated RAM-disk shadow engine before disk writes. The cluster gossip mesh auto-routes requests to the quietest capable node, steering Apple Swift workloads to macOS Apple Silicon nodes and polyglot builds to high-throughput 128-core Linux nodes.", 130))
+s.append(para(28, 388, "Workspaces synchronize over 10 GbE LAN using incremental Base64 diffs rather than slow network mounts (NFS/SSHFS). Each git worktree attaches an isolated session overlay (<repo>--wt-<hash>) to a shared base compiler database (SharedWorkspace::with_base) with zero cross-session cache contamination. Edits are pre-checked on a dedicated RAM-disk shadow engine before disk writes. The cluster gossip mesh auto-routes requests to the quietest capable node, steering Apple Swift workloads to macOS Apple Silicon nodes and polyglot builds to high-throughput 128-core Linux nodes.", 125))
 
 write("architecture-overview.svg", s)
 
 # ==============================================================================
 # 2. Dual-Engine Shadow Validation Pipeline
 # ==============================================================================
-W, H = 960, 360
+W, H = 960, 400
 s = head(W, H, "Dual-engine shadow validation: speculative edits tested without cache poisoning",
          "Dry-run proposals evaluated in isolated RAM-disk workspace · Primary Salsa DB stays clean and warm")
 
@@ -167,7 +176,7 @@ s.append(box(350, 86, 342, 60, "primary Salsa DB (rust-analyzer)", "serves all r
 s.append(f"<text x='521' y='160' text-anchor='middle' fill='{RING}' font-weight='bold' font-size='10'>ISOLATED: ZERO CRATE RE-INFER DELAY (saves 21s)</text>")
 
 # Shadow Engine Box
-s.append(box(350, 172, 342, 66, "shadow engine (in-memory /dev/shm)", "applies proposed overlay in RAM disk · runs analyzer diagnostics\nchecks JSON, Markdown, SVG · zero files written to disk", fill=OK_FILL, stroke=OK))
+s.append(box(350, 172, 342, 66, "shadow engine (in-memory /dev/shm)", "applies proposed overlay in RAM disk · runs diagnostics\nchecks JSON, Markdown, SVG · no disk writes", fill=OK_FILL, stroke=OK))
 
 s.append(arrow(706, 116, 766, 116, "query result", INK, "a"))
 s.append(arrow(706, 205, 766, 205, "winner diff", OK, "g"))
@@ -183,26 +192,26 @@ for x, val, label in [
     (28, "21 seconds", "saved per query (no crate re-infer)"),
     (280, "0.4 seconds", "per shadow-run candidate fix"),
     (540, "3+ hypotheses", "evaluated concurrently in RAM"),
-    (780, "100% safe", "zero broken references written"),
+    (780, "Refusal gate", "blocks compile regressions (force overrides)"),
 ]:
     s.append(f"<text x='{x}' y='{y}' fill='{INK}' font-weight='bold' font-size='14'>{esc(val)}</text>")
     s.append(f"<text x='{x}' y='{y + 16}' fill='{MUTED}' font-size='11'>{esc(label)}</text>")
 
-s.append(para(28, 320, "Validating proposed file edits directly inside a shared language server invalidates warm compiler caches, triggering expensive crate re-inference (over 20s in large repositories). prod-code isolates all speculative edits in dedicated RAM-disk shadow engines. Edits that break public symbols or introduce syntax errors are caught in memory without touching disk or primary state.", 130))
+s.append(para(28, 320, "Validating proposed file edits directly inside a shared language server invalidates warm compiler caches, triggering expensive crate re-inference (over 20s in large repositories). prod-code isolates speculative edits in dedicated RAM-disk shadow engines. Edits that introduce diagnostics or syntax errors are refused in memory without touching disk or primary state, while callers retain the option to force-apply.", 125))
 
 write("shadow-validation-pipeline.svg", s)
 
 # ==============================================================================
 # 3. Cluster Topology & Language Routing
 # ==============================================================================
-W, H = 960, 420
+W, H = 960, 460
 s = head(W, H, "Production cluster: 9 nodes, 355 cores, language-aware routing",
          "Decentralized UDP gossip (:9401) · Automatic node placement · Specialized Darwin routing")
 
 # Left: Client Request Dispatch
 s.append(panel(16, 56, 250, 250, "client dispatch"))
 s.append(box(30, 90, 222, 44, "client request", "code_check / test / def / slice", fill="white", stroke=INK))
-s.append(box(30, 146, 222, 54, "rendezvous placement", "hash(workspace) % alive_nodes\nremembers placement locally", fill=PURPLE_FILL, stroke=PURPLE))
+s.append(box(30, 146, 222, 54, "rendezvous placement", "highest-random-weight ordering\nremembers placement locally", fill=PURPLE_FILL, stroke=PURPLE))
 s.append(box(30, 212, 222, 44, "nested path router", "e.g. path: 'swift/Package.swift'\nroutes to Swift-capable node", fill=NET_FILL, stroke=NET))
 
 s.append(arrow(266, 173, 310, 173, "RPC route", NET, "n"))
@@ -211,21 +220,21 @@ s.append(arrow(266, 173, 310, 173, "RPC route", NET, "n"))
 s.append(panel(310, 56, 634, 250, "9-node cluster fleet (355 CPU cores total)"))
 
 # Node 1
-s.append(box(324, 86, 290, 50, "128c Linux aarch64 (Ampere Altra)", "Heavy Polyglot: Rust, Go, C++, Python, Java, Zig, Dart\nload: 0.05/cpu · 10GbE LAN", fill=RING_FILL, stroke=RING))
+s.append(box(324, 86, 290, 50, "128c Linux aarch64 (Ampere Altra)", "Heavy Polyglot: Rust, Go, C++, Python\nload: 0.05/cpu · 10GbE LAN", fill=RING_FILL, stroke=RING))
 
 # Node 2-7
-s.append(box(624, 86, 306, 50, "192c Linux x86_64 (Zen 5 & Zen 4)", "6 Nodes × 32 Cores · NVMe storage & RAM cache\nHigh-throughput compilation & parallel tests", fill=NET_FILL, stroke=NET))
+s.append(box(624, 86, 306, 50, "192c Linux x86_64 (Zen 5 & Zen 4)", "6 Nodes × 32 Cores · NVMe storage & RAM\nHigh-throughput compilation & parallel tests", fill=NET_FILL, stroke=NET))
 
 # Node 8-9 macOS
-s.append(box(324, 146, 290, 50, "35c macOS Apple Silicon (M-series)", "Mac Studio (24c) + MacBook Pro (11c)\nDedicated engines: Swift, sourcekit-lsp, xcodebuild", fill=PURPLE_FILL, stroke=PURPLE))
+s.append(box(324, 146, 290, 50, "35c macOS Apple Silicon (M-series)", "Mac Studio (24c) + MacBook Pro (11c)\nDedicated: Swift, sourcekit-lsp, xcodebuild", fill=PURPLE_FILL, stroke=PURPLE))
 
 # Gossip Mesh Box
-s.append(box(624, 146, 306, 50, "decentralized UDP gossip (:9401)", "heartbeats every 5s · load, memory, engine status\nzero master SPOF · instant failover", fill=AMBER_FILL, stroke=AMBER))
+s.append(box(624, 146, 306, 50, "decentralized UDP gossip (:9401)", "heartbeats every 5s · load, memory, status\nzero master SPOF · instant failover", fill=AMBER_FILL, stroke=AMBER))
 
 # Telemetry Box
-s.append(box(324, 206, 606, 44, "observability tier: Prometheus (:9401/metrics) · Pushgateway (:9091) · VictoriaMetrics & Grafana", "Every query & command recorded to events-YYYY-MM-DD.jsonl · p50/p95 latency audit via `prod-code metrics`", fill="white", stroke=GRID, bold=False, size=10))
+s.append(box(324, 206, 606, 44, "observability: Prometheus (:9401/metrics) · Pushgateway (:9091) · VictoriaMetrics & Grafana", "Events logged to events-YYYY-MM-DD.jsonl · p50/p95 latency audit via `prod-code metrics`", fill="white", stroke=GRID, bold=False, size=10))
 
-s.append(f"<text x='627' y='278' text-anchor='middle' fill='{MUTED}' font-size='10'>Automated zero-downtime rolling upgrades via scripts/cluster-rollout.py</text>")
+s.append(f"<text x='627' y='278' text-anchor='middle' fill='{MUTED}' font-size='10'>Sequential cluster binary rollout via scripts/cluster-rollout.py</text>")
 
 y = 335
 for x, val, label in [
@@ -237,7 +246,7 @@ for x, val, label in [
     s.append(f"<text x='{x}' y='{y}' fill='{INK}' font-weight='bold' font-size='14'>{esc(val)}</text>")
     s.append(f"<text x='{x}' y='{y + 16}' fill='{MUTED}' font-size='11'>{esc(label)}</text>")
 
-s.append(para(28, 380, "Gateways broadcast UDP status packets every 5 seconds. Workspaces are assigned using rendezvous hashing with stickiness so warm compilation caches stay resident. If a request targets a nested SwiftPM package inside a Rust repo, the placement engine automatically reroutes that specific execution to an Apple Silicon macOS node without disrupting the primary workspace placement.", 130))
+s.append(para(28, 380, "Gateways broadcast UDP status packets every 5 seconds. Workspaces are assigned using rendezvous ordering (highest-random-weight) with stickiness so warm compilation caches stay resident. If a request targets a nested SwiftPM package inside a Rust repo, the placement engine automatically reroutes that specific execution to an Apple Silicon macOS node without disrupting primary workspace placement.", 125))
 
 write("cluster-topology.svg", s)
 

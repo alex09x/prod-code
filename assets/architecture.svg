@@ -200,7 +200,7 @@
 
       <text x="140" y="28" fill="#f1f5f9" font-family="system-ui, sans-serif" font-size="11" font-weight="600">Zen 5 &amp; Zen 4 High-Frequency Nodes + NVMe Storage</text>
       <text x="140" y="46" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">• High-Throughput Remote Compilation &amp; Parallel Test Matrix Runs</text>
-      <text x="140" y="62" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">• Primary In-Process Salsa AST Databases + Gossip Mesh (:9400)</text>
+      <text x="140" y="62" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">• Shared Salsa AST DB + Isolated Overlays + Gossip Mesh (:9400)</text>
       <text x="515" y="46" fill="#38bdf8" font-family="monospace" font-size="11" font-weight="700">0.10 load</text>
     </g>
 
@@ -226,7 +226,7 @@
         <rect width="180" height="96" rx="6" fill="#0f172a" stroke="#334155" stroke-width="1"/>
         <text x="10" y="20" fill="#38bdf8" font-family="system-ui, sans-serif" font-size="11" font-weight="700">Worktree Isolation</text>
         <text x="10" y="36" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="9.5">&lt;repo&gt;--wt-&lt;hash&gt;</text>
-        <text x="10" y="52" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="9.5">One Salsa DB per worktree</text>
+        <text x="10" y="52" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="9.5">Isolated worktree overlays</text>
         <text x="10" y="68" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="9.5">Zero cross-agent cache bleed</text>
         <text x="10" y="84" fill="#64748b" font-family="system-ui, sans-serif" font-size="9">30m idle evict · 7d prune</text>
       </g>

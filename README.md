@@ -47,7 +47,7 @@ tests complement those scenarios. The required coverage floor is 80% of regions 
 
 ## Architecture
 
-![Architecture: developer workstation to 9-node cluster, Salsa DB per worktree](docs/img/architecture-overview.svg)
+![Architecture: developer workstation to 9-node cluster, isolated worktree overlays over shared Salsa analysis](docs/img/architecture-overview.svg)
 
 <details>
 <summary>Click to view Mermaid flowchart and component mapping</summary>
@@ -128,20 +128,20 @@ Choose your preferred installation method for the `prod-code` CLI:
 curl -fsSL https://prod.codes/install.sh | sh
 
 # Debian / Ubuntu (.deb)
-curl -fsSLO https://github.com/alex09x/prod-code/releases/latest/download/prod-code_0.3.29_amd64.deb
+curl -fsSLO https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code_0.3.29_amd64.deb
 sudo dpkg -i prod-code_0.3.29_amd64.deb
 
 # RHEL / Fedora / Rocky Linux (.rpm)
-sudo rpm -i https://github.com/alex09x/prod-code/releases/latest/download/prod-code-0.3.29-1.x86_64.rpm
+sudo rpm -i https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-1.x86_64.rpm
 
 # Arch Linux (.pkg.tar.gz)
-sudo pacman -U https://github.com/alex09x/prod-code/releases/latest/download/prod-code-0.3.29-1-x86_64.pkg.tar.gz
+sudo pacman -U https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-1-x86_64.pkg.tar.gz
 
 # Build from source
 cargo install --path crates/prod-code-client
 ```
 
-Native notarized macOS installers (`prod-code-0.3.29-arm64.pkg` and `.dmg`) and standalone binaries for Linux (`x86_64`, `aarch64`) and macOS (`arm64` Apple Silicon) are available on [GitHub Releases](https://github.com/alex09x/prod-code/releases/latest).
+Native notarized macOS installers ([`prod-code-0.3.29-macOS.pkg`](https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-macOS.pkg) and [`.dmg`](https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-macOS.dmg)) and standalone binaries for Linux (`x86_64`, `aarch64`) and macOS (`arm64` Apple Silicon) are available on [GitHub Releases](https://github.com/alex09x/prod-code/releases/tag/v0.3.29).
 
 ### In-Place Self-Updater
 
