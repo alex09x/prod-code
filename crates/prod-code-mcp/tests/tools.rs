@@ -919,10 +919,10 @@ async fn tools_call_times_out_with_typed_error_under_budget() {
     assert!(text.contains("timed out after"), "{text}");
 }
 
-/// Review finding fix: caller-supplied `timeout_secs` cannot exceed `MCP_TOOL_CALL_TIMEOUT` (150s).
+/// Issue #1065: caller-supplied `timeout_secs` governs tool execution and is not clamped to 150s.
 #[test]
-fn resolve_tool_call_timeout_clamps_caller_override_to_mcp_ceiling() {
-    use prod_code_mcp::{resolve_tool_call_timeout, MCP_TOOL_CALL_TIMEOUT};
+fn resolve_tool_call_timeout_honors_caller_override_or_defaults_to_mcp_ceiling() {
+    use prod_code_mcp::{MAX_TOOL_CALL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, resolve_tool_call_timeout};
 
     // Default when omitted
     assert_eq!(
@@ -930,30 +930,32 @@ fn resolve_tool_call_timeout_clamps_caller_override_to_mcp_ceiling() {
         MCP_TOOL_CALL_TIMEOUT
     );
 
-    // Short valid timeouts are preserved (with +1s margin)
+    // Short valid timeouts are preserved (with +5s margin)
     assert_eq!(
         resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 10 })),
-        std::time::Duration::from_secs(11)
+        std::time::Duration::from_secs(15)
     );
 
-    // Minimal bound
+    // Zero timeout safely falls back to default
     assert_eq!(
         resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 0 })),
-        std::time::Duration::from_secs(2)
+        MCP_TOOL_CALL_TIMEOUT
     );
 
-    // Overrides exceeding ceiling are strictly clamped to MCP_TOOL_CALL_TIMEOUT
+    // Long background timeouts are preserved
     assert_eq!(
         resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 180 })),
-        MCP_TOOL_CALL_TIMEOUT
+        std::time::Duration::from_secs(185)
     );
     assert_eq!(
-        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 3600 })),
-        MCP_TOOL_CALL_TIMEOUT
+        resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": 2400 })),
+        std::time::Duration::from_secs(2405)
     );
+
+    // Extreme timeouts are safely clamped to MAX_TOOL_CALL_TIMEOUT (24 hours)
     assert_eq!(
         resolve_tool_call_timeout(&serde_json::json!({ "timeout_secs": u64::MAX })),
-        MCP_TOOL_CALL_TIMEOUT
+        MAX_TOOL_CALL_TIMEOUT
     );
 
     // Invalid non-integer types safely fall back to default

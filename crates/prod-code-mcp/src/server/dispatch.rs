@@ -18,17 +18,22 @@ use crate::protocol::{
 use crate::server::failover::{is_retryable_connection_error, rediscover_node};
 use crate::tools::{execute_tool, list_tools};
 
-/// Server-safe maximum ceiling for MCP tool call execution to prevent client context deadline exceeded (180s).
+/// Server-safe default timeout for MCP tool call execution when `timeout_secs` is omitted.
 pub const MCP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(150);
 
+/// Upper ceiling for MCP tool call execution to prevent unbounded resource hold (24 hours).
+pub const MAX_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
 /// Resolve effective tool call execution timeout from arguments.
-/// Caller-supplied `timeout_secs` is clamped to `MCP_TOOL_CALL_TIMEOUT` to ensure a server-safe bound.
+/// When caller provides `timeout_secs` (> 0), that timeout governs execution with a small margin,
+/// clamped to `MAX_TOOL_CALL_TIMEOUT` (24h).
+/// Otherwise falls back to `MCP_TOOL_CALL_TIMEOUT` (150s).
 pub fn resolve_tool_call_timeout(arguments: &serde_json::Value) -> std::time::Duration {
     arguments
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
-        .map(|s| std::time::Duration::from_secs(s.max(1).saturating_add(1)))
-        .map(|dur| dur.min(MCP_TOOL_CALL_TIMEOUT))
+        .filter(|&s| s > 0)
+        .map(|s| std::time::Duration::from_secs(s.saturating_add(5)).min(MAX_TOOL_CALL_TIMEOUT))
         .unwrap_or(MCP_TOOL_CALL_TIMEOUT)
 }
 
