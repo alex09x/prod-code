@@ -45,6 +45,67 @@ The live suite starts real gateways and drives their language servers. Unit and 
 tests complement those scenarios. The required coverage floor is 80% of regions per source file
 (`python3 scripts/coverage.py --min 80`); missing measurements fail the gate.
 
+## Architecture
+
+![Architecture: developer workstation to 9-node cluster, isolated worktree overlays over shared Salsa analysis](docs/img/architecture-overview.svg)
+
+<details>
+<summary>Click to view Mermaid flowchart and component mapping</summary>
+
+```mermaid
+flowchart TD
+    subgraph ClientHost["Developer Workstation (Laptop / Desktop)"]
+        Agent["AI Coding Agents\n(Claude Code, Codex, Antigravity)"]
+        Editor["Code Editors\n(Zed, VS Code, Neovim)"]
+        CLI["prod-code CLI"]
+
+        Agent -->|"Native MCP (67 tools)"| MCPBridge["prod-code mcp"]
+        Editor -->|"LSP protocol"| LSPBridge["prod-code lsp"]
+        CLI -->|"Commands / Queries"| ClientCore["prod-code client"]
+
+        MCPBridge & LSPBridge & ClientCore --> SyncEngine["Fast Mirror & Sync Engine\n(Base64 diffs, watermarks, local cache)"]
+    end
+
+    SyncEngine -->|"10 GbE LAN / Gossip (:9400)"| GatewayCluster
+
+    subgraph GatewayCluster["Production Cluster (9 nodes · 355 CPU cores)"]
+        subgraph LinuxAarch64["128-Core aarch64 (Ampere Altra)"]
+            LinuxArmNode["Linux aarch64 build node (128 cpus)\nRust, Go, C++, Python, TS, Java, Kotlin"]
+        end
+
+        subgraph LinuxX86["High-Throughput x86_64 Nodes (192 cpus)"]
+            LinuxX86Node1["Zen 5 build node (32 cpus)"]
+            LinuxX86Node2["Zen 4 build node + telemetry (32 cpus)"]
+            LinuxX86Node3["Polyglot build node (32 cpus)"]
+            LinuxX86Storage["Storage & build nodes (96 cpus)"]
+        end
+
+        subgraph MacNodes["Apple Silicon macOS Nodes (35 cpus)"]
+            MacNodeStudio["macOS build node (24 cpus) · Swift, Go"]
+            MacNodeBook["macOS build node (11 cpus) · Swift"]
+        end
+
+        subgraph GatewayInternals["Gateway Architecture (per node)"]
+            Router["Placement & Gossip Router"] --> Workspaces["Per-Worktree Mirrors\n(<repo>--wt-<hash>)"]
+            Workspaces --> PrimarySalsa["Primary Salsa DB\n(rust-analyzer in-proc; child LSPs)"]
+            Workspaces --> ShadowValidation["Isolated Shadow Engines\n(RAM-disk validation without cache poison)"]
+            Workspaces --> RemoteExec["Remote Builds, Lints & Tests\n(cargo, go, pytest, swift, etc.)"]
+            GatewayInternals --> Telemetry["Prometheus Scrape (:9401)\n& Pushgateway (:9091)"]
+        end
+    end
+
+    Telemetry --> Monitoring["Prometheus + VictoriaMetrics + Grafana"]
+```
+
+</details>
+
+`prod-code` separates the lightweight developer interface from heavy language intelligence and compilation:
+
+1. **Mirroring over Mounting**: Workspaces synchronize fast Base64 diffs over 10 GbE LAN instead of network-mounting filesystems (NFS/SSHFS), keeping filesystem operations local and fast.
+2. **Worktree Isolation**: Rust worktree mirrors attach isolated overlays to a shared base compiler database (`SharedWorkspace::with_base`), while child language servers run isolated per-process, avoiding cross-session state corruption.
+3. **Dual-Engine Shadow Validation**: Code edits are verified on dedicated shadow engines in memory before writing to disk, ensuring speculative proposals cannot invalidate warm primary caches.
+4. **Polyglot Cluster Gossip**: Nodes discover each other via UDP gossip on `:9401`, evaluate load and memory pressure, and route requests to capable nodes (including automatic rerouting of Swift subprojects to macOS nodes).
+
 ## Requirements
 
 Building `prod-code` and running its development checks require Rust 1.95.0 or newer. With
@@ -58,24 +119,81 @@ Run commands with `cargo +1.95.0` to use that toolchain without changing your de
 
 ## Install
 
-```sh
-# the client (one binary; the gateway is the same binary's sibling)
-cargo install --path crates/prod-code-client        # or take a release binary
+### Direct Download & Packages
 
-# register it once; every repository then has the tools
+Choose your preferred installation method for the `prod-code` CLI:
+
+```sh
+# Direct shell installer (detects OS and architecture)
+curl -fsSL https://prod.codes/install.sh | sh
+
+# Debian / Ubuntu (.deb)
+curl -fsSLO https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code_0.3.29_amd64.deb
+sudo dpkg -i prod-code_0.3.29_amd64.deb
+
+# RHEL / Fedora / Rocky Linux (.rpm)
+sudo rpm -i https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-1.x86_64.rpm
+
+# Arch Linux (.pkg.tar.gz)
+sudo pacman -U https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-1-x86_64.pkg.tar.gz
+
+# Build from source
+cargo install --path crates/prod-code-client
+```
+
+Native notarized macOS installers ([`prod-code-0.3.29-macOS.pkg`](https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-macOS.pkg) and [`.dmg`](https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-macOS.dmg)) and standalone binaries for Linux (`x86_64`, `aarch64`) and macOS (`arm64` Apple Silicon) are available on [GitHub Releases](https://github.com/alex09x/prod-code/releases/tag/v0.3.29).
+
+### In-Place Self-Updater
+
+Keep your client installation up to date with a single command:
+
+```sh
+prod-code update --check   # check for newer releases on GitHub
+prod-code update           # download, verify SHA-256 integrity, and replace binary in-place
+```
+
+When `prod-code` is updated, running agent sessions automatically pick up new MCP tools without requiring an IDE or agent restart (dynamic re-exec on binary change via MCP `notifications/tools/list_changed`).
+
+### Registering with AI Coding Agents
+
+Register `prod-code` once; every repository accessed by your agent gains remote code intelligence tools:
+
+```sh
+# Claude Code
 claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
-codex  mcp add prod-code --env PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
+
+# OpenAI Codex CLI
+codex mcp add prod-code --env PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
 ```
 
-For Antigravity/Gemini, add the same command to `~/.gemini/config/mcp_config.json`. On a node:
+For **Google Antigravity** / **Gemini CLI**, add the server definition to `~/.gemini/config/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "prod-code": {
+      "command": "prod-code",
+      "args": ["mcp"],
+      "env": {
+        "PROD_CODE_REMOTE": "192.0.2.10:9400"
+      }
+    }
+  }
+}
+```
+
+### Running the Gateway Daemon
+
+On a Linux or macOS build node:
 
 ```sh
+# Start gateway server directly
 prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces \
-  --advertise <this host>:9400 --peers <other nodes>
-```
+  --advertise 192.0.2.10:9400 --peers 192.0.2.11:9400,192.0.2.12:9400
 
-The MCP server tells the agent how to work at `initialize`, and reloads itself when the
-binary is replaced, so a running session picks up new tools without a restart.
+# Or run with declarative gateway.toml
+prod-code-server --config /etc/prod-code/gateway.toml
+```
 
 ## In an editor
 
@@ -104,27 +222,30 @@ Tools use the node that holds the workspace. The tables describe current source;
 
 | tool | what it does |
 |---|---|
-| `code_search` | find code by what it does, ranked declarations with the doc comment that matched |
-| `code_symbols` | workspace symbol index by name, fuzzy, analyzer-backed |
-| `code_definition` · `code_references` | where a symbol is defined; every use of it |
-| `code_callers` · `code_callees` · `code_implementations` · `code_supertypes` | call hierarchy both ways, as a tree to a depth; implementations of a trait or interface, and the traits a type implements or a trait requires |
-| `code_outline` | a file's declarations with their kinds and lines, or those of every source file in a directory |
-| `code_source` | read std, registry and SDK sources that live only on the node |
+| `code_search` | find code by natural language query; ranked declarations with matching doc comments (dense embeddings fused with lexical ranking) |
+| `code_symbols` | workspace symbol index by name, fuzzy matching, analyzer-backed |
+| `code_definition` · `code_references` | exact symbol definition location; every reference and usage across the workspace |
+| `code_callers` · `code_callees` · `code_implementations` · `code_supertypes` | call hierarchy in both directions as a tree to requested depth; trait/interface implementations, and supertypes or required traits |
+| `code_outline` | declaration outline with kinds and line numbers for a single file or every source file in a directory |
+| `code_source` | read stdlib, crate/package registry and SDK sources that live cached only on the gateway node |
+| `code_structural_search` | AST pattern search across polyglot languages using metavariables (`$name`) without brittle regex |
+| `code_find_duplicates` | clone and duplicate block detection across workspace files using Type-1 and Type-2 AST hashing |
 
 **Understand it without reading everything**
 
 | tool | what it does |
 |---|---|
-| `code_slice` | bounded traversal of declarations referenced by a symbol; depth and byte budgets limit the result |
-| `code_hover` · `code_type_at` | signature, type and docs |
-| `code_impact` | changed functions, reachable callers and candidate tests; CI falls back to the full suite when the evidence is incomplete |
-| `code_dead_code` | reference-based candidates, with failed or malformed queries marked unverified |
+| `code_slice` | bounded transitive traversal of declarations referenced by a symbol; depth and byte budgets limit result size |
+| `code_hover` · `code_type_at` | signature, precise inferred type, documentation, and markdown hover information |
+| `code_impact` | blast radius of uncommitted changes: changed functions, reachable callers, and candidate tests |
+| `code_dependencies` | workspace dependency graph analysis, direct and transitive dependencies, coupling metrics, and cycle detection |
+| `code_dead_code` | reference-based unreferenced candidate declarations, marking unverified and protected symbols |
 | `code_prune_orphans` | eligible dead-code candidates removed with safe delete and analyzer validation; unverified and protected symbols remain |
 
 **Change it safely**
 
-Most custom planners below target Rust. The two parameter tools also support Go, C/C++,
-TypeScript/JavaScript, Python and Swift for their documented input shapes. Rename and server
+Most custom planners below target Rust. The parameter, move, extract-function, wrap-return, and OOP refactoring tools also support Go, C/C++,
+TypeScript/JavaScript, Python, and Swift for their documented input shapes. Rename and server
 code actions depend on the selected language server. See [ROADMAP-AUDIT.md](ROADMAP-AUDIT.md)
 for missing capabilities and [ROADMAP.md](ROADMAP.md) for individual restrictions.
 
@@ -134,52 +255,56 @@ A Rust file reported as `unlinked-file` is unchecked and cannot pass edit valida
 modules must be checked with their module declarations; new Cargo targets need a workspace
 reload or an explicit compiler check that includes them. Missing or malformed diagnostic
 reports also fail validation. Manifest and lockfile proposals need
-`shadow-run` with the appropriate parser or build command; JSON manifests, Markdown documentation,
+`code_shadow_run` with the appropriate parser or build command; JSON manifests, Markdown documentation,
 and SVG vector graphics are validated directly through built-in syntax parsers.
 
 | tool | what it does |
 |---|---|
-| `code_validate_edit` · `code_validate_edits` | analyzer diagnostics and built-in parser validation for proposed file contents (supporting source files via remote LSP, plus JSON, Markdown, and SVG/XML), nothing written; several files judged together, with a warning when an edit removes a symbol another file still uses |
-| `code_diagnostics` | diagnostics for a file, in memory, without a build |
-| `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete only when nothing references it, or a parameter with its arguments |
-| `code_change_signature` | Rust signature changes; Go reorder/removal through gopls and typed literal additions to ordinary functions. Additions preserve old argument order and require remote compiler verification |
-| `code_move` | a declaration moved to another module, with the imports it takes and the imports it leaves behind |
-| `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters, or an associated function to another type; a whole module moved to another parent, with every path that names it |
-| `code_extract_function` | a selection turned into a named function, and its duplicates and near-duplicates in this file and others replaced by calls |
-| `code_introduce_parameter_object` | parameters bundled into the language's supported object form, updating supported body uses and calls; JavaScript uses plain objects |
-| `code_extract_parameter` | an expression promoted to a parameter and supported callers updated, with structural and semantic refusal cases |
-| `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done; with `convert`, `.into()` written wherever the analyzer accepts it |
-| `code_generify` | a parameter's concrete type turned into a bounded type parameter, every file that calls it type-checked against the new signature |
-| `code_invert_boolean` | a predicate, a `bool` field or a `bool` variable renamed to its opposite, every read and write unchanged in effect |
-| `code_make_static` | a method that never uses `self` turned into an associated function, every call site with it |
-| `code_inline_parameter` | a parameter every caller passes the same constant for, moved into the body and out of every call |
-| `code_extract_delegate` | fields and the methods that use only them moved into a helper type the struct holds, with every access and literal rewritten |
-| `code_extract_trait` | selected Rust inherent methods moved into a trait with caller imports; preserves ordinary lifetime/type/const generics and bounds, refuses conditional or opaque-return shapes and Self-dependent impl bounds |
-| `code_loop_to_iterator` | a loop that only sums, counts or pushes into an accumulator turned into an iterator chain, checked by the analyzer |
-| `code_introduce_variable` | an expression bound once (`let w1 = w + 1;`) and every occurrence of it in the function replaced, refused when evaluating once would change what the code does |
-| `code_convert_to_method` | an associated function turned into a method: its first parameter becomes `self`, `Type::f(&x, a)` becomes `x.f(a)` |
-| `code_wrap_return` | a return type wrapped in `Option` or `Result`, `?` at every caller that can propagate, the rest named |
-| `code_extract_field` | an expression in a method turned into a field of its type, initialised wherever the type is built |
-| `code_encapsulate_field` | a public field made private, every read and write outside its file turned into a getter or setter call |
-| `code_schema_rename` | one schema field renamed across every language that spells it differently, semantically per project |
-| `code_assists` · `code_assist` | the analyzer's code actions and compiler fix-its, applied to the checkout |
-| `code_codemod` | structural search and replace on the syntax tree (`pattern ==>> replacement`), as a diff or applied |
-| `code_generate_fixture` | a Rust value with explicit default fallbacks, or `builder: true` for a typed builder preview of a named struct with ordinary lifetime/type/const parameters, defaults and bounds; verified by default, with no files written |
-| `code_shadow_run` | run a command once per candidate fix, each in a private shadow of the workspace, and take the winner's diff |
+| `code_validate_edit` · `code_validate_edits` | in-memory analyzer diagnostics and syntax validation for proposed contents across one or many files before writing; detects broken references and schema violations |
+| `code_diagnostics` | diagnostics for a file, in memory, without running a full build |
+| `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete declaration only when zero references exist, or parameter with arguments |
+| `code_change_signature` | Rust signature changes; Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
+| `code_move` | a declaration moved to another module across languages, with imports it takes and leaves behind |
+| `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters; a whole module moved to another parent with all referencing paths |
+| `code_extract_function` | a selection extracted into a named function across languages, replacing identical duplicates across files |
+| `code_introduce_parameter_object` | parameters bundled into a struct, dataclass, or object across callers and body uses |
+| `code_extract_parameter` · `code_inline_parameter` | promote an expression to a parameter; inline a uniform constant parameter into the body |
+| `code_migrate_type` | change a declared type, listing all incompatible sites before execution, with automatic `.into()` insertion |
+| `code_generify` | turn a parameter's concrete type into a bounded generic type parameter, verifying callers against the new signature |
+| `code_invert_boolean` | invert a boolean predicate, variable, or field, rewriting all conditions with identical runtime semantics |
+| `code_make_static` · `code_convert_to_method` | turn a method that never uses `self` into an associated function; turn an associated function into a method |
+| `code_extract_delegate` | move cohesive fields and methods to a helper delegate struct, updating accessors and instantiations |
+| `code_extract_trait` · `code_extract_interface` | extract inherent methods into a trait or interface definition across languages with caller imports |
+| `code_loop_to_iterator` | transform accumulator loops into idiomatic functional iterator chains across languages |
+| `code_introduce_variable` | bind repeated expression once (`let w1 = expr;`) and replace occurrences safely |
+| `code_wrap_return` | wrap return type in `Option`, `Result`, or `Promise`, adding `?` or `await` at propagating callers |
+| `code_extract_field` · `code_encapsulate_field` | turn an expression into a struct field; encapsulate a public field with getters/setters |
+| `code_schema_rename` | rename a database/serialization schema field across multi-language models |
+| `code_assists` · `code_assist` | list and apply analyzer code actions, quick fixes, and compiler suggestions directly to checkout |
+| `code_codemod` | structural search and replace on syntax trees (`pattern ==>> replacement`), as diff or applied |
+| `code_generate_fixture` | synthesize valid typed test fixtures and builders from struct definitions with default fallbacks |
+| `code_propose_expression` | synthesize valid in-scope expressions evaluating to a requested target type |
+| `code_pull_up` · `code_push_down` | pull members up to a superclass/trait or push members down to subclasses/implementors |
+| `code_replace_constructor_with_factory` | replace direct constructor calls with named static factory methods |
+| `code_replace_constructor_with_builder` | transform multi-parameter constructors into fluent builder patterns |
+| `code_replace_inheritance_with_delegation` | refactor class inheritance hierarchies into composition and delegation |
+| `code_replace_conditional_with_polymorphism` | replace `switch`/`match`/`if-else` conditionals with polymorphic dispatch |
+| `code_shadow_run` | test multiple hypotheses in isolated RAM-disk workspaces concurrently and return the winning diff |
 
 **Run it**
 
 | tool | what it does |
 |---|---|
-| `code_check` · `code_lint` · `code_test` · `code_benchmarks` | build, lint and test on the node with parsed diagnostics; `path` narrows to one crate, package or directory; `fix: true` applies the compiler's machine-applicable fixes and checks again (Rust) |
-| `code_exec` | any command in the workspace copy; formatters, generators and lockfiles are written back |
-| `code_diagnose_failure` | run tests and report up to ten failure dossiers with sites, callers, changes and supported printed assertion operands |
+| `code_check` · `code_lint` · `code_test` · `code_benchmarks` | compile check, lint, test, and benchmark on the node with parsed diagnostics; `path` narrows scope; `fix: true` applies compiler fixes |
+| `code_exec` | execute any build or toolchain command in remote workspace copy; modified files, formatters, and lockfiles are written back |
+| `code_diagnose_failure` | run tests and generate diagnostic failure dossiers with sites, callers, changes, and printed assertion operands |
 
 **Operate it**
 
 | tool | what it does |
 |---|---|
-| `code_status` · `code_sync` | gateway health, engines, loaded workspaces and the builds and tests running on it; a manual push (the watcher does this for you) |
+| `code_status` · `code_sync` | gateway health, registered engines, loaded workspaces, and running builds/tests; manual delta sync push or pull |
+| `code_report_issue` | report a bug or missing feature directly to GitHub with sanitized diagnostics and automated issue deduplication |
 
 Every position tool also takes `symbol` instead of a file and a position, so an agent never
 has to grep for a line number:
@@ -189,13 +314,18 @@ has to grep for a line number:
 ```
 
 The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod |
-fixture | change-signature | schema-rename | migrate-type | move | parameter-object |
-extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | convert-to-method | inline-parameter | introduce-variable | extract-trait | extract-delegate | prune | loop-to-iterator | invert-boolean | generify | hover | def | refs | callers | callees |
-impls | symbols | outline | validate | diagnostics | check | lint | test | exec | impact |
-diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run | source | status |
-cluster | metrics`. The position commands take `--symbol NAME` instead of a file and a
-position, `prod-code symbols <name>` finds a declaration by name, and `prod-code validate FILE
---from NEW --with OTHER=NEW2` checks a multi-file change in one overlay.
+fixture | change-signature | schema-rename | migrate-type | move | move-method | move-module |
+parameter-object | extract-parameter | extract-field | encapsulate-field | wrap-return | make-static |
+convert-to-method | inline-parameter | introduce-variable | extract-trait | extract-interface |
+extract-delegate | pull-up | push-down | replace-constructor-with-factory |
+replace-constructor-with-builder | replace-inheritance-with-delegation |
+replace-conditional-with-polymorphism | prune | loop-to-iterator | invert-boolean | generify | hover |
+def | refs | callers | callees | impls | supertypes | symbols | outline | validate | diagnostics |
+check | lint | test | benchmarks | exec | impact | diagnose | rename | assists | assist | safe-delete |
+dead-code | dependencies | duplicates | structural-search | propose-expression | shadow-run | source |
+status | cluster | resolve | sync | pull | update | package | cert | metrics`. The position commands take
+`--symbol NAME` instead of a file and a position, `prod-code symbols <name>` finds a declaration by
+name, and `prod-code validate FILE --from NEW --with OTHER=NEW2` checks a multi-file change in one overlay.
 
 ## Three things worth seeing
 
@@ -240,12 +370,12 @@ what is missing (0.4 s instead of ~7 s for a 10 MB repository). After that the c
 watermark per node and sends a diff. Content travels base64, which took a 10.8 MB first sync
 from 8.1 s to 0.76 s. The MCP server watches the tree and syncs only when something changed.
 
-**One analyzer per worktree, never shared.** Salsa holds one state of one workspace keyed by
-file path, so two worktrees served from one database answer each other's questions. Every git
-worktree gets its own server workspace and its own database, named `<repo>--wt-<hash>`. The
-cost is the first load; the engine then stays resident until it has been idle for thirty
-minutes (`--idle-evict-secs`), and worktree directories are pruned after seven days
-(`--prune-worktree-days`).
+**Worktree isolation with shared base analysis.** Each git worktree receives its own server
+workspace directory named `<repo>--wt-<hash>`. In Rust, worktrees attach isolated session overlays
+to a shared base compiler database (`SharedWorkspace::with_base`), keeping memory usage bounded
+while preventing cross-session bleed. Child language servers run isolated per-process. The engine
+stays resident until idle for thirty minutes (`--idle-evict-secs`), and worktree directories are
+pruned after seven days (`--prune-worktree-days` or `prune_worktree_secs = 604800`).
 
 **Proposals are checked on a second analyzer.** Validating an edit opens the proposed text in the
 analyzer and closes it again; in the analyzer every other query uses, a proposal that changes
@@ -253,6 +383,8 @@ what a widely imported file declares made the next query re-infer the crate (21 
 `references` after a dry run). Validation sessions run on a second engine for the same
 workspace, fed by every sync like the first, so a dry run never reaches anyone else's query. It
 costs the memory of one more database per workspace that has been validated.
+
+![Dual-engine shadow validation: speculative edits tested without cache poisoning](docs/img/shadow-validation-pipeline.svg)
 
 **Builds and tests run on the node**, in the workspace's own `target/`, which stays warm
 between runs. Files a command changes are written back into your checkout.
@@ -266,12 +398,28 @@ SwiftPM package under `swift/` — goes to a node that serves that language, pla
 key so the checkout's own placement stays. Nodes given with `--remote` on the command line are
 used as given, without asking the cluster.
 
+![Production cluster: 9 nodes, 355 cores, language-aware routing](docs/img/cluster-topology.svg)
+
 ```
 $ prod-code cluster
-⚡ prod-code cluster (5 node(s))
-192.0.2.11:9400   UP   load 0.10/cpu (32 cpus)   workspaces 0   rss 10 MB
+⚡ prod-code cluster (9 node(s) · 355 cpus)
+192.0.2.10:9400   UP   load 0.05/cpu (128 cpus)  workspaces 3   rss 482 MB  [linux/aarch64]
+                  engines: rust, go, cpp, python, typescript, java, kotlin, csharp, scala, zig, nim, d, php, ruby, dart
+192.0.2.11:9400   UP   load 0.12/cpu (32 cpus)   workspaces 2   rss 310 MB  [linux/x86_64 Zen5]
                   engines: rust, go, cpp, python, typescript
-192.0.2.20:9400   UP   load 2.96/cpu (24 cpus)   workspaces 0   rss 14 MB
+192.0.2.12:9400   UP   load 0.08/cpu (32 cpus)   workspaces 1   rss 280 MB  [linux/x86_64 Zen4]
+                  engines: rust, go, cpp, python, typescript
+192.0.2.13:9400   UP   load 0.15/cpu (32 cpus)   workspaces 4   rss 415 MB  [linux/x86_64]
+                  engines: rust, go, cpp, python, typescript, java, kotlin, csharp, scala, zig, nim, d, php, ruby, dart
+192.0.2.14:9400   UP   load 0.04/cpu (32 cpus)   workspaces 1   rss 195 MB  [linux/x86_64]
+                  engines: rust, go, cpp, python, typescript
+192.0.2.15:9400   UP   load 0.06/cpu (32 cpus)   workspaces 0   rss 160 MB  [linux/x86_64]
+                  engines: rust, go, cpp, python, typescript
+192.0.2.16:9400   UP   load 0.07/cpu (32 cpus)   workspaces 0   rss 155 MB  [linux/x86_64]
+                  engines: rust, go, cpp, python, typescript
+192.0.2.17:9400   UP   load 0.18/cpu (24 cpus)   workspaces 2   rss 290 MB  [darwin/arm64 Mac Studio]
+                  engines: swift, go, rust, typescript
+192.0.2.18:9400   UP   load 0.22/cpu (11 cpus)   workspaces 1   rss 210 MB  [darwin/arm64 MacBook Pro]
                   engines: swift
 ```
 
@@ -295,35 +443,114 @@ files, `package.json`, `pyproject`, `CMakeLists`…). Dependencies live on the n
 `prod-code exec -- bun install`, `-- uv sync` or `-- npm ci` once per checkout and the
 language servers and test runners use them.
 
-## Per-repository options (`prod-code.toml`)
+## Configuration
 
-Put a `prod-code.toml` at the checkout root to tune how the gateway analyses it. It is synced
-like any manifest and read when the workspace is loaded:
+### Gateway Server (`gateway.toml`)
+
+The gateway daemon discovers its configuration file automatically from the following locations (highest to lowest priority):
+
+1. Explicit CLI argument: `--config /path/to/gateway.toml`
+2. System configuration: `/etc/prod-code/gateway.toml`
+3. User XDG configuration: `~/.config/prod-code/gateway.toml`
+4. Home directory: `~/.prod-code/gateway.toml`
+5. Current working directory: `./gateway.toml`
+
+CLI flags and environment variables always override values specified in `gateway.toml`.
+
+```toml
+[server]
+# Network bind address for RPC connections (default: 0.0.0.0:9400)
+bind = "0.0.0.0:9400"
+
+# Optional Unix domain socket path
+# socket_path = "/run/prod-code/gateway.sock"
+
+# Workspace storage root directory on server
+storage = "/srv/prod-code/workspaces"
+
+# Advertised host:port for gossip peers and clients
+advertise = "192.0.2.10:9400"
+
+# Cluster peer addresses for gossip discovery
+peers = "192.0.2.11:9400,192.0.2.12:9400"
+
+# Languages served (empty array serves all installed language engines)
+engines = ["rust", "go", "cpp", "python", "typescript"]
+
+# Unload idle engines after this many seconds (0 disables, default: 1800)
+idle_evict_secs = 1800
+
+# Retain git worktree mirrors for this many seconds (default: 3600; 604800 = 7 days)
+prune_worktree_secs = 604800
+
+# RAM-disk build cache (/dev/shm) for high-throughput compilation
+build_cache_ram = false
+
+[metrics]
+enabled = true
+snapshot_interval_secs = 30
+inventory_interval_secs = 3600
+
+[metrics.retention]
+retention_days = 14
+max_storage_bytes = 524288000   # 500 MB budget for metrics logs
+
+[metrics.prometheus]
+enabled = true
+mode = "scrape"                 # "scrape" (pull HTTP endpoint), "push" (Pushgateway), or "both"
+listen = "0.0.0.0:9401"         # Serves GET /metrics and GET /health
+# push_url = "http://192.0.2.20:9091"
+push_interval_secs = 15
+job = "prod-code"
+```
+
+### Per-Repository Options (`prod-code.toml`)
+
+Put a `prod-code.toml` at the checkout root to tune how the gateway analyses your repository. It is mirrored like any manifest and evaluated when the workspace loads:
 
 ```toml
 [rust]
 features = "all"            # or ["feat-a", "feat-b"]; default: the crate's default features
 no_default_features = false
-all_targets = true          # tests, benches and examples are analysed (default)
-sysroot = true              # standard library from rust-src (default)
+all_targets = true          # tests, benches, and examples are analysed (default: true)
+sysroot = true              # standard library from rust-src (default: true)
 ```
 
-Use `features = "all"` when the same module tree is compiled into several crates behind
-feature flags: rust-analyzer attaches each file to one crate, and a module behind a disabled
-feature is dead there.
+Use `features = "all"` when the same module tree is compiled into several crates behind feature flags: rust-analyzer attaches each file to one crate, and a module behind a disabled feature is otherwise dead there.
 
-## Operating it
+### Environment Variables
 
-**Usage metrics.** Every query, command and sync round on a node is one event (which agent,
-from which host, against which workspace and method, how long, whether it worked), appended
-to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`. `prod-code metrics [--since SECS]`
-aggregates them across the cluster with p50 and p95.
+The client and gateway respect the following environment variables:
 
-**macOS nodes.** `scripts/deploy-mac-node.sh <host> <advertise> <peers>` builds or installs
-the gateway, signs it with the identity in `PROD_CODE_SIGN_IDENTITY` under a stable bundle
-identifier (so macOS remembers the Local Network grant instead of prompting after every
-redeploy), writes the launchd agent with `--engines` (`PROD_CODE_ENGINES`, default `swift`)
-and reloads it.
+| Variable | Scope | Description |
+|---|---|---|
+| `PROD_CODE_REMOTE` | Client | Remote gateway address(es) (`host:port[,host:port...]`), defaults to `127.0.0.1:9400`. Rendezvous hashing picks the target node with automatic failover. |
+| `PROD_CODE_AUTH_TOKEN` | Client / Gateway | Shared bearer authentication token for secure RPC connections across untrusted networks. |
+| `PROD_CODE_ENGINES` | Gateway | Comma-separated list of engines the node is permitted to serve (e.g. `swift` on macOS nodes, `rust,go` on Linux). |
+| `PROD_CODE_SIGN_IDENTITY` | Gateway (macOS) | Developer ID / ad-hoc signing identity for macOS gateway daemons to preserve Local Network permissions across updates. |
+| `PROD_CODE_LOCAL` | Build Hook | Optional escape hatch bypassing the local-build guard hook (`prod-code-local-build-guard.py`) for commands that must compile locally. |
+
+## Operating & Fleet Management
+
+**Cluster Rollout.** Deploy binary updates across the cluster using the rollout script:
+
+```sh
+# Copy local binary to cluster nodes, restart systemd service, and verify versions
+python3 scripts/cluster-rollout.py --version 0.3.29
+
+# Or run the shell orchestrator
+scripts/cluster-rollout.sh --version 0.3.29
+```
+
+The script locates the compiled binary locally, copies it via `scp` to each node sequentially, restarts the `prod-code-gateway` service, and checks `systemctl is-active` and `prod-code-server --version` to verify the deployment.
+
+**Prometheus & VictoriaMetrics Telemetry.** Gateways export native metrics for Grafana dashboards:
+- **HTTP Scrape Endpoint**: `http://<node>:9401/metrics` exposes Prometheus exposition format metrics (CPU, RSS memory, cache hit rates, query latencies, active Salsa engines).
+- **Health Probes**: `http://<node>:9401/health` returns `200 OK` as an HTTP listener liveness probe.
+- **Pushgateway**: Configure `mode = "push"` or `mode = "both"` in `gateway.toml` to stream telemetry directly to a central Prometheus Pushgateway.
+- **Event Audit Ledger**: Every query, command, and sync round appends an audit event to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`. Analyze aggregate latency and usage across the cluster with `prod-code metrics [--since SECS]`.
+
+**macOS Nodes.** `scripts/deploy-mac-node.sh <host> <advertise> <peers>` builds or installs the gateway, signs it with `PROD_CODE_SIGN_IDENTITY` under a stable bundle identifier (so macOS remembers the Local Network permission across updates), writes the launchd agent with `--engines` (`PROD_CODE_ENGINES`, default `swift`), and reloads the service.
 
 ## Field Evaluations & Benchmarks
 
