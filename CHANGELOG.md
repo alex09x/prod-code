@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## v0.3.29 — 2026-10-11
+
+### Fixed
+- **Engine-Aware Subproject & Directory Routing** (`crates/prod-code-mcp`):
+  Added `engine_for_path` checking nested subprojects, path manifests, file extensions, and directory contents for target engines. Integrated with `default_serves` check in `route_in` to route Swift test directories (`swift/Tests/...`) and root Swift projects to compatible nodes instead of immediately failing with `Transport closed` when default node is Linux (#1059).
+- **Single-Node Engine Compatibility Fast-Fail** (`crates/prod-code-mcp`):
+  Added engine compatibility validation in `pick_node_with` for single-node placements, returning an actionable diagnostic rather than crashing with closed transport (#1060).
+- **Session Pool Engine-Placement Preservation** (`crates/prod-code-mcp`):
+  Updated `pooled_query_with_budget` in `pool.rs` to look up engine-specific placement keys (`{workspace}#{engine}`) and verify `default_serves(remembered, eng)` before updating `target_remote`, preventing secondary language sessions (Swift/Python) from being retired and overwritten with incompatible root workspace nodes (#1060).
+- **Interactive CLI Query Timeout Bounding** (`crates/prod-code-client`):
+  Wrapped `execute_tool` calls in `run_tool` and `run_refs` (`commands/common.rs`, `commands/query/navigation.rs`) with `resolve_tool_call_timeout(&args)` and actionable error reporting upon timeout, preventing `prod-code def` and `prod-code refs` commands from stalling indefinitely on unindexed symbols or cold language servers (#1061, #1062).
+- **Workspace Sync Benchmark & Dataset Code Preservation** (`crates/prod-code-mcp`):
+  Updated `is_path_filtered_with_profile` in `filters.rs` to detect source files (`.rs`, `.py`, `.c`, `.cpp`, `.ts`, `.swift`, etc.) inside tracked directories named `benchmarks/benches` or `dataset/datasets`, ensuring tracked benchmark schemas and fixture code reach the remote mirror without breaking `cargo check` or `pytest` runs (#1063, #1064).
+- **Tool Call Execution Timeout Propagation & Ceiling** (`crates/prod-code-mcp`):
+  Updated `resolve_tool_call_timeout` in `dispatch.rs` to honor client-specified `timeout_secs` (and `timeout_millis`) with a 5-second buffer, while clamping to `MAX_TOOL_CALL_TIMEOUT` (24 hours = 86400s). Long-running executions such as `code_exec` with `timeout_secs=2400` are no longer killed by the default 150s limit (#1065).
+
 ## v0.3.28 — 2026-10-08
 
 ### Fixed
