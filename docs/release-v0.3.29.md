@@ -126,19 +126,24 @@ export PROD_CODE_REMOTE="<gateway-node-ip>:9400"
 
 Подробные инструкции по настройке TLS-сертификатов и развертыванию шлюзов приведены в [`README.md`](../README.md).
 
-### 2. Подключение к AI-агентам (Claude Code, OpenAI Codex, Antigravity)
+### 2. Подключение к AI-агентам (Claude Code, OpenAI Codex, Gemini CLI, Antigravity)
 
 Для **Claude Code**:
 ```bash
-claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=<gateway-node-ip>:9400 -- prod-code mcp
+claude mcp add --scope user prod-code -e "PROD_CODE_REMOTE=$PROD_CODE_REMOTE" -- prod-code mcp
 ```
 
 Для **OpenAI Codex CLI**:
 ```bash
-codex mcp add prod-code --env PROD_CODE_REMOTE=<gateway-node-ip>:9400 -- prod-code mcp
+codex mcp add prod-code --env "PROD_CODE_REMOTE=$PROD_CODE_REMOTE" -- prod-code mcp
 ```
 
-Для **Google Antigravity** / **Gemini CLI** (в `~/.gemini/config/mcp_config.json` или проектном `.mcp.json`):
+Для **Gemini CLI** (команда `gemini mcp add` регистрирует сервер в `~/.gemini/settings.json` или проектном `.gemini/settings.json`):
+```bash
+gemini mcp add -s user prod-code prod-code mcp -e "PROD_CODE_REMOTE=$PROD_CODE_REMOTE"
+```
+
+Для **Google Antigravity** (добавьте определение сервера в `~/.gemini/config/mcp_config.json`):
 ```json
 {
   "mcpServers": {

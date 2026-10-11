@@ -164,13 +164,16 @@ Register `prod-code` once; every repository accessed by your agent gains remote 
 
 ```sh
 # Claude Code
-claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
+claude mcp add --scope user prod-code -e "PROD_CODE_REMOTE=192.0.2.10:9400" -- prod-code mcp
 
 # OpenAI Codex CLI
-codex mcp add prod-code --env PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
+codex mcp add prod-code --env "PROD_CODE_REMOTE=192.0.2.10:9400" -- prod-code mcp
+
+# Gemini CLI
+gemini mcp add -s user prod-code prod-code mcp -e "PROD_CODE_REMOTE=192.0.2.10:9400"
 ```
 
-For **Google Antigravity** / **Gemini CLI**, add the server definition to `~/.gemini/config/mcp_config.json`:
+For **Google Antigravity**, add the server definition to `~/.gemini/config/mcp_config.json` (or use `~/.gemini/settings.json` for Gemini CLI):
 
 ```json
 {
