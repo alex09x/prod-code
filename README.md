@@ -654,7 +654,8 @@ mirror stays current, why tools take a symbol instead of a position, validating 
 writing it, where the milliseconds went, and running candidate fixes in overlay shadows.
 
 In this repository: [`ROADMAP.md`](ROADMAP.md) for what is built and what is not,
-[`CHANGELOG.md`](CHANGELOG.md) for what each release changed, and
+[`CHANGELOG.md`](CHANGELOG.md) for what each release changed,
+[`docs/release-v0.3.29.md`](docs/release-v0.3.29.md) for the v0.3.29 architectural release overview and cluster offloading benchmarks, and
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for how a change gets made here (an issue and a pull
 request with the commands that reproduce it; checks run on the build nodes, there is no
 hosted CI).
