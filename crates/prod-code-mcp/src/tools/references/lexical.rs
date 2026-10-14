@@ -50,16 +50,43 @@ fn normalize_segments(path: &Path) -> Vec<String> {
     out
 }
 
-fn strip_known_ext(s: &str) -> &str {
-    for ext in [
-        ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".astro", ".svelte", ".vue", ".pyi", ".py",
-        ".rs", ".hpp", ".h",
-    ] {
-        if let Some(stripped) = s.strip_suffix(ext) {
-            return stripped;
+const CODE_EXTS: &[&str] = &[
+    "tsx", "ts", "jsx", "js", "mjs", "cjs", "astro", "svelte", "vue", "pyi", "py", "rs", "hpp",
+    "h", "c", "cpp", "cc", "cxx",
+];
+
+fn split_known_ext(s: &str) -> (&str, Option<&str>) {
+    for &ext in CODE_EXTS {
+        if let Some(stem) = s.strip_suffix(ext)
+            && let Some(stripped) = stem.strip_suffix('.')
+            && !stripped.is_empty()
+            && !stripped.ends_with(['.', '/', '\\'])
+        {
+            return (stripped, Some(ext));
         }
     }
-    s
+    (s, None)
+}
+
+fn ext_compatible(spec_ext: &str, decl_ext: &str) -> bool {
+    spec_ext.eq_ignore_ascii_case(decl_ext)
+        || matches!(
+            (spec_ext, decl_ext),
+            ("js", "ts" | "tsx" | "jsx")
+                | ("jsx", "tsx")
+                | ("mjs", "mts")
+                | ("cjs", "cts")
+                | ("h" | "hpp", "c" | "cpp" | "cc" | "cxx")
+        )
+}
+
+fn has_competing_file_for_stem(stem_path: &Path, ignore_ext: Option<&str>) -> bool {
+    ["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "pyi", "rs"]
+        .iter()
+        .any(|&ext| {
+            !ignore_ext.is_some_and(|ig| ig.eq_ignore_ascii_case(ext))
+                && stem_path.with_extension(ext).is_file()
+        })
 }
 
 fn specifier_matches_decl(
@@ -80,7 +107,21 @@ fn specifier_matches_decl(
         raw
     };
     let unquoted_trimmed = unquoted.trim();
-    let path_str = strip_known_ext(unquoted_trimmed);
+    let is_dir_spec = unquoted_trimmed.ends_with('/')
+        || unquoted_trimmed.ends_with('\\')
+        || matches!(unquoted_trimmed, "." | "..");
+    let trimmed_no_slash = unquoted_trimmed.trim_end_matches(['/', '\\']);
+    let (path_str, explicit_ext) = if is_dir_spec {
+        (trimmed_no_slash, None)
+    } else {
+        split_known_ext(trimmed_no_slash)
+    };
+    let decl_ext = decl_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if let Some(spec_ext) = explicit_ext
+        && !ext_compatible(spec_ext, decl_ext)
+    {
+        return ImportMatch::None;
+    }
     let caller_dir = caller_path.parent().unwrap_or_else(|| Path::new(""));
 
     if unquoted_trimmed.starts_with('.') {
@@ -90,7 +131,7 @@ fn specifier_matches_decl(
             for _ in 0..dots.saturating_sub(1) {
                 segs.pop();
             }
-            let tail = strip_known_ext(&unquoted_trimmed[dots..]);
+            let (tail, _) = split_known_ext(&unquoted_trimmed[dots..]);
             for part in tail.split('.').filter(|s| !s.is_empty()) {
                 segs.push(part.to_string());
             }
@@ -108,25 +149,56 @@ fn specifier_matches_decl(
             }
             normalize_segments(&joined)
         };
-        let decl_norm = normalize_segments(&decl_path.with_extension(""));
-        if resolved_segs == decl_norm {
+        let decl_stem = decl_path.with_extension("");
+        let decl_norm = normalize_segments(&decl_stem);
+        if !is_dir_spec && resolved_segs == decl_norm {
+            if let Some(spec_ext) = explicit_ext {
+                if !spec_ext.eq_ignore_ascii_case(decl_ext)
+                    && decl_path.with_extension(spec_ext).is_file()
+                {
+                    return ImportMatch::None;
+                }
+                return ImportMatch::Proven;
+            }
+            if has_competing_file_for_stem(&decl_stem, Some(decl_ext)) {
+                return ImportMatch::Uncertain;
+            }
+            if matches!(decl_ext, "py" | "pyi") && decl_stem.join("__init__.py").is_file() {
+                return ImportMatch::None;
+            }
             return ImportMatch::Proven;
         }
         if is_index
+            && explicit_ext.is_none()
             && let Some(parent) = decl_path.parent()
             && resolved_segs == normalize_segments(parent)
         {
+            if !is_dir_spec && has_competing_file_for_stem(parent, None) {
+                return if matches!(decl_ext, "py" | "pyi" | "rs") {
+                    ImportMatch::Uncertain
+                } else {
+                    ImportMatch::None
+                };
+            }
             return ImportMatch::Proven;
         }
         return ImportMatch::None;
     }
 
-    if !unquoted_trimmed.is_empty() && caller_dir.join(unquoted_trimmed) == decl_path {
+    if !unquoted_trimmed.is_empty()
+        && !is_dir_spec
+        && caller_dir.join(unquoted_trimmed) == decl_path
+    {
         return ImportMatch::Proven;
     }
 
+    let sep: &[char] = if path_str.contains(['/', '\\']) {
+        &['/', '\\']
+    } else {
+        &['.', ':']
+    };
     let spec_segs: Vec<&str> = path_str
-        .split(['/', '.', ':'])
+        .split(sep)
         .filter(|s| {
             !s.is_empty() && !matches!(*s, "." | ".." | "@" | "~" | "crate" | "super" | "self")
         })
@@ -138,8 +210,9 @@ fn specifier_matches_decl(
     {
         return ImportMatch::None;
     }
-    if decl_segs.ends_with(&spec_segs)
+    if (!is_dir_spec && decl_segs.ends_with(&spec_segs))
         || (is_index
+            && explicit_ext.is_none()
             && decl_segs.len() >= 2
             && decl_segs[..decl_segs.len() - 1].ends_with(&spec_segs))
     {
@@ -163,42 +236,22 @@ fn clause_binds_symbol(binding_part: &str, name: &str) -> bool {
     if trimmed.contains('*') {
         return true;
     }
-    if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}'))
-        && open < close
-    {
-        for item in trimmed[open + 1..close].split(',') {
-            let parts: Vec<&str> = item.split_whitespace().collect();
-            let parts = if parts.first() == Some(&"type") {
-                &parts[1..]
-            } else {
-                &parts[..]
-            };
-            match parts {
-                [orig] if *orig == name => return true,
-                [orig, "as", _] if *orig == name => return true,
-                _ => {}
-            }
-        }
-        let default_part = trimmed[..open].trim().trim_end_matches(',').trim();
-        if default_part == name {
-            return true;
-        }
-        return false;
-    }
-    for item in trimmed.split(',') {
+    let item_matches = |item: &str| -> bool {
         let parts: Vec<&str> = item.split_whitespace().collect();
         let parts = if parts.first() == Some(&"type") {
             &parts[1..]
         } else {
             &parts[..]
         };
-        match parts {
-            [orig] if *orig == name => return true,
-            [orig, "as", _] if *orig == name => return true,
-            _ => {}
-        }
+        matches!(parts, [orig] | [orig, "as", _] if *orig == name)
+    };
+    if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}'))
+        && open < close
+    {
+        return trimmed[open + 1..close].split(',').any(item_matches)
+            || trimmed[..open].trim().trim_end_matches(',').trim() == name;
     }
-    false
+    trimmed.split(',').any(item_matches)
 }
 
 pub(crate) fn imports_declaration(
@@ -220,6 +273,8 @@ pub(crate) fn imports_declaration(
             _ => None,
         })
         .collect();
+    let check_spec =
+        |spec: &str| specifier_matches_decl(spec, caller_path, decl_path, &decl_segs, is_index);
     let lines: Vec<&str> = text.lines().collect();
     let mut best = ImportMatch::None;
     let mut i = 0;
@@ -229,14 +284,7 @@ pub(crate) fn imports_declaration(
             || trimmed.starts_with("#include<")
             || trimmed.starts_with("#include\"")
         {
-            let spec = trimmed.trim_start_matches("#include").trim();
-            best = best.merge(specifier_matches_decl(
-                spec,
-                caller_path,
-                decl_path,
-                &decl_segs,
-                is_index,
-            ));
+            best = best.merge(check_spec(trimmed.trim_start_matches("#include").trim()));
             i += 1;
             continue;
         }
@@ -268,9 +316,9 @@ pub(crate) fn imports_declaration(
         {
             let mut stmt = String::from(trimmed);
             let mut j = i;
-            let is_multiline = (trimmed.contains('{') && !trimmed.contains('}'))
-                || (trimmed.starts_with("from ") && trimmed.ends_with('('));
-            if is_multiline {
+            if (trimmed.contains('{') && !trimmed.contains('}'))
+                || (trimmed.starts_with("from ") && trimmed.ends_with('('))
+            {
                 while j + 1 < lines.len() && j - i < 25 {
                     j += 1;
                     let next = lines[j].trim();
@@ -286,24 +334,10 @@ pub(crate) fn imports_declaration(
                 }
             }
             let matched = if stmt.starts_with("from ") {
-                if let Some((spec_part, binding_part)) =
-                    stmt.trim_start_matches("from ").split_once(" import ")
-                {
-                    let clean_binding = binding_part.trim().trim_matches(['(', ')']);
-                    if clause_binds_symbol(clean_binding, name) {
-                        specifier_matches_decl(
-                            spec_part,
-                            caller_path,
-                            decl_path,
-                            &decl_segs,
-                            is_index,
-                        )
-                    } else {
-                        ImportMatch::None
-                    }
-                } else {
-                    ImportMatch::None
-                }
+                stmt.trim_start_matches("from ")
+                    .split_once(" import ")
+                    .filter(|(_, b)| clause_binds_symbol(b.trim().trim_matches(['(', ')']), name))
+                    .map_or(ImportMatch::None, |(s, _)| check_spec(s))
             } else if let Some((binding_part, spec_part)) = stmt
                 .rsplit_once(" from ")
                 .or_else(|| stmt.rsplit_once("}from "))
@@ -316,13 +350,12 @@ pub(crate) fn imports_declaration(
                     binding_part.to_string()
                 };
                 if clause_binds_symbol(&binding_full, name) {
-                    specifier_matches_decl(spec_part, caller_path, decl_path, &decl_segs, is_index)
+                    check_spec(spec_part)
                 } else {
                     ImportMatch::None
                 }
             } else {
-                let spec_part = stmt.trim_start_matches("import").trim();
-                specifier_matches_decl(spec_part, caller_path, decl_path, &decl_segs, is_index)
+                check_spec(stmt.trim_start_matches("import").trim())
             };
             best = best.merge(matched);
             i = j + 1;
@@ -330,13 +363,7 @@ pub(crate) fn imports_declaration(
         }
         for call in ["require(", "import("] {
             if let Some((_, after)) = trimmed.split_once(call) {
-                best = best.merge(specifier_matches_decl(
-                    after,
-                    caller_path,
-                    decl_path,
-                    &decl_segs,
-                    is_index,
-                ));
+                best = best.merge(check_spec(after));
             }
         }
         i += 1;

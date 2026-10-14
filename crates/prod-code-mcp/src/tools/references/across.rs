@@ -170,14 +170,26 @@ fn apply_ts_mask(slice: &str, offset: usize, mask: &mut [bool]) {
 }
 
 fn scan_template_expr(text: &str, open_brace: usize, mask: &mut [bool]) -> usize {
-    if let Some(close) = crate::parameter_object::matching_bracket(text, open_brace) {
-        if open_brace + 1 < close {
-            apply_ts_mask(&text[open_brace + 1..close], open_brace + 1, mask);
-        }
-        close + 1
-    } else {
-        open_brace + 1
+    crate::caller_migration::mask::scan_ts_template_expr(text, open_brace, mask)
+}
+
+fn skip_quoted_attr(text: &str, quote_idx: usize, is_code_expr: bool, mask: &mut [bool]) -> usize {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let q = bytes[quote_idx];
+    let val_start = quote_idx + 1;
+    let mut i = val_start;
+    while i < len && bytes[i] != q {
+        i = if bytes[i] == b'\\' {
+            (i + 2).min(len)
+        } else {
+            i + 1
+        };
     }
+    if is_code_expr && val_start < i {
+        apply_ts_mask(&text[val_start..i], val_start, mask);
+    }
+    (i + 1).min(len)
 }
 
 pub(crate) fn mask_executable_code(text: &str, path: &Path) -> Vec<bool> {
@@ -265,7 +277,8 @@ pub(crate) fn mask_executable_code(text: &str, path: &Path) -> Vec<bool> {
                     .map_or(len, |rel| i + 1 + rel + 8);
                 continue;
             }
-            let mut t = i + 1 + usize::from(i + 1 < len && bytes[i + 1] == b'/');
+            let is_closing_tag = i + 1 < len && bytes[i + 1] == b'/';
+            let mut t = i + 1 + usize::from(is_closing_tag);
             let name_start = t;
             while t < len
                 && (bytes[t].is_ascii_alphanumeric() || matches!(bytes[t], b'_' | b'.' | b'-'))
@@ -277,21 +290,52 @@ pub(crate) fn mask_executable_code(text: &str, path: &Path) -> Vec<bool> {
             }
             i = t;
             while i < len && bytes[i] != b'>' {
-                if bytes[i] == b'{' {
+                if bytes[i].is_ascii_whitespace() || bytes[i] == b'/' {
+                    i += 1;
+                } else if bytes[i] == b'{' {
                     i = scan_template_expr(text, i, &mut mask);
                 } else if bytes[i] == b'"' || bytes[i] == b'\'' {
-                    let q = bytes[i];
-                    i += 1;
-                    while i < len && bytes[i] != q {
-                        i = if bytes[i] == b'\\' {
-                            (i + 2).min(len)
-                        } else {
-                            i + 1
-                        };
-                    }
-                    i = (i + 1).min(len);
+                    i = skip_quoted_attr(text, i, false, &mut mask);
                 } else {
-                    i += 1;
+                    let attr_start = i;
+                    while i < len
+                        && !bytes[i].is_ascii_whitespace()
+                        && !matches!(bytes[i], b'=' | b'>' | b'/' | b'{' | b'"' | b'\'')
+                    {
+                        i += 1;
+                    }
+                    let attr_name = &text[attr_start..i];
+                    let is_vue_expr = ext == "vue"
+                        && !is_closing_tag
+                        && (attr_name.starts_with("v-")
+                            || attr_name.starts_with(':')
+                            || attr_name.starts_with('@')
+                            || attr_name.starts_with('#'));
+                    if is_vue_expr
+                        && let (Some(b_open), Some(b_close)) =
+                            (attr_name.find('['), attr_name.rfind(']'))
+                        && b_open + 1 < b_close
+                    {
+                        apply_ts_mask(
+                            &attr_name[b_open + 1..b_close],
+                            attr_start + b_open + 1,
+                            &mut mask,
+                        );
+                    }
+                    while i < len && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    if i < len && bytes[i] == b'=' {
+                        i += 1;
+                        while i < len && bytes[i].is_ascii_whitespace() {
+                            i += 1;
+                        }
+                        if i < len && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                            i = skip_quoted_attr(text, i, is_vue_expr, &mut mask);
+                        } else if i < len && bytes[i] == b'{' {
+                            i = scan_template_expr(text, i, &mut mask);
+                        }
+                    }
                 }
             }
             i = (i + 1).min(len);

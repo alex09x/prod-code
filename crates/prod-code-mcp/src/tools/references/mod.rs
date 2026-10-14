@@ -247,7 +247,7 @@ mod tests {
         let caller = Path::new("/ws/src/pages/index.astro");
         let decl_ts = Path::new("/ws/src/data/caseStudies.ts");
         let decl_idx = Path::new("/ws/src/data/caseStudies/index.ts");
-        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\nconst label = \"caseStudies\";\nfunction render(caseStudies: string) {\n  return caseStudies;\n}\n---\n<a href=\"https://example.org\">{caseStudies.length}</a>\n";
+        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\nconst label = \"caseStudies\";\nfunction render(caseStudies: string) {\n  return caseStudies;\n}\n---\n<a href=\"https://example.org\">{`Value: ${caseStudies.length}`}</a>\n";
         assert_eq!(
             imports_declaration(astro_text, caller, decl_ts, "caseStudies"),
             ImportMatch::Proven
@@ -257,14 +257,18 @@ mod tests {
             ImportMatch::Proven
         );
         let page_b = Path::new("/ws/src/b/Page.astro");
-        let rel_imp = "import { foo } from './data';\n";
+        let rel_imp = "import { foo } from './data.js';\n";
         assert_eq!(
-            imports_declaration(rel_imp, page_b, Path::new("/ws/src/a/data.ts"), "foo"),
+            imports_declaration(rel_imp, page_b, Path::new("/ws/src/a/data.js"), "foo"),
             ImportMatch::None
         );
         assert_eq!(
-            imports_declaration(rel_imp, page_b, Path::new("/ws/src/b/data.ts"), "foo"),
+            imports_declaration(rel_imp, page_b, Path::new("/ws/src/b/data.js"), "foo"),
             ImportMatch::Proven
+        );
+        assert_eq!(
+            imports_declaration(rel_imp, page_b, Path::new("/ws/src/b/data/index.js"), "foo"),
+            ImportMatch::None
         );
 
         let mask = mask_executable_code(astro_text, caller);
@@ -285,10 +289,21 @@ mod tests {
         }
         assert_eq!(uses, vec![4, 11]);
 
-        let py_text = "# foo in comment\nvalue = total // foo()\n";
+        let vue_text = "<template><button title=\"foo\" :prop=\"foo\" @click=\"foo()\">{{ foo }}</button></template>";
+        let vue_mask = mask_executable_code(vue_text, Path::new("/ws/App.vue"));
+        let vue_foos: Vec<bool> = vue_text
+            .match_indices("foo")
+            .map(|(off, _)| vue_mask[off])
+            .collect();
+        assert_eq!(vue_foos, vec![false, true, true, true]);
+
+        let py_text = "# foo in comment\nmsg = f\"literal foo {foo()}\"\n";
         let py_mask = mask_executable_code(py_text, Path::new("/ws/app.py"));
-        let foo_off = py_text.rfind("foo").unwrap();
-        assert!(py_mask[foo_off]);
+        let py_foos: Vec<bool> = py_text
+            .match_indices("foo")
+            .map(|(off, _)| py_mask[off])
+            .collect();
+        assert_eq!(py_foos, vec![false, false, true]);
     }
 
     #[test]
