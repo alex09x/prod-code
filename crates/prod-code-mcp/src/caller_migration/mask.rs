@@ -186,38 +186,34 @@ fn scan_code_into_mask(
 
         let b = bytes[i];
         if !b.is_ascii_whitespace() {
-            let is_ident = b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$');
-            if is_ident {
-                if !bytes
-                    .get(i + 1)
-                    .is_some_and(|n| n.is_ascii_alphanumeric() || matches!(*n, b'_' | b'$'))
-                {
+            let is_ident_byte =
+                |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$' | 0x80..=0xFF);
+            if is_ident_byte(b) {
+                if !bytes.get(i + 1).copied().is_some_and(is_ident_byte) {
                     let mut w = i;
-                    while w > start
-                        && (bytes[w - 1].is_ascii_alphanumeric()
-                            || matches!(bytes[w - 1], b'_' | b'$'))
-                    {
+                    while w > start && is_ident_byte(bytes[w - 1]) {
                         w -= 1;
                     }
                     regex_allowed = matches!(
-                        &text[w..=i],
-                        "return"
-                            | "typeof"
-                            | "void"
-                            | "delete"
-                            | "throw"
-                            | "new"
-                            | "in"
-                            | "of"
-                            | "instanceof"
-                            | "case"
-                            | "yield"
-                            | "await"
-                            | "else"
-                            | "do"
+                        &bytes[w..=i],
+                        b"return"
+                            | b"typeof"
+                            | b"void"
+                            | b"delete"
+                            | b"throw"
+                            | b"new"
+                            | b"in"
+                            | b"of"
+                            | b"instanceof"
+                            | b"case"
+                            | b"yield"
+                            | b"await"
+                            | b"else"
+                            | b"do"
                     );
                 }
             } else if matches!(b, b')' | b']' | b'.')
+                || (!regex_allowed && b == b'!' && bytes.get(i + 1) != Some(&b'='))
                 || (!regex_allowed && matches!(b, b'+' | b'-') && bytes.get(i + 1) == Some(&b))
                 || (!regex_allowed && matches!(b, b'+' | b'-') && i > start && bytes[i - 1] == b)
             {
