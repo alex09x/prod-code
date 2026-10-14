@@ -232,3 +232,131 @@ pub(crate) async fn handle_references(
 
     Ok(McpToolCallResult::text(out.trim_end()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::across::imports_declaration;
+    use std::path::Path;
+
+    #[test]
+    fn imports_declaration_matches_multiline_astro_and_rejects_same_identifier_from_other_module() {
+        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\n---\n<div>{caseStudies.length}</div>\n";
+        assert!(imports_declaration(
+            astro_text,
+            Path::new("/ws/src/data/caseStudies.ts"),
+            "caseStudies"
+        ));
+        assert!(imports_declaration(
+            astro_text,
+            Path::new("/ws/src/data/caseStudies/index.ts"),
+            "CaseStudy"
+        ));
+        assert!(!imports_declaration(
+            astro_text,
+            Path::new("/ws/src/data/caseStudies.ts"),
+            "unrelatedSymbol"
+        ));
+        let other_module = "import { caseStudies } from '../otherData';\n";
+        assert!(!imports_declaration(
+            other_module,
+            Path::new("/ws/src/data/caseStudies/index.ts"),
+            "caseStudies"
+        ));
+        assert!(!imports_declaration(
+            other_module,
+            Path::new("/ws/src/data/caseStudies.ts"),
+            "caseStudies"
+        ));
+    }
+
+    #[test]
+    fn nested_git_worktree_is_excluded_from_source_files_and_worktree_check() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join(".git"), "gitdir: /tmp/main\n").unwrap();
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let main_file = src_dir.join("app.ts");
+        std::fs::write(&main_file, "export const x = 1;\n").unwrap();
+
+        let nested_wt = root.join(".prod/worktrees/wt-123");
+        std::fs::create_dir_all(nested_wt.join("src")).unwrap();
+        std::fs::write(nested_wt.join(".git"), "gitdir: /tmp/wt-123\n").unwrap();
+        let wt_file = nested_wt.join("src/app.ts");
+        std::fs::write(&wt_file, "export const x = 1;\n").unwrap();
+
+        assert!(!crate::tools::symbols::is_in_nested_git_worktree(
+            root, &main_file
+        ));
+        assert!(crate::tools::symbols::is_in_nested_git_worktree(
+            root, &wt_file
+        ));
+
+        let files: Vec<_> = crate::tools::symbols::source_files(root).collect();
+        assert!(files.contains(&main_file));
+        assert!(!files.contains(&wt_file));
+    }
+
+    #[test]
+    fn resolve_file_path_preserves_external_toolchain_and_maps_remote_mirror() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("my-repo");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+
+        let external =
+            "/opt/rustup/toolchains/stable/lib/rustlib/src/rust/library/core/src/error.rs";
+        assert_eq!(
+            crate::tools::compile_gate::resolve_file_path(&root, external),
+            std::path::PathBuf::from(external)
+        );
+
+        let mirror = "/srv/prod-code/workspaces/my-repo/src/lib.rs";
+        assert_eq!(
+            crate::tools::compile_gate::resolve_file_path(&root, mirror),
+            root.join("src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn nested_swift_project_and_swift_declarations_work_at_deep_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"root\"\n").unwrap();
+        let swift_pkg = root.join("apps/macos/Sources/AppPkg");
+        let deep_dir = swift_pkg.join("Features/Terminal/Views/Components/Rows");
+        std::fs::create_dir_all(&deep_dir).unwrap();
+        std::fs::write(
+            swift_pkg.join("Package.swift"),
+            "// swift-tools-version: 6.0\n",
+        )
+        .unwrap();
+        let swift_file = deep_dir.join("GhosttyTerminalNSView.swift");
+        std::fs::write(
+            &swift_file,
+            "import AppKit\nfinal class GhosttyTerminalNSView: NSView {}\nextension GhosttyTerminalNSView {}\n",
+        )
+        .unwrap();
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let nested =
+            crate::tools::symbols::projects_naming(root, "GhosttyTerminalNSView", deadline);
+        assert!(nested.iter().any(|(rep, subpath, engine)| {
+            rep == &swift_file && subpath == "apps/macos/Sources/AppPkg" && *engine == "swift"
+        }));
+        assert!(
+            crate::tools::symbols::declared_at(
+                "final class GhosttyTerminalNSView: NSView {",
+                "GhosttyTerminalNSView"
+            )
+            .is_some()
+        );
+        assert!(
+            crate::tools::symbols::declared_at(
+                "extension GhosttyTerminalNSView {",
+                "GhosttyTerminalNSView"
+            )
+            .is_some()
+        );
+    }
+}

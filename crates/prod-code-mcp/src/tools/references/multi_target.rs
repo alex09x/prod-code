@@ -133,11 +133,26 @@ pub(crate) async fn collect_multi_target_references(
             .iter()
             .enumerate()
             .flat_map(|(index, text_line)| {
+                let trimmed = text_line.trim_start();
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("/*")
+                    || trimmed.starts_with('*')
+                    || trimmed.starts_with("<!--")
+                {
+                    return Vec::new();
+                }
+                let comment_col = text_line
+                    .find("//")
+                    .map(|byte_idx| text_line[..byte_idx].chars().count());
                 let is_declaration_line = is_declaration_file && index as u32 + 1 == decl_line;
                 let chars: Vec<char> = text_line.chars().collect();
+                let wanted = &wanted[..];
                 (0..chars.len())
-                    .filter(|&c| {
-                        if !chars[c..].starts_with(&wanted)
+                    .filter(move |&c| {
+                        if comment_col.is_some_and(|cc| c >= cc) {
+                            return false;
+                        }
+                        if !chars[c..].starts_with(wanted)
                             || (c > 0 && is_name(chars.get(c - 1)))
                             || is_name(chars.get(c + wanted_len))
                         {
@@ -169,7 +184,15 @@ pub(crate) async fn collect_multi_target_references(
         {
             if imports_declaration(&text, declaration, name) {
                 seen_files.insert(norm_path);
-                record_file_uses(&uri_str, &file_uses, wanted_len, seen_locs, all_locs);
+                let non_decl: Vec<(usize, usize)> = file_uses
+                    .into_iter()
+                    .filter(|&(u_idx, _)| {
+                        !text_lines
+                            .get(u_idx)
+                            .is_some_and(|line| declared_at(line, name).is_some())
+                    })
+                    .collect();
+                record_file_uses(&uri_str, &non_decl, wanted_len, seen_locs, all_locs);
             }
             continue;
         }
@@ -233,7 +256,7 @@ pub(crate) async fn collect_multi_target_references(
                     );
                 }
 
-                record_file_uses(&uri_str, &file_uses, wanted_len, seen_locs, all_locs);
+                record_file_uses(&uri_str, &[(index, col)], wanted_len, seen_locs, all_locs);
 
                 if checkout_use_note.is_none() && initial_was_empty {
                     let is_external = crate::remote_fs::is_external(
@@ -274,20 +297,15 @@ pub(crate) async fn collect_multi_target_references(
                     if !unindexed_callers.contains(&path) {
                         unindexed_callers.push(path.clone());
                     }
-                    if is_swift || has_import {
+                    if (is_swift || has_import) && !is_own_decl {
                         seen_files.insert(norm_path.clone());
-                        let filtered: Vec<(usize, usize)> = file_uses
-                            .iter()
-                            .copied()
-                            .filter(|&(u_idx, _)| {
-                                has_import
-                                    || !text_lines
-                                        .get(u_idx)
-                                        .is_some_and(|line| declared_at(line, name).is_some())
-                            })
-                            .collect();
-                        record_file_uses(&uri_str, &filtered, wanted_len, seen_locs, all_locs);
-                        break;
+                        record_file_uses(
+                            &uri_str,
+                            &[(index, col)],
+                            wanted_len,
+                            seen_locs,
+                            all_locs,
+                        );
                     }
                 }
             }

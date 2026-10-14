@@ -159,26 +159,94 @@ pub(crate) fn engine_can_reference(caller_engine: Option<&str>, decl_engine: &st
     }
 }
 
+fn specifier_matches_decl(spec: &str, decl_segs: &[&str], is_index: bool) -> bool {
+    let raw = spec
+        .trim()
+        .trim_end_matches(';')
+        .trim_end_matches(')')
+        .trim();
+    let unquoted = if let Some((_, rest)) = raw.split_once(['\'', '"', '<']) {
+        rest.split(['\'', '"', '>']).next().unwrap_or(raw)
+    } else {
+        raw
+    };
+    let mut path_str = unquoted.trim();
+    for ext in [
+        ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".astro", ".svelte", ".vue", ".py", ".rs",
+        ".hpp", ".h",
+    ] {
+        if let Some(stripped) = path_str.strip_suffix(ext) {
+            path_str = stripped;
+            break;
+        }
+    }
+    let spec_segs: Vec<&str> = path_str
+        .split(['/', '.', ':'])
+        .filter(|s| {
+            !s.is_empty() && !matches!(*s, "." | ".." | "@" | "~" | "crate" | "super" | "self")
+        })
+        .collect();
+    if spec_segs.is_empty() {
+        return false;
+    }
+    if is_index && spec_segs.len() == 1 && matches!(spec_segs[0], "index" | "mod" | "__init__") {
+        return false;
+    }
+    decl_segs.ends_with(&spec_segs)
+        || (is_index
+            && decl_segs.len() >= 2
+            && decl_segs[..decl_segs.len() - 1].ends_with(&spec_segs))
+}
+
 pub(crate) fn imports_declaration(text: &str, decl_path: &Path, name: &str) -> bool {
     let file_stem = decl_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let mut stems = Vec::new();
-    if !file_stem.is_empty() {
-        stems.push(file_stem);
+    if file_stem.is_empty() {
+        return false;
     }
-    if matches!(file_stem, "index" | "mod" | "__init__")
-        && let Some(parent_stem) = decl_path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-        && !parent_stem.is_empty()
-    {
-        stems.push(parent_stem);
-    }
-    let matches_stem = |s: &str| stems.is_empty() || stems.iter().any(|stem| s.contains(stem));
+    let is_index = matches!(file_stem, "index" | "mod" | "__init__");
+    let without_ext = decl_path.with_extension("");
+    let decl_segs: Vec<&str> = without_ext
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim();
+        if trimmed.starts_with("#include ")
+            || trimmed.starts_with("#include<")
+            || trimmed.starts_with("#include\"")
+        {
+            let spec = trimmed.trim_start_matches("#include").trim();
+            if specifier_matches_decl(spec, &decl_segs, is_index) {
+                return true;
+            }
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
+            let mut stmt = String::from(trimmed);
+            while !stmt.contains(';') && i + 1 < lines.len() {
+                i += 1;
+                stmt.push(' ');
+                stmt.push_str(lines[i].trim());
+            }
+            let target_stem = if is_index && decl_segs.len() >= 2 {
+                decl_segs[decl_segs.len() - 2]
+            } else {
+                file_stem
+            };
+            if (crate::tools::symbols::names_word(&stmt, name) || stmt.contains('*'))
+                && crate::tools::symbols::names_word(&stmt, target_stem)
+            {
+                return true;
+            }
+            i += 1;
+            continue;
+        }
         if trimmed.starts_with("import ")
             || trimmed.starts_with("import{")
             || trimmed.starts_with("export ")
@@ -204,16 +272,41 @@ pub(crate) fn imports_declaration(text: &str, decl_path: &Path, name: &str) -> b
                     }
                 }
             }
-            if (crate::tools::symbols::names_word(&stmt, name) || stmt.contains('*'))
-                && matches_stem(&stmt)
+            let matched = if stmt.starts_with("from ") {
+                if let Some((spec_part, binding_part)) =
+                    stmt.trim_start_matches("from ").split_once(" import ")
+                {
+                    (crate::tools::symbols::names_word(binding_part, name)
+                        || binding_part.contains('*'))
+                        && specifier_matches_decl(spec_part, &decl_segs, is_index)
+                } else {
+                    false
+                }
+            } else if let Some((binding_part, spec_part)) = stmt
+                .rsplit_once(" from ")
+                .or_else(|| stmt.rsplit_once("}from "))
+                .or_else(|| stmt.rsplit_once("}from'"))
+                .or_else(|| stmt.rsplit_once("}from\""))
             {
+                (crate::tools::symbols::names_word(binding_part, name)
+                    || binding_part.contains('*'))
+                    && specifier_matches_decl(spec_part, &decl_segs, is_index)
+            } else {
+                let spec_part = stmt.trim_start_matches("import").trim();
+                specifier_matches_decl(spec_part, &decl_segs, is_index)
+            };
+            if matched {
                 return true;
             }
             i = j + 1;
             continue;
         }
-        if (trimmed.contains("require(") || trimmed.contains("import(")) && matches_stem(trimmed) {
-            return true;
+        for call in ["require(", "import("] {
+            if let Some((_, after)) = trimmed.split_once(call)
+                && specifier_matches_decl(after, &decl_segs, is_index)
+            {
+                return true;
+            }
         }
         i += 1;
     }
@@ -240,121 +333,4 @@ pub(crate) fn definition_is(found: &serde_json::Value, path: &str, line: u32) ->
             .and_then(|l| l.as_u64());
         crate::remote_fs::uri_to_path(uri) == path && start == Some(line as u64)
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn imports_declaration_matches_multiline_astro_and_index_imports() {
-        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\n---\n<div>{caseStudies.length}</div>\n";
-        assert!(imports_declaration(
-            astro_text,
-            Path::new("/ws/src/data/caseStudies.ts"),
-            "caseStudies"
-        ));
-        assert!(imports_declaration(
-            astro_text,
-            Path::new("/ws/src/data/caseStudies/index.ts"),
-            "CaseStudy"
-        ));
-        assert!(!imports_declaration(
-            astro_text,
-            Path::new("/ws/src/data/caseStudies.ts"),
-            "unrelatedSymbol"
-        ));
-    }
-
-    #[test]
-    fn nested_git_worktree_is_excluded_from_source_files_and_worktree_check() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        std::fs::write(root.join(".git"), "gitdir: /tmp/main\n").unwrap();
-        let src_dir = root.join("src");
-        std::fs::create_dir_all(&src_dir).unwrap();
-        let main_file = src_dir.join("app.ts");
-        std::fs::write(&main_file, "export const x = 1;\n").unwrap();
-
-        let nested_wt = root.join(".prod/worktrees/wt-123");
-        std::fs::create_dir_all(nested_wt.join("src")).unwrap();
-        std::fs::write(nested_wt.join(".git"), "gitdir: /tmp/wt-123\n").unwrap();
-        let wt_file = nested_wt.join("src/app.ts");
-        std::fs::write(&wt_file, "export const x = 1;\n").unwrap();
-
-        assert!(!crate::tools::symbols::is_in_nested_git_worktree(
-            root, &main_file
-        ));
-        assert!(crate::tools::symbols::is_in_nested_git_worktree(
-            root, &wt_file
-        ));
-
-        let files: Vec<_> = crate::tools::symbols::source_files(root).collect();
-        assert!(files.contains(&main_file));
-        assert!(!files.contains(&wt_file));
-    }
-
-    #[test]
-    fn resolve_file_path_preserves_external_toolchain_and_maps_remote_mirror() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("my-repo");
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
-
-        let external =
-            "/opt/rustup/toolchains/stable/lib/rustlib/src/rust/library/core/src/error.rs";
-        assert_eq!(
-            crate::tools::compile_gate::resolve_file_path(&root, external),
-            std::path::PathBuf::from(external)
-        );
-
-        let mirror = "/srv/prod-code/workspaces/my-repo/src/lib.rs";
-        assert_eq!(
-            crate::tools::compile_gate::resolve_file_path(&root, mirror),
-            root.join("src/lib.rs")
-        );
-    }
-
-    #[test]
-    fn nested_swift_project_and_swift_declarations_work_at_deep_paths() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"root\"\n").unwrap();
-        let swift_pkg = root.join("apps/macos/Sources/AppPkg");
-        let deep_dir = swift_pkg.join("Features/Terminal/Views/Components/Rows");
-        std::fs::create_dir_all(&deep_dir).unwrap();
-        std::fs::write(
-            swift_pkg.join("Package.swift"),
-            "// swift-tools-version: 6.0\n",
-        )
-        .unwrap();
-        let swift_file = deep_dir.join("GhosttyTerminalNSView.swift");
-        std::fs::write(
-            &swift_file,
-            "import AppKit\nfinal class GhosttyTerminalNSView: NSView {}\nextension GhosttyTerminalNSView {}\n",
-        )
-        .unwrap();
-
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        let nested =
-            crate::tools::symbols::projects_naming(root, "GhosttyTerminalNSView", deadline);
-        assert!(nested.iter().any(|(rep, subpath, engine)| {
-            rep == &swift_file && subpath == "apps/macos/Sources/AppPkg" && *engine == "swift"
-        }));
-        assert!(
-            crate::tools::symbols::declared_at(
-                "final class GhosttyTerminalNSView: NSView {",
-                "GhosttyTerminalNSView"
-            )
-            .is_some()
-        );
-        assert!(
-            crate::tools::symbols::declared_at(
-                "extension GhosttyTerminalNSView {",
-                "GhosttyTerminalNSView"
-            )
-            .is_some()
-        );
-    }
 }
