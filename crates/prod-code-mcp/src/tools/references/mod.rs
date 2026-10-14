@@ -83,7 +83,13 @@ pub(crate) async fn handle_references(
     let mut seen_files = HashSet::new();
     let mut unindexed_callers = Vec::new();
 
-    add_locations(&res, &mut seen_locs, &mut seen_files, &mut all_locs);
+    add_locations(
+        workspace_root,
+        &res,
+        &mut seen_locs,
+        &mut seen_files,
+        &mut all_locs,
+    );
     let initial_was_empty = all_locs.is_empty();
     if !initial_was_empty {
         seen_files.insert(std::fs::canonicalize(&file_path).unwrap_or_else(|_| file_path.clone()));
@@ -130,7 +136,13 @@ pub(crate) async fn handle_references(
                 params,
             )
             .await?;
-            add_locations(&res, &mut seen_locs, &mut seen_files, &mut all_locs);
+            add_locations(
+                workspace_root,
+                &res,
+                &mut seen_locs,
+                &mut seen_files,
+                &mut all_locs,
+            );
         }
     }
 

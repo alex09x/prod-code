@@ -239,7 +239,7 @@ fn an_unproven_auto_trait_bound_is_shown_and_not_counted() {
     assert_eq!(report.errors, 1);
     let rendered = report.render();
     assert!(
-        rendered.contains("2 unproven Send/Sync/Unpin bound(s) are not counted")
+        rendered.contains("2 unproven bound(s) or analyzer limitation(s) are not counted")
             && rendered.contains(
                 "unconfirmed: the trait bound `NonNull<()>: Send` is not satisfied (src/main.rs:1:"
             ),

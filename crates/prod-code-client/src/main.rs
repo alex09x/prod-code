@@ -284,7 +284,22 @@ async fn run_cli() -> Result<()> {
     if let (Some(Commands::Lsp { .. }), Err(err)) = (&cli.command, &picked) {
         return refuse_lsp(err).await;
     }
-    let remote = picked?;
+    // Likewise, an MCP client expects the stdio server to complete `initialize` and `tools/list`
+    // rather than closing the transport pipe at startup (#1080); `tools/call` will rediscover a
+    // live gateway node or return a structured tool error.
+    let remote = match (&cli.command, picked) {
+        (_, Ok(addr)) => addr,
+        (Some(Commands::Mcp), Err(err)) => {
+            let fallback = remotes.first().copied().unwrap_or(seeds[0]);
+            tracing::warn!(
+                error = %format!("{err:#}"),
+                %fallback,
+                "initial gateway discovery failed before MCP initialize; starting stdio server with fallback node"
+            );
+            fallback
+        }
+        (_, Err(err)) => return Err(err),
+    };
     prod_code_mcp::cluster::set_routing(remotes.clone(), cwd_workspace.clone());
     startup.mark("pick_node");
     startup.report();

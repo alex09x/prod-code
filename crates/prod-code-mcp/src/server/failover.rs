@@ -37,6 +37,7 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
         || msg.contains("broken pipe")
         || msg.contains("connection reset")
         || msg.contains("connection closed")
+        || msg.contains("closed the connection")
         || msg.contains("transport closed")
         || msg.contains("server closed connection")
         || msg.contains("capacity: this node has no memory")

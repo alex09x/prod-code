@@ -82,7 +82,9 @@ where
     }
 
     let mut pending: Vec<u8> = Vec::new();
-    let mut rebalance_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    let period = std::time::Duration::from_secs(30);
+    let mut rebalance_interval =
+        tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     rebalance_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {

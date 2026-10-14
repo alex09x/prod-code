@@ -262,7 +262,8 @@ pub async fn pick_node_with(
         ));
     }
     if let Some(engine) = engine
-        && !node_fits(*only, Some(engine), os).await
+        && let Ok(status) = node_status(*only).await
+        && !status_fits(&status, Some(engine), os)
     {
         return Err(anyhow!(
             "no reachable gateway serves {engine} (reachable without it: {only}); add a node with the {engine} language server installed"

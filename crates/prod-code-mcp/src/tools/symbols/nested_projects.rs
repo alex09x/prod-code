@@ -30,15 +30,45 @@ pub(crate) const SKIPPED_DIRS: &[&str] = &[
 pub(crate) const MAX_NESTED_PROJECTS: usize = 6;
 
 /// How far below a directory a search of its sources looks.
-pub(crate) const MAX_SEARCH_DEPTH: usize = 6;
+pub(crate) const MAX_SEARCH_DEPTH: usize = 10;
 
 /// The most source files a name search reads to find the nested projects that mention it.
 pub(crate) const MAX_SCANNED_FILES: usize = 5000;
 
+/// Returns `true` when `path` sits inside a nested git repository or git worktree under `root`
+/// (a subdirectory below `root` that has its own `.git` file or directory, #1071).
+pub(crate) fn is_in_nested_git_worktree(root: &Path, path: &Path) -> bool {
+    let resolved = if let Ok(rel) = path.strip_prefix(root) {
+        root.join(rel)
+    } else if let Some(rel) =
+        crate::remote_fs::workspace_relative_path(root, &path.to_string_lossy())
+    {
+        root.join(rel)
+    } else {
+        let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if canon_path.starts_with(&canon_root) {
+            return is_in_nested_git_worktree(&canon_root, &canon_path);
+        }
+        return false;
+    };
+    let Ok(rel) = resolved.strip_prefix(root) else {
+        return false;
+    };
+    let mut cur = root.to_path_buf();
+    let mut comps = rel.components().peekable();
+    while let Some(comp) = comps.next() {
+        cur.push(comp.as_os_str());
+        if (comps.peek().is_some() || cur.is_dir()) && cur.join(".git").symlink_metadata().is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 /// The files under `dir` a search of the checkout looks at, in path order: what git does not
-/// ignore, hidden directories and [`SKIPPED_DIRS`] left out, at most [`MAX_SEARCH_DEPTH`] levels
-/// down. A dependency's build tree next to its sources is an ignored part of the checkout and
-/// stays out, where a plain walk spent the search on it (#358).
+/// ignore, hidden directories, [`SKIPPED_DIRS`], and nested git worktrees/subrepositories left
+/// out, at most [`MAX_SEARCH_DEPTH`] levels down (#358, #1071).
 pub(crate) fn source_files(dir: &Path) -> impl Iterator<Item = std::path::PathBuf> {
     ignore::WalkBuilder::new(dir)
         .max_depth(Some(MAX_SEARCH_DEPTH))
@@ -46,7 +76,8 @@ pub(crate) fn source_files(dir: &Path) -> impl Iterator<Item = std::path::PathBu
         .filter_entry(|entry| {
             entry.depth() == 0
                 || !entry.file_type().is_some_and(|t| t.is_dir())
-                || !SKIPPED_DIRS.contains(&entry.file_name().to_string_lossy().as_ref())
+                || (!SKIPPED_DIRS.contains(&entry.file_name().to_string_lossy().as_ref())
+                    && entry.path().join(".git").symlink_metadata().is_err())
         })
         .build()
         .flatten()
@@ -77,7 +108,11 @@ pub(crate) fn representative_source_file(dir: &Path) -> Option<std::path::PathBu
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             if path.is_dir() {
-                if depth < 4 && !SKIPPED_DIRS.contains(&name.as_str()) && !name.starts_with('.') {
+                if depth < 4
+                    && !SKIPPED_DIRS.contains(&name.as_str())
+                    && !name.starts_with('.')
+                    && path.join(".git").symlink_metadata().is_err()
+                {
                     stack.push((path, depth + 1));
                 }
                 continue;

@@ -13,8 +13,11 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use url::Url;
 
+use super::across::{definition_is, engine_can_reference, imports_declaration, writes_call};
 use crate::tools::execute_lsp_query;
-use crate::tools::symbols::{MAX_SCANNED_FILES, names_word, source_files};
+use crate::tools::symbols::{
+    MAX_SCANNED_FILES, declared_at, is_in_nested_git_worktree, names_word, source_files,
+};
 
 /// The most time multi-target references discovery can take before returning accumulated references.
 pub(crate) const MULTI_TARGET_REF_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
@@ -26,16 +29,8 @@ pub(crate) const MAX_USES_ASKED: usize = 12;
 /// that resolves elsewhere in a file means the same elsewhere through the rest of it.
 pub(crate) const MAX_USES_ASKED_PER_FILE: usize = 2;
 
-/// Whether `text` writes `name(` with `name` as a whole word, a call or a declaration.
-pub(crate) fn writes_call(text: &str, name: &str) -> bool {
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
-    text.match_indices(name).any(|(at, _)| {
-        !text[..at].chars().next_back().is_some_and(ident)
-            && text[at + name.len()..].trim_start().starts_with('(')
-    })
-}
-
 pub(crate) fn add_locations(
+    workspace_root: &Path,
     locations: &serde_json::Value,
     seen_locs: &mut HashSet<(String, u64, u64)>,
     seen_files: &mut HashSet<PathBuf>,
@@ -48,6 +43,12 @@ pub(crate) fn add_locations(
                 .or_else(|| loc.get("targetUri"))
                 .and_then(|u| u.as_str())
                 .unwrap_or("");
+            let parsed_path = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
+            if let Some(ref path) = parsed_path
+                && is_in_nested_git_worktree(workspace_root, path)
+            {
+                continue;
+            }
             let start_line = loc
                 .pointer("/range/start/line")
                 .or_else(|| loc.pointer("/targetRange/start/line"))
@@ -62,45 +63,13 @@ pub(crate) fn add_locations(
                 + 1;
             if seen_locs.insert((uri.to_string(), start_line, start_col)) {
                 all_locs.push(loc.clone());
-                if let Ok(parsed) = Url::parse(uri)
-                    && let Ok(path) = parsed.to_file_path()
-                {
+                if let Some(path) = parsed_path {
                     let norm = std::fs::canonicalize(&path).unwrap_or(path);
                     seen_files.insert(norm);
                 }
             }
         }
     }
-}
-
-pub(crate) fn engine_can_reference(caller_engine: Option<&str>, decl_engine: &str) -> bool {
-    match (caller_engine, decl_engine) {
-        (Some(c), d) if c == d => true,
-        (Some("astro" | "svelte" | "vue" | "html" | "javascript"), "typescript") => true,
-        (Some("astro" | "svelte" | "vue" | "html" | "typescript"), "javascript") => true,
-        (Some("cpp"), "c") | (Some("c"), "cpp") => true,
-        _ => false,
-    }
-}
-
-pub(crate) fn imports_declaration(text: &str, decl_path: &Path, name: &str) -> bool {
-    let file_stem = decl_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if (trimmed.starts_with("import ") || trimmed.starts_with("from "))
-            && trimmed.contains(name)
-        {
-            if file_stem.is_empty() || trimmed.contains(file_stem) {
-                return true;
-            }
-        }
-        if (trimmed.contains("require(") || trimmed.contains("import("))
-            && trimmed.contains(file_stem)
-        {
-            return true;
-        }
-    }
-    false
 }
 
 /// Collects references across multiple feature-gated targets, shared modules, or separate checkouts (#783).
@@ -153,14 +122,15 @@ pub(crate) async fn collect_multi_target_references(
         };
         if !names_word(&text, name) {
             continue;
-        }
+        };
         let Ok(uri) = Url::from_file_path(&path) else {
             continue;
         };
         let uri_str = uri.to_string();
         let wanted_len = wanted.len();
-        let file_uses: Vec<(usize, usize)> = text
-            .lines()
+        let text_lines: Vec<&str> = text.lines().collect();
+        let file_uses: Vec<(usize, usize)> = text_lines
+            .iter()
             .enumerate()
             .flat_map(|(index, text_line)| {
                 let is_declaration_line = is_declaration_file && index as u32 + 1 == decl_line;
@@ -187,7 +157,24 @@ pub(crate) async fn collect_multi_target_references(
             })
             .collect();
 
-        for (index, col) in file_uses.into_iter().take(MAX_USES_ASKED_PER_FILE) {
+        if file_uses.is_empty() {
+            continue;
+        }
+
+        // Markup/component template files (Astro, Svelte, Vue, HTML) importing a TypeScript or
+        // JavaScript module are not indexed by `typescript-language-server`: record their uses
+        // directly when they import `declaration`, without burning the LSP query budget (#1071).
+        let file_engine = crate::sync::engine_for_file(&path);
+        if !is_declaration_file && matches!(file_engine, Some("astro" | "svelte" | "vue" | "html"))
+        {
+            if imports_declaration(&text, declaration, name) {
+                seen_files.insert(norm_path);
+                record_file_uses(&uri_str, &file_uses, wanted_len, seen_locs, all_locs);
+            }
+            continue;
+        }
+
+        for &(index, col) in file_uses.iter().take(MAX_USES_ASKED_PER_FILE) {
             if tokio::time::Instant::now() >= deadline {
                 return checkout_use_note;
             }
@@ -237,18 +224,16 @@ pub(crate) async fn collect_multi_target_references(
                 )
                 .await
                 {
-                    add_locations(&target_refs, seen_locs, seen_files, all_locs);
+                    add_locations(
+                        workspace_root,
+                        &target_refs,
+                        seen_locs,
+                        seen_files,
+                        all_locs,
+                    );
                 }
 
-                if seen_locs.insert((uri_str.clone(), use_line, use_col)) {
-                    all_locs.push(serde_json::json!({
-                        "uri": &uri_str,
-                        "range": {
-                            "start": { "line": index, "character": col },
-                            "end": { "line": index, "character": col + wanted_len }
-                        }
-                    }));
-                }
+                record_file_uses(&uri_str, &file_uses, wanted_len, seen_locs, all_locs);
 
                 if checkout_use_note.is_none() && initial_was_empty {
                     let is_external = crate::remote_fs::is_external(
@@ -278,23 +263,31 @@ pub(crate) async fn collect_multi_target_references(
                     .is_none_or(|f| f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object());
                 let is_swift = path.extension().and_then(|e| e.to_str()) == Some("swift")
                     || declaration.extension().and_then(|e| e.to_str()) == Some("swift");
-                if !is_declaration_file && has_no_def && writes_call(&text, name) {
+                let has_import = imports_declaration(&text, declaration, name);
+                if !is_declaration_file && has_no_def && (has_import || writes_call(&text, name)) {
+                    let is_own_decl = text_lines
+                        .get(index)
+                        .is_some_and(|line| declared_at(line, name).is_some());
+                    if is_own_decl && !has_import {
+                        break;
+                    }
                     if !unindexed_callers.contains(&path) {
                         unindexed_callers.push(path.clone());
                     }
-                    if is_swift || imports_declaration(&text, declaration, name) {
+                    if is_swift || has_import {
                         seen_files.insert(norm_path.clone());
-                        let use_line = (index + 1) as u64;
-                        let use_col = (col + 1) as u64;
-                        if seen_locs.insert((uri_str.clone(), use_line, use_col)) {
-                            all_locs.push(serde_json::json!({
-                                "uri": &uri_str,
-                                "range": {
-                                    "start": { "line": index, "character": col },
-                                    "end": { "line": index, "character": col + wanted_len }
-                                }
-                            }));
-                        }
+                        let filtered: Vec<(usize, usize)> = file_uses
+                            .iter()
+                            .copied()
+                            .filter(|&(u_idx, _)| {
+                                has_import
+                                    || !text_lines
+                                        .get(u_idx)
+                                        .is_some_and(|line| declared_at(line, name).is_some())
+                            })
+                            .collect();
+                        record_file_uses(&uri_str, &filtered, wanted_len, seen_locs, all_locs);
+                        break;
                     }
                 }
             }
@@ -303,24 +296,24 @@ pub(crate) async fn collect_multi_target_references(
     checkout_use_note
 }
 
-/// Whether a `textDocument/definition` answer (a location, a list of them, or of links) names
-/// 0-based `line` of the file at `path`.
-pub(crate) fn definition_is(found: &serde_json::Value, path: &str, line: u32) -> bool {
-    let locations: Vec<&serde_json::Value> = match found {
-        serde_json::Value::Array(all) => all.iter().collect(),
-        serde_json::Value::Object(_) => vec![found],
-        _ => Vec::new(),
-    };
-    locations.iter().any(|location| {
-        let uri = location
-            .get("uri")
-            .or_else(|| location.get("targetUri"))
-            .and_then(|u| u.as_str())
-            .unwrap_or("");
-        let start = location
-            .pointer("/range/start/line")
-            .or_else(|| location.pointer("/targetSelectionRange/start/line"))
-            .and_then(|l| l.as_u64());
-        crate::remote_fs::uri_to_path(uri) == path && start == Some(line as u64)
-    })
+fn record_file_uses(
+    uri_str: &str,
+    uses: &[(usize, usize)],
+    wanted_len: usize,
+    seen_locs: &mut HashSet<(String, u64, u64)>,
+    all_locs: &mut Vec<serde_json::Value>,
+) {
+    for &(u_idx, u_col) in uses {
+        let use_line = (u_idx + 1) as u64;
+        let use_col = (u_col + 1) as u64;
+        if seen_locs.insert((uri_str.to_string(), use_line, use_col)) {
+            all_locs.push(serde_json::json!({
+                "uri": uri_str,
+                "range": {
+                    "start": { "line": u_idx, "character": u_col },
+                    "end": { "line": u_idx, "character": u_col + wanted_len }
+                }
+            }));
+        }
+    }
 }

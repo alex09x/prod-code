@@ -190,15 +190,21 @@ pub async fn discover_nodes_with_paths(
                 }
             }
             learned = true;
-            if remembered_nodes.iter().all(|r| nodes.contains(r)) {
-                break;
-            }
+            break;
         }
     }
 
-    for remembered in &remembered_nodes {
-        if !nodes.contains(remembered) && is_alive(*remembered).await {
-            nodes.push(*remembered);
+    let unprobed: Vec<SocketAddr> = remembered_nodes
+        .iter()
+        .copied()
+        .filter(|r| !nodes.contains(r))
+        .collect();
+    if !unprobed.is_empty() {
+        let checks = futures_util::future::join_all(unprobed.iter().map(|r| is_alive(*r))).await;
+        for (remembered, alive) in unprobed.into_iter().zip(checks) {
+            if alive && !nodes.contains(&remembered) {
+                nodes.push(remembered);
+            }
         }
     }
 

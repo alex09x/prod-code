@@ -41,19 +41,36 @@ pub(crate) fn save_placement(path: &Path, placement: &Placement) {
     }
 }
 
+static IN_PROCESS_PLACEMENTS: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, SocketAddr>>> =
+    std::sync::OnceLock::new();
+
+fn in_process_placements() -> &'static std::sync::Mutex<BTreeMap<String, SocketAddr>> {
+    IN_PROCESS_PLACEMENTS.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
 /// Remember the chosen node for `workspace_name` in the placement file.
 pub fn remember_placement(workspace_name: &str, node: SocketAddr) {
+    let mut guard = in_process_placements()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    guard.insert(workspace_name.to_string(), node);
     if let Some(path) = placement_path() {
         let mut placement = load_placement(&path);
-        placement
-            .workspaces
-            .insert(workspace_name.to_string(), node);
+        for (k, v) in guard.iter() {
+            placement.workspaces.insert(k.clone(), *v);
+        }
         save_placement(&path, &placement);
     }
 }
 
 /// The remembered placement of `workspace_name`, if any.
 pub fn remembered_node(workspace_name: &str) -> Option<SocketAddr> {
+    let guard = in_process_placements()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(node) = guard.get(workspace_name).copied() {
+        return Some(node);
+    }
     let path = placement_path()?;
     load_placement(&path)
         .workspaces

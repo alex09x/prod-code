@@ -38,18 +38,24 @@ pub async fn read_remote_file(
             max_bytes,
         }))
         .await?;
-    let reply = tokio::time::timeout(std::time::Duration::from_secs(15), framed.next())
-        .await
-        .map_err(|_| anyhow!("timed out reading {path} from {remote}"))?;
-    match reply {
-        Some(Ok(WireMessage::ReadFileResponse(resp))) => match (resp.content, resp.error) {
-            (Some(bytes), _) => Ok((bytes, resp.truncated)),
-            (None, Some(err)) => Err(anyhow!(err)),
-            (None, None) => Err(anyhow!("empty reply for {path}")),
-        },
-        Some(Ok(other)) => Err(anyhow!("unexpected reply: {other:?}")),
-        Some(Err(e)) => Err(anyhow!("decode error: {e}")),
-        None => Err(anyhow!("gateway closed the connection")),
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let reply = tokio::time::timeout_at(deadline, framed.next())
+            .await
+            .map_err(|_| anyhow!("timed out reading {path} from {remote}"))?;
+        match reply {
+            Some(Ok(WireMessage::ReadFileResponse(resp))) => {
+                break match (resp.content, resp.error) {
+                    (Some(bytes), _) => Ok((bytes, resp.truncated)),
+                    (None, Some(err)) => Err(anyhow!(err)),
+                    (None, None) => Err(anyhow!("empty reply for {path}")),
+                };
+            }
+            Some(Ok(WireMessage::Pong | WireMessage::LspPayload(_))) => continue,
+            Some(Ok(other)) => break Err(anyhow!("unexpected reply: {other:?}")),
+            Some(Err(e)) => break Err(anyhow!("decode error: {e}")),
+            None => break Err(anyhow!("gateway closed the connection")),
+        }
     }
 }
 
