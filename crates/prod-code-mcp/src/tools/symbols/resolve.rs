@@ -126,7 +126,14 @@ pub async fn resolve_symbol(
     } else {
         exact
     };
-    let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
+    let hint_str = hint.map(|h| {
+        let resolved = if h.is_absolute() {
+            h.to_path_buf()
+        } else {
+            root.join(h)
+        };
+        resolved.to_string_lossy().into_owned()
+    });
     let mut scored: Vec<(i32, SymbolHit)> = exact
         .into_iter()
         .map(|hit| {
@@ -147,8 +154,11 @@ pub async fn resolve_symbol(
                 }
             }
             // The checkout's own symbol before a same-named one of the standard library or a
-            // dependency, which gopls lists alongside (#345).
-            if hit.path.starts_with(root) {
+            // dependency, which gopls or rust-analyzer lists alongside (#345, #1079).
+            if hit.path.starts_with(root)
+                || crate::remote_fs::workspace_relative_path(root, &hit.path.to_string_lossy())
+                    .is_some()
+            {
                 score += 5;
             }
             // An index can be stale or (clangd) point the right range at the wrong file:

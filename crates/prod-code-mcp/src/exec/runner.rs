@@ -99,6 +99,8 @@ pub async fn run_remote(
                 pulled_files.extend(apply_pulled_files_for(root, &remote.to_string(), &written)?);
             }
             Some(Ok(WireMessage::ExecExit(exit))) => {
+                let ws_name = identity.base.as_deref().unwrap_or(&identity.name);
+                crate::cluster::remember_placement(ws_name, remote);
                 let _ = framed
                     .send(WireMessage::Disconnect {
                         reason: "exec finished".to_string(),

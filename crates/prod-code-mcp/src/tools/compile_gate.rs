@@ -17,14 +17,14 @@ pub(crate) fn resolve_file_path(workspace_root: &Path, path_str: &str) -> std::p
     if p.is_absolute() {
         if p.exists() {
             p
+        } else if let Some(rel) =
+            crate::remote_fs::workspace_relative_path(workspace_root, path_str)
+        {
+            workspace_root.join(rel)
         } else {
             let rel = path_str.trim_start_matches('/');
             let in_ws = workspace_root.join(rel);
-            if in_ws.exists() || !p.starts_with(workspace_root) {
-                in_ws
-            } else {
-                p
-            }
+            if in_ws.exists() { in_ws } else { p }
         }
     } else {
         workspace_root.join(p)
@@ -39,6 +39,14 @@ pub async fn execute_lsp_query(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
+    let remote =
+        if crate::cluster::nested_engine(workspace_root, &file_path.to_string_lossy()).is_some() {
+            crate::cluster::route_for_path(remote, workspace_root, file_path.to_str())
+                .await
+                .unwrap_or(remote)
+        } else {
+            remote
+        };
     // One long-lived session per checkout for the life of this process (see
     // crate::session::pooled_query): local edits are pushed before the query.
     crate::session::pooled_query(remote, workspace_root, file_path, method, params).await

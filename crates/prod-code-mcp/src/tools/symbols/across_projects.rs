@@ -47,6 +47,14 @@ pub(crate) async fn symbol_search_across_projects(
         hits.iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
     };
+    let resolved_hint = hint.map(|h| {
+        if h.is_absolute() {
+            h.to_path_buf()
+        } else {
+            root.join(h)
+        }
+    });
+    let hint = resolved_hint.as_deref();
 
     // Fast-path for explicit file hints: if the caller pointed at a specific source file
     // that contains the symbol name, check its outline first (#1033, #1036).
@@ -74,9 +82,23 @@ pub(crate) async fn symbol_search_across_projects(
         }
     }
 
+    let primary_node = if let Some(h) = hint {
+        match tokio::time::timeout_at(
+            deadline,
+            crate::cluster::route_for_path(remote, root, h.to_str()),
+        )
+        .await
+        {
+            Ok(Ok(n)) => n,
+            _ => remote,
+        }
+    } else {
+        remote
+    };
+
     let mut hits = match tokio::time::timeout_at(
         deadline,
-        workspace_symbol_search(remote, root, query, hint, limit),
+        workspace_symbol_search(primary_node, root, query, hint, limit),
     )
     .await
     {
@@ -151,12 +173,10 @@ pub(crate) async fn symbol_search_across_projects(
             );
             break;
         }
-        // Per-project query timeout: bound to at most 1500ms to prevent any single
-        // slow/unresponsive nested LSP server from consuming the entire search budget.
-        let project_deadline =
-            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_millis(1500));
+        let step_budget = std::time::Duration::from_secs(5);
+        let route_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
         let node = match tokio::time::timeout_at(
-            project_deadline,
+            route_deadline,
             crate::cluster::route_for_path(remote, root, anchor.to_str()),
         )
         .await
@@ -176,8 +196,9 @@ pub(crate) async fn symbol_search_across_projects(
             break;
         }
 
+        let search_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
         let search_fut = workspace_symbol_search_auxiliary(node, root, query, Some(&anchor), limit);
-        let found = match tokio::time::timeout_at(project_deadline, search_fut).await {
+        let found = match tokio::time::timeout_at(search_deadline, search_fut).await {
             Ok(Ok(found)) => found,
             Ok(Err(err)) => {
                 tracing::debug!(
@@ -202,13 +223,14 @@ pub(crate) async fn symbol_search_across_projects(
             .iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         hits.extend(found);
-        if !named_here && tokio::time::Instant::now() < project_deadline {
+        if !named_here && tokio::time::Instant::now() < deadline {
             // sourcekit-lsp has no index for Swift files a package does not build, and answers
-            // `workspace/symbol` with nothing: their outlines still name what they declare.
-            let files = files_naming(&root.join(&subpath), engine, name, project_deadline);
+            // `workspace/symbol` with nothing: their outlines still name what they declare (#1081).
+            let decl_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
+            let files = files_naming(&root.join(&subpath), engine, name, decl_deadline);
             if !files.is_empty() {
                 match tokio::time::timeout_at(
-                    project_deadline,
+                    decl_deadline,
                     declarations_in(node, root, &files, name),
                 )
                 .await

@@ -109,6 +109,9 @@ pub(crate) async fn workspace_symbol_search_with_retry_policy(
             }
             continue;
         };
+        if super::nested_projects::is_in_nested_git_worktree(root, &path) {
+            continue;
+        }
         let Some(start) = sym.pointer("/location/range/start") else {
             if bare_symbol_name(name).eq_ignore_ascii_case(bare_symbol_name(query)) {
                 return Err(anyhow::Error::new(MalformedLspCoordinate(format!(

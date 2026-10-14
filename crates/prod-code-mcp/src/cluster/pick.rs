@@ -126,8 +126,9 @@ pub async fn pick_node_with(
                     if status.host.pressure().is_some() && nodes.len() > 1 {
                         continue;
                     }
-                    if status.congestion_score() >= 0.80 && nodes.len() > 1 {
-                        if let Some((better, _)) = evaluate_cluster_rebalance_with(
+                    if status.congestion_score() >= 0.80
+                        && nodes.len() > 1
+                        && let Some((better, _)) = evaluate_cluster_rebalance_with(
                             nodes,
                             chosen,
                             workspace_name,
@@ -135,15 +136,14 @@ pub async fn pick_node_with(
                             os,
                         )
                         .await
-                        {
-                            if let Some(path) = placement_file {
-                                placement
-                                    .workspaces
-                                    .insert(workspace_name.to_string(), better);
-                                save_placement(path, &placement);
-                            }
-                            return Ok(better);
+                    {
+                        if let Some(path) = placement_file {
+                            placement
+                                .workspaces
+                                .insert(workspace_name.to_string(), better);
+                            save_placement(path, &placement);
                         }
+                        return Ok(better);
                     }
                 }
                 tracing::debug!(%chosen, reason = %answer.reason, "cluster placement");
@@ -262,7 +262,8 @@ pub async fn pick_node_with(
         ));
     }
     if let Some(engine) = engine
-        && !node_fits(*only, Some(engine), os).await
+        && let Ok(status) = node_status(*only).await
+        && !status_fits(&status, Some(engine), os)
     {
         return Err(anyhow!(
             "no reachable gateway serves {engine} (reachable without it: {only}); add a node with the {engine} language server installed"

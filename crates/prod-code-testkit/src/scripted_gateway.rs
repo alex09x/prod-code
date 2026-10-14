@@ -294,6 +294,43 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     }))
                     .await?;
             }
+            WireMessage::StatusRequest => {
+                framed
+                    .send(WireMessage::StatusResponse(
+                        prod_code_protocol::StatusResponse {
+                            server_pid: std::process::id(),
+                            uptime_seconds: 1,
+                            active_sessions: 0,
+                            loaded_workspaces: 0,
+                            detected_engines: vec![
+                                "rust".to_string(),
+                                "go".to_string(),
+                                "typescript".to_string(),
+                                "javascript".to_string(),
+                                "python".to_string(),
+                                "cpp".to_string(),
+                                "c".to_string(),
+                                "swift".to_string(),
+                                "generic-lsp".to_string(),
+                            ],
+                            memory_rss_bytes: None,
+                            total_queries: 0,
+                            active_queries: 0,
+                            load_average_millis: Some(100),
+                            cpu_count: Some(4),
+                            platform: Some(format!(
+                                "{} {}",
+                                std::env::consts::OS,
+                                std::env::consts::ARCH
+                            )),
+                            running_commands: Vec::new(),
+                            host: prod_code_protocol::HostResources::default(),
+                            version: None,
+                            git_commit: None,
+                        },
+                    ))
+                    .await?;
+            }
             WireMessage::Disconnect { .. } => break,
             _ => {}
         }

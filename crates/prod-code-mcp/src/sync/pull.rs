@@ -114,8 +114,14 @@ pub async fn pull_remote_files(
             ))
             .await?;
 
+        let handshake_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         let response = loop {
-            match framed.next().await {
+            let next_msg = tokio::time::timeout_at(handshake_deadline, framed.next())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("timed out waiting for gateway handshake during pull")
+                })?;
+            match next_msg {
                 Some(Ok(WireMessage::HandshakeResponse(resp))) => break Some((framed, resp)),
                 Some(Ok(WireMessage::Redirect {
                     target_addr,
@@ -134,7 +140,9 @@ pub async fn pull_remote_files(
                     tracing::info!(%current_remote, ?reason, "following gateway redirect during pull");
                     break None;
                 }
-                Some(Ok(WireMessage::Auth(_))) => continue,
+                Some(Ok(WireMessage::Auth(_) | WireMessage::Pong | WireMessage::LspPayload(_))) => {
+                    continue;
+                }
                 Some(Ok(other)) => anyhow::bail!("unexpected message during handshake: {other:?}"),
                 Some(Err(e)) => anyhow::bail!("connection error during handshake: {e}"),
                 None => anyhow::bail!("gateway closed connection during handshake"),
@@ -178,15 +186,16 @@ pub async fn pull_remote_files(
             ))
             .await?;
 
+        let read_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         let read_resp = loop {
-            let next_msg = tokio::time::timeout(std::time::Duration::from_secs(30), framed.next())
+            let next_msg = tokio::time::timeout_at(read_deadline, framed.next())
                 .await
                 .map_err(|_| {
                     anyhow::anyhow!("timed out reading remote file {rel_str} from gateway")
                 })?;
             match next_msg {
                 Some(Ok(WireMessage::ReadFileResponse(resp))) => break resp,
-                Some(Ok(WireMessage::Pong)) => continue,
+                Some(Ok(WireMessage::Pong | WireMessage::LspPayload(_))) => continue,
                 Some(Ok(other)) => anyhow::bail!("unexpected message reading file: {other:?}"),
                 Some(Err(e)) => anyhow::bail!("connection error reading file: {e}"),
                 None => anyhow::bail!("gateway closed connection while reading file"),

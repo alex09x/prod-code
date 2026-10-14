@@ -315,6 +315,8 @@ pub(crate) fn declared_at(line: &str, name: &str) -> Option<usize> {
         "def",
         "protocol",
         "actor",
+        "extension",
+        "typealias",
         "var",
         "let",
         "val",
