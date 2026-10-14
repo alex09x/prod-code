@@ -247,7 +247,7 @@ mod tests {
         let caller = Path::new("/ws/src/pages/index.astro");
         let decl_ts = Path::new("/ws/src/data/caseStudies.ts");
         let decl_idx = Path::new("/ws/src/data/caseStudies/index.ts");
-        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\nconst label = \"caseStudies\";\nfunction render(caseStudies: string) {\n  return caseStudies;\n}\n---\n<a href=\"https://example.org\">{`Value: ${caseStudies.length}`}</a>\n";
+        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\nconst label = \"caseStudies\";\nfunction render(caseStudies: string) {\n  return caseStudies;\n}\n---\n<a href=\"https://example.org\">{/[}]/.test(caseStudies[0]) ? `Value: ${caseStudies.length / 2}` : /caseStudies/.source}</a>\n";
         assert_eq!(
             imports_declaration(astro_text, caller, decl_ts, "caseStudies"),
             ImportMatch::Proven
@@ -287,7 +287,7 @@ mod tests {
             }
             line_start += line.len() + 1;
         }
-        assert_eq!(uses, vec![4, 11]);
+        assert_eq!(uses, vec![4, 11, 11]);
 
         let vue_text = "<template><button title=\"foo\" :prop=\"foo\" @click=\"foo()\">{{ foo }}</button></template>";
         let vue_mask = mask_executable_code(vue_text, Path::new("/ws/App.vue"));

@@ -62,6 +62,7 @@ fn scan_code_into_mask(
     let mut brace_depth = 0usize;
     let mut paren_depth = 0usize;
     let mut bracket_depth = 0usize;
+    let mut regex_allowed = true;
 
     while i < end {
         if lang == Language::Python && bytes[i] == b'#' {
@@ -92,13 +93,25 @@ fn scan_code_into_mask(
             continue;
         }
 
+        if matches!(lang, Language::TypeScript | Language::JavaScript)
+            && bytes[i] == b'/'
+            && regex_allowed
+            && let Some(regex_end) = scan_js_regex(text, i, end)
+        {
+            i = regex_end;
+            regex_allowed = false;
+            continue;
+        }
+
         if lang == Language::Python && (bytes[i] == b'"' || bytes[i] == b'\'') {
             i = scan_python_string(text, start, i, end, code);
+            regex_allowed = false;
             continue;
         }
 
         if matches!(lang, Language::TypeScript | Language::JavaScript) && bytes[i] == b'`' {
             i = scan_ts_template_literal(text, i, end, lang, code);
+            regex_allowed = false;
             continue;
         }
 
@@ -135,6 +148,7 @@ fn scan_code_into_mask(
                 }
             }
             i = j;
+            regex_allowed = false;
             continue;
         }
 
@@ -170,10 +184,82 @@ fn scan_code_into_mask(
             }
         }
 
+        let b = bytes[i];
+        if !b.is_ascii_whitespace() {
+            let is_ident = b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$');
+            if is_ident {
+                if !bytes
+                    .get(i + 1)
+                    .is_some_and(|n| n.is_ascii_alphanumeric() || matches!(*n, b'_' | b'$'))
+                {
+                    let mut w = i;
+                    while w > start
+                        && (bytes[w - 1].is_ascii_alphanumeric()
+                            || matches!(bytes[w - 1], b'_' | b'$'))
+                    {
+                        w -= 1;
+                    }
+                    regex_allowed = matches!(
+                        &text[w..=i],
+                        "return"
+                            | "typeof"
+                            | "void"
+                            | "delete"
+                            | "throw"
+                            | "new"
+                            | "in"
+                            | "of"
+                            | "instanceof"
+                            | "case"
+                            | "yield"
+                            | "await"
+                            | "else"
+                            | "do"
+                    );
+                }
+            } else if matches!(b, b')' | b']' | b'.')
+                || (!regex_allowed && matches!(b, b'+' | b'-') && bytes.get(i + 1) == Some(&b))
+                || (!regex_allowed && matches!(b, b'+' | b'-') && i > start && bytes[i - 1] == b)
+            {
+                regex_allowed = false;
+            } else {
+                regex_allowed = true;
+            }
+        }
+
         code[i] = true;
         i += 1;
     }
 
+    None
+}
+
+fn scan_js_regex(text: &str, i: usize, end: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut j = i + 1;
+    let mut in_class = false;
+    while j < end {
+        match bytes[j] {
+            b'\n' | b'\r' => return None,
+            b'\\' => {
+                j += 1;
+                if j >= end || matches!(bytes[j], b'\n' | b'\r') {
+                    return None;
+                }
+            }
+            b'[' => in_class = true,
+            b']' => in_class = false,
+            b'/' if !in_class => {
+                j += 1;
+                while j < end && bytes[j].is_ascii_alphabetic() {
+                    j += 1;
+                }
+                return Some(j);
+            }
+            _ => {}
+        }
+        j += 1;
+    }
     None
 }
 
