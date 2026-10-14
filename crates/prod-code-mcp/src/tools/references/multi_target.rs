@@ -13,10 +13,13 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use url::Url;
 
-use super::across::{definition_is, engine_can_reference, imports_declaration, writes_call};
+use super::across::{
+    ImportMatch, definition_is, engine_can_reference, imports_declaration, is_occurrence_shadowed,
+    mask_executable_code, masked_code_string, writes_call,
+};
 use crate::tools::execute_lsp_query;
 use crate::tools::symbols::{
-    MAX_SCANNED_FILES, declared_at, is_in_nested_git_worktree, names_word, source_files,
+    MAX_SCANNED_FILES, is_in_nested_git_worktree, names_word, source_files,
 };
 
 /// The most time multi-target references discovery can take before returning accumulated references.
@@ -128,49 +131,44 @@ pub(crate) async fn collect_multi_target_references(
         };
         let uri_str = uri.to_string();
         let wanted_len = wanted.len();
+        let code_mask = mask_executable_code(&text, &path);
+        let masked_code = masked_code_string(&text, &code_mask);
         let text_lines: Vec<&str> = text.lines().collect();
-        let file_uses: Vec<(usize, usize)> = text_lines
-            .iter()
-            .enumerate()
-            .flat_map(|(index, text_line)| {
-                let trimmed = text_line.trim_start();
-                if trimmed.starts_with("//")
-                    || trimmed.starts_with("/*")
-                    || trimmed.starts_with('*')
-                    || trimmed.starts_with("<!--")
-                {
-                    return Vec::new();
+        let mut line_byte_start = 0usize;
+        let mut file_uses: Vec<(usize, usize, usize)> = Vec::new();
+        for (index, raw_line) in text.split('\n').enumerate() {
+            let text_line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+            let is_declaration_line = is_declaration_file && index as u32 + 1 == decl_line;
+            let chars: Vec<(usize, char)> = text_line.char_indices().collect();
+            for c in 0..chars.len() {
+                if c + wanted_len > chars.len() {
+                    break;
                 }
-                let comment_col = text_line
-                    .find("//")
-                    .map(|byte_idx| text_line[..byte_idx].chars().count());
-                let is_declaration_line = is_declaration_file && index as u32 + 1 == decl_line;
-                let chars: Vec<char> = text_line.chars().collect();
-                let wanted = &wanted[..];
-                (0..chars.len())
-                    .filter(move |&c| {
-                        if comment_col.is_some_and(|cc| c >= cc) {
-                            return false;
-                        }
-                        if !chars[c..].starts_with(wanted)
-                            || (c > 0 && is_name(chars.get(c - 1)))
-                            || is_name(chars.get(c + wanted_len))
-                        {
-                            return false;
-                        }
-                        if is_declaration_line {
-                            let match_start = c as u32 + 1;
-                            let match_end = match_start + wanted_len as u32;
-                            if match_start <= decl_col && decl_col <= match_end {
-                                return false;
-                            }
-                        }
-                        true
-                    })
-                    .map(move |c| (index, c))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+                let byte_off = line_byte_start + chars[c].0;
+                if !code_mask
+                    .get(byte_off..byte_off + name.len())
+                    .is_some_and(|slice| slice.iter().all(|&b| b))
+                {
+                    continue;
+                }
+                let matches_word = (0..wanted_len).all(|k| chars[c + k].1 == wanted[k]);
+                if !matches_word
+                    || (c > 0 && is_name(Some(&chars[c - 1].1)))
+                    || is_name(chars.get(c + wanted_len).map(|(_, ch)| ch))
+                {
+                    continue;
+                }
+                if is_declaration_line {
+                    let match_start = c as u32 + 1;
+                    let match_end = match_start + wanted_len as u32;
+                    if match_start <= decl_col && decl_col <= match_end {
+                        continue;
+                    }
+                }
+                file_uses.push((index, c, byte_off));
+            }
+            line_byte_start += raw_line.len() + 1;
+        }
 
         if file_uses.is_empty() {
             continue;
@@ -182,22 +180,37 @@ pub(crate) async fn collect_multi_target_references(
         let file_engine = crate::sync::engine_for_file(&path);
         if !is_declaration_file && matches!(file_engine, Some("astro" | "svelte" | "vue" | "html"))
         {
-            if imports_declaration(&text, declaration, name) {
-                seen_files.insert(norm_path);
-                let non_decl: Vec<(usize, usize)> = file_uses
-                    .into_iter()
-                    .filter(|&(u_idx, _)| {
-                        !text_lines
-                            .get(u_idx)
-                            .is_some_and(|line| declared_at(line, name).is_some())
-                    })
-                    .collect();
-                record_file_uses(&uri_str, &non_decl, wanted_len, seen_locs, all_locs);
+            match imports_declaration(&text, &path, declaration, name) {
+                ImportMatch::Proven => {
+                    let non_shadowed: Vec<(usize, usize)> = file_uses
+                        .into_iter()
+                        .filter(|&(u_idx, _, byte_off)| {
+                            !is_occurrence_shadowed(
+                                &masked_code,
+                                &text_lines,
+                                u_idx,
+                                byte_off,
+                                name,
+                            )
+                        })
+                        .map(|(u_idx, u_col, _)| (u_idx, u_col))
+                        .collect();
+                    if !non_shadowed.is_empty() {
+                        seen_files.insert(norm_path);
+                        record_file_uses(&uri_str, &non_shadowed, wanted_len, seen_locs, all_locs);
+                    }
+                }
+                ImportMatch::Uncertain => {
+                    if !unindexed_callers.contains(&path) {
+                        unindexed_callers.push(path.clone());
+                    }
+                }
+                ImportMatch::None => {}
             }
             continue;
         }
 
-        for &(index, col) in file_uses.iter().take(MAX_USES_ASKED_PER_FILE) {
+        for &(index, col, byte_off) in file_uses.iter().take(MAX_USES_ASKED_PER_FILE) {
             if tokio::time::Instant::now() >= deadline {
                 return checkout_use_note;
             }
@@ -286,18 +299,22 @@ pub(crate) async fn collect_multi_target_references(
                     .is_none_or(|f| f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object());
                 let is_swift = path.extension().and_then(|e| e.to_str()) == Some("swift")
                     || declaration.extension().and_then(|e| e.to_str()) == Some("swift");
-                let has_import = imports_declaration(&text, declaration, name);
-                if !is_declaration_file && has_no_def && (has_import || writes_call(&text, name)) {
-                    let is_own_decl = text_lines
-                        .get(index)
-                        .is_some_and(|line| declared_at(line, name).is_some());
-                    if is_own_decl && !has_import {
+                let import_match = imports_declaration(&text, &path, declaration, name);
+                let has_proven_import = import_match == ImportMatch::Proven;
+                let has_any_import = import_match != ImportMatch::None;
+                if !is_declaration_file
+                    && has_no_def
+                    && (has_any_import || writes_call(&masked_code, name))
+                {
+                    let is_own_decl =
+                        is_occurrence_shadowed(&masked_code, &text_lines, index, byte_off, name);
+                    if is_own_decl && !has_proven_import {
                         break;
                     }
                     if !unindexed_callers.contains(&path) {
                         unindexed_callers.push(path.clone());
                     }
-                    if (is_swift || has_import) && !is_own_decl {
+                    if (is_swift || has_proven_import) && !is_own_decl {
                         seen_files.insert(norm_path.clone());
                         record_file_uses(
                             &uri_str,

@@ -159,158 +159,161 @@ pub(crate) fn engine_can_reference(caller_engine: Option<&str>, decl_engine: &st
     }
 }
 
-fn specifier_matches_decl(spec: &str, decl_segs: &[&str], is_index: bool) -> bool {
-    let raw = spec
-        .trim()
-        .trim_end_matches(';')
-        .trim_end_matches(')')
-        .trim();
-    let unquoted = if let Some((_, rest)) = raw.split_once(['\'', '"', '<']) {
-        rest.split(['\'', '"', '>']).next().unwrap_or(raw)
-    } else {
-        raw
-    };
-    let mut path_str = unquoted.trim();
-    for ext in [
-        ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".astro", ".svelte", ".vue", ".py", ".rs",
-        ".hpp", ".h",
-    ] {
-        if let Some(stripped) = path_str.strip_suffix(ext) {
-            path_str = stripped;
-            break;
-        }
-    }
-    let spec_segs: Vec<&str> = path_str
-        .split(['/', '.', ':'])
-        .filter(|s| {
-            !s.is_empty() && !matches!(*s, "." | ".." | "@" | "~" | "crate" | "super" | "self")
-        })
-        .collect();
-    if spec_segs.is_empty() {
-        return false;
-    }
-    if is_index && spec_segs.len() == 1 && matches!(spec_segs[0], "index" | "mod" | "__init__") {
-        return false;
-    }
-    decl_segs.ends_with(&spec_segs)
-        || (is_index
-            && decl_segs.len() >= 2
-            && decl_segs[..decl_segs.len() - 1].ends_with(&spec_segs))
+pub(crate) use super::lexical::{ImportMatch, imports_declaration, is_occurrence_shadowed};
+
+fn apply_ts_mask(slice: &str, offset: usize, mask: &mut [bool]) {
+    let sub = crate::caller_migration::mask::lexical_code_mask(
+        slice,
+        crate::parameter_object::Language::TypeScript,
+    );
+    mask[offset..offset + sub.len()].copy_from_slice(&sub);
 }
 
-pub(crate) fn imports_declaration(text: &str, decl_path: &Path, name: &str) -> bool {
-    let file_stem = decl_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if file_stem.is_empty() {
-        return false;
+fn scan_template_expr(text: &str, open_brace: usize, mask: &mut [bool]) -> usize {
+    if let Some(close) = crate::parameter_object::matching_bracket(text, open_brace) {
+        if open_brace + 1 < close {
+            apply_ts_mask(&text[open_brace + 1..close], open_brace + 1, mask);
+        }
+        close + 1
+    } else {
+        open_brace + 1
     }
-    let is_index = matches!(file_stem, "index" | "mod" | "__init__");
-    let without_ext = decl_path.with_extension("");
-    let decl_segs: Vec<&str> = without_ext
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => s.to_str(),
-            _ => None,
-        })
-        .collect();
-    let lines: Vec<&str> = text.lines().collect();
+}
+
+pub(crate) fn mask_executable_code(text: &str, path: &Path) -> Vec<bool> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+
+    if !matches!(ext.as_str(), "astro" | "svelte" | "vue" | "html") {
+        let lang = crate::parameter_object::Language::of(path)
+            .unwrap_or(crate::parameter_object::Language::TypeScript);
+        return crate::caller_migration::mask::lexical_code_mask(text, lang);
+    }
+
+    let mut mask = vec![false; len];
     let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        if trimmed.starts_with("#include ")
-            || trimmed.starts_with("#include<")
-            || trimmed.starts_with("#include\"")
+    if ext == "astro" {
+        let trimmed = text.trim_start_matches([' ', '\t', '\r', '\n', '\u{feff}']);
+        if let Some(after) = trimmed.strip_prefix("---")
+            && (after.starts_with('\n') || after.starts_with("\r\n"))
         {
-            let spec = trimmed.trim_start_matches("#include").trim();
-            if specifier_matches_decl(spec, &decl_segs, is_index) {
-                return true;
-            }
-            i += 1;
-            continue;
-        }
-        if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
-            let mut stmt = String::from(trimmed);
-            while !stmt.contains(';') && i + 1 < lines.len() {
-                i += 1;
-                stmt.push(' ');
-                stmt.push_str(lines[i].trim());
-            }
-            let target_stem = if is_index && decl_segs.len() >= 2 {
-                decl_segs[decl_segs.len() - 2]
-            } else {
-                file_stem
-            };
-            if (crate::tools::symbols::names_word(&stmt, name) || stmt.contains('*'))
-                && crate::tools::symbols::names_word(&stmt, target_stem)
-            {
-                return true;
-            }
-            i += 1;
-            continue;
-        }
-        if trimmed.starts_with("import ")
-            || trimmed.starts_with("import{")
-            || trimmed.starts_with("export ")
-            || trimmed.starts_with("export{")
-            || trimmed.starts_with("from ")
-        {
-            let mut stmt = String::from(trimmed);
-            let mut j = i;
-            let is_multiline = (trimmed.contains('{') && !trimmed.contains('}'))
-                || (trimmed.starts_with("from ") && trimmed.ends_with('('));
-            if is_multiline {
-                while j + 1 < lines.len() && j - i < 25 {
-                    j += 1;
-                    let next = lines[j].trim();
-                    stmt.push(' ');
-                    stmt.push_str(next);
-                    if next.contains(';')
-                        || next.contains("from ")
-                        || next.starts_with('}')
-                        || next.ends_with(')')
+            let fm_start = len - after.len();
+            let full_ts = crate::caller_migration::mask::lexical_code_mask(
+                &text[fm_start..],
+                crate::parameter_object::Language::TypeScript,
+            );
+            let mut rel = 0;
+            while rel < full_ts.len() {
+                if (rel == 0 || bytes[fm_start + rel - 1] == b'\n') && full_ts[rel] {
+                    let line_rest = &text[fm_start + rel..];
+                    let ts_trim = line_rest.trim_start_matches([' ', '\t']);
+                    if let Some(after_fence) = ts_trim.strip_prefix("---")
+                        && (after_fence.is_empty()
+                            || after_fence.starts_with('\n')
+                            || after_fence.starts_with("\r\n"))
                     {
+                        mask[fm_start..fm_start + rel].copy_from_slice(&full_ts[..rel]);
+                        i = fm_start + (line_rest.len() - after_fence.len());
                         break;
                     }
                 }
+                rel += 1;
             }
-            let matched = if stmt.starts_with("from ") {
-                if let Some((spec_part, binding_part)) =
-                    stmt.trim_start_matches("from ").split_once(" import ")
-                {
-                    (crate::tools::symbols::names_word(binding_part, name)
-                        || binding_part.contains('*'))
-                        && specifier_matches_decl(spec_part, &decl_segs, is_index)
-                } else {
-                    false
-                }
-            } else if let Some((binding_part, spec_part)) = stmt
-                .rsplit_once(" from ")
-                .or_else(|| stmt.rsplit_once("}from "))
-                .or_else(|| stmt.rsplit_once("}from'"))
-                .or_else(|| stmt.rsplit_once("}from\""))
-            {
-                (crate::tools::symbols::names_word(binding_part, name)
-                    || binding_part.contains('*'))
-                    && specifier_matches_decl(spec_part, &decl_segs, is_index)
-            } else {
-                let spec_part = stmt.trim_start_matches("import").trim();
-                specifier_matches_decl(spec_part, &decl_segs, is_index)
-            };
-            if matched {
-                return true;
-            }
-            i = j + 1;
+        }
+    }
+    while i < len {
+        if bytes[i..].starts_with(b"<!--") {
+            i = text[i + 4..].find("-->").map_or(len, |rel| i + 4 + rel + 3);
             continue;
         }
-        for call in ["require(", "import("] {
-            if let Some((_, after)) = trimmed.split_once(call)
-                && specifier_matches_decl(after, &decl_segs, is_index)
+        if bytes[i] == b'{' {
+            i = scan_template_expr(text, i, &mut mask);
+            continue;
+        }
+        if bytes[i] == b'<' {
+            let rest_lower = text[i + 1..].to_ascii_lowercase();
+            if rest_lower.starts_with("script")
+                && rest_lower
+                    .as_bytes()
+                    .get(6)
+                    .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+                && let Some(tag_close) = text[i..].find('>')
             {
-                return true;
+                let body_start = i + tag_close + 1;
+                if !text[i..body_start].ends_with("/>")
+                    && let Some(end_rel) = text[body_start..].to_ascii_lowercase().find("</script")
+                {
+                    let body_end = body_start + end_rel;
+                    apply_ts_mask(&text[body_start..body_end], body_start, &mut mask);
+                    i = text[body_end..].find('>').map_or(len, |c| body_end + c + 1);
+                    continue;
+                }
             }
+            if rest_lower.starts_with("style")
+                && rest_lower
+                    .as_bytes()
+                    .get(5)
+                    .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+            {
+                i = rest_lower
+                    .find("</style>")
+                    .map_or(len, |rel| i + 1 + rel + 8);
+                continue;
+            }
+            let mut t = i + 1 + usize::from(i + 1 < len && bytes[i + 1] == b'/');
+            let name_start = t;
+            while t < len
+                && (bytes[t].is_ascii_alphanumeric() || matches!(bytes[t], b'_' | b'.' | b'-'))
+            {
+                t += 1;
+            }
+            if t > name_start && bytes[name_start].is_ascii_uppercase() {
+                mask[name_start..t].fill(true);
+            }
+            i = t;
+            while i < len && bytes[i] != b'>' {
+                if bytes[i] == b'{' {
+                    i = scan_template_expr(text, i, &mut mask);
+                } else if bytes[i] == b'"' || bytes[i] == b'\'' {
+                    let q = bytes[i];
+                    i += 1;
+                    while i < len && bytes[i] != q {
+                        i = if bytes[i] == b'\\' {
+                            (i + 2).min(len)
+                        } else {
+                            i + 1
+                        };
+                    }
+                    i = (i + 1).min(len);
+                } else {
+                    i += 1;
+                }
+            }
+            i = (i + 1).min(len);
+            continue;
         }
         i += 1;
     }
-    false
+    mask
+}
+
+pub(crate) fn masked_code_string(text: &str, mask: &[bool]) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (idx, ch) in text.char_indices() {
+        if ch == '\n' || ch == '\r' || mask.get(idx).copied().unwrap_or(false) {
+            out.push(ch);
+        } else {
+            for _ in 0..ch.len_utf8() {
+                out.push(' ');
+            }
+        }
+    }
+    out
 }
 
 /// Whether a `textDocument/definition` answer (a location, a list of them, or of links) names

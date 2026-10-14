@@ -74,7 +74,11 @@ pub(crate) fn is_locally_shadowed(content: &str, at: usize, name: &str, lang: La
             // 2. Check parameter list before open_brace
             if let Some(close_paren) = content[..open_brace].rfind(')') {
                 let between = &content[close_paren + 1..open_brace];
-                if between.len() < 200 {
+                if between.len() < 200
+                    && !between.trim_start().starts_with('{')
+                    && !between.contains(';')
+                    && !between.trim_end().ends_with('}')
+                {
                     if let Some(open_paren) = find_matching_open_paren(content, close_paren) {
                         let params = &content[open_paren + 1..close_paren];
                         if params_declare_name(params, name, lang) {
@@ -216,7 +220,7 @@ fn strip_closed_blocks(text: &str, lang: Language) -> String {
     result
 }
 
-fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
+pub(crate) fn body_has_local_decl(body_prefix: &str, name: &str, lang: Language) -> bool {
     let active_body = strip_closed_blocks(body_prefix, lang);
     let mut current_decl: Option<String> = None;
     for line in active_body.lines() {

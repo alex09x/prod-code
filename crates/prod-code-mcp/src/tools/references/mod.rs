@@ -21,6 +21,7 @@ use super::{build_swift_index, execute_lsp_query, resolve_file_path};
 use crate::protocol::McpToolCallResult;
 
 pub(crate) mod across;
+pub(crate) mod lexical;
 pub(crate) mod multi_target;
 
 pub(crate) use across::*;
@@ -235,38 +236,59 @@ pub(crate) async fn handle_references(
 
 #[cfg(test)]
 mod tests {
-    use super::across::imports_declaration;
+    use super::across::{
+        ImportMatch, imports_declaration, is_occurrence_shadowed, mask_executable_code,
+        masked_code_string,
+    };
     use std::path::Path;
 
     #[test]
-    fn imports_declaration_matches_multiline_astro_and_rejects_same_identifier_from_other_module() {
-        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\n---\n<div>{caseStudies.length}</div>\n";
-        assert!(imports_declaration(
-            astro_text,
-            Path::new("/ws/src/data/caseStudies.ts"),
-            "caseStudies"
-        ));
-        assert!(imports_declaration(
-            astro_text,
-            Path::new("/ws/src/data/caseStudies/index.ts"),
-            "CaseStudy"
-        ));
-        assert!(!imports_declaration(
-            astro_text,
-            Path::new("/ws/src/data/caseStudies.ts"),
-            "unrelatedSymbol"
-        ));
-        let other_module = "import { caseStudies } from '../otherData';\n";
-        assert!(!imports_declaration(
-            other_module,
-            Path::new("/ws/src/data/caseStudies/index.ts"),
-            "caseStudies"
-        ));
-        assert!(!imports_declaration(
-            other_module,
-            Path::new("/ws/src/data/caseStudies.ts"),
-            "caseStudies"
-        ));
+    fn imports_declaration_resolves_relative_paths_and_filters_strings_urls_and_shadowing() {
+        let caller = Path::new("/ws/src/pages/index.astro");
+        let decl_ts = Path::new("/ws/src/data/caseStudies.ts");
+        let decl_idx = Path::new("/ws/src/data/caseStudies/index.ts");
+        let astro_text = "---\nimport {\n  type CaseStudy,\n  caseStudies,\n} from '../data/caseStudies';\nconst label = \"caseStudies\";\nfunction render(caseStudies: string) {\n  return caseStudies;\n}\n---\n<a href=\"https://example.org\">{caseStudies.length}</a>\n";
+        assert_eq!(
+            imports_declaration(astro_text, caller, decl_ts, "caseStudies"),
+            ImportMatch::Proven
+        );
+        assert_eq!(
+            imports_declaration(astro_text, caller, decl_idx, "CaseStudy"),
+            ImportMatch::Proven
+        );
+        let page_b = Path::new("/ws/src/b/Page.astro");
+        let rel_imp = "import { foo } from './data';\n";
+        assert_eq!(
+            imports_declaration(rel_imp, page_b, Path::new("/ws/src/a/data.ts"), "foo"),
+            ImportMatch::None
+        );
+        assert_eq!(
+            imports_declaration(rel_imp, page_b, Path::new("/ws/src/b/data.ts"), "foo"),
+            ImportMatch::Proven
+        );
+
+        let mask = mask_executable_code(astro_text, caller);
+        let masked = masked_code_string(astro_text, &mask);
+        let lines: Vec<&str> = astro_text.lines().collect();
+        let mut uses = Vec::new();
+        let mut line_start = 0usize;
+        for (idx, line) in astro_text.split('\n').enumerate() {
+            for (byte_in_line, _) in line.match_indices("caseStudies") {
+                let off = line_start + byte_in_line;
+                if mask[off..off + "caseStudies".len()].iter().all(|&b| b)
+                    && !is_occurrence_shadowed(&masked, &lines, idx, off, "caseStudies")
+                {
+                    uses.push(idx + 1);
+                }
+            }
+            line_start += line.len() + 1;
+        }
+        assert_eq!(uses, vec![4, 11]);
+
+        let py_text = "# foo in comment\nvalue = total // foo()\n";
+        let py_mask = mask_executable_code(py_text, Path::new("/ws/app.py"));
+        let foo_off = py_text.rfind("foo").unwrap();
+        assert!(py_mask[foo_off]);
     }
 
     #[test]
