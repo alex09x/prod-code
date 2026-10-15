@@ -292,21 +292,29 @@ impl Engine {
     );
 
     // A single local `struct Option<T>` shadows the prelude's `std::option::Option` and must not
-    // be assumed to have pure `as_ref`/`unwrap` methods.
-    let shadowed_opt_old = custom_old
-        .replacen("struct CustomOption<T>(T);\n", "", 1)
-        .replacen("CustomOption<Pool>", "Option<Pool>", 1);
-    let shadowed_opt_old = format!("struct Option<T>(T);\n{shadowed_opt_old}");
-    let shadowed_opt_start = shadowed_opt_old.find(custom_sel).unwrap();
-    let shadowed_opt_end = shadowed_opt_start + custom_sel.len();
+    // be assumed to have pure `as_ref`/`unwrap` methods on the otherwise-identical `old`/`ra_extracted` fixture.
+    let shadowed_opt_old = format!("struct Option<T>(T);\n{old}");
+    let shadowed_opt_extracted = format!("struct Option<T>(T);\n{ra_extracted}");
+    let shadowed_opt_start = shadowed_opt_old.find(sel).unwrap();
+    let shadowed_opt_end = shadowed_opt_start + sel.len();
+    assert!(
+        rewrite_of(
+            &shadowed_opt_old,
+            &shadowed_opt_extracted,
+            shadowed_opt_start,
+            shadowed_opt_end
+        )
+        .is_some(),
+        "shadowed Option fixture must be a valid rewrite_of extraction"
+    );
     assert_eq!(
         reacquire_conflicting_borrows(
             &shadowed_opt_old,
             shadowed_opt_start,
             shadowed_opt_end,
-            custom_extracted
+            &shadowed_opt_extracted
         ),
-        custom_extracted,
+        shadowed_opt_extracted,
         "local `struct Option<T>` must prevent assuming `std::option::Option`"
     );
 
