@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## v0.3.31 — 2026-10-14
+
+### Fixed
+- **Cross-Package Go Constant & Value Moves in `code_move`** (`crates/prod-code-mcp`):
+  Added `find_go_decl_end` (`move_polyglot/decl.rs`) so single-line `const`/`var`/`type` declarations do not swallow following braced blocks, added `rewrite_go_call_sites_in_context` (`move_polyglot/go_refs.rs`) and `is_named_map_or_slice_type` (`move_polyglot/go_imports.rs`) to qualify exported value and constant references (including named and imported map/slice/array composite-literal keys) while preserving struct field keys and rejecting shadowed local/parameter bindings or unexported symbols, and scanned sibling `.go` files in the source package (`move_polyglot/callers.rs`, `move_polyglot/execute.rs`) when LSP reference discovery omits value uses (#1101).
+
 ## v0.3.30 — 2026-10-14
 
 ### Fixed
