@@ -16,7 +16,7 @@ use std::path::Path;
 /// Python and JavaScript repositories keep a Makefile of tasks too. A `project.yml` with
 /// top-level `targets:` is an XcodeGen spec, a Swift project whose Xcode project is generated
 /// (#404). The gateway's `detect_engine` decides the same way.
-pub(crate) fn manifest_engine_at(root: &Path) -> Option<&'static str> {
+pub fn manifest_engine_at(root: &Path) -> Option<&'static str> {
     detect_engine_at(root, false)
 }
 
@@ -64,6 +64,11 @@ fn detect_engine_at(root: &Path, include_bare_sources: bool) -> Option<&'static 
             "pyi", "cs", "kt", "kts", "scala", "sc", "java", "ts", "tsx", "mts", "cts", "js",
             "jsx", "mjs", "cjs", "php", "rb", "dart", "zig", "ex", "exs",
         ]);
+    let has_ts_manifest = has("tsconfig.json")
+        || has("package.json")
+        || has("jsconfig.json")
+        || has("deno.json")
+        || has("deno.jsonc");
     let has_xcode = std::fs::read_dir(root)
         .map(|entries| {
             entries.flatten().any(|e| {
@@ -132,16 +137,17 @@ fn detect_engine_at(root: &Path, include_bare_sources: bool) -> Option<&'static 
         || has("settings.gradle.kts")
     {
         Some("java")
-    } else if has("svelte.config.js") || has("svelte.config.ts") || (bare && has_ext(&["svelte"])) {
-        Some("svelte")
-    } else if has("vue.config.js") || has("vue.config.ts") || (bare && has_ext(&["vue"])) {
-        Some("vue")
-    } else if has("tsconfig.json")
-        || has("package.json")
-        || has("jsconfig.json")
-        || has("deno.json")
-        || has("deno.jsonc")
+    } else if has("svelte.config.js")
+        || has("svelte.config.ts")
+        || ((include_bare_sources || has_ts_manifest) && has_ext(&["svelte"]))
     {
+        Some("svelte")
+    } else if has("vue.config.js")
+        || has("vue.config.ts")
+        || ((include_bare_sources || has_ts_manifest) && has_ext(&["vue"]))
+    {
+        Some("vue")
+    } else if has_ts_manifest {
         Some("typescript")
     } else if make_cpp {
         Some("cpp")

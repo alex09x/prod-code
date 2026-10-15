@@ -90,7 +90,11 @@ pub(crate) fn source_files(dir: &Path) -> impl Iterator<Item = std::path::PathBu
 pub(crate) fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
     let project_root = dir
         .ancestors()
-        .find(|ancestor| crate::sync::expected_engine(ancestor).is_some())
+        .find(|ancestor| crate::sync::manifest_engine_at(ancestor).is_some())
+        .or_else(|| {
+            dir.ancestors()
+                .find(|ancestor| crate::sync::expected_engine(ancestor).is_some())
+        })
         .unwrap_or(dir);
     let (dir_subpath, language) = crate::sync::engine_project(project_root, dir);
     let exts: &[&str] = match language? {

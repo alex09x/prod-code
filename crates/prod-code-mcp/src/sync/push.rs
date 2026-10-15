@@ -145,13 +145,15 @@ async fn push_sync_round(
             .contains(&(canonical_root.clone(), node.clone()));
     let needs_probe = plan.initial || is_first_contact;
 
+    let mut uploading_full_manifest = false;
     if needs_probe {
+        let probed_manifest = plan.manifest();
         framed
             .send(WireMessage::SyncProbeRequest(SyncProbeRequest {
                 client_workspace_root: root_str.clone(),
                 base_workspace_name: Some(identity.name.clone()),
                 seed_from: identity.base.clone(),
-                files: plan.manifest(),
+                files: probed_manifest.clone(),
             }))
             .await?;
         let probe = wait_for_message(framed, "sync probe response", |m| match m {
@@ -164,6 +166,11 @@ async fn push_sync_round(
         outcome.files_deleted += probe.files_deleted;
         outcome.server_workspace_root = probe.server_workspace_root;
         let keep: HashSet<String> = probe.missing.into_iter().collect();
+        uploading_full_manifest = !probe.seeded
+            && !probed_manifest.is_empty()
+            && probed_manifest
+                .iter()
+                .all(|f| keep.contains(&f.relative_path));
         plan.retain_uploads(&keep);
         let existing: HashSet<String> =
             plan.files.iter().map(|f| f.relative_path.clone()).collect();
@@ -183,6 +190,14 @@ async fn push_sync_round(
                 }
             }
         }
+        let uploaded_set: HashSet<&str> = plan
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_str())
+            .collect();
+        uploading_full_manifest &= probed_manifest
+            .iter()
+            .all(|f| uploaded_set.contains(f.relative_path.as_str()));
     }
 
     // An empty delta is still sent on later rounds: the gateway's answer tells whether its
@@ -191,7 +206,6 @@ async fn push_sync_round(
     if !plan.files.is_empty() || !plan.initial {
         let files = std::mem::take(&mut plan.files);
         outcome.changed_paths = files.iter().map(|f| f.relative_path.clone()).collect();
-        let uploading_probed_missing = outcome.probed && !outcome.changed_paths.is_empty();
         for (i, files) in sync_batches(files, SYNC_BATCH_BYTES)
             .into_iter()
             .enumerate()
@@ -210,9 +224,9 @@ async fn push_sync_round(
             })
             .await
             .context("workspace sync was not acknowledged")?;
-            if i == 0 && resp.workspace_was_fresh && !plan.initial && !uploading_probed_missing {
-                // The server directory was reset behind our watermark: forget it and start
-                // over with a manifest probe on the same connection.
+            if resp.workspace_was_fresh && !(i == 0 && uploading_full_manifest) {
+                // The server directory was reset behind our watermark (or between probe and
+                // upload): forget it and start over with a manifest probe on the same connection.
                 tracing::warn!(
                     workspace = %identity.name,
                     "gateway workspace was reset; resyncing the full tree"

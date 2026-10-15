@@ -14,5 +14,6 @@ pub mod project;
 pub mod workspace;
 
 pub use cgo::macos_only_cgo;
+pub use detect::manifest_engine_at;
 pub use project::{engine_for_file, engine_project, expected_engine, other_checkout};
 pub use workspace::is_in_dependency_dir;

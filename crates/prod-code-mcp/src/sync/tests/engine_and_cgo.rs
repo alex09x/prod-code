@@ -372,4 +372,16 @@ fn go_package_with_embedded_schema_sql_stays_in_root_go_project() {
         ),
         Some(sibling.join("service.go"))
     );
+
+    // Vue and Svelte projects with JS/TS companions must keep their component engine.
+    let vue_dir = root.join("web/vue-app");
+    std::fs::create_dir_all(&vue_dir).unwrap();
+    std::fs::write(vue_dir.join("package.json"), "{}\n").unwrap();
+    std::fs::write(vue_dir.join("App.vue"), "<template></template>\n").unwrap();
+    std::fs::write(vue_dir.join("main.ts"), "export {};\n").unwrap();
+    assert_eq!(expected_engine(&vue_dir), Some("vue"));
+    assert_eq!(
+        engine_project(root, Path::new("web/vue-app/App.vue")),
+        (Some("web/vue-app".to_string()), Some("vue"))
+    );
 }
