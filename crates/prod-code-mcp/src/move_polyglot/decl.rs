@@ -99,7 +99,7 @@ pub fn find_matching_brace_end(lines: &[&str], start_line_idx: usize) -> Option<
                 }
             }
 
-            if c == '\\' && (in_single_quote || in_double_quote) {
+            if c == '\\' && (in_single_quote || in_double_quote || in_backtick) {
                 i += 2;
                 continue;
             }

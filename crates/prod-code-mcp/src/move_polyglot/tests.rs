@@ -104,6 +104,12 @@ fn find_polyglot_decl_typescript_function() {
     assert_eq!(name, "add");
     assert_eq!(start, 1);
     assert_eq!(end, 6);
+
+    let tpl = "export function fmt(): string {\n    const s = `escaped \\` }`;\n    return s;\n}\n";
+    let (t_name, t_start, t_end) = find_polyglot_decl(tpl, 1, Language::TypeScript).unwrap();
+    assert_eq!(t_name, "fmt");
+    assert_eq!(t_start, 1);
+    assert_eq!(t_end, 4);
 }
 
 #[test]
@@ -340,13 +346,19 @@ fn go_cross_package_move_qualifies_exported_constant_value_references() {
 
 #[test]
 fn go_reference_rewriting_skips_struct_field_keys_and_rejects_shadowed_or_unexported() {
-    let source = "package a\nfunc use() {\n\t_ = Config{Page: Page}\n}\n";
+    let source = "package a\ntype Headers map[string]string\nfunc use() {\n\t_ = Config{Page: Page}\n\t_ = Headers{Page: \"x\"}\n\t_ = []string{Page: \"y\"}\n}\n";
     let (rewritten, count) = rewrite_go_call_sites(source, "Page", "b").unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, 3);
     assert!(rewritten.contains("Config{Page: b.Page}"));
+    assert!(rewritten.contains("Headers{b.Page: \"x\"}"));
+    assert!(rewritten.contains("[]string{b.Page: \"y\"}"));
 
-    let shadowed = "package a\nfunc use() {\n\tPage := \"local\"\n\t_ = []byte(Page)\n}\n";
+    let shadowed = "package a\nfunc use() {\n\tPage, café := \"local\", 1\n\t_ = []byte(Page) + []byte(string(rune(café)))\n}\n";
     assert!(rewrite_go_call_sites(shadowed, "Page", "b").is_err());
+
+    let multiline_param =
+        "package a\nfunc Handler(\n\tPage string,\n) string {\n\treturn Page\n}\n";
+    assert!(rewrite_go_call_sites(multiline_param, "Page", "b").is_err());
 
     let unexported = "package a\nfunc use() []byte {\n\treturn []byte(page)\n}\n";
     assert!(rewrite_go_call_sites(unexported, "page", "b").is_err());
