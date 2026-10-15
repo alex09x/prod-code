@@ -276,3 +276,78 @@ fn go_move_selects_regular_package_when_external_test_package_exists() {
     let test_header = super::target::initial_file_header(&test_target, Language::Go);
     assert_eq!(test_header, "package pkg_test\n\n");
 }
+
+#[test]
+fn find_polyglot_decl_go_const_does_not_swallow_following_functions() {
+    let go = "package a\n\nconst Page = \"hello\"\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n";
+    let (name, start, end) = find_polyglot_decl(go, 3, Language::Go).unwrap();
+    assert_eq!(name, "Page");
+    assert_eq!(start, 3);
+    assert_eq!(end, 3);
+
+    let multiline = "package a\n\nconst Page = `\n<div>{hello}</div>\n`\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n";
+    let (m_name, m_start, m_end) = find_polyglot_decl(multiline, 3, Language::Go).unwrap();
+    assert_eq!(m_name, "Page");
+    assert_eq!(m_start, 3);
+    assert_eq!(m_end, 5);
+}
+
+#[test]
+fn go_cross_package_move_qualifies_exported_constant_value_references() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("go.mod"), "module example.com/m\n").unwrap();
+    let a_dir = temp.path().join("a");
+    let b_dir = temp.path().join("b");
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::create_dir_all(&b_dir).unwrap();
+    let source = a_dir.join("a.go");
+    let sibling = a_dir.join("handler.go");
+    let target = b_dir.join("b.go");
+    std::fs::write(
+        &source,
+        "package a\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n",
+    )
+    .unwrap();
+
+    let (rewritten, note) = super::imports::update_source_imports(
+        "package a\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n",
+        "Page",
+        &source,
+        &target,
+        temp.path(),
+        Language::Go,
+    )
+    .unwrap();
+
+    assert!(rewritten.contains("import \"example.com/m/b\""));
+    assert!(rewritten.contains("return []byte(b.Page)"));
+    assert_eq!(note.as_deref(), Some("imported \"example.com/m/b\""));
+
+    let (sib_rewritten, sib_note) = rewrite_caller_imports(
+        "package a\n\nfunc Other() string {\n\treturn Page\n}\n",
+        "Page",
+        &sibling,
+        &source,
+        &target,
+        temp.path(),
+        Language::Go,
+    )
+    .unwrap();
+    assert!(sib_rewritten.contains("import \"example.com/m/b\""));
+    assert!(sib_rewritten.contains("return b.Page"));
+    assert_eq!(sib_note, "imported \"example.com/m/b\"");
+}
+
+#[test]
+fn go_reference_rewriting_skips_struct_field_keys_and_rejects_shadowed_or_unexported() {
+    let source = "package a\nfunc use() {\n\t_ = Config{Page: Page}\n}\n";
+    let (rewritten, count) = rewrite_go_call_sites(source, "Page", "b").unwrap();
+    assert_eq!(count, 1);
+    assert!(rewritten.contains("Config{Page: b.Page}"));
+
+    let shadowed = "package a\nfunc use() {\n\tPage := \"local\"\n\t_ = []byte(Page)\n}\n";
+    assert!(rewrite_go_call_sites(shadowed, "Page", "b").is_err());
+
+    let unexported = "package a\nfunc use() []byte {\n\treturn []byte(page)\n}\n";
+    assert!(rewrite_go_call_sites(unexported, "page", "b").is_err());
+}

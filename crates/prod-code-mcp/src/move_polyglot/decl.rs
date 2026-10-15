@@ -99,7 +99,7 @@ pub fn find_matching_brace_end(lines: &[&str], start_line_idx: usize) -> Option<
                 }
             }
 
-            if c == '\\' && (in_single_quote || in_double_quote || in_backtick) {
+            if c == '\\' && (in_single_quote || in_double_quote) {
                 i += 2;
                 continue;
             }
@@ -129,6 +129,8 @@ pub fn find_matching_brace_end(lines: &[&str], start_line_idx: usize) -> Option<
                     if started && depth <= 0 {
                         return Some(idx);
                     }
+                } else if c == ';' && !started {
+                    return None;
                 }
             }
 
@@ -136,6 +138,124 @@ pub fn find_matching_brace_end(lines: &[&str], start_line_idx: usize) -> Option<
         }
     }
     None
+}
+
+fn find_go_decl_end(lines: &[&str], start_line_idx: usize) -> usize {
+    let mut brace_depth = 0i32;
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_block_comment = false;
+
+    for (idx, line) in lines.iter().enumerate().skip(start_line_idx) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        let mut last_code_char: Option<char> = None;
+
+        while i < chars.len() {
+            let c = chars[i];
+            let next_c = chars.get(i + 1).copied();
+
+            if in_block_comment {
+                if c == '*' && next_c == Some('/') {
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+
+            if !in_single_quote && !in_double_quote && !in_backtick {
+                if c == '/' && next_c == Some('/') {
+                    break;
+                }
+                if c == '/' && next_c == Some('*') {
+                    in_block_comment = true;
+                    i += 2;
+                    continue;
+                }
+            }
+
+            if c == '\\' && (in_single_quote || in_double_quote) {
+                i += 2;
+                continue;
+            }
+
+            if c == '\x27' && !in_double_quote && !in_backtick {
+                in_single_quote = !in_single_quote;
+                last_code_char = Some(c);
+                i += 1;
+                continue;
+            }
+            if c == '"' && !in_single_quote && !in_backtick {
+                in_double_quote = !in_double_quote;
+                last_code_char = Some(c);
+                i += 1;
+                continue;
+            }
+            if c == '`' && !in_single_quote && !in_double_quote {
+                in_backtick = !in_backtick;
+                last_code_char = Some(c);
+                i += 1;
+                continue;
+            }
+
+            if !in_single_quote && !in_double_quote && !in_backtick {
+                match c {
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -= 1,
+                    '(' => paren_depth += 1,
+                    ')' => paren_depth -= 1,
+                    '[' => bracket_depth += 1,
+                    ']' => bracket_depth -= 1,
+                    _ => {}
+                }
+                if !c.is_whitespace() {
+                    last_code_char = Some(c);
+                }
+            }
+
+            i += 1;
+        }
+
+        in_single_quote = false;
+        in_double_quote = false;
+
+        if !in_backtick
+            && !in_block_comment
+            && brace_depth <= 0
+            && paren_depth <= 0
+            && bracket_depth <= 0
+            && let Some(last) = last_code_char
+            && !matches!(
+                last,
+                '=' | ','
+                    | '+'
+                    | '-'
+                    | '*'
+                    | '/'
+                    | '%'
+                    | '&'
+                    | '|'
+                    | '^'
+                    | '<'
+                    | '>'
+                    | '!'
+                    | ':'
+                    | '.'
+                    | '('
+                    | '['
+                    | '{'
+            )
+        {
+            return idx;
+        }
+    }
+
+    lines.len().saturating_sub(1)
 }
 
 pub fn find_polyglot_decl(text: &str, line: u32, lang: Language) -> Result<(String, u32, u32)> {
@@ -220,6 +340,7 @@ pub fn find_polyglot_decl(text: &str, line: u32, lang: Language) -> Result<(Stri
             }
             (end_idx + 1) as u32
         }
+        Language::Go => (find_go_decl_end(&lines, header_idx) + 1) as u32,
         _ => {
             if let Some(brace_end_idx) = find_matching_brace_end(&lines, header_idx) {
                 let mut e = brace_end_idx;

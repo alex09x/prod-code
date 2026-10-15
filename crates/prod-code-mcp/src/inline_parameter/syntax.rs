@@ -275,7 +275,7 @@ pub fn is_in_string(content: &str, at: usize, lang: Language) -> bool {
         if let Some(delimiter) = quote {
             if escaped {
                 escaped = false;
-            } else if ch == '\\' {
+            } else if ch == '\\' && !(lang == Language::Go && delimiter == '`') {
                 escaped = true;
             } else if ch == delimiter {
                 quote = None;

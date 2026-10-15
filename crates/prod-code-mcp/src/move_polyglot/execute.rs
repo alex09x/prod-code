@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use crate::move_item::Move;
 use crate::parameter_object::Language;
 
-use super::callers::rewrite_caller_imports;
+use super::callers::rewrite_caller_imports_checked;
 use super::decl::{find_polyglot_decl, with_doc_comment_polyglot};
 use super::go_imports::remove_unused_go_imports;
 use super::imports::{carry_imports_polyglot, update_source_imports};
@@ -128,7 +128,7 @@ pub async fn move_item(
             continue;
         };
         if let Some((rewritten_caller, note)) =
-            rewrite_caller_imports(&caller_text, &name, &src, file, target, root, lang)
+            rewrite_caller_imports_checked(&caller_text, &name, &src, file, target, root, lang)?
         {
             import_notes.push(format!("{}: {note}", display(root, &src)));
             rewritten.insert(src, rewritten_caller);

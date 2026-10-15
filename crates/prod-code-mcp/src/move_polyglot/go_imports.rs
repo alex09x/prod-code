@@ -45,13 +45,71 @@ pub(crate) fn go_import_package(spec: &str) -> Option<String> {
     package.chars().all(is_ident).then_some(package)
 }
 
+fn scan_go_prefix(content: &str, at: usize) -> (bool, Option<(char, usize)>) {
+    let mut stack: Vec<(char, usize)> = Vec::new();
+    let mut chars = content[..at].char_indices().peekable();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+    while let Some((idx, ch)) = chars.next() {
+        if line_comment {
+            if ch == '\n' {
+                line_comment = false;
+            }
+            continue;
+        }
+        if block_comment {
+            if ch == '*' && chars.peek().map(|(_, c)| *c) == Some('/') {
+                chars.next();
+                block_comment = false;
+            }
+            continue;
+        }
+        if let Some(delim) = quote {
+            if delim == '`' {
+                if ch == '`' {
+                    quote = None;
+                }
+            } else if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delim {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek().map(|(_, c)| *c) == Some('/') {
+            chars.next();
+            line_comment = true;
+        } else if ch == '/' && chars.peek().map(|(_, c)| *c) == Some('*') {
+            chars.next();
+            block_comment = true;
+        } else if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+        } else if matches!(ch, '(' | '[' | '{') {
+            stack.push((ch, idx));
+        } else if matches!(ch, ')' | ']' | '}') {
+            stack.pop();
+        }
+    }
+    (
+        quote.is_some() || line_comment || block_comment,
+        stack.pop(),
+    )
+}
+
+pub(crate) fn is_in_go_string_or_comment(content: &str, at: usize) -> bool {
+    scan_go_prefix(content, at).0
+}
+
 pub(crate) fn go_package_is_used(content: &str, package: &str) -> bool {
     content.match_indices(package).any(|(at, _)| {
         let end = at + package.len();
         !(at > 0 && content[..at].chars().next_back().is_some_and(is_ident))
             && !content[end..].chars().next().is_some_and(is_ident)
-            && !crate::inline_parameter::is_in_comment(content, at, Language::Go)
-            && !crate::inline_parameter::is_in_string(content, at, Language::Go)
+            && !is_in_go_string_or_comment(content, at)
             && content[end..].trim_start().starts_with('.')
     })
 }
@@ -107,10 +165,24 @@ pub(crate) fn get_go_package(file: &Path) -> String {
         for line in content.lines() {
             let t = line.trim();
             if let Some(rest) = t.strip_prefix("package ") {
-                let name = rest.trim();
+                let name = rest
+                    .split("//")
+                    .next()
+                    .unwrap_or(rest)
+                    .trim()
+                    .trim_end_matches(';');
                 if !name.is_empty() {
                     return name.to_string();
                 }
+            }
+        }
+    }
+    let header = super::target::initial_file_header(file, Language::Go);
+    for line in header.lines() {
+        if let Some(rest) = line.trim().strip_prefix("package ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return name.to_string();
             }
         }
     }
@@ -128,7 +200,15 @@ pub(crate) fn go_module_import_path(target_dir: &Path) -> Result<String> {
             && let Some(module) = manifest.lines().find_map(|line| {
                 line.trim()
                     .strip_prefix("module ")
-                    .map(|value| value.trim().trim_matches('"').to_string())
+                    .map(|value| {
+                        value
+                            .split("//")
+                            .next()
+                            .unwrap_or(value)
+                            .trim()
+                            .trim_matches('"')
+                            .to_string()
+                    })
                     .filter(|value| !value.is_empty())
             })
         {
@@ -148,11 +228,50 @@ pub(crate) fn go_module_import_path(target_dir: &Path) -> Result<String> {
     )
 }
 
+fn is_short_var_decl_lhs(after_on_line: &str) -> bool {
+    let mut rest = after_on_line.trim_start();
+    loop {
+        if rest.starts_with(":=") {
+            return true;
+        }
+        if let Some(after_comma) = rest.strip_prefix(',') {
+            let after_ws = after_comma.trim_start();
+            let ident_len = after_ws.chars().take_while(|&c| is_ident(c)).count();
+            if ident_len == 0 {
+                return false;
+            }
+            rest = after_ws[ident_len..].trim_start();
+        } else {
+            return false;
+        }
+    }
+}
+
+fn is_go_value_before_colon(source_text: &str, at: usize, before_on_line: &str) -> bool {
+    if before_on_line.starts_with("case ") || before_on_line.contains("{ case ") {
+        return true;
+    }
+    match scan_go_prefix(source_text, at).1 {
+        Some(('[', _)) => true,
+        Some(('{', brace_idx)) => {
+            let before_brace = source_text[..brace_idx].trim_end();
+            before_brace.contains("map[")
+                && before_brace
+                    .rfind("map[")
+                    .is_some_and(|m| !before_brace[m..].contains('{'))
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn rewrite_go_call_sites(
     source_text: &str,
     decl_name: &str,
     target_pkg: &str,
 ) -> Result<(String, usize)> {
+    if decl_name.is_empty() {
+        return Ok((source_text.to_string(), 0));
+    }
     let mut edits = Vec::new();
     for (at, _) in source_text.match_indices(decl_name) {
         if (at > 0 && source_text[..at].chars().next_back().is_some_and(is_ident))
@@ -160,30 +279,76 @@ pub(crate) fn rewrite_go_call_sites(
                 .chars()
                 .next()
                 .is_some_and(is_ident)
-            || crate::inline_parameter::is_in_comment(source_text, at, Language::Go)
-            || crate::inline_parameter::is_in_string(source_text, at, Language::Go)
+            || is_in_go_string_or_comment(source_text, at)
         {
             continue;
         }
+        let line_start = source_text[..at].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = source_text[at..]
+            .find('\n')
+            .map_or(source_text.len(), |i| at + i);
+        let before_on_line = source_text[line_start..at].trim_start();
         let before = source_text[..at].trim_end();
-        if before.ends_with('.') {
-            continue; // A selector, which may name an unrelated method.
+        if before_on_line.starts_with("package ") || before.ends_with('.') {
+            continue;
         }
         let after = source_text[at + decl_name.len()..].trim_start();
-        if after.starts_with('(') {
-            let line_start = source_text[..at].rfind('\n').map_or(0, |i| i + 1);
-            if source_text[line_start..at]
-                .trim_start()
-                .starts_with("func ")
-            {
-                continue; // A separate declaration is not a call site.
-            }
-            edits.push((at, decl_name.len()));
-        } else {
+        let after_on_line = source_text[at + decl_name.len()..line_end].trim_start();
+
+        if before_on_line.trim_end() == "func"
+            || (before_on_line.starts_with("func ")
+                && before_on_line
+                    .trim_start_matches("func")
+                    .trim_start()
+                    .starts_with('(')
+                && before_on_line.trim_end().ends_with(')')
+                && after.starts_with('('))
+        {
+            continue; // Separate function or receiver-method declaration.
+        }
+
+        let prev_word = before.rsplit(|c: char| !is_ident(c)).next().unwrap_or("");
+        if matches!(prev_word, "var" | "const" | "type") {
             anyhow::bail!(
-                "Go reference `{decl_name}` at byte {at} is not a call; cannot safely qualify it"
+                "Go reference `{decl_name}` at byte {at} is shadowed by a local `{prev_word}` declaration; cannot safely qualify it"
             );
         }
+
+        if is_short_var_decl_lhs(after_on_line) {
+            anyhow::bail!(
+                "Go reference `{decl_name}` at byte {at} is shadowed by a local binding; cannot safely qualify it"
+            );
+        }
+
+        if after_on_line.starts_with("...")
+            || after_on_line.starts_with("[]")
+            || after_on_line
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
+        {
+            if before_on_line.starts_with("func ") || before_on_line.contains("func(") {
+                anyhow::bail!(
+                    "Go reference `{decl_name}` at byte {at} is shadowed by a parameter declaration; cannot safely qualify it"
+                );
+            }
+            continue; // Struct field declaration e.g. `Field Type`.
+        }
+
+        if after.starts_with(':')
+            && !after.starts_with(":=")
+            && !is_go_value_before_colon(source_text, at, before_on_line)
+        {
+            continue; // Composite-literal field key or statement label.
+        }
+
+        if !decl_name.chars().next().is_some_and(char::is_uppercase) {
+            anyhow::bail!(
+                "Go symbol `{decl_name}` at byte {at} is unexported and cannot be qualified across packages"
+            );
+        }
+
+        edits.push((at, decl_name.len()));
     }
     let count = edits.len();
     let mut rewritten = source_text.to_string();
