@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use std::net::SocketAddr;
 use std::path::Path;
 
 pub(crate) fn display(root: &Path, path: &Path) -> String {
@@ -117,13 +118,132 @@ pub(crate) fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
     None
 }
 
+fn owner_token_pos(
+    text: &str,
+    impl_at: usize,
+    impl_open: usize,
+    owner: &str,
+) -> Option<(u32, u32)> {
+    let header = &text[impl_at..impl_open];
+    let head = header.split("where").next().unwrap_or(header);
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    let mut found = None;
+    for (idx, _) in head.match_indices(owner) {
+        let before_ok = !head[..idx].chars().next_back().is_some_and(is_id);
+        let after_ok = !head[idx + owner.len()..].chars().next().is_some_and(is_id);
+        if before_ok && after_ok {
+            found = Some(impl_at + idx);
+        }
+    }
+    found.and_then(|off| crate::signature::position_at(text, off).ok())
+}
+
+fn impl_constraints_key(header: &str, owner: &str) -> String {
+    let compact: String = header.split_whitespace().collect::<Vec<_>>().join(" ");
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    if let Some((idx, _)) = compact.match_indices(owner).find(|(i, _)| {
+        !compact[..*i].chars().next_back().is_some_and(is_id)
+            && !compact[*i + owner.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_id)
+    }) {
+        let prefix = compact[..idx].trim_end();
+        let path_start = prefix
+            .rfind(|c: char| !is_id(c) && c != ':')
+            .map_or(0, |p| p + 1);
+        format!("{}{}", &prefix[..path_start], &compact[idx..])
+    } else {
+        compact
+    }
+}
+
+async fn resolve_type_def(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    (line, col): (u32, u32),
+) -> Option<(String, u64, u64)> {
+    let uri = url::Url::from_file_path(file).ok()?.to_string();
+    let val = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/definition",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+        }),
+    )
+    .await
+    .ok()?;
+    let item = if let Some(arr) = val.as_array() {
+        arr.first()?
+    } else {
+        &val
+    };
+    let target_uri = item
+        .get("targetUri")
+        .or_else(|| item.get("uri"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let start = item
+        .pointer("/targetSelectionRange/start")
+        .or_else(|| item.pointer("/range/start"))?;
+    Some((
+        target_uri,
+        start.get("line")?.as_u64()?,
+        start.get("character")?.as_u64()?,
+    ))
+}
+
+/// Returns the index in `impl_blocks(target_text)` of the inherent `impl` block whose resolved
+/// owner declaration and `impl` constraints match the source `impl` block at `impl_at..impl_open`.
+pub(crate) async fn verified_target_impl_index(
+    remote: SocketAddr,
+    root: &Path,
+    source_file: &Path,
+    source_text: &str,
+    (impl_at, impl_open): (usize, usize),
+    target_file: &Path,
+    target_text: &str,
+    owner: &str,
+) -> Option<usize> {
+    let src_pos = owner_token_pos(source_text, impl_at, impl_open, owner)?;
+    let src_def = resolve_type_def(remote, root, source_file, src_pos).await?;
+    let src_key = impl_constraints_key(&source_text[impl_at..impl_open], owner);
+    let mut matched = Vec::new();
+    for (idx, (ty, t_at, t_open, _)) in crate::extract_field::impl_blocks(target_text)
+        .into_iter()
+        .enumerate()
+    {
+        if ty != owner || target_text[t_at..t_open].contains(" for ") {
+            continue;
+        }
+        if impl_constraints_key(&target_text[t_at..t_open], owner) != src_key {
+            continue;
+        }
+        let Some(t_pos) = owner_token_pos(target_text, t_at, t_open, owner) else {
+            continue;
+        };
+        if resolve_type_def(remote, root, target_file, t_pos)
+            .await
+            .as_ref()
+            == Some(&src_def)
+        {
+            matched.push(idx);
+        }
+    }
+    (matched.len() == 1).then(|| matched[0])
+}
+
 /// Cuts an inherent method at `start..=decl_end` (with declaration header at `decl_start`) from
-/// `source_text`'s `impl` block and inserts it into `target_text`'s `impl {owner}` block.
+/// `source_text`'s `impl` block and inserts it into `target_text`'s verified `impl` block.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn move_inherent_method(
     source_text: &str,
     target_text: &str,
-    owner: &str,
+    target_impl_idx: Option<usize>,
     (impl_at, impl_open, impl_close): (usize, usize, usize),
     start: u32,
     decl_start: u32,
@@ -164,11 +284,12 @@ pub(crate) fn move_inherent_method(
     let item = item_lines.join("\n");
     let (mut target_with_imports, carried) =
         super::imports::carry_imports(source_text, &item, target_text);
-    let target_new = if let Some((_, _, _, target_close)) =
+    let target_block = target_impl_idx.and_then(|idx| {
         crate::extract_field::impl_blocks(&target_with_imports)
             .into_iter()
-            .find(|(ty, at, o, _)| ty == owner && !target_with_imports[*at..*o].contains(" for "))
-    {
+            .nth(idx)
+    });
+    let target_new = if let Some((_, _, _, target_close)) = target_block {
         let before = target_with_imports[..target_close].trim_end_matches([' ', '\t']);
         let lead = if before.ends_with("{\n") || before.ends_with('{') {
             ""

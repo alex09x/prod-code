@@ -87,39 +87,120 @@ pub fn normalize_type_spelling(ty: &str) -> String {
     out
 }
 
-/// Explicitly typed `let` bindings (`let v: T = …;`) in the enclosing function body before `at`.
-/// If a later untyped `let v = …;` shadows `v`, `v` is removed.
+/// Explicitly typed `let` bindings (`let v: T = …;`) in an open lexical scope before `at`.
+/// Closed inner blocks, comments, and literals are ignored; untyped or destructuring bindings
+/// shadow earlier bindings in outer scopes.
 pub fn typed_locals_before(text: &str, at: usize) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
     let body_start = crate::introduce_variable::enclosing_body(text, at)
         .map_or(0, |(open, _)| (open + 1).min(at));
     let scope = &text[body_start..at];
+    let bytes = scope.as_bytes();
     let is_id = |c: char| c.is_alphanumeric() || c == '_';
-    for (i, _) in scope.match_indices("let") {
-        let whole = !scope[..i].chars().next_back().is_some_and(is_id)
-            && scope[i + 3..].starts_with(char::is_whitespace);
-        if !whole {
+    let mut scopes: Vec<BTreeMap<String, Option<String>>> = vec![BTreeMap::new()];
+    let mut pending_block_shadows: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Ok(Some((end, _))) = opaque_at(scope, i, 0) {
+            i = end;
             continue;
         }
-        let rest = &scope[i + 3..];
-        let end = rest.find(['=', ';']).unwrap_or(rest.len());
-        let header = rest[..end].trim();
-        if let Some((pat, ty)) = crate::signature::parse::split_at_top_level(header, ':') {
-            let pat = pat.trim();
-            let name = pat
-                .strip_prefix("mut")
-                .filter(|r| r.starts_with(char::is_whitespace))
-                .map_or(pat, str::trim);
-            if crate::signature::parse::is_ident(name) {
-                out.insert(name.to_string(), normalize_type_spelling(ty));
+        match bytes[i] {
+            b'{' => {
+                let mut frame = BTreeMap::new();
+                for ident in pending_block_shadows.drain(..) {
+                    frame.insert(ident, None);
+                }
+                scopes.push(frame);
+                i += 1;
+                continue;
             }
-        } else {
-            let name = header
-                .strip_prefix("mut")
-                .filter(|r| r.starts_with(char::is_whitespace))
-                .map_or(header, str::trim);
-            if crate::signature::parse::is_ident(name) {
-                out.remove(name);
+            b'}' => {
+                pending_block_shadows.clear();
+                if scopes.len() > 1 {
+                    scopes.pop();
+                }
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if scope[i..].starts_with("let")
+            && !scope[..i].chars().next_back().is_some_and(is_id)
+            && scope[i + 3..].starts_with(char::is_whitespace)
+        {
+            let before = scope[..i].trim_end();
+            let cond_let = before.ends_with("if")
+                && !before[..before.len() - 2]
+                    .chars()
+                    .next_back()
+                    .is_some_and(is_id)
+                || before.ends_with("while")
+                    && !before[..before.len() - 5]
+                        .chars()
+                        .next_back()
+                        .is_some_and(is_id);
+            let rest = &scope[i + 3..];
+            let mut depth = 0i32;
+            let mut end = rest.len();
+            let mut j = 0;
+            while j < rest.len() {
+                if let Ok(Some((next, _))) = opaque_at(rest, j, 0) {
+                    j = next;
+                    continue;
+                }
+                match rest.as_bytes()[j] {
+                    b'(' | b'[' => depth += 1,
+                    b')' | b']' => depth = (depth - 1).max(0),
+                    b'=' | b';' | b'{' if depth == 0 => {
+                        end = j;
+                        break;
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            let header = rest[..end].trim();
+            if cond_let {
+                for tok in header.split(|c: char| !is_id(c)).filter(|s| !s.is_empty()) {
+                    pending_block_shadows.push(tok.to_string());
+                }
+            } else if let Some((pat, ty)) = crate::signature::parse::split_at_top_level(header, ':')
+            {
+                let pat = pat.trim();
+                let name = pat
+                    .strip_prefix("mut")
+                    .filter(|r| r.starts_with(char::is_whitespace))
+                    .map_or(pat, str::trim);
+                if crate::signature::parse::is_ident(name) {
+                    scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(name.to_string(), Some(normalize_type_spelling(ty)));
+                } else {
+                    for tok in pat.split(|c: char| !is_id(c)).filter(|s| !s.is_empty()) {
+                        scopes.last_mut().unwrap().insert(tok.to_string(), None);
+                    }
+                }
+            } else {
+                for tok in header.split(|c: char| !is_id(c)).filter(|s| !s.is_empty()) {
+                    scopes.last_mut().unwrap().insert(tok.to_string(), None);
+                }
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    let mut out = BTreeMap::new();
+    for frame in scopes {
+        for (k, v) in frame {
+            match v {
+                Some(ty) => {
+                    out.insert(k, ty);
+                }
+                None => {
+                    out.remove(&k);
+                }
             }
         }
     }

@@ -82,21 +82,29 @@ pub async fn move_item(
     let symbols = document_symbols(remote, root, file).await?;
     let (name, decl_start, decl_end) =
         span_at(&symbols, line).with_context(|| format!("no declaration at line {line}"))?;
-    // A method belongs to its `impl`; pasted into a module without an inherent `impl` of the same
-    // owner it is a free function with a `self` it cannot have (#196, #1084).
+    // A method belongs to its `impl`; pasted into a module without a verified inherent `impl` of
+    // the same resolved owner type it cannot be moved by `code_move` (#196, #1084).
     let decl_offset = crate::signature::offset_of(&source_text, decl_start, 1).unwrap_or(0);
     let enclosing_impl = crate::extract_field::impl_blocks(&source_text)
         .into_iter()
         .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close);
+    let mut verified_target_impl = None;
     if let Some((ref owner, impl_at, impl_open, _)) = enclosing_impl {
         let is_inherent = !source_text[impl_at..impl_open].contains(" for ");
-        let target_has_impl = crate::extract_field::impl_blocks(&target_text)
-            .into_iter()
-            .any(|(ty, at, o, _)| &ty == owner && !target_text[at..o].contains(" for "));
-        if !is_inherent
-            || from_module.krate != to_module.krate
-            || (!target_has_impl && new_module_parent.is_none())
-        {
+        if is_inherent && from_module.krate == to_module.krate && new_module_parent.is_none() {
+            verified_target_impl = super::item::verified_target_impl_index(
+                remote,
+                root,
+                file,
+                &source_text,
+                (impl_at, impl_open),
+                target,
+                &target_text,
+                owner,
+            )
+            .await;
+        }
+        if verified_target_impl.is_none() {
             anyhow::bail!(
                 "`{name}` belongs to `impl {owner}`; move it to another type with \
                  `code_move_method` (`prod-code move-method <file> <line> <col>` with `--to-param \
@@ -120,11 +128,11 @@ pub async fn move_item(
     }
     let start = with_doc_comment(&source_text, decl_start);
     let (source_new, target_new, item, carried) =
-        if let Some((ref owner, impl_at, impl_open, impl_close)) = enclosing_impl {
+        if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
             move_inherent_method(
                 &source_text,
                 &target_text,
-                owner,
+                verified_target_impl,
                 (impl_at, impl_open, impl_close),
                 start,
                 decl_start,

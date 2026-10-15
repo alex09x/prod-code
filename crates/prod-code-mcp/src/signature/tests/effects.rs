@@ -278,6 +278,14 @@ fn a_reorder_or_removal_that_changes_effects_or_drops_is_named() {
         .is_empty(),
         "an explicitly typed local matching the reference parameter type is safe to remove"
     );
+
+    let scoped = "fn f() {\n    let v = &wrapper;\n    { let v: &str = \"\"; }\n    // let c: &str = \"\";\n    let s: &str = \"\";\n    let s = &wrapper;\n    consume(v, s);\n}\n";
+    let call_at = scoped.find("consume").unwrap();
+    let locals = crate::signature::call_sites::typed_locals_before(scoped, call_at);
+    assert!(
+        !locals.contains_key("v") && !locals.contains_key("c") && !locals.contains_key("s"),
+        "closed blocks, comments, and shadowed bindings must not leak into typed_locals: {locals:?}"
+    );
 }
 
 #[test]

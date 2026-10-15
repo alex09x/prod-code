@@ -111,48 +111,53 @@ pub(crate) async fn symbol_search_across_projects(
             return Ok(Vec::new());
         }
     };
+    let extend_unique = |hits: &mut Vec<SymbolHit>, decls: Vec<SymbolHit>| {
+        for d in decls {
+            if !hits.iter().any(|h| h.path == d.path && h.line == d.line) {
+                hits.push(d);
+            }
+        }
+    };
     if let Some(hint) = hint {
         // The project a path names may keep no index (sourcekit-lsp before a build), or its
         // index may omit `override func` declarations (#358, #1091).
         if let (_, Some(engine)) = crate::sync::engine_project(root, hint)
             && (!named(&hits) || engine == "swift")
         {
-            let node = match tokio::time::timeout_at(
-                deadline,
-                crate::cluster::route_for_path(remote, root, hint.to_str()),
-            )
-            .await
-            {
-                Ok(Ok(n)) => n,
-                Ok(Err(_)) => remote,
-                Err(_) => return Ok(hits),
-            };
             let dir = if hint.is_dir() {
                 Some(hint)
             } else {
                 hint.parent()
             };
-            let files: Vec<_> = dir
+            let files = dir
                 .map(|d| files_naming(d, engine, name, deadline))
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|f| !hits.iter().any(|h| h.path == *f))
-                .collect();
+                .unwrap_or_default();
             if !files.is_empty()
-                && let Ok(Ok(decls)) =
-                    tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name))
-                        .await
+                && let Ok(Ok(decls)) = tokio::time::timeout_at(
+                    deadline,
+                    declarations_in(primary_node, root, &files, name),
+                )
+                .await
             {
-                for d in decls {
-                    if !hits.iter().any(|h| h.path == d.path && h.line == d.line) {
-                        hits.push(d);
-                    }
-                }
+                extend_unique(&mut hits, decls);
             }
         }
         return Ok(hits);
     }
-    if named(&hits) && crate::sync::expected_engine(root) != Some("swift") {
+    if crate::sync::expected_engine(root) == Some("swift") && tokio::time::Instant::now() < deadline
+    {
+        let decl_deadline =
+            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+        let files = files_naming(root, "swift", name, decl_deadline);
+        if !files.is_empty()
+            && let Ok(Ok(decls)) =
+                tokio::time::timeout_at(decl_deadline, declarations_in(remote, root, &files, name))
+                    .await
+        {
+            extend_unique(&mut hits, decls);
+        }
+    }
+    if named(&hits) {
         return Ok(hits);
     }
     // The projects whose sources name the symbol first, then the others a walk meets (#358).
@@ -239,10 +244,7 @@ pub(crate) async fn symbol_search_across_projects(
             // sourcekit-lsp has no index for Swift files a package does not build, and omits
             // `override func` from `workspace/symbol`: their outlines still name what they declare (#1081, #1091).
             let decl_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
-            let files: Vec<_> = files_naming(&root.join(&subpath), engine, name, decl_deadline)
-                .into_iter()
-                .filter(|f| !hits.iter().any(|h| h.path == *f))
-                .collect();
+            let files = files_naming(&root.join(&subpath), engine, name, decl_deadline);
             if !files.is_empty() {
                 match tokio::time::timeout_at(
                     decl_deadline,
@@ -250,13 +252,7 @@ pub(crate) async fn symbol_search_across_projects(
                 )
                 .await
                 {
-                    Ok(Ok(decls)) => {
-                        for d in decls {
-                            if !hits.iter().any(|h| h.path == d.path && h.line == d.line) {
-                                hits.push(d);
-                            }
-                        }
-                    }
+                    Ok(Ok(decls)) => extend_unique(&mut hits, decls),
                     Ok(Err(e)) => return Err(e),
                     Err(_) => {
                         tracing::warn!(

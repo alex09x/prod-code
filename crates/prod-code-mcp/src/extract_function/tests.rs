@@ -222,4 +222,50 @@ impl Engine {
         rewrite_of(old, &fixed, start, end).is_some(),
         "rewrite_of must still recognize the transformed extraction"
     );
+
+    // Owned or effectful values derived from `state` (`let amount = state.next();`) must NEVER be
+    // re-evaluated inside the helper or reported as E0502 borrow conflicts.
+    let owned_old = "\
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let amount = state.next();
+        state.total += amount;
+    }
+}
+";
+    let owned_sel = "state.total += amount;";
+    let owned_start = owned_old.find(owned_sel).unwrap();
+    let owned_end = owned_start + owned_sel.len();
+    let owned_extracted = "\
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let amount = state.next();
+        self.fun_name(state, amount);
+    }
+
+    fn fun_name(&self, state: &mut State, amount: u64) {
+        state.total += amount;
+    }
+}
+";
+    assert_eq!(
+        reacquire_conflicting_borrows(owned_old, owned_start, owned_end, owned_extracted),
+        owned_extracted,
+        "effectful owned binding must not be re-evaluated in helper"
+    );
+    let fn_span = (
+        owned_extracted.find("fn fun_name").unwrap(),
+        owned_extracted.len(),
+    );
+    assert!(
+        super::borrows::conflicting_borrow_captures(
+            owned_old,
+            owned_start,
+            owned_end,
+            owned_extracted,
+            Some(fn_span)
+        )
+        .is_empty(),
+        "owned value must not emit spurious E0502"
+    );
 }

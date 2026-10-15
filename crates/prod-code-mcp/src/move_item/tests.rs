@@ -218,7 +218,7 @@ impl CompactOrderBook {
         let (src_new, dst_new, item, _) = move_inherent_method(
             source,
             target,
-            "CompactOrderBook",
+            Some(0),
             (impl_at, impl_open, impl_close),
             10,
             11,
