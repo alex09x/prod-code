@@ -10,9 +10,14 @@
 
 use std::path::Path;
 
+use anyhow::Result;
+
 use crate::parameter_object::Language;
 
-use super::go_imports::get_go_package;
+use super::go_imports::{
+    add_go_import, get_go_package, go_module_import_path, go_package_is_used,
+    rewrite_go_cross_pkg_in_source,
+};
 use super::imports::{remove_from_braced_ts_import, remove_from_py_from_import};
 use super::specifiers::{
     display, display_relative_or_name, is_ident, is_symbol_used, python_module_specifier,
@@ -28,6 +33,28 @@ pub fn rewrite_caller_imports(
     root: &Path,
     lang: Language,
 ) -> Option<(String, String)> {
+    rewrite_caller_imports_checked(
+        caller_text,
+        decl_name,
+        caller_file,
+        source_file,
+        target_file,
+        root,
+        lang,
+    )
+    .ok()
+    .flatten()
+}
+
+pub(crate) fn rewrite_caller_imports_checked(
+    caller_text: &str,
+    decl_name: &str,
+    caller_file: &Path,
+    source_file: &Path,
+    target_file: &Path,
+    root: &Path,
+    lang: Language,
+) -> Result<Option<(String, String)>> {
     match lang {
         Language::TypeScript | Language::JavaScript => {
             let rel_to_source = relative_import_specifier(caller_file, source_file);
@@ -103,20 +130,20 @@ pub fn rewrite_caller_imports(
                 if caller_text.ends_with('\n') {
                     out.push('\n');
                 }
-                return Some((out, notes.join("; ")));
+                return Ok(Some((out, notes.join("; "))));
             }
 
             if is_symbol_used(caller_text, decl_name) && !caller_text.contains(&rel_to_target) {
                 let import_line = format!("import {{ {decl_name} }} from \"{rel_to_target}\";\n");
                 let mut out = import_line;
                 out.push_str(caller_text);
-                return Some((
+                return Ok(Some((
                     out,
                     format!("added import `{decl_name}` from `{rel_to_target}`"),
-                ));
+                )));
             }
 
-            None
+            Ok(None)
         }
         Language::Python => {
             let src_mod = python_module_specifier(caller_file, source_file, root);
@@ -153,16 +180,36 @@ pub fn rewrite_caller_imports(
                 if caller_text.ends_with('\n') {
                     out.push('\n');
                 }
-                return Some((out, notes.join("; ")));
+                return Ok(Some((out, notes.join("; "))));
             }
 
-            None
+            Ok(None)
         }
         Language::Go => {
+            if source_file.parent() == target_file.parent() {
+                return Ok(None);
+            }
             let src_pkg = get_go_package(source_file);
             let tgt_pkg = get_go_package(target_file);
+            let caller_pkg = get_go_package(caller_file);
+
+            if caller_file.parent() == source_file.parent() && caller_pkg == src_pkg {
+                if !is_symbol_used(caller_text, decl_name) {
+                    return Ok(None);
+                }
+                let (rewritten, note) = rewrite_go_cross_pkg_in_source(
+                    caller_text,
+                    decl_name,
+                    &tgt_pkg,
+                    caller_file,
+                    target_file,
+                    root,
+                )?;
+                return Ok((!note.is_empty()).then_some((rewritten, note)));
+            }
+
             if src_pkg == tgt_pkg {
-                return None;
+                return Ok(None);
             }
             let old_call = format!("{src_pkg}.{decl_name}");
             let new_call = format!("{tgt_pkg}.{decl_name}");
@@ -170,12 +217,20 @@ pub fn rewrite_caller_imports(
                 let mut replaced = caller_text.replace(&old_call, &new_call);
                 let src_pkg_path = display(root, source_file.parent().unwrap_or(root));
                 let tgt_pkg_path = display(root, target_file.parent().unwrap_or(root));
-                if replaced.contains(&src_pkg_path) {
+                if !go_package_is_used(&replaced, &src_pkg) && replaced.contains(&src_pkg_path) {
                     replaced = replaced.replace(&src_pkg_path, &tgt_pkg_path);
+                } else if let Ok(target_import_path) =
+                    go_module_import_path(target_file.parent().unwrap_or(root))
+                    && !replaced.contains(&format!("\"{target_import_path}\""))
+                {
+                    replaced = add_go_import(&replaced, &target_import_path);
                 }
-                return Some((replaced, format!("rewrote `{old_call}` to `{new_call}`")));
+                return Ok(Some((
+                    replaced,
+                    format!("rewrote `{old_call}` to `{new_call}`"),
+                )));
             }
-            None
+            Ok(None)
         }
         Language::Cpp | Language::C => {
             let src_hdr = display_relative_or_name(caller_file, source_file);
@@ -184,10 +239,10 @@ pub fn rewrite_caller_imports(
             let new_inc = format!("#include \"{tgt_hdr}\"");
             if caller_text.contains(&old_inc) && !caller_text.contains(&new_inc) {
                 let replaced = caller_text.replace(&old_inc, &format!("{old_inc}\n{new_inc}"));
-                return Some((replaced, format!("included \"{tgt_hdr}\"")));
+                return Ok(Some((replaced, format!("included \"{tgt_hdr}\""))));
             }
-            None
+            Ok(None)
         }
-        _ => None,
+        _ => Ok(None),
     }
 }

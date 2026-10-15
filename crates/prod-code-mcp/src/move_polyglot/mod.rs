@@ -18,6 +18,7 @@ pub mod callers;
 pub mod decl;
 pub mod execute;
 pub mod go_imports;
+pub mod go_refs;
 pub mod header;
 pub mod imports;
 pub mod specifiers;

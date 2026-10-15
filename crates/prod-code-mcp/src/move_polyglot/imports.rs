@@ -14,7 +14,9 @@ use anyhow::Result;
 
 use crate::parameter_object::Language;
 
-use super::go_imports::{add_go_import, get_go_package, rewrite_go_cross_pkg_in_source};
+use super::go_imports::{
+    add_go_import, get_go_package, go_package_is_used, rewrite_go_cross_pkg_in_source,
+};
 use super::specifiers::{
     display_relative_or_name, is_symbol_used, python_module_specifier, relative_import_specifier,
 };
@@ -244,8 +246,7 @@ pub fn carry_imports_polyglot(
                 "sort",
             ];
             for pkg in go_packages {
-                let needle = format!("{pkg}.");
-                if item_text.contains(&needle) && !out.contains(&format!("\"{pkg}\"")) {
+                if go_package_is_used(item_text, pkg) && !out.contains(&format!("\"{pkg}\"")) {
                     out = add_go_import(&out, pkg);
                     notes.push(format!("carried import \"{pkg}\""));
                 }
@@ -333,6 +334,7 @@ pub fn update_source_imports(
                     source_text,
                     decl_name,
                     &tgt_pkg,
+                    source_file,
                     target_file,
                     root,
                 )?;

@@ -104,6 +104,12 @@ fn find_polyglot_decl_typescript_function() {
     assert_eq!(name, "add");
     assert_eq!(start, 1);
     assert_eq!(end, 6);
+
+    let tpl = "export function fmt(): string {\n    const s = `escaped \\` }`;\n    return s;\n}\n";
+    let (t_name, t_start, t_end) = find_polyglot_decl(tpl, 1, Language::TypeScript).unwrap();
+    assert_eq!(t_name, "fmt");
+    assert_eq!(t_start, 1);
+    assert_eq!(t_end, 4);
 }
 
 #[test]
@@ -275,4 +281,101 @@ fn go_move_selects_regular_package_when_external_test_package_exists() {
 
     let test_header = super::target::initial_file_header(&test_target, Language::Go);
     assert_eq!(test_header, "package pkg_test\n\n");
+}
+
+#[test]
+fn find_polyglot_decl_go_const_does_not_swallow_following_functions() {
+    let go = "package a\n\nconst Page = \"hello\"\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n";
+    let (name, start, end) = find_polyglot_decl(go, 3, Language::Go).unwrap();
+    assert_eq!(name, "Page");
+    assert_eq!(start, 3);
+    assert_eq!(end, 3);
+
+    let multiline = "package a\n\nconst Page = `\n<div>{hello}</div>\n`\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n";
+    let (m_name, m_start, m_end) = find_polyglot_decl(multiline, 3, Language::Go).unwrap();
+    assert_eq!(m_name, "Page");
+    assert_eq!(m_start, 3);
+    assert_eq!(m_end, 5);
+}
+
+#[test]
+fn go_cross_package_move_qualifies_exported_constant_value_references() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("go.mod"), "module example.com/m\n").unwrap();
+    let a_dir = temp.path().join("a");
+    let b_dir = temp.path().join("b");
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::create_dir_all(&b_dir).unwrap();
+    let source = a_dir.join("a.go");
+    let sibling = a_dir.join("handler.go");
+    let target = b_dir.join("b.go");
+    std::fs::write(
+        &source,
+        "package a\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n",
+    )
+    .unwrap();
+
+    let (rewritten, note) = super::imports::update_source_imports(
+        "package a\n\nfunc Handler() []byte {\n\treturn []byte(Page)\n}\n",
+        "Page",
+        &source,
+        &target,
+        temp.path(),
+        Language::Go,
+    )
+    .unwrap();
+
+    assert!(rewritten.contains("import \"example.com/m/b\""));
+    assert!(rewritten.contains("return []byte(b.Page)"));
+    assert_eq!(note.as_deref(), Some("imported \"example.com/m/b\""));
+
+    let types_dir = temp.path().join("types");
+    std::fs::create_dir_all(&types_dir).unwrap();
+    std::fs::write(
+        a_dir.join("types.go"),
+        "package a\n\ntype Headers map[string]string\n",
+    )
+    .unwrap();
+    std::fs::write(
+        types_dir.join("types.go"),
+        "package types\n\ntype Table map[string]string\ntype Header struct { Page string }\n",
+    )
+    .unwrap();
+    let (sib_rewritten, sib_note) = rewrite_caller_imports(
+        "package a\n\nimport (\n\th \"net/http\"\n\thttp \"example.com/m/types\"\n)\n\nfunc Other() string {\n\t_ = Headers{Page: \"x\"}\n\t_ = h.Header{Page: []string{\"z\"}}\n\t_ = http.Table{Page: \"y\"}\n\t_ = http.Header{Page: Page}\n\treturn Page\n}\n",
+        "Page",
+        &sibling,
+        &source,
+        &target,
+        temp.path(),
+        Language::Go,
+    )
+    .unwrap();
+    assert!(sib_rewritten.contains("import \"example.com/m/b\""));
+    assert!(sib_rewritten.contains("Headers{b.Page: \"x\"}"));
+    assert!(sib_rewritten.contains("h.Header{b.Page: []string{\"z\"}}"));
+    assert!(sib_rewritten.contains("http.Table{b.Page: \"y\"}"));
+    assert!(sib_rewritten.contains("http.Header{Page: b.Page}"));
+    assert!(sib_rewritten.contains("return b.Page"));
+    assert_eq!(sib_note, "imported \"example.com/m/b\"");
+}
+
+#[test]
+fn go_reference_rewriting_skips_struct_field_keys_and_rejects_shadowed_or_unexported() {
+    let source = "package a\ntype Headers map[string]string\nfunc use() {\n\t_ = Config{Page: Page}\n\t_ = Headers{Page: \"x\"}\n\t_ = []string{Page: \"y\"}\n}\n";
+    let (rewritten, count) = rewrite_go_call_sites(source, "Page", "b").unwrap();
+    assert_eq!(count, 3);
+    assert!(rewritten.contains("Config{Page: b.Page}"));
+    assert!(rewritten.contains("Headers{b.Page: \"x\"}"));
+    assert!(rewritten.contains("[]string{b.Page: \"y\"}"));
+
+    let shadowed = "package a\nfunc use() {\n\tPage, café := \"local\", 1\n\t_ = []byte(Page) + []byte(string(rune(café)))\n}\n";
+    assert!(rewrite_go_call_sites(shadowed, "Page", "b").is_err());
+
+    let multiline_param =
+        "package a\nfunc Handler(\n\tPage string,\n) string {\n\treturn Page\n}\n";
+    assert!(rewrite_go_call_sites(multiline_param, "Page", "b").is_err());
+
+    let unexported = "package a\nfunc use() []byte {\n\treturn []byte(page)\n}\n";
+    assert!(rewrite_go_call_sites(unexported, "page", "b").is_err());
 }

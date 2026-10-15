@@ -8,34 +8,41 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::parameter_object::Language;
 
+#[cfg(test)]
+pub(crate) use super::go_refs::rewrite_go_call_sites;
+pub(crate) use super::go_refs::{
+    find_go_type_rhs, is_in_go_string_or_comment, rewrite_go_call_sites_in_context,
+};
 use super::specifiers::is_ident;
 
-pub(crate) fn go_import_package(spec: &str) -> Option<String> {
+fn parse_go_import_spec(spec: &str) -> Option<(Option<&str>, &str)> {
     let spec = spec
         .split_once("//")
         .map_or(spec, |(before, _)| before)
         .trim();
     let words: Vec<&str> = spec.split_whitespace().collect();
-    let (alias, path) = match words.as_slice() {
+    let (alias, raw_path) = match words.as_slice() {
         [path] => (None, *path),
         [alias, path] if is_ident(alias.chars().next()?) && alias.chars().all(is_ident) => {
             (Some(*alias), *path)
         }
         _ => return None,
     };
-    if matches!(alias, Some("." | "_")) || !path.starts_with('"') || !path.ends_with('"') {
+    if matches!(alias, Some("." | "_")) || raw_path.len() < 2 {
         return None;
     }
-    let import_path = &path[1..path.len() - 1];
-    if import_path == "C" {
-        return None;
-    }
+    let import_path = raw_path.trim_matches(['"', '`']);
+    (import_path.len() + 2 == raw_path.len() && import_path != "C").then_some((alias, import_path))
+}
+
+pub(crate) fn go_import_package(spec: &str) -> Option<String> {
+    let (alias, import_path) = parse_go_import_spec(spec)?;
     let package = match alias {
         Some(alias) => alias.to_string(),
         None if !import_path.contains('/') => import_path.to_string(),
@@ -50,8 +57,7 @@ pub(crate) fn go_package_is_used(content: &str, package: &str) -> bool {
         let end = at + package.len();
         !(at > 0 && content[..at].chars().next_back().is_some_and(is_ident))
             && !content[end..].chars().next().is_some_and(is_ident)
-            && !crate::inline_parameter::is_in_comment(content, at, Language::Go)
-            && !crate::inline_parameter::is_in_string(content, at, Language::Go)
+            && !is_in_go_string_or_comment(content, at)
             && content[end..].trim_start().starts_with('.')
     })
 }
@@ -107,10 +113,24 @@ pub(crate) fn get_go_package(file: &Path) -> String {
         for line in content.lines() {
             let t = line.trim();
             if let Some(rest) = t.strip_prefix("package ") {
-                let name = rest.trim();
+                let name = rest
+                    .split("//")
+                    .next()
+                    .unwrap_or(rest)
+                    .trim()
+                    .trim_end_matches(';');
                 if !name.is_empty() {
                     return name.to_string();
                 }
+            }
+        }
+    }
+    let header = super::target::initial_file_header(file, Language::Go);
+    for line in header.lines() {
+        if let Some(rest) = line.trim().strip_prefix("package ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return name.to_string();
             }
         }
     }
@@ -120,27 +140,54 @@ pub(crate) fn get_go_package(file: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
-pub(crate) fn go_module_import_path(target_dir: &Path) -> Result<String> {
-    let target = std::fs::canonicalize(target_dir).unwrap_or_else(|_| target_dir.to_path_buf());
-    let mut directory = Some(target.as_path());
+fn find_go_mod(start: &Path) -> Option<(PathBuf, String)> {
+    let mut directory = Some(start);
     while let Some(dir) = directory {
         if let Ok(manifest) = std::fs::read_to_string(dir.join("go.mod"))
             && let Some(module) = manifest.lines().find_map(|line| {
                 line.trim()
                     .strip_prefix("module ")
-                    .map(|value| value.trim().trim_matches('"').to_string())
-                    .filter(|value| !value.is_empty())
+                    .map(|v| {
+                        v.split("//")
+                            .next()
+                            .unwrap_or(v)
+                            .trim()
+                            .trim_matches('"')
+                            .to_string()
+                    })
+                    .filter(|v| !v.is_empty())
             })
         {
-            let relative = target.strip_prefix(dir).unwrap_or(Path::new(""));
-            let suffix = relative.to_string_lossy().replace('\\', "/");
-            return Ok(if suffix.is_empty() {
-                module
-            } else {
-                format!("{module}/{suffix}")
-            });
+            return Some((dir.to_path_buf(), module));
         }
         directory = dir.parent();
+    }
+    None
+}
+
+fn go_files_in_dir(dir: &Path, skip_tests: bool) -> impl Iterator<Item = PathBuf> + use<> {
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(move |p| {
+            p.extension().is_some_and(|ext| ext == "go")
+                && (!skip_tests || !p.to_string_lossy().ends_with("_test.go"))
+        })
+}
+
+pub(crate) fn go_module_import_path(target_dir: &Path) -> Result<String> {
+    let target = std::fs::canonicalize(target_dir).unwrap_or_else(|_| target_dir.to_path_buf());
+    if let Some((mod_dir, module)) = find_go_mod(&target) {
+        let relative = target.strip_prefix(&mod_dir).unwrap_or(Path::new(""));
+        let suffix = relative.to_string_lossy().replace('\\', "/");
+        return Ok(if suffix.is_empty() {
+            module
+        } else {
+            format!("{module}/{suffix}")
+        });
     }
     anyhow::bail!(
         "cannot find the Go module path for {}",
@@ -148,49 +195,164 @@ pub(crate) fn go_module_import_path(target_dir: &Path) -> Result<String> {
     )
 }
 
-pub(crate) fn rewrite_go_call_sites(
-    source_text: &str,
-    decl_name: &str,
-    target_pkg: &str,
-) -> Result<(String, usize)> {
-    let mut edits = Vec::new();
-    for (at, _) in source_text.match_indices(decl_name) {
-        if (at > 0 && source_text[..at].chars().next_back().is_some_and(is_ident))
-            || source_text[at + decl_name.len()..]
-                .chars()
-                .next()
-                .is_some_and(is_ident)
-            || crate::inline_parameter::is_in_comment(source_text, at, Language::Go)
-            || crate::inline_parameter::is_in_string(source_text, at, Language::Go)
-        {
+fn resolve_go_import_path_dir(
+    import_path: &str,
+    source_file: Option<&Path>,
+    root: Option<&Path>,
+) -> Option<PathBuf> {
+    let start = source_file.and_then(Path::parent).or(root)?;
+    if let Some((mod_dir, module)) = find_go_mod(start) {
+        if import_path == module {
+            return Some(mod_dir);
+        }
+        let candidate = mod_dir.join(import_path.strip_prefix(&format!("{module}/"))?);
+        return candidate.is_dir().then_some(candidate);
+    }
+    let r = root?;
+    [r.join(import_path), r.join(import_path.rsplit('/').next()?)]
+        .into_iter()
+        .find(|cand| cand.is_dir())
+}
+
+fn resolve_imported_go_package<'a>(
+    source_text: &'a str,
+    pkg_alias: &str,
+    source_file: Option<&Path>,
+    root: Option<&Path>,
+) -> Option<(&'a str, Option<PathBuf>)> {
+    let mut in_group = false;
+    for line in source_text.lines() {
+        let trimmed = line.trim();
+        let spec = if in_group {
+            if trimmed == ")" {
+                in_group = false;
+                None
+            } else {
+                parse_go_import_spec(trimmed)
+            }
+        } else if trimmed == "import (" {
+            in_group = true;
+            None
+        } else {
+            trimmed
+                .strip_prefix("import ")
+                .and_then(parse_go_import_spec)
+        };
+        let Some((alias, import_path)) = spec else {
+            continue;
+        };
+        if let Some(explicit) = alias {
+            if explicit == pkg_alias {
+                return Some((
+                    import_path,
+                    resolve_go_import_path_dir(import_path, source_file, root),
+                ));
+            }
             continue;
         }
-        let before = source_text[..at].trim_end();
-        if before.ends_with('.') {
-            continue; // A selector, which may name an unrelated method.
-        }
-        let after = source_text[at + decl_name.len()..].trim_start();
-        if after.starts_with('(') {
-            let line_start = source_text[..at].rfind('\n').map_or(0, |i| i + 1);
-            if source_text[line_start..at]
-                .trim_start()
-                .starts_with("func ")
-            {
-                continue; // A separate declaration is not a call site.
+        let dir = resolve_go_import_path_dir(import_path, source_file, root);
+        let matches_pkg = match dir.as_deref() {
+            Some(d) => {
+                go_files_in_dir(d, true).any(|p| get_go_package(&p) == pkg_alias)
+                    || import_path.rsplit('/').next() == Some(pkg_alias)
             }
-            edits.push((at, decl_name.len()));
-        } else {
-            anyhow::bail!(
-                "Go reference `{decl_name}` at byte {at} is not a call; cannot safely qualify it"
-            );
+            None => import_path.rsplit('/').next() == Some(pkg_alias),
+        };
+        if matches_pkg {
+            return Some((import_path, dir));
         }
     }
-    let count = edits.len();
-    let mut rewritten = source_text.to_string();
-    for (at, len) in edits.into_iter().rev() {
-        rewritten.replace_range(at..at + len, &format!("{target_pkg}.{decl_name}"));
+    None
+}
+
+fn resolve_type_is_map_or_slice(
+    source_text: &str,
+    type_expr: &str,
+    source_file: Option<&Path>,
+    root: Option<&Path>,
+    depth: usize,
+) -> bool {
+    if depth > 4 {
+        return false;
     }
-    Ok((rewritten, count))
+    let eval_rhs = |ctx_text: &str, rhs: &str, ctx_file: Option<&Path>| -> bool {
+        let rest = rhs.trim_start();
+        let rest = rest.strip_prefix('=').map_or(rest, str::trim_start);
+        if rest.starts_with("map[") || rest.starts_with('[') {
+            return true;
+        }
+        let len: usize = rest
+            .chars()
+            .take_while(|&c| is_ident(c) || c == '.')
+            .map(char::len_utf8)
+            .sum();
+        let next = &rest[..len];
+        !next.is_empty()
+            && !matches!(next, "struct" | "interface" | "func" | "chan")
+            && resolve_type_is_map_or_slice(ctx_text, next, ctx_file, root, depth + 1)
+    };
+    if let Some((pkg_alias, type_name)) = type_expr.split_once('.') {
+        if pkg_alias.is_empty()
+            || !pkg_alias.chars().all(is_ident)
+            || type_name.is_empty()
+            || !type_name.chars().all(is_ident)
+        {
+            return false;
+        }
+        let Some((import_path, pkg_dir)) =
+            resolve_imported_go_package(source_text, pkg_alias, source_file, root)
+        else {
+            return false;
+        };
+        if matches!(
+            (import_path, type_name),
+            ("net/http" | "mime/multipart", "Header")
+                | ("net/url", "Values")
+                | ("net/textproto", "MIMEHeader")
+        ) {
+            return true;
+        }
+        let Some(pkg_dir) = pkg_dir else {
+            return false;
+        };
+        return go_files_in_dir(&pkg_dir, true).any(|p| {
+            std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| {
+                    find_go_type_rhs(&t, type_name).map(|rhs| eval_rhs(&t, rhs, Some(&p)))
+                })
+                .unwrap_or(false)
+        });
+    }
+    if type_expr.is_empty() || !type_expr.chars().all(is_ident) {
+        return false;
+    }
+    if let Some(rhs) = find_go_type_rhs(source_text, type_expr) {
+        return eval_rhs(source_text, rhs, source_file);
+    }
+    let Some(dir) = source_file.and_then(Path::parent) else {
+        return false;
+    };
+    go_files_in_dir(dir, false)
+        .filter(|p| Some(p.as_path()) != source_file)
+        .any(|p| {
+            std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| {
+                    find_go_type_rhs(&t, type_expr).map(|rhs| eval_rhs(&t, rhs, Some(&p)))
+                })
+                .unwrap_or(false)
+        })
+}
+
+pub(crate) fn is_named_map_or_slice_type(
+    source_text: &str,
+    lit_type: &str,
+    source_file: Option<&Path>,
+    root: Option<&Path>,
+) -> bool {
+    let base_type = lit_type.split('[').next().unwrap_or(lit_type).trim();
+    resolve_type_is_map_or_slice(source_text, base_type, source_file, root, 0)
 }
 
 pub(crate) fn add_go_import(content: &str, pkg: &str) -> String {
@@ -212,6 +374,7 @@ pub(crate) fn rewrite_go_cross_pkg_in_source(
     source_text: &str,
     decl_name: &str,
     target_pkg: &str,
+    source_file: &Path,
     target_file: &Path,
     root: &Path,
 ) -> Result<(String, String)> {
@@ -221,7 +384,13 @@ pub(crate) fn rewrite_go_cross_pkg_in_source(
         !source_text.contains(&format!("\"{target_import_path}\"")),
         "the target Go module is already imported and its local alias cannot be safely resolved"
     );
-    let (replaced, calls) = rewrite_go_call_sites(source_text, decl_name, target_pkg)?;
+    let (replaced, calls) = rewrite_go_call_sites_in_context(
+        source_text,
+        decl_name,
+        target_pkg,
+        Some(source_file),
+        Some(root),
+    )?;
     if calls == 0 {
         return Ok((source_text.to_string(), String::new()));
     }
