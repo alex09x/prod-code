@@ -168,7 +168,11 @@ pub(crate) fn parse_unique_structs(
             && text[i + 3..].starts_with(char::is_whitespace)
             && let Some(semi) = text[i + 3..].find(';')
         {
-            for tok in text[i + 3..i + 3 + semi].split(|c: char| !is_ident(c)) {
+            let use_body = &text[i + 3..i + 3 + semi];
+            if use_body.contains('*') {
+                *counts.entry("Option".to_string()).or_insert(0) += 2;
+            }
+            for tok in use_body.split(|c: char| !is_ident(c)) {
                 if tok.chars().next().is_some_and(char::is_uppercase) {
                     *counts.entry(tok.to_string()).or_insert(0) += 2;
                 }
@@ -220,7 +224,7 @@ pub(crate) fn parse_unique_structs(
     }
     let shadowed: BTreeSet<String> = counts
         .into_iter()
-        .filter(|(_, c)| *c > 1)
+        .filter(|(k, c)| *c > 1 || (k == "Option" && *c >= 1))
         .map(|(k, _)| k)
         .collect();
     for s in &shadowed {

@@ -211,22 +211,16 @@ pub fn typed_locals_before(text: &str, at: usize) -> BTreeMap<String, String> {
                         .is_some_and(is_id)
             });
             let rest = &scope[i + 3..];
-            let (mut depth, mut eq_at, mut semi_at, mut brace_at, mut j) =
-                (0i32, None, None, None, 0usize);
+            let (mut depth, mut eq_at, mut semi_at, mut j) = (0i32, None, None, 0usize);
             while j < rest.len() {
                 if let Ok(Some((next, _))) = opaque_at(rest, j, 0) {
                     j = next;
                     continue;
                 }
                 match rest.as_bytes()[j] {
-                    b'(' | b'[' => depth += 1,
-                    b')' | b']' => depth = (depth - 1).max(0),
-                    b'{' if depth == 0 && eq_at.is_none() => {
-                        brace_at = Some(j);
-                        break;
-                    }
-                    b'{' => depth += 1,
-                    b'}' => depth = (depth - 1).max(0),
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' if depth == 0 => break,
+                    b')' | b']' | b'}' => depth -= 1,
                     b'=' if depth == 0
                         && eq_at.is_none()
                         && !rest[..j].ends_with(['=', '!', '<', '>'])
@@ -245,7 +239,7 @@ pub fn typed_locals_before(text: &str, at: usize) -> BTreeMap<String, String> {
                 }
                 j += rest[j..].chars().next().map_or(1, char::len_utf8);
             }
-            let hdr_end = eq_at.or(semi_at).or(brace_at).unwrap_or(rest.len());
+            let hdr_end = eq_at.or(semi_at).unwrap_or(rest.len());
             let header = rest[..hdr_end].trim();
             if cond_let {
                 let d = scopes.len();

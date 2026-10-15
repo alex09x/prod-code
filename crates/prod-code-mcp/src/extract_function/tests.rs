@@ -291,6 +291,25 @@ impl Engine {
         "unproven borrow capture must report E0502 conflict"
     );
 
+    // A single local `struct Option<T>` shadows the prelude's `std::option::Option` and must not
+    // be assumed to have pure `as_ref`/`unwrap` methods.
+    let shadowed_opt_old = custom_old
+        .replacen("struct CustomOption<T>(T);\n", "", 1)
+        .replacen("CustomOption<Pool>", "Option<Pool>", 1);
+    let shadowed_opt_old = format!("struct Option<T>(T);\n{shadowed_opt_old}");
+    let shadowed_opt_start = shadowed_opt_old.find(custom_sel).unwrap();
+    let shadowed_opt_end = shadowed_opt_start + custom_sel.len();
+    assert_eq!(
+        reacquire_conflicting_borrows(
+            &shadowed_opt_old,
+            shadowed_opt_start,
+            shadowed_opt_end,
+            custom_extracted
+        ),
+        custom_extracted,
+        "local `struct Option<T>` must prevent assuming `std::option::Option`"
+    );
+
     // Owned or effectful values derived from `state` (`let amount = state.next();`) must NEVER be
     // re-evaluated inside the helper or reported as E0502 borrow conflicts.
     let owned_old = "\
