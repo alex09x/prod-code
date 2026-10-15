@@ -10,192 +10,103 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::tokens::{is_ident, mentions};
-use crate::signature::call_sites::opaque_at;
+use super::tokens::{
+    ActiveBinding, active_let_bindings, is_field_path_of, is_ident, mentions, parse_unique_structs,
+};
+use crate::signature::call_sites::normalize_type_spelling;
 
-#[derive(Debug, Clone)]
-struct ActiveBinding {
-    is_mut: bool,
-    is_ref_pat: bool,
-    explicit_ty: Option<String>,
-    rhs: String,
-    stmt_start: usize,
-    stmt_end: usize,
-}
-
-fn is_field_path_of(expr: &str, parent: &str) -> bool {
-    let expr = expr.trim().trim_matches(['(', ')']).trim();
-    expr == parent
-        || expr
-            .strip_prefix(parent)
-            .and_then(|r| r.strip_prefix('.'))
-            .is_some_and(|r| {
-                !r.is_empty()
-                    && r.split('.')
-                        .all(|s| !s.is_empty() && s.chars().all(is_ident))
-            })
-}
-
-/// Returns true when `rhs` is a side-effect-free borrow projection of `parent` (`&parent.field`,
-/// `parent.field.as_ref().unwrap()`, etc.).
-pub(crate) fn is_pure_borrow_rhs(rhs: &str, parent: &str) -> bool {
-    let rhs = rhs.trim();
-    if let Some(rest) = rhs.strip_prefix("&mut").map(str::trim_start)
-        && rest.len() < rhs.len() - 4
-    {
-        return is_field_path_of(rest, parent);
+/// Proves that `b.rhs` is a side-effect-free borrow projection of `parent` (`&mut ParentStruct`)
+/// producing `param_ty` (`&TargetTy`) without invoking user-defined methods or `Deref` coercions.
+fn prove_pure_borrow_rhs(
+    b: &ActiveBinding,
+    parent: &str,
+    parent_ty: &str,
+    param_ty: &str,
+    structs: &BTreeMap<String, BTreeMap<String, String>>,
+    shadowed: &BTreeSet<String>,
+) -> bool {
+    if b.is_mut || b.is_ref_pat {
+        return false;
     }
-    if let Some(rest) = rhs.strip_prefix('&') {
-        return is_field_path_of(rest.trim_start(), parent);
-    }
-    let Some(rest) = rhs.strip_prefix(parent).and_then(|r| r.strip_prefix('.')) else {
+    let norm_param = normalize_type_spelling(param_ty);
+    let Some(target_ty) = norm_param
+        .strip_prefix('&')
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && !t.starts_with("mut "))
+    else {
         return false;
     };
-    let segments: Vec<&str> = rest.split('.').map(str::trim).collect();
-    let Some(call_idx) = segments.iter().position(|s| s.contains('(')) else {
-        return false;
-    };
-    if !segments[..call_idx]
-        .iter()
-        .all(|seg| !seg.is_empty() && seg.chars().all(is_ident))
+    if b.explicit_ty
+        .as_ref()
+        .is_some_and(|t| normalize_type_spelling(t) != norm_param)
     {
         return false;
     }
-    let mut saw_borrow_proj = false;
-    for seg in &segments[call_idx..] {
-        match *seg {
-            "as_ref()" | "as_deref()" | "as_str()" | "as_slice()" | "borrow()" => {
-                saw_borrow_proj = true;
-            }
-            "unwrap()" if saw_borrow_proj => {}
-            _ => return false,
+    let norm_parent = normalize_type_spelling(parent_ty);
+    let Some(parent_struct) = norm_parent
+        .strip_prefix("&mut")
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.chars().all(is_ident) && !shadowed.contains(*s))
+    else {
+        return false;
+    };
+    let rhs = b.rhs.trim();
+    let (place, is_opt_unwrap) = if let Some(rest) = rhs.strip_prefix('&') {
+        if rest.trim_start().starts_with("mut ") {
+            return false;
+        }
+        (rest.trim(), false)
+    } else if let Some(rest) = rhs.strip_suffix(".as_ref().unwrap()") {
+        if shadowed.contains("Option") {
+            return false;
+        }
+        (rest.trim(), true)
+    } else {
+        return false;
+    };
+    let Some(field_chain) = place.strip_prefix(parent).and_then(|r| r.strip_prefix('.')) else {
+        return false;
+    };
+    let segs: Vec<&str> = field_chain.split('.').map(str::trim).collect();
+    if segs.is_empty()
+        || !segs
+            .iter()
+            .all(|s| !s.is_empty() && s.chars().all(is_ident))
+    {
+        return false;
+    }
+    let mut cur = parent_struct;
+    for seg in &segs[..segs.len() - 1] {
+        let Some(fty) = structs.get(cur).and_then(|f| f.get(*seg)) else {
+            return false;
+        };
+        cur = fty
+            .strip_prefix("&mut")
+            .or_else(|| fty.strip_prefix('&'))
+            .unwrap_or(fty)
+            .trim();
+        if cur.is_empty() || !cur.chars().all(is_ident) || shadowed.contains(cur) {
+            return false;
         }
     }
-    saw_borrow_proj
-}
-
-fn parse_let_stmt(rest: &str) -> Option<(Option<usize>, usize)> {
-    let (mut depth, mut eq_at, mut j) = (0i32, None, 0usize);
-    while j < rest.len() {
-        if let Ok(Some((end, _))) = opaque_at(rest, j, 0) {
-            j = end;
-            continue;
-        }
-        match rest.as_bytes()[j] {
-            b'(' | b'{' | b'[' => depth += 1,
-            b')' | b'}' | b']' if depth == 0 => return None,
-            b')' | b'}' | b']' => depth -= 1,
-            b'=' if depth == 0
-                && eq_at.is_none()
-                && !rest[..j].ends_with(['=', '!', '<', '>'])
-                && !rest[j + 1..].starts_with('=') =>
-            {
-                eq_at = Some(j);
-            }
-            b';' if depth == 0 => return Some((eq_at, j)),
-            _ => {}
-        }
-        j += 1;
+    let Some(last_ty) = structs.get(cur).and_then(|f| f.get(*segs.last().unwrap())) else {
+        return false;
+    };
+    if is_opt_unwrap {
+        last_ty == &format!("Option<{target_ty}>")
+            || last_ty == &format!("std::option::Option<{target_ty}>")
+            || last_ty == &format!("core::option::Option<{target_ty}>")
+    } else {
+        last_ty == target_ty
     }
-    None
-}
-
-/// Scope-aware scan of `let` bindings in `code` that remain in scope at the end of `code`.
-fn active_let_bindings(code: &str) -> BTreeMap<String, ActiveBinding> {
-    let bytes = code.as_bytes();
-    let mut scopes: Vec<BTreeMap<String, Option<ActiveBinding>>> = vec![BTreeMap::new()];
-    let mut i = 0;
-    while i < bytes.len() {
-        if let Ok(Some((end, _))) = opaque_at(code, i, 0) {
-            i = end;
-            continue;
-        }
-        if bytes[i] == b'{' {
-            scopes.push(BTreeMap::new());
-            i += 1;
-            continue;
-        }
-        if bytes[i] == b'}' {
-            if scopes.len() > 1 {
-                scopes.pop();
-            }
-            i += 1;
-            continue;
-        }
-        if code[i..].starts_with("let")
-            && !code[..i].chars().next_back().is_some_and(is_ident)
-            && code[i + 3..].starts_with(char::is_whitespace)
-        {
-            let before = code[..i].trim_end();
-            let is_cond = ["if", "while"].iter().any(|kw| {
-                before.ends_with(kw)
-                    && !before[..before.len() - kw.len()]
-                        .chars()
-                        .next_back()
-                        .is_some_and(is_ident)
-            });
-            let rest = &code[i + 3..];
-            if !is_cond && let Some((eq_at, semi)) = parse_let_stmt(rest) {
-                let header = rest[..eq_at.unwrap_or(semi)].trim();
-                let split = crate::signature::parse::split_at_top_level(header, ':');
-                let (pat, explicit_ty) = split.map_or((header, None), |(p, ty)| {
-                    (p.trim(), Some(ty.trim().to_string()))
-                });
-                let (is_ref_pat, after_ref) = pat
-                    .strip_prefix("ref")
-                    .filter(|r| r.starts_with(char::is_whitespace))
-                    .map_or((false, pat), |r| (true, r.trim_start()));
-                let (is_mut, name) = after_ref
-                    .strip_prefix("mut")
-                    .filter(|r| r.starts_with(char::is_whitespace))
-                    .map_or((false, after_ref.trim()), |r| (true, r.trim()));
-                let frame = scopes.last_mut().unwrap();
-                if !name.is_empty() && name.chars().all(is_ident) {
-                    let entry = eq_at
-                        .map(|eq| rest[eq + 1..semi].trim())
-                        .filter(|rhs| !rhs.is_empty())
-                        .map(|rhs| ActiveBinding {
-                            is_mut,
-                            is_ref_pat,
-                            explicit_ty,
-                            rhs: rhs.to_string(),
-                            stmt_start: i,
-                            stmt_end: i + 3 + semi + 1,
-                        });
-                    frame.insert(name.to_string(), entry);
-                } else {
-                    for tok in pat.split(|c: char| !is_ident(c)).filter(|s| !s.is_empty()) {
-                        frame.insert(tok.to_string(), None);
-                    }
-                }
-                i = i + 3 + semi + 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    let mut out = BTreeMap::new();
-    for (k, v) in scopes.into_iter().flatten() {
-        if let Some(b) = v {
-            out.insert(k, b);
-        } else {
-            out.remove(&k);
-        }
-    }
-    out
 }
 
 fn parent_untouched_since(
     scope: &str,
     from: usize,
     parent: &str,
-    bindings: &BTreeMap<String, ActiveBinding>,
+    mut allowed: Vec<(usize, usize)>,
 ) -> bool {
-    let mut allowed: Vec<(usize, usize)> = bindings
-        .values()
-        .filter(|b| b.stmt_start >= from && is_pure_borrow_rhs(&b.rhs, parent))
-        .map(|b| (b.stmt_start, b.stmt_end))
-        .collect();
     allowed.sort_unstable();
     let mut cursor = from;
     for (s, e) in allowed {
@@ -207,14 +118,29 @@ fn parent_untouched_since(
     cursor >= scope.len() || !mentions(&scope[cursor..], parent)
 }
 
-fn is_proven_borrow_of_parent(b: &ActiveBinding, parent: &str) -> bool {
-    is_pure_borrow_rhs(&b.rhs, parent)
-        || (b.is_ref_pat && is_field_path_of(&b.rhs, parent))
+fn is_likely_borrow_of_parent(b: &ActiveBinding, parent: &str) -> bool {
+    let rhs = b.rhs.trim();
+    (rhs.starts_with('&')
+        && is_field_path_of(
+            rhs.trim_start_matches("&mut ").trim_start_matches('&'),
+            parent,
+        ))
+        || (b.is_ref_pat && is_field_path_of(rhs, parent))
         || (b
             .explicit_ty
             .as_deref()
             .is_some_and(|ty| ty.trim_start().starts_with('&'))
-            && mentions(&b.rhs, parent))
+            && mentions(rhs, parent))
+        || (rhs.starts_with(&format!("{parent}."))
+            && [
+                ".as_ref()",
+                ".as_deref()",
+                ".as_str()",
+                ".as_slice()",
+                ".borrow()",
+            ]
+            .iter()
+            .any(|m| rhs.contains(m)))
 }
 
 struct ExtractContext<'a> {
@@ -227,7 +153,7 @@ struct ExtractContext<'a> {
     list_close: usize,
     receiver: Option<String>,
     declared: Vec<crate::signature::Declared>,
-    mut_parents: Vec<String>,
+    mut_parents: Vec<(String, String)>,
 }
 
 fn parse_extract_context<'a>(
@@ -247,13 +173,16 @@ fn parse_extract_context<'a>(
     let fn_kw = fn_text.find("fn ")?;
     let (_, list_open, list_close) = crate::signature::param_span(fn_text, fn_kw + 3)?;
     let (receiver, declared) = crate::signature::parse_declared(&fn_text[list_open..list_close]);
-    let mut mut_parents: Vec<String> = declared
+    let mut mut_parents: Vec<(String, String)> = declared
         .iter()
-        .filter(|d| d.raw.contains("&mut"))
-        .map(|d| d.name.clone())
+        .filter_map(|d| {
+            let (_, ty) = crate::signature::parse::split_at_top_level(&d.raw, ':')?;
+            ty.contains("&mut")
+                .then(|| (d.name.clone(), ty.trim().to_string()))
+        })
         .collect();
     if receiver.as_deref().is_some_and(|rv| rv.contains("&mut")) {
-        mut_parents.insert(0, "self".to_string());
+        mut_parents.insert(0, ("self".to_string(), "&mut Self".to_string()));
     }
     (!bindings.is_empty() && !mut_parents.is_empty()).then_some(ExtractContext {
         scope,
@@ -285,6 +214,7 @@ pub fn reacquire_conflicting_borrows(
     let Some(ctx) = parse_extract_context(text, start, end, extracted, (fn_start, fn_end)) else {
         return extracted.to_string();
     };
+    let (structs, shadowed) = parse_unique_structs(text);
     let (mut reacquired, mut kept_params) = (Vec::new(), Vec::new());
     if let Some(rv) = ctx.receiver.as_deref() {
         kept_params.push(rv.trim().to_string());
@@ -292,14 +222,26 @@ pub fn reacquire_conflicting_borrows(
     for d in &ctx.declared {
         let param_ty = crate::signature::parse::split_at_top_level(&d.raw, ':')
             .map_or("", |(_, ty)| ty.trim());
-        let is_imm_borrow = param_ty.contains('&') && !param_ty.trim_start().starts_with("&mut");
-        if !ctx.mut_parents.contains(&d.name)
-            && is_imm_borrow
+        let is_mut_parent = ctx.mut_parents.iter().any(|(p, _)| p == &d.name);
+        if !is_mut_parent
             && let Some(b) = ctx.bindings.get(&d.name)
-            && !b.is_mut
-            && ctx.mut_parents.iter().any(|p| {
-                is_pure_borrow_rhs(&b.rhs, p)
-                    && parent_untouched_since(ctx.scope, b.stmt_end, p, &ctx.bindings)
+            && ctx.mut_parents.iter().any(|(p, p_ty)| {
+                prove_pure_borrow_rhs(b, p, p_ty, param_ty, &structs, &shadowed) && {
+                    let allowed = ctx
+                        .bindings
+                        .values()
+                        .filter(|ob| {
+                            ob.stmt_start >= b.stmt_end
+                                && ((ob.rhs.trim().starts_with('&')
+                                    && is_field_path_of(ob.rhs.trim().trim_start_matches('&'), p))
+                                    || prove_pure_borrow_rhs(
+                                        ob, p, p_ty, param_ty, &structs, &shadowed,
+                                    ))
+                        })
+                        .map(|ob| (ob.stmt_start, ob.stmt_end))
+                        .collect();
+                    parent_untouched_since(ctx.scope, b.stmt_end, p, allowed)
+                }
             })
             && !mentions(ctx.after, &d.name)
         {
@@ -354,9 +296,9 @@ pub fn reacquire_conflicting_borrows(
     )
 }
 
-/// Reports `E0502` borrow conflicts when an extracted function takes `&mut parent` while a proven
-/// borrow derived from `parent` before `start` is either also passed as a reference argument or
-/// remains live after `end`.
+/// Reports `E0502` borrow conflicts when an extracted function takes `&mut parent` while a borrow
+/// derived from `parent` before `start` is either also passed as a reference argument or remains
+/// live after `end`.
 pub fn conflicting_borrow_captures(
     text: &str,
     start: usize,
@@ -370,14 +312,14 @@ pub fn conflicting_borrow_captures(
         return Vec::new();
     };
     let mut conflicts = Vec::new();
-    for parent in &ctx.mut_parents {
+    for (parent, _) in &ctx.mut_parents {
         for d in &ctx.declared {
             let param_ty = crate::signature::parse::split_at_top_level(&d.raw, ':')
                 .map_or("", |(_, ty)| ty.trim());
             if &d.name != parent
                 && param_ty.contains('&')
                 && let Some(b) = ctx.bindings.get(&d.name)
-                && (is_proven_borrow_of_parent(b, parent) || mentions(&b.rhs, parent))
+                && (is_likely_borrow_of_parent(b, parent) || mentions(&b.rhs, parent))
             {
                 conflicts.push(format!(
                     "cannot borrow `*{parent}` as mutable because it is also borrowed as immutable via `{}` [E0502]",
@@ -386,7 +328,7 @@ pub fn conflicting_borrow_captures(
             }
         }
         for (var, b) in &ctx.bindings {
-            if var != parent && is_proven_borrow_of_parent(b, parent) && mentions(ctx.after, var) {
+            if var != parent && is_likely_borrow_of_parent(b, parent) && mentions(ctx.after, var) {
                 conflicts.push(format!(
                     "cannot borrow `*{parent}` as mutable in extracted call while immutable borrow `{var}` is live across the call [E0502]"
                 ));

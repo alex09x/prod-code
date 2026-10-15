@@ -160,10 +160,16 @@ fn conflicting_field_borrow_is_reacquired_inside_extracted_helper() {
     use super::borrows::reacquire_conflicting_borrows;
 
     let old = "\
+struct State {
+    pool: Option<Pool>,
+    balances: Vec<u64>,
+}
+
 impl Engine {
     pub fn apply(&self, state: &mut State, owner: usize, token: u16) -> Result<(), &'static str> {
+        let café = 1usize;
         let pool = state.pool.as_ref().unwrap();
-        let limit = pool.limit;
+        let limit = pool.limit + café;
         if token as usize >= limit {
             return Err(\"bad token\");
         }
@@ -182,10 +188,16 @@ impl Engine {
     let start = old.find(sel).unwrap();
     let end = start + sel.len();
     let ra_extracted = "\
+struct State {
+    pool: Option<Pool>,
+    balances: Vec<u64>,
+}
+
 impl Engine {
     pub fn apply(&self, state: &mut State, owner: usize, token: u16) -> Result<(), &'static str> {
+        let café = 1usize;
         let pool = state.pool.as_ref().unwrap();
-        let limit = pool.limit;
+        let limit = pool.limit + café;
         if token as usize >= limit {
             return Err(\"bad token\");
         }
@@ -221,6 +233,62 @@ impl Engine {
     assert!(
         rewrite_of(old, &fixed, start, end).is_some(),
         "rewrite_of must still recognize the transformed extraction"
+    );
+
+    // Unproven method calls (`state.pool.as_ref()` on a user type) must NOT be duplicated, and
+    // must instead be reported as an E0502 borrow conflict.
+    let custom_old = "\
+struct State {
+    pool: CustomHolder,
+    total: u64,
+}
+
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let pool = state.pool.as_ref();
+        state.total += pool.fee;
+    }
+}
+";
+    let custom_sel = "state.total += pool.fee;";
+    let custom_start = custom_old.find(custom_sel).unwrap();
+    let custom_end = custom_start + custom_sel.len();
+    let custom_extracted = "\
+struct State {
+    pool: CustomHolder,
+    total: u64,
+}
+
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let pool = state.pool.as_ref();
+        self.fun_name(state, pool);
+    }
+
+    fn fun_name(&self, state: &mut State, pool: &Pool) {
+        state.total += pool.fee;
+    }
+}
+";
+    assert_eq!(
+        reacquire_conflicting_borrows(custom_old, custom_start, custom_end, custom_extracted),
+        custom_extracted,
+        "unproven method call `state.pool.as_ref()` must not be duplicated in helper"
+    );
+    let custom_fn_span = (
+        custom_extracted.find("fn fun_name").unwrap(),
+        custom_extracted.len(),
+    );
+    assert!(
+        !super::borrows::conflicting_borrow_captures(
+            custom_old,
+            custom_start,
+            custom_end,
+            custom_extracted,
+            Some(custom_fn_span)
+        )
+        .is_empty(),
+        "unproven borrow capture must report E0502 conflict"
     );
 
     // Owned or effectful values derived from `state` (`let amount = state.next();`) must NEVER be

@@ -279,12 +279,16 @@ fn a_reorder_or_removal_that_changes_effects_or_drops_is_named() {
         "an explicitly typed local matching the reference parameter type is safe to remove"
     );
 
-    let scoped = "fn f() {\n    let v = &wrapper;\n    { let v: &str = \"\"; }\n    // let c: &str = \"\";\n    let s: &str = \"\";\n    let s = &wrapper;\n    consume(v, s);\n}\n";
+    let scoped = "fn f() {\n    let v = &wrapper;\n    { let v: &str = \"\"; }\n    // let c: &str = \"\";\n    let s: &str = \"\";\n    let s = &wrapper;\n    let lp: &str = \"\";\n    let café: &str = \"ok\";\n    for lp in items {\n        let v: &str = consume(v, s, lp, café);\n    }\n}\n";
     let call_at = scoped.find("consume").unwrap();
     let locals = crate::signature::call_sites::typed_locals_before(scoped, call_at);
     assert!(
-        !locals.contains_key("v") && !locals.contains_key("c") && !locals.contains_key("s"),
-        "closed blocks, comments, and shadowed bindings must not leak into typed_locals: {locals:?}"
+        !locals.contains_key("v")
+            && !locals.contains_key("c")
+            && !locals.contains_key("s")
+            && !locals.contains_key("lp")
+            && locals.get("café").map(String::as_str) == Some("&str"),
+        "closed blocks, comments, pre-init let, and for-loop shadows must not leak into typed_locals: {locals:?}"
     );
 }
 
