@@ -215,6 +215,14 @@ pub async fn process_and_validate_duplicates(
             "cannot find value `{var}` in this scope: local variable from enclosing function was not captured in extracted function"
         ));
     }
+    let borrow_conflicts = crate::extract_function::borrows::conflicting_borrow_captures(
+        &orig_text,
+        start,
+        end,
+        &result[0].1,
+        function,
+    );
+    diagnostics.extend(borrow_conflicts.iter().cloned());
     let base_clean = diagnostics.is_empty();
     let mut kept: Vec<usize> = Vec::new();
     for (n, (duplicate, target)) in found.iter_mut().enumerate() {
@@ -292,7 +300,8 @@ pub async fn process_and_validate_duplicates(
     if !with_parameters {
         parameters.clear();
     }
-    if found.iter().any(|(d, _)| d.replaced) && uncaptured.is_empty() {
+    if found.iter().any(|(d, _)| d.replaced) && uncaptured.is_empty() && borrow_conflicts.is_empty()
+    {
         diagnostics = Vec::new();
     }
 

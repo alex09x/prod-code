@@ -14,7 +14,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use super::imports::{add_import, carry_imports, drop_import, requalify};
-use super::item::{append_item, cut, display, offset_of, span_at, with_doc_comment};
+use super::item::{
+    append_item, cut, display, move_inherent_method, offset_of, span_at, with_doc_comment,
+};
 use super::module::{declare_module, module_of, parent_module_file};
 use super::types::Move;
 
@@ -80,18 +82,27 @@ pub async fn move_item(
     let symbols = document_symbols(remote, root, file).await?;
     let (name, decl_start, decl_end) =
         span_at(&symbols, line).with_context(|| format!("no declaration at line {line}"))?;
-    // A method belongs to its `impl`; pasted into a module it is a free function with a
-    // `self` it cannot have (#196).
+    // A method belongs to its `impl`; pasted into a module without an inherent `impl` of the same
+    // owner it is a free function with a `self` it cannot have (#196, #1084).
     let decl_offset = crate::signature::offset_of(&source_text, decl_start, 1).unwrap_or(0);
-    if let Some((owner, _, _, _)) = crate::extract_field::impl_blocks(&source_text)
+    let enclosing_impl = crate::extract_field::impl_blocks(&source_text)
         .into_iter()
-        .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close)
-    {
-        anyhow::bail!(
-            "`{name}` belongs to `impl {owner}`; move it to another type with \
-             `code_move_method` (`prod-code move-method <file> <line> <col>` with `--to-param \
-             <name>` for a method, `--to-type <Type>` for an associated function)"
-        );
+        .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close);
+    if let Some((ref owner, impl_at, impl_open, _)) = enclosing_impl {
+        let is_inherent = !source_text[impl_at..impl_open].contains(" for ");
+        let target_has_impl = crate::extract_field::impl_blocks(&target_text)
+            .into_iter()
+            .any(|(ty, at, o, _)| &ty == owner && !target_text[at..o].contains(" for "));
+        if !is_inherent
+            || from_module.krate != to_module.krate
+            || (!target_has_impl && new_module_parent.is_none())
+        {
+            anyhow::bail!(
+                "`{name}` belongs to `impl {owner}`; move it to another type with \
+                 `code_move_method` (`prod-code move-method <file> <line> <col>` with `--to-param \
+                 <name>` for a method, `--to-type <Type>` for an associated function)"
+            );
+        }
     }
     // A `mod x;` line declares a module whose code is in its own file; cutting the line would
     // move nothing of it (#188).
@@ -108,13 +119,27 @@ pub async fn move_item(
         );
     }
     let start = with_doc_comment(&source_text, decl_start);
-    let (source_new, item) = cut(&source_text, start, decl_end);
-    let (target_with_imports, carried) = carry_imports(&source_text, &item, &target_text);
-    let target_new = if target_with_imports.trim().is_empty() {
-        format!("{}\n", item.trim())
-    } else {
-        append_item(&target_with_imports, &item)
-    };
+    let (source_new, target_new, item, carried) =
+        if let Some((ref owner, impl_at, impl_open, impl_close)) = enclosing_impl {
+            move_inherent_method(
+                &source_text,
+                &target_text,
+                owner,
+                (impl_at, impl_open, impl_close),
+                start,
+                decl_start,
+                decl_end,
+            )
+        } else {
+            let (source_new, item) = cut(&source_text, start, decl_end);
+            let (target_with_imports, carried) = carry_imports(&source_text, &item, &target_text);
+            let target_new = if target_with_imports.trim().is_empty() {
+                format!("{}\n", item.trim())
+            } else {
+                append_item(&target_with_imports, &item)
+            };
+            (source_new, target_new, item, carried)
+        };
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
     let refs = crate::signature::references(remote, root, file, line, col)
@@ -148,61 +173,70 @@ pub async fn move_item(
         .collect();
     let mut left_alone = Vec::new();
     let mut unmatched = Vec::new();
-    for (path, positions) in &by_file {
-        if path == target {
-            continue; // home already
-        }
-        let Ok((_, module)) = module_of(path) else {
-            left_alone.push(format!(
-                "{} — outside the ordinary crate layout, its imports were not touched",
-                display(root, path)
-            ));
-            continue;
-        };
-        let prefix = to_module.spelled_from(&module.krate);
-        // Taken as empty, the file would be written back as only its new imports (#446).
-        let current = match rewritten.get(path) {
-            Some(text) => text.clone(),
-            None => std::fs::read_to_string(path).with_context(|| {
-                format!(
-                    "cannot read {}, where the analyzer reports a use of `{name}`; nothing was \
-                     planned",
-                    path.display()
-                )
-            })?,
-        };
-        // `requalify` passes over a position that does not name the item; such a use would
-        // still reach it where it was (#446). Its edits end at each position, so the text it
-        // sees there is this one.
-        for (l, c) in positions {
-            let site = format!("{}:{l}:{c}", display(root, path));
-            match offset_of(&current, *l, *c) {
-                None => unmatched.push(format!("{site} (the position is not in the file)")),
-                Some(at)
-                    if !current[at..].starts_with(name.as_str())
-                        || current[at + name.len()..]
-                            .starts_with(|c: char| c.is_alphanumeric() || c == '_') =>
-                {
-                    unmatched.push(format!(
-                        "{site} (the analyzer places `{name}` here, but the file says otherwise)"
-                    ))
-                }
-                Some(_) => {}
+    let mut callers: Vec<PathBuf> = Vec::new();
+    if enclosing_impl.is_some() {
+        for path in by_file.keys() {
+            if !rewritten.contains_key(path) {
+                callers.push(path.clone());
             }
         }
-        let (requalified, bare) = requalify(&current, positions, &name, &prefix);
-        let (mut text, dropped) = drop_import(&requalified, &name);
-        for note in dropped {
-            imports.push(format!("{}: {note}", display(root, path)));
+    } else {
+        for (path, positions) in &by_file {
+            if path == target {
+                continue; // home already
+            }
+            let Ok((_, module)) = module_of(path) else {
+                left_alone.push(format!(
+                    "{} — outside the ordinary crate layout, its imports were not touched",
+                    display(root, path)
+                ));
+                continue;
+            };
+            let prefix = to_module.spelled_from(&module.krate);
+            // Taken as empty, the file would be written back as only its new imports (#446).
+            let current = match rewritten.get(path) {
+                Some(text) => text.clone(),
+                None => std::fs::read_to_string(path).with_context(|| {
+                    format!(
+                        "cannot read {}, where the analyzer reports a use of `{name}`; nothing was \
+                         planned",
+                        path.display()
+                    )
+                })?,
+            };
+            // `requalify` passes over a position that does not name the item; such a use would
+            // still reach it where it was (#446). Its edits end at each position, so the text it
+            // sees there is this one.
+            for (l, c) in positions {
+                let site = format!("{}:{l}:{c}", display(root, path));
+                match offset_of(&current, *l, *c) {
+                    None => unmatched.push(format!("{site} (the position is not in the file)")),
+                    Some(at)
+                        if !current[at..].starts_with(name.as_str())
+                            || current[at + name.len()..]
+                                .starts_with(|c: char| c.is_alphanumeric() || c == '_') =>
+                    {
+                        unmatched.push(format!(
+                            "{site} (the analyzer places `{name}` here, but the file says otherwise)"
+                        ))
+                    }
+                    Some(_) => {}
+                }
+            }
+            let (requalified, bare) = requalify(&current, positions, &name, &prefix);
+            let (mut text, dropped) = drop_import(&requalified, &name);
+            for note in dropped {
+                imports.push(format!("{}: {note}", display(root, path)));
+            }
+            // Only a file that still spells the name on its own needs to import it; one where
+            // every use was path-qualified now names the new module inline and needs nothing.
+            if bare > 0 {
+                let use_line = format!("use {prefix}::{name};");
+                text = add_import(&text, &use_line);
+                imports.push(format!("{}: added `{use_line}`", display(root, path)));
+            }
+            rewritten.insert(path.clone(), text);
         }
-        // Only a file that still spells the name on its own needs to import it; one where
-        // every use was path-qualified now names the new module inline and needs nothing.
-        if bare > 0 {
-            let use_line = format!("use {prefix}::{name};");
-            text = add_import(&text, &use_line);
-            imports.push(format!("{}: added `{use_line}`", display(root, path)));
-        }
-        rewritten.insert(path.clone(), text);
     }
 
     // A new module is declared last: the imports above were placed at the positions the
@@ -230,7 +264,7 @@ pub async fn move_item(
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &[]).await?;
+    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &callers).await?;
     let diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))

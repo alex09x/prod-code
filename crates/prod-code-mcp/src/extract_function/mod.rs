@@ -9,6 +9,7 @@
  */
 
 pub mod binding;
+pub mod borrows;
 pub mod duplicates;
 pub mod execute;
 pub mod rewrite;

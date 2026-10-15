@@ -28,13 +28,44 @@ pub(crate) async fn handle_search(
         .and_then(|v| v.as_str())
         .context("Missing 'query' argument")?;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let subpath = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .map(|p| resolve_file_path(workspace_root, p))
-        .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
-    let resp =
-        crate::search::search(remote, workspace_root, query, limit, subpath.as_deref()).await?;
+    let (target_remote, target_root, subpath) = match args.get("path").and_then(|v| v.as_str()) {
+        None => (remote, workspace_root.to_path_buf(), None),
+        Some(raw_path) if raw_path.trim().is_empty() => {
+            (remote, workspace_root.to_path_buf(), None)
+        }
+        Some(raw_path) => {
+            let resolved = resolve_file_path(workspace_root, raw_path);
+            anyhow::ensure!(resolved.exists(), "search path `{raw_path}` does not exist");
+            let canonical_ws = std::fs::canonicalize(workspace_root)
+                .unwrap_or_else(|_| workspace_root.to_path_buf());
+            let canonical_path =
+                std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+            if canonical_path.starts_with(&canonical_ws) {
+                let sub = crate::exec::subdir_of(&canonical_ws, &canonical_path);
+                (remote, workspace_root.to_path_buf(), sub)
+            } else {
+                let other_root = if canonical_path.join(".git").exists() {
+                    canonical_path.clone()
+                } else {
+                    crate::sync::other_checkout(workspace_root, &canonical_path)
+                        .unwrap_or_else(|| canonical_path.clone())
+                };
+                let other_remote = crate::cluster::route_for_checkout(remote, &other_root)
+                    .await
+                    .unwrap_or(remote);
+                let sub = crate::exec::subdir_of(&other_root, &canonical_path);
+                (other_remote, other_root, sub)
+            }
+        }
+    };
+    let resp = crate::search::search(
+        target_remote,
+        &target_root,
+        query,
+        limit,
+        subpath.as_deref(),
+    )
+    .await?;
     Ok(McpToolCallResult::text(crate::search::render(&resp, query)))
 }
 

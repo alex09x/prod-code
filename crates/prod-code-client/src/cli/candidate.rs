@@ -96,9 +96,6 @@ pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
         | Commands::StructuralSearch { path: Some(p), .. } => {
             paths.push(p.clone());
         }
-        Commands::Pull { files } => {
-            paths.extend(files.clone());
-        }
         Commands::Validate {
             file,
             from,
@@ -124,23 +121,40 @@ pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
                 }
             }
         }
-        Commands::Exec { command, .. } => {
-            for arg in command {
-                if arg.contains('=') {
-                    continue;
-                }
-                let pieces: Vec<String> = arg
-                    .split(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == ';')
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-                paths.push(PathBuf::from(arg));
-                for piece in pieces {
-                    paths.push(PathBuf::from(piece));
-                }
-            }
-        }
         _ => {}
     }
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_path_tokens;
+    use crate::cli::Commands;
+    use std::path::PathBuf;
+
+    #[test]
+    fn exec_and_pull_do_not_extract_language_hint_paths() {
+        let exec_cmd = Commands::Exec {
+            timeout_secs: 0,
+            no_pull: false,
+            env: vec![],
+            command: vec![
+                "python3".to_string(),
+                "scripts/cluster-rollout.py".to_string(),
+                "--status".to_string(),
+            ],
+        };
+        assert!(
+            command_path_tokens(Some(&exec_cmd)).is_empty(),
+            "exec command arguments must not force a script language engine (#1088)"
+        );
+
+        let pull_cmd = Commands::Pull {
+            files: vec![PathBuf::from("target/release/prod-code")],
+        };
+        assert!(
+            command_path_tokens(Some(&pull_cmd)).is_empty(),
+            "pull paths must use the base workspace placement (#1087)"
+        );
+    }
 }

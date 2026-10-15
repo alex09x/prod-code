@@ -23,7 +23,7 @@ use crate::signature::plan::{call_site_rule, format_list, plan, reorders_to_itse
 use crate::signature::references::{
     locate_declaration, references, structural_replace, whole_file_edit,
 };
-use crate::signature::rewrite::attribute;
+use crate::signature::rewrite::{apply_fallback_rewrites, attribute};
 use crate::signature::types::{Modifiers, Param, Plan, SignatureChange};
 use crate::signature::util::{display, normalize, read_caller};
 
@@ -167,10 +167,27 @@ pub async fn change_with(
     let mut rule = String::new();
     if order_changed {
         rule = call_site_rule(&name, receiver.is_some(), declared.len(), &args, &adds);
-        let edit = structural_replace(remote, root, file, &rule).await?;
-        for (path, new_text) in crate::tools::rewritten_files(&edit) {
-            rewritten.insert(PathBuf::from(path), new_text);
-        }
+        let ssr_ok = if let Ok(edit) = structural_replace(remote, root, file, &rule).await {
+            for (path, new_text) in crate::tools::rewritten_files(&edit) {
+                rewritten.insert(PathBuf::from(path), new_text);
+            }
+            true
+        } else {
+            false
+        };
+        apply_fallback_rewrites(
+            root,
+            file,
+            &text,
+            &name,
+            receiver.is_some(),
+            declared.len(),
+            &args,
+            &adds,
+            &refs,
+            ssr_ok,
+            &mut rewritten,
+        )?;
     }
 
     // `async` in or out: every call the analyzer knows gains or loses its `.await`.

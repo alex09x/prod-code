@@ -116,3 +116,83 @@ pub(crate) fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
     }
     None
 }
+
+/// Cuts an inherent method at `start..=decl_end` (with declaration header at `decl_start`) from
+/// `source_text`'s `impl` block and inserts it into `target_text`'s `impl {owner}` block.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn move_inherent_method(
+    source_text: &str,
+    target_text: &str,
+    owner: &str,
+    (impl_at, impl_open, impl_close): (usize, usize, usize),
+    start: u32,
+    decl_start: u32,
+    decl_end: u32,
+) -> (String, String, String, Vec<String>) {
+    let (source_cut, raw_item) = cut(source_text, start, decl_end);
+    let span_start = crate::signature::offset_of(source_text, start, 1).unwrap_or(impl_open + 1);
+    let span_end =
+        crate::signature::offset_of(source_text, decl_end + 1, 1).unwrap_or(source_text.len());
+    let (cut_s, cut_e) = crate::move_method::cut_from_impl(
+        source_text,
+        (impl_at, impl_open, impl_close),
+        (span_start, span_end),
+    );
+    let source_new = if (cut_s, cut_e) != (span_start, span_end) {
+        let mut s = String::with_capacity(source_text.len());
+        s.push_str(&source_text[..cut_s]);
+        s.push_str(&source_text[cut_e..]);
+        s
+    } else {
+        source_cut
+    };
+
+    let decl_rel = decl_start.saturating_sub(start) as usize;
+    let mut item_lines: Vec<String> = raw_item.lines().map(str::to_string).collect();
+    if let Some(sig_line) = item_lines.get_mut(decl_rel) {
+        let trimmed = sig_line.trim_start();
+        if !trimmed.starts_with("pub")
+            && (trimmed.starts_with("fn ")
+                || trimmed.starts_with("async fn ")
+                || trimmed.starts_with("const fn ")
+                || trimmed.starts_with("unsafe fn "))
+        {
+            let indent_len = sig_line.len() - trimmed.len();
+            sig_line.insert_str(indent_len, "pub(crate) ");
+        }
+    }
+    let item = item_lines.join("\n");
+    let (mut target_with_imports, carried) =
+        super::imports::carry_imports(source_text, &item, target_text);
+    let target_new = if let Some((_, _, _, target_close)) =
+        crate::extract_field::impl_blocks(&target_with_imports)
+            .into_iter()
+            .find(|(ty, at, o, _)| ty == owner && !target_with_imports[*at..*o].contains(" for "))
+    {
+        let before = target_with_imports[..target_close].trim_end_matches([' ', '\t']);
+        let lead = if before.ends_with("{\n") || before.ends_with('{') {
+            ""
+        } else {
+            "\n"
+        };
+        let mut out = String::with_capacity(target_with_imports.len() + item.len() + 4);
+        out.push_str(before);
+        out.push_str(lead);
+        out.push_str(item.trim_end());
+        out.push('\n');
+        out.push_str(&target_with_imports[target_close..]);
+        out
+    } else {
+        let header = source_text[impl_at..=impl_open].trim();
+        if !target_with_imports.contains("use super::*;") {
+            target_with_imports = super::imports::add_import(&target_with_imports, "use super::*;");
+        }
+        let block = format!("{header}\n{}\n}}", item.trim_end());
+        if target_with_imports.trim().is_empty() {
+            format!("{block}\n")
+        } else {
+            append_item(&target_with_imports, &block)
+        }
+    };
+    (source_new, target_new, item, carried)
+}

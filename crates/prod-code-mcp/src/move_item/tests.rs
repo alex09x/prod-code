@@ -183,4 +183,57 @@ mod tests {
         assert_eq!(span_at(&symbols, 6), Some(("inner".to_string(), 5, 9)));
         assert_eq!(span_at(&symbols, 2), Some(("Outer".to_string(), 1, 21)));
     }
+
+    #[test]
+    fn an_inherent_method_moves_into_another_modules_impl_of_the_same_type() {
+        use super::super::item::move_inherent_method;
+
+        let source = "\
+pub struct CompactOrderBook {
+    pub count: usize,
+}
+
+impl CompactOrderBook {
+    pub fn new() -> Self {
+        Self { count: 0 }
+    }
+
+    /// Executes an order.
+    fn execute_native_order_with_owner(&mut self, delta: usize) {
+        self.count += delta;
+    }
+}
+";
+        let target = "\
+use super::*;
+
+impl CompactOrderBook {
+    pub fn reset(&mut self) {
+        self.count = 0;
+    }
+}
+";
+        let blocks = crate::extract_field::impl_blocks(source);
+        let (_, impl_at, impl_open, impl_close) = blocks[0];
+        let (src_new, dst_new, item, _) = move_inherent_method(
+            source,
+            target,
+            "CompactOrderBook",
+            (impl_at, impl_open, impl_close),
+            10,
+            11,
+            13,
+        );
+        assert!(
+            !src_new.contains("execute_native_order_with_owner"),
+            "{src_new}"
+        );
+        assert!(src_new.contains("pub fn new()"), "{src_new}");
+        assert!(
+            dst_new
+                .contains("pub(crate) fn execute_native_order_with_owner(&mut self, delta: usize)"),
+            "moved method should be inserted into target impl with crate visibility: {dst_new}"
+        );
+        assert!(item.contains("pub(crate) fn execute_native_order_with_owner"));
+    }
 }

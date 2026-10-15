@@ -40,10 +40,90 @@ pub fn call_sites(root: &Path, refs: &[Reference]) -> Result<Vec<CallSite>> {
         if let Some(args) = call_arguments(text, offset).with_context(|| {
             format!("the arguments of the call at {at} could not be read; nothing was written")
         })? {
-            out.push(CallSite { at, args });
+            let typed_locals = typed_locals_before(text, offset);
+            out.push(CallSite {
+                at,
+                args,
+                typed_locals,
+            });
         }
     }
     Ok(out)
+}
+
+/// Normalizes a Rust type annotation for exact parameter comparison, removing lifetime tokens and
+/// redundant whitespace while preserving `mut` and path structure.
+pub fn normalize_type_spelling(ty: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = ty.chars().collect();
+    let mut i = 0;
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    while i < chars.len() {
+        if chars[i] == '\'' && i + 1 < chars.len() && is_id(chars[i + 1]) {
+            let mut j = i + 1;
+            while j < chars.len() && is_id(chars[j]) {
+                j += 1;
+            }
+            if j >= chars.len() || chars[j] != '\'' {
+                i = j;
+                while i < chars.len() && chars[i].is_whitespace() {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        if chars[i].is_whitespace() {
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
+            if i < chars.len() && out.chars().next_back().is_some_and(is_id) && is_id(chars[i]) {
+                out.push(' ');
+            }
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Explicitly typed `let` bindings (`let v: T = …;`) in the enclosing function body before `at`.
+/// If a later untyped `let v = …;` shadows `v`, `v` is removed.
+pub fn typed_locals_before(text: &str, at: usize) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let body_start = crate::introduce_variable::enclosing_body(text, at)
+        .map_or(0, |(open, _)| (open + 1).min(at));
+    let scope = &text[body_start..at];
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    for (i, _) in scope.match_indices("let") {
+        let whole = !scope[..i].chars().next_back().is_some_and(is_id)
+            && scope[i + 3..].starts_with(char::is_whitespace);
+        if !whole {
+            continue;
+        }
+        let rest = &scope[i + 3..];
+        let end = rest.find(['=', ';']).unwrap_or(rest.len());
+        let header = rest[..end].trim();
+        if let Some((pat, ty)) = crate::signature::parse::split_at_top_level(header, ':') {
+            let pat = pat.trim();
+            let name = pat
+                .strip_prefix("mut")
+                .filter(|r| r.starts_with(char::is_whitespace))
+                .map_or(pat, str::trim);
+            if crate::signature::parse::is_ident(name) {
+                out.insert(name.to_string(), normalize_type_spelling(ty));
+            }
+        } else {
+            let name = header
+                .strip_prefix("mut")
+                .filter(|r| r.starts_with(char::is_whitespace))
+                .map_or(header, str::trim);
+            if crate::signature::parse::is_ident(name) {
+                out.remove(name);
+            }
+        }
+    }
+    out
 }
 
 /// The arguments of the call whose callee's name starts at `at` (`f(…)`, `recv.f(…)`,

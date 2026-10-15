@@ -100,11 +100,13 @@ pub struct OldCall {
     pub needs: bool,
 }
 
-/// A call of the function: where, for the report, and its arguments as written.
-#[derive(Debug)]
+/// A call of the function: where, for the report, its arguments as written, and any explicitly
+/// typed local bindings (`let v: T = …;`) in scope before the call.
+#[derive(Debug, Default)]
 pub struct CallSite {
     pub at: String,
     pub args: Vec<String>,
+    pub typed_locals: std::collections::BTreeMap<String, String>,
 }
 
 /// What evaluating an argument can do, as far as its text and the analyzer show.

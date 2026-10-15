@@ -154,3 +154,72 @@ fn the_placeholder_is_renamed_only_whole() {
     );
     assert!(mentions("a fun_name b", PLACEHOLDER) && !mentions("fun_names", PLACEHOLDER));
 }
+
+#[test]
+fn conflicting_field_borrow_is_reacquired_inside_extracted_helper() {
+    use super::borrows::reacquire_conflicting_borrows;
+
+    let old = "\
+impl Engine {
+    pub fn apply(&self, state: &mut State, owner: usize, token: u16) -> Result<(), &'static str> {
+        let pool = state.pool.as_ref().unwrap();
+        let limit = pool.limit;
+        if token as usize >= limit {
+            return Err(\"bad token\");
+        }
+        if state.balances.len() <= owner {
+            state.balances.resize(owner + 1, 0);
+        }
+        if !pool.currencies.contains(&token) {
+            return Err(\"unsupported currency\");
+        }
+        state.balances[owner] += 1;
+        Ok(())
+    }
+}
+";
+    let sel = "if state.balances.len() <= owner {\n            state.balances.resize(owner + 1, 0);\n        }\n        if !pool.currencies.contains(&token) {\n            return Err(\"unsupported currency\");\n        }";
+    let start = old.find(sel).unwrap();
+    let end = start + sel.len();
+    let ra_extracted = "\
+impl Engine {
+    pub fn apply(&self, state: &mut State, owner: usize, token: u16) -> Result<(), &'static str> {
+        let pool = state.pool.as_ref().unwrap();
+        let limit = pool.limit;
+        if token as usize >= limit {
+            return Err(\"bad token\");
+        }
+        self.fun_name(state, owner, pool, token)?;
+        state.balances[owner] += 1;
+        Ok(())
+    }
+
+    fn fun_name(&self, state: &mut State, owner: usize, pool: &Pool, token: u16) -> Result<(), &'static str> {
+        if state.balances.len() <= owner {
+            state.balances.resize(owner + 1, 0);
+        }
+        if !pool.currencies.contains(&token) {
+            return Err(\"unsupported currency\");
+        }
+        Ok(())
+    }
+}
+";
+    let fixed = reacquire_conflicting_borrows(old, start, end, ra_extracted);
+    assert!(
+        fixed.contains("self.fun_name(state, owner, token)?;"),
+        "call should drop conflicting borrow argument `pool`: {fixed}"
+    );
+    assert!(
+        fixed.contains("fn fun_name(&self, state: &mut State, owner: usize, token: u16)"),
+        "helper signature should drop `pool: &Pool`: {fixed}"
+    );
+    assert!(
+        fixed.contains("let pool = state.pool.as_ref().unwrap();"),
+        "helper body should re-acquire `pool`: {fixed}"
+    );
+    assert!(
+        rewrite_of(old, &fixed, start, end).is_some(),
+        "rewrite_of must still recognize the transformed extraction"
+    );
+}
