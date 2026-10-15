@@ -72,7 +72,6 @@ pub fn needs_index(method: &str) -> bool {
             | "textDocument/references"
             | "textDocument/implementation"
             | "textDocument/rename"
-            | "textDocument/documentSymbol"
             | "textDocument/definition"
             | "textDocument/prepareCallHierarchy"
             | "textDocument/prepareTypeHierarchy"

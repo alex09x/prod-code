@@ -111,36 +111,53 @@ pub(crate) async fn symbol_search_across_projects(
             return Ok(Vec::new());
         }
     };
-    if named(&hits) {
-        return Ok(hits);
-    }
-    if let Some(hint) = hint {
-        // The project a path names may keep no index (sourcekit-lsp before a build): the
-        // outlines of its files that name the symbol still find it (#358).
-        if let (_, Some(engine)) = crate::sync::engine_project(root, hint) {
-            let node = match tokio::time::timeout_at(
-                deadline,
-                crate::cluster::route_for_path(remote, root, hint.to_str()),
-            )
-            .await
-            {
-                Ok(Ok(n)) => n,
-                Ok(Err(_)) => remote,
-                Err(_) => return Ok(hits),
-            };
-            let files = if hint.is_dir() {
-                files_naming(hint, engine, name, deadline)
-            } else {
-                Vec::new()
-            };
-            if !files.is_empty()
-                && let Ok(Ok(decls)) =
-                    tokio::time::timeout_at(deadline, declarations_in(node, root, &files, name))
-                        .await
-            {
-                hits.extend(decls);
+    let extend_unique = |hits: &mut Vec<SymbolHit>, decls: Vec<SymbolHit>| {
+        for d in decls {
+            if !hits.iter().any(|h| h.path == d.path && h.line == d.line) {
+                hits.push(d);
             }
         }
+    };
+    if let Some(hint) = hint {
+        // The project a path names may keep no index (sourcekit-lsp before a build), or its
+        // index may omit `override func` declarations (#358, #1091).
+        if let (_, Some(engine)) = crate::sync::engine_project(root, hint)
+            && (!named(&hits) || engine == "swift")
+        {
+            let dir = if hint.is_dir() {
+                Some(hint)
+            } else {
+                hint.parent()
+            };
+            let files = dir
+                .map(|d| files_naming(d, engine, name, deadline))
+                .unwrap_or_default();
+            if !files.is_empty()
+                && let Ok(Ok(decls)) = tokio::time::timeout_at(
+                    deadline,
+                    declarations_in(primary_node, root, &files, name),
+                )
+                .await
+            {
+                extend_unique(&mut hits, decls);
+            }
+        }
+        return Ok(hits);
+    }
+    if crate::sync::expected_engine(root) == Some("swift") && tokio::time::Instant::now() < deadline
+    {
+        let decl_deadline =
+            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+        let files = files_naming(root, "swift", name, decl_deadline);
+        if !files.is_empty()
+            && let Ok(Ok(decls)) =
+                tokio::time::timeout_at(decl_deadline, declarations_in(remote, root, &files, name))
+                    .await
+        {
+            extend_unique(&mut hits, decls);
+        }
+    }
+    if named(&hits) {
         return Ok(hits);
     }
     // The projects whose sources name the symbol first, then the others a walk meets (#358).
@@ -223,9 +240,9 @@ pub(crate) async fn symbol_search_across_projects(
             .iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
         hits.extend(found);
-        if !named_here && tokio::time::Instant::now() < deadline {
-            // sourcekit-lsp has no index for Swift files a package does not build, and answers
-            // `workspace/symbol` with nothing: their outlines still name what they declare (#1081).
+        if (!named_here || engine == "swift") && tokio::time::Instant::now() < deadline {
+            // sourcekit-lsp has no index for Swift files a package does not build, and omits
+            // `override func` from `workspace/symbol`: their outlines still name what they declare (#1081, #1091).
             let decl_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
             let files = files_naming(&root.join(&subpath), engine, name, decl_deadline);
             if !files.is_empty() {
@@ -235,7 +252,7 @@ pub(crate) async fn symbol_search_across_projects(
                 )
                 .await
                 {
-                    Ok(Ok(decls)) => hits.extend(decls),
+                    Ok(Ok(decls)) => extend_unique(&mut hits, decls),
                     Ok(Err(e)) => return Err(e),
                     Err(_) => {
                         tracing::warn!(
@@ -281,8 +298,10 @@ pub(crate) fn files_naming(
         }
     }
     files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let any_decl = files.iter().any(|(d, _)| *d);
     files
         .into_iter()
+        .filter(|(d, _)| !any_decl || *d)
         .map(|(_, p)| p)
         .take(MAX_OUTLINED_FILES)
         .collect()
@@ -307,12 +326,6 @@ pub(crate) async fn declarations_in(
             continue;
         };
         collect_named(&outline, name, None, file, &mut hits)?;
-        if hits
-            .iter()
-            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
-        {
-            break;
-        }
     }
     Ok(hits)
 }

@@ -96,7 +96,7 @@ pub async fn pull_remote_files(
                     protocol_version: prod_code_protocol::PROTOCOL_VERSION,
                     supported_versions: Some(prod_code_protocol::supported_protocol_versions()),
                     capabilities: Some(prod_code_protocol::ClientCapabilities {
-                        redirects: true,
+                        redirects: false,
                         ..Default::default()
                     }),
                     client_name: "prod-code-pull".to_string(),

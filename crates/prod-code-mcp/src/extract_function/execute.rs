@@ -96,6 +96,7 @@ pub async fn extract_function(
         .find(|(p, _)| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canonical)
         .map(|(_, t)| t)
         .context("the assist did not rewrite the file")?;
+    let extracted = super::borrows::reacquire_conflicting_borrows(&text, start, end, &extracted);
 
     let rewrite = rewrite_of(&text, &extracted, start, end);
     let call = rewrite.as_ref().map(|r| r.call.clone());

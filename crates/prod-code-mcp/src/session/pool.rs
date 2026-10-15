@@ -150,7 +150,8 @@ pub(crate) async fn pooled_query_with_budget(
             let root_engine = crate::sync::expected_engine(&root);
             let belongs_to_root_engine =
                 root_engine.is_none() || file_engine.is_none() || file_engine == root_engine;
-            let engine_key = file_engine.map(|eng| format!("{}#{eng}", ws_identity.name));
+            let ws_name = ws_identity.base.as_deref().unwrap_or(&ws_identity.name);
+            let engine_key = file_engine.map(|eng| format!("{ws_name}#{eng}"));
             if let Some(ref key) = engine_key
                 && let Some(remembered) = crate::cluster::remembered_node(key)
             {
@@ -164,7 +165,7 @@ pub(crate) async fn pooled_query_with_budget(
                     crate::cluster::forget_placement(key);
                 }
             } else if belongs_to_root_engine
-                && let Some(remembered) = crate::cluster::remembered_node(&ws_identity.name)
+                && let Some(remembered) = crate::cluster::remembered_node(ws_name)
             {
                 let valid = match file_engine {
                     Some(eng) => crate::cluster::default_serves(remembered, eng).await,

@@ -154,3 +154,213 @@ fn the_placeholder_is_renamed_only_whole() {
     );
     assert!(mentions("a fun_name b", PLACEHOLDER) && !mentions("fun_names", PLACEHOLDER));
 }
+
+#[test]
+fn conflicting_field_borrow_is_reacquired_inside_extracted_helper() {
+    use super::borrows::reacquire_conflicting_borrows;
+
+    let old = "\
+struct State {
+    pool: Option<Pool>,
+    balances: Vec<u64>,
+}
+
+impl Engine {
+    pub fn apply(&self, state: &mut State, owner: usize, token: u16) -> Result<(), &'static str> {
+        let café = 1usize;
+        let pool = state.pool.as_ref().unwrap();
+        let limit = pool.limit + café;
+        if token as usize >= limit {
+            return Err(\"bad token\");
+        }
+        if state.balances.len() <= owner {
+            state.balances.resize(owner + 1, 0);
+        }
+        if !pool.currencies.contains(&token) {
+            return Err(\"unsupported currency\");
+        }
+        state.balances[owner] += 1;
+        Ok(())
+    }
+}
+";
+    let sel = "if state.balances.len() <= owner {\n            state.balances.resize(owner + 1, 0);\n        }\n        if !pool.currencies.contains(&token) {\n            return Err(\"unsupported currency\");\n        }";
+    let start = old.find(sel).unwrap();
+    let end = start + sel.len();
+    let ra_extracted = "\
+struct State {
+    pool: Option<Pool>,
+    balances: Vec<u64>,
+}
+
+impl Engine {
+    pub fn apply(&self, state: &mut State, owner: usize, token: u16) -> Result<(), &'static str> {
+        let café = 1usize;
+        let pool = state.pool.as_ref().unwrap();
+        let limit = pool.limit + café;
+        if token as usize >= limit {
+            return Err(\"bad token\");
+        }
+        self.fun_name(state, owner, pool, token)?;
+        state.balances[owner] += 1;
+        Ok(())
+    }
+
+    fn fun_name(&self, state: &mut State, owner: usize, pool: &Pool, token: u16) -> Result<(), &'static str> {
+        if state.balances.len() <= owner {
+            state.balances.resize(owner + 1, 0);
+        }
+        if !pool.currencies.contains(&token) {
+            return Err(\"unsupported currency\");
+        }
+        Ok(())
+    }
+}
+";
+    let fixed = reacquire_conflicting_borrows(old, start, end, ra_extracted);
+    assert!(
+        fixed.contains("self.fun_name(state, owner, token)?;"),
+        "call should drop conflicting borrow argument `pool`: {fixed}"
+    );
+    assert!(
+        fixed.contains("fn fun_name(&self, state: &mut State, owner: usize, token: u16)"),
+        "helper signature should drop `pool: &Pool`: {fixed}"
+    );
+    assert!(
+        fixed.contains("let pool = state.pool.as_ref().unwrap();"),
+        "helper body should re-acquire `pool`: {fixed}"
+    );
+    assert!(
+        rewrite_of(old, &fixed, start, end).is_some(),
+        "rewrite_of must still recognize the transformed extraction"
+    );
+
+    // Unproven method calls (`state.pool.as_ref()` on a user type) must NOT be duplicated, and
+    // must instead be reported as an E0502 borrow conflict.
+    let custom_old = "\
+struct State {
+    pool: CustomHolder,
+    total: u64,
+}
+
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let pool = state.pool.as_ref();
+        state.total += pool.fee;
+    }
+}
+";
+    let custom_sel = "state.total += pool.fee;";
+    let custom_start = custom_old.find(custom_sel).unwrap();
+    let custom_end = custom_start + custom_sel.len();
+    let custom_extracted = "\
+struct State {
+    pool: CustomHolder,
+    total: u64,
+}
+
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let pool = state.pool.as_ref();
+        self.fun_name(state, pool);
+    }
+
+    fn fun_name(&self, state: &mut State, pool: &Pool) {
+        state.total += pool.fee;
+    }
+}
+";
+    assert_eq!(
+        reacquire_conflicting_borrows(custom_old, custom_start, custom_end, custom_extracted),
+        custom_extracted,
+        "unproven method call `state.pool.as_ref()` must not be duplicated in helper"
+    );
+    let custom_fn_span = (
+        custom_extracted.find("fn fun_name").unwrap(),
+        custom_extracted.len(),
+    );
+    assert!(
+        !super::borrows::conflicting_borrow_captures(
+            custom_old,
+            custom_start,
+            custom_end,
+            custom_extracted,
+            Some(custom_fn_span)
+        )
+        .is_empty(),
+        "unproven borrow capture must report E0502 conflict"
+    );
+
+    // A single local `struct Option<T>` shadows the prelude's `std::option::Option` and must not
+    // be assumed to have pure `as_ref`/`unwrap` methods on the otherwise-identical `old`/`ra_extracted` fixture.
+    let shadowed_opt_old = format!("struct Option<T>(T);\n{old}");
+    let shadowed_opt_extracted = format!("struct Option<T>(T);\n{ra_extracted}");
+    let shadowed_opt_start = shadowed_opt_old.find(sel).unwrap();
+    let shadowed_opt_end = shadowed_opt_start + sel.len();
+    assert!(
+        rewrite_of(
+            &shadowed_opt_old,
+            &shadowed_opt_extracted,
+            shadowed_opt_start,
+            shadowed_opt_end
+        )
+        .is_some(),
+        "shadowed Option fixture must be a valid rewrite_of extraction"
+    );
+    assert_eq!(
+        reacquire_conflicting_borrows(
+            &shadowed_opt_old,
+            shadowed_opt_start,
+            shadowed_opt_end,
+            &shadowed_opt_extracted
+        ),
+        shadowed_opt_extracted,
+        "local `struct Option<T>` must prevent assuming `std::option::Option`"
+    );
+
+    // Owned or effectful values derived from `state` (`let amount = state.next();`) must NEVER be
+    // re-evaluated inside the helper or reported as E0502 borrow conflicts.
+    let owned_old = "\
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let amount = state.next();
+        state.total += amount;
+    }
+}
+";
+    let owned_sel = "state.total += amount;";
+    let owned_start = owned_old.find(owned_sel).unwrap();
+    let owned_end = owned_start + owned_sel.len();
+    let owned_extracted = "\
+impl Engine {
+    pub fn add(&self, state: &mut State) {
+        let amount = state.next();
+        self.fun_name(state, amount);
+    }
+
+    fn fun_name(&self, state: &mut State, amount: u64) {
+        state.total += amount;
+    }
+}
+";
+    assert_eq!(
+        reacquire_conflicting_borrows(owned_old, owned_start, owned_end, owned_extracted),
+        owned_extracted,
+        "effectful owned binding must not be re-evaluated in helper"
+    );
+    let fn_span = (
+        owned_extracted.find("fn fun_name").unwrap(),
+        owned_extracted.len(),
+    );
+    assert!(
+        super::borrows::conflicting_borrow_captures(
+            owned_old,
+            owned_start,
+            owned_end,
+            owned_extracted,
+            Some(fn_span)
+        )
+        .is_empty(),
+        "owned value must not emit spurious E0502"
+    );
+}

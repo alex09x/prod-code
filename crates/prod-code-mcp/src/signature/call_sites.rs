@@ -40,11 +40,18 @@ pub fn call_sites(root: &Path, refs: &[Reference]) -> Result<Vec<CallSite>> {
         if let Some(args) = call_arguments(text, offset).with_context(|| {
             format!("the arguments of the call at {at} could not be read; nothing was written")
         })? {
-            out.push(CallSite { at, args });
+            let typed_locals = typed_locals_before(text, offset);
+            out.push(CallSite {
+                at,
+                args,
+                typed_locals,
+            });
         }
     }
     Ok(out)
 }
+
+pub use crate::signature::util::{normalize_type_spelling, typed_locals_before};
 
 /// The arguments of the call whose callee's name starts at `at` (`f(…)`, `recv.f(…)`,
 /// `Type::f::<T>(…)`), split at their top-level commas. `Ok(None)` when the name is not called

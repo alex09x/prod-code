@@ -40,6 +40,7 @@ fn sites(text: &str, name: &str) -> Vec<CallSite> {
             call_arguments(text, at).unwrap().map(|args| CallSite {
                 at: line_col_at(text, at).unwrap().0.to_string(),
                 args,
+                typed_locals: std::collections::BTreeMap::new(),
             })
         })
         .collect()
@@ -256,4 +257,71 @@ fn a_reorder_or_removal_that_changes_effects_or_drops_is_named() {
         &sites("eff_pair(a)", "eff_pair"),
     );
     assert!(hazards[0].contains("passes 1 argument(s)"), "{hazards:?}");
+
+    // #1089: A local bound with the exact reference type (`let v: &[u8] = ...;`) is known not to
+    // coerce via `Deref`, so removing or reordering the parameter does not trigger REF_COERCION.
+    let slice_params = parse_declared("guard_raw: &[u8], body_raw: &[u8]").1;
+    let slice_facts = confirmed(&slice_params);
+    let mut typed_site = sites("sections(guard_raw, &sections.body_raw)", "sections");
+    typed_site[0]
+        .typed_locals
+        .insert("guard_raw".to_string(), "&[u8]".to_string());
+    assert!(
+        effect_hazards(
+            "sections",
+            &slice_params,
+            &slice_facts,
+            false,
+            &[Some(1)],
+            &typed_site
+        )
+        .is_empty(),
+        "an explicitly typed local matching the reference parameter type is safe to remove"
+    );
+
+    let scoped = "fn f() {\n    let v = &wrapper;\n    { let v: &str = \"\"; }\n    // let c: &str = \"\";\n    let s: &str = \"\";\n    let s = &wrapper;\n    let st: &str = \"\";\n    let Holder { st } = holder;\n    let lp: &str = \"\";\n    let café: &str = \"ok\";\n    for lp in items {\n        let v: &str = consume(v, s, st, lp, café);\n    }\n}\n";
+    let call_at = scoped.find("consume").unwrap();
+    let locals = crate::signature::call_sites::typed_locals_before(scoped, call_at);
+    assert!(
+        !locals.contains_key("v")
+            && !locals.contains_key("c")
+            && !locals.contains_key("s")
+            && !locals.contains_key("st")
+            && !locals.contains_key("lp")
+            && locals.get("café").map(String::as_str) == Some("&str"),
+        "closed blocks, comments, pre-init let, struct destructuring, and for-loop shadows must not leak into typed_locals: {locals:?}"
+    );
+}
+
+#[test]
+fn rewrite_file_calls_handles_qualified_defaults_and_associated_calls() {
+    use crate::signature::rewrite::rewrite_file_calls;
+
+    // #1085: adding a parameter with a qualified default expression `&std::cell::RefCell::new(None)`
+    let src = "fn caller() {\n    let x = compute(1, 2);\n}\n";
+    let rewritten = rewrite_file_calls(
+        src,
+        "compute",
+        false,
+        2,
+        &[Some(0), Some(1), None],
+        &["&std::cell::RefCell::new(None)"],
+        &[(2, 13)],
+    )
+    .expect("call should be rewritten");
+    assert_eq!(
+        rewritten,
+        "fn caller() {\n    let x = compute(1, 2, &std::cell::RefCell::new(None));\n}\n"
+    );
+
+    // #1086: removing a parameter from an associated function called as `Decoder::sections(...)`
+    let assoc_src =
+        "fn run() {\n    let out = Decoder::sections(guard_raw, &sections.body_raw);\n}\n";
+    let assoc_rewritten =
+        rewrite_file_calls(assoc_src, "sections", false, 2, &[Some(1)], &[], &[(2, 24)])
+            .expect("associated call should be rewritten");
+    assert_eq!(
+        assoc_rewritten,
+        "fn run() {\n    let out = Decoder::sections(&sections.body_raw);\n}\n"
+    );
 }

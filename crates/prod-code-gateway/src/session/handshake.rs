@@ -69,8 +69,9 @@ pub async fn handle_handshake(
     let engine_kind = detect::resolve_engine(&engine_root, req.preferred_engine.as_deref());
     let engine = engine_kind.as_str();
 
-    if let Some(()) =
-        check_cluster_redirects(&req, state, engine, &server_workspace, &mut framed).await?
+    if req.client_name != "prod-code-pull"
+        && let Some(()) =
+            check_cluster_redirects(&req, state, engine, &server_workspace, &mut framed).await?
     {
         return Ok(());
     }

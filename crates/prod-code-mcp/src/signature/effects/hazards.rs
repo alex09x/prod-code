@@ -304,7 +304,22 @@ pub fn effect_hazards(
         let kinds: Vec<ArgKind> = own
             .iter()
             .enumerate()
-            .map(|(i, a)| classify_arg(a, fact(i)))
+            .map(|(i, a)| {
+                let param_ty =
+                    split_at_top_level(&declared[i].raw, ':').map_or("", |(_, ty)| ty.trim());
+                let code = crate::signature::call_sites::blank_comments(a);
+                let trimmed = code.as_deref().unwrap_or(a).trim();
+                let exact_typed_local = crate::signature::parse::is_ident(trimmed)
+                    && !param_ty.is_empty()
+                    && call.typed_locals.get(trimmed).is_some_and(|bound| {
+                        bound == &crate::signature::call_sites::normalize_type_spelling(param_ty)
+                    });
+                if exact_typed_local {
+                    ArgKind::Place
+                } else {
+                    classify_arg(a, fact(i))
+                }
+            })
             .collect();
         for &d in &removed {
             let param = &declared[d];

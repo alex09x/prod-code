@@ -169,20 +169,56 @@ pub(crate) fn go_module_root(root: &Path, source: &Path) -> Result<PathBuf> {
 }
 
 pub(crate) fn refuse_linked_sources(module: &Path) -> Result<()> {
+    fn is_ignored_dir_name(name: &str) -> bool {
+        name.starts_with('.')
+            || name.starts_with('_')
+            || matches!(name, "testdata" | "vendor" | "node_modules" | "target")
+            || name.ends_with(".framework")
+            || name.ends_with(".xcframework")
+    }
+
+    fn dir_contains_go(dir: &Path, depth: usize) -> bool {
+        if depth > 16 {
+            return true;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return true;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "go") {
+                return true;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && is_ignored_dir_name(name)
+            {
+                continue;
+            }
+            if path.is_dir() && dir_contains_go(&path, depth + 1) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn visit(directory: &Path) -> Result<Option<PathBuf>> {
         for entry in std::fs::read_dir(directory)
             .with_context(|| format!("cannot inspect Go module {}", directory.display()))?
         {
             let entry = entry.context("cannot inspect a Go module entry")?;
             let path = entry.path();
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
-            }
             let metadata = std::fs::symlink_metadata(&path)
                 .with_context(|| format!("cannot inspect {}", path.display()))?;
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && !metadata.file_type().is_symlink()
+                && is_ignored_dir_name(name)
+            {
+                continue;
+            }
             if metadata.file_type().is_symlink() {
                 let hides_go = path.extension().is_some_and(|extension| extension == "go")
-                    || std::fs::metadata(&path).is_ok_and(|target| target.is_dir());
+                    || std::fs::metadata(&path)
+                        .is_ok_and(|target| target.is_dir() && dir_contains_go(&path, 0));
                 if hides_go {
                     return Ok(Some(path));
                 }
@@ -201,4 +237,46 @@ pub(crate) fn refuse_linked_sources(module: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refuse_linked_sources;
+
+    #[cfg(unix)]
+    #[test]
+    fn non_go_framework_and_dotbuild_symlinks_do_not_block_safe_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("go.mod"), "module example.com/m\n").unwrap();
+        std::fs::write(root.join("main.go"), "package main\n").unwrap();
+
+        let build_dir = root.join("macos/.build/artifacts/WebRTC.xcframework/Versions/A/Resources");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::os::unix::fs::symlink(
+            "Versions/A/Resources",
+            root.join("macos/.build/artifacts/WebRTC.xcframework/Resources"),
+        )
+        .unwrap();
+
+        let ext_non_go = dir.path().join("external_assets");
+        std::fs::create_dir_all(&ext_non_go).unwrap();
+        std::fs::write(ext_non_go.join("info.plist"), "<plist/>").unwrap();
+        std::os::unix::fs::symlink(&ext_non_go, root.join("assets_link")).unwrap();
+
+        assert!(
+            refuse_linked_sources(root).is_ok(),
+            "non-Go symlinks and .build/.xcframework artifacts should be ignored"
+        );
+
+        let ext_go = dir.path().join("external_go");
+        std::fs::create_dir_all(&ext_go).unwrap();
+        std::fs::write(ext_go.join("hidden.go"), "package hidden\n").unwrap();
+        std::os::unix::fs::symlink(&ext_go, root.join("pkg_link")).unwrap();
+
+        assert!(
+            refuse_linked_sources(root).is_err(),
+            "directory symlink containing .go sources must still be refused"
+        );
+    }
 }

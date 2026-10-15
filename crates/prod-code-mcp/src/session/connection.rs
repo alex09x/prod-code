@@ -146,7 +146,14 @@ impl LspSession {
                         .with_context(|| {
                             format!("redirect target resolved to no addresses: {target_addr}")
                         })?;
-                    crate::cluster::remember_placement(&identity.name, remote);
+                    let ws_name = identity.base.as_deref().unwrap_or(&identity.name);
+                    let placement_key = match engine {
+                        Some(eng) if engine != crate::sync::expected_engine(&root) => {
+                            format!("{ws_name}#{eng}")
+                        }
+                        _ => ws_name.to_string(),
+                    };
+                    crate::cluster::remember_placement(&placement_key, remote);
                     continue;
                 }
                 Some(Ok(WireMessage::Disconnect { reason })) => {

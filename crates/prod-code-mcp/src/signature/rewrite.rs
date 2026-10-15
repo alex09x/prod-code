@@ -259,3 +259,136 @@ pub fn attribute(
     }
     (unmatched, unexpected)
 }
+
+/// Directly rewrites call sites in `old` at the analyzer-reported reference positions `spots`
+/// when `rust-analyzer` structural search-and-replace cannot parse the rule (for example,
+/// qualified paths in default argument expressions or associated function calls without `self`).
+pub fn rewrite_file_calls(
+    old: &str,
+    name: &str,
+    has_receiver: bool,
+    arity: usize,
+    plan_args: &[Option<usize>],
+    adds: &[&str],
+    spots: &[(u32, u32)],
+) -> Option<String> {
+    let code = blank_comments(old);
+    let mut offsets: Vec<usize> = spots
+        .iter()
+        .filter_map(|&(l, c)| offset_of(old, l, c))
+        .filter(|&o| names_at(old, o, name) && !in_use_or_comment(old, code.as_deref(), o))
+        .collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    if offsets.is_empty() {
+        return None;
+    }
+
+    let mut out = old.to_string();
+    let mut changed = false;
+    // Rewrite from rightmost/innermost to leftmost/outermost so nested calls inside an outer
+    // call's arguments are rewritten before the outer call splits its own arguments.
+    for o in offsets.into_iter().rev() {
+        let Ok(Some(open)) = call_open(&out, o) else {
+            continue;
+        };
+        let Some(close) = argument_list_end(&out, open) else {
+            continue;
+        };
+        let Some(call_args) = split_arguments(&out, open) else {
+            continue;
+        };
+        let is_dot_call = out[..o].trim_end().ends_with('.');
+        let (ufcs_recv, source_args): (Option<&str>, &[String]) =
+            if has_receiver && !is_dot_call && call_args.len() == arity + 1 {
+                (Some(call_args[0].trim()), &call_args[1..])
+            } else if call_args.len() == arity {
+                (None, &call_args[..])
+            } else {
+                continue;
+            };
+        if adds.is_empty() && crate::signature::plan::reorders_to_itself(source_args, plan_args) {
+            continue;
+        }
+        let mut added = adds.iter();
+        let mut new_args: Vec<String> = Vec::with_capacity(plan_args.len() + 1);
+        if let Some(recv) = ufcs_recv {
+            new_args.push(recv.to_string());
+        }
+        let mut valid = true;
+        for slot in plan_args {
+            match slot {
+                Some(idx) => {
+                    if let Some(arg) = source_args.get(*idx) {
+                        new_args.push(arg.trim().to_string());
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                }
+                None => {
+                    new_args.push(
+                        added
+                            .next()
+                            .copied()
+                            .unwrap_or("Default::default()")
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        if !valid {
+            continue;
+        }
+        out.replace_range(open + 1..close - 1, &new_args.join(", "));
+        changed = true;
+    }
+    changed.then_some(out)
+}
+
+/// Fills in any files from `refs` where `structural_replace` failed or left call sites unmatched.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_fallback_rewrites(
+    root: &std::path::Path,
+    file: &std::path::Path,
+    file_text: &str,
+    name: &str,
+    has_receiver: bool,
+    arity: usize,
+    plan_args: &[Option<usize>],
+    adds: &[&str],
+    refs: &[(std::path::PathBuf, u32, u32)],
+    ssr_ok: bool,
+    rewritten: &mut std::collections::BTreeMap<std::path::PathBuf, String>,
+) -> anyhow::Result<()> {
+    use crate::signature::{
+        plan::reorders_to_itself,
+        util::{display, read_caller},
+    };
+    let mut ref_spots: std::collections::BTreeMap<std::path::PathBuf, Vec<(u32, u32)>> =
+        std::collections::BTreeMap::new();
+    for (path, l, c) in refs {
+        ref_spots.entry(path.clone()).or_default().push((*l, *c));
+    }
+    let order_needs = |call: &[String], _: bool| !reorders_to_itself(call, plan_args);
+    for (path, spots) in ref_spots {
+        let old = if path == file {
+            file_text.to_string()
+        } else {
+            read_caller(&path)?
+        };
+        let needs_fallback = !ssr_ok
+            || rewritten.get(&path).is_none_or(|cur| {
+                !attribute(&display(root, &path), &old, cur, name, &spots, &order_needs)
+                    .0
+                    .is_empty()
+            });
+        if needs_fallback
+            && let Some(c) =
+                rewrite_file_calls(&old, name, has_receiver, arity, plan_args, adds, &spots)
+        {
+            rewritten.insert(path, c);
+        }
+    }
+    Ok(())
+}
