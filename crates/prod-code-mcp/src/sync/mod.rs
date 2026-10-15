@@ -31,7 +31,7 @@ pub use cache::{
 };
 pub use engine::{
     engine_for_file, engine_project, expected_engine, is_in_dependency_dir, macos_only_cgo,
-    other_checkout,
+    manifest_engine_at, other_checkout,
 };
 pub use filter_path::{is_filesystem_root, is_fixture_path, is_synced_git_path};
 pub use plan::{commit_workspace_sync, prepare_workspace_sync, prepare_workspace_sync_for};

@@ -88,7 +88,15 @@ pub(crate) fn source_files(dir: &Path) -> impl Iterator<Item = std::path::PathBu
 /// A source file of the project at `dir` in its main language (shortest path under `src`
 /// first), used to make an LSP server load the project before a workspace-level query.
 pub(crate) fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
-    let (_, language) = crate::sync::engine_project(dir, dir);
+    let project_root = dir
+        .ancestors()
+        .find(|ancestor| crate::sync::manifest_engine_at(ancestor).is_some())
+        .or_else(|| {
+            dir.ancestors()
+                .find(|ancestor| crate::sync::expected_engine(ancestor).is_some())
+        })
+        .unwrap_or(dir);
+    let (dir_subpath, language) = crate::sync::engine_project(project_root, dir);
     let exts: &[&str] = match language? {
         "rust" => &["rs"],
         "go" => &["go"],
@@ -132,7 +140,7 @@ pub(crate) fn representative_source_file(dir: &Path) -> Option<std::path::PathBu
             // A file of a nested project that is its own (another language, or a crate the
             // root workspace leaves out) would open the session in that project (#335).
             if best.as_ref().is_none_or(|(a, b, _)| key < (*a, *b))
-                && crate::sync::engine_project(dir, &path).0.is_none()
+                && crate::sync::engine_project(project_root, &path).0 == dir_subpath
             {
                 best = Some((key.0, key.1, path));
             }

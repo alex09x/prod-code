@@ -161,6 +161,8 @@ pub async fn apply_sync_probe(
         &req.client_workspace_root,
         req.base_workspace_name.as_deref(),
     );
+    let sync_lock = crate::sync::server_workspace_sync_lock(&target);
+    let _sync_guard = sync_lock.lock().await;
     let fresh = !target.exists()
         || std::fs::read_dir(&target)
             .map(|mut d| d.next().is_none())
@@ -272,7 +274,6 @@ pub async fn apply_sync_probe(
         }
     }
     let _ = std::fs::create_dir_all(&target);
-    workspace::touch_last_used(&target);
 
     let root = target.clone();
     let stamps = req.files;
@@ -323,6 +324,9 @@ pub async fn apply_sync_probe(
     }
     missing.sort();
     missing.dedup();
+    if !fresh || seeded || missing.is_empty() {
+        workspace::touch_last_used(&target);
+    }
 
     if !deleted.is_empty()
         && let Some(ws) = workspace_manager.get_loaded(&target).await

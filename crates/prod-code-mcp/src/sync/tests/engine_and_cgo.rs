@@ -322,3 +322,66 @@ fn test_starlark_does_not_misclassify_workspace_or_build_directories() {
     std::fs::write(temp2.path().join("WORKSPACE"), "").unwrap();
     assert_eq!(expected_engine(temp2.path()), Some("starlark"));
 }
+
+#[test]
+fn go_package_with_embedded_schema_sql_stays_in_root_go_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(root.join("go.mod"), "module example.com/app\n\ngo 1.22\n").unwrap();
+    let pkg = root.join("internal/voice/pluginstore");
+    let sibling = root.join("internal/voice/service");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(pkg.join("schema.sql"), "CREATE TABLE plugins (id TEXT);\n").unwrap();
+    std::fs::write(
+        pkg.join("store.go"),
+        "package pluginstore\n\ntype Store struct{}\n",
+    )
+    .unwrap();
+    std::fs::write(sibling.join("service.go"), "package service\n").unwrap();
+
+    // Directory hints for both the package and its parent directory must remain with the Go module (#1097).
+    assert_eq!(
+        engine_project(root, Path::new("internal/voice/pluginstore")),
+        (None, Some("go"))
+    );
+    assert_eq!(
+        engine_project(root, Path::new("internal/voice")),
+        (None, Some("go"))
+    );
+    assert_eq!(
+        crate::cluster::nested_engine(root, "internal/voice/pluginstore"),
+        None
+    );
+    assert_eq!(crate::cluster::nested_engine(root, "internal/voice"), None);
+    assert_eq!(
+        crate::cluster::routing::engine_for_path(root, "internal/voice/pluginstore"),
+        Some("go")
+    );
+    assert_eq!(
+        crate::cluster::routing::engine_for_path(root, "internal/voice"),
+        Some("go")
+    );
+    assert_eq!(
+        crate::tools::symbols::nested_projects::representative_source_file(&pkg),
+        Some(pkg.join("store.go"))
+    );
+    assert_eq!(
+        crate::tools::symbols::nested_projects::representative_source_file(
+            &root.join("internal/voice")
+        ),
+        Some(sibling.join("service.go"))
+    );
+
+    // Vue and Svelte projects with JS/TS companions must keep their component engine.
+    let vue_dir = root.join("web/vue-app");
+    std::fs::create_dir_all(&vue_dir).unwrap();
+    std::fs::write(vue_dir.join("package.json"), "{}\n").unwrap();
+    std::fs::write(vue_dir.join("App.vue"), "<template></template>\n").unwrap();
+    std::fs::write(vue_dir.join("main.ts"), "export {};\n").unwrap();
+    assert_eq!(expected_engine(&vue_dir), Some("vue"));
+    assert_eq!(
+        engine_project(root, Path::new("web/vue-app/App.vue")),
+        (Some("web/vue-app".to_string()), Some("vue"))
+    );
+}

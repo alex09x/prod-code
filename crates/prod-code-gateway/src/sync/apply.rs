@@ -11,6 +11,23 @@
 use crate::sync::file_write::write_synced_file_for_workspace;
 use crate::*;
 
+static WORKSPACE_SYNC_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn server_workspace_sync_lock(
+    server_workspace: &std::path::Path,
+) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    WORKSPACE_SYNC_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(server_workspace.to_path_buf())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 pub async fn apply_sync(
     storage_root: &std::path::Path,
     workspace_manager: &WorkspaceManager,
@@ -26,6 +43,13 @@ pub async fn apply_sync_with_metrics(
     req: SyncRequest,
 ) -> SyncResponse {
     let start = Instant::now();
+    let target = workspace::server_workspace_path(
+        storage_root,
+        &req.client_workspace_root,
+        req.base_workspace_name.as_deref(),
+    );
+    let sync_lock = server_workspace_sync_lock(&target);
+    let _sync_guard = sync_lock.lock().await;
     let server_workspace = workspace::resolve_server_workspace(
         storage_root,
         &req.client_workspace_root,
@@ -215,5 +239,56 @@ pub async fn apply_sync_with_metrics(
         server_workspace_root: server_workspace.to_string_lossy().to_string(),
         workspace_was_fresh,
         stale_paths,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fresh_unseeded_probe_defers_last_used_marker_until_upload() {
+        let storage = tempfile::tempdir().unwrap();
+        let wm = WorkspaceManager::new();
+        let probe_resp = crate::sync::apply_sync_probe(
+            storage.path(),
+            &wm,
+            SyncProbeRequest {
+                client_workspace_root: "/tmp/client-go-repo".to_string(),
+                base_workspace_name: Some("client-go-repo".to_string()),
+                seed_from: None,
+                files: vec![FileStamp {
+                    relative_path: "go.mod".to_string(),
+                    size: 24,
+                    hash: 123,
+                }],
+            },
+        )
+        .await;
+        assert_eq!(probe_resp.missing, vec!["go.mod".to_string()]);
+        let ws_dir = std::path::PathBuf::from(&probe_resp.server_workspace_root);
+        assert!(
+            !ws_dir.join(workspace::LAST_USED_MARKER).exists(),
+            "fresh unseeded workspace with missing files must not be marked ready before upload (#1098)"
+        );
+
+        let sync_resp = apply_sync(
+            storage.path(),
+            &wm,
+            SyncRequest {
+                client_workspace_root: "/tmp/client-go-repo".to_string(),
+                base_workspace_name: Some("client-go-repo".to_string()),
+                clean_others: false,
+                files: vec![FileDelta {
+                    relative_path: "go.mod".to_string(),
+                    content: Some(b"module example.com/app\n".to_vec()),
+                    is_executable: false,
+                }],
+            },
+        )
+        .await;
+        assert!(sync_resp.workspace_was_fresh);
+        assert!(ws_dir.join(workspace::LAST_USED_MARKER).exists());
+        assert!(ws_dir.join("go.mod").is_file());
     }
 }
