@@ -201,6 +201,7 @@ pub(crate) fn rewrite_caller_imports_checked(
                     caller_text,
                     decl_name,
                     &tgt_pkg,
+                    caller_file,
                     target_file,
                     root,
                 )?;

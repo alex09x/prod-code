@@ -329,8 +329,20 @@ fn go_cross_package_move_qualifies_exported_constant_value_references() {
     assert!(rewritten.contains("return []byte(b.Page)"));
     assert_eq!(note.as_deref(), Some("imported \"example.com/m/b\""));
 
+    let types_dir = temp.path().join("types");
+    std::fs::create_dir_all(&types_dir).unwrap();
+    std::fs::write(
+        a_dir.join("types.go"),
+        "package a\n\ntype Headers map[string]string\n",
+    )
+    .unwrap();
+    std::fs::write(
+        types_dir.join("types.go"),
+        "package types\n\ntype Table map[string]string\ntype Config struct { Page string }\n",
+    )
+    .unwrap();
     let (sib_rewritten, sib_note) = rewrite_caller_imports(
-        "package a\n\nfunc Other() string {\n\treturn Page\n}\n",
+        "package a\n\nimport \"example.com/m/types\"\n\nfunc Other() string {\n\t_ = Headers{Page: \"x\"}\n\t_ = types.Table{Page: \"y\"}\n\t_ = types.Config{Page: Page}\n\treturn Page\n}\n",
         "Page",
         &sibling,
         &source,
@@ -340,6 +352,9 @@ fn go_cross_package_move_qualifies_exported_constant_value_references() {
     )
     .unwrap();
     assert!(sib_rewritten.contains("import \"example.com/m/b\""));
+    assert!(sib_rewritten.contains("Headers{b.Page: \"x\"}"));
+    assert!(sib_rewritten.contains("types.Table{b.Page: \"y\"}"));
+    assert!(sib_rewritten.contains("types.Config{Page: b.Page}"));
     assert!(sib_rewritten.contains("return b.Page"));
     assert_eq!(sib_note, "imported \"example.com/m/b\"");
 }

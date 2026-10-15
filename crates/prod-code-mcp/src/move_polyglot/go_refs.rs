@@ -8,6 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use std::path::Path;
+
 use anyhow::Result;
 
 use super::specifiers::is_ident;
@@ -94,30 +96,6 @@ fn is_short_var_decl_lhs(after_on_line: &str) -> bool {
     }
 }
 
-fn is_named_map_or_slice_type(source_text: &str, type_name: &str) -> bool {
-    if type_name.is_empty() || !type_name.chars().all(is_ident) {
-        return false;
-    }
-    let is_map_or_slice_rhs = |rhs: &str| {
-        let rest = rhs.trim_start();
-        let rest = rest.strip_prefix('=').map_or(rest, str::trim_start);
-        rest.starts_with("map[") || rest.starts_with('[')
-    };
-    let needle = format!("type {type_name}");
-    if source_text.match_indices(&needle).any(|(idx, _)| {
-        let after = &source_text[idx + needle.len()..];
-        !after.chars().next().is_some_and(is_ident) && is_map_or_slice_rhs(after)
-    }) {
-        return true;
-    }
-    source_text.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.strip_prefix(type_name).is_some_and(|after| {
-            !after.chars().next().is_some_and(is_ident) && is_map_or_slice_rhs(after)
-        })
-    })
-}
-
 fn composite_literal_type(before_brace: &str) -> &str {
     let trimmed = before_brace.trim_end();
     let mut depth_brace = 0i32;
@@ -161,6 +139,8 @@ fn is_go_value_before_colon(
     source_text: &str,
     before_on_line: &str,
     enclosing: Option<(char, usize)>,
+    source_file: Option<&Path>,
+    root: Option<&Path>,
 ) -> bool {
     if before_on_line.starts_with("case ") || before_on_line.contains("{ case ") {
         return true;
@@ -171,61 +151,64 @@ fn is_go_value_before_colon(
             let lit_type = composite_literal_type(&source_text[..brace_idx]);
             lit_type.starts_with("map[")
                 || lit_type.starts_with('[')
-                || is_named_map_or_slice_type(source_text, lit_type)
+                || super::go_imports::is_named_map_or_slice_type(
+                    source_text,
+                    lit_type,
+                    source_file,
+                    root,
+                )
         }
         _ => false,
     }
 }
 
-fn last_code_char(segment: &str) -> Option<char> {
-    let mut chars = segment.chars().peekable();
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut line_comment = false;
-    let mut block_comment = false;
-    let mut last = None;
-    while let Some(ch) = chars.next() {
-        if line_comment {
-            if ch == '\n' {
-                line_comment = false;
+pub(crate) fn find_go_type_rhs<'a>(text: &'a str, type_name: &str) -> Option<&'a str> {
+    let skip_type_params = |after: &'a str| -> &'a str {
+        let trimmed = after.trim_start();
+        if let Some(inner) = trimmed.strip_prefix('[')
+            && let Some(close) = inner.find(']')
+        {
+            let rest = &inner[close + 1..];
+            if rest.starts_with(char::is_whitespace) || rest.trim_start().starts_with('=') {
+                return rest;
             }
+        }
+        trimmed
+    };
+    let needle = format!("type {type_name}");
+    for (idx, _) in text.match_indices(&needle) {
+        if (idx > 0 && text[..idx].chars().next_back().is_some_and(is_ident))
+            || is_in_go_string_or_comment(text, idx)
+        {
             continue;
         }
-        if block_comment {
-            if ch == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                block_comment = false;
-            }
-            continue;
-        }
-        if let Some(delim) = quote {
-            if delim == '`' {
-                if ch == '`' {
-                    quote = None;
-                }
-            } else if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == delim {
-                quote = None;
-            }
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'/') {
-            chars.next();
-            line_comment = true;
-        } else if ch == '/' && chars.peek() == Some(&'*') {
-            chars.next();
-            block_comment = true;
-        } else if matches!(ch, '\'' | '"' | '`') {
-            quote = Some(ch);
-            last = Some(ch);
-        } else if !ch.is_whitespace() {
-            last = Some(ch);
+        let after = &text[idx + needle.len()..];
+        if !after.chars().next().is_some_and(is_ident) {
+            return Some(skip_type_params(after));
         }
     }
-    last
+    let mut line_offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let at = line_offset + (line.len() - trimmed.len());
+        line_offset += line.len();
+        if let Some(after) = trimmed.strip_prefix(type_name)
+            && !after.chars().next().is_some_and(is_ident)
+            && let (false, Some(('(', paren_idx))) = scan_go_prefix(text, at)
+            && text[..paren_idx].trim_end().ends_with("type")
+        {
+            return Some(skip_type_params(after));
+        }
+    }
+    None
+}
+
+fn last_code_char(segment: &str) -> Option<char> {
+    segment
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(l).trim_end())
+        .rfind(|l| !l.is_empty())
+        .and_then(|l| l.chars().next_back())
 }
 
 fn is_go_func_param_name(source_text: &str, open_paren: usize, at: usize, end: usize) -> bool {
@@ -265,10 +248,21 @@ fn is_go_func_param_name(source_text: &str, open_paren: usize, at: usize, end: u
             .is_some_and(|c| c.is_alphabetic() || c == '_')
 }
 
+#[cfg(test)]
 pub(crate) fn rewrite_go_call_sites(
     source_text: &str,
     decl_name: &str,
     target_pkg: &str,
+) -> Result<(String, usize)> {
+    rewrite_go_call_sites_in_context(source_text, decl_name, target_pkg, None, None)
+}
+
+pub(crate) fn rewrite_go_call_sites_in_context(
+    source_text: &str,
+    decl_name: &str,
+    target_pkg: &str,
+    source_file: Option<&Path>,
+    root: Option<&Path>,
 ) -> Result<(String, usize)> {
     if decl_name.is_empty() {
         return Ok((source_text.to_string(), 0));
@@ -349,7 +343,7 @@ pub(crate) fn rewrite_go_call_sites(
 
         if after.starts_with(':')
             && !after.starts_with(":=")
-            && !is_go_value_before_colon(source_text, before_on_line, enclosing)
+            && !is_go_value_before_colon(source_text, before_on_line, enclosing, source_file, root)
         {
             continue;
         }

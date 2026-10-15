@@ -334,6 +334,7 @@ pub fn update_source_imports(
                     source_text,
                     decl_name,
                     &tgt_pkg,
+                    source_file,
                     target_file,
                     root,
                 )?;
