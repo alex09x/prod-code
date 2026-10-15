@@ -205,29 +205,21 @@ fn resolve_go_import_path_dir(
         if import_path == module {
             return Some(mod_dir);
         }
-        if let Some(rel) = import_path.strip_prefix(&format!("{module}/")) {
-            let candidate = mod_dir.join(rel);
-            if candidate.is_dir() {
-                return Some(candidate);
-            }
-        }
+        let candidate = mod_dir.join(import_path.strip_prefix(&format!("{module}/"))?);
+        return candidate.is_dir().then_some(candidate);
     }
-    if let Some(r) = root {
-        for cand in [r.join(import_path), r.join(import_path.rsplit('/').next()?)] {
-            if cand.is_dir() {
-                return Some(cand);
-            }
-        }
-    }
-    None
+    let r = root?;
+    [r.join(import_path), r.join(import_path.rsplit('/').next()?)]
+        .into_iter()
+        .find(|cand| cand.is_dir())
 }
 
-fn resolve_imported_go_package_dir(
-    source_text: &str,
+fn resolve_imported_go_package<'a>(
+    source_text: &'a str,
     pkg_alias: &str,
     source_file: Option<&Path>,
     root: Option<&Path>,
-) -> Option<PathBuf> {
+) -> Option<(&'a str, Option<PathBuf>)> {
     let mut in_group = false;
     for line in source_text.lines() {
         let trimmed = line.trim();
@@ -251,19 +243,23 @@ fn resolve_imported_go_package_dir(
         };
         if let Some(explicit) = alias {
             if explicit == pkg_alias {
-                return resolve_go_import_path_dir(import_path, source_file, root);
+                return Some((
+                    import_path,
+                    resolve_go_import_path_dir(import_path, source_file, root),
+                ));
             }
             continue;
         }
         let dir = resolve_go_import_path_dir(import_path, source_file, root);
-        if import_path.rsplit('/').next() == Some(pkg_alias) {
-            if dir.is_some() {
-                return dir;
+        let matches_pkg = match dir.as_deref() {
+            Some(d) => {
+                go_files_in_dir(d, true).any(|p| get_go_package(&p) == pkg_alias)
+                    || import_path.rsplit('/').next() == Some(pkg_alias)
             }
-        } else if let Some(ref d) = dir
-            && go_files_in_dir(d, true).any(|p| get_go_package(&p) == pkg_alias)
-        {
-            return dir;
+            None => import_path.rsplit('/').next() == Some(pkg_alias),
+        };
+        if matches_pkg {
+            return Some((import_path, dir));
         }
     }
     None
@@ -303,15 +299,20 @@ fn resolve_type_is_map_or_slice(
         {
             return false;
         }
+        let Some((import_path, pkg_dir)) =
+            resolve_imported_go_package(source_text, pkg_alias, source_file, root)
+        else {
+            return false;
+        };
         if matches!(
-            (pkg_alias, type_name),
-            ("http" | "mime", "Header") | ("url", "Values") | ("textproto", "MIMEHeader")
+            (import_path, type_name),
+            ("net/http" | "mime/multipart", "Header")
+                | ("net/url", "Values")
+                | ("net/textproto", "MIMEHeader")
         ) {
             return true;
         }
-        let Some(pkg_dir) =
-            resolve_imported_go_package_dir(source_text, pkg_alias, source_file, root)
-        else {
+        let Some(pkg_dir) = pkg_dir else {
             return false;
         };
         return go_files_in_dir(&pkg_dir, true).any(|p| {
