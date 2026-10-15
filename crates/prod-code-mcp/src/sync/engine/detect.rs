@@ -16,7 +16,15 @@ use std::path::Path;
 /// Python and JavaScript repositories keep a Makefile of tasks too. A `project.yml` with
 /// top-level `targets:` is an XcodeGen spec, a Swift project whose Xcode project is generated
 /// (#404). The gateway's `detect_engine` decides the same way.
+pub(crate) fn manifest_engine_at(root: &Path) -> Option<&'static str> {
+    detect_engine_at(root, false)
+}
+
 pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
+    detect_engine_at(root, true)
+}
+
+fn detect_engine_at(root: &Path, include_bare_sources: bool) -> Option<&'static str> {
     let has = |name: &str| root.join(name).exists();
     let has_file = |name: &str| root.join(name).is_file();
     let has_exact_file = |name: &str| {
@@ -50,6 +58,12 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
                 .any(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
         })
     };
+    let bare = include_bare_sources
+        && !has_ext(&[
+            "rs", "go", "swift", "c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx", "m", "mm", "py",
+            "pyi", "cs", "kt", "kts", "scala", "sc", "java", "ts", "tsx", "mts", "cts", "js",
+            "jsx", "mjs", "cjs", "php", "rb", "dart", "zig", "ex", "exs",
+        ]);
     let has_xcode = std::fs::read_dir(root)
         .map(|entries| {
             entries.flatten().any(|e| {
@@ -118,9 +132,9 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         || has("settings.gradle.kts")
     {
         Some("java")
-    } else if has("svelte.config.js") || has("svelte.config.ts") || has_ext(&["svelte"]) {
+    } else if has("svelte.config.js") || has("svelte.config.ts") || (bare && has_ext(&["svelte"])) {
         Some("svelte")
-    } else if has("vue.config.js") || has("vue.config.ts") || has_ext(&["vue"]) {
+    } else if has("vue.config.js") || has("vue.config.ts") || (bare && has_ext(&["vue"])) {
         Some("vue")
     } else if has("tsconfig.json")
         || has("package.json")
@@ -141,31 +155,36 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         Some("zig")
     } else if has("mix.exs") {
         Some("elixir")
-    } else if has(".luarc.json") || has(".luacheckrc") || has_ext(&["lua"]) {
+    } else if has(".luarc.json") || has(".luacheckrc") || (bare && has_ext(&["lua"])) {
         Some("lua")
     } else if has("cabal.project")
         || has("stack.yaml")
         || has("package.yaml")
-        || has_ext(&["hs", "lhs", "cabal"])
+        || has_ext(&["cabal"])
+        || (bare && has_ext(&["hs", "lhs"]))
     {
         Some("haskell")
-    } else if has("dune-project") || has("dune") || has_ext(&["ml", "mli"]) {
+    } else if has("dune-project") || has("dune") || (bare && has_ext(&["ml", "mli"])) {
         Some("ocaml")
-    } else if has("project.clj") || has("deps.edn") || has_ext(&["clj", "cljs", "cljc"]) {
+    } else if has("project.clj") || has("deps.edn") || (bare && has_ext(&["clj", "cljs", "cljc"])) {
         Some("clojure")
-    } else if has("JuliaProject.toml") || has_ext(&["jl"]) {
+    } else if has("JuliaProject.toml") || (bare && has_ext(&["jl"])) {
         Some("julia")
-    } else if has("DESCRIPTION") || has("NAMESPACE") || has_ext(&["r"]) {
+    } else if has("DESCRIPTION") || has("NAMESPACE") || (bare && has_ext(&["r"])) {
         Some("r")
-    } else if has("rebar.config") || has("rebar.lock") || has("erlang.mk") || has_ext(&["erl"]) {
+    } else if has("rebar.config")
+        || has("rebar.lock")
+        || has("erlang.mk")
+        || (bare && has_ext(&["erl"]))
+    {
         Some("erlang")
-    } else if has_ext(&["fs", "fsi", "fsx", "fsproj"]) {
+    } else if has_ext(&["fsproj"]) || (bare && has_ext(&["fs", "fsi", "fsx"])) {
         Some("fsharp")
     } else if has("cpanfile")
         || has("Makefile.PL")
         || has("Build.PL")
         || has("dist.ini")
-        || has_ext(&["pl", "pm"])
+        || (bare && has_ext(&["pl", "pm"]))
     {
         Some("perl")
     } else if has("foundry.toml")
@@ -173,21 +192,20 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         || has("hardhat.config.ts")
         || has("hardhat.config.cjs")
         || has("truffle-config.js")
-        || has_ext(&["sol"])
+        || (bare && has_ext(&["sol"]))
     {
         Some("solidity")
     } else if has("nim.cfg") || has_ext(&["nimble"]) {
         Some("nim")
     } else if has("dub.json") || has("dub.sdl") {
         Some("d")
-    } else if has("fpm.toml") || has_ext(&["f", "for", "f90", "f95", "f03", "f08"]) {
+    } else if has("fpm.toml") || (bare && has_ext(&["f", "for", "f90", "f95", "f03", "f08"])) {
         Some("fortran")
     } else if has(".sqlfluff")
         || has("sqlfluff.cfg")
         || has(".sqls.json")
         || has("sqls.json")
-        || has("schema.sql")
-        || has_ext(&["sql"])
+        || (bare && (has("schema.sql") || has_ext(&["sql"])))
     {
         Some("sql")
     } else if has("codegen.yml")
@@ -196,8 +214,7 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         || has(".graphqlrc")
         || has(".graphqlrc.yml")
         || has(".graphqlrc.json")
-        || has("schema.graphql")
-        || has_ext(&["graphql", "gql"])
+        || (bare && (has("schema.graphql") || has_ext(&["graphql", "gql"])))
     {
         Some("graphql")
     } else if has("buf.yaml")
@@ -205,45 +222,46 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         || has("buf.gen.yaml")
         || has("buf.lock")
         || has(".protolint.yaml")
-        || has_ext(&["proto"])
+        || (bare && has_ext(&["proto"]))
     {
         Some("protobuf")
-    } else if has("shard.yml") || has("shard.lock") || has_ext(&["cr"]) {
+    } else if has("shard.yml") || has("shard.lock") || (bare && has_ext(&["cr"])) {
         Some("crystal")
-    } else if has("Jenkinsfile") || has_ext(&["groovy", "gvy"]) {
+    } else if has("Jenkinsfile") || (bare && has_ext(&["groovy", "gvy"])) {
         Some("groovy")
-    } else if has("default.gpr") || has_ext(&["gpr", "adb", "ads"]) {
+    } else if has("default.gpr") || has_ext(&["gpr"]) || (bare && has_ext(&["adb", "ads"])) {
         Some("ada")
-    } else if has("v.mod") || has_ext(&["vsh"]) {
+    } else if has("v.mod") || (bare && has_ext(&["vsh"])) {
         Some("v")
-    } else if has("info.rkt") || has_ext(&["rkt"]) {
+    } else if has("info.rkt") || (bare && has_ext(&["rkt"])) {
         Some("racket")
-    } else if has("main.tf")
-        || has("versions.tf")
-        || has("terraform.tf")
-        || has(".terraform.lock.hcl")
-        || has_ext(&["tf", "tofu"])
+    } else if has(".terraform.lock.hcl")
+        || (bare
+            && (has("main.tf")
+                || has("versions.tf")
+                || has("terraform.tf")
+                || has_ext(&["tf", "tofu"])))
     {
         Some("terraform")
     } else if has("flake.nix")
         || has("default.nix")
         || has("shell.nix")
         || has("configuration.nix")
-        || has_ext(&["nix"])
+        || (bare && has_ext(&["nix"]))
     {
         Some("nix")
-    } else if has(".asm-lsp.toml") || has_ext(&["asm", "nasm", "s"]) {
+    } else if has(".asm-lsp.toml") || (bare && has_ext(&["asm", "nasm", "s"])) {
         Some("assembly")
-    } else if has_prefix("Dockerfile")
-        || has_prefix("Containerfile")
-        || has(".hadolint.yaml")
+    } else if has(".hadolint.yaml")
         || has(".hadolint.yml")
-        || has_ext(&["dockerfile"])
+        || (bare
+            && (has_prefix("Dockerfile")
+                || has_prefix("Containerfile")
+                || has_ext(&["dockerfile"])))
     {
         Some("dockerfile")
     } else if has("PSScriptAnalyzerSettings.psd1")
-        || has("profile.ps1")
-        || has_ext(&["ps1", "psm1", "psd1"])
+        || (bare && (has("profile.ps1") || has_ext(&["ps1", "psm1", "psd1"])))
     {
         Some("powershell")
     } else if has_file("BUILD.bazel")
@@ -252,24 +270,24 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         || has_exact_file("BUILD")
         || has_exact_file("WORKSPACE")
         || has_file("Tiltfile")
-        || has_ext(&["bzl", "star"])
+        || (bare && has_ext(&["bzl", "star"]))
     {
         Some("starlark")
-    } else if has("terragrunt.hcl") || has(".tflint.hcl") || has_ext(&["hcl"]) {
+    } else if has("terragrunt.hcl") || has(".tflint.hcl") || (bare && has_ext(&["hcl"])) {
         Some("hcl")
-    } else if has("typst.toml") || has_ext(&["typ"]) {
+    } else if has("typst.toml") || (bare && has_ext(&["typ"])) {
         Some("typst")
-    } else if has("wat.json") || has_ext(&["wat", "wast"]) {
+    } else if has("wat.json") || (bare && has_ext(&["wat", "wast"])) {
         Some("wat")
-    } else if has("verilator.f") || has_ext(&["sv", "svh"]) {
+    } else if has("verilator.f") || (bare && has_ext(&["sv", "svh"])) {
         Some("systemverilog")
-    } else if has("vunit.py") || has_ext(&["vhd", "vhdl"]) {
+    } else if has("vunit.py") || (bare && has_ext(&["vhd", "vhdl"])) {
         Some("vhdl")
-    } else if has("Ballerina.toml") || has_ext(&["bal"]) {
+    } else if has("Ballerina.toml") || (bare && has_ext(&["bal"])) {
         Some("ballerina")
-    } else if has("jsonnetfile.json") || has_ext(&["jsonnet", "libsonnet"]) {
+    } else if has("jsonnetfile.json") || (bare && has_ext(&["jsonnet", "libsonnet"])) {
         Some("jsonnet")
-    } else if has("cue.mod") || has_ext(&["cue"]) {
+    } else if has("cue.mod") || (bare && has_ext(&["cue"])) {
         Some("cue")
     } else if has(".yamllint")
         || has(".yamllint.yml")
@@ -285,10 +303,9 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         Some("toml")
     } else if has(".jsonlintrc") || has(".jsonlintrc.json") || has(".jsonlint") {
         Some("json")
-    } else if has("index.html")
-        || has("htmlhint.json")
+    } else if has("htmlhint.json")
         || has(".htmlhintrc")
-        || has_ext(&["html", "htm"])
+        || (bare && (has("index.html") || has_ext(&["html", "htm"])))
     {
         Some("html")
     } else if has("stylelint.config.js")
@@ -297,11 +314,10 @@ pub(crate) fn engine_at(root: &Path) -> Option<&'static str> {
         || has(".stylelintrc")
         || has(".stylelintrc.json")
         || has(".stylelintrc.yml")
-        || has("styles.css")
-        || has_ext(&["css", "scss", "less"])
+        || (bare && (has("styles.css") || has_ext(&["css", "scss", "less"])))
     {
         Some("css")
-    } else if has(".shellcheckrc") || has_ext(&["sh", "bash", "zsh"]) {
+    } else if has(".shellcheckrc") || (bare && has_ext(&["sh", "bash", "zsh"])) {
         Some("shell")
     } else if has(".marksman.toml") {
         Some("markdown")

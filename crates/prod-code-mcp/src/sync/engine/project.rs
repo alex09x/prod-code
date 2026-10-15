@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use crate::sync::engine::detect::engine_at;
+use crate::sync::engine::detect::{engine_at, manifest_engine_at};
 use crate::sync::engine::workspace::{
     excluded_from_root_workspace, is_in_dependency_dir, missing_path_is_confined_to,
 };
@@ -43,24 +43,40 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     }
     let existing_file = dir.is_file();
     let proposed_file = missing_path && engine_for_file(&dir).is_some();
+    let in_nested_manifest = dir
+        .ancestors()
+        .take_while(|d| d.starts_with(&canonical_root) && *d != canonical_root)
+        .any(|d| !is_in_dependency_dir(d) && manifest_engine_at(d).is_some());
     let file = (existing_file || proposed_file)
         .then(|| dir.clone())
         .or_else(|| {
             if dir.is_dir()
+                && !in_nested_manifest
                 && let Ok(entries) = std::fs::read_dir(&dir)
             {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file()
-                        && let Some(engine) = engine_for_file(&path)
+                let mut paths: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.is_file())
+                    .collect();
+                paths.sort();
+                let mut fallback = None;
+                for path in paths {
+                    if let Some(engine) = engine_for_file(&path)
                         && !matches!(
                             engine,
                             "markdown" | "yaml" | "toml" | "json" | "html" | "css"
                         )
                     {
-                        return Some(path);
+                        if Some(engine) == root_engine {
+                            return Some(path);
+                        }
+                        if fallback.is_none() {
+                            fallback = Some(path);
+                        }
                     }
                 }
+                return fallback;
             }
             None
         });
@@ -72,7 +88,7 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
 
     while dir.starts_with(&canonical_root) && dir != canonical_root {
         if !is_in_dependency_dir(&dir)
-            && let Some(engine) = expected_engine(&dir)
+            && let Some(engine) = manifest_engine_at(&dir)
         {
             // Same language is not the same project. A Cargo workspace answers for its
             // members; a crate it excludes belongs to no project the root analyzer loaded, so
@@ -156,7 +172,6 @@ pub fn other_checkout(root: &Path, file: &Path) -> Option<PathBuf> {
 }
 
 /// The engine a source file's extension names, when it names one.
-
 pub fn engine_for_file(path: &Path) -> Option<&'static str> {
     let filename = path.file_name()?.to_str()?.to_ascii_lowercase();
     if filename.starts_with("dockerfile") || filename.starts_with("containerfile") {
@@ -258,7 +273,7 @@ pub fn expected_engine(root: &Path) -> Option<&'static str> {
         {
             continue;
         }
-        match (engine_at(&path), found) {
+        match (manifest_engine_at(&path), found) {
             (Some(engine), None) => found = Some(engine),
             (Some(engine), Some(seen)) if engine != seen => return None,
             _ => {}

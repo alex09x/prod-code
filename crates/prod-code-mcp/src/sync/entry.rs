@@ -51,10 +51,39 @@ pub(crate) fn size_limit(relative_path: &str) -> u64 {
     }
 }
 
-/// `files` in the order given, cut into messages of at most `budget` bytes of content each; a
-/// file larger than the budget travels alone. Always at least one batch, possibly empty: an
-/// empty delta is still sent, and its answer tells whether the gateway's copy still exists.
-pub(crate) fn sync_batches(files: Vec<FileDelta>, budget: usize) -> Vec<Vec<FileDelta>> {
+fn is_priority_manifest(relative_path: &str) -> bool {
+    Path::new(relative_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "go.mod"
+                    | "go.sum"
+                    | "go.work"
+                    | "Cargo.toml"
+                    | "Cargo.lock"
+                    | "Package.swift"
+                    | "pyproject.toml"
+                    | "requirements.txt"
+                    | "setup.py"
+                    | "package.json"
+                    | "tsconfig.json"
+                    | "CMakeLists.txt"
+                    | "meson.build"
+                    | "pom.xml"
+                    | "build.gradle"
+                    | "build.gradle.kts"
+            )
+        })
+}
+
+/// `files` in the order given (with project manifests placed first), cut into messages of at
+/// most `budget` bytes of content each; a file larger than the budget travels alone. Always at
+/// least one batch, possibly empty: an empty delta is still sent, and its answer tells whether
+/// the gateway's copy still exists.
+pub(crate) fn sync_batches(mut files: Vec<FileDelta>, budget: usize) -> Vec<Vec<FileDelta>> {
+    files.sort_by_key(|f| !is_priority_manifest(&f.relative_path));
     let mut batches = vec![Vec::new()];
     let mut size = 0usize;
     for file in files {

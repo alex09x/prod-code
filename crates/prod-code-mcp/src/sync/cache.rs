@@ -130,6 +130,25 @@ pub fn save_sync_cache_for(root: &Path, node: &str, cache: &SyncCache) {
 pub(crate) static PROBED_NODES: std::sync::LazyLock<std::sync::Mutex<HashSet<(PathBuf, String)>>> =
     std::sync::LazyLock::new(Default::default);
 
+static SYNC_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<(PathBuf, String), std::sync::Arc<tokio::sync::Mutex<()>>>,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn workspace_sync_lock(
+    root: &Path,
+    node: &str,
+) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    SYNC_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry((canonical, node.to_string()))
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 /// Forgets the watermarks of `root` for every node.
 pub fn clear_sync_cache(root: &Path) {
     let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());

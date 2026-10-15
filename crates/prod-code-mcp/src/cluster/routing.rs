@@ -162,23 +162,37 @@ pub fn engine_for_path(root: &Path, path: &str) -> Option<&'static str> {
     if let Some(engine) = crate::sync::engine_for_file(&hint) {
         return Some(engine);
     }
+    let root_engine = crate::sync::expected_engine(root);
     if hint.is_dir()
         && let Ok(entries) = std::fs::read_dir(&hint)
     {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file()
-                && let Some(engine) = crate::sync::engine_for_file(&p)
+        let mut paths: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect();
+        paths.sort();
+        let mut fallback = None;
+        for p in paths {
+            if let Some(engine) = crate::sync::engine_for_file(&p)
                 && !matches!(
                     engine,
                     "markdown" | "yaml" | "toml" | "json" | "html" | "css"
                 )
             {
-                return Some(engine);
+                if Some(engine) == root_engine {
+                    return Some(engine);
+                }
+                if fallback.is_none() {
+                    fallback = Some(engine);
+                }
             }
         }
+        if fallback.is_some() {
+            return fallback;
+        }
     }
-    crate::sync::expected_engine(root)
+    root_engine
 }
 
 /// Whether `node` lists `engine`.

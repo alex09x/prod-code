@@ -8,7 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use crate::sync::cache::{PROBED_NODES, clear_sync_cache_for, resend_lost_files};
+use crate::sync::cache::{
+    PROBED_NODES, clear_sync_cache_for, resend_lost_files, workspace_sync_lock,
+};
 use crate::sync::entry::{sync_batches, sync_file_entry};
 use crate::sync::plan::{commit_workspace_sync, prepare_workspace_sync_for};
 use crate::sync::read::read_file_or_contained_symlink;
@@ -58,7 +60,6 @@ async fn wait_for_message<T>(
 /// workspace from the origin repository's copy and report only the files it still lacks;
 /// later rounds send the watermark delta. The watermark is committed once the gateway has
 /// acknowledged the uploads.
-
 pub async fn push_workspace_sync(
     framed: &mut Framed<AnyStream, ProdCodeCodec>,
     root: &Path,
@@ -66,6 +67,8 @@ pub async fn push_workspace_sync(
     subpath: Option<&Path>,
 ) -> Result<SyncOutcome> {
     const MAX_RESET_RETRIES: usize = 2;
+    let sync_lock = workspace_sync_lock(root, &gateway_node(framed));
+    let _sync_guard = sync_lock.lock().await;
     let mut resets = 0;
     loop {
         let mut outcome = match push_sync_round(framed, root, identity, subpath).await? {
@@ -136,10 +139,10 @@ async fn push_sync_round(
 
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let is_first_contact = subpath.is_none()
-        && PROBED_NODES
+        && !PROBED_NODES
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((canonical_root.clone(), node.clone()));
+            .contains(&(canonical_root.clone(), node.clone()));
     let needs_probe = plan.initial || is_first_contact;
 
     if needs_probe {
@@ -188,6 +191,7 @@ async fn push_sync_round(
     if !plan.files.is_empty() || !plan.initial {
         let files = std::mem::take(&mut plan.files);
         outcome.changed_paths = files.iter().map(|f| f.relative_path.clone()).collect();
+        let uploading_probed_missing = outcome.probed && !outcome.changed_paths.is_empty();
         for (i, files) in sync_batches(files, SYNC_BATCH_BYTES)
             .into_iter()
             .enumerate()
@@ -206,7 +210,7 @@ async fn push_sync_round(
             })
             .await
             .context("workspace sync was not acknowledged")?;
-            if i == 0 && resp.workspace_was_fresh && !plan.initial {
+            if i == 0 && resp.workspace_was_fresh && !plan.initial && !uploading_probed_missing {
                 // The server directory was reset behind our watermark: forget it and start
                 // over with a manifest probe on the same connection.
                 tracing::warn!(
@@ -229,5 +233,11 @@ async fn push_sync_round(
     }
 
     commit_workspace_sync(root, &plan);
+    if subpath.is_none() {
+        PROBED_NODES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((canonical_root, node));
+    }
     Ok(RoundResult::Success(outcome))
 }
