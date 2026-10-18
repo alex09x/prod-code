@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## v0.3.32 — 2026-10-17
+
+### Fixed
+- **Active-Exec Workspace Sync Protection for Newly Generated Files** (`crates/prod-code-gateway`):
+  Added active-exec tracking (`begin_active_exec`, `end_active_exec`, `record_synced_during_exec`, `is_active_exec` in `workspace/stale.rs`), wired into `run_exec` and `run_remote_exec`, and updated `reconcile_manifest` (`sync/sync_fs.rs`) so files created or reformatted by an active `exec` (`gofmt`, `sqlc`, `protoc`, etc.) are not overwritten or deleted by concurrent client syncs before writeback while still respecting client deletions of client-synced files (#1104).
+- **Concurrent MCP Request Dispatch & Per-Workspace Mutation Locking** (`crates/prod-code-mcp`):
+  Replaced the single-flight `serve_mcp_requests` loop (`server/transport.rs`) with a concurrent `tokio::task::JoinSet` and writer channel while preserving task-originated placement failover updates, and added per-workspace `RwLock` serialization (`workspace_mutation_lock` and `is_read_only_tool` in `tools/execution.rs`) so read-only calls run concurrently while mutating/writeback tools (`code_change_signature`, `code_rename`, `code_move`, `code_exec`, `code_shadow_run` with `apply: true`, `code_check`/`code_lint` with `fix: true`, `code_sync`) hold an exclusive write guard (#1105).
+- **Root-Anchored `code_impact` Symbol Attribution & Qualified Lookup** (`crates/prod-code-mcp`):
+  Updated `changed_symbols` (`impact/symbols.rs`) to anchor LSP symbol queries at `workspace_root` rather than nested non-project directories, and updated `find_symbol` (`impact/signatures.rs`) to strip `impl Trait for Type` containers to `Type` and fall back from qualified names (`Type::method`) to bare symbol names (#1106).
+- **Swift Pre-Build Symbol, Definition, Outline & Reference Fallbacks** (`crates/prod-code-mcp`):
+  Added executable-code-masked Swift declaration and outline fallbacks (`local_declarations_in_file` in `tools/symbols/search.rs`, `local_swift_outline_symbols` in `tools/outline/file.rs`, and `scan_swift_string` in `caller_migration/mask.rs` supporting multiline `"""..."""` and raw `#"..."#` strings), positional `handle_definition` outline fallback (`tools/symbol_handlers.rs`), and per-file target/module-scoped Swift reference fallback (`tools/references/multi_target.rs`, `tools/references/lexical.rs`) when `sourcekit-lsp` returns empty results before `swift build` (#1107).
+- **Single-Line JSX/HTML Tag vs Symbol Rename Detection in Pre-Tool Hook** (`scripts/hooks/prod-code-local-build-guard.py`):
+  Added `HTML_INTRINSIC_TAGS` and `is_html_intrinsic_tag_token` so single-line lowercase HTML/SVG wrapper tag swaps (`<div>...</div>` -> `<details>...</details>`) are allowed in `Edit`/`Write` calls while PascalCase JSX component renames (`<OldCard />` -> `<NewCard />`) and TypeScript generic type arguments (`factory<OldType>()` -> `factory<NewType>()`) remain guarded (#1108).
+- **Associated Rust Method Resolution (`Type::method`) in `code_symbols` and `code_definition`** (`crates/prod-code-mcp`, `crates/prod-code-engine-rust`):
+  Added `find_inherent_method_symbols` in `crates/prod-code-engine-rust/src/snapshot/hierarchy.rs` to index inherent `impl` methods on cold Salsa snapshots, and added `search_qualified_type_members` (`tools/symbols/search.rs`) so `Type::method` queries resolve directly through the owner type's file and members (#1109).
+- **Go Receiver Method Disambiguation Over Composite-Literal Field Keys** (`crates/prod-code-mcp`):
+  Updated `collect_members` and `find_source_members` (`tools/symbols/type_members.rs`, `tools/symbols/matching.rs`) to match `gopls` receiver-prefixed method names (`(*Store).Method`, `(Store).Method`), skip sibling files that do not mention the owner type, bound sibling scans by engine and `read_name_scan_text`, and reject composite-literal `Field: value` lines when resolving `Type.Method` (#1110).
+- **Multi-Segment Qualified Symbol Queries & Relevance Path Capping** (`crates/prod-code-mcp`):
+  Updated `handle_symbols` (`tools/symbol_handlers.rs`) and `search_symbols` (`tools/symbols/search.rs`) to split multi-segment `::` queries (`crate::module::Type::method`) into leaf symbol and qualifier segments, and capped `is_relevant_to_Language` (`sync/relevance.rs`) at `MAX_RELEVANCE_DEPTH` (`8`) so deeply nested cache trees do not inflate workspace sync file counts (#1111, #1112).
+- **Native TypeScript LSP (`tsgo --lsp`) Detection & Go `GOCACHE` Warmth** (`crates/prod-code-engine-generic`, `crates/prod-code-gateway`):
+  Updated `native_typescript_lsp` (`config/presets/core.rs`) to check `which_bin("tsgo")` on `PATH` for `@typescript/native-preview` before falling back to `vtsls` or `typescript-language-server`, and exported `GOCACHE` alongside `GOMODCACHE` in `shared_cache_env` (`seed_cache/build_cache.rs`) so `gopls` and `go test` share warm build artifacts across workspace checkouts (#1113).
+
 ## v0.3.31 — 2026-10-14
 
 ### Fixed
