@@ -8,8 +8,11 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::across_projects::{names_word, symbol_search_across_projects};
-use super::matching::{bare_symbol_name, decorated_owner, owner_path_matches, owner_segments};
+use super::across_projects::{names_word, read_name_scan_text, symbol_search_across_projects};
+use super::matching::{
+    bare_symbol_name, decorated_owner, is_test_source_path, names_type, owner_path_matches,
+    owner_segments,
+};
 use super::nested_projects::source_files;
 use super::sources::{RemoteSources, is_use_declaration};
 use super::types::{MalformedLspCoordinate, SymbolHit, lsp_position, symbol_kind_name};
@@ -28,7 +31,7 @@ pub(crate) fn find_source_members(
     owner: &[&str],
     member: &str,
 ) -> Vec<SymbolHit> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Some(text) = read_name_scan_text(path) else {
         return Vec::new();
     };
     let type_name = owner.last().copied().unwrap_or_default();
@@ -84,14 +87,6 @@ pub(crate) fn find_source_members(
     hits
 }
 
-fn is_test_source_path(path: &Path) -> bool {
-    let n = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    n.ends_with("_test.go")
-        || n.ends_with("_test.rs")
-        || n.ends_with(".test.ts")
-        || n.ends_with(".spec.ts")
-}
-
 /// The members called `member` of the type called `type_name`, read from the outline of each
 /// file that declares the type. The type is resolved the way a symbol is, by its exact name;
 /// with a `hint`, members under it are preferred.
@@ -120,7 +115,7 @@ pub(crate) async fn type_members(
             files.push(p);
         } else if p.is_dir() {
             for entry in source_files(&p).take(8) {
-                if std::fs::read_to_string(&entry).is_ok_and(|text| names_word(&text, member)) {
+                if read_name_scan_text(&entry).is_some_and(|text| names_word(&text, member)) {
                     files.push(entry);
                 }
             }
@@ -176,7 +171,11 @@ pub(crate) async fn type_members(
     if members.is_empty() {
         // First inspect sibling files in the same directory/package as the type declaration (#1110).
         for type_file in &files {
-            let Some(parent_dir) = type_file.parent() else {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            let type_engine = crate::sync::engine_for_file(type_file).filter(|e| !e.is_empty());
+            let (Some(type_engine), Some(parent_dir)) = (type_engine, type_file.parent()) else {
                 continue;
             };
             let Ok(entries) = std::fs::read_dir(parent_dir) else {
@@ -184,15 +183,22 @@ pub(crate) async fn type_members(
             };
             let mut siblings: Vec<std::path::PathBuf> = entries
                 .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.is_file() && !files.contains(p))
+                .filter(|p| {
+                    p.is_file()
+                        && !files.contains(p)
+                        && crate::sync::engine_for_file(p) == Some(type_engine)
+                })
                 .collect();
             siblings.sort_by_key(|p| (is_test_source_path(p), p.clone()));
             for sibling in siblings {
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
                 if candidates.contains(&sibling) {
                     continue;
                 }
-                if std::fs::read_to_string(&sibling)
-                    .is_ok_and(|text| names_word(&text, member) && names_word(&text, type_name))
+                if read_name_scan_text(&sibling)
+                    .is_some_and(|text| names_word(&text, member) && names_word(&text, type_name))
                 {
                     candidates.push(sibling);
                     if candidates.len() >= 6 {
@@ -209,7 +215,7 @@ pub(crate) async fn type_members(
                 if !files.contains(&path)
                     && !candidates.contains(&path)
                     && !is_test_source_path(&path)
-                    && std::fs::read_to_string(&path).is_ok_and(|text| {
+                    && read_name_scan_text(&path).is_some_and(|text| {
                         names_word(&text, member)
                             && names_word(&text, type_name)
                             && text.lines().any(|l| declared_at(l, member).is_some())
@@ -386,15 +392,4 @@ pub(crate) fn member_at(sym: &serde_json::Value) -> Result<(String, u64, u32, u3
         line,
         col,
     ))
-}
-
-/// Whether an outline label names the type `type_name`: the type itself, or an `impl` block
-/// for it (`impl Type`, `impl<T> Type<T>`, `impl Trait for Type`), whose members are the
-/// type's too.
-pub(crate) fn names_type(label: &str, type_name: &str) -> bool {
-    owner_segments(label).last().is_some_and(|target| {
-        target
-            .replace('-', "_")
-            .eq_ignore_ascii_case(&type_name.replace('-', "_"))
-    })
 }

@@ -536,6 +536,13 @@ KEYWORDS = {
     "true", "false", "null", "nil", "none", "undefined", "async", "await",
 }
 IDENT_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+HTML_INTRINSIC_TAGS = frozenset({
+    "div", "details", "summary", "span", "section", "article", "aside", "header",
+    "footer", "nav", "main", "p", "a", "ul", "ol", "li", "dl", "dt", "dd", "table",
+    "thead", "tbody", "tfoot", "tr", "td", "th", "form", "fieldset", "legend",
+    "label", "input", "button", "select", "option", "textarea", "dialog", "figure",
+    "figcaption", "blockquote", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6",
+})
 
 
 def single_symbol_rename(old_str, new_str):
@@ -560,8 +567,11 @@ def single_symbol_rename(old_str, new_str):
         new_sym = list(added)[0]
         if old_sym.isdigit() or new_sym.isdigit() or len(old_sym) < 2 or len(new_sym) < 2:
             return None
-        if re.search(r"<\s*/?\s*" + re.escape(old_sym) + r"\b", old_s) and re.search(
-            r"<\s*/?\s*" + re.escape(new_sym) + r"\b", new_s
+        if (
+            old_sym in HTML_INTRINSIC_TAGS
+            and new_sym in HTML_INTRINSIC_TAGS
+            and re.search(r"<\s*/?\s*" + re.escape(old_sym) + r"\b", old_s)
+            and re.search(r"<\s*/?\s*" + re.escape(new_sym) + r"\b", new_s)
         ):
             return None
         simulated = re.sub(r"\b" + re.escape(old_sym) + r"\b", new_sym, old_s)

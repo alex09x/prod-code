@@ -211,7 +211,7 @@ fn specifier_matches_decl(
         return ImportMatch::None;
     }
     if (!is_dir_spec && decl_segs.ends_with(&spec_segs))
-        || (is_index
+        || ((is_index || decl_ext == "swift")
             && explicit_ext.is_none()
             && decl_segs.len() >= 2
             && decl_segs[..decl_segs.len() - 1].ends_with(&spec_segs))
@@ -279,7 +279,11 @@ pub(crate) fn imports_declaration(
     let mut best = ImportMatch::None;
     let mut i = 0;
     while i < lines.len() {
-        let trimmed = lines[i].trim();
+        let raw_trimmed = lines[i].trim();
+        let trimmed = raw_trimmed
+            .strip_prefix("@testable")
+            .map(str::trim_start)
+            .unwrap_or(raw_trimmed);
         if trimmed.starts_with("#include ")
             || trimmed.starts_with("#include<")
             || trimmed.starts_with("#include\"")

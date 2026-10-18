@@ -81,7 +81,7 @@ where
 
     let mut pending: Vec<u8> = Vec::new();
     let mut eof = false;
-    let mut in_flight: tokio::task::JoinSet<(Option<String>, SocketAddr, Option<String>)> =
+    let mut in_flight: tokio::task::JoinSet<(Option<String>, Option<SocketAddr>, Option<String>)> =
         tokio::task::JoinSet::new();
     let mut active_aborts: std::collections::HashMap<String, tokio::task::AbortHandle> =
         std::collections::HashMap::new();
@@ -122,12 +122,12 @@ where
                 }
             }
             Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => {
-                if let Ok((id_key, updated_remote, maybe_out)) = joined {
+                if let Ok((id_key, changed_remote, maybe_out)) = joined {
                     if let Some(k) = id_key {
                         active_aborts.remove(&k);
                     }
-                    if updated_remote != remote {
-                        remote = updated_remote;
+                    if let Some(new_remote) = changed_remote {
+                        remote = new_remote;
                     }
                     if let Some(out) = maybe_out
                         && (writer.write_all(out.as_bytes()).await.is_err()
@@ -207,7 +207,8 @@ where
                     .as_ref()
                     .and_then(|id| serde_json::to_string(id).ok());
                 let id_key_for_task = id_key.clone();
-                let mut task_remote = remote;
+                let start_remote = remote;
+                let mut task_remote = start_remote;
                 let ws_root = workspace_root.clone();
                 let abort_handle = in_flight.spawn(async move {
                     let fut = std::panic::AssertUnwindSafe(handle_mcp_request(
@@ -216,9 +217,10 @@ where
                         req_json,
                     ));
                     let outcome = fut.catch_unwind().await;
+                    let changed_remote = (task_remote != start_remote).then_some(task_remote);
                     (
                         id_key_for_task,
-                        task_remote,
+                        changed_remote,
                         format_handled_response(req_id, outcome),
                     )
                 });

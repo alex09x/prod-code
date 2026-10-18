@@ -113,10 +113,13 @@ pub async fn outline_file(
 }
 
 fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
+    let code_mask =
+        crate::tools::references::mask_executable_code(source, std::path::Path::new("file.swift"));
+    let masked = crate::tools::references::masked_code_string(source, &code_mask);
     let mut items = Vec::new();
-    for (idx, line) in source.lines().enumerate() {
+    for (idx, line) in masked.lines().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+        if trimmed.is_empty() {
             continue;
         }
         for (kw, kind) in [

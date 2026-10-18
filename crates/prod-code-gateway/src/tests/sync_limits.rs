@@ -228,4 +228,37 @@ async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
         paths,
         vec!["internal/server/router.go", "internal/server/types.go"]
     );
+
+    // A file created by a client sync during the active exec and then removed from the client's
+    // manifest must be deleted by `reconcile_manifest`, while a command-created file is kept.
+    let _ = apply_sync(
+        storage.path(),
+        &manager,
+        SyncRequest {
+            client_workspace_root: "/client/gofmt-ws".to_string(),
+            base_workspace_name: Some(ws_name.to_string()),
+            clean_others: false,
+            files: vec![FileDelta {
+                relative_path: "internal/server/temp_client.go".to_string(),
+                content: Some(b"package server\n".to_vec()),
+                is_executable: false,
+            }],
+        },
+    )
+    .await;
+    std::fs::write(
+        root.join("internal/server/cmd_generated.go"),
+        b"package server\n",
+    )
+    .unwrap();
+    let (_, deleted_after) = reconcile_manifest(&root, &stamps);
+    assert!(
+        deleted_after.contains(&"internal/server/temp_client.go".to_string()),
+        "client-created file omitted from manifest must be deleted: {deleted_after:?}"
+    );
+    assert!(!root.join("internal/server/temp_client.go").exists());
+    assert!(
+        root.join("internal/server/cmd_generated.go").exists(),
+        "command-created file must be preserved during active exec"
+    );
 }

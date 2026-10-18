@@ -119,6 +119,7 @@ pub fn reconcile_manifest(
                 if active_exec
                     .as_ref()
                     .is_some_and(|(_, before)| !before.contains_key(rel.as_str()))
+                    && !synced_during_exec.contains_key(rel.as_str())
                 {
                     continue;
                 }

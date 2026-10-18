@@ -125,16 +125,25 @@ mod tests {
         let swift_file = dir.path().join("AppState.swift");
         std::fs::write(
             &swift_file,
-            "final class AppState {\n    func reloadSession() {}\n}\n",
+            "/*\nfunc ghostInComment() {}\n*/\nfinal class AppState {\n    let snippet = \"\"\"\n    }\n    func ghostInString() {}\n    \"\"\"\n    func reloadSession() {}\n}\n",
         )
         .unwrap();
         let swift_class_decls = search::local_declarations_in_file(&swift_file, "AppState");
         assert!(swift_class_decls.iter().any(|d| d.name == "AppState"));
+        assert!(
+            search::local_declarations_in_file(&swift_file, "ghostInComment").is_empty(),
+            "declarations inside block comments must be ignored"
+        );
+        assert!(
+            search::local_declarations_in_file(&swift_file, "ghostInString").is_empty(),
+            "declarations inside multiline strings must be ignored"
+        );
         let swift_method_decls = search::local_declarations_in_file(&swift_file, "reloadSession");
         assert!(
             swift_method_decls.iter().any(|d| {
                 d.name == "reloadSession" && d.container.as_deref() == Some("AppState")
-            })
+            }),
+            "braces inside strings must not close the enclosing container: {swift_method_decls:?}"
         );
     }
 }

@@ -8,9 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::matching::{bare_symbol_name, match_rank, qualifier_matches};
+use super::matching::{bare_symbol_name, match_rank, names_type, qualifier_matches};
 use super::nested_projects::{read_name_scan_text, representative_source_file};
-use super::type_members::names_type;
 use super::types::{MalformedLspCoordinate, SymbolHit, lsp_position, symbol_kind_name};
 use super::unindexed::declared_at;
 use crate::tools::execute_lsp_query;
@@ -181,7 +180,7 @@ fn parse_workspace_symbol_hits(
 }
 
 /// The declarations called `name` in the outlines of `files`, falling back to local source
-/// declaration extraction when the language server has no outline for `file` (#1107, #1109).
+/// declaration extraction when `sourcekit-lsp` has not yet indexed a Swift file (#1107).
 pub(crate) async fn declarations_in(
     remote: SocketAddr,
     root: &Path,
@@ -191,22 +190,18 @@ pub(crate) async fn declarations_in(
     let mut hits = Vec::new();
     for file in files {
         let mut file_hits = Vec::new();
-        let mut allow_local_fallback = remote.port() != 9;
+        let is_swift = file.extension().and_then(|e| e.to_str()) == Some("swift");
         if let Ok(uri) = Url::from_file_path(file) {
             let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
             let query_fut =
                 execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params);
-            match tokio::time::timeout(std::time::Duration::from_millis(2500), query_fut).await {
-                Ok(Ok(outline)) => {
-                    collect_named(&outline, name, None, file, &mut file_hits)?;
-                    if file.extension().and_then(|e| e.to_str()) != Some("swift") {
-                        allow_local_fallback = false;
-                    }
-                }
-                Ok(Err(_)) | Err(_) => {}
+            if let Ok(Ok(outline)) =
+                tokio::time::timeout(std::time::Duration::from_millis(2500), query_fut).await
+            {
+                collect_named(&outline, name, None, file, &mut file_hits)?;
             }
         }
-        if file_hits.is_empty() && allow_local_fallback {
+        if file_hits.is_empty() && is_swift && remote.port() != 9 {
             file_hits = local_declarations_in_file(file, name);
         }
         for hit in file_hits {
@@ -271,12 +266,14 @@ pub(crate) fn local_declarations_in_file(file: &Path, name: &str) -> Vec<SymbolH
     let Some(text) = read_name_scan_text(file) else {
         return Vec::new();
     };
+    let code_mask = crate::tools::references::mask_executable_code(&text, file);
+    let masked = crate::tools::references::masked_code_string(&text, &code_mask);
     let mut hits = Vec::new();
     let mut current_container: Option<(String, i32)> = None;
     let mut brace_depth: i32 = 0;
-    for (index, line) in text.lines().enumerate() {
+    for (index, line) in masked.lines().enumerate() {
         let trimmed = line.trim();
-        if !trimmed.starts_with("//") && !trimmed.starts_with('#') && !trimmed.starts_with('*') {
+        if !trimmed.is_empty() {
             if let Some(container_label) = enclosing_container_header(trimmed) {
                 current_container = Some((container_label, brace_depth));
             }
