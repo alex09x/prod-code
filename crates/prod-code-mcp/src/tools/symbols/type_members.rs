@@ -8,8 +8,11 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::across_projects::{names_word, symbol_search_across_projects};
-use super::matching::{bare_symbol_name, owner_path_matches, owner_segments};
+use super::across_projects::{names_word, read_name_scan_text, symbol_search_across_projects};
+use super::matching::{
+    bare_symbol_name, decorated_owner, is_test_source_path, names_type, owner_path_matches,
+    owner_segments,
+};
 use super::nested_projects::source_files;
 use super::sources::{RemoteSources, is_use_declaration};
 use super::types::{MalformedLspCoordinate, SymbolHit, lsp_position, symbol_kind_name};
@@ -28,7 +31,7 @@ pub(crate) fn find_source_members(
     owner: &[&str],
     member: &str,
 ) -> Vec<SymbolHit> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Some(text) = read_name_scan_text(path) else {
         return Vec::new();
     };
     let type_name = owner.last().copied().unwrap_or_default();
@@ -38,18 +41,48 @@ pub(crate) fn find_source_members(
     if !type_name.is_empty() && !owner_path_matches(root, path, owner, &[type_name.to_string()]) {
         return Vec::new();
     }
+    let is_go = path.extension().and_then(|e| e.to_str()) == Some("go");
+    let file_declares_type =
+        type_name.is_empty() || text.lines().any(|l| declared_at(l, type_name).is_some());
     let mut hits = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        if let Some(col) = declared_at(line, member) {
-            hits.push(SymbolHit {
-                path: path.to_path_buf(),
-                name: member.to_string(),
-                kind: "Property",
-                container: Some(owner.join("::")),
-                line: index as u32 + 1,
-                col: col as u32 + 1,
-            });
+        let Some(col) = declared_at(line, member) else {
+            continue;
+        };
+        let trimmed = line.trim_start();
+        if is_go {
+            if trimmed.starts_with("func") {
+                let prefix: String = line.chars().take(col).collect();
+                if !type_name.is_empty() && !names_word(&prefix, type_name) {
+                    continue;
+                }
+            } else {
+                // Go struct fields do not use `name: Value`; a colon after `member` in Go is a
+                // composite literal key or label, not a member declaration (#1110).
+                let after: String = line.chars().skip(col + member.chars().count()).collect();
+                if !file_declares_type || after.trim_start().starts_with(':') {
+                    continue;
+                }
+            }
+        } else if ["struct ", "enum ", "trait ", "class ", "interface ", "mod "]
+            .iter()
+            .any(|kw| trimmed.starts_with(kw) || trimmed.contains(&format!(" {kw}")))
+            || (!file_declares_type && !trimmed.contains("fn "))
+        {
+            continue;
         }
+        hits.push(SymbolHit {
+            path: path.to_path_buf(),
+            name: member.to_string(),
+            kind: if trimmed.starts_with("func") || trimmed.contains("fn ") {
+                "Method"
+            } else {
+                "Property"
+            },
+            container: Some(owner.join("::")),
+            line: index as u32 + 1,
+            col: col as u32 + 1,
+        });
     }
     hits
 }
@@ -82,7 +115,7 @@ pub(crate) async fn type_members(
             files.push(p);
         } else if p.is_dir() {
             for entry in source_files(&p).take(8) {
-                if std::fs::read_to_string(&entry).is_ok_and(|text| names_word(&text, member)) {
+                if read_name_scan_text(&entry).is_some_and(|text| names_word(&text, member)) {
                     files.push(entry);
                 }
             }
@@ -136,17 +169,62 @@ pub(crate) async fn type_members(
     }
     let mut candidates = Vec::new();
     if members.is_empty() {
-        for path in source_files(root).take(1000) {
+        // First inspect sibling files in the same directory/package as the type declaration (#1110).
+        for type_file in &files {
             if tokio::time::Instant::now() >= deadline {
                 break;
             }
-            if !files.contains(&path)
-                && std::fs::read_to_string(&path)
-                    .is_ok_and(|text| names_word(&text, member) && names_word(&text, type_name))
-            {
-                candidates.push(path);
-                if candidates.len() >= 4 {
+            let type_engine = crate::sync::engine_for_file(type_file).filter(|e| !e.is_empty());
+            let (Some(type_engine), Some(parent_dir)) = (type_engine, type_file.parent()) else {
+                continue;
+            };
+            let Ok(entries) = std::fs::read_dir(parent_dir) else {
+                continue;
+            };
+            let mut siblings: Vec<std::path::PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.is_file()
+                        && !files.contains(p)
+                        && crate::sync::engine_for_file(p) == Some(type_engine)
+                })
+                .collect();
+            siblings.sort_by_key(|p| (is_test_source_path(p), p.clone()));
+            for sibling in siblings {
+                if tokio::time::Instant::now() >= deadline {
                     break;
+                }
+                if candidates.contains(&sibling) {
+                    continue;
+                }
+                if read_name_scan_text(&sibling)
+                    .is_some_and(|text| names_word(&text, member) && names_word(&text, type_name))
+                {
+                    candidates.push(sibling);
+                    if candidates.len() >= 6 {
+                        break;
+                    }
+                }
+            }
+        }
+        if candidates.len() < 4 {
+            for path in source_files(root).take(1000) {
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                if !files.contains(&path)
+                    && !candidates.contains(&path)
+                    && !is_test_source_path(&path)
+                    && read_name_scan_text(&path).is_some_and(|text| {
+                        names_word(&text, member)
+                            && names_word(&text, type_name)
+                            && text.lines().any(|l| declared_at(l, member).is_some())
+                    })
+                {
+                    candidates.push(path);
+                    if candidates.len() >= 6 {
+                        break;
+                    }
                 }
             }
         }
@@ -237,7 +315,8 @@ pub(crate) async fn type_members(
 /// called `type_name`, as (name, LSP kind, 1-based line, 1-based column) of the member's name.
 /// A nested answer lists them as children of the type, or of an `impl` block for it (that is
 /// where rust-analyzer puts methods); a flat one, as the gateway's own engine answers, names the
-/// parent in `containerName`, innermost last after ` > `.
+/// parent in `containerName`, innermost last after ` > `; `gopls` names receiver methods at top
+/// level as `(*Type).Method` or `(Type).Method` (#1110).
 pub(crate) fn collect_members(
     symbols: &serde_json::Value,
     root: &Path,
@@ -253,18 +332,19 @@ pub(crate) fn collect_members(
         bare_symbol_name(name).eq_ignore_ascii_case(member)
     };
     for sym in symbols.as_array().into_iter().flatten() {
+        let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let parent = sym.get("containerName").and_then(|c| c.as_str());
+        let decorated = decorated_owner(name);
         if is_member(sym)
-            && parent.is_some_and(|parent| {
+            && (parent.is_some_and(|parent| {
                 owner_path_matches(root, path, owner, &owner_segments(parent))
-            })
+            }) || (!decorated.is_empty() && owner_path_matches(root, path, owner, &decorated)))
         {
             out.push(member_at(sym)?);
         }
         let Some(children) = sym.get("children") else {
             continue;
         };
-        let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let mut declared = ancestors.to_vec();
         declared.extend(owner_segments(name));
         if names_type(name, type_name) && owner_path_matches(root, path, owner, &declared) {
@@ -312,15 +392,4 @@ pub(crate) fn member_at(sym: &serde_json::Value) -> Result<(String, u64, u32, u3
         line,
         col,
     ))
-}
-
-/// Whether an outline label names the type `type_name`: the type itself, or an `impl` block
-/// for it (`impl Type`, `impl<T> Type<T>`, `impl Trait for Type`), whose members are the
-/// type's too.
-pub(crate) fn names_type(label: &str, type_name: &str) -> bool {
-    owner_segments(label).last().is_some_and(|target| {
-        target
-            .replace('-', "_")
-            .eq_ignore_ascii_case(&type_name.replace('-', "_"))
-    })
 }

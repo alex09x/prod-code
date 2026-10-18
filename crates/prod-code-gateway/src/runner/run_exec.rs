@@ -120,6 +120,13 @@ pub async fn run_exec_with_ram(
     } else {
         TreeSnapshot::default()
     });
+    let _active_exec = req.pull_changes.then(|| {
+        workspace::register_active_exec(
+            &workspace,
+            snapshot_started,
+            Arc::new(before.stamps.clone()),
+        )
+    });
 
     let run_dir = match req.subdir.as_deref() {
         Some(sub)

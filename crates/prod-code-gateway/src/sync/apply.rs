@@ -87,11 +87,17 @@ pub async fn apply_sync_with_metrics(
             )
         })
         .collect();
+    let active_exec = workspace::active_exec_snapshot(&server_workspace);
+    let synced_during_exec = active_exec
+        .as_ref()
+        .map(|(started, _)| workspace::synced_since(&server_workspace, *started))
+        .unwrap_or_default();
     let mut project_config_changed = false;
     let mut watched = Vec::new();
     // Files that could not be written: not recorded as synced, and reported stale so that the
     // client sends them again (#385).
     let mut failed: Vec<String> = Vec::new();
+    let mut skipped_pre_exec: Vec<String> = Vec::new();
     for delta in req.files {
         let target_path = match safe_sync_target(&server_workspace, &delta.relative_path).await {
             Ok(path) => path,
@@ -104,6 +110,16 @@ pub async fn apply_sync_with_metrics(
         project_config_changed |= is_project_config_file(&delta.relative_path);
         match delta.content {
             Some(content_bytes) => {
+                let incoming_stamp = (content_bytes.len() as u64, content_hash(&content_bytes));
+                if target_path.exists()
+                    && active_exec.as_ref().is_some_and(|(_, before)| {
+                        before.get(delta.relative_path.as_str()) == Some(&incoming_stamp)
+                    })
+                    && !synced_during_exec.contains_key(delta.relative_path.as_str())
+                {
+                    skipped_pre_exec.push(delta.relative_path);
+                    continue;
+                }
                 bytes_transferred += content_bytes.len();
                 let kind = if target_path.exists() {
                     workspace::WatchedChange::Changed
@@ -169,7 +185,7 @@ pub async fn apply_sync_with_metrics(
     }
     let synced: Vec<(String, Option<u64>)> = synced
         .into_iter()
-        .filter(|(path, _)| !failed.contains(path))
+        .filter(|(path, _)| !failed.contains(path) && !skipped_pre_exec.contains(path))
         .collect();
     workspace::record_synced(&server_workspace, &synced);
     workspace::touch_last_used(&server_workspace);

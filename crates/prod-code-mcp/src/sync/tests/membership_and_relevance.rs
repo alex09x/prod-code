@@ -283,5 +283,23 @@ version = "0.2.2"
         assert!(!crate::sync::filter_path::is_synced_git_path(
             "qis/datasets/raw_dump.csv"
         ));
+
+        // Agent runtime state directories must never be synced (#1108).
+        assert!(!is_relevant_code_or_manifest_file(
+            ".prod/runtime/agents/0731ccca/context.json"
+        ));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            ".prod/runtime/agents/0731ccca/context.json"
+        ));
+        assert!(!is_relevant_code_or_manifest_file(
+            ".prod/runtime/sessions/e466425b/turn-state.json"
+        ));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            ".prod/runtime/sessions/e466425b/turn-state.json"
+        ));
+        assert!(!is_relevant_code_or_manifest_file(".prod/hooks/run.sh"));
+        assert!(!crate::sync::filter_path::is_synced_git_path(
+            ".prod/hooks/run.sh"
+        ));
     }
 }

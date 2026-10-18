@@ -166,3 +166,64 @@ async fn cluster_rebalance_tick_skips_cgo_check_on_rust_workspace() {
     let (_, engine) = crate::sync::engine_project(temp.path(), temp.path());
     assert_eq!(engine, Some("rust"));
 }
+
+#[tokio::test]
+async fn workspace_mutation_lock_allows_concurrent_reads_and_serializes_mutations() {
+    use crate::tools::execution::{is_read_only_tool, workspace_mutation_lock};
+
+    assert!(is_read_only_tool("code_definition", &serde_json::json!({})));
+    assert!(is_read_only_tool("code_references", &serde_json::json!({})));
+    assert!(is_read_only_tool(
+        "code_shadow_run",
+        &serde_json::json!({"argv": ["cargo", "test"], "hypotheses": []})
+    ));
+    assert!(!is_read_only_tool(
+        "code_shadow_run",
+        &serde_json::json!({"argv": ["cargo", "test"], "hypotheses": [], "apply": true})
+    ));
+    assert!(is_read_only_tool("code_lint", &serde_json::json!({})));
+    assert!(!is_read_only_tool(
+        "code_lint",
+        &serde_json::json!({"fix": true})
+    ));
+    assert!(!is_read_only_tool(
+        "code_check",
+        &serde_json::json!({"fix": true})
+    ));
+    assert!(!is_read_only_tool(
+        "code_exec",
+        &serde_json::json!({"argv": ["cargo", "test"]})
+    ));
+    assert!(!is_read_only_tool(
+        "code_change_signature",
+        &serde_json::json!({"apply": true})
+    ));
+    assert!(!is_read_only_tool("code_rename", &serde_json::json!({})));
+
+    let temp = tempfile::tempdir().unwrap();
+    let lock = workspace_mutation_lock(temp.path());
+    let r1 = lock.clone().try_read_owned().expect("first read lock");
+    let r2 = lock
+        .clone()
+        .try_read_owned()
+        .expect("second concurrent read lock");
+    assert!(
+        lock.clone().try_write_owned().is_err(),
+        "mutating write lock must wait while read locks are held"
+    );
+    drop(r1);
+    drop(r2);
+    let w1 = lock
+        .clone()
+        .try_write_owned()
+        .expect("write lock after reads finish");
+    assert!(
+        lock.clone().try_write_owned().is_err(),
+        "second mutating tool must serialize behind active write lock"
+    );
+    assert!(
+        lock.clone().try_read_owned().is_err(),
+        "read lock must wait while mutating tool holds write lock"
+    );
+    drop(w1);
+}

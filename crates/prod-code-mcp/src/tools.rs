@@ -46,27 +46,27 @@ pub mod execution;
 pub use execution::*;
 pub(crate) async fn dispatch_tool(
     remote: SocketAddr,
-    workspace_root: &Path,
+    root: &Path,
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
     match tool_name {
-        "code_symbols" => handle_symbols(remote, workspace_root, &args).await,
-        "code_safe_delete" => handle_safe_delete(remote, workspace_root, &args).await,
+        "code_symbols" => Box::pin(handle_symbols(remote, root, &args)).await,
+        "code_safe_delete" => Box::pin(handle_safe_delete(remote, root, &args)).await,
         "code_assists" | "code_assist" => {
-            handle_assists(remote, workspace_root, tool_name, &args).await
+            Box::pin(handle_assists(remote, root, tool_name, &args)).await
         }
         "code_check" | "code_lint" | "code_test" | "code_benchmarks" => {
-            handle_check(remote, workspace_root, tool_name, &args).await
+            Box::pin(handle_check(remote, root, tool_name, &args)).await
         }
-        "code_rename" => handle_rename(remote, workspace_root, &args).await,
-        "code_exec" => handle_exec(remote, workspace_root, &args).await,
-        "code_definition" => handle_definition(remote, workspace_root, &args).await,
+        "code_rename" => Box::pin(handle_rename(remote, root, &args)).await,
+        "code_exec" => Box::pin(handle_exec(remote, root, &args)).await,
+        "code_definition" => Box::pin(handle_definition(remote, root, &args)).await,
 
         "code_callers" | "code_callees" => {
-            handle_callers(remote, workspace_root, tool_name, &args).await
+            Box::pin(handle_callers(remote, root, tool_name, &args)).await
         }
-        "code_implementations" => handle_implementations(remote, workspace_root, &args).await,
+        "code_implementations" => Box::pin(handle_implementations(remote, root, &args)).await,
         "code_supertypes" => {
             let path_str = args
                 .get("path")
@@ -79,42 +79,42 @@ pub(crate) async fn dispatch_tool(
                     .with_context(|| format!("Missing '{key}' argument"))
             };
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-            let file_path = resolve_file_path(workspace_root, path_str);
+            let file_path = resolve_file_path(root, path_str);
             let found = crate::supertypes::supertypes(
                 remote,
-                workspace_root,
+                root,
                 &file_path,
                 num("line")?,
                 num("character")?,
                 depth,
             )
             .await?;
-            Ok(McpToolCallResult::text(found.render(workspace_root)))
+            Ok(McpToolCallResult::text(found.render(root)))
         }
         "code_impact" => {
             let base = args.get("base").and_then(|v| v.as_str());
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
-            let report = crate::impact::analyze(remote, workspace_root, base, depth).await?;
+            let report = crate::impact::analyze(remote, root, base, depth).await?;
             Ok(McpToolCallResult::text(report.render()))
         }
-        "code_diagnose_failure" => handle_diagnose_failure(remote, workspace_root, &args).await,
+        "code_diagnose_failure" => Box::pin(handle_diagnose_failure(remote, root, &args)).await,
         "code_diagnostics" | "code_validate_edit" => {
-            handle_diagnostics(remote, workspace_root, tool_name, &args).await
+            Box::pin(handle_diagnostics(remote, root, tool_name, &args)).await
         }
-        "code_validate_edits" => handle_validate_edits(remote, workspace_root, &args).await,
-        "code_shadow_run" => handle_shadow_run(remote, workspace_root, &args).await,
-        "code_slice" => handle_slice(remote, workspace_root, &args).await,
-        "code_search" => handle_search(remote, workspace_root, &args).await,
-        "code_codemod" => handle_codemod(remote, workspace_root, &args).await,
-        "code_schema_rename" => handle_schema_rename(remote, workspace_root, &args).await,
-        "code_encapsulate_field" => handle_encapsulate_field(remote, workspace_root, &args).await,
-        "code_migrate_type" => handle_migrate_type(remote, workspace_root, &args).await,
-        "code_extract_field" => handle_extract_field(remote, workspace_root, &args).await,
-        "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
-        "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
-        "code_inline_parameter" => handle_inline_parameter(remote, workspace_root, &args).await,
-        "code_introduce_variable" => handle_introduce_variable(remote, workspace_root, &args).await,
-        "code_extract_function" => handle_extract_function(remote, workspace_root, &args).await,
+        "code_validate_edits" => Box::pin(handle_validate_edits(remote, root, &args)).await,
+        "code_shadow_run" => Box::pin(handle_shadow_run(remote, root, &args)).await,
+        "code_slice" => Box::pin(handle_slice(remote, root, &args)).await,
+        "code_search" => Box::pin(handle_search(remote, root, &args)).await,
+        "code_codemod" => Box::pin(handle_codemod(remote, root, &args)).await,
+        "code_schema_rename" => Box::pin(handle_schema_rename(remote, root, &args)).await,
+        "code_encapsulate_field" => Box::pin(handle_encapsulate_field(remote, root, &args)).await,
+        "code_migrate_type" => Box::pin(handle_migrate_type(remote, root, &args)).await,
+        "code_extract_field" => Box::pin(handle_extract_field(remote, root, &args)).await,
+        "code_wrap_return" => Box::pin(handle_wrap_return(remote, root, &args)).await,
+        "code_make_static" => Box::pin(handle_make_static(remote, root, &args)).await,
+        "code_inline_parameter" => Box::pin(handle_inline_parameter(remote, root, &args)).await,
+        "code_introduce_variable" => Box::pin(handle_introduce_variable(remote, root, &args)).await,
+        "code_extract_function" => Box::pin(handle_extract_function(remote, root, &args)).await,
         "code_loop_to_iterator" => {
             let path_str = args
                 .get("path")
@@ -133,17 +133,10 @@ pub(crate) async fn dispatch_tool(
                 .map(|v| v as u32);
             let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let done = crate::loop_to_iterator::loop_to_iterator_polyglot(
-                remote,
-                workspace_root,
-                &file_path,
-                symbol,
-                line,
-                character,
-                apply,
-                force,
-            )
+            let file_path = resolve_file_path(root, path_str);
+            let done = Box::pin(crate::loop_to_iterator::loop_to_iterator_polyglot(
+                remote, root, &file_path, symbol, line, character, apply, force,
+            ))
             .await?;
             let text = done.render();
             Ok(if done.diagnostics.is_empty() {
@@ -152,12 +145,12 @@ pub(crate) async fn dispatch_tool(
                 McpToolCallResult::error(text)
             })
         }
-        "code_extract_trait" => handle_extract_trait(remote, workspace_root, &args).await,
+        "code_extract_trait" => Box::pin(handle_extract_trait(remote, root, &args)).await,
         "code_replace_constructor_with_factory" => {
-            handle_replace_constructor_with_factory(remote, workspace_root, &args).await
+            Box::pin(handle_replace_constructor_with_factory(remote, root, &args)).await
         }
         "code_replace_constructor_with_builder" => {
-            handle_replace_constructor_with_builder(remote, workspace_root, &args).await
+            Box::pin(handle_replace_constructor_with_builder(remote, root, &args)).await
         }
         "code_replace_constructor" => {
             let mode = args
@@ -165,34 +158,40 @@ pub(crate) async fn dispatch_tool(
                 .and_then(|m| m.as_str())
                 .unwrap_or("factory");
             if mode == "builder" {
-                handle_replace_constructor_with_builder(remote, workspace_root, &args).await
+                Box::pin(handle_replace_constructor_with_builder(remote, root, &args)).await
             } else {
-                handle_replace_constructor_with_factory(remote, workspace_root, &args).await
+                Box::pin(handle_replace_constructor_with_factory(remote, root, &args)).await
             }
         }
-        "code_pull_up" => handle_pull_up(remote, workspace_root, &args).await,
-        "code_push_down" => handle_push_down(remote, workspace_root, &args).await,
+        "code_pull_up" => Box::pin(handle_pull_up(remote, root, &args)).await,
+        "code_push_down" => Box::pin(handle_push_down(remote, root, &args)).await,
         "code_replace_inheritance_with_delegation" | "code_replace_inheritance" => {
-            handle_replace_inheritance_with_delegation(remote, workspace_root, &args).await
+            Box::pin(handle_replace_inheritance_with_delegation(
+                remote, root, &args,
+            ))
+            .await
         }
         "code_replace_conditional_with_polymorphism" | "code_replace_conditional" => {
-            handle_replace_conditional_with_polymorphism(remote, workspace_root, &args).await
+            Box::pin(handle_replace_conditional_with_polymorphism(
+                remote, root, &args,
+            ))
+            .await
         }
-        "code_extract_interface" => handle_extract_interface(remote, workspace_root, &args).await,
-        "code_extract_delegate" => handle_extract_delegate(remote, workspace_root, &args).await,
-        "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
-        "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
-        "code_generify" => handle_generify(remote, workspace_root, &args).await,
-        "code_extract_parameter" => handle_extract_parameter(remote, workspace_root, &args).await,
+        "code_extract_interface" => Box::pin(handle_extract_interface(remote, root, &args)).await,
+        "code_extract_delegate" => Box::pin(handle_extract_delegate(remote, root, &args)).await,
+        "code_convert_to_method" => Box::pin(handle_convert_to_method(remote, root, &args)).await,
+        "code_invert_boolean" => Box::pin(handle_invert_boolean(remote, root, &args)).await,
+        "code_generify" => Box::pin(handle_generify(remote, root, &args)).await,
+        "code_extract_parameter" => Box::pin(handle_extract_parameter(remote, root, &args)).await,
         "code_introduce_parameter_object" => {
-            handle_introduce_parameter_object(remote, workspace_root, &args).await
+            Box::pin(handle_introduce_parameter_object(remote, root, &args)).await
         }
-        "code_move" => handle_move(remote, workspace_root, &args).await,
-        "code_move_module" => handle_move_module(remote, workspace_root, &args).await,
-        "code_move_method" => handle_move_method(remote, workspace_root, &args).await,
-        "code_change_signature" => handle_change_signature(remote, workspace_root, &args).await,
-        "code_generate_fixture" => handle_generate_fixture(remote, workspace_root, &args).await,
-        "code_dead_code" => handle_dead_code(remote, workspace_root, &args).await,
+        "code_move" => Box::pin(handle_move(remote, root, &args)).await,
+        "code_move_module" => Box::pin(handle_move_module(remote, root, &args)).await,
+        "code_move_method" => Box::pin(handle_move_method(remote, root, &args)).await,
+        "code_change_signature" => Box::pin(handle_change_signature(remote, root, &args)).await,
+        "code_generate_fixture" => Box::pin(handle_generate_fixture(remote, root, &args)).await,
+        "code_dead_code" => Box::pin(handle_dead_code(remote, root, &args)).await,
         "code_prune_orphans" => {
             let max_files = args
                 .get("max_files")
@@ -216,9 +215,9 @@ pub(crate) async fn dispatch_tool(
             if commit {
                 apply = true;
             }
-            let pruned = crate::prune::prune_orphans_opts(
+            let pruned = Box::pin(crate::prune::prune_orphans_opts(
                 remote,
-                workspace_root,
+                root,
                 crate::dead_code::DeadCodeOptions {
                     include_exported: false,
                     max_files,
@@ -228,7 +227,7 @@ pub(crate) async fn dispatch_tool(
                 force,
                 git_patch,
                 commit,
-            )
+            ))
             .await?;
             let text = if git_patch && !apply && !commit {
                 pruned.git_patch.clone().unwrap_or_else(|| pruned.render())
@@ -241,12 +240,12 @@ pub(crate) async fn dispatch_tool(
                 McpToolCallResult::error(text)
             })
         }
-        "code_source" => handle_source(remote, workspace_root, &args).await,
-        "code_references" => handle_references(remote, workspace_root, &args).await,
+        "code_source" => Box::pin(handle_source(remote, root, &args)).await,
+        "code_references" => Box::pin(handle_references(remote, root, &args)).await,
 
-        "code_outline" => handle_outline(remote, workspace_root, &args).await,
+        "code_outline" => Box::pin(handle_outline(remote, root, &args)).await,
 
-        "code_hover" | "code_type_at" => handle_hover(remote, workspace_root, &args).await,
+        "code_hover" | "code_type_at" => Box::pin(handle_hover(remote, root, &args)).await,
 
         "code_status" => handle_status(remote).await,
         "code_report_issue" => {
@@ -281,12 +280,12 @@ pub(crate) async fn dispatch_tool(
             }
         }
 
-        "code_sync" => handle_sync(remote, workspace_root, args).await,
+        "code_sync" => handle_sync(remote, root, args).await,
 
-        "code_dependencies" => handle_dependencies(workspace_root, &args).await,
-        "code_find_duplicates" => handle_find_duplicates(workspace_root, &args).await,
-        "code_structural_search" => handle_structural_search(workspace_root, &args).await,
-        "code_propose_expression" => handle_propose_expression(workspace_root, &args).await,
+        "code_dependencies" => handle_dependencies(root, &args).await,
+        "code_find_duplicates" => handle_find_duplicates(root, &args).await,
+        "code_structural_search" => handle_structural_search(root, &args).await,
+        "code_propose_expression" => handle_propose_expression(root, &args).await,
 
         unknown => Ok(McpToolCallResult::error(format!("Unknown tool: {unknown}"))),
     }

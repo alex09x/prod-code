@@ -80,17 +80,70 @@ fn validate_position_arguments(tool_name: &str, args: &serde_json::Value) -> Res
     Ok(())
 }
 
-/// Execute an MCP tool call against the remote gateway.
-pub async fn execute_tool(
-    remote: SocketAddr,
+static WORKSPACE_MUTATION_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<std::path::PathBuf, std::sync::Arc<tokio::sync::RwLock<()>>>,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn workspace_mutation_lock(
     workspace_root: &Path,
-    tool_name: &str,
-    args: serde_json::Value,
-) -> Result<McpToolCallResult> {
-    Box::pin(execute_tool_inner(remote, workspace_root, tool_name, args)).await
+) -> std::sync::Arc<tokio::sync::RwLock<()>> {
+    let key =
+        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+    WORKSPACE_MUTATION_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(key)
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::RwLock::new(())))
+        .clone()
 }
 
-async fn execute_tool_inner(
+/// Returns `true` when `tool_name` with `args` is guaranteed not to mutate workspace files on
+/// disk and can safely execute concurrently with other read-only tool calls.
+pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bool {
+    match tool_name {
+        "code_definition"
+        | "code_references"
+        | "code_callers"
+        | "code_callees"
+        | "code_implementations"
+        | "code_supertypes"
+        | "code_hover"
+        | "code_type_at"
+        | "code_outline"
+        | "code_symbols"
+        | "code_source"
+        | "code_search"
+        | "code_slice"
+        | "code_impact"
+        | "code_diagnostics"
+        | "code_validate_edit"
+        | "code_validate_edits"
+        | "code_assists"
+        | "code_dead_code"
+        | "code_dependencies"
+        | "code_find_duplicates"
+        | "code_structural_search"
+        | "code_propose_expression"
+        | "code_status"
+        | "code_report_issue"
+        | "code_test"
+        | "code_benchmarks"
+        | "code_diagnose_failure" => true,
+        "code_shadow_run" => args.get("apply").and_then(|v| v.as_bool()) != Some(true),
+        "code_check" | "code_lint" => args.get("fix").and_then(|v| v.as_bool()) != Some(true),
+        _ => false,
+    }
+}
+
+enum WorkspaceMutationGuard {
+    Read(#[allow(dead_code)] tokio::sync::OwnedRwLockReadGuard<()>),
+    Write(#[allow(dead_code)] tokio::sync::OwnedRwLockWriteGuard<()>),
+}
+
+/// Execute an MCP tool call against the remote gateway.
+pub async fn execute_tool(
     remote: SocketAddr,
     workspace_root: &Path,
     tool_name: &str,
@@ -107,6 +160,12 @@ async fn execute_tool_inner(
         let dirs = dirs.clone();
         return references_across(remote, workspace_root, args, &dirs).await;
     }
+    let lock = workspace_mutation_lock(workspace_root);
+    let _guard = if is_read_only_tool(tool_name, &args) {
+        WorkspaceMutationGuard::Read(lock.read_owned().await)
+    } else {
+        WorkspaceMutationGuard::Write(lock.write_owned().await)
+    };
     // Normalize path parameter across aliases: path, file_path, file, package, crate (#673, #900)
     let mut args = args;
     let initial_path = args
@@ -141,7 +200,13 @@ async fn execute_tool_inner(
             .and_then(|v| v.as_str())
             .filter(|p| !p.trim().is_empty())
             .map(|p| resolve_file_path(workspace_root, p));
-        let hit = resolve_symbol(remote, workspace_root, symbol.trim(), hint.as_deref()).await?;
+        let hit = Box::pin(resolve_symbol(
+            remote,
+            workspace_root,
+            symbol.trim(),
+            hint.as_deref(),
+        ))
+        .await?;
         let mut owned = args.clone();
         if let Some(obj) = owned.as_object_mut() {
             obj.insert(

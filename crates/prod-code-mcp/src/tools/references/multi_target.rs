@@ -298,7 +298,7 @@ pub(crate) async fn collect_multi_target_references(
                     .as_ref()
                     .is_none_or(|f| f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object());
                 let is_swift = path.extension().and_then(|e| e.to_str()) == Some("swift")
-                    || declaration.extension().and_then(|e| e.to_str()) == Some("swift");
+                    && declaration.extension().and_then(|e| e.to_str()) == Some("swift");
                 let import_match = imports_declaration(&text, &path, declaration, name);
                 let has_proven_import = import_match == ImportMatch::Proven;
                 let has_any_import = import_match != ImportMatch::None;
@@ -314,7 +314,35 @@ pub(crate) async fn collect_multi_target_references(
                     if !unindexed_callers.contains(&path) {
                         unindexed_callers.push(path.clone());
                     }
-                    if (is_swift || has_proven_import) && !is_own_decl {
+                    if is_swift
+                        && !is_own_decl
+                        && swift_shares_or_imports_target(&path, declaration, has_any_import)
+                    {
+                        let non_shadowed: Vec<(usize, usize)> = file_uses
+                            .iter()
+                            .filter(|&&(u_idx, _, u_off)| {
+                                !is_occurrence_shadowed(
+                                    &masked_code,
+                                    &text_lines,
+                                    u_idx,
+                                    u_off,
+                                    name,
+                                )
+                            })
+                            .map(|&(u_idx, u_col, _)| (u_idx, u_col))
+                            .collect();
+                        if !non_shadowed.is_empty() {
+                            seen_files.insert(norm_path.clone());
+                            record_file_uses(
+                                &uri_str,
+                                &non_shadowed,
+                                wanted_len,
+                                seen_locs,
+                                all_locs,
+                            );
+                        }
+                        break;
+                    } else if has_proven_import && !is_own_decl {
                         seen_files.insert(norm_path.clone());
                         record_file_uses(
                             &uri_str,
@@ -329,6 +357,20 @@ pub(crate) async fn collect_multi_target_references(
         }
     }
     checkout_use_note
+}
+
+fn swift_shares_or_imports_target(caller: &Path, decl: &Path, has_any_import: bool) -> bool {
+    fn target_dir(p: &Path) -> Option<&Path> {
+        p.ancestors().find(|a| {
+            a.parent()
+                .and_then(|d| d.file_name())
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| matches!(n, "Sources" | "Tests" | "Plugins"))
+        })
+    }
+    has_any_import
+        || caller.parent() == decl.parent()
+        || matches!((target_dir(caller), target_dir(decl)), (Some(a), Some(b)) if a == b)
 }
 
 fn record_file_uses(

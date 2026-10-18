@@ -166,9 +166,10 @@ impl GenericLspConfig {
             working_dir: None,
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
-            // It reports reloading the package as progress.
+            // It reports reloading the package as progress; bound initial index wait to 4s so
+            // cold Swift semantic queries return promptly with an indexing note (#1113).
             ready: ReadySignal::Progress,
-            index_wait: INDEX_WAIT,
+            index_wait: std::time::Duration::from_secs(4),
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
             health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),

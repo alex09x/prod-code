@@ -358,3 +358,22 @@ pub(crate) fn no_symbol_message(symbol: &str, name: &str, others: &[SymbolHit]) 
         )
     }
 }
+
+/// Whether an outline label names the type `type_name`: the type itself, or an `impl` block
+/// for it (`impl Type`, `impl<T> Type<T>`, `impl Trait for Type`), whose members are the
+/// type's too.
+pub(crate) fn names_type(label: &str, type_name: &str) -> bool {
+    owner_segments(label).last().is_some_and(|target| {
+        target
+            .replace('-', "_")
+            .eq_ignore_ascii_case(&type_name.replace('-', "_"))
+    })
+}
+
+pub(crate) fn is_test_source_path(path: &Path) -> bool {
+    let n = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    n.ends_with("_test.go")
+        || n.ends_with("_test.rs")
+        || n.contains(".test.")
+        || n.contains(".spec.")
+}

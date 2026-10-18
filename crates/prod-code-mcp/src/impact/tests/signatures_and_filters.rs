@@ -83,6 +83,15 @@ fn test_polyglot_signature_extraction_and_normalization() {
     assert_eq!(start, 1);
     assert_eq!(end, 1);
     assert_eq!(sig, "def square(x: int) -> int");
+
+    // Rust lifetimes (`'static`, `'a`) must not be treated as unclosed character literals (#1105).
+    let lifetime_rust = "fn load_fixture(name: &str) -> &'static [u8] {\n    let bytes = b\"hello\";\n    bytes\n}\n";
+    let lines: Vec<&str> = lifetime_rust.lines().collect();
+    let (l_start, l_end, l_sig) =
+        extract_signature_span(&lines, 1, "load_fixture", "rust").unwrap();
+    assert_eq!(l_start, 1);
+    assert_eq!(l_end, 1);
+    assert_eq!(l_sig, "fn load_fixture(name: &str) -> &'static [u8]");
 }
 
 #[test]

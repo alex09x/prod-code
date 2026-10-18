@@ -148,3 +148,117 @@ async fn a_sync_write_that_fails_keeps_the_old_text_and_asks_for_it_again() {
         "fn new() {}"
     );
 }
+
+/// While a `pull_changes` command (such as `gofmt -w`) is running, a concurrent client probe or
+/// delta sync carrying the pre-command unformatted version of newly added Go files must not
+/// overwrite the command's formatted output on disk (#1108).
+#[tokio::test]
+async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
+    let storage = tempfile::tempdir().unwrap();
+    let ws_name = "gofmt-ws";
+    let root = workspace::server_workspace_path(storage.path(), "/client/gofmt-ws", Some(ws_name));
+    std::fs::create_dir_all(root.join("internal/server")).unwrap();
+    workspace::touch_last_used(&root);
+
+    let unformatted_router = b"package server\nfunc   route( ) {}\n";
+    let unformatted_types = b"package server\ntype   Item  struct{ A int }\n";
+    let formatted_router = b"package server\n\nfunc route() {}\n";
+    let formatted_types = b"package server\n\ntype Item struct{ A int }\n";
+
+    std::fs::write(root.join("internal/server/router.go"), unformatted_router).unwrap();
+    std::fs::write(root.join("internal/server/types.go"), unformatted_types).unwrap();
+
+    let snapshot_started = Instant::now();
+    let before = snapshot_tree(&root);
+    let _active =
+        workspace::register_active_exec(&root, snapshot_started, Arc::new(before.stamps.clone()));
+
+    // Command (`gofmt -w`) rewrites the files in place on the gateway workspace.
+    std::fs::write(root.join("internal/server/router.go"), formatted_router).unwrap();
+    std::fs::write(root.join("internal/server/types.go"), formatted_types).unwrap();
+
+    // Concurrent client probe still has the pre-exec unformatted stamps.
+    let stamps = vec![
+        FileStamp {
+            relative_path: "internal/server/router.go".to_string(),
+            size: unformatted_router.len() as u64,
+            hash: content_hash(unformatted_router),
+        },
+        FileStamp {
+            relative_path: "internal/server/types.go".to_string(),
+            size: unformatted_types.len() as u64,
+            hash: content_hash(unformatted_types),
+        },
+    ];
+    let (missing, deleted) = reconcile_manifest(&root, &stamps);
+    assert!(
+        missing.is_empty(),
+        "expected no missing files, got {missing:?}"
+    );
+    assert!(deleted.is_empty());
+
+    // Concurrent client delta upload attempts to re-upload the pre-exec unformatted bytes.
+    let manager = WorkspaceManager::new();
+    let _ = apply_sync(
+        storage.path(),
+        &manager,
+        SyncRequest {
+            client_workspace_root: "/client/gofmt-ws".to_string(),
+            base_workspace_name: Some(ws_name.to_string()),
+            clean_others: false,
+            files: vec![
+                FileDelta {
+                    relative_path: "internal/server/router.go".to_string(),
+                    content: Some(unformatted_router.to_vec()),
+                    is_executable: false,
+                },
+                FileDelta {
+                    relative_path: "internal/server/types.go".to_string(),
+                    content: Some(unformatted_types.to_vec()),
+                    is_executable: false,
+                },
+            ],
+        },
+    )
+    .await;
+
+    let changed = changed_since(&root, &before.stamps);
+    let paths: Vec<&str> = changed.iter().map(|d| d.relative_path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["internal/server/router.go", "internal/server/types.go"]
+    );
+
+    // A file created by a client sync during the active exec and then removed from the client's
+    // manifest must be deleted by `reconcile_manifest`, while a command-created file is kept.
+    let _ = apply_sync(
+        storage.path(),
+        &manager,
+        SyncRequest {
+            client_workspace_root: "/client/gofmt-ws".to_string(),
+            base_workspace_name: Some(ws_name.to_string()),
+            clean_others: false,
+            files: vec![FileDelta {
+                relative_path: "internal/server/temp_client.go".to_string(),
+                content: Some(b"package server\n".to_vec()),
+                is_executable: false,
+            }],
+        },
+    )
+    .await;
+    std::fs::write(
+        root.join("internal/server/cmd_generated.go"),
+        b"package server\n",
+    )
+    .unwrap();
+    let (_, deleted_after) = reconcile_manifest(&root, &stamps);
+    assert!(
+        deleted_after.contains(&"internal/server/temp_client.go".to_string()),
+        "client-created file omitted from manifest must be deleted: {deleted_after:?}"
+    );
+    assert!(!root.join("internal/server/temp_client.go").exists());
+    assert!(
+        root.join("internal/server/cmd_generated.go").exists(),
+        "command-created file must be preserved during active exec"
+    );
+}

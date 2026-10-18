@@ -39,8 +39,8 @@ pub use session::{
 };
 pub use shared::{SharedWorkspace, watched_events};
 pub use stale::{
-    STALE_MARKER, clear_stale_paths, forget_stale_paths, record_stale_paths, record_synced,
-    stale_paths, synced_since,
+    ActiveExecGuard, STALE_MARKER, active_exec_snapshot, clear_stale_paths, forget_stale_paths,
+    record_stale_paths, record_synced, register_active_exec, stale_paths, synced_since,
 };
 pub use types::{
     RustEngines, RustLoader, WatchedChange, WorkspaceKey, default_max_concurrent_engine_loads,

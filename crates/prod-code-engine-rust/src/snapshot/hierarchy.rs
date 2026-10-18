@@ -8,16 +8,18 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-//! Call hierarchy queries (incoming calls, outgoing calls).
+//! Call hierarchy and workspace symbol queries.
 
 use anyhow::Result;
-use ra_ap_ide::{CallHierarchyConfig, RaFixtureConfig};
+use ra_ap_ide::{
+    CallHierarchyConfig, FileId, FilePosition, MonikerResult, NavigationTarget, RaFixtureConfig,
+};
 use ra_ap_load_cargo::worktree::Overlay;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::RustEngineSnapshot;
-use crate::types::{CallEdge, HierarchyItem};
+use crate::types::{CallEdge, HierarchyItem, WorkspaceSymbol};
 use crate::vfs::offset_to_line_col;
 
 impl RustEngineSnapshot {
@@ -127,5 +129,185 @@ impl RustEngineSnapshot {
                 })
             })
             .collect()
+    }
+
+    /// Workspace-wide symbol search by name (what `workspace/symbol` answers): fuzzy on the
+    /// name, associated items included. Positions point at the name.
+    pub fn workspace_symbols(&self, query: &str, limit: usize) -> Result<Vec<WorkspaceSymbol>> {
+        let overlay = self.overlay_for_path(&self.workspace_root);
+        let limit = limit.max(1);
+        let mut exact_local = ra_ap_ide::Query::new(query.to_string());
+        exact_local.exact();
+        let mut out: Vec<WorkspaceSymbol> = self
+            .analysis
+            .symbol_search(exact_local, limit)?
+            .into_iter()
+            .filter(|target| self.is_in_view(target.file_id, overlay.as_ref()))
+            .filter_map(|target| self.workspace_symbol(target, None))
+            .collect();
+        let local = ra_ap_ide::Query::new(query.to_string());
+        for symbol in self
+            .analysis
+            .symbol_search(local, limit)?
+            .into_iter()
+            .filter(|target| self.is_in_view(target.file_id, overlay.as_ref()))
+            .filter_map(|target| self.workspace_symbol(target, None))
+        {
+            if out.len() >= limit {
+                break;
+            }
+            let listed = out
+                .iter()
+                .any(|s| s.path == symbol.path && (s.line, s.col) == (symbol.line, symbol.col));
+            if !listed {
+                out.push(symbol);
+            }
+        }
+        if out.is_empty()
+            && let Some((qual_prefix, item_name)) = query.rsplit_once("::")
+            && !item_name.is_empty()
+        {
+            let quals: Vec<String> = qual_prefix
+                .split("::")
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim().to_ascii_lowercase())
+                .collect();
+            let mut item_query = ra_ap_ide::Query::new(item_name.to_string());
+            item_query.exact();
+            let mut candidates = self.analysis.symbol_search(item_query, limit.max(200))?;
+            if candidates.is_empty() {
+                candidates = self
+                    .analysis
+                    .symbol_search(ra_ap_ide::Query::new(item_name.to_string()), limit.max(200))?;
+            }
+            for target in candidates
+                .into_iter()
+                .filter(|target| self.is_in_view(target.file_id, overlay.as_ref()))
+            {
+                let module = self.module_path(&target);
+                let Some(symbol) = self.workspace_symbol(target, module) else {
+                    continue;
+                };
+                if symbol.container.as_deref().is_some_and(|c| {
+                    let segs: Vec<String> = c
+                        .split([':', ' ', '<', '>'])
+                        .filter(|s| !s.is_empty() && *s != "impl" && *s != "for")
+                        .map(|s| s.to_ascii_lowercase())
+                        .collect();
+                    segs.len() >= quals.len() && segs[segs.len() - quals.len()..] == quals[..]
+                }) {
+                    out.push(symbol);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+        if out.iter().any(|s| s.name.eq_ignore_ascii_case(query)) {
+            return Ok(out);
+        }
+        let mut exact = ra_ap_ide::Query::new(query.to_string());
+        exact.libs();
+        exact.exact();
+        let mut found = self.library_symbols(exact, limit, overlay.as_ref())?;
+        if found.is_empty() && out.is_empty() {
+            let mut libs = ra_ap_ide::Query::new(query.to_string());
+            libs.libs();
+            found = self.library_symbols(libs, limit, overlay.as_ref())?;
+        }
+        found.extend(out);
+        found.truncate(limit);
+        Ok(found)
+    }
+
+    /// Library symbols matching `query`, each with the module path it is declared in.
+    fn library_symbols(
+        &self,
+        query: ra_ap_ide::Query,
+        limit: usize,
+        overlay: Option<&Overlay>,
+    ) -> Result<Vec<WorkspaceSymbol>> {
+        let out = Vec::new();
+        let targets = self.analysis.symbol_search(query, limit)?;
+        if targets.is_empty() {
+            return Ok(out);
+        }
+        let crate_names: HashMap<FileId, String> = self
+            .analysis
+            .fetch_crates()?
+            .into_iter()
+            .filter_map(|info| Some((info.root_file_id, info.name?.replace('-', "_"))))
+            .collect();
+        Ok(targets
+            .into_iter()
+            .filter(|target| self.is_in_view(target.file_id, overlay))
+            .filter_map(|target| {
+                let module = self.module_path(&target).or_else(|| {
+                    self.analysis
+                        .crates_for(target.file_id)
+                        .ok()?
+                        .into_iter()
+                        .find_map(|k| crate_names.get(&self.analysis.crate_root(k).ok()?))
+                        .cloned()
+                });
+                self.workspace_symbol(target, module)
+            })
+            .collect())
+    }
+
+    /// `crate::module::path` a hit is declared in, from its moniker (#328, #1109).
+    fn module_path(&self, target: &NavigationTarget) -> Option<String> {
+        let focus = target.focus_range.unwrap_or(target.full_range);
+        let position = FilePosition {
+            file_id: target.file_id,
+            offset: focus.start(),
+        };
+        let monikers = self.analysis.moniker(position).ok()??.info;
+        monikers.into_iter().find_map(|result| {
+            let MonikerResult::Moniker(moniker) = result else {
+                return None;
+            };
+            let identifier = moniker.identifier;
+            let mut path = identifier.crate_name;
+            for descriptor in identifier
+                .description
+                .iter()
+                .take(identifier.description.len().saturating_sub(1))
+                .filter(|d| d.name != "impl")
+            {
+                path.push_str("::");
+                path.push_str(&descriptor.name);
+            }
+            Some(path)
+        })
+    }
+
+    /// One search hit as a `WorkspaceSymbol`; `None` when its file is not on disk. `module`
+    /// replaces the container, for hits outside the workspace.
+    fn workspace_symbol(
+        &self,
+        target: NavigationTarget,
+        module: Option<String>,
+    ) -> Option<WorkspaceSymbol> {
+        let path = self.path_for_file_id(target.file_id)?;
+        let text = self.analysis.file_text(target.file_id).ok()?;
+        let focus = target.focus_range.unwrap_or(target.full_range);
+        let (line, col) = offset_to_line_col(&text, focus.start());
+        let (end_line, _) = offset_to_line_col(&text, target.full_range.end());
+        Some(WorkspaceSymbol {
+            path,
+            name: target.name.to_string(),
+            kind: target
+                .kind
+                .map(|k| format!("{k:?}"))
+                .unwrap_or_else(|| "Symbol".to_string()),
+            line,
+            col,
+            end_line: end_line.max(line),
+            container: module.or_else(|| target.container_name.map(|c| c.to_string())),
+        })
     }
 }

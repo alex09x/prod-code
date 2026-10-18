@@ -90,7 +90,12 @@ pub(crate) fn is_callable_symbol(kind: u64, sym: &serde_json::Value, text: Optio
     }
     if matches!(kind, 7 | 8 | 13 | 14) {
         if let Some(detail) = sym.get("detail").and_then(|d| d.as_str())
-            && (detail.contains("=>") || detail.contains("function") || detail.contains('('))
+            && (detail.contains("=>")
+                || detail.contains("function")
+                || detail.starts_with("fn(")
+                || detail.contains(" Fn(")
+                || detail.contains(" FnMut(")
+                || detail.contains(" FnOnce("))
         {
             return true;
         }
@@ -100,11 +105,21 @@ pub(crate) fn is_callable_symbol(kind: u64, sym: &serde_json::Value, text: Optio
         {
             let lines: Vec<&str> = text.lines().collect();
             let idx = (sl - 1) as usize;
+            let decl = lines.get(idx).copied().unwrap_or("").trim();
+            if decl.contains("match ")
+                || decl.starts_with("if let ")
+                || decl.starts_with("while let ")
+            {
+                return false;
+            }
             for line in lines.iter().skip(idx).take(3) {
                 let trimmed = line.trim();
-                if trimmed.contains("=>")
-                    || trimmed.contains("function")
-                    || trimmed.contains("async ")
+                if trimmed.contains("function") || trimmed.contains("async (") {
+                    return true;
+                }
+                if let Some(arrow_pos) = trimmed.find("=>")
+                    && trimmed[..arrow_pos].contains('=')
+                    && !trimmed[..arrow_pos].contains("match ")
                 {
                     return true;
                 }
@@ -123,6 +138,15 @@ pub(crate) fn collect_functions(
     text: Option<&str>,
     out: &mut Vec<(String, u32, u32, u32, u32)>,
 ) -> std::result::Result<(), String> {
+    collect_functions_inner(symbols, text, false, out)
+}
+
+fn collect_functions_inner(
+    symbols: &[serde_json::Value],
+    text: Option<&str>,
+    inside_callable: bool,
+    out: &mut Vec<(String, u32, u32, u32, u32)>,
+) -> std::result::Result<(), String> {
     for sym in symbols {
         let malformed = || unreadable("textDocument/documentSymbol", sym);
         let (Some(name), Some(kind)) = (
@@ -134,13 +158,20 @@ pub(crate) fn collect_functions(
         if name.is_empty() || !(1..=26).contains(&kind) {
             return Err(malformed());
         }
-        if is_callable_symbol(kind, sym, text) && !name.is_empty() {
+        let callable = if inside_callable {
+            matches!(kind, 6 | 9 | 12)
+        } else {
+            is_callable_symbol(kind, sym, text)
+        };
+        if callable && !name.is_empty() {
             let (start, end, sl, sc) = symbol_range(sym).ok_or_else(malformed)?;
             out.push((name.to_string(), start, end, sl, sc));
         }
         match sym.get("children") {
             None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::Array(children)) => collect_functions(children, text, out)?,
+            Some(serde_json::Value::Array(children)) => {
+                collect_functions_inner(children, text, inside_callable || callable, out)?;
+            }
             Some(_) => return Err(malformed()),
         }
     }

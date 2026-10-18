@@ -83,6 +83,12 @@ impl LspSession {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let root_str = root.to_string_lossy().to_string();
         let identity: WorkspaceIdentity = workspace_identity(&root);
+        if let Some(h) = hint
+            && crate::cluster::nested_engine(&root, &h.to_string_lossy()).is_some()
+            && let Ok(routed) = crate::cluster::route_for_path(remote, &root, h.to_str()).await
+        {
+            remote = routed;
+        }
         let mut redirect_count = 0;
         let (framed, handshake) = loop {
             let stream = prod_code_protocol::transport::connect(remote)
