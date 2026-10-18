@@ -79,20 +79,86 @@ pub async fn outline_file(
     let params = serde_json::json!({
         "textDocument": { "uri": file_uri }
     });
-    let res = execute_lsp_query(
+    let source = std::fs::read_to_string(file_path).ok();
+    let query_fut = execute_lsp_query(
         remote,
         workspace_root,
         file_path,
         "textDocument/documentSymbol",
         params,
-    )
-    .await?;
-    let source = std::fs::read_to_string(file_path).ok();
-    let (text, _) = render_outline_with(&res, path_str, options, source.as_deref());
+    );
+    let (res, warmup_note) = if engine == Some("swift") {
+        match tokio::time::timeout(std::time::Duration::from_secs(4), query_fut).await {
+            Ok(res) => (res?, false),
+            Err(_) => (
+                local_swift_outline_symbols(source.as_deref().unwrap_or("")),
+                true,
+            ),
+        }
+    } else {
+        (query_fut.await?, false)
+    };
+    let (mut text, _) = render_outline_with(&res, path_str, options, source.as_deref());
+    if warmup_note {
+        text.push_str(
+            "\n\n(note: outlined from Swift source while sourcekit-lsp finishes package warmup)",
+        );
+    }
     let (text, _) = cut_block(
         &text,
         options.max_bytes.unwrap_or(usize::MAX),
         options.max_items.unwrap_or(usize::MAX),
     );
     Ok(text)
+}
+
+fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
+    let mut items = Vec::new();
+    for (idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+            continue;
+        }
+        for (kw, kind) in [
+            ("struct ", 23u64),
+            ("class ", 5),
+            ("enum ", 10),
+            ("protocol ", 11),
+            ("actor ", 5),
+            ("extension ", 5),
+            ("func ", 12),
+            ("init(", 9),
+        ] {
+            if let Some(pos) = trimmed.find(kw)
+                && (pos == 0 || trimmed[..pos].ends_with(char::is_whitespace))
+            {
+                let name = if kw == "init(" {
+                    "init".to_string()
+                } else {
+                    trimmed[pos + kw.len()..]
+                        .trim()
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                        .collect()
+                };
+                if !name.is_empty() {
+                    let line_u32 = idx as u32;
+                    items.push(serde_json::json!({
+                        "name": name,
+                        "kind": kind,
+                        "range": {
+                            "start": { "line": line_u32, "character": 0 },
+                            "end": { "line": line_u32, "character": line.len() as u32 }
+                        },
+                        "selectionRange": {
+                            "start": { "line": line_u32, "character": 0 },
+                            "end": { "line": line_u32, "character": line.len() as u32 }
+                        }
+                    }));
+                }
+                break;
+            }
+        }
+    }
+    serde_json::Value::Array(items)
 }

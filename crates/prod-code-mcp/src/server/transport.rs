@@ -73,8 +73,6 @@ where
         );
     }
     if resumed {
-        // The session was initialised with the previous binary: tell the client to refresh
-        // its tool list from this one.
         writer
             .write_all(hot_reload::tools_list_changed().as_bytes())
             .await?;
@@ -82,6 +80,11 @@ where
     }
 
     let mut pending: Vec<u8> = Vec::new();
+    let mut eof = false;
+    let mut in_flight: tokio::task::JoinSet<(Option<String>, SocketAddr, Option<String>)> =
+        tokio::task::JoinSet::new();
+    let mut active_aborts: std::collections::HashMap<String, tokio::task::AbortHandle> =
+        std::collections::HashMap::new();
     let period = std::time::Duration::from_secs(30);
     let mut rebalance_interval =
         tokio::time::interval_at(tokio::time::Instant::now() + period, period);
@@ -89,6 +92,7 @@ where
 
     loop {
         if reload_flag.load(std::sync::atomic::Ordering::Acquire)
+            && in_flight.is_empty()
             && pending.is_empty()
             && reader.buffer().is_empty()
             && let Some(exe) = &exe
@@ -103,17 +107,39 @@ where
             reload_flag.store(false, std::sync::atomic::Ordering::Release);
         }
 
+        if eof && in_flight.is_empty() {
+            break;
+        }
         let consumed = tokio::select! {
-            filled = reader.fill_buf() => {
+            filled = reader.fill_buf(), if !eof => {
                 let buf = filled.context("Failed reading from stdin")?;
                 if buf.is_empty() {
-                    break; // EOF
+                    eof = true;
+                    0
+                } else {
+                    pending.extend_from_slice(buf);
+                    buf.len()
                 }
-                pending.extend_from_slice(buf);
-                buf.len()
             }
-            _ = reload_notify.notified() => 0,
-            _ = rebalance_interval.tick() => {
+            Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => {
+                if let Ok((id_key, updated_remote, maybe_out)) = joined {
+                    if let Some(k) = id_key {
+                        active_aborts.remove(&k);
+                    }
+                    if updated_remote != remote {
+                        remote = updated_remote;
+                    }
+                    if let Some(out) = maybe_out
+                        && (writer.write_all(out.as_bytes()).await.is_err()
+                            || writer.flush().await.is_err())
+                    {
+                        break;
+                    }
+                }
+                0
+            }
+            _ = reload_notify.notified(), if !eof => 0,
+            _ = rebalance_interval.tick(), if !eof => {
                 crate::server::rebalance::handle_cluster_rebalance_tick(
                     &mut remote,
                     &workspace_root,
@@ -122,7 +148,9 @@ where
                 0
             }
         };
-        reader.consume(consumed);
+        if consumed > 0 {
+            reader.consume(consumed);
+        }
 
         while let Some(line) = hot_reload::take_line(&mut pending) {
             let trimmed = line.trim();
@@ -133,10 +161,7 @@ where
                 let err_resp = serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": serde_json::Value::Null,
-                    "error": {
-                        "code": -32600,
-                        "message": "Request exceeds maximum JSON-RPC frame size"
-                    }
+                    "error": { "code": -32600, "message": "Request exceeds maximum JSON-RPC frame size" }
                 });
                 if let Ok(mut out) = serde_json::to_string(&err_resp) {
                     out.push('\n');
@@ -161,64 +186,105 @@ where
                     continue;
                 }
             };
+            let method = req_json
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            if method == "notifications/cancelled" || method == "$/cancelRequest" {
+                if let Some(cancel_id) = req_json
+                    .pointer("/params/requestId")
+                    .or_else(|| req_json.pointer("/params/id"))
+                    && let Ok(key) = serde_json::to_string(cancel_id)
+                    && let Some(handle) = active_aborts.remove(&key)
+                {
+                    handle.abort();
+                }
+                continue;
+            }
             let req_id = req_json.get("id").cloned();
-            let handle_future = std::panic::AssertUnwindSafe(handle_mcp_request(
-                &mut remote,
-                &workspace_root,
-                req_json,
-            ));
-            match handle_future.catch_unwind().await {
-                Ok(Ok(Some(resp_val))) => {
-                    let mut out = bound_serialized_response(resp_val, MAX_JSONRPC_FRAME_BYTES);
-                    out.push('\n');
-                    if let Err(e) = writer.write_all(out.as_bytes()).await {
-                        tracing::error!(error = %e, "Failed writing to stdout");
-                        break;
-                    }
-                    if let Err(e) = writer.flush().await {
-                        tracing::error!(error = %e, "Failed flushing stdout");
-                        break;
-                    }
+            if method == "tools/call" {
+                let id_key = req_id
+                    .as_ref()
+                    .and_then(|id| serde_json::to_string(id).ok());
+                let id_key_for_task = id_key.clone();
+                let mut task_remote = remote;
+                let ws_root = workspace_root.clone();
+                let abort_handle = in_flight.spawn(async move {
+                    let fut = std::panic::AssertUnwindSafe(handle_mcp_request(
+                        &mut task_remote,
+                        &ws_root,
+                        req_json,
+                    ));
+                    let outcome = fut.catch_unwind().await;
+                    (
+                        id_key_for_task,
+                        task_remote,
+                        format_handled_response(req_id, outcome),
+                    )
+                });
+                if let Some(k) = id_key {
+                    active_aborts.insert(k, abort_handle);
                 }
-                Ok(Ok(None)) => {}
-                Ok(Err(e)) => {
-                    tracing::error!(error = %e, "MCP request handler internal error");
-                    let err_resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id.unwrap_or(serde_json::Value::Null),
-                        "error": { "code": -32603, "message": format!("Internal error: {e}") }
-                    });
-                    if let Ok(mut out) = serde_json::to_string(&err_resp) {
-                        out.push('\n');
-                        let _ = writer.write_all(out.as_bytes()).await;
-                        let _ = writer.flush().await;
-                    }
-                }
-                Err(panic_payload) => {
-                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                        (*s).to_string()
-                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        "unknown panic".to_string()
-                    };
-                    tracing::error!(panic = %msg, "MCP request handler panicked");
-                    let err_resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": { "code": -32603, "message": format!("Internal error (panic): {msg}") }
-                    });
-                    if let Ok(mut out) = serde_json::to_string(&err_resp) {
-                        out.push('\n');
-                        let _ = writer.write_all(out.as_bytes()).await;
-                        let _ = writer.flush().await;
-                    }
+            } else {
+                let fut = std::panic::AssertUnwindSafe(handle_mcp_request(
+                    &mut remote,
+                    &workspace_root,
+                    req_json,
+                ));
+                if let Some(out) = format_handled_response(req_id, fut.catch_unwind().await)
+                    && (writer.write_all(out.as_bytes()).await.is_err()
+                        || writer.flush().await.is_err())
+                {
+                    return Ok(());
                 }
             }
         }
     }
 
     Ok(())
+}
+
+fn format_handled_response(
+    req_id: Option<serde_json::Value>,
+    outcome: std::result::Result<Result<Option<serde_json::Value>>, Box<dyn std::any::Any + Send>>,
+) -> Option<String> {
+    match outcome {
+        Ok(Ok(Some(resp_val))) => {
+            let mut out = bound_serialized_response(resp_val, MAX_JSONRPC_FRAME_BYTES);
+            out.push('\n');
+            Some(out)
+        }
+        Ok(Ok(None)) => None,
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "MCP request handler internal error");
+            let err_resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": req_id.unwrap_or(serde_json::Value::Null),
+                "error": { "code": -32603, "message": format!("Internal error: {e}") }
+            });
+            serde_json::to_string(&err_resp).ok().map(|mut s| {
+                s.push('\n');
+                s
+            })
+        }
+        Err(panic_payload) => {
+            let msg = panic_payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            tracing::error!(panic = %msg, "MCP request handler panicked");
+            let err_resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": { "code": -32603, "message": format!("Internal error (panic): {msg}") }
+            });
+            serde_json::to_string(&err_resp).ok().map(|mut s| {
+                s.push('\n');
+                s
+            })
+        }
+    }
 }
 
 pub const MAX_JSONRPC_FRAME_BYTES: usize = 512 * 1024;
@@ -263,28 +329,22 @@ pub(crate) fn bound_serialized_response(
         .unwrap_or_default();
 
     if text_blocks.is_empty() {
-        let err_resp = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
-            "error": {
-                "code": -32000,
-                "message": "Response exceeds maximum JSON-RPC frame size"
+        for id in [
+            resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
+            serde_json::Value::Null,
+        ] {
+            let err_resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": -32000, "message": "Response exceeds maximum JSON-RPC frame size" }
+            });
+            if let Ok(s) = serde_json::to_string(&err_resp)
+                && s.len() <= max_frame_bytes
+            {
+                return s;
             }
-        });
-        if let Ok(serialized) = serde_json::to_string(&err_resp)
-            && serialized.len() <= max_frame_bytes
-        {
-            return serialized;
         }
-        return serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": serde_json::Value::Null,
-            "error": {
-                "code": -32000,
-                "message": "Response exceeds maximum JSON-RPC frame size"
-            }
-        })
-        .to_string();
+        return r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Response exceeds maximum JSON-RPC frame size"}}"#.to_string();
     }
 
     let marker = "\n[... output truncated to avoid exceeding MCP frame line limits]\n";
@@ -310,32 +370,20 @@ pub(crate) fn bound_serialized_response(
             target_len = target_len.saturating_sub(4096);
         }
     }
-    let fallback = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": resp.get("id"),
-        "result": {
-            "content": [{
-                "type": "text",
-                "text": "[... output truncated to avoid exceeding MCP frame line limits]\n"
-            }],
-            "isError": false
+    for id in [
+        resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
+        serde_json::Value::Null,
+    ] {
+        let fallback = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "content": [{ "type": "text", "text": marker.trim_start() }], "isError": false }
+        });
+        if let Ok(s) = serde_json::to_string(&fallback)
+            && s.len() <= max_frame_bytes
+        {
+            return s;
         }
-    });
-    if let Ok(serialized) = serde_json::to_string(&fallback)
-        && serialized.len() <= max_frame_bytes
-    {
-        return serialized;
     }
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": serde_json::Value::Null,
-        "result": {
-            "content": [{
-                "type": "text",
-                "text": "[... output truncated to avoid exceeding MCP frame line limits]\n"
-            }],
-            "isError": false
-        }
-    })
-    .to_string()
+    r#"{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"[... output truncated to avoid exceeding MCP frame line limits]\n"}],"isError":false}}"#.to_string()
 }

@@ -86,10 +86,17 @@ pub fn is_fixture_path(path: &Path) -> bool {
 /// input (Go's `-mod=vendor`, a C library linked through cgo) and goes too (#313). The size
 /// limits are applied where the file is read.
 pub fn is_synced_git_path(rel_path: &str) -> bool {
+    let path = Path::new(rel_path);
+    for component in path.parent().into_iter().flat_map(Path::components) {
+        if let std::path::Component::Normal(dir) = component
+            && matches!(dir.to_str(), Some(".git" | ".prod"))
+        {
+            return false;
+        }
+    }
     if is_relevant_code_or_manifest_file(rel_path) {
         return true;
     }
-    let path = Path::new(rel_path);
     let mut under_code_dir = false;
     let mut under_pkg_dir = false;
     for component in path.parent().into_iter().flat_map(Path::components) {
@@ -97,9 +104,6 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
             continue;
         };
         let dir = dir.to_string_lossy();
-        if dir == ".git" {
-            return false;
-        }
         if matches!(dir.as_ref(), "crates" | "packages") {
             under_pkg_dir = true;
         }

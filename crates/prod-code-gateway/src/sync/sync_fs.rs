@@ -99,6 +99,11 @@ pub fn reconcile_manifest(
     root: &std::path::Path,
     stamps: &[FileStamp],
 ) -> (Vec<String>, Vec<String>) {
+    let active_exec = workspace::active_exec_snapshot(root);
+    let synced_during_exec = active_exec
+        .as_ref()
+        .map(|(started, _)| workspace::synced_since(root, *started))
+        .unwrap_or_default();
     let wanted: std::collections::HashMap<&str, &FileStamp> = stamps
         .iter()
         .map(|s| (s.relative_path.as_str(), s))
@@ -111,6 +116,12 @@ pub fn reconcile_manifest(
     for (rel, path) in &present {
         match wanted.get(rel.as_str()) {
             None => {
+                if active_exec
+                    .as_ref()
+                    .is_some_and(|(_, before)| !before.contains_key(rel.as_str()))
+                {
+                    continue;
+                }
                 if std::fs::remove_file(path).is_ok() {
                     let _ = crate::sync::config_meta::forget_sync(root, path);
                     deleted.push(rel.clone());
@@ -122,6 +133,9 @@ pub fn reconcile_manifest(
                     let server_size = bytes.len() as u64;
                     let server_hash = content_hash(&bytes);
                     (server_size == stamp.size && server_hash == stamp.hash)
+                        || (active_exec.as_ref().is_some_and(|(_, before)| {
+                            before.get(rel.as_str()) == Some(&(stamp.size, stamp.hash))
+                        }) && !synced_during_exec.contains_key(rel.as_str()))
                         || crate::sync::config_meta::matches(
                             root,
                             path,

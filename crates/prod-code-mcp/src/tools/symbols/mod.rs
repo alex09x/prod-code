@@ -43,3 +43,98 @@ pub(crate) use type_members::*;
 pub(crate) use types::*;
 #[allow(unused_imports)]
 pub(crate) use unindexed::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn go_collect_members_and_source_members_prefer_receiver_methods_over_field_keys() {
+        // gopls top-level method symbols use `(*Store).ConstructionStatus` (#1110).
+        let symbols = json!([{
+            "name": "(*Store).ConstructionStatus",
+            "kind": 6,
+            "selectionRange": {
+                "start": { "line": 14, "character": 18 },
+                "end": { "line": 14, "character": 36 }
+            }
+        }]);
+        let mut hits = Vec::new();
+        let root = std::path::Path::new("/tmp");
+        let file = std::path::Path::new("/tmp/construction_status.go");
+        collect_members(
+            &symbols,
+            root,
+            file,
+            &["Store"],
+            "ConstructionStatus",
+            &[],
+            &mut hits,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].2, 15);
+        assert_eq!(hits[0].3, 19);
+
+        let dir = tempfile::tempdir().unwrap();
+        let callsite_file = dir.path().join("turn_test.go");
+        std::fs::write(
+            &callsite_file,
+            "package pluginstore\nfunc testTurn(s *Store) {\n\t_ = Status{\n\t\tConstructionStatus: s.ConstructionStatus(1),\n\t}\n}\n",
+        )
+        .unwrap();
+        let callsite_hits =
+            find_source_members(dir.path(), &callsite_file, &["Store"], "ConstructionStatus");
+        assert!(
+            callsite_hits.is_empty(),
+            "composite-literal field key in non-type file must not match as Store declaration: {callsite_hits:?}"
+        );
+
+        let method_file = dir.path().join("construction_status.go");
+        std::fs::write(
+            &method_file,
+            "package pluginstore\n\nfunc (s *Store) ConstructionStatus(id int64) string {\n\treturn \"ok\"\n}\n",
+        )
+        .unwrap();
+        let method_hits =
+            find_source_members(dir.path(), &method_file, &["Store"], "ConstructionStatus");
+        assert_eq!(method_hits.len(), 1);
+        assert_eq!(method_hits[0].line, 3);
+        assert_eq!(method_hits[0].container.as_deref(), Some("Store"));
+    }
+
+    #[test]
+    fn local_declarations_extract_rust_impl_methods_and_swift_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        let rust_file = dir.path().join("decode.rs");
+        std::fs::write(
+            &rust_file,
+            "pub struct BlockMeta;\n\nimpl BlockMeta {\n    pub fn decode(input: &[u8]) -> Self {\n        BlockMeta\n    }\n}\n",
+        )
+        .unwrap();
+        let rust_decls = search::local_declarations_in_file(&rust_file, "decode");
+        assert!(rust_decls.iter().any(|d| {
+            d.name == "decode"
+                && d.container
+                    .as_deref()
+                    .is_some_and(|c| c.contains("BlockMeta"))
+                && qualifier_matches(dir.path(), d, &["BlockMeta"])
+        }));
+
+        let swift_file = dir.path().join("AppState.swift");
+        std::fs::write(
+            &swift_file,
+            "final class AppState {\n    func reloadSession() {}\n}\n",
+        )
+        .unwrap();
+        let swift_class_decls = search::local_declarations_in_file(&swift_file, "AppState");
+        assert!(swift_class_decls.iter().any(|d| d.name == "AppState"));
+        let swift_method_decls = search::local_declarations_in_file(&swift_file, "reloadSession");
+        assert!(
+            swift_method_decls.iter().any(|d| {
+                d.name == "reloadSession" && d.container.as_deref() == Some("AppState")
+            })
+        );
+    }
+}

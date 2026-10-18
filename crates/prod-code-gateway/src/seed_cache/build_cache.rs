@@ -176,6 +176,7 @@ pub fn is_node_cache(name: &str) -> bool {
     matches!(
         name,
         ".git"
+            | ".prod"
             | "target"
             | "node_modules"
             | ".venv"

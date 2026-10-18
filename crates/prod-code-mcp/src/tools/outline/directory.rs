@@ -182,7 +182,14 @@ fn subdirectory_listing(dir: &Path, display: &Path, skipped: usize) -> String {
                 return None;
             }
             let sources = source_files(&entry.path())
-                .filter(|path| crate::sync::engine_for_file(path).is_some())
+                .filter(|path| {
+                    crate::sync::engine_for_file(path).is_some_and(|engine| {
+                        !matches!(
+                            engine,
+                            "markdown" | "yaml" | "toml" | "json" | "html" | "css"
+                        )
+                    })
+                })
                 .take(10_000)
                 .count();
             (sources > 0).then_some((name, sources))

@@ -158,6 +158,39 @@ fn a_malformed_document_symbol_is_an_error_not_a_skipped_entry() {
             ("routeMethod".to_string(), 11, 13, 11, 14),
         ]
     );
+
+    // Local `let` bindings (kind 13/14) inside a Rust function must not be collected as functions (#1105).
+    let rust_fn_with_locals = vec![serde_json::json!({
+        "name": "assert_fixture_parity",
+        "kind": 12,
+        "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 20, "character": 1 } },
+        "selectionRange": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 24 } },
+        "children": [
+            {
+                "name": "snapshot_bytes",
+                "kind": 13,
+                "detail": "(Vec<u8>, usize)",
+                "range": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 40 } },
+                "selectionRange": { "start": { "line": 2, "character": 8 }, "end": { "line": 2, "character": 22 } }
+            },
+            {
+                "name": "expected",
+                "kind": 13,
+                "detail": "Result<(), Error>",
+                "range": { "start": { "line": 3, "character": 4 }, "end": { "line": 3, "character": 35 } },
+                "selectionRange": { "start": { "line": 3, "character": 8 }, "end": { "line": 3, "character": 16 } }
+            }
+        ]
+    })];
+    let mut rust_out = Vec::new();
+    assert_eq!(
+        collect_functions(&rust_fn_with_locals, None, &mut rust_out),
+        Ok(())
+    );
+    assert_eq!(
+        rust_out,
+        vec![("assert_fixture_parity".to_string(), 1, 21, 1, 4)]
+    );
 }
 
 #[test]

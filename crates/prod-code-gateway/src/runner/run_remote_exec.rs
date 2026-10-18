@@ -136,6 +136,13 @@ pub async fn run_remote_exec_with_ram(
     } else {
         TreeSnapshot::default()
     });
+    let _active_exec = req.pull_changes.then(|| {
+        workspace::register_active_exec(
+            &workspace,
+            snapshot_started,
+            Arc::new(before.stamps.clone()),
+        )
+    });
 
     let run_dir = resolve_run_dir(&workspace, req.subdir.as_deref());
 

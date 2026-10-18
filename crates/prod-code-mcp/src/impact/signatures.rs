@@ -47,6 +47,25 @@ pub(crate) fn normalize_signature(lines: &[&str], language: &str) -> String {
     trimmed.replace("( ", "(").replace(" )", ")").to_string()
 }
 
+fn is_rust_char_literal(rest_after_quote: &str) -> bool {
+    let mut chars = rest_after_quote.chars();
+    match chars.next() {
+        Some('\\') => {
+            for ch in chars.take(10) {
+                if ch == '\'' {
+                    return true;
+                }
+                if ch.is_whitespace() {
+                    return false;
+                }
+            }
+            false
+        }
+        Some(ch) if ch != '\'' && !ch.is_whitespace() => chars.next() == Some('\''),
+        _ => false,
+    }
+}
+
 pub(crate) fn extract_signature_span(
     lines: &[&str],
     line: u32,
@@ -100,7 +119,11 @@ pub(crate) fn extract_signature_span(
                 }
                 continue;
             }
-            if c == '"' || c == '\'' || c == '`' {
+            if c == '"'
+                || c == '`'
+                || (c == '\''
+                    && (language != "rust" || is_rust_char_literal(&line_text[byte_idx + 1..])))
+            {
                 in_str = true;
                 str_char = c;
                 continue;

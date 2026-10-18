@@ -14,7 +14,8 @@ use std::path::Path;
 
 use super::resolve_file_path;
 use super::symbols::{
-    SymbolHit, match_rank, symbol_search_across_projects, unindexed_declarations,
+    SymbolHit, bare_symbol_name, match_rank, qualifier_matches, symbol_search_across_projects,
+    type_members, unindexed_declarations,
 };
 use crate::protocol::McpToolCallResult;
 
@@ -23,6 +24,7 @@ pub(crate) async fn handle_symbols(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    let started = std::time::Instant::now();
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
@@ -32,6 +34,13 @@ pub(crate) async fn handle_symbols(
         .get("path")
         .and_then(|v| v.as_str())
         .map(|p| resolve_file_path(workspace_root, p));
+    let parts: Vec<&str> = query
+        .split([':', '.', '#', '/'])
+        .map(|p| p.trim().trim_end_matches("()"))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let qualifiers = &parts[..parts.len().saturating_sub(1)];
+    let name = bare_symbol_name(query);
     // More than are shown: a server lists its fuzzy matches in its own order, and the names
     // that hold the query may come after the limit.
     let mut hits = symbol_search_across_projects(
@@ -42,8 +51,27 @@ pub(crate) async fn handle_symbols(
         limit.max(SYMBOL_CANDIDATES),
     )
     .await?;
+    if !qualifiers.is_empty() {
+        hits.retain(|h| qualifier_matches(workspace_root, h, qualifiers));
+        if hits.is_empty()
+            && let Ok(members) =
+                type_members(remote, workspace_root, qualifiers, name, hint.as_deref()).await
+        {
+            hits.extend(members);
+        }
+    }
+    if let Some(ref h) = hint {
+        let under_hint = |hit: &SymbolHit| hit.path == *h || hit.path.starts_with(h);
+        if hits.iter().any(under_hint) {
+            hits.retain(under_hint);
+        }
+    }
     if hits.is_empty() {
-        let unindexed = unindexed_declarations(remote, workspace_root, query).await;
+        let unindexed = if started.elapsed() < std::time::Duration::from_secs(6) {
+            unindexed_declarations(remote, workspace_root, name).await
+        } else {
+            String::new()
+        };
         return Ok(McpToolCallResult::text(format!(
             "No symbols match `{query}`.{unindexed}"
         )));

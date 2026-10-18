@@ -55,7 +55,13 @@ pub async fn resolve_symbol(
         if !members.is_empty() {
             members
         } else {
-            let hits = symbol_search_across_projects(remote, root, name, hint, 200).await?;
+            let mut hits = symbol_search_across_projects(remote, root, symbol, hint, 200).await?;
+            if !hits.iter().any(|hit| {
+                bare_symbol_name(&hit.name).eq_ignore_ascii_case(name)
+                    && qualifier_matches(root, hit, qualifiers)
+            }) {
+                hits.extend(symbol_search_across_projects(remote, root, name, hint, 200).await?);
+            }
             let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
                 .into_iter()
                 .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
@@ -224,7 +230,7 @@ pub(crate) fn find_stdlib_or_usage_hits(
 ) -> Vec<SymbolHit> {
     let mut hits = Vec::new();
     let is_stdlib = matches!(qualifiers.first().copied(), Some("std" | "core" | "alloc"));
-    if !is_stdlib && !symbol.contains("::") {
+    if !is_stdlib {
         return hits;
     }
     let mut files_to_check = Vec::new();
@@ -250,7 +256,7 @@ pub(crate) fn find_stdlib_or_usage_hits(
         }
         for (idx, line) in text.lines().enumerate() {
             if line.contains(symbol)
-                || (line.contains(name) && qualifiers.iter().any(|q| line.contains(q)))
+                || (line.contains(name) && qualifiers.iter().all(|q| line.contains(q)))
             {
                 if let Some(col) = find_identifier_on_line(line, name) {
                     hits.push(SymbolHit {

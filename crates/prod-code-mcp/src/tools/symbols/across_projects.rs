@@ -8,22 +8,19 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::matching::{bare_symbol_name, match_rank};
+use super::matching::{bare_symbol_name, match_rank, qualifier_matches};
 pub(crate) use super::nested_projects::{names_word, read_name_scan_text};
 use super::nested_projects::{nested_project_anchors, projects_naming, source_files};
+pub(crate) use super::search::declarations_in;
 use super::search::{workspace_symbol_search, workspace_symbol_search_auxiliary};
-use super::types::{
-    MalformedLspCoordinate, SymbolHit, is_malformed_lsp_coordinate, lsp_position, symbol_kind_name,
-};
+use super::types::{SymbolHit, is_malformed_lsp_coordinate};
 use super::unindexed::declared_at;
-use crate::tools::execute_lsp_query;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::path::Path;
-use url::Url;
 
 /// The most time allowed for cross-project symbol search before returning accumulated hits (#829).
-pub(crate) const SYMBOL_SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const SYMBOL_SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The most files of a project read for the declarations of a name its server has no index of.
 pub(crate) const MAX_OUTLINED_FILES: usize = 8;
@@ -42,11 +39,14 @@ pub(crate) async fn symbol_search_across_projects(
         return Ok(Vec::new());
     }
     let deadline = tokio::time::Instant::now() + SYMBOL_SEARCH_BUDGET;
+    let parts: Vec<&str> = query
+        .split([':', '.', '#', '/'])
+        .map(|p| p.trim().trim_end_matches("()"))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let qualifiers = &parts[..parts.len().saturating_sub(1)];
+    let qualifier_word = qualifiers.last().copied();
     let name = bare_symbol_name(query);
-    let named = |hits: &[SymbolHit]| {
-        hits.iter()
-            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
-    };
     let resolved_hint = hint.map(|h| {
         if h.is_absolute() {
             h.to_path_buf()
@@ -55,6 +55,13 @@ pub(crate) async fn symbol_search_across_projects(
         }
     });
     let hint = resolved_hint.as_deref();
+    let named = |hits: &[SymbolHit]| {
+        hits.iter().any(|hit| {
+            bare_symbol_name(&hit.name).eq_ignore_ascii_case(name)
+                && (qualifiers.is_empty() || qualifier_matches(root, hit, qualifiers))
+                && hint.is_none_or(|h| hit.path == h || hit.path.starts_with(h))
+        })
+    };
 
     // Fast-path for explicit file hints: if the caller pointed at a specific source file
     // that contains the symbol name, check its outline first (#1033, #1036).
@@ -71,14 +78,18 @@ pub(crate) async fn symbol_search_across_projects(
             Ok(Ok(n)) => n,
             _ => remote,
         };
-        if let Ok(Ok(decls)) = tokio::time::timeout_at(
+        if let Ok(Ok(mut decls)) = tokio::time::timeout_at(
             deadline,
             declarations_in(node, root, &[hint_path.to_path_buf()], name),
         )
         .await
-            && named(&decls)
         {
-            return Ok(decls);
+            if !qualifiers.is_empty() {
+                decls.retain(|d| qualifier_matches(root, d, qualifiers));
+            }
+            if named(&decls) {
+                return Ok(decls);
+            }
         }
     }
 
@@ -96,8 +107,10 @@ pub(crate) async fn symbol_search_across_projects(
         remote
     };
 
+    let primary_deadline =
+        deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
     let mut hits = match tokio::time::timeout_at(
-        deadline,
+        primary_deadline,
         workspace_symbol_search(primary_node, root, query, hint, limit),
     )
     .await
@@ -106,13 +119,16 @@ pub(crate) async fn symbol_search_across_projects(
         Err(_) => {
             tracing::warn!(
                 query,
-                "primary workspace symbol search reached budget; returning no hits"
+                "primary workspace symbol search reached budget; continuing with local fallback"
             );
-            return Ok(Vec::new());
+            Vec::new()
         }
     };
     let extend_unique = |hits: &mut Vec<SymbolHit>, decls: Vec<SymbolHit>| {
         for d in decls {
+            if !qualifiers.is_empty() && !qualifier_matches(root, &d, qualifiers) {
+                continue;
+            }
             if !hits.iter().any(|h| h.path == d.path && h.line == d.line) {
                 hits.push(d);
             }
@@ -120,7 +136,7 @@ pub(crate) async fn symbol_search_across_projects(
     };
     if let Some(hint) = hint {
         // The project a path names may keep no index (sourcekit-lsp before a build), or its
-        // index may omit `override func` declarations (#358, #1091).
+        // index may omit `override func` or associated declarations (#358, #1091, #1109).
         if let (_, Some(engine)) = crate::sync::engine_project(root, hint)
             && (!named(&hits) || engine == "swift")
         {
@@ -130,7 +146,7 @@ pub(crate) async fn symbol_search_across_projects(
                 hint.parent()
             };
             let files = dir
-                .map(|d| files_naming(d, engine, name, deadline))
+                .map(|d| files_naming_qualified(d, engine, name, qualifier_word, deadline))
                 .unwrap_or_default();
             if !files.is_empty()
                 && let Ok(Ok(decls)) = tokio::time::timeout_at(
@@ -144,11 +160,13 @@ pub(crate) async fn symbol_search_across_projects(
         }
         return Ok(hits);
     }
-    if crate::sync::expected_engine(root) == Some("swift") && tokio::time::Instant::now() < deadline
+    if let Some(root_engine) = crate::sync::expected_engine(root)
+        && (root_engine == "swift" || (!qualifiers.is_empty() && !named(&hits)))
+        && tokio::time::Instant::now() < deadline
     {
         let decl_deadline =
             deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
-        let files = files_naming(root, "swift", name, decl_deadline);
+        let files = files_naming_qualified(root, root_engine, name, qualifier_word, decl_deadline);
         if !files.is_empty()
             && let Ok(Ok(decls)) =
                 tokio::time::timeout_at(decl_deadline, declarations_in(remote, root, &files, name))
@@ -160,18 +178,19 @@ pub(crate) async fn symbol_search_across_projects(
     if named(&hits) {
         return Ok(hits);
     }
-    // The projects whose sources name the symbol first, then the others a walk meets (#358).
-    // If the root project already returned relevant matches (prefix, word-boundary, substring),
-    // and no nested project's sources explicitly name the query, avoid falling back to
-    // arbitrary nested project anchors which can cause runaway timeouts (#829).
     let has_relevant_hits = hits.iter().any(|hit| match_rank(&hit.name, query) < 4);
     let mut anchors = projects_naming(root, name, deadline);
+    if let Some(q) = qualifier_word {
+        anchors.sort_by_key(|(path, _, _)| {
+            !read_name_scan_text(path).is_some_and(|text| names_word(&text, q))
+        });
+    }
     if anchors.is_empty() {
         if has_relevant_hits {
             return Ok(hits);
         }
         for anchor in nested_project_anchors(root, deadline) {
-            if anchors.len() >= 3 {
+            if anchors.len() >= 2 {
                 break;
             }
             if !anchors
@@ -190,7 +209,7 @@ pub(crate) async fn symbol_search_across_projects(
             );
             break;
         }
-        let step_budget = std::time::Duration::from_secs(5);
+        let step_budget = std::time::Duration::from_secs(4);
         let route_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
         let node = match tokio::time::timeout_at(
             route_deadline,
@@ -236,15 +255,20 @@ pub(crate) async fn symbol_search_across_projects(
                 Vec::new()
             }
         };
-        let named_here = found
-            .iter()
-            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
+        let named_here = found.iter().any(|hit| {
+            bare_symbol_name(&hit.name).eq_ignore_ascii_case(name)
+                && (qualifiers.is_empty() || qualifier_matches(root, hit, qualifiers))
+        });
         hits.extend(found);
         if (!named_here || engine == "swift") && tokio::time::Instant::now() < deadline {
-            // sourcekit-lsp has no index for Swift files a package does not build, and omits
-            // `override func` from `workspace/symbol`: their outlines still name what they declare (#1081, #1091).
             let decl_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
-            let files = files_naming(&root.join(&subpath), engine, name, decl_deadline);
+            let files = files_naming_qualified(
+                &root.join(&subpath),
+                engine,
+                name,
+                qualifier_word,
+                decl_deadline,
+            );
             if !files.is_empty() {
                 match tokio::time::timeout_at(
                     decl_deadline,
@@ -272,14 +296,15 @@ pub(crate) async fn symbol_search_across_projects(
 }
 
 /// Files of `engine`'s language under `dir` whose text has `name` as a word, prioritizing files
-/// that declare `name`.
-pub(crate) fn files_naming(
+/// that declare `name` (and optionally also mention `qualifier`).
+pub(crate) fn files_naming_qualified(
     dir: &Path,
     engine: &str,
     name: &str,
+    qualifier: Option<&str>,
     deadline: tokio::time::Instant,
 ) -> Vec<std::path::PathBuf> {
-    let mut files: Vec<(bool, std::path::PathBuf)> = Vec::new();
+    let mut files: Vec<(bool, bool, std::path::PathBuf)> = Vec::new();
     for path in source_files(dir).filter(|path| crate::sync::engine_for_file(path) == Some(engine))
     {
         if tokio::time::Instant::now() >= deadline {
@@ -291,88 +316,32 @@ pub(crate) fn files_naming(
         if !names_word(&text, name) {
             continue;
         }
+        let has_qual = qualifier.is_none_or(|q| names_word(&text, q));
         let has_decl = text.lines().any(|line| declared_at(line, name).is_some());
-        files.push((has_decl, path));
-        if files.len() >= MAX_OUTLINED_FILES * 2 {
+        files.push((has_qual, has_decl, path));
+        if files.iter().filter(|(q, d, _)| *q && *d).count() >= MAX_OUTLINED_FILES {
+            break;
+        }
+        if files.len() >= MAX_OUTLINED_FILES * 4 {
             break;
         }
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    let any_decl = files.iter().any(|(d, _)| *d);
+    files.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    let any_qual = files.iter().any(|(q, _, _)| *q);
+    let any_decl = files
+        .iter()
+        .filter(|(q, _, _)| !any_qual || *q)
+        .any(|(_, d, _)| *d);
     files
         .into_iter()
-        .filter(|(d, _)| !any_decl || *d)
-        .map(|(_, p)| p)
+        .filter(|(q, d, _)| (!any_qual || *q) && (!any_decl || *d))
+        .map(|(_, _, p)| p)
         .take(MAX_OUTLINED_FILES)
         .collect()
-}
-
-/// The declarations called `name` in the outlines of `files`.
-pub(crate) async fn declarations_in(
-    remote: SocketAddr,
-    root: &Path,
-    files: &[std::path::PathBuf],
-    name: &str,
-) -> Result<Vec<SymbolHit>> {
-    let mut hits = Vec::new();
-    for file in files {
-        let Ok(uri) = Url::from_file_path(file) else {
-            continue;
-        };
-        let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
-        let Ok(outline) =
-            execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params).await
-        else {
-            continue;
-        };
-        collect_named(&outline, name, None, file, &mut hits)?;
-    }
-    Ok(hits)
-}
-
-/// Walks a `textDocument/documentSymbol` answer, nested or flat, for the symbols called `name`.
-pub(crate) fn collect_named(
-    symbols: &serde_json::Value,
-    name: &str,
-    parent: Option<&str>,
-    file: &Path,
-    out: &mut Vec<SymbolHit>,
-) -> Result<()> {
-    for symbol in symbols.as_array().into_iter().flatten() {
-        let own = symbol.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if bare_symbol_name(own).eq_ignore_ascii_case(name) {
-            let start = symbol
-                .pointer("/selectionRange/start")
-                .or_else(|| symbol.pointer("/location/range/start"));
-            if let Some(start) = start {
-                let (line, col) = lsp_position(start, &format!("named declaration `{own}`"))?;
-                out.push(SymbolHit {
-                    path: file.to_path_buf(),
-                    name: own.to_string(),
-                    kind: symbol_kind_name(
-                        symbol.get("kind").and_then(|k| k.as_u64()).unwrap_or(0),
-                    ),
-                    container: parent.map(str::to_string).or_else(|| {
-                        symbol
-                            .get("containerName")
-                            .and_then(|c| c.as_str())
-                            .filter(|c| !c.is_empty())
-                            .map(str::to_string)
-                    }),
-                    line,
-                    col,
-                });
-            } else {
-                return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
-                    "malformed LSP named declaration `{own}`: missing selection range start"
-                ))));
-            }
-        }
-        if let Some(children) = symbol.get("children") {
-            collect_named(children, name, Some(own), file, out)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

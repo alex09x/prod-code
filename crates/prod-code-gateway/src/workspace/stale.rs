@@ -121,3 +121,63 @@ pub fn clear_stale_paths<'a>(
     }
     all.into_iter().collect()
 }
+
+type ExecStamps = std::sync::Arc<HashMap<String, (u64, u64)>>;
+
+struct ActiveExec {
+    id: u64,
+    started: Instant,
+    stamps: ExecStamps,
+}
+
+static NEXT_EXEC_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static ACTIVE_EXECS: LazyLock<Mutex<HashMap<PathBuf, Vec<ActiveExec>>>> =
+    LazyLock::new(Default::default);
+
+/// Guard removing an active exec's pre-command snapshot when the command and its pullback finish.
+pub struct ActiveExecGuard {
+    workspace_dir: PathBuf,
+    id: u64,
+}
+
+impl Drop for ActiveExecGuard {
+    fn drop(&mut self) {
+        let mut all = ACTIVE_EXECS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(list) = all.get_mut(&self.workspace_dir) {
+            list.retain(|entry| entry.id != self.id);
+            if list.is_empty() {
+                all.remove(&self.workspace_dir);
+            }
+        }
+    }
+}
+
+/// Records the pre-command file stamps of an active `pull_changes` execution on `workspace_dir`.
+pub fn register_active_exec(
+    workspace_dir: &Path,
+    started: Instant,
+    stamps: ExecStamps,
+) -> ActiveExecGuard {
+    let id = NEXT_EXEC_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut all = ACTIVE_EXECS.lock().unwrap_or_else(|e| e.into_inner());
+    all.entry(workspace_dir.to_path_buf())
+        .or_default()
+        .push(ActiveExec {
+            id,
+            started,
+            stamps,
+        });
+    ActiveExecGuard {
+        workspace_dir: workspace_dir.to_path_buf(),
+        id,
+    }
+}
+
+/// Returns the start time and pre-command file stamps of the earliest active `pull_changes`
+/// execution on `workspace_dir`, if one is currently running.
+pub fn active_exec_snapshot(workspace_dir: &Path) -> Option<(Instant, ExecStamps)> {
+    let all = ACTIVE_EXECS.lock().unwrap_or_else(|e| e.into_inner());
+    all.get(workspace_dir)?
+        .first()
+        .map(|entry| (entry.started, std::sync::Arc::clone(&entry.stamps)))
+}

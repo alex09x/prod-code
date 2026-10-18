@@ -100,6 +100,7 @@ pub(crate) async fn collect_multi_target_references(
     let wanted: Vec<char> = name.chars().collect();
     let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
     let mut asked = 0usize;
+    let mut swift_unindexed = false;
     let mut checkout_use_note = None;
     let deadline = tokio::time::Instant::now() + MULTI_TARGET_REF_BUDGET;
     let is_unexported_go =
@@ -214,27 +215,31 @@ pub(crate) async fn collect_multi_target_references(
             if tokio::time::Instant::now() >= deadline {
                 return checkout_use_note;
             }
-            asked += 1;
-            if asked > MAX_USES_ASKED {
-                return checkout_use_note;
-            }
-            let params = serde_json::json!({
-                "textDocument": { "uri": &uri_str },
-                "position": { "line": index, "character": col }
-            });
-            let found_def = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                execute_lsp_query(
-                    remote,
-                    workspace_root,
-                    &path,
-                    "textDocument/definition",
-                    params,
-                ),
-            )
-            .await
-            .ok()
-            .and_then(|r| r.ok());
+            let found_def = if swift_unindexed && !is_declaration_file {
+                None
+            } else {
+                asked += 1;
+                if asked > MAX_USES_ASKED {
+                    return checkout_use_note;
+                }
+                let params = serde_json::json!({
+                    "textDocument": { "uri": &uri_str },
+                    "position": { "line": index, "character": col }
+                });
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    execute_lsp_query(
+                        remote,
+                        workspace_root,
+                        &path,
+                        "textDocument/definition",
+                        params,
+                    ),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+            };
 
             if let Some(ref found) = found_def
                 && definition_is(found, &declared, decl_line.saturating_sub(1))
@@ -314,7 +319,33 @@ pub(crate) async fn collect_multi_target_references(
                     if !unindexed_callers.contains(&path) {
                         unindexed_callers.push(path.clone());
                     }
-                    if (is_swift || has_proven_import) && !is_own_decl {
+                    if is_swift && !is_own_decl {
+                        swift_unindexed = true;
+                        let non_shadowed: Vec<(usize, usize)> = file_uses
+                            .iter()
+                            .filter(|&&(u_idx, _, u_off)| {
+                                !is_occurrence_shadowed(
+                                    &masked_code,
+                                    &text_lines,
+                                    u_idx,
+                                    u_off,
+                                    name,
+                                )
+                            })
+                            .map(|&(u_idx, u_col, _)| (u_idx, u_col))
+                            .collect();
+                        if !non_shadowed.is_empty() {
+                            seen_files.insert(norm_path.clone());
+                            record_file_uses(
+                                &uri_str,
+                                &non_shadowed,
+                                wanted_len,
+                                seen_locs,
+                                all_locs,
+                            );
+                        }
+                        break;
+                    } else if has_proven_import && !is_own_decl {
                         seen_files.insert(norm_path.clone());
                         record_file_uses(
                             &uri_str,

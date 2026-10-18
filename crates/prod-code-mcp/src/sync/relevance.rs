@@ -15,6 +15,13 @@ use std::path::Path;
 /// Returns true if the relative path represents a code or configuration file relevant to language servers.
 pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
     let path = Path::new(rel_path);
+    for component in path.parent().into_iter().flat_map(Path::components) {
+        if let std::path::Component::Normal(dir) = component
+            && matches!(dir.to_str(), Some(".git" | ".prod"))
+        {
+            return false;
+        }
+    }
     // Build and tool manifests whose extension alone would not qualify them.
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if matches!(

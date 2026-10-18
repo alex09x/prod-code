@@ -176,7 +176,7 @@ pub(crate) async fn find_unindexed_declarations(
         }
     }
     for path in source_files(root)
-        .filter(|path| crate::sync::engine_for_file(path).is_some())
+        .filter(|path| crate::sync::engine_for_file(path).is_some_and(|e| e != "rust"))
         .take(MAX_SCANNED_FILES)
     {
         if tokio::time::Instant::now() >= deadline {
