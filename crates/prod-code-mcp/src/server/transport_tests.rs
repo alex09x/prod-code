@@ -174,12 +174,25 @@ async fn workspace_mutation_lock_allows_concurrent_reads_and_serializes_mutation
     assert!(is_read_only_tool("code_definition", &serde_json::json!({})));
     assert!(is_read_only_tool("code_references", &serde_json::json!({})));
     assert!(is_read_only_tool(
-        "code_exec",
-        &serde_json::json!({"command": "cargo test"})
+        "code_shadow_run",
+        &serde_json::json!({"argv": ["cargo", "test"], "hypotheses": []})
+    ));
+    assert!(!is_read_only_tool(
+        "code_shadow_run",
+        &serde_json::json!({"argv": ["cargo", "test"], "hypotheses": [], "apply": true})
+    ));
+    assert!(is_read_only_tool("code_lint", &serde_json::json!({})));
+    assert!(!is_read_only_tool(
+        "code_lint",
+        &serde_json::json!({"fix": true})
+    ));
+    assert!(!is_read_only_tool(
+        "code_check",
+        &serde_json::json!({"fix": true})
     ));
     assert!(!is_read_only_tool(
         "code_exec",
-        &serde_json::json!({"command": "gofmt -w .", "pull_changes": true})
+        &serde_json::json!({"argv": ["cargo", "test"]})
     ));
     assert!(!is_read_only_tool(
         "code_change_signature",

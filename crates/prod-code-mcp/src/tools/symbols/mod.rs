@@ -123,11 +123,8 @@ mod tests {
         }));
 
         let swift_file = dir.path().join("AppState.swift");
-        std::fs::write(
-            &swift_file,
-            "/*\nfunc ghostInComment() {}\n*/\nfinal class AppState {\n    let snippet = \"\"\"\n    }\n    func ghostInString() {}\n    \"\"\"\n    func reloadSession() {}\n}\n",
-        )
-        .unwrap();
+        let swift_source = "/*\nfunc ghostInComment() {}\n*/\nfinal class AppState {\n    let snippet = \"\"\"\n    A lone \" quote\n    }\n    func ghostInString() {}\n    \"\"\"\n    let raw = #\"raw \" quote\n    func ghostInRawString() {}\n    \"#\n    func reloadSession() {}\n}\n";
+        std::fs::write(&swift_file, swift_source).unwrap();
         let swift_class_decls = search::local_declarations_in_file(&swift_file, "AppState");
         assert!(swift_class_decls.iter().any(|d| d.name == "AppState"));
         assert!(
@@ -136,7 +133,11 @@ mod tests {
         );
         assert!(
             search::local_declarations_in_file(&swift_file, "ghostInString").is_empty(),
-            "declarations inside multiline strings must be ignored"
+            "declarations inside multiline strings with interior quotes must be ignored"
+        );
+        assert!(
+            search::local_declarations_in_file(&swift_file, "ghostInRawString").is_empty(),
+            "declarations inside raw strings with interior quotes must be ignored"
         );
         let swift_method_decls = search::local_declarations_in_file(&swift_file, "reloadSession");
         assert!(
@@ -145,5 +146,13 @@ mod tests {
             }),
             "braces inside strings must not close the enclosing container: {swift_method_decls:?}"
         );
+        let outline = crate::tools::outline::file::local_swift_outline_symbols(swift_source);
+        let outline_names: Vec<&str> = outline
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+            .collect();
+        assert_eq!(outline_names, vec!["AppState", "reloadSession"]);
     }
 }

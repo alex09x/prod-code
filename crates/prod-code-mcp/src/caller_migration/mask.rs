@@ -109,6 +109,15 @@ fn scan_code_into_mask(
             continue;
         }
 
+        if lang == Language::Swift
+            && (bytes[i] == b'"' || bytes[i] == b'#')
+            && let Some(next_i) = scan_swift_string(text, i, end, code)
+        {
+            i = next_i;
+            regex_allowed = false;
+            continue;
+        }
+
         if matches!(lang, Language::TypeScript | Language::JavaScript) && bytes[i] == b'`' {
             i = scan_ts_template_literal(text, i, end, lang, code);
             regex_allowed = false;
@@ -129,16 +138,6 @@ fn scan_code_into_mask(
             let mut j = i + 1;
             while j < end {
                 if escapes && bytes[j] == b'\\' {
-                    if lang == Language::Swift && bytes.get(j + 1) == Some(&b'(') {
-                        if let Some(close) =
-                            scan_code_into_mask(text, j + 2, end, Language::Swift, Some(b')'), code)
-                        {
-                            j = close + 1;
-                            continue;
-                        }
-                        j = end;
-                        break;
-                    }
                     j = (j + 2).min(end);
                 } else if bytes[j] == quote {
                     j += 1;
@@ -194,32 +193,34 @@ fn scan_code_into_mask(
                     while w > start && is_ident_byte(bytes[w - 1]) {
                         w -= 1;
                     }
-                    regex_allowed = matches!(
-                        &bytes[w..=i],
-                        b"return"
-                            | b"typeof"
-                            | b"void"
-                            | b"delete"
-                            | b"throw"
-                            | b"new"
-                            | b"in"
-                            | b"of"
-                            | b"instanceof"
-                            | b"case"
-                            | b"yield"
-                            | b"await"
-                            | b"else"
-                            | b"do"
-                    );
+                    regex_allowed = [
+                        &b"return"[..],
+                        b"typeof",
+                        b"void",
+                        b"delete",
+                        b"throw",
+                        b"new",
+                        b"in",
+                        b"of",
+                        b"instanceof",
+                        b"case",
+                        b"yield",
+                        b"await",
+                        b"else",
+                        b"do",
+                    ]
+                    .contains(&&bytes[w..=i]);
                 }
-            } else if matches!(b, b')' | b']' | b'.')
-                || (!regex_allowed && b == b'!' && bytes.get(i + 1) != Some(&b'='))
-                || (!regex_allowed && matches!(b, b'+' | b'-') && bytes.get(i + 1) == Some(&b))
-                || (!regex_allowed && matches!(b, b'+' | b'-') && i > start && bytes[i - 1] == b)
-            {
-                regex_allowed = false;
             } else {
-                regex_allowed = true;
+                regex_allowed = !(matches!(b, b')' | b']' | b'.')
+                    || (!regex_allowed && b == b'!' && bytes.get(i + 1) != Some(&b'='))
+                    || (!regex_allowed
+                        && matches!(b, b'+' | b'-')
+                        && bytes.get(i + 1) == Some(&b))
+                    || (!regex_allowed
+                        && matches!(b, b'+' | b'-')
+                        && i > start
+                        && bytes[i - 1] == b));
             }
         }
 
@@ -352,4 +353,46 @@ fn scan_python_format_spec(
         }
     }
     None
+}
+
+fn scan_swift_string(text: &str, i: usize, end: usize, code: &mut [bool]) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let hashes = bytes[i..end].iter().take_while(|&&b| b == b'#').count();
+    let k = i + hashes;
+    if bytes.get(k) != Some(&b'"') {
+        return None;
+    }
+    let quote_len = if bytes[k..end].starts_with(b"\"\"\"") {
+        3
+    } else {
+        1
+    };
+    let (quotes, hash_slice) = (&bytes[k..k + quote_len], &bytes[i..k]);
+    let mut j = k + quote_len;
+    while j < end {
+        if bytes[j] == b'\\' && bytes[j + 1..end].starts_with(hash_slice) {
+            let after_esc = j + 1 + hashes;
+            if bytes.get(after_esc) == Some(&b'(') {
+                let close = scan_code_into_mask(
+                    text,
+                    after_esc + 1,
+                    end,
+                    Language::Swift,
+                    Some(b')'),
+                    code,
+                );
+                j = close.map_or(end, |c| c + 1);
+            } else {
+                j = (after_esc + 1).min(end);
+            }
+        } else if bytes[j..end].starts_with(quotes)
+            && bytes[j + quote_len..end].starts_with(hash_slice)
+            && !(quote_len == 3 && hashes == 0 && bytes.get(j + 3) == Some(&b'"'))
+        {
+            return Some(j + quote_len + hashes);
+        } else {
+            j += 1;
+        }
+    }
+    Some(end)
 }

@@ -120,7 +120,6 @@ pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bo
         | "code_diagnostics"
         | "code_validate_edit"
         | "code_validate_edits"
-        | "code_shadow_run"
         | "code_assists"
         | "code_dead_code"
         | "code_dependencies"
@@ -129,12 +128,11 @@ pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bo
         | "code_propose_expression"
         | "code_status"
         | "code_report_issue"
-        | "code_check"
-        | "code_lint"
         | "code_test"
         | "code_benchmarks"
         | "code_diagnose_failure" => true,
-        "code_exec" => args.get("pull_changes").and_then(|v| v.as_bool()) != Some(true),
+        "code_shadow_run" => args.get("apply").and_then(|v| v.as_bool()) != Some(true),
+        "code_check" | "code_lint" => args.get("fix").and_then(|v| v.as_bool()) != Some(true),
         _ => false,
     }
 }

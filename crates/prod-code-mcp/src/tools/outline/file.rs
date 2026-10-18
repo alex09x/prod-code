@@ -112,7 +112,7 @@ pub async fn outline_file(
     Ok(text)
 }
 
-fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
+pub(crate) fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
     let code_mask =
         crate::tools::references::mask_executable_code(source, std::path::Path::new("file.swift"));
     let masked = crate::tools::references::masked_code_string(source, &code_mask);
