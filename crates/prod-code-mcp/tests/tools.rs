@@ -7981,3 +7981,100 @@ async fn code_symbols_with_substring_or_prefix_hits_does_not_scan_nested_project
     assert!(out.contains("handle_structural_search"), "{out}");
     assert_eq!(searches.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn agent_friction_aliases_path_suggestions_and_loaded_unindexed_declarations() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub mod plan;\npub fn outer() {\n    fn inner_helper() {}\n}\n",
+        ),
+        ("src/plan/mod.rs", "pub fn run_plan() {}\n"),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let lib_for_gw = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "workspace/symbol" => serde_json::json!([]),
+            "textDocument/hover" if uri.ends_with("src/lib.rs") => {
+                answers::hover("fn inner_helper()")
+            }
+            "textDocument/definition" if uri.ends_with("src/lib.rs") => {
+                answers::locations(&lib_for_gw, &[(3, 8)])
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+
+    // 1. Missing path suggests `src/plan/mod.rs` when `src/plan.rs` was split into a directory module.
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_source",
+        serde_json::json!({ "path": "src/plan.rs" }),
+    )
+    .await
+    .expect_err("src/plan.rs does not exist");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("did you mean `src/plan/mod.rs`?"),
+        "expected nearest path suggestion in error, got: {msg}"
+    );
+
+    let outline_err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "src/plan.rs" }),
+    )
+    .await
+    .expect_err("src/plan.rs outline fails");
+    let outline_msg = format!("{outline_err:#}");
+    assert!(
+        outline_msg.contains("did you mean `src/plan/mod.rs`?"),
+        "expected nearest path suggestion in outline error, got: {outline_msg}"
+    );
+
+    // 2. `code_source` accepts `file` as an alias for `path`.
+    let src_text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_source",
+            serde_json::json!({ "file": "src/plan/mod.rs" }),
+        )
+        .await
+        .expect("code_source with `file` alias succeeds"),
+    );
+    assert!(src_text.contains("pub fn run_plan()"), "{src_text}");
+
+    // 3. `code_exec` missing argument message names both `argv` and `command`.
+    let exec_err = execute_tool(remote, &ws.root(), "code_exec", serde_json::json!({}))
+        .await
+        .expect_err("empty code_exec fails");
+    let exec_msg = format!("{exec_err:#}");
+    assert!(
+        exec_msg.contains("Missing 'argv' argument") && exec_msg.contains("command"),
+        "{exec_msg}"
+    );
+
+    // 4. `code_definition` resolves a declaration in a loaded file (`!hover.is_null()`) even when
+    // `workspace/symbol` omits it, instead of failing with `ask by its position`.
+    let def_text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_definition",
+            serde_json::json!({ "symbol": "inner_helper" }),
+        )
+        .await
+        .expect("code_definition resolves loaded unindexed declaration"),
+    );
+    assert!(def_text.contains("fn inner_helper()"), "{def_text}");
+}

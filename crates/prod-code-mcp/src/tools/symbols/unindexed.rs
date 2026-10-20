@@ -148,6 +148,37 @@ pub(crate) const MAX_UNINDEXED_DECLARATIONS: usize = 3;
 pub(crate) const UNINDEXED_DECLARATION_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(10);
 
+fn collect_candidate_files(
+    root: &Path,
+    hint: Option<&Path>,
+    include_rust: bool,
+) -> Vec<std::path::PathBuf> {
+    let mut candidate_files = Vec::new();
+    if let Some(h) = hint {
+        let p = if h.is_absolute() {
+            h.to_path_buf()
+        } else {
+            root.join(h)
+        };
+        if p.is_file() {
+            candidate_files.push(p);
+        } else if p.is_dir() {
+            candidate_files.extend(source_files(&p).take(32));
+        }
+    }
+    for path in source_files(root)
+        .filter(|path| {
+            crate::sync::engine_for_file(path).is_some_and(|e| include_rust || e != "rust")
+        })
+        .take(MAX_SCANNED_FILES)
+    {
+        if !candidate_files.contains(&path) {
+            candidate_files.push(path);
+        }
+    }
+    candidate_files
+}
+
 pub(crate) async fn find_unindexed_declarations(
     root: &Path,
     name: &str,
@@ -158,47 +189,16 @@ pub(crate) async fn find_unindexed_declarations(
     }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
     let mut hits = Vec::new();
-    let mut files = Vec::new();
-    if let Some(h) = hint {
-        let p = if h.is_absolute() {
-            h.to_path_buf()
-        } else {
-            root.join(h)
-        };
-        if p.is_file() {
-            files.push(p);
-        } else if p.is_dir() {
-            for entry in source_files(&p).take(8) {
-                if std::fs::read_to_string(&entry).is_ok_and(|text| names_word(&text, name)) {
-                    files.push(entry);
-                }
-            }
-        }
-    }
-    for path in source_files(root)
-        .filter(|path| crate::sync::engine_for_file(path).is_some_and(|e| e != "rust"))
-        .take(MAX_SCANNED_FILES)
-    {
-        if tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        if !files.contains(&path)
-            && std::fs::read_to_string(&path).is_ok_and(|text| names_word(&text, name))
-        {
-            files.push(path);
-            if files.len() >= 16 {
-                break;
-            }
-        }
-    }
-
-    for path in files {
+    for path in collect_candidate_files(root, hint, false) {
         if tokio::time::Instant::now() >= deadline {
             break;
         }
         let Some(text) = read_name_scan_text(&path) else {
             continue;
         };
+        if !names_word(&text, name) {
+            continue;
+        }
         for (index, line) in text.lines().enumerate() {
             if let Some(col) = declared_at(line, name) {
                 hits.push(SymbolHit {
@@ -210,6 +210,71 @@ pub(crate) async fn find_unindexed_declarations(
                     col: col as u32 + 1,
                 });
                 if hits.len() >= 10 {
+                    return hits;
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Resolves declarations of `name` in source files (including Rust) that the language server loads
+/// (`!hover.is_null()` at the declaration site) when `workspace/symbol` omits them (#1125).
+pub(crate) async fn find_loaded_unindexed_declarations(
+    remote: SocketAddr,
+    root: &Path,
+    name: &str,
+    hint: Option<&Path>,
+) -> Vec<SymbolHit> {
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Vec::new();
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+    let mut hits = Vec::new();
+    for path in collect_candidate_files(root, hint, true) {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let Some(text) = read_name_scan_text(&path) else {
+            continue;
+        };
+        if !names_word(&text, name) {
+            continue;
+        }
+        for (index, line) in text.lines().enumerate() {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            let Some(col) = declared_at(line, name) else {
+                continue;
+            };
+            let Ok(uri) = Url::from_file_path(&path) else {
+                continue;
+            };
+            let hover_fut = execute_lsp_query(
+                remote,
+                root,
+                &path,
+                "textDocument/hover",
+                serde_json::json!({
+                    "textDocument": { "uri": uri.to_string() },
+                    "position": { "line": index, "character": col }
+                }),
+            );
+            let hover = match tokio::time::timeout_at(deadline, hover_fut).await {
+                Ok(Ok(val)) => val,
+                _ => serde_json::Value::Null,
+            };
+            if !hover.is_null() {
+                hits.push(SymbolHit {
+                    path: path.clone(),
+                    name: name.to_string(),
+                    kind: "Declaration",
+                    container: None,
+                    line: index as u32 + 1,
+                    col: col as u32 + 1,
+                });
+                if hits.len() >= MAX_UNINDEXED_DECLARATIONS {
                     return hits;
                 }
             }

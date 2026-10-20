@@ -153,9 +153,9 @@ impl LspSession {
         // it, and reading it here would fail (#271).
         let only_on_the_node = !abs.starts_with(&self.root) && !abs.exists();
         if !self.opened.contains_key(&uri) && !abs.is_dir() && !only_on_the_node {
-            let text = tokio::fs::read_to_string(&abs)
-                .await
-                .with_context(|| format!("failed to read {}", abs.display()))?;
+            let text = tokio::fs::read_to_string(&abs).await.with_context(|| {
+                crate::remote_fs::missing_file_context(&self.root, &abs, "failed to read")
+            })?;
             self.notify(
                 "textDocument/didOpen",
                 serde_json::json!({ "textDocument": {

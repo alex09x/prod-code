@@ -22,7 +22,11 @@ pub fn execution_tools() -> Vec<McpTool> {
                     "argv": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Command and arguments, e.g. [\"cargo\", \"test\", \"-p\", \"my-crate\"]"
+                        "description": "Command and arguments, e.g. [\"cargo\", \"test\", \"-p\", \"my-crate\"] (or pass `command`)"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Alias for argv: a shell command string run via `sh -c <command>` (or an array of strings)"
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -36,8 +40,7 @@ pub fn execution_tools() -> Vec<McpTool> {
                         "type": "integer",
                         "description": "How much of the output tail to return (default 16384)"
                     }
-                },
-                "required": ["argv"]
+                }
             }),
         },
         McpTool {

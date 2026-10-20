@@ -187,6 +187,34 @@ pub fn polyglot_compiler_cache_env(
                 yarn_cache.to_string_lossy().into_owned(),
             ));
         }
+
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let mut path_parts: Vec<String> = current_path
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        let extra_dirs = [
+            home_path.join(".local/bin"),
+            home_path.join("go/bin"),
+            home_path.join(".cargo/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/go/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ];
+        let mut added = false;
+        for dir in extra_dirs {
+            if dir.is_dir() {
+                let s = dir.to_string_lossy().into_owned();
+                if !path_parts.iter().any(|p| p == &s) {
+                    path_parts.push(s);
+                    added = true;
+                }
+            }
+        }
+        if added {
+            env.push(("PATH".to_string(), path_parts.join(":")));
+        }
     }
     // Python shared virtual-environment stub cache across worktrees (Roadmap 3.6)
     env.extend(python_cache::python_stub_cache_env_for_workspace(workspace));

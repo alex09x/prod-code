@@ -61,18 +61,43 @@ pub(crate) fn resolve_exec_subdir(
     Ok(Some(sub))
 }
 
+pub(crate) fn parse_exec_argv(args: &serde_json::Value) -> Result<Vec<String>> {
+    if let Some(arr) = args
+        .get("argv")
+        .or_else(|| args.get("command"))
+        .or_else(|| args.get("cmd"))
+        .and_then(|v| v.as_array())
+    {
+        Ok(arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect())
+    } else if let Some(cmd_str) = args
+        .get("argv")
+        .or_else(|| args.get("command"))
+        .or_else(|| args.get("cmd"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Ok(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            cmd_str.to_string(),
+        ])
+    } else {
+        anyhow::bail!(
+            "Missing 'argv' argument (expected `argv: [\"cmd\", \"arg\", ...]` or `command: \"...\"`)"
+        )
+    }
+}
+
 pub(crate) async fn handle_exec(
     remote: SocketAddr,
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    let argv: Vec<String> = args
-        .get("argv")
-        .and_then(|v| v.as_array())
-        .context("Missing 'argv' argument")?
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
+    let argv = parse_exec_argv(args)?;
     let timeout_secs = args
         .get("timeout_secs")
         .and_then(|v| v.as_u64())

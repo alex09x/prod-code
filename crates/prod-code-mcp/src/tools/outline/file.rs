@@ -37,8 +37,9 @@ pub async fn outline_file(
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
     if matches!(extension.as_deref(), Some("md" | "markdown")) {
-        let text = std::fs::read_to_string(file_path)
-            .with_context(|| format!("reading {}", file_path.display()))?;
+        let text = std::fs::read_to_string(file_path).with_context(|| {
+            crate::remote_fs::missing_file_context(workspace_root, file_path, "reading")
+        })?;
         let rendered = markdown_outline(&text, path_str, options);
         let (text, _) = cut_block(
             &rendered,
@@ -48,8 +49,9 @@ pub async fn outline_file(
         return Ok(text);
     }
     if matches!(extension.as_deref(), Some("proto")) {
-        let text = std::fs::read_to_string(file_path)
-            .with_context(|| format!("reading {}", file_path.display()))?;
+        let text = std::fs::read_to_string(file_path).with_context(|| {
+            crate::remote_fs::missing_file_context(workspace_root, file_path, "reading")
+        })?;
         let rendered = protobuf_outline(&text, path_str, options);
         let (text, _) = cut_block(
             &rendered,
