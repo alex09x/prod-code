@@ -35,22 +35,26 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             col,
             symbol,
             body,
-        } => match symbol {
-            Some(symbol) => {
-                let mut args = symbol_args(&symbol, file);
-                args["body"] = serde_json::json!(body);
-                run_tool(cx.remote, "code_definition", args).await
+            no_body,
+        } => {
+            let show_body = body || !no_body;
+            match symbol {
+                Some(symbol) => {
+                    let mut args = symbol_args(&symbol, file);
+                    args["body"] = serde_json::json!(show_body);
+                    run_tool(cx.remote, "code_definition", args).await
+                }
+                None if show_body => {
+                    let mut args = file_pos_json(file, line, col)?;
+                    args["body"] = serde_json::json!(true);
+                    run_tool(cx.remote, "code_definition", args).await
+                }
+                None => {
+                    let (file, line, col) = position(file, line, col)?;
+                    run_definition(cx.remote, &file, line, col).await
+                }
             }
-            None if body => {
-                let mut args = file_pos_json(file, line, col)?;
-                args["body"] = serde_json::json!(true);
-                run_tool(cx.remote, "code_definition", args).await
-            }
-            None => {
-                let (file, line, col) = position(file, line, col)?;
-                run_definition(cx.remote, &file, line, col).await
-            }
-        },
+        }
         Commands::Hover {
             file,
             line,

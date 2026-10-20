@@ -82,9 +82,12 @@ pub enum Commands {
         /// FILE, the one declared or used there (#330).
         #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
-        /// Also print the definition's code, numbered, with its doc comments (#306).
+        /// Also print the definition's code, numbered, with its doc comments (enabled by default; #306, #1121).
         #[arg(long, default_value_t = false)]
         body: bool,
+        /// Print only the definition's file:line:col location without its body (#1121).
+        #[arg(long, visible_alias = "location-only", default_value_t = false)]
+        no_body: bool,
     },
     /// Inspect symbol type & docs: prod-code hover <file> <line> <col>, or --symbol NAME
     Hover {

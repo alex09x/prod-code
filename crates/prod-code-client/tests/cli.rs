@@ -748,14 +748,27 @@ async fn cli_resolves_definition_location_and_reports_when_none_found() {
     let p1 = path.clone();
 
     let gw = MockGateway::start(move |method, _| match method {
-        "textDocument/definition" => answers::locations(&p1, &[(1, 5)]),
+        "textDocument/definition" => answers::locations(&p1, &[(1, 12)]),
         _ => serde_json::Value::Null,
     })
     .await;
 
-    let out = run_cli(&ws, gw.addr, &["def", "src/lib.rs", "1", "5"]).await;
+    let out = run_cli(&ws, gw.addr, &["def", "src/lib.rs", "1", "12"]).await;
     assert!(out.status.success());
-    assert!(stdout_of(&out).contains("📍 Definition:"));
+    let def_stdout = stdout_of(&out);
+    assert!(def_stdout.contains("📍 Definition:"), "{def_stdout}");
+    assert!(
+        def_stdout.contains("pub struct Order"),
+        "expected default def output to include definition body (#1121): {def_stdout}"
+    );
+
+    let out_no_body = run_cli(&ws, gw.addr, &["def", "--no-body", "src/lib.rs", "1", "12"]).await;
+    assert!(out_no_body.status.success());
+    let no_body_stdout = stdout_of(&out_no_body);
+    assert!(
+        no_body_stdout.contains("📍 Definition:") && !no_body_stdout.contains("pub struct Order"),
+        "expected --no-body to omit body (#1121): {no_body_stdout}"
+    );
 
     let gw_empty = MockGateway::start(|method, _| match method {
         "textDocument/definition" => serde_json::json!([]),
@@ -2930,12 +2943,14 @@ async fn cli_takes_a_file_to_tell_same_named_symbols_apart() {
     })
     .await;
 
-    let ambiguous = run_cli(&ws, gw.addr, &["refs", "--symbol", "calculate"]).await;
+    let both = run_cli(&ws, gw.addr, &["refs", "--symbol", "calculate"]).await;
+    let both_stdout = stdout_of(&both);
     assert!(
-        stderr_of(&ambiguous).contains("ambiguous") || stdout_of(&ambiguous).contains("ambiguous"),
-        "two candidates without a file: {}{}",
-        stdout_of(&ambiguous),
-        stderr_of(&ambiguous)
+        both.status.success()
+            && both_stdout.contains("=== [1/2]")
+            && both_stdout.contains("=== [2/2]"),
+        "two candidates without a file should return both (#1120): {both_stdout}{}",
+        stderr_of(&both)
     );
     let picked = run_cli(
         &ws,
