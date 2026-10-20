@@ -13,11 +13,14 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use super::imports::{add_import, carry_imports, drop_import, requalify};
+use super::imports::{
+    add_import, carry_imports, drop_import, has_use_super_glob, requalify,
+    source_declares_child_module,
+};
 use super::item::{
     append_item, cut, display, move_inherent_method, offset_of, span_at, with_doc_comment,
 };
-use super::module::{declare_module, module_of, parent_module_file};
+use super::module::{declare_module, extract_inline_module, module_of, parent_module_file};
 use super::types::Move;
 
 /// Moves the declaration at `file:line:col` into `target`, rewriting the imports of every file
@@ -48,7 +51,7 @@ pub async fn move_item(
     let source_text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     // A target that does not exist yet is created, and declared by its parent module (#148).
-    let new_module_parent = if target.exists() {
+    let mut new_module_parent = if target.exists() {
         None
     } else {
         anyhow::ensure!(
@@ -71,7 +74,7 @@ pub async fn move_item(
     };
 
     let (_, from_module) = module_of(file)?;
-    let (_, to_module) = module_of(target)?;
+    let (_, mut to_module) = module_of(target)?;
     anyhow::ensure!(
         from_module != to_module,
         "{} and {} are the same module",
@@ -127,32 +130,57 @@ pub async fn move_item(
         );
     }
     let start = with_doc_comment(&source_text, decl_start);
-    let (source_new, target_new, item, carried) =
-        if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
-            move_inherent_method(
-                &source_text,
-                &target_text,
-                verified_target_impl,
-                (impl_at, impl_open, impl_close),
-                start,
-                decl_start,
-                decl_end,
-            )
+    let mut created = None;
+    let mut extracted_inline_mod = false;
+    let (source_new, target_new, item, carried) = if let Some((_, impl_at, impl_open, impl_close)) =
+        enclosing_impl
+    {
+        move_inherent_method(
+            &source_text,
+            &target_text,
+            verified_target_impl,
+            (impl_at, impl_open, impl_close),
+            start,
+            decl_start,
+            decl_end,
+        )
+    } else if target_text.trim().is_empty()
+        && let Some((source_new, target_new)) =
+            extract_inline_module(&source_text, start, decl_end, &name, file, target)
+    {
+        new_module_parent = None;
+        extracted_inline_mod = true;
+        let mut segs = from_module.segments.clone();
+        segs.push(name.clone());
+        to_module.segments = segs;
+        created = Some((display(root, target), display(root, file)));
+        let (_, raw_item) = cut(&source_text, start, decl_end);
+        (source_new, target_new, raw_item, Vec::new())
+    } else {
+        let (source_new, item) = cut(&source_text, start, decl_end);
+        let (target_with_imports, carried) = if source_declares_child_module(&source_text, target)
+            && has_use_super_glob(&target_text)
+        {
+            (target_text.clone(), Vec::new())
         } else {
-            let (source_new, item) = cut(&source_text, start, decl_end);
-            let (target_with_imports, carried) = carry_imports(&source_text, &item, &target_text);
-            let target_new = if target_with_imports.trim().is_empty() {
-                format!("{}\n", item.trim())
-            } else {
-                append_item(&target_with_imports, &item)
-            };
-            (source_new, target_new, item, carried)
+            carry_imports(&source_text, &item, &target_text)
         };
+        let target_new = if target_with_imports.trim().is_empty() {
+            format!("{}\n", item.trim())
+        } else {
+            append_item(&target_with_imports, &item)
+        };
+        (source_new, target_new, item, carried)
+    };
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
-    let refs = crate::signature::references(remote, root, file, line, col)
-        .await
-        .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?;
+    let refs = if extracted_inline_mod {
+        Vec::new()
+    } else {
+        crate::signature::references(remote, root, file, line, col)
+            .await
+            .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?
+    };
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
@@ -249,7 +277,6 @@ pub async fn move_item(
 
     // A new module is declared last: the imports above were placed at the positions the
     // analyzer gave, which a line inserted into the parent first would have shifted.
-    let mut created = None;
     if let Some(parent) = &new_module_parent {
         let module_name = target
             .file_stem()
@@ -318,7 +345,11 @@ pub async fn move_item(
         from_module: from_module.absolute(),
         to: display(root, target),
         to_module: to_module.absolute(),
-        new_path: format!("{}::{name}", to_module.absolute()),
+        new_path: if extracted_inline_mod {
+            to_module.absolute()
+        } else {
+            format!("{}::{name}", to_module.absolute())
+        },
         moved_lines: item.lines().count(),
         rewritten: rewritten
             .into_iter()
