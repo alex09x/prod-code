@@ -20,6 +20,9 @@ mod tests;
 
 #[allow(unused_imports)]
 pub(crate) use cache::{CALL_CACHE, CallCacheEntry};
-pub use cache::{MAX_DEPTH, MAX_NODES, clear_call_hierarchy_cache, clear_call_hierarchy_cache_for};
+pub use cache::{
+    DEFAULT_CALL_TREE_BUDGET, MAX_DEPTH, MAX_NODES, clear_call_hierarchy_cache,
+    clear_call_hierarchy_cache_for,
+};
 pub use types::{CallTree, Node};
-pub use walk::call_tree;
+pub use walk::{call_tree, call_tree_with_budget};

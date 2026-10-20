@@ -24,6 +24,7 @@ pub(crate) const SKIPPED_DIRS: &[&str] = &[
     "vendor",
     "Pods",
     "DerivedData",
+    "test-fixtures",
 ];
 
 /// The most nested projects a name search asks besides the checkout's own.

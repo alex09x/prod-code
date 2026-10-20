@@ -44,6 +44,7 @@ fn a_tree_is_indented_by_level_and_a_repeat_is_marked() {
             false,
         )],
         truncated: true,
+        timed_out_at_depth: None,
     };
     assert_eq!(tree.count(), 3);
     assert_eq!(
@@ -54,12 +55,27 @@ fn a_tree_is_indented_by_level_and_a_repeat_is_marked() {
          • leaf  file:///w/leaf.rs:1:4  [call sites: 3:5]  (shown above)\n\
          … stopped at 300 functions; ask for less depth or start lower"
     );
+    let partial = CallTree {
+        name: "leaf".into(),
+        incoming: true,
+        depth: 3,
+        nodes: vec![node("mid", vec![], false)],
+        truncated: false,
+        timed_out_at_depth: Some((1, 60.0)),
+    };
+    assert_eq!(
+        partial.render(),
+        "`leaf`: 1 caller(s), 1 in all to depth 3\n  \
+         • mid  file:///w/mid.rs:1:4  [call sites: 3:5]\n\
+         … truncated at depth 1 after 60.0 s; rerun with depth=2 or a narrower symbol"
+    );
     let empty = CallTree {
         name: "f".into(),
         incoming: false,
         depth: 1,
         nodes: vec![],
         truncated: false,
+        timed_out_at_depth: None,
     };
     assert_eq!(empty.render(), "`f`: 0 callee(s) — no callees found.");
 }

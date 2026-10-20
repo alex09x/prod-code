@@ -7869,3 +7869,115 @@ async fn qualified_symbol_fast_path_queries_type_outline_before_common_member_na
         "fast path must not search workspace/symbol for common method name `new`"
     );
 }
+
+#[tokio::test]
+async fn code_callers_returns_partial_tree_when_server_time_budget_expires() {
+    let ws = workspace();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub fn leaf() {}\npub fn caller_a() { leaf(); }\npub fn caller_b() { leaf(); }\npub fn top() { caller_a(); }\n",
+    );
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/prepareCallHierarchy" => serde_json::json!([
+            { "name": "leaf", "uri": format!("file://{}", path.display()),
+              "selectionRange": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 11 } } }
+        ]),
+        "callHierarchy/incomingCalls" => {
+            let name = params["item"]["name"].as_str().unwrap_or("");
+            if name == "leaf" {
+                serde_json::json!([
+                    { "from": { "name": "caller_a", "uri": format!("file://{}", path.display()),
+                                "selectionRange": { "start": { "line": 1, "character": 7 }, "end": { "line": 1, "character": 15 } } },
+                      "fromRanges": [ { "start": { "line": 1, "character": 20 }, "end": { "line": 1, "character": 24 } } ] },
+                    { "from": { "name": "caller_b", "uri": format!("file://{}", path.display()),
+                                "selectionRange": { "start": { "line": 2, "character": 7 }, "end": { "line": 2, "character": 15 } } },
+                      "fromRanges": [ { "start": { "line": 2, "character": 20 }, "end": { "line": 2, "character": 24 } } ] }
+                ])
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                serde_json::json!([
+                    { "from": { "name": "top", "uri": format!("file://{}", path.display()),
+                                "selectionRange": { "start": { "line": 3, "character": 7 }, "end": { "line": 3, "character": 10 } } },
+                      "fromRanges": [ { "start": { "line": 3, "character": 15 }, "end": { "line": 3, "character": 23 } } ] }
+                ])
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_callers",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "line": 1,
+            "character": 8,
+            "depth": 3,
+            "budget_ms": 80
+        }),
+    )
+    .await
+    .expect("callers returns partial tree instead of timing out");
+    let out = text_of(&res);
+    assert!(out.contains("`leaf`: 2 caller(s)"), "{out}");
+    assert!(out.contains("caller_a"), "{out}");
+    assert!(out.contains("caller_b"), "{out}");
+    assert!(
+        out.contains("truncated at depth 1 after") && out.contains("rerun with depth=2"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn code_symbols_with_substring_or_prefix_hits_does_not_scan_nested_projects() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn handle_structural_search() {}\npub fn reserve_slot() {}\n",
+        ),
+        ("nested/go.mod", "module example.com/nested\n\ngo 1.22\n"),
+        (
+            "nested/main.go",
+            "package main\n// structural_search and reserve_ mentioned here\nfunc main() {}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let searches = Arc::new(AtomicUsize::new(0));
+    let searches_clone = Arc::clone(&searches);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => {
+            let count = searches_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            let q = params["query"].as_str().unwrap_or("");
+            if count == 1 && q == "structural_search" {
+                serde_json::json!([answers::symbol("handle_structural_search", 12, &lib, 1, 8)])
+            } else {
+                panic!("unexpected nested project workspace/symbol query #{count} for `{q}`");
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let out = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_symbols",
+            serde_json::json!({ "query": "structural_search" }),
+        )
+        .await
+        .expect("code_symbols succeeds without querying nested project"),
+    );
+    assert!(out.contains("handle_structural_search"), "{out}");
+    assert_eq!(searches.load(Ordering::SeqCst), 1);
+}

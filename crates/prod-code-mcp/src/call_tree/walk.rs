@@ -13,13 +13,13 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
 use super::cache::{
-    CALL_CACHE, CallCacheEntry, MAX_DEPTH, MAX_NODES, PREPARE_CACHE, PrepareCacheEntry,
-    normalize_root,
+    CALL_CACHE, CallCacheEntry, DEFAULT_CALL_TREE_BUDGET, MAX_DEPTH, MAX_NODES, PREPARE_CACHE,
+    PrepareCacheEntry, normalize_root,
 };
 use super::types::{
     CallTree, Node, key_of, node_of, valid_lsp_range, validate_call_hierarchy_item,
@@ -33,12 +33,23 @@ struct Walk<'a> {
     incoming: bool,
     depth: usize,
     generation: u64,
+    started: Instant,
+    deadline: tokio::time::Instant,
     seen: HashSet<(String, u64, u64)>,
     shown: usize,
     truncated: bool,
+    timed_out_at_depth: Option<usize>,
 }
 
 impl Walk<'_> {
+    fn record_timeout(&mut self, completed_depth: usize) {
+        let clamped = completed_depth.min(self.depth);
+        self.timed_out_at_depth = Some(
+            self.timed_out_at_depth
+                .map_or(clamped, |prev| prev.min(clamped)),
+        );
+    }
+
     /// The functions one level below `item`, each expanded while the depth and budget last.
     fn expand(
         &mut self,
@@ -75,15 +86,24 @@ impl Walk<'_> {
             let (edges, from_cache) = match cached_edges {
                 Some(edges) => (edges, true),
                 None => {
-                    let res = execute_lsp_query(
+                    if tokio::time::Instant::now() >= self.deadline {
+                        self.record_timeout(level.saturating_sub(1));
+                        return Ok(Vec::new());
+                    }
+                    let query_fut = execute_lsp_query(
                         self.remote,
                         self.root,
                         self.file,
                         method,
                         serde_json::json!({ "item": item }),
-                    )
-                    .await?;
-                    (res, false)
+                    );
+                    match tokio::time::timeout_at(self.deadline, query_fut).await {
+                        Ok(res) => (res?, false),
+                        Err(_) => {
+                            self.record_timeout(level.saturating_sub(1));
+                            return Ok(Vec::new());
+                        }
+                    }
                 }
             };
             let edges_array = match &edges {
@@ -136,7 +156,10 @@ impl Walk<'_> {
                     },
                 );
             }
+            // Pass 1: materialize all sibling nodes at `level` before expanding `level + 1`
+            // so that a time-budget cutoff during deeper expansion preserves the full current level.
             let mut nodes = Vec::new();
+            let mut to_expand = Vec::new();
             for edge in edges_array {
                 let other = edge.get(side).unwrap();
                 if self.shown >= MAX_NODES {
@@ -148,9 +171,25 @@ impl Walk<'_> {
                 if !self.seen.insert(key_of(other)) {
                     node.repeated = true;
                 } else if level < self.depth {
-                    node.children = self.expand(other.clone(), level + 1).await?;
+                    to_expand.push((nodes.len(), other.clone()));
                 }
                 nodes.push(node);
+            }
+            // Pass 2: expand deeper levels while within the wall-clock budget.
+            let total_to_expand = to_expand.len();
+            for (pos, (idx, child_item)) in to_expand.into_iter().enumerate() {
+                if tokio::time::Instant::now() >= self.deadline {
+                    self.record_timeout(level);
+                    break;
+                }
+                nodes[idx].children = self.expand(child_item, level + 1).await?;
+                if self.timed_out_at_depth.is_some() && tokio::time::Instant::now() >= self.deadline
+                {
+                    if pos + 1 < total_to_expand {
+                        self.record_timeout(level);
+                    }
+                    break;
+                }
             }
             Ok(nodes)
         })
@@ -169,6 +208,33 @@ pub async fn call_tree(
     incoming: bool,
     depth: usize,
 ) -> Result<Option<CallTree>> {
+    call_tree_with_budget(
+        remote,
+        root,
+        file,
+        line,
+        character,
+        incoming,
+        depth,
+        DEFAULT_CALL_TREE_BUDGET,
+    )
+    .await
+}
+
+/// Like [`call_tree`], with an explicit server-side wall-clock budget (#1124).
+#[allow(clippy::too_many_arguments)]
+pub async fn call_tree_with_budget(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: u32,
+    character: u32,
+    incoming: bool,
+    depth: usize,
+    budget: Duration,
+) -> Result<Option<CallTree>> {
+    let started = Instant::now();
+    let deadline = tokio::time::Instant::now() + budget;
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {file:?}"))?
         .to_string();
@@ -255,11 +321,17 @@ pub async fn call_tree(
         incoming,
         depth,
         generation,
+        started,
+        deadline,
         seen: HashSet::from([key_of(&item)]),
         shown: 0,
         truncated: false,
+        timed_out_at_depth: None,
     };
     let nodes = walk.expand(item.clone(), 1).await?;
+    let timed_out_at_depth = walk
+        .timed_out_at_depth
+        .map(|d| (d, walk.started.elapsed().as_secs_f64()));
     Ok(Some(CallTree {
         name: item
             .get("name")
@@ -270,5 +342,6 @@ pub async fn call_tree(
         depth,
         nodes,
         truncated: walk.truncated,
+        timed_out_at_depth,
     }))
 }
