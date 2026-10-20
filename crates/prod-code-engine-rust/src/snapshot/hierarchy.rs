@@ -206,7 +206,15 @@ impl RustEngineSnapshot {
                 return Ok(out);
             }
         }
-        if out.iter().any(|s| s.name.eq_ignore_ascii_case(query)) {
+        let query_lower = query.to_ascii_lowercase();
+        if !out.is_empty()
+            && (out.iter().any(|s| s.name.eq_ignore_ascii_case(query))
+                || query.ends_with('_')
+                || (query.len() >= 3
+                    && out
+                        .iter()
+                        .any(|s| s.name.to_ascii_lowercase().starts_with(&query_lower))))
+        {
             return Ok(out);
         }
         let mut exact = ra_ap_ide::Query::new(query.to_string());

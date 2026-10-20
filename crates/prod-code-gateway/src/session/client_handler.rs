@@ -179,19 +179,12 @@ pub async fn handle_client(
                 let synced_rust = priming::synced_rust_files(&workspace, &touched);
                 if !synced_rust.is_empty()
                     && let Some(loaded) = state.workspace_manager.get_loaded(&workspace).await
-                    && loaded.rust_engine.is_some()
+                    && let Some(engine) = loaded.loaded_validation_engine()
                 {
-                    // Validation runs on its own engine: that is the one to warm. Loading it
-                    // warms the newest files, these among them.
-                    let workspace = workspace.clone();
-                    let admission = Arc::clone(state.workspace_manager.admission());
-                    tokio::spawn(async move {
-                        if let Ok(view) = loaded.validation_view(&admission).await
-                            && let Some(engine) = view.rust_engine.clone()
-                        {
-                            priming::warm_in_background(engine, workspace, synced_rust);
-                        }
-                    });
+                    // Validation runs on its own engine: warm it only once it has been loaded,
+                    // without spawning a second RustEngine::load on sync or falling back to
+                    // the main engine (#1118).
+                    priming::warm_in_background(engine, workspace.clone(), synced_rust);
                 }
                 // The search index is kept current by what the sync wrote, so a query never
                 // has to walk the tree.

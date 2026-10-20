@@ -12,6 +12,7 @@
 
 pub mod across_projects;
 pub mod alias;
+pub mod declared_at;
 pub mod matching;
 pub mod nested_projects;
 pub mod resolve;
@@ -30,6 +31,8 @@ pub use types::SymbolHit;
 pub(crate) use across_projects::*;
 #[allow(unused_imports)]
 pub(crate) use alias::*;
+#[allow(unused_imports)]
+pub(crate) use declared_at::*;
 #[allow(unused_imports)]
 pub(crate) use matching::*;
 #[allow(unused_imports)]

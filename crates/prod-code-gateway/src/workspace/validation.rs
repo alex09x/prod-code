@@ -126,6 +126,17 @@ impl SharedWorkspace {
         }))
     }
 
+    /// Returns the Rust validation engine if it has already been initialized, without
+    /// spawning a new load or falling back to the main engine (#1118).
+    pub(crate) fn loaded_validation_engine(
+        &self,
+    ) -> Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>> {
+        if let Some(ref base) = self.base_workspace {
+            return base.validation.get().and_then(Clone::clone);
+        }
+        self.validation.get().and_then(Clone::clone)
+    }
+
     /// The validation engine, loaded with `load` by the first session that asks while the host
     /// has memory for it. The load runs in a task of its own: a session that stops waiting
     /// leaves it running with its reservation, and the next session waits for its engine
