@@ -18,8 +18,24 @@ use super::inspection_handlers::with_indexing_notes;
 use super::list_tools;
 use super::references::references_across;
 use super::schemas::{POSITION_ARGUMENTS, SYMBOL_ADDRESSABLE};
-use super::symbols::resolve_symbol;
+use super::symbols::{
+    DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT, resolve_symbol, resolve_symbol_candidates,
+};
 use crate::protocol::McpToolCallResult;
+
+fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "code_definition"
+            | "code_references"
+            | "code_hover"
+            | "code_type_at"
+            | "code_callers"
+            | "code_callees"
+            | "code_implementations"
+            | "code_supertypes"
+    )
+}
 
 pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -> Result<u32> {
     value
@@ -196,18 +212,96 @@ pub async fn execute_tool(
         && let Some(symbol) = args.get("symbol").and_then(|v| v.as_str())
         && !symbol.trim().is_empty()
     {
+        let symbol_trimmed = symbol.trim().to_string();
         let hint = args
             .get("path")
             .and_then(|v| v.as_str())
             .filter(|p| !p.trim().is_empty())
             .map(|p| resolve_file_path(workspace_root, p));
-        let hit = Box::pin(resolve_symbol(
-            remote,
-            workspace_root,
-            symbol.trim(),
-            hint.as_deref(),
-        ))
-        .await?;
+        let candidates = if is_multi_candidate_navigation_tool(tool_name) {
+            let max_candidates = args
+                .get("max_candidates")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT);
+            Box::pin(resolve_symbol_candidates(
+                remote,
+                workspace_root,
+                &symbol_trimmed,
+                hint.as_deref(),
+                max_candidates,
+            ))
+            .await?
+        } else {
+            vec![
+                Box::pin(resolve_symbol(
+                    remote,
+                    workspace_root,
+                    &symbol_trimmed,
+                    hint.as_deref(),
+                ))
+                .await?,
+            ]
+        };
+
+        if candidates.len() > 1 {
+            let total = candidates.len();
+            let mut out = format!("`{symbol_trimmed}` matched {total} candidates:\n");
+            let mut any_ok = false;
+            for (idx, hit) in candidates.iter().enumerate() {
+                let mut cand_args = args.clone();
+                if let Some(obj) = cand_args.as_object_mut() {
+                    obj.insert(
+                        "path".into(),
+                        serde_json::Value::String(hit.path.to_string_lossy().into_owned()),
+                    );
+                    obj.insert("line".into(), serde_json::json!(hit.line));
+                    obj.insert("character".into(), serde_json::json!(hit.col));
+                }
+                validate_position_arguments(tool_name, &cand_args)?;
+                let cand_remote = crate::cluster::route_for_path(
+                    remote,
+                    workspace_root,
+                    cand_args.get("path").and_then(|v| v.as_str()),
+                )
+                .await?;
+                out.push_str(&format!(
+                    "\n=== [{}/{total}] {} ===\n",
+                    idx + 1,
+                    hit.render(workspace_root)
+                ));
+                match Box::pin(dispatch_tool(
+                    cand_remote,
+                    workspace_root,
+                    tool_name,
+                    cand_args,
+                ))
+                .await
+                {
+                    Ok(res) => {
+                        if !res.is_error {
+                            any_ok = true;
+                        }
+                        for item in &res.content {
+                            let crate::protocol::McpContentItem::Text { text } = item;
+                            out.push_str(text.trim_end());
+                            out.push('\n');
+                        }
+                    }
+                    Err(err) => {
+                        out.push_str(&format!("Error: {err:#}\n"));
+                    }
+                }
+            }
+            let combined = if any_ok {
+                Ok(McpToolCallResult::text(out.trim_end().to_string()))
+            } else {
+                Ok(McpToolCallResult::error(out.trim_end().to_string()))
+            };
+            return with_indexing_notes(combined, workspace_root);
+        }
+
+        let hit = &candidates[0];
         let mut owned = args.clone();
         if let Some(obj) = owned.as_object_mut() {
             obj.insert(

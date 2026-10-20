@@ -21,7 +21,8 @@ pub mod type_members;
 pub mod types;
 pub mod unindexed;
 
-pub use resolve::resolve_symbol;
+pub use matching::DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT;
+pub use resolve::{resolve_symbol, resolve_symbol_candidates};
 pub use search::workspace_symbol_search;
 pub use types::SymbolHit;
 

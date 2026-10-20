@@ -9,7 +9,6 @@
  */
 
 use super::types::{SymbolHit, edit_distance};
-use anyhow::Result;
 use std::path::Path;
 
 /// Whether a qualified request can name `hit`. A member belongs to the requested type when its
@@ -272,30 +271,47 @@ pub(crate) fn match_rank(name: &str, query: &str) -> u8 {
     if boundary { 2 } else { 3 }
 }
 
-/// The one location `ties` point at, or an error listing them when they point at several.
-pub(crate) fn single_candidate(
+/// Default maximum number of ambiguous candidates returned inline by read-only navigation tools (#1120).
+pub const DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT: usize = 3;
+
+/// Deduplicates `ties` pointing to the exact same `(path, line)`, preserving order.
+pub(crate) fn dedup_ties(ties: &[&SymbolHit]) -> Vec<SymbolHit> {
+    let mut out: Vec<SymbolHit> = Vec::with_capacity(ties.len());
+    for &hit in ties {
+        if !out
+            .iter()
+            .any(|existing| existing.path == hit.path && existing.line == hit.line)
+        {
+            out.push(hit.clone());
+        }
+    }
+    out
+}
+
+/// Formats an ambiguity error listing candidates along with a one-line signature/snippet (#1120).
+pub(crate) fn ambiguous_candidates_error(
     root: &Path,
     symbol: &str,
-    ties: &[&SymbolHit],
-) -> Result<SymbolHit> {
-    if ties.is_empty() {
-        anyhow::bail!("no candidate found for `{symbol}`");
-    }
-    if ties.len() > 1
-        && ties
-            .iter()
-            .any(|h| h.path != ties[0].path || h.line != ties[0].line)
-    {
-        let mut msg = format!(
-            "`{symbol}` is ambiguous ({} candidates); qualify it (Type::name) or pass `path`:\n",
-            ties.len()
-        );
-        for hit in ties.iter().take(10) {
-            msg.push_str(&format!("  {}\n", hit.render(root)));
+    ties: &[SymbolHit],
+) -> anyhow::Error {
+    let mut msg = format!(
+        "`{symbol}` is ambiguous ({} candidates); qualify it (Type::name) or pass `path`:\n",
+        ties.len()
+    );
+    for hit in ties.iter().take(10) {
+        let snippet = std::fs::read_to_string(&hit.path).ok().and_then(|text| {
+            text.lines()
+                .nth(hit.line.saturating_sub(1) as usize)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+        match snippet {
+            Some(s) => msg.push_str(&format!("  {} — `{s}`\n", hit.render(root))),
+            None => msg.push_str(&format!("  {}\n", hit.render(root))),
         }
-        anyhow::bail!(msg.trim_end().to_string());
     }
-    Ok(ties[0].clone())
+    anyhow::anyhow!("{}", msg.trim_end())
 }
 
 /// A symbol name without the decoration some servers put around it: a trailing parameter list

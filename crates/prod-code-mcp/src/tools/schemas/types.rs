@@ -63,6 +63,12 @@ pub fn relax_position_schema(schema: &mut serde_json::Value) {
                 "description": "Symbol name instead of path/line/character, optionally qualified (`Metrics::record`, `pkg.Func`, `Class.method`); resolved through the workspace symbol index. `path` may still be given to disambiguate."
             })
         });
+        props.entry("max_candidates").or_insert_with(|| {
+            serde_json::json!({
+                "type": "integer",
+                "description": "For read-only navigation tools: maximum number of tied symbol candidates to answer automatically when an unqualified `symbol` is ambiguous (default: 3; set to 1 for strict single-candidate resolution). Exact qualified names (`Type::name`) always return all overloads/members."
+            })
+        });
     }
     if let Some(required) = schema.get_mut("required").and_then(|r| r.as_array_mut()) {
         required.retain(|r| !matches!(r.as_str(), Some("path") | Some("line") | Some("character")));

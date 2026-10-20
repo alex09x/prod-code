@@ -9,7 +9,9 @@
  */
 
 use super::across_projects::symbol_search_across_projects;
-use super::matching::{bare_symbol_name, no_symbol_message, qualifier_matches, single_candidate};
+use super::matching::{
+    ambiguous_candidates_error, bare_symbol_name, dedup_ties, no_symbol_message, qualifier_matches,
+};
 use super::sources::{
     find_identifier_on_line, identifier_at, is_extension_declaration, is_use_declaration,
     remote_sources, source_text,
@@ -21,20 +23,14 @@ use anyhow::Result;
 use std::net::SocketAddr;
 use std::path::Path;
 
-/// Resolves a (possibly qualified) symbol name to one position. Only a hit whose name is the
-/// requested name (ignoring ASCII case and the server's decoration, see `bare_symbol_name`)
-/// is a candidate: the index also returns prefix and fuzzy matches, and acting on one of those
-/// renames or deletes a symbol the caller never named (#253). Qualifiers (`Type::name`,
-/// `pkg.Func`, `Class.method`) are matched against the hit's container, `hint` (a file or
-/// directory) prefers hits under it. A member the index does not list, such as a Rust struct
-/// field, is found through its type's outline. A tie between different locations is an error
-/// listing the candidates; no match is an error listing the closest names.
-pub async fn resolve_symbol(
+/// Resolves a (possibly qualified) symbol name to its top-ranked tied candidates and whether
+/// the query was explicitly qualified (`Type::name` / `pkg.Func`).
+pub(crate) async fn resolve_symbol_ties(
     remote: SocketAddr,
     root: &Path,
     symbol: &str,
     hint: Option<&Path>,
-) -> Result<SymbolHit> {
+) -> Result<(bool, Vec<SymbolHit>)> {
     let parts: Vec<&str> = symbol
         .split(['.', ':', '#', '/'])
         .map(|p| p.trim().trim_end_matches("()"))
@@ -216,7 +212,46 @@ pub async fn resolve_symbol(
     } else {
         declarations
     };
-    single_candidate(root, symbol, &ties)
+    let deduped = dedup_ties(&ties);
+    if deduped.is_empty() {
+        anyhow::bail!("no candidate found for `{symbol}`");
+    }
+    Ok((qualifier.is_some(), deduped))
+}
+
+/// Resolves a (possibly qualified) symbol name to one position. A tie between different
+/// locations is an error listing the candidates; no match is an error listing the closest names.
+pub async fn resolve_symbol(
+    remote: SocketAddr,
+    root: &Path,
+    symbol: &str,
+    hint: Option<&Path>,
+) -> Result<SymbolHit> {
+    let (_, deduped) = resolve_symbol_ties(remote, root, symbol, hint).await?;
+    if deduped.len() > 1 {
+        return Err(ambiguous_candidates_error(root, symbol, &deduped));
+    }
+    Ok(deduped.into_iter().next().unwrap())
+}
+
+/// Resolves a symbol name to one or more candidate positions for read-only navigation tools (#1120):
+/// - When the query is an exact qualified name (`Type::name` or `pkg.Type.name`), always returns
+///   all verified matches on that owner (e.g. overloads, or a struct field and method of the same name).
+/// - When unqualified and `<= max_unqualified` candidates tie (default 3), returns all of them so
+///   the caller can answer for every candidate in a single response.
+/// - When unqualified and `> max_unqualified` candidates tie, returns the disambiguation error.
+pub async fn resolve_symbol_candidates(
+    remote: SocketAddr,
+    root: &Path,
+    symbol: &str,
+    hint: Option<&Path>,
+    max_unqualified: usize,
+) -> Result<Vec<SymbolHit>> {
+    let (is_qualified, deduped) = resolve_symbol_ties(remote, root, symbol, hint).await?;
+    if deduped.len() <= 1 || is_qualified || deduped.len() <= max_unqualified {
+        return Ok(deduped);
+    }
+    Err(ambiguous_candidates_error(root, symbol, &deduped))
 }
 
 /// Resolves standard library symbols (e.g. `std::process::Command`) or workspace usages when
