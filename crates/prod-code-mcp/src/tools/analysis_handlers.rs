@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use super::diagnostics_handler::compile_check;
-use super::exec_handler::resolve_exec_subdir;
+use super::exec_handler::{parse_exec_argv, resolve_exec_subdir};
 use super::resolve_file_path;
 use super::symbols::resolve_symbol;
 use crate::protocol::McpToolCallResult;
@@ -25,8 +25,11 @@ pub(crate) async fn handle_search(
 ) -> Result<McpToolCallResult> {
     let query = args
         .get("query")
+        .or_else(|| args.get("pattern"))
         .and_then(|v| v.as_str())
-        .context("Missing 'query' argument")?;
+        .context(
+            "Missing 'query' argument (expected `query: \"...\"`, optional `path` and `limit`)",
+        )?;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let (target_remote, target_root, subpath) = match args.get("path").and_then(|v| v.as_str()) {
         None => (remote, workspace_root.to_path_buf(), None),
@@ -215,13 +218,7 @@ pub(crate) async fn handle_shadow_run(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    let argv: Vec<String> = args
-        .get("argv")
-        .and_then(|v| v.as_array())
-        .context("Missing 'argv' argument")?
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
+    let argv = parse_exec_argv(args)?;
     if argv.is_empty() {
         return Ok(McpToolCallResult::error("'argv' is empty".to_string()));
     }

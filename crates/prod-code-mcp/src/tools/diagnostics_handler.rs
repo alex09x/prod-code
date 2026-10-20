@@ -26,8 +26,10 @@ pub(crate) async fn handle_diagnostics(
 ) -> Result<McpToolCallResult> {
     let path_str = args
         .get("path")
+        .or_else(|| args.get("file"))
+        .or_else(|| args.get("file_path"))
         .and_then(|v| v.as_str())
-        .context("Missing 'path' argument")?;
+        .context("Missing 'path' argument (expected `path: \"...\"`)")?;
     let file_path = resolve_file_path(workspace_root, path_str);
 
     if tool_name == "code_validate_edit" {
@@ -103,13 +105,18 @@ pub(crate) async fn handle_diagnostics(
         }
     }
 
-    let report = match args.get("new_text").and_then(|v| v.as_str()) {
+    let proposed_text = args
+        .get("new_text")
+        .or_else(|| args.get("content"))
+        .or_else(|| args.get("text"))
+        .and_then(|v| v.as_str());
+    let report = match proposed_text {
         Some(text) if tool_name == "code_validate_edit" => {
             crate::diagnostics::validate_text(remote, workspace_root, &file_path, text).await?
         }
         _ if tool_name == "code_validate_edit" => {
             return Ok(McpToolCallResult::error(
-                "Missing 'new_text' argument".to_string(),
+                "Missing 'new_text' argument (expected `path` and `new_text` / `content`, or `chunk` / `stream_chunks`)".to_string(),
             ));
         }
         _ => crate::diagnostics::diagnostics(remote, workspace_root, &file_path).await?,
@@ -126,7 +133,7 @@ pub(crate) async fn handle_diagnostics(
         .unwrap_or(false);
     if tool_name == "code_validate_edit"
         && (compile || borrow_check)
-        && let Some(proposed) = args.get("new_text").and_then(|v| v.as_str())
+        && let Some(proposed) = proposed_text
     {
         let (errors, compiled) =
             compile_check(remote, workspace_root, &[(file_path, proposed.to_string())]).await?;

@@ -18,7 +18,10 @@ use super::sources::{
 };
 use super::type_members::type_members;
 use super::types::SymbolHit;
-use super::unindexed::{find_unindexed_declarations, unindexed_declarations, unindexed_members};
+use super::unindexed::{
+    find_loaded_unindexed_declarations, find_unindexed_declarations, unindexed_declarations,
+    unindexed_members,
+};
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -72,7 +75,25 @@ pub(crate) async fn resolve_symbol_ties(
                 if !stdlib_hits.is_empty() {
                     stdlib_hits
                 } else {
-                    anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
+                    let mut unindexed_qualified: Vec<SymbolHit> =
+                        find_unindexed_declarations(root, name, hint)
+                            .await
+                            .into_iter()
+                            .filter(|hit| qualifier_matches(root, hit, qualifiers))
+                            .collect();
+                    if unindexed_qualified.is_empty() {
+                        unindexed_qualified =
+                            find_loaded_unindexed_declarations(remote, root, name, hint)
+                                .await
+                                .into_iter()
+                                .filter(|hit| qualifier_matches(root, hit, qualifiers))
+                                .collect();
+                    }
+                    if !unindexed_qualified.is_empty() {
+                        unindexed_qualified
+                    } else {
+                        anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
+                    }
                 }
             }
         }
@@ -90,8 +111,14 @@ pub(crate) async fn resolve_symbol_ties(
                 if !members.is_empty() {
                     members
                 } else {
-                    let unindexed = unindexed_declarations(remote, root, name).await;
-                    anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
+                    let loaded_hits =
+                        find_loaded_unindexed_declarations(remote, root, name, hint).await;
+                    if !loaded_hits.is_empty() {
+                        loaded_hits
+                    } else {
+                        let unindexed = unindexed_declarations(remote, root, name).await;
+                        anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
+                    }
                 }
             }
         } else {

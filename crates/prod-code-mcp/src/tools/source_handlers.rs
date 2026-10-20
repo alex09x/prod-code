@@ -22,8 +22,12 @@ pub(crate) async fn handle_source(
 ) -> Result<McpToolCallResult> {
     let path = args
         .get("path")
+        .or_else(|| args.get("file"))
+        .or_else(|| args.get("file_path"))
         .and_then(|v| v.as_str())
-        .context("Missing 'path' argument")?;
+        .context(
+            "Missing 'path' argument (expected `path: \"...\"`, optional `line` and `context`)",
+        )?;
     let line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as u32);
     let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
     let (bytes, truncated) = crate::remote_fs::read_source(remote, workspace_root, path).await?;

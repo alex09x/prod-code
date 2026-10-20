@@ -19,6 +19,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tokio_util::codec::Framed;
 
+mod suggest;
+pub use suggest::{missing_file_context, suggest_nearest_path};
+
 /// Maximum bytes read from a local source file before truncating (matches gateway ReadFile limit).
 pub const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -75,16 +78,16 @@ pub async fn read_source(
 
     if p.is_absolute() {
         if let Some(local_path) = absolute_checkout_source_path(root, &root_canon, p)? {
-            read_local_source_file(&local_path)
+            read_local_source_file(root, &local_path)
         } else if let Some(rel) = workspace_relative_path(root, &path) {
             let local_path = root.join(rel);
-            read_local_source_file(&local_path)
+            read_local_source_file(root, &local_path)
         } else {
             read_remote_file(remote, &path, 0).await
         }
     } else {
         let local_path = resolve_relative_checkout_path(root, &root_canon, p)?;
-        read_local_source_file(&local_path)
+        read_local_source_file(root, &local_path)
     }
 }
 
@@ -113,7 +116,7 @@ fn absolute_checkout_source_path(
             if !ancestor.starts_with(root_canon) {
                 anyhow::bail!("{} is outside the workspace", path.display());
             }
-            Err(error).with_context(|| format!("reading {}", path.display()))
+            Err(error).with_context(|| missing_file_context(root, path, "reading"))
         }
         Err(error) if claims_checkout => {
             Err(error).with_context(|| format!("resolving {}", path.display()))
@@ -142,8 +145,9 @@ fn canonical_existing_ancestor(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn read_local_source_file(path: &Path) -> Result<(Vec<u8>, bool)> {
-    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+fn read_local_source_file(root: &Path, path: &Path) -> Result<(Vec<u8>, bool)> {
+    let file =
+        std::fs::File::open(path).with_context(|| missing_file_context(root, path, "reading"))?;
     read_limited_source(file).with_context(|| format!("reading {}", path.display()))
 }
 
