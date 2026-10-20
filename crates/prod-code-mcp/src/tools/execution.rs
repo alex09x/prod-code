@@ -168,6 +168,29 @@ pub async fn execute_tool(
 ) -> Result<McpToolCallResult> {
     // Invalid explicit positions are refused before symbol lookup, routing or any write.
     validate_position_arguments(tool_name, &args)?;
+    let mut args = args;
+    if SYMBOL_ADDRESSABLE.contains(&tool_name) {
+        let batch_symbols = super::batch::extract_batch_symbols(&args);
+        if batch_symbols.len() > 1 && is_multi_candidate_navigation_tool(tool_name) {
+            return super::batch::execute_batch_symbols(
+                remote,
+                workspace_root,
+                tool_name,
+                args,
+                &batch_symbols,
+            )
+            .await;
+        } else if batch_symbols.len() == 1 && args.get("symbol").and_then(|v| v.as_str()).is_none()
+        {
+            if let Some(obj) = args.as_object_mut() {
+                obj.remove("symbols");
+                obj.insert(
+                    "symbol".into(),
+                    serde_json::Value::String(batch_symbols[0].clone()),
+                );
+            }
+        }
+    }
     // Notes left by an earlier call are not this answer's (#391).
     let _ = crate::session::take_indexing_notes(workspace_root);
     if tool_name == "code_references"

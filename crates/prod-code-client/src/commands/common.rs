@@ -36,6 +36,20 @@ pub fn symbol_args(symbol: &str, file: Option<PathBuf>) -> serde_json::Value {
     args
 }
 
+/// The MCP arguments of one or more repeatable `--symbol NAME` flags (#1123).
+pub fn symbols_args(symbols: &[String], file: Option<PathBuf>) -> serde_json::Value {
+    let mut args = if symbols.len() == 1 {
+        serde_json::json!({ "symbol": symbols[0] })
+    } else {
+        serde_json::json!({ "symbols": symbols })
+    };
+    if let Some(file) = file {
+        let file = std::fs::canonicalize(&file).unwrap_or(file);
+        args["path"] = serde_json::json!(file.to_string_lossy());
+    }
+    args
+}
+
 /// Runs one MCP tool from the current checkout and prints what it says; exit 1 on an error.
 pub async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
@@ -102,6 +116,16 @@ pub async fn run_by_symbol(
     file: Option<PathBuf>,
 ) -> Result<()> {
     run_tool(remote, tool, symbol_args(symbol, file)).await
+}
+
+/// A position command given one or more `--symbol` flags (#1123).
+pub async fn run_by_symbols(
+    remote: SocketAddr,
+    tool: &str,
+    symbols: &[String],
+    file: Option<PathBuf>,
+) -> Result<()> {
+    run_tool(remote, tool, symbols_args(symbols, file)).await
 }
 
 /// Parses a `LINE:COL` string into 1-based (line, col) tuple.
