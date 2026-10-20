@@ -74,6 +74,15 @@ pub async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -
         })?;
     }
     let result = result?;
+    if tool == "code_definition"
+        && result.content.len() == 1
+        && matches!(
+            &result.content[0],
+            prod_code_mcp::protocol::McpContentItem::Text { text } if text.trim() == "No definition found."
+        )
+    {
+        anyhow::bail!("no definition found");
+    }
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
         println!("{text}");
