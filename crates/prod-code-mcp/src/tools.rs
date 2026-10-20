@@ -42,6 +42,7 @@ pub use outline::{
     protobuf_outline, render_outline,
 };
 
+pub(crate) mod batch;
 pub mod execution;
 pub use execution::*;
 pub(crate) async fn dispatch_tool(

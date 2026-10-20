@@ -10,7 +10,7 @@
 
 use super::DispatchContext;
 use crate::cli::Commands;
-use crate::commands::common::{position, run_by_symbol, run_tool, symbol_args};
+use crate::commands::common::{position, run_by_symbols, run_tool, symbols_args};
 use crate::commands::query::*;
 use crate::workspace::find_workspace_root;
 use anyhow::{Context, Result};
@@ -38,21 +38,17 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             no_body,
         } => {
             let show_body = body || !no_body;
-            match symbol {
-                Some(symbol) => {
-                    let mut args = symbol_args(&symbol, file);
-                    args["body"] = serde_json::json!(show_body);
-                    run_tool(cx.remote, "code_definition", args).await
-                }
-                None if show_body => {
-                    let mut args = file_pos_json(file, line, col)?;
-                    args["body"] = serde_json::json!(true);
-                    run_tool(cx.remote, "code_definition", args).await
-                }
-                None => {
-                    let (file, line, col) = position(file, line, col)?;
-                    run_definition(cx.remote, &file, line, col).await
-                }
+            if !symbol.is_empty() {
+                let mut args = symbols_args(&symbol, file);
+                args["body"] = serde_json::json!(show_body);
+                run_tool(cx.remote, "code_definition", args).await
+            } else if show_body {
+                let mut args = file_pos_json(file, line, col)?;
+                args["body"] = serde_json::json!(true);
+                run_tool(cx.remote, "code_definition", args).await
+            } else {
+                let (file, line, col) = position(file, line, col)?;
+                run_definition(cx.remote, &file, line, col).await
             }
         }
         Commands::Hover {
@@ -60,13 +56,14 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             line,
             col,
             symbol,
-        } => match symbol {
-            Some(symbol) => run_by_symbol(cx.remote, "code_hover", &symbol, file).await,
-            None => {
+        } => {
+            if !symbol.is_empty() {
+                run_by_symbols(cx.remote, "code_hover", &symbol, file).await
+            } else {
                 let (file, line, col) = position(file, line, col)?;
                 run_hover(cx.remote, &file, line, col).await
             }
-        },
+        }
         Commands::Refs {
             file,
             line,
@@ -76,9 +73,10 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             also_in,
             build_index,
         } => {
-            let mut args = match symbol {
-                Some(symbol) => symbol_args(&symbol, file),
-                None => file_pos_json(file, line, col)?,
+            let mut args = if !symbol.is_empty() {
+                symbols_args(&symbol, file)
+            } else {
+                file_pos_json(file, line, col)?
             };
             if context > 0 {
                 args["context"] = serde_json::json!(context);
@@ -105,17 +103,14 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             depth,
             build_index,
         } => {
-            let mut args = match symbol {
-                Some(symbol) => {
-                    let mut args = symbol_args(&symbol, file);
-                    args["depth"] = serde_json::json!(depth);
-                    args
-                }
-                None => {
-                    let mut args = file_pos_json(file, line, col)?;
-                    args["depth"] = serde_json::json!(depth);
-                    args
-                }
+            let mut args = if !symbol.is_empty() {
+                let mut args = symbols_args(&symbol, file);
+                args["depth"] = serde_json::json!(depth);
+                args
+            } else {
+                let mut args = file_pos_json(file, line, col)?;
+                args["depth"] = serde_json::json!(depth);
+                args
             };
             if build_index {
                 args["build_index"] = serde_json::json!(true);
@@ -134,31 +129,29 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             line,
             col,
             symbol,
-        } => match symbol {
-            Some(symbol) => run_by_symbol(cx.remote, "code_implementations", &symbol, file).await,
-            None => {
+        } => {
+            if !symbol.is_empty() {
+                run_by_symbols(cx.remote, "code_implementations", &symbol, file).await
+            } else {
                 let (file, line, col) = position(file, line, col)?;
                 run_implementations(cx.remote, &file, line, col).await
             }
-        },
+        }
         Commands::Supertypes {
             file,
             line,
             col,
             symbol,
             depth,
-        } => match symbol {
-            Some(symbol) => {
-                let mut args = symbol_args(&symbol, file);
-                args["depth"] = serde_json::json!(depth);
-                run_tool(cx.remote, "code_supertypes", args).await
-            }
-            None => {
-                let mut args = file_pos_json(file, line, col)?;
-                args["depth"] = serde_json::json!(depth);
-                run_tool(cx.remote, "code_supertypes", args).await
-            }
-        },
+        } => {
+            let mut args = if !symbol.is_empty() {
+                symbols_args(&symbol, file)
+            } else {
+                file_pos_json(file, line, col)?
+            };
+            args["depth"] = serde_json::json!(depth);
+            run_tool(cx.remote, "code_supertypes", args).await
+        }
         Commands::Symbols { target } => {
             let target_path = Path::new(&target);
             let resolved_file = if target_path.is_file() {

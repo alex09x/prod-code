@@ -5701,3 +5701,61 @@ async fn test_cli_prod_code_cluster_env_defaults_to_auto() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("parse json");
     assert_eq!(json["is_internal"], true);
 }
+
+#[tokio::test]
+async fn cli_supports_repeatable_symbol_flag_for_batch_queries() {
+    let ws = make_workspace();
+    let path = ws.path("src/lib.rs");
+    let p = path.clone();
+
+    let gw = MockGateway::start(move |method, params| match method {
+        "workspace/symbol" => {
+            let q = params
+                .pointer("/query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match q {
+                "Order" => serde_json::json!([answers::symbol("Order", 23, &p, 1, 12)]),
+                "calculate" => serde_json::json!([answers::symbol("calculate", 12, &p, 5, 8)]),
+                _ => serde_json::json!([]),
+            }
+        }
+        "textDocument/definition" => {
+            let line = params
+                .pointer("/position/line")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32
+                + 1;
+            let col = if line == 1 { 12 } else { 8 };
+            answers::locations(&p, &[(line, col)])
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "def",
+            "--symbol",
+            "Order",
+            "--symbol",
+            "calculate",
+            "--symbol",
+            "MissingSym",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("=== [1/3] Order ==="), "{stdout}");
+    assert!(stdout.contains("pub struct Order"), "{stdout}");
+    assert!(stdout.contains("=== [2/3] calculate ==="), "{stdout}");
+    assert!(stdout.contains("pub fn calculate() -> i32"), "{stdout}");
+    assert!(stdout.contains("=== [3/3] MissingSym ==="), "{stdout}");
+    assert!(
+        stdout.contains("Error: no symbol named `MissingSym`"),
+        "{stdout}"
+    );
+}

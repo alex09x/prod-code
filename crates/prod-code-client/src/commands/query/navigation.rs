@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use crate::commands::common::{position, run_tool, symbol_args};
+use crate::commands::common::{position, run_tool, symbols_args};
 use crate::workspace::find_workspace_root;
 use anyhow::{Context, Result};
 use std::env;
@@ -73,25 +73,22 @@ pub async fn run_call_tree(
     file: Option<PathBuf>,
     line: Option<u32>,
     col: Option<u32>,
-    symbol: Option<String>,
+    symbol: Vec<String>,
     depth: usize,
 ) -> Result<()> {
-    let args = match symbol {
-        Some(symbol) => {
-            let mut args = symbol_args(&symbol, file);
-            args["depth"] = serde_json::json!(depth);
-            args
-        }
-        None => {
-            let (file, line, col) = position(file, line, col)?;
-            let file = std::fs::canonicalize(&file).unwrap_or(file);
-            serde_json::json!({
-                "path": file.to_string_lossy(),
-                "line": line,
-                "character": col,
-                "depth": depth,
-            })
-        }
+    let args = if !symbol.is_empty() {
+        let mut args = symbols_args(&symbol, file);
+        args["depth"] = serde_json::json!(depth);
+        args
+    } else {
+        let (file, line, col) = position(file, line, col)?;
+        let file = std::fs::canonicalize(&file).unwrap_or(file);
+        serde_json::json!({
+            "path": file.to_string_lossy(),
+            "line": line,
+            "character": col,
+            "depth": depth,
+        })
     };
     run_tool(remote, tool, args).await
 }

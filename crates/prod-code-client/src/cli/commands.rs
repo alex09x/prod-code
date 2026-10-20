@@ -78,10 +78,9 @@ pub enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
-        /// FILE, the one declared or used there (#330).
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position (repeatable for batch queries; #330, #1123).
         #[arg(long, conflicts_with_all = ["line", "col"])]
-        symbol: Option<String>,
+        symbol: Vec<String>,
         /// Also print the definition's code, numbered, with its doc comments (enabled by default; #306, #1121).
         #[arg(long, default_value_t = false)]
         body: bool,
@@ -97,10 +96,9 @@ pub enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
-        /// FILE, the one declared or used there (#330).
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position (repeatable for batch queries; #330, #1123).
         #[arg(long, conflicts_with_all = ["line", "col"])]
-        symbol: Option<String>,
+        symbol: Vec<String>,
     },
     /// Find all references to symbol: prod-code refs <file> <line> <col>, or --symbol NAME
     Refs {
@@ -110,10 +108,9 @@ pub enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
-        /// FILE, the one declared or used there (#330).
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position (repeatable for batch queries; #330, #1123).
         #[arg(long, conflicts_with_all = ["line", "col"])]
-        symbol: Option<String>,
+        symbol: Vec<String>,
         /// Number of context lines before and after each reference to print (#1122).
         #[arg(short = 'C', long, default_value_t = 0)]
         context: usize,
@@ -133,10 +130,9 @@ pub enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
-        /// FILE, the one declared or used there (#330).
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position (repeatable for batch queries; #330, #1123).
         #[arg(long, conflicts_with_all = ["line", "col"])]
-        symbol: Option<String>,
+        symbol: Vec<String>,
         /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
         #[arg(long, default_value_t = 1)]
         depth: usize,
@@ -152,10 +148,9 @@ pub enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
-        /// FILE, the one declared or used there (#330).
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position (repeatable for batch queries; #330, #1123).
         #[arg(long, conflicts_with_all = ["line", "col"])]
-        symbol: Option<String>,
+        symbol: Vec<String>,
         /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
         #[arg(long, default_value_t = 1)]
         depth: usize,
@@ -168,10 +163,9 @@ pub enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
-        /// FILE, the one declared or used there (#330).
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position (repeatable for batch queries; #330, #1123).
         #[arg(long, conflicts_with_all = ["line", "col"])]
-        symbol: Option<String>,
+        symbol: Vec<String>,
     },
     /// What the type at a position implements, or what the trait requires: prod-code supertypes
     /// <file> <line> <col>, or --symbol NAME
@@ -182,10 +176,9 @@ pub enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type`, `module::Trait`) instead of a position; with FILE, the one
-        /// declared or used there (#330).
+        /// The symbol by name (`Type`, `module::Trait`) instead of a position (repeatable for batch queries; #330, #1123).
         #[arg(long, conflicts_with_all = ["line", "col"])]
-        symbol: Option<String>,
+        symbol: Vec<String>,
         /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
         #[arg(long, default_value_t = 1)]
         depth: usize,

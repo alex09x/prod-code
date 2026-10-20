@@ -63,6 +63,13 @@ pub fn relax_position_schema(schema: &mut serde_json::Value) {
                 "description": "Symbol name instead of path/line/character, optionally qualified (`Metrics::record`, `pkg.Func`, `Class.method`); resolved through the workspace symbol index. `path` may still be given to disambiguate."
             })
         });
+        props.entry("symbols").or_insert_with(|| {
+            serde_json::json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Batch symbol names (for read-only navigation tools such as `code_definition`, `code_references`, `code_hover`, `code_callers`): resolves and queries every listed symbol in one call sharing a single workspace sync and engine session. Individual symbol errors are reported inline without failing the batch."
+            })
+        });
         props.entry("max_candidates").or_insert_with(|| {
             serde_json::json!({
                 "type": "integer",

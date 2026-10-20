@@ -8139,3 +8139,81 @@ async fn code_references_includes_enclosing_symbol_and_optional_context_lines() 
     assert!(text_ctx.contains(">   5 |     target_fn();"), "{text_ctx}");
     assert!(text_ctx.contains("  6 |     let y = 2;"), "{text_ctx}");
 }
+
+/// Issue #1123: `code_definition`, `code_references`, `code_hover`, and `code_callers` accept
+/// `symbols: [...]` to resolve and query multiple symbols in a single batch call sharing one
+/// session/sync and reporting missing symbols inline without failing the batch.
+#[tokio::test]
+async fn batch_symbol_queries_group_results_and_report_inline_errors() {
+    let ws = rust_workspace(
+        "pub fn sym_one() -> i32 { 1 }\npub fn sym_two() -> i32 { 2 }\npub fn sym_three() -> i32 { 3 }\npub fn sym_four() -> i32 { 4 }\n",
+    );
+    let lib = ws.path("src/lib.rs");
+    let p = lib.clone();
+    let sync_probes: SyncProbeLog = Arc::default();
+
+    let remote = mock_gateway(Script {
+        sync_probe_requests: Arc::clone(&sync_probes),
+        lsp: Arc::new(move |method, params| match method {
+            "workspace/symbol" => {
+                let q = params
+                    .pointer("/query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                match q {
+                    "sym_one" => serde_json::json!([answers::symbol("sym_one", 12, &p, 1, 8)]),
+                    "sym_two" => serde_json::json!([answers::symbol("sym_two", 12, &p, 2, 8)]),
+                    "sym_three" => serde_json::json!([answers::symbol("sym_three", 12, &p, 3, 8)]),
+                    "sym_four" => serde_json::json!([answers::symbol("sym_four", 12, &p, 4, 8)]),
+                    _ => serde_json::json!([]),
+                }
+            }
+            "textDocument/definition" => {
+                let line = params
+                    .pointer("/position/line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32
+                    + 1;
+                answers::locations(&p, &[(line, 8)])
+            }
+            _ => serde_json::Value::Null,
+        }),
+        ..Default::default()
+    })
+    .await;
+
+    let res = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "symbols": ["sym_one", "sym_two", "sym_three", "missing_sym", "sym_four"]
+        }),
+    )
+    .await
+    .expect("batch code_definition runs");
+
+    assert!(
+        !res.is_error,
+        "batch must succeed when at least one symbol resolves"
+    );
+    let text = text_of(&res);
+    assert!(text.contains("=== [1/5] sym_one ==="), "{text}");
+    assert!(text.contains("pub fn sym_one() -> i32 { 1 }"), "{text}");
+    assert!(text.contains("=== [2/5] sym_two ==="), "{text}");
+    assert!(text.contains("pub fn sym_two() -> i32 { 2 }"), "{text}");
+    assert!(text.contains("=== [3/5] sym_three ==="), "{text}");
+    assert!(text.contains("pub fn sym_three() -> i32 { 3 }"), "{text}");
+    assert!(text.contains("=== [4/5] missing_sym ==="), "{text}");
+    assert!(
+        text.contains("Error: no symbol named `missing_sym`"),
+        "{text}"
+    );
+    assert!(text.contains("=== [5/5] sym_four ==="), "{text}");
+    assert!(text.contains("pub fn sym_four() -> i32 { 4 }"), "{text}");
+    assert_eq!(
+        sync_probes.lock().unwrap().len(),
+        1,
+        "all 5 symbols must share a single pooled session and workspace sync"
+    );
+}
