@@ -166,3 +166,56 @@ fn nested_swift_project_and_swift_declarations_work_at_deep_paths() {
         .is_some()
     );
 }
+
+#[test]
+fn swift_extension_nested_types_and_qualified_uses_are_not_shadowed() {
+    let swift_file = Path::new("/ws/swift/Sources/TakoApp/_TakoShim/Tako+CrabView.swift");
+    let text = "\
+import AppKit
+
+extension Tako {
+    final class CrabView: NSView {}
+
+    final class CrabTabBinding {
+        private let crabView = CrabView()
+        private let qualified = Tako.CrabView()
+    }
+
+    enum CrabPainter {
+        static func paint(_ view: CrabView) {}
+    }
+}
+
+extension Tako.CrabView {
+    func refresh() {
+        Tako.CrabPainter.paint(self)
+    }
+}
+";
+    let mask = mask_executable_code(text, swift_file);
+    let masked = masked_code_string(text, &mask);
+    let lines: Vec<&str> = text.lines().collect();
+
+    let find_non_shadowed_lines = |symbol: &str, decl_line_1based: usize| -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut line_start = 0usize;
+        for (idx, line) in text.split('\n').enumerate() {
+            for (byte_in_line, _) in line.match_indices(symbol) {
+                if idx + 1 == decl_line_1based {
+                    continue;
+                }
+                let off = line_start + byte_in_line;
+                if mask[off..off + symbol.len()].iter().all(|&b| b)
+                    && !is_occurrence_shadowed(&masked, &lines, idx, off, symbol)
+                {
+                    out.push(idx + 1);
+                }
+            }
+            line_start += line.len() + 1;
+        }
+        out
+    };
+
+    assert_eq!(find_non_shadowed_lines("CrabView", 4), vec![7, 8, 12, 16]);
+    assert_eq!(find_non_shadowed_lines("CrabPainter", 11), vec![18]);
+}

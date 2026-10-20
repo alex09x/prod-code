@@ -101,7 +101,39 @@ pub(crate) async fn handle_references(
         &mut seen_files,
         &mut all_locs,
     );
-    let initial_was_empty = all_locs.is_empty();
+    let mut initial_was_empty = all_locs.is_empty();
+    let build_index = args
+        .get("build_index")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut swift_index_attempted = false;
+    if initial_was_empty
+        && build_index
+        && let Some((built, note)) =
+            build_swift_index(remote, workspace_root, &file_path, true).await
+    {
+        swift_index_attempted = true;
+        out.push_str(&note);
+        out.push('\n');
+        if built {
+            res = execute_lsp_query(
+                remote,
+                workspace_root,
+                &file_path,
+                "textDocument/references",
+                params.clone(),
+            )
+            .await?;
+            add_locations(
+                workspace_root,
+                &res,
+                &mut seen_locs,
+                &mut seen_files,
+                &mut all_locs,
+            );
+            initial_was_empty = all_locs.is_empty();
+        }
+    }
     if !initial_was_empty {
         seen_files.insert(std::fs::canonicalize(&file_path).unwrap_or_else(|_| file_path.clone()));
     }
@@ -128,11 +160,8 @@ pub(crate) async fn handle_references(
         out.push_str(&note);
     }
 
-    let build_index = args
-        .get("build_index")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     if all_locs.is_empty()
+        && !swift_index_attempted
         && let Some((built, note)) =
             build_swift_index(remote, workspace_root, &file_path, build_index).await
     {
@@ -227,4 +256,61 @@ pub(crate) async fn handle_references(
     }
 
     Ok(McpToolCallResult::text(out.trim_end()))
+}
+
+pub(crate) fn swift_shares_or_imports_target(
+    caller: &Path,
+    decl: &Path,
+    has_any_import: bool,
+) -> bool {
+    fn target_dir(p: &Path) -> Option<&Path> {
+        p.ancestors().find(|a| {
+            a.parent()
+                .and_then(|d| d.file_name())
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| matches!(n, "Sources" | "Tests" | "Plugins"))
+        })
+    }
+    has_any_import
+        || caller.parent() == decl.parent()
+        || matches!((target_dir(caller), target_dir(decl)), (Some(a), Some(b)) if a == b)
+}
+
+pub(crate) fn definition_in_file(found: &serde_json::Value, path: &str) -> bool {
+    let locations: Vec<&serde_json::Value> = match found {
+        serde_json::Value::Array(all) => all.iter().collect(),
+        serde_json::Value::Object(_) => vec![found],
+        _ => Vec::new(),
+    };
+    locations.iter().any(|location| {
+        let uri = location
+            .get("uri")
+            .or_else(|| location.get("targetUri"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        crate::remote_fs::uri_to_path(uri) == path
+    })
+}
+
+pub(crate) fn definition_in_other_workspace_file(
+    found: &serde_json::Value,
+    workspace_root: &Path,
+    decl_path: &str,
+) -> bool {
+    let locations: Vec<&serde_json::Value> = match found {
+        serde_json::Value::Array(all) => all.iter().collect(),
+        serde_json::Value::Object(_) => vec![found],
+        _ => Vec::new(),
+    };
+    locations.iter().any(|location| {
+        let uri = location
+            .get("uri")
+            .or_else(|| location.get("targetUri"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        let resolved = crate::remote_fs::uri_to_path(uri);
+        !resolved.is_empty()
+            && resolved != decl_path
+            && !crate::remote_fs::is_external(workspace_root, &resolved)
+    })
 }

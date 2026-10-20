@@ -35,15 +35,10 @@ fn normalize_segments(path: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for comp in path.components() {
         match comp {
-            Component::CurDir => {}
             Component::ParentDir => {
                 out.pop();
             }
-            Component::Normal(s) => {
-                if let Some(s) = s.to_str() {
-                    out.push(s.to_string());
-                }
-            }
+            Component::Normal(s) => out.extend(s.to_str().map(str::to_string)),
             _ => {}
         }
     }
@@ -382,14 +377,23 @@ pub(crate) fn is_occurrence_shadowed(
     byte_offset: usize,
     name: &str,
 ) -> bool {
-    if text_lines
-        .get(line_idx)
-        .is_some_and(|line| declared_at(line, name).is_some())
-    {
+    if text_lines.get(line_idx).is_some_and(|line| {
+        !line.trim_start().starts_with("extension ")
+            && !line.contains(" extension ")
+            && declared_at(line, name).is_some()
+    }) {
         return true;
     }
-    if masked_code[..byte_offset].trim_end().ends_with('.') {
-        return true;
+    if let Some(before_dot) = masked_code[..byte_offset].trim_end().strip_suffix('.') {
+        let recv = before_dot
+            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            .unwrap_or("");
+        if !recv.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && !name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        {
+            return true;
+        }
     }
     is_locally_shadowed(masked_code, byte_offset, name, Language::TypeScript)
         || body_has_local_decl(&masked_code[..byte_offset], name, Language::TypeScript)
