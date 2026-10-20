@@ -17,6 +17,9 @@ use super::across::{
     ImportMatch, definition_is, engine_can_reference, imports_declaration, is_occurrence_shadowed,
     mask_executable_code, masked_code_string, writes_call,
 };
+use super::{
+    definition_in_file, definition_in_other_workspace_file, swift_shares_or_imports_target,
+};
 use crate::tools::execute_lsp_query;
 use crate::tools::symbols::{
     MAX_SCANNED_FILES, is_in_nested_git_worktree, names_word, source_files,
@@ -174,6 +177,14 @@ pub(crate) async fn collect_multi_target_references(
             continue;
         }
 
+        let non_shadowed: Vec<(usize, usize)> = file_uses
+            .iter()
+            .filter(|&&(u_idx, _, u_off)| {
+                !is_occurrence_shadowed(&masked_code, &text_lines, u_idx, u_off, name)
+            })
+            .map(|&(u_idx, u_col, _)| (u_idx, u_col))
+            .collect();
+
         // Markup/component template files (Astro, Svelte, Vue, HTML) importing a TypeScript or
         // JavaScript module are not indexed by `typescript-language-server`: record their uses
         // directly when they import `declaration`, without burning the LSP query budget (#1071).
@@ -182,19 +193,6 @@ pub(crate) async fn collect_multi_target_references(
         {
             match imports_declaration(&text, &path, declaration, name) {
                 ImportMatch::Proven => {
-                    let non_shadowed: Vec<(usize, usize)> = file_uses
-                        .into_iter()
-                        .filter(|&(u_idx, _, byte_off)| {
-                            !is_occurrence_shadowed(
-                                &masked_code,
-                                &text_lines,
-                                u_idx,
-                                byte_off,
-                                name,
-                            )
-                        })
-                        .map(|(u_idx, u_col, _)| (u_idx, u_col))
-                        .collect();
                     if !non_shadowed.is_empty() {
                         seen_files.insert(norm_path);
                         record_file_uses(&uri_str, &non_shadowed, wanted_len, seen_locs, all_locs);
@@ -209,6 +207,9 @@ pub(crate) async fn collect_multi_target_references(
             }
             continue;
         }
+
+        let is_swift = path.extension().and_then(|e| e.to_str()) == Some("swift")
+            && declaration.extension().and_then(|e| e.to_str()) == Some("swift");
 
         for &(index, col, byte_off) in file_uses.iter().take(MAX_USES_ASKED_PER_FILE) {
             if tokio::time::Instant::now() >= deadline {
@@ -236,9 +237,11 @@ pub(crate) async fn collect_multi_target_references(
             .ok()
             .and_then(|r| r.ok());
 
-            if let Some(ref found) = found_def
-                && definition_is(found, &declared, decl_line.saturating_sub(1))
-            {
+            let def_matches = found_def.as_ref().is_some_and(|found| {
+                definition_is(found, &declared, decl_line.saturating_sub(1))
+                    || (is_swift && definition_in_file(found, &declared))
+            });
+            if def_matches {
                 seen_files.insert(norm_path.clone());
                 let use_line = (index + 1) as u64;
                 let use_col = (col + 1) as u64;
@@ -269,9 +272,14 @@ pub(crate) async fn collect_multi_target_references(
                     );
                 }
 
-                record_file_uses(&uri_str, &[(index, col)], wanted_len, seen_locs, all_locs);
+                let uses_to_record: &[(usize, usize)] = if is_swift && !non_shadowed.is_empty() {
+                    &non_shadowed
+                } else {
+                    &[(index, col)]
+                };
+                record_file_uses(&uri_str, uses_to_record, wanted_len, seen_locs, all_locs);
 
-                if checkout_use_note.is_none() && initial_was_empty {
+                if checkout_use_note.is_none() && initial_was_empty && !is_declaration_file {
                     let is_external = crate::remote_fs::is_external(
                         workspace_root,
                         &declaration.to_string_lossy(),
@@ -288,20 +296,36 @@ pub(crate) async fn collect_multi_target_references(
                 }
                 break;
             } else {
+                let import_match = imports_declaration(&text, &path, declaration, name);
+                let has_proven_import = import_match == ImportMatch::Proven;
+                let has_any_import = import_match != ImportMatch::None;
+                let has_no_def = found_def
+                    .as_ref()
+                    .is_none_or(|f| f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object());
+                let def_in_other_ws_file = found_def.as_ref().is_some_and(|found| {
+                    !has_no_def
+                        && definition_in_other_workspace_file(found, workspace_root, &declared)
+                });
+                if is_swift
+                    && !def_in_other_ws_file
+                    && (is_declaration_file
+                        || swift_shares_or_imports_target(&path, declaration, has_any_import))
+                {
+                    if has_no_def {
+                        asked = asked.saturating_sub(1);
+                    }
+                    if !non_shadowed.is_empty() {
+                        seen_files.insert(norm_path.clone());
+                        record_file_uses(&uri_str, &non_shadowed, wanted_len, seen_locs, all_locs);
+                    }
+                    break;
+                }
                 if let Some(ref found) = found_def
                     && (found.as_array().is_some_and(|a| !a.is_empty()) || found.is_object())
                 {
                     // The name means another item in this file.
                     break;
                 }
-                let has_no_def = found_def
-                    .as_ref()
-                    .is_none_or(|f| f.as_array().is_none_or(|a| a.is_empty()) && !f.is_object());
-                let is_swift = path.extension().and_then(|e| e.to_str()) == Some("swift")
-                    && declaration.extension().and_then(|e| e.to_str()) == Some("swift");
-                let import_match = imports_declaration(&text, &path, declaration, name);
-                let has_proven_import = import_match == ImportMatch::Proven;
-                let has_any_import = import_match != ImportMatch::None;
                 if !is_declaration_file
                     && has_no_def
                     && (has_any_import || writes_call(&masked_code, name))
@@ -314,35 +338,7 @@ pub(crate) async fn collect_multi_target_references(
                     if !unindexed_callers.contains(&path) {
                         unindexed_callers.push(path.clone());
                     }
-                    if is_swift
-                        && !is_own_decl
-                        && swift_shares_or_imports_target(&path, declaration, has_any_import)
-                    {
-                        let non_shadowed: Vec<(usize, usize)> = file_uses
-                            .iter()
-                            .filter(|&&(u_idx, _, u_off)| {
-                                !is_occurrence_shadowed(
-                                    &masked_code,
-                                    &text_lines,
-                                    u_idx,
-                                    u_off,
-                                    name,
-                                )
-                            })
-                            .map(|&(u_idx, u_col, _)| (u_idx, u_col))
-                            .collect();
-                        if !non_shadowed.is_empty() {
-                            seen_files.insert(norm_path.clone());
-                            record_file_uses(
-                                &uri_str,
-                                &non_shadowed,
-                                wanted_len,
-                                seen_locs,
-                                all_locs,
-                            );
-                        }
-                        break;
-                    } else if has_proven_import && !is_own_decl {
+                    if has_proven_import && !is_own_decl {
                         seen_files.insert(norm_path.clone());
                         record_file_uses(
                             &uri_str,
@@ -357,20 +353,6 @@ pub(crate) async fn collect_multi_target_references(
         }
     }
     checkout_use_note
-}
-
-fn swift_shares_or_imports_target(caller: &Path, decl: &Path, has_any_import: bool) -> bool {
-    fn target_dir(p: &Path) -> Option<&Path> {
-        p.ancestors().find(|a| {
-            a.parent()
-                .and_then(|d| d.file_name())
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| matches!(n, "Sources" | "Tests" | "Plugins"))
-        })
-    }
-    has_any_import
-        || caller.parent() == decl.parent()
-        || matches!((target_dir(caller), target_dir(decl)), (Some(a), Some(b)) if a == b)
 }
 
 fn record_file_uses(
