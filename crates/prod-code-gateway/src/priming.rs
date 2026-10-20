@@ -114,14 +114,13 @@ pub fn warm_in_background(
         let done = tokio::task::spawn_blocking(move || job.run())
             .await
             .unwrap_or(0);
-        // Then the diagnostics a validation asks for, through the same call, for the files
-        // likeliest to be validated next. This holds the engine, which on the validation engine
-        // only delays another validation, and that one would have paid the same.
+        // Then the diagnostics a validation asks for, computed on a snapshot without holding
+        // the engine lock, so concurrent queries, syncs, and refreshes never stall (#1118).
         for path in files.iter().take(DIAGNOSED_FILES) {
-            let engine = Arc::clone(&engine);
+            let snap = engine.lock().await.snapshot_for_path(path);
             let path = path.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                let _ = engine.blocking_lock().diagnostics(&path);
+                let _ = snap.diagnostics(&path);
             })
             .await;
         }

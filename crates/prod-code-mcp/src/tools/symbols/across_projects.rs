@@ -109,6 +109,7 @@ pub(crate) async fn symbol_search_across_projects(
 
     let primary_deadline =
         deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
+    let mut primary_timed_out = false;
     let mut hits = match tokio::time::timeout_at(
         primary_deadline,
         workspace_symbol_search(primary_node, root, query, hint, limit),
@@ -117,6 +118,7 @@ pub(crate) async fn symbol_search_across_projects(
     {
         Ok(result) => result?,
         Err(_) => {
+            primary_timed_out = true;
             tracing::warn!(
                 query,
                 "primary workspace symbol search reached budget; continuing with local fallback"
@@ -134,6 +136,14 @@ pub(crate) async fn symbol_search_across_projects(
             }
         }
     };
+    if primary_timed_out && hits.is_empty() {
+        let fallback_decls =
+            super::declared_at::scan_timeout_fallback_declarations(root, name, hint, limit);
+        extend_unique(&mut hits, fallback_decls);
+        if !hits.is_empty() {
+            return Ok(hits);
+        }
+    }
     if let Some(hint) = hint {
         // The project a path names may keep no index (sourcekit-lsp before a build), or its
         // index may omit `override func` or associated declarations (#358, #1091, #1109).

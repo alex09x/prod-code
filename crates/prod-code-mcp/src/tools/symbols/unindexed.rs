@@ -9,6 +9,7 @@
  */
 
 use super::across_projects::{names_word, read_name_scan_text};
+pub(crate) use super::declared_at::declared_at;
 use super::matching::{bare_symbol_name, owner_segments};
 use super::nested_projects::{MAX_SCANNED_FILES, source_files};
 use super::type_members::member_at;
@@ -148,7 +149,7 @@ pub(crate) const MAX_UNINDEXED_DECLARATIONS: usize = 3;
 pub(crate) const UNINDEXED_DECLARATION_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(10);
 
-fn collect_candidate_files(
+pub(super) fn collect_candidate_files(
     root: &Path,
     hint: Option<&Path>,
     include_rust: bool,
@@ -356,82 +357,4 @@ pub(crate) async fn unindexed_declarations(remote: SocketAddr, root: &Path, name
         }
     }
     out
-}
-
-/// The 0-based column where `line` declares `name`: the name right after a declaring keyword
-/// (`fn`, `struct`, `func`, `class`, `def`, ...) or after a Go method's receiver
-/// (`func (s *T) name`). `None` for a line that only uses it.
-pub(crate) fn declared_at(line: &str, name: &str) -> Option<usize> {
-    const KEYWORDS: &[&str] = &[
-        "fn",
-        "struct",
-        "enum",
-        "trait",
-        "type",
-        "union",
-        "mod",
-        "const",
-        "static",
-        "macro_rules!",
-        "func",
-        "function",
-        "class",
-        "interface",
-        "def",
-        "protocol",
-        "actor",
-        "extension",
-        "typealias",
-        "var",
-        "let",
-        "val",
-    ];
-    let chars: Vec<char> = line.chars().collect();
-    let wanted: Vec<char> = name.chars().collect();
-    let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
-    (0..chars.len()).find(|&col| {
-        if !chars[col..].starts_with(&wanted)
-            || (col > 0 && is_name(chars.get(col - 1)))
-            || is_name(chars.get(col + wanted.len()))
-        {
-            return false;
-        }
-        let before: String = chars[..col].iter().collect();
-        let trimmed = before.trim_end();
-        if trimmed.len() == before.len() {
-            return false;
-        }
-        let last = trimmed
-            .rsplit(|c: char| c.is_whitespace() || c == '(')
-            .next()
-            .unwrap_or("");
-        if KEYWORDS.contains(&last)
-            || (trimmed.ends_with(')') && trimmed.trim_start().starts_with("func"))
-        {
-            return true;
-        }
-        let after: Vec<char> = chars[col + wanted.len()..]
-            .iter()
-            .copied()
-            .skip_while(|c| c.is_whitespace())
-            .collect();
-        if after.first() == Some(&':') && after.get(1) != Some(&':') {
-            let before_trimmed = trimmed.trim_start();
-            if before_trimmed.is_empty()
-                || before_trimmed == "pub"
-                || before_trimmed.starts_with("pub(")
-                || before_trimmed == "mut"
-                || before_trimmed == "val"
-                || before_trimmed == "var"
-                || before_trimmed == "let"
-                || before_trimmed == "public"
-                || before_trimmed == "private"
-                || before_trimmed == "protected"
-                || before_trimmed == "readonly"
-            {
-                return true;
-            }
-        }
-        false
-    })
 }
