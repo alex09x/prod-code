@@ -269,9 +269,29 @@ pub async fn execute_tool(
 
         if candidates.len() > 1 {
             let total = candidates.len();
+            let shared_budget = if let Some(ms) = args.get("budget_ms").and_then(|v| v.as_u64()) {
+                std::time::Duration::from_millis(ms.max(1))
+            } else if let Some(secs) = args
+                .get("budget_secs")
+                .or_else(|| args.get("timeout_secs"))
+                .and_then(|v| v.as_u64())
+            {
+                std::time::Duration::from_secs(secs.clamp(1, 90))
+            } else {
+                crate::call_tree::DEFAULT_CALL_TREE_BUDGET
+            };
+            let deadline = std::time::Instant::now() + shared_budget;
             let mut out = format!("`{symbol_trimmed}` matched {total} candidates:\n");
             let mut any_ok = false;
             for (idx, hit) in candidates.iter().enumerate() {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    out.push_str(&format!(
+                        "\n[Partial result: shared server time budget ({:.1}s) expired after {idx}/{total} candidates; pass `path` or a more specific symbol to inspect remaining candidates.]\n",
+                        shared_budget.as_secs_f64()
+                    ));
+                    break;
+                }
                 let mut cand_args = args.clone();
                 if let Some(obj) = cand_args.as_object_mut() {
                     obj.insert(
@@ -280,6 +300,10 @@ pub async fn execute_tool(
                     );
                     obj.insert("line".into(), serde_json::json!(hit.line));
                     obj.insert("character".into(), serde_json::json!(hit.col));
+                    obj.insert(
+                        "budget_ms".into(),
+                        serde_json::json!((remaining.as_millis() as u64).max(1)),
+                    );
                 }
                 validate_position_arguments(tool_name, &cand_args)?;
                 let cand_remote = crate::cluster::route_for_path(
@@ -293,15 +317,18 @@ pub async fn execute_tool(
                     idx + 1,
                     hit.render(workspace_root)
                 ));
-                match Box::pin(dispatch_tool(
-                    cand_remote,
-                    workspace_root,
-                    tool_name,
-                    cand_args,
-                ))
+                match tokio::time::timeout(
+                    remaining,
+                    Box::pin(dispatch_tool(
+                        cand_remote,
+                        workspace_root,
+                        tool_name,
+                        cand_args,
+                    )),
+                )
                 .await
                 {
-                    Ok(res) => {
+                    Ok(Ok(res)) => {
                         if !res.is_error {
                             any_ok = true;
                         }
@@ -311,8 +338,23 @@ pub async fn execute_tool(
                             out.push('\n');
                         }
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         out.push_str(&format!("Error: {err:#}\n"));
+                    }
+                    Err(_) => {
+                        out.push_str(&format!(
+                            "[Timed out on candidate {}/{total} after {:.1}s shared server budget; returning partial multi-candidate result.]\n",
+                            idx + 1,
+                            shared_budget.as_secs_f64()
+                        ));
+                        if idx + 1 < total {
+                            out.push_str(&format!(
+                                "\n[Partial result: shared server time budget ({:.1}s) expired at candidate {}/{total}; pass `path` or a more specific symbol to inspect remaining candidates.]\n",
+                                shared_budget.as_secs_f64(),
+                                idx + 1,
+                            ));
+                        }
+                        break;
                     }
                 }
             }
