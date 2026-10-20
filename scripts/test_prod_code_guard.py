@@ -953,6 +953,72 @@ class ProdCodeGuardSymbolGrepPolicyTests(unittest.TestCase):
             # Allowed -> no denial output printed for Bash
             self.assertEqual(stdout_2.getvalue().strip(), "")
 
+    def test_heredoc_and_inline_script_edit_verification_allowed_issue_1125(self) -> None:
+        repo_root = str(Path(__file__).parent.parent)
+        cmd_example_4 = (
+            "python3 - <<'EOF'\n"
+            "p='construction_handoff.go'\n"
+            "s=open(p).read()\n"
+            's=s.replace("acceptCtx, cancel := context.WithTimeout(parent, 3*time.Second)","acceptCtx, cancel := context.WithTimeout(parent, constructionAcceptTimeout)",1)\n'
+            's=s.replace("const constructionAcceptRetries = 2\\n","const constructionAcceptRetries = 2\\n\\nvar constructionAcceptTimeout = 3 * time.Second\\n",1)\n'
+            "open(p,'w').write(s)\n"
+            "EOF\n"
+            "grep -c constructionAcceptTimeout construction_handoff.go"
+        )
+        self.assertIsNone(guard.symbol_grep(cmd_example_4, repo_root))
+        self.assertIsNone(guard.text_grep(cmd_example_4, repo_root))
+
+        cmd_escaped_eof = (
+            "python3 - <<\\EOF\n"
+            "s = '`grep -rn someIdentifier src/`'\n"
+            "EOF\n"
+        )
+        self.assertIsNone(guard.symbol_grep(cmd_escaped_eof, repo_root))
+        self.assertIsNone(guard.text_grep(cmd_escaped_eof, repo_root))
+
+        cmd_unquoted_python = (
+            "python3 - <<EOF\n"
+            "doc = '`rg my_symbol crates/`'\n"
+            "EOF\n"
+        )
+        self.assertIsNone(guard.symbol_grep(cmd_unquoted_python, repo_root))
+        self.assertIsNone(guard.text_grep(cmd_unquoted_python, repo_root))
+
+    def test_text_grep_routes_non_symbol_patterns_to_code_grep_issue_1119(self) -> None:
+        repo_root = str(Path(__file__).parent.parent)
+        cases = [
+            ('rg "fn test_" crates/', "fn test_", "crates/"),
+            ('rg "reserve_" crates/', "reserve_", "crates/"),
+            ("grep -n 'ctx\\|cancel' crates/prod-code-mcp/src/lib.rs", "ctx\\|cancel", "crates/prod-code-mcp/src/lib.rs"),
+            ('rg "TODO|FIXME" crates/', "TODO|FIXME", "crates/"),
+        ]
+        for cmd, expected_pat, expected_path in cases:
+            with self.subTest(command=cmd):
+                self.assertIsNone(guard.symbol_grep(cmd, repo_root))
+                res = guard.text_grep(cmd, repo_root)
+                self.assertEqual(res, (expected_pat, expected_path))
+
+                payload = {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": cmd},
+                    "cwd": repo_root,
+                }
+                stdout = io.StringIO()
+                orig_stdin, orig_stdout = sys.stdin, sys.stdout
+                try:
+                    sys.stdin = io.StringIO(json.dumps(payload))
+                    sys.stdout = stdout
+                    guard.main()
+                finally:
+                    sys.stdin, sys.stdout = orig_stdin, orig_stdout
+
+                out = json.loads(stdout.getvalue().strip())
+                reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn(f'code_grep {{pattern: "{expected_pat}", path: "{expected_path}"}}', reason)
+                self.assertIn(f'prod-code grep "{expected_pat}" {expected_path}', reason)
+
 
 if __name__ == "__main__":
     unittest.main()
+

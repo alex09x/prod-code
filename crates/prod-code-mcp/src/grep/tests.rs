@@ -198,3 +198,23 @@ async fn execute_tool_code_grep_and_schema_registration() {
     assert!(text.contains("main.rs:2:"));
     assert!(text.contains("[in handle_request]"));
 }
+
+#[tokio::test]
+async fn code_grep_missing_path_suggests_closest_existing_sibling() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("internal/api")).unwrap();
+    std::fs::write(root.join("internal/api/handler.go"), "package api\n").unwrap();
+
+    let opts = GrepOptions {
+        pattern: "package".to_string(),
+        path: Some(root.join("internal/app/handler.go")),
+        ..Default::default()
+    };
+    let err = run_grep(root, None, &opts).await.unwrap_err().to_string();
+    assert!(err.contains("search path does not exist"), "err: {err}");
+    assert!(
+        err.contains("did you mean") && err.contains("internal/api/handler.go"),
+        "expected closest existing sibling suggestion in error, got: {err}"
+    );
+}

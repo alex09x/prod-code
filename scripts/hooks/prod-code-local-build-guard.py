@@ -56,23 +56,40 @@ ALLOWED_ANYWHERE = [
 ]
 
 
-HEREDOC_QUOTED = re.compile(r"<<-?\s*(['\"])(?P<delim>\w+)\1[^\n]*\n.*?\n\s*(?P=delim)\s*(?=\n|$)", re.S)
-HEREDOC_UNQUOTED = re.compile(r"<<-?\s*(?P<delim>\w+)[^\n]*\n(?P<body>.*?)\n\s*(?P=delim)\s*(?=\n|$)", re.S)
+HEREDOC_QUOTED = re.compile(
+    r"<<-?\s*(?:(['\"])(?P<qdelim>[A-Za-z0-9_-]+)\1|\\(?P<edelim>[A-Za-z0-9_-]+))[^\n]*\n.*?\n\s*(?:(?P=qdelim)|(?P=edelim))\s*['\"]?\s*(?=\n|$)",
+    re.S,
+)
+HEREDOC_UNQUOTED = re.compile(
+    r"(?P<prefix>[^\n]*?)<<-?\s*(?P<delim>[A-Za-z0-9_-]+)[^\n]*\n(?P<body>.*?)\n\s*(?P=delim)\s*['\"]?\s*(?=\n|$)",
+    re.S,
+)
+SCRIPT_INTERPRETER_PREFIX = re.compile(
+    r"\b(?:python3?|node|ruby|perl|php|lua|awk|sed)\b"
+)
 
 
-def without_heredocs(command):
+def without_heredocs(command, extract_substs=True):
     """The command with every here-document body replaced with `<<heredoc`.
-    For unquoted here-documents, command substitutions `$(...)` and backticks
-    are preserved so nested executable commands can still be analyzed."""
+    For unquoted here-documents when `extract_substs=True` (build-command check),
+    command substitutions `$(...)` and backticks are preserved unless the heredoc
+    is fed directly to a non-shell script interpreter. For grep checks (`extract_substs=False`),
+    heredoc bodies are always treated strictly as data."""
     cleaned = HEREDOC_QUOTED.sub("<<heredoc", command)
     substs = []
 
     def handle_unquoted(m):
+        prefix = m.group("prefix") or ""
         body = m.group("body")
-        if body:
-            for sub in re.findall(r"\$\((.*?)\)|`([^`]*)`", body, re.S):
-                substs.append(sub[0] or sub[1])
-        return "<<heredoc"
+        if extract_substs and body:
+            is_interpreter = bool(SCRIPT_INTERPRETER_PREFIX.search(prefix))
+            pattern = r"\$\((.*?)\)" if is_interpreter else r"\$\((.*?)\)|`([^`]*)`"
+            for sub in re.findall(pattern, body, re.S):
+                if isinstance(sub, tuple):
+                    substs.append(sub[0] or sub[1])
+                elif sub:
+                    substs.append(sub)
+        return prefix + "<<heredoc"
 
     cleaned = HEREDOC_UNQUOTED.sub(handle_unquoted, cleaned).replace(r"\`", "")
     if substs:
@@ -327,7 +344,7 @@ def in_git_repo(cwd):
 
 def split_pipelines(command):
     """Splits command into pipelines separated by &&, ||, ;, \\n outside quotes."""
-    cleaned = without_heredocs(command)
+    cleaned = without_heredocs(command, extract_substs=False)
     pipelines = []
     cur = []
     i = 0
@@ -411,11 +428,46 @@ def first_command_in_pipeline(pipeline):
     return "".join(cur).strip()
 
 
-def symbol_grep(command, cwd):
-    """(symbol, pattern) when the command looks a symbol up over source files with grep/rg."""
-    if "PROD_CODE_GREP=1" in command:
-        return None
+def is_filename_or_fixture_pattern(pat, cwd, fixed_strings):
+    """Whether `pat` names a filename, file extension, or existing workspace fixture (#765)."""
+    p = pat.strip()
+    if not p:
+        return True
+    if p.lower() in SPECIAL_FILENAMES:
+        return True
+    if ("/" in p or "\\" in p) and " " not in p and "|" not in p:
+        if fixed_strings:
+            return True
+        base = os.path.basename(p)
+        if "." in base and base.rsplit(".", 1)[-1].lower() in RESOURCE_EXTENSIONS:
+            return True
+        if cwd and (
+            os.path.exists(os.path.join(cwd, p))
+            or os.path.exists(os.path.join(cwd, "tests", "fixtures", p))
+            or os.path.exists(os.path.join(cwd, "fixtures", p))
+        ):
+            return True
+    if "." in p and " " not in p and "|" not in p and not p.startswith("."):
+        ext = p.rsplit(".", 1)[-1].lower()
+        if ext in RESOURCE_EXTENSIONS:
+            return True
+        if fixed_strings and re.fullmatch(r"[a-z0-9_-]{1,8}", ext):
+            return True
+    if fixed_strings and cwd and (
+        os.path.exists(os.path.join(cwd, p))
+        or os.path.exists(os.path.join(cwd, "tests", "fixtures", p))
+        or os.path.exists(os.path.join(cwd, "fixtures", p))
+    ):
+        return True
+    return False
+
+
+def _iter_grep_invocations(command, cwd):
+    """Yields (patterns, paths, recursive, fixed_strings) for grep/rg/git-grep over source files in `command`."""
+    preceded_by_script = False
     for pipeline in split_pipelines(command):
+        if "<<heredoc" in pipeline:
+            preceded_by_script = True
         first = first_command_in_pipeline(pipeline)
         try:
             words = shlex.split(first)
@@ -427,13 +479,14 @@ def symbol_grep(command, cwd):
             continue
         tool = os.path.basename(words[0])
         args = words[1:]
+        if tool in ("python", "python3", "node", "ruby", "perl", "sed", "awk", "tee", "cat", "patch"):
+            preceded_by_script = True
+            continue
         if tool in ("bash", "sh", "zsh", "fish"):
             # Codex sends its shell calls as `bash -lc '<script>'`.
             for j, a in enumerate(args[:-1]):
                 if re.fullmatch(r"-[a-z]*c", a):
-                    inner = symbol_grep(args[j + 1], cwd)
-                    if inner:
-                        return inner
+                    yield from _iter_grep_invocations(args[j + 1], cwd)
             continue
         if tool == "git" and args[:1] == ["grep"]:
             tool, args = "git-grep", args[1:]
@@ -463,6 +516,12 @@ def symbol_grep(command, cwd):
         if not patterns:
             continue
         paths = rest
+        # A single-file non-recursive grep immediately following an inline script or heredoc
+        # in the same compound command (e.g. `python3 - <<'EOF' ... EOF\ngrep -c sym file.go`)
+        # is a post-edit verification check on the modified file, not codebase discovery (#1125).
+        if preceded_by_script and not recursive and paths:
+            if all(not os.path.isdir(os.path.join(cwd or ".", os.path.expanduser(x))) for x in paths):
+                continue
         if paths:
             code = [x for x in paths if CODE_EXT.search(x) or (os.path.isdir(os.path.join(cwd or ".", os.path.expanduser(x))) and not re.search(r"(^|/)(\.claude|node_modules|target|\.build|logs?|tmp)(/|$)", x))]
             if not code or all(NOT_CODE_EXT.search(x) for x in paths):
@@ -473,19 +532,40 @@ def symbol_grep(command, cwd):
             continue
         if not in_git_repo(cwd):
             continue
+        yield patterns, paths, recursive, fixed_strings
+
+
+def symbol_grep(command, cwd):
+    """(symbol, pattern) when the command looks a symbol up over source files with grep/rg."""
+    if "PROD_CODE_GREP=1" in command:
+        return None
+    for patterns, _paths, _recursive, fixed_strings in _iter_grep_invocations(command, cwd):
         for pat in patterns:
-            if fixed_strings:
-                if "/" in pat or "\\" in pat or pat.lower() in SPECIAL_FILENAMES:
-                    continue
-                if "." in pat:
-                    ext = pat.rsplit(".", 1)[-1].lower()
-                    if ext in RESOURCE_EXTENSIONS or re.fullmatch(r"[a-z0-9_-]{1,8}", ext):
-                        continue
-                if cwd and (os.path.exists(os.path.join(cwd, pat)) or os.path.exists(os.path.join(cwd, "tests", "fixtures", pat)) or os.path.exists(os.path.join(cwd, "fixtures", pat))):
-                    continue
+            if is_filename_or_fixture_pattern(pat, cwd, fixed_strings):
+                continue
             sym = symbol_in(pat)
             if sym:
                 return sym, pat
+    return None
+
+
+def text_grep(command, cwd):
+    """(pattern, target_path) when the command runs a literal, regex, or prefix text search
+    over source files with grep/rg that should be routed to `code_grep` / `prod-code grep` (#1119)."""
+    if "PROD_CODE_GREP=1" in command:
+        return None
+    for patterns, paths, _recursive, fixed_strings in _iter_grep_invocations(command, cwd):
+        target_path = None
+        for p in paths:
+            if p != "." and not p.startswith("*.") and not re.fullmatch(r"\.[a-z0-9]+", p, re.I):
+                target_path = p
+                break
+        for pat in patterns:
+            if is_filename_or_fixture_pattern(pat, cwd, fixed_strings):
+                continue
+            if symbol_in(pat) is not None:
+                continue
+            return pat, target_path
     return None
 
 
@@ -951,6 +1031,23 @@ def main():
                 f"(or for literal/regex text search, use code_grep {{pattern: \"{pat}\"}} / `prod-code grep \"{pat}\"`). "
                 f"If prod-code returns empty or errors, file a bug: code_report_issue {{title: \"Symbol not found: {sym}\", body: \"...\"}}."
             )
+        else:
+            found_text = text_grep(command, cwd)
+            if found_text is not None:
+                pat, target_path = found_text
+                log({"ts": int(time.time()), "agent": agent, "rule": "text-grep", "decision": "deny", "cwd": cwd, "pattern": pat, "cmd": command[:300]})
+                if target_path:
+                    mcp_call = f'code_grep {{pattern: "{pat}", path: "{target_path}"}}'
+                    cli_call = f'prod-code grep "{pat}" {target_path}'
+                else:
+                    mcp_call = f'code_grep {{pattern: "{pat}"}}'
+                    cli_call = f'prod-code grep "{pat}"'
+                reason = (
+                    f"Grep for text pattern `{pat}` over source files is blocked. "
+                    f"Use prod-code literal/regex text search instead: {mcp_call} (CLI: `{cli_call}`). "
+                    f"It runs ripgrep on the build node and returns file:line:col with the enclosing AST symbol (`[in Type::method]`). "
+                    f"For AST symbol lookups use code_symbols / code_definition / code_references; for concept search use code_search."
+                )
     if not reason and agy:
         # No decision at all: "allow" would skip Antigravity's own permission prompt.
         pass

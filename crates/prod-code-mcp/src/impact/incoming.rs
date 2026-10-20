@@ -70,9 +70,6 @@ pub(crate) fn test_name(
     Ok(test_marker(language, &text, line, name))
 }
 
-/// Times an empty answer from a managed language server is asked again, and the wait before
-/// each: a server still reading the project answers empty (#202, #284).
-
 /// What the analyzer said about the callers of one function.
 pub(crate) enum Incoming {
     /// The functions that call it, each with whether it is a test; possibly none.
