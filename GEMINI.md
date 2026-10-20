@@ -30,8 +30,8 @@ This repository is worked on with the tool it builds, and only with it. That is 
 gets tested on real work, and how its bugs are found before a user finds them.
 
 - **Navigate** with `code_definition`, `code_references`, `code_callers`, `code_callees`,
-  `code_outline`, `code_symbols` and `code_hover` (or `prod-code def|refs|callers|outline|
-  symbols|hover`). Do not grep for code structure or line numbers; grep is for prose.
+  `code_outline`, `code_symbols`, `code_hover`, and `code_grep` (or `prod-code def|refs|callers|
+  outline|symbols|hover|grep`). Use AST tools for code structure and identifiers; use `code_grep` (`prod-code grep`) for literal strings, error messages, regexes, or symbol prefixes.
 - **Targeted reading policy**: Never read entire files (`view_file` without line boundaries, or `cat`) merely to plan or execute a local change. Use `code_definition(symbol)` to inspect symbols (defaults to `body: true`), `code_outline` or `code_symbols` to locate line ranges, or specify a narrow slice (`StartLine`/`EndLine`, typically 30–60 lines) around the edit.
 - **Change code** with the refactoring tools where one fits: `code_rename`, `code_move`,
   `code_change_signature`, `code_extract_parameter`, `code_extract_field`,
