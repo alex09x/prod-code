@@ -1378,6 +1378,35 @@ pub enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Literal or regex text search across the workspace with enclosing symbol context.
+    Grep {
+        /// Regular expression or literal string to search for.
+        pattern: String,
+        /// Optional file or directory path to restrict the search scope.
+        #[arg(value_name = "PATH")]
+        target_path: Option<String>,
+        /// Restrict search to this file or directory (flag alias for positional PATH).
+        #[arg(long)]
+        path: Option<String>,
+        /// Treat pattern as a literal string (-F / --fixed-strings) instead of a regex.
+        #[arg(short = 'F', long)]
+        fixed_strings: bool,
+        /// Case-insensitive search (-i / --ignore-case); default is smart-case.
+        #[arg(short = 'i', long)]
+        ignore_case: bool,
+        /// Include file globs (repeatable, e.g. --include '*.rs').
+        #[arg(long = "include", alias = "glob")]
+        include: Vec<String>,
+        /// Exclude file globs (repeatable, e.g. --exclude '*_test.go').
+        #[arg(long = "exclude")]
+        exclude: Vec<String>,
+        /// Maximum matches to return (default 50, max 500).
+        #[arg(short = 'm', long, default_value_t = 50)]
+        max_results: usize,
+        /// Number of context lines before and after each match (default 0, max 10).
+        #[arg(short = 'C', long, default_value_t = 0)]
+        context: usize,
+    },
     /// Print only the code a symbol depends on: its declaration plus the items it uses.
     Slice {
         /// Symbol name (`Metrics::record`, `pkg.Func`), or a file with `--line`.

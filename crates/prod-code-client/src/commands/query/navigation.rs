@@ -178,6 +178,23 @@ pub async fn run_search_cli(
     Ok(())
 }
 
+pub async fn run_grep_cli(
+    remote: SocketAddr,
+    opts: prod_code_mcp::grep::GrepOptions,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut opts = opts;
+    if opts.path.is_none()
+        && let Some(sub) = prod_code_mcp::exec::subdir_of(&root, &cwd)
+    {
+        opts.path = Some(std::path::PathBuf::from(sub));
+    }
+    let report = prod_code_mcp::grep::run_grep(&root, Some(remote), &opts).await?;
+    println!("{}", report.render());
+    Ok(())
+}
+
 pub async fn run_slice(
     remote: SocketAddr,
     target: String,

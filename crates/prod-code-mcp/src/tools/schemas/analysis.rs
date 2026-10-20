@@ -187,7 +187,7 @@ pub fn analysis_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_search".to_string(),
-            description: "Find code by what it does when you do not know what it is called. The gateway indexes every declaration in the workspace together with the doc comment above it, and ranks them against your question's words (BM25 over name, container, signature and doc, name weighted highest). Ask it the way you would ask a colleague: \"where do we decide which node runs a workspace\". Returns declarations with file:line, signature and the doc sentence that matched, best first. When the gateway has its embedding model, every declaration is also ranked by meaning (a small sentence-embedding model, computed in the background after the index is built) and the two rankings are fused, so a question sharing no words with the code still finds it; the result says how far the embedding has got, or that the search is lexical only. `code_symbols` remains the way to look up a name you already know."
+            description: "Find code by what it does when you do not know what it is called. The gateway indexes every declaration in the workspace together with the doc comment above it, and ranks them against your question's words (BM25 over name, container, signature and doc, name weighted highest). Ask it the way you would ask a colleague: \"where do we decide which node runs a workspace\". Returns declarations with file:line, signature and the doc sentence that matched, best first. When the gateway has its embedding model, every declaration is also ranked by meaning (a small sentence-embedding model, computed in the background after the index is built) and the two rankings are fused, so a question sharing no words with the code still finds it; the result says how far the embedding has got, or that the search is lexical only. Use `code_symbols` to look up a symbol name you already know, and `code_grep` for exact literal strings, error messages, regexes, comments, or config keys."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -197,6 +197,33 @@ pub fn analysis_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "Restrict to declarations under this directory (relative to the workspace root)" }
                 },
                 "required": ["query"]
+            }),
+        },
+        McpTool {
+            name: "code_grep".to_string(),
+            description: "Literal and regex text search (`rg`) across the workspace on the build node, respecting `.gitignore` and excluding build directories (`target/`, `node_modules/`, `.git/`, `dist/`, `.build/`). Returns `file:line:col`, the matched line (with optional `context` lines before/after), AND the enclosing symbol (`[in Type::method]`, `[in fn name]`) so you can immediately jump to `code_definition` or `code_references`. Use `code_grep` for error messages, string literals, log lines, comments (`TODO|FIXME`), config keys, and regex/prefix patterns (`fn test_`). For symbol lookups, use `code_symbols` / `code_definition` / `code_references`."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Regular expression or literal string to search for" },
+                    "path": { "type": "string", "description": "Restrict search to this file or directory (relative to the workspace root or absolute)" },
+                    "fixed_strings": { "type": "boolean", "description": "Treat `pattern` as a literal string (`-F`) instead of a regex (default false)" },
+                    "ignore_case": { "type": "boolean", "description": "Case-insensitive search (`-i`); when false (default), uses smart-case" },
+                    "include": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Include file globs, e.g. [\"*.rs\", \"*.go\"]"
+                    },
+                    "exclude": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Exclude file globs, e.g. [\"*_test.go\", \"fixtures/**\"]"
+                    },
+                    "max_results": { "type": "integer", "description": "Maximum matches to return (default 50, max 500)" },
+                    "context": { "type": "integer", "description": "Number of context lines before and after each match (default 0, max 10)" }
+                },
+                "required": ["pattern"]
             }),
         },
         McpTool {

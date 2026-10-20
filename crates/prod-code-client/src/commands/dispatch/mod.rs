@@ -59,6 +59,35 @@ pub async fn dispatch(cmd: Commands, cx: DispatchContext<'_>) -> Result<()> {
         | Commands::Duplicates { .. }
         | Commands::StructuralSearch { .. } => dispatch_query(cmd, &cx).await,
 
+        Commands::Grep {
+            pattern,
+            target_path,
+            path,
+            fixed_strings,
+            ignore_case,
+            include,
+            exclude,
+            max_results,
+            context,
+        } => {
+            let resolved_path = path
+                .or(target_path)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from);
+            let opts = prod_code_mcp::grep::GrepOptions {
+                pattern,
+                path: resolved_path,
+                fixed_strings,
+                ignore_case,
+                include,
+                exclude,
+                max_results,
+                context,
+            };
+            crate::commands::query::run_grep_cli(cx.remote, opts).await
+        }
+
         Commands::Check { .. }
         | Commands::Lint { .. }
         | Commands::Test { .. }

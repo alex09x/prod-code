@@ -80,6 +80,13 @@ pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
                 paths.push(PathBuf::from(p));
             }
         }
+        Commands::Grep {
+            target_path, path, ..
+        } => {
+            if let Some(p) = path.as_ref().or(target_path.as_ref()) {
+                paths.push(PathBuf::from(p));
+            }
+        }
         Commands::Symbols { target } | Commands::Slice { target, .. } => {
             paths.push(PathBuf::from(target));
         }
