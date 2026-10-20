@@ -8078,3 +8078,64 @@ async fn agent_friction_aliases_path_suggestions_and_loaded_unindexed_declaratio
     );
     assert!(def_text.contains("fn inner_helper()"), "{def_text}");
 }
+
+/// Issue #1122: `code_references` annotates every hit with `[in <enclosing_symbol>]` and renders
+/// `±context` numbered lines around each hit when `context > 0`.
+#[tokio::test]
+async fn code_references_includes_enclosing_symbol_and_optional_context_lines() {
+    let ws = workspace();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub fn target_fn() {}\n\npub fn caller_one() {\n    let x = 1;\n    target_fn();\n    let y = 2;\n}\n\nimpl Widget {\n    pub fn caller_two(&self) {\n        target_fn();\n    }\n}\n",
+    );
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/references" => answers::locations(&path, &[(1, 8), (5, 5), (11, 9)]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    // 1. Default (`context: 0`) includes `[in <enclosing_symbol>]` on each reference line.
+    let res_default = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("default references run");
+    let text_default = text_of(&res_default);
+    assert!(
+        text_default.contains(":1:8 [in target_fn]"),
+        "expected `[in target_fn]` on line 1, got:\n{text_default}"
+    );
+    assert!(
+        text_default.contains(":5:5 [in caller_one]"),
+        "expected `[in caller_one]` on line 5, got:\n{text_default}"
+    );
+    assert!(
+        text_default.contains(":11:9 [in Widget::caller_two]"),
+        "expected `[in Widget::caller_two]` on line 11, got:\n{text_default}"
+    );
+    assert!(
+        !text_default.contains("    > "),
+        "context=0 should not emit context lines:\n{text_default}"
+    );
+
+    // 2. `context: 1` renders ±1 numbered lines around each hit with `>` on the matched line.
+    let res_ctx = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8, "context": 1 }),
+    )
+    .await
+    .expect("references with context=1 run");
+    let text_ctx = text_of(&res_ctx);
+    assert!(text_ctx.contains(":5:5 [in caller_one]"), "{text_ctx}");
+    assert!(text_ctx.contains("  4 |     let x = 1;"), "{text_ctx}");
+    assert!(text_ctx.contains(">   5 |     target_fn();"), "{text_ctx}");
+    assert!(text_ctx.contains("  6 |     let y = 2;"), "{text_ctx}");
+}
