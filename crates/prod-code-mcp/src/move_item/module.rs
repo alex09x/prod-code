@@ -138,3 +138,109 @@ pub(crate) fn crate_name(manifest: &str) -> Option<String> {
     }
     lib.or(package).map(|n| n.replace('-', "_"))
 }
+
+/// When the selected declaration at `start..=decl_end` is an inline `mod <name> { ... }` and the
+/// target file is empty, extracts the module's inner body into `target` and replaces the inline
+/// module in `source_text` with an external `mod <name>;` declaration (annotated with
+/// `#[path = "..."]` when `target` is not at the default child module path) so `use super::*;`
+/// inside the moved module keeps its original parent scope (#1117).
+pub(crate) fn extract_inline_module(
+    source_text: &str,
+    start: u32,
+    decl_end: u32,
+    name: &str,
+    file: &Path,
+    target: &Path,
+) -> Option<(String, String)> {
+    let (_, raw_item) = super::item::cut(source_text, start, decl_end);
+    let mod_kw = format!("mod {name}");
+    let mod_pos = raw_item.find(&mod_kw)?;
+    if mod_pos > 0
+        && raw_item[..mod_pos]
+            .chars()
+            .next_back()
+            .is_some_and(|c| !c.is_whitespace())
+    {
+        return None;
+    }
+    let after_mod = &raw_item[mod_pos + mod_kw.len()..];
+    let brace_rel = after_mod.find('{')?;
+    if !after_mod[..brace_rel].trim().is_empty() {
+        return None;
+    }
+    let open_brace = mod_pos + mod_kw.len() + brace_rel;
+    let close_brace = raw_item.rfind('}')?;
+    if close_brace <= open_brace {
+        return None;
+    }
+
+    let header = raw_item[..open_brace].trim_end();
+    let mut header_lines: Vec<String> = header.lines().map(str::to_string).collect();
+    if header_lines.is_empty() {
+        return None;
+    }
+    let last_line = header_lines.pop()?;
+    let indent: String = last_line
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+
+    let file_dir = file.parent()?;
+    let file_stem = file.file_stem()?.to_str()?;
+    let default_child = if matches!(file_stem, "lib" | "main" | "mod") {
+        file_dir.join(format!("{name}.rs"))
+    } else {
+        file_dir.join(file_stem).join(format!("{name}.rs"))
+    };
+    let has_path_attr = header_lines.iter().any(|l| l.trim().starts_with("#[path"));
+    if target != default_child && !has_path_attr {
+        let rel = target
+            .strip_prefix(file_dir)
+            .ok()
+            .and_then(|p| p.to_str())
+            .map(|s| s.replace('\\', "/"))
+            .or_else(|| {
+                target
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+            })?;
+        header_lines.push(format!("{indent}#[path = \"{rel}\"]"));
+    }
+    header_lines.push(format!("{};", last_line.trim_end()));
+    let replacement_decl = header_lines.join("\n");
+
+    let lines: Vec<&str> = source_text.lines().collect();
+    let s = (start as usize).saturating_sub(1);
+    let e = (decl_end as usize).min(lines.len());
+    let mut kept: Vec<String> = lines[..s].iter().map(|l| (*l).to_string()).collect();
+    kept.push(replacement_decl);
+    kept.extend(lines[e..].iter().map(|l| (*l).to_string()));
+    let mut source_new = kept.join("\n");
+    if source_text.ends_with('\n') {
+        source_new.push('\n');
+    }
+
+    let inner = &raw_item[open_brace + 1..close_brace];
+    let mut body_lines: Vec<&str> = inner.lines().collect();
+    while body_lines.first().is_some_and(|l| l.trim().is_empty()) {
+        body_lines.remove(0);
+    }
+    while body_lines.last().is_some_and(|l| l.trim().is_empty()) {
+        body_lines.pop();
+    }
+    let unindented: Vec<String> = body_lines
+        .into_iter()
+        .map(|l| {
+            if let Some(stripped) = l.strip_prefix("    ") {
+                stripped.to_string()
+            } else if let Some(stripped) = l.strip_prefix('\t') {
+                stripped.to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    let target_new = format!("{}\n", unindented.join("\n").trim_end());
+    Some((source_new, target_new))
+}

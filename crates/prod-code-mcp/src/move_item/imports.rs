@@ -73,34 +73,117 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
     (out, notes)
 }
 
-/// The names a `use` statement actually brings into scope.
-pub(crate) fn leaf_names(stmt: &str) -> Vec<String> {
+fn is_valid_rust_ident(s: &str) -> bool {
+    let s = s.strip_prefix("r#").unwrap_or(s);
+    !s.is_empty()
+        && s != "_"
+        && s != "self"
+        && s != "super"
+        && s != "crate"
+        && s.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&s[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+fn collect_use_group_entries(prefix: &str, group: &str, out: &mut Vec<(String, String)>) {
+    for raw in split_top_level_commas(group) {
+        let seg = raw.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        if let Some(open) = seg.find('{')
+            && let Some(close) = seg.rfind('}')
+            && close > open
+        {
+            let sub = seg[..open].trim().trim_end_matches("::").trim();
+            let combined = match (prefix.is_empty(), sub.is_empty()) {
+                (true, _) => sub.to_string(),
+                (false, true) => prefix.to_string(),
+                (false, false) => format!("{prefix}::{sub}"),
+            };
+            collect_use_group_entries(&combined, &seg[open + 1..close], out);
+            continue;
+        }
+        if seg == "self" {
+            let leaf = prefix.rsplit("::").next().unwrap_or(prefix).trim();
+            if is_valid_rust_ident(leaf) && !prefix.is_empty() {
+                out.push((prefix.to_string(), leaf.to_string()));
+            }
+            continue;
+        }
+        let rel_path = if prefix.is_empty() {
+            seg.to_string()
+        } else {
+            format!("{prefix}::{seg}")
+        };
+        let leaf = if let Some((_, alias)) = seg.split_once(" as ") {
+            alias.trim()
+        } else {
+            seg.rsplit("::").next().unwrap_or(seg).trim()
+        };
+        if is_valid_rust_ident(leaf) {
+            out.push((rel_path, leaf.to_string()));
+        }
+    }
+}
+
+/// Returns `(rel_path_from_first_brace_or_full, leaf_ident)` for every named item imported by `stmt`.
+/// Glob imports (`*`) and stray punctuation are excluded (#1117).
+pub(crate) fn use_tree_entries(stmt: &str) -> Vec<(String, String)> {
     let Some(at) = stmt.find("use ") else {
         return Vec::new();
     };
-    let body = stmt[at + 4..].trim().trim_end_matches(';').trim();
-    match body.split_once('{') {
-        None => body
-            .rsplit("::")
-            .next()
-            .map(|leaf| vec![leaf.trim().to_string()])
-            .unwrap_or_default(),
-        Some((_, group)) => group
-            .trim_end_matches('}')
-            .split(',')
-            .map(|item| {
-                item.split(" as ")
-                    .next()
-                    .unwrap_or(item)
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(item)
-                    .trim()
-                    .to_string()
-            })
-            .filter(|s| !s.is_empty())
-            .collect(),
+    let clean: String = stmt[at + 4..]
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = clean.trim().trim_end_matches(';').trim();
+    let mut out = Vec::new();
+    if let Some(open) = body.find('{')
+        && let Some(close) = body.rfind('}')
+        && close > open
+    {
+        collect_use_group_entries("", &body[open + 1..close], &mut out);
+    } else {
+        let leaf = if let Some((_, alias)) = body.split_once(" as ") {
+            alias.trim()
+        } else {
+            body.rsplit("::").next().unwrap_or(body).trim()
+        };
+        if is_valid_rust_ident(leaf) {
+            out.push((body.to_string(), leaf.to_string()));
+        }
     }
+    out
+}
+
+/// The names a `use` statement actually brings into scope.
+pub(crate) fn leaf_names(stmt: &str) -> Vec<String> {
+    use_tree_entries(stmt)
+        .into_iter()
+        .map(|(_, leaf)| leaf)
+        .collect()
 }
 
 /// The same statement without `name` in its group.
@@ -108,11 +191,12 @@ pub(crate) fn remove_from_group(stmt: &str, name: &str) -> String {
     let Some((head, rest)) = stmt.split_once('{') else {
         return stmt.to_string();
     };
-    let (group, tail) = rest.rsplit_once('}').unwrap_or((rest, ""));
-    let kept: Vec<&str> = group
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty() && item.split(" as ").next().unwrap_or(item) != name)
+    let (_, tail) = rest.rsplit_once('}').unwrap_or((rest, ""));
+    let entries = use_tree_entries(stmt);
+    let kept: Vec<String> = entries
+        .into_iter()
+        .filter(|(_, leaf)| leaf != name)
+        .map(|(rel, _)| rel)
         .collect();
     format!("{head}{{{}}}{tail}", kept.join(", "))
 }
@@ -128,9 +212,20 @@ pub fn add_import(text: &str, use_line: &str) -> String {
         .or_else(|| {
             // No imports yet: go under the file's own header, not above it.
             let mut at = 0;
+            let mut in_block_comment = false;
             for line in text.lines() {
                 let t = line.trim();
-                if t.starts_with("//!") || t.starts_with("#![") || t.is_empty() {
+                if in_block_comment {
+                    at += line.len() + 1;
+                    if t.contains("*/") {
+                        in_block_comment = false;
+                    }
+                } else if t.starts_with("/*") {
+                    at += line.len() + 1;
+                    if !t.contains("*/") {
+                        in_block_comment = true;
+                    }
+                } else if t.starts_with("//!") || t.starts_with("#![") || t.is_empty() {
                     at += line.len() + 1;
                 } else {
                     break;
@@ -151,6 +246,9 @@ pub fn add_import(text: &str, use_line: &str) -> String {
 
 /// Whether `text` uses `name` as a word of its own, rather than inside a longer identifier.
 pub(crate) fn mentions(text: &str, name: &str) -> bool {
+    if !is_valid_rust_ident(name) {
+        return false;
+    }
     let mut at = 0;
     while let Some(i) = text[at..].find(name) {
         let start = at + i;
@@ -172,15 +270,64 @@ pub(crate) fn mentions(text: &str, name: &str) -> bool {
     false
 }
 
-/// The same statement bringing in only `names`.
+/// The same statement bringing in only `names`, preserving any nested submodule prefixes (#1117).
 pub(crate) fn narrowed(stmt: &str, names: &[String]) -> String {
     let Some((head, _)) = stmt.split_once('{') else {
         return stmt.trim().to_string();
     };
-    if names.len() == 1 {
-        return format!("{}{};", head.trim_start(), names[0]);
+    let entries = use_tree_entries(stmt);
+    let rel_paths: Vec<String> = names
+        .iter()
+        .map(|name| {
+            entries
+                .iter()
+                .find(|(_, leaf)| leaf == name)
+                .map(|(rel, _)| rel.clone())
+                .unwrap_or_else(|| name.clone())
+        })
+        .collect();
+    if rel_paths.len() == 1 {
+        return format!("{}{};", head.trim_start(), rel_paths[0]);
     }
-    format!("{}{{{}}};", head.trim_start(), names.join(", "))
+    format!("{}{{{}}};", head.trim_start(), rel_paths.join(", "))
+}
+
+/// Returns `true` when `text` has a top-level `use super::*;` statement.
+pub(crate) fn has_use_super_glob(text: &str) -> bool {
+    use_statements(text).into_iter().any(|(s, e)| {
+        let stmt = text[s..e].trim();
+        stmt == "use super::*;" || stmt.ends_with(" use super::*;")
+    })
+}
+
+/// Returns `true` when `source_text` declares `target` as a child module (either via
+/// `#[path = "..."]` naming `target`'s file name or via `mod <target_stem>;`) (#1117).
+pub(crate) fn source_declares_child_module(source_text: &str, target: &std::path::Path) -> bool {
+    if let Some(file_name) = target.file_name().and_then(|n| n.to_str()) {
+        let path_attr_double = format!("\"{file_name}\"");
+        let path_attr_slash = format!("/{file_name}\"");
+        for line in source_text.lines() {
+            let t = line.trim();
+            if t.starts_with("#[path")
+                && (t.contains(&path_attr_double) || t.contains(&path_attr_slash))
+            {
+                return true;
+            }
+        }
+    }
+    if let Some(stem) = target.file_stem().and_then(|s| s.to_str()) {
+        let mod_decl = format!("mod {stem};");
+        for line in source_text.lines() {
+            let t = line.trim();
+            if t == mod_decl
+                || t.strip_prefix("pub ").is_some_and(|r| r.trim() == mod_decl)
+                || (t.starts_with("pub(") && t.ends_with(&mod_decl))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The imports the moved item takes with it.

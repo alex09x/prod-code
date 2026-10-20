@@ -236,4 +236,92 @@ impl CompactOrderBook {
         );
         assert!(item.contains("pub(crate) fn execute_native_order_with_owner"));
     }
+
+    #[test]
+    fn nested_multiline_use_groups_narrow_without_stray_braces_or_stripped_prefixes() {
+        let source = "\
+use crate::p2p::{
+    risk_snapshot::{
+        PerpPosition, PortfolioMarginState, RiskAccount, RiskSnapshot, RiskTier,
+    },
+    spot_snapshot::{SpotAccount, SpotBalance},
+};
+";
+        let unrelated_item = "#[test]\nfn check_deficits() {\n    assert_eq!(1, 1);\n}";
+        let (target_unrelated, notes_unrelated) =
+            carry_imports(source, unrelated_item, "use super::*;\n");
+        assert_eq!(target_unrelated, "use super::*;\n");
+        assert!(
+            notes_unrelated.is_empty(),
+            "closing brace of nested use group must not match function braces: {notes_unrelated:?}"
+        );
+
+        let using_item = "fn snapshot(acc: RiskAccount, bal: SpotBalance) {}";
+        let (target_used, notes_used) = carry_imports(source, using_item, "//! Target.\n");
+        assert!(
+            target_used.contains(
+                "use crate::p2p::{risk_snapshot::RiskAccount, spot_snapshot::SpotBalance};"
+            ),
+            "narrowed nested use must preserve submodule prefixes and balanced braces: {target_used}"
+        );
+        assert_eq!(notes_used.len(), 1);
+    }
+
+    #[test]
+    fn child_path_module_and_use_super_glob_are_detected() {
+        use super::super::imports::{has_use_super_glob, source_declares_child_module};
+        use std::path::Path;
+
+        let source = "\
+pub fn compute() -> u32 { 42 }
+
+#[cfg(test)]
+#[path = \"abstraction_deficit_tests.rs\"]
+mod deficits;
+";
+        assert!(source_declares_child_module(
+            source,
+            Path::new("/repo/src/abstraction_deficit_tests.rs")
+        ));
+        assert!(!source_declares_child_module(
+            source,
+            Path::new("/repo/src/other_tests.rs")
+        ));
+        assert!(has_use_super_glob("use super::*;\n\n#[test]\nfn t() {}\n"));
+        assert!(!has_use_super_glob("use crate::foo;\n"));
+    }
+
+    #[test]
+    fn extract_inline_module_replaces_block_with_path_mod_and_unindents_body() {
+        use super::super::module::extract_inline_module;
+        use std::path::Path;
+
+        let source = "\
+pub fn ema() -> u64 {
+    7
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ema_returns_seven() {
+        assert_eq!(ema(), 7);
+    }
+}
+";
+        let file = Path::new("/repo/src/oracle_ema.rs");
+        let target = Path::new("/repo/src/oracle_ema_tests.rs");
+        let (source_new, target_new) = extract_inline_module(source, 5, 13, "tests", file, target)
+            .expect("inline module should be extracted");
+        assert_eq!(
+            source_new,
+            "pub fn ema() -> u64 {\n    7\n}\n\n#[cfg(test)]\n#[path = \"oracle_ema_tests.rs\"]\nmod tests;\n"
+        );
+        assert_eq!(
+            target_new,
+            "use super::*;\n\n#[test]\nfn ema_returns_seven() {\n    assert_eq!(ema(), 7);\n}\n"
+        );
+    }
 }
