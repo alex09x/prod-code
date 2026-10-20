@@ -69,6 +69,72 @@ pub(crate) async fn handle_search(
     Ok(McpToolCallResult::text(crate::search::render(&resp, query)))
 }
 
+fn parse_string_or_list(val: Option<&serde_json::Value>) -> Vec<String> {
+    match val {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => vec![s.trim().to_string()],
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::trim))
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) async fn handle_grep(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let pattern = args
+        .get("pattern")
+        .or_else(|| args.get("query"))
+        .and_then(|v| v.as_str())
+        .context("Missing 'pattern' argument (expected `pattern: \"...\"`)")?;
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from);
+    let fixed_strings = args
+        .get("fixed_strings")
+        .or_else(|| args.get("literal"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ignore_case = args
+        .get("ignore_case")
+        .or_else(|| args.get("case_insensitive"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut include = parse_string_or_list(args.get("include"));
+    if include.is_empty() {
+        include = parse_string_or_list(args.get("glob"));
+    }
+    let exclude = parse_string_or_list(args.get("exclude"));
+    let max_results = args
+        .get("max_results")
+        .or_else(|| args.get("limit"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(crate::grep::DEFAULT_MAX_RESULTS);
+    let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+
+    let opts = crate::grep::GrepOptions {
+        pattern: pattern.to_string(),
+        path,
+        fixed_strings,
+        ignore_case,
+        include,
+        exclude,
+        max_results,
+        context,
+    };
+    let report = crate::grep::run_grep(workspace_root, Some(remote), &opts).await?;
+    Ok(McpToolCallResult::text(report.render()))
+}
+
 pub(crate) async fn handle_slice(
     remote: SocketAddr,
     workspace_root: &Path,

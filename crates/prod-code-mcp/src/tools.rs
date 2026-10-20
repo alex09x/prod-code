@@ -105,6 +105,7 @@ pub(crate) async fn dispatch_tool(
         "code_shadow_run" => Box::pin(handle_shadow_run(remote, root, &args)).await,
         "code_slice" => Box::pin(handle_slice(remote, root, &args)).await,
         "code_search" => Box::pin(handle_search(remote, root, &args)).await,
+        "code_grep" => Box::pin(handle_grep(remote, root, &args)).await,
         "code_codemod" => Box::pin(handle_codemod(remote, root, &args)).await,
         "code_schema_rename" => Box::pin(handle_schema_rename(remote, root, &args)).await,
         "code_encapsulate_field" => Box::pin(handle_encapsulate_field(remote, root, &args)).await,

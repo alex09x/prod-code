@@ -106,6 +106,9 @@ class ProdCodeGuardClassificationTests(unittest.TestCase):
             "file_id_for_path",
         )
         self.assertIsNone(guard.symbol_in("meta.json"))
+        self.assertIsNone(guard.symbol_in("fn test_"))
+        self.assertIsNone(guard.symbol_in("test_foo_"))
+        self.assertIsNone(guard.symbol_in("reserve_"))
         self.assertEqual(
             guard.symbol_in("Type::method"),
             "Type::method",

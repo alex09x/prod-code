@@ -115,6 +115,7 @@ pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bo
         | "code_symbols"
         | "code_source"
         | "code_search"
+        | "code_grep"
         | "code_slice"
         | "code_impact"
         | "code_diagnostics"

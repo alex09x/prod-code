@@ -263,8 +263,11 @@ SPECIAL_FILENAMES = {
 def looks_like_symbol(name):
     """A code identifier rather than a word: snake_case, camelCase or PascalCase with an inner
     capital, or qualified (Type::method, pkg.Func). `error`, `TODO` and `Price` stay words.
-    Filenames, extensions, and resource references (meta.json, Cargo.lock, README.md) stay words."""
+    Filenames, extensions, and resource references (meta.json, Cargo.lock, README.md) stay words.
+    Trailing-underscore prefixes (`test_`, `reserve_`) stay text patterns (#1119)."""
     if not re.fullmatch(IDENT + r"((::|\.)" + IDENT + r")*", name) or len(name) < 3:
+        return False
+    if name.endswith("_"):
         return False
     if "/" in name or "\\" in name:
         return False
@@ -293,7 +296,13 @@ def symbol_in(pattern):
     p = re.sub(r"\s+", " ", p).strip()
     d = DEFINITION.match(p)
     if d and len(p) - d.end() <= 12:
-        return d.group("name")
+        name = d.group("name")
+        tail = p[d.end():].strip()
+        if name.endswith("_") or len(name) < 3:
+            return None
+        if tail and not re.match(r"^(\\\(|\(|<|\{|:|$)", tail):
+            return None
+        return name
     q = re.sub(r"^(\\?\.|->)", "", p)
     q = re.sub(r"(\\\(|\()$", "", q)
     return q if looks_like_symbol(q) else None
@@ -495,7 +504,7 @@ def asked_prod_code(transcript, symbol, agent=None):
     except OSError:
         return agent is None
     for line in tail.splitlines():
-        if bare in line and re.search(r"prod-code__code_|prod_code__code_|\"code_(definition|references|symbols|search|hover|callers|slice|outline)\"|prod-code\s+(def|refs|symbols|search|hover|callers|slice|outline)\b", line):
+        if bare in line and re.search(r"prod-code__code_|prod_code__code_|\"code_(definition|references|symbols|search|grep|hover|callers|slice|outline)\"|prod-code\s+(def|refs|symbols|search|grep|hover|callers|slice|outline)\b", line):
             return True
     return False
 
@@ -922,7 +931,8 @@ def main():
                     log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
                     reason = (
                         f"Grep for symbol `{sym}` is blocked. Ask prod-code first: "
-                        f"code_definition {{symbol: \"{sym}\"}} or code_symbols {{query: \"{sym}\"}}."
+                        f"code_definition {{symbol: \"{sym}\"}}, code_symbols {{query: \"{sym}\"}}, "
+                        f"or code_grep {{pattern: \"{sym}\"}} (`prod-code grep \"{sym}\"`)."
                     )
                 elif not reported_prod_code_issue(transcript, sym, agent=agent):
                     log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
@@ -937,7 +947,8 @@ def main():
             log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "deny", "cwd": cwd, "symbol": sym, "pattern": pat, "cmd": command[:300]})
             reason = (
                 f"Grep for code symbol `{sym}` is blocked (`{pat}`). Use prod-code AST tools: "
-                f"code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}}, or code_symbols {{query: \"{sym}\"}}. "
+                f"code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}}, or code_symbols {{query: \"{sym}\"}} "
+                f"(or for literal/regex text search, use code_grep {{pattern: \"{pat}\"}} / `prod-code grep \"{pat}\"`). "
                 f"If prod-code returns empty or errors, file a bug: code_report_issue {{title: \"Symbol not found: {sym}\", body: \"...\"}}."
             )
     if not reason and agy:

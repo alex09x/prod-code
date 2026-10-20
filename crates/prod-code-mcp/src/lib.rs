@@ -35,6 +35,7 @@ pub mod extract_trait;
 pub mod fixit;
 pub mod fixture;
 pub mod generify;
+pub mod grep;
 pub mod hot_reload;
 pub mod impact;
 pub mod inline_parameter;
