@@ -14,7 +14,7 @@ pub fn navigation_tools() -> Vec<McpTool> {
     vec![
         McpTool {
             name: "code_callers".to_string(),
-            description: "Incoming call hierarchy: every function/method in the workspace that calls the given function, with the call sites. With `depth`, their callers too, as a tree. Name the function with `symbol` (e.g. `Metrics::record`); path/line/character is the alternative. Semantic (resolved through the analyzer), not a text search."
+            description: "Incoming call hierarchy: every function/method in the workspace that calls the given function, with the call sites. With `depth`, their callers too, as a tree (expands level-by-level within a server-side time budget and returns a partial tree if the budget expires). Name the function with `symbol` (e.g. `Metrics::record`); path/line/character is the alternative. Semantic (resolved through the analyzer), not a text search."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -23,6 +23,7 @@ pub fn navigation_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line number" },
                     "character": { "type": "integer", "description": "1-based column/character number" },
                     "depth": { "type": "integer", "description": "Levels to walk (default 1, the direct ones; at most 6). Deeper levels come as an indented tree; a function already shown is marked instead of expanded again" },
+                    "budget_secs": { "type": "integer", "description": "Server-side wall-clock budget in seconds before returning a partial call tree (default 60, max 90)" },
                     "build_index": { "type": "boolean", "description": "Opt-in to building the package index (e.g. for SwiftPM checkouts) if cross-file callers require a build; default false" }
                 },
                 "required": ["path", "line", "character"]
@@ -30,7 +31,7 @@ pub fn navigation_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_callees".to_string(),
-            description: "Outgoing call hierarchy: every function/method the given function calls, with the call sites. With `depth`, what those call too, as a tree. Name it with `symbol`, or give path/line/character."
+            description: "Outgoing call hierarchy: every function/method the given function calls, with the call sites. With `depth`, what those call too, as a tree (expands level-by-level within a server-side time budget and returns a partial tree if the budget expires). Name it with `symbol`, or give path/line/character."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -38,7 +39,8 @@ pub fn navigation_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line number" },
                     "character": { "type": "integer", "description": "1-based column/character number" },
-                    "depth": { "type": "integer", "description": "Levels to walk (default 1, the direct ones; at most 6). Deeper levels come as an indented tree; a function already shown is marked instead of expanded again" }
+                    "depth": { "type": "integer", "description": "Levels to walk (default 1, the direct ones; at most 6). Deeper levels come as an indented tree; a function already shown is marked instead of expanded again" },
+                    "budget_secs": { "type": "integer", "description": "Server-side wall-clock budget in seconds before returning a partial call tree (default 60, max 90)" }
                 },
                 "required": ["path", "line", "character"]
             }),

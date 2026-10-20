@@ -34,8 +34,10 @@ pub struct CallTree {
     pub incoming: bool,
     pub depth: usize,
     pub nodes: Vec<Node>,
-    /// The budget ran out before the tree was complete.
+    /// The node budget (`MAX_NODES`) ran out before the tree was complete.
     pub truncated: bool,
+    /// If the server-side time budget expired before reaching `depth`, `(completed_depth, elapsed_secs)`.
+    pub timed_out_at_depth: Option<(usize, f64)>,
 }
 
 impl CallTree {
@@ -51,6 +53,13 @@ impl CallTree {
         let kind = if self.incoming { "caller" } else { "callee" };
         let mut out = format!("`{}`: {} {kind}(s)", self.name, self.nodes.len());
         if self.nodes.is_empty() {
+            if let Some((completed_depth, elapsed_secs)) = self.timed_out_at_depth {
+                out.push_str(&format!(
+                    " — truncated at depth {completed_depth} after {elapsed_secs:.1} s (server time budget reached); rerun with depth={} or a narrower symbol.",
+                    (completed_depth + 1).min(self.depth.max(1))
+                ));
+                return out;
+            }
             out.push_str(&format!(" — no {kind}s found."));
             return out;
         }
@@ -81,6 +90,12 @@ impl CallTree {
         if self.truncated {
             out.push_str(&format!(
                 "… stopped at {MAX_NODES} functions; ask for less depth or start lower\n"
+            ));
+        }
+        if let Some((completed_depth, elapsed_secs)) = self.timed_out_at_depth {
+            let next_depth = (completed_depth + 1).min(self.depth.max(1));
+            out.push_str(&format!(
+                "… truncated at depth {completed_depth} after {elapsed_secs:.1} s; rerun with depth={next_depth} or a narrower symbol\n"
             ));
         }
         out.trim_end().to_string()

@@ -123,9 +123,20 @@ pub(crate) async fn handle_callers(
         .context("Missing 'character' argument")? as u32;
     let incoming = tool_name == "code_callers";
     let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+    let budget = if let Some(ms) = args.get("budget_ms").and_then(|v| v.as_u64()) {
+        std::time::Duration::from_millis(ms.max(1))
+    } else if let Some(secs) = args
+        .get("budget_secs")
+        .or_else(|| args.get("timeout_secs"))
+        .and_then(|v| v.as_u64())
+    {
+        std::time::Duration::from_secs(secs.clamp(1, 90))
+    } else {
+        crate::call_tree::DEFAULT_CALL_TREE_BUDGET
+    };
     let file_path = resolve_file_path(workspace_root, path_str);
     let tree = || {
-        crate::call_tree::call_tree(
+        crate::call_tree::call_tree_with_budget(
             remote,
             workspace_root,
             &file_path,
@@ -133,6 +144,7 @@ pub(crate) async fn handle_callers(
             character,
             incoming,
             depth,
+            budget,
         )
     };
     let mut found = tree().await?;

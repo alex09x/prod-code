@@ -12,12 +12,16 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The deepest tree asked for; a larger depth is read as this.
 pub const MAX_DEPTH: usize = 6;
 /// Functions shown in one tree, over every level.
 pub const MAX_NODES: usize = 300;
+/// Default server-side wall-clock budget for expanding a call hierarchy tree (#1124).
+/// Kept well below the 120 s MCP client timeout so deep call trees return a partial tree
+/// with an explicit truncation note instead of timing out the entire tool call.
+pub const DEFAULT_CALL_TREE_BUDGET: Duration = Duration::from_secs(60);
 
 pub(crate) fn normalize_root(root: &Path) -> String {
     std::fs::canonicalize(root)

@@ -179,6 +179,9 @@ pub(crate) async fn symbol_search_across_projects(
         return Ok(hits);
     }
     let has_relevant_hits = hits.iter().any(|hit| match_rank(&hit.name, query) < 4);
+    if has_relevant_hits {
+        return Ok(hits);
+    }
     let mut anchors = projects_naming(root, name, deadline);
     if let Some(q) = qualifier_word {
         anchors.sort_by_key(|(path, _, _)| {
@@ -186,9 +189,6 @@ pub(crate) async fn symbol_search_across_projects(
         });
     }
     if anchors.is_empty() {
-        if has_relevant_hits {
-            return Ok(hits);
-        }
         for anchor in nested_project_anchors(root, deadline) {
             if anchors.len() >= 2 {
                 break;
