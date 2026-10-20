@@ -114,6 +114,9 @@ pub enum Commands {
         /// FILE, the one declared or used there (#330).
         #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
+        /// Number of context lines before and after each reference to print (#1122).
+        #[arg(short = 'C', long, default_value_t = 0)]
+        context: usize,
         /// Another checkout to search as well, the name resolved there too (repeatable; with
         /// --symbol) (#375).
         #[arg(long = "in", value_name = "DIR")]

@@ -878,14 +878,31 @@ async fn cli_finds_references_and_reports_when_none_found() {
     let p = path.clone();
 
     let gw = MockGateway::start(move |method, _| match method {
-        "textDocument/references" => answers::locations(&p, &[(1, 12), (3, 5)]),
+        "textDocument/references" => answers::locations(&p, &[(1, 12), (5, 8)]),
         _ => serde_json::Value::Null,
     })
     .await;
 
     let out = run_cli(&ws, gw.addr, &["refs", "src/lib.rs", "1", "12"]).await;
     assert!(out.status.success());
-    assert!(stdout_of(&out).contains("Found 2 reference(s):"));
+    let refs_stdout = stdout_of(&out);
+    assert!(
+        refs_stdout.contains("Found 2 reference(s):"),
+        "{refs_stdout}"
+    );
+    assert!(
+        refs_stdout.contains(":1:12 [in Order]") && refs_stdout.contains(":5:8 [in calculate]"),
+        "expected enclosing symbol annotation (#1122): {refs_stdout}"
+    );
+
+    let out_ctx = run_cli(&ws, gw.addr, &["refs", "-C", "1", "src/lib.rs", "1", "12"]).await;
+    assert!(out_ctx.status.success());
+    let ctx_stdout = stdout_of(&out_ctx);
+    assert!(
+        ctx_stdout.contains(">   1 | pub struct Order {")
+            && ctx_stdout.contains("  2 |     pub order_id: String,"),
+        "expected -C 1 context lines (#1122): {ctx_stdout}"
+    );
 
     let gw_empty = MockGateway::start(|method, _| match method {
         "textDocument/references" => serde_json::json!([]),

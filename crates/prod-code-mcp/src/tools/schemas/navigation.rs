@@ -103,7 +103,7 @@ pub fn navigation_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_references".to_string(),
-            description: "Find every reference to a symbol across the workspace. Give `symbol` (its name) or a file position (path + 1-based line/column). With `also_in` and `symbol`, other checkouts are searched too, each resolving the name itself."
+            description: "Find every reference to a symbol across the workspace, annotated with its enclosing function/method/type (`[in Type::method]`). Pass `context: N` (e.g. 2 or 3) to include ±N numbered source lines around each reference so a separate `code_source` call is not needed. Give `symbol` (its name) or a file position (path + 1-based line/column). With `also_in` and `symbol`, other checkouts are searched too."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -119,6 +119,10 @@ pub fn navigation_tools() -> Vec<McpTool> {
                     "character": {
                         "type": "integer",
                         "description": "1-based column/character number"
+                    },
+                    "context": {
+                        "type": "integer",
+                        "description": "Number of context lines before and after each reference to include in the output (default: 0; e.g. 2 or 3 avoids a separate code_source call)"
                     },
                     "include_declarations": {
                         "type": "boolean",

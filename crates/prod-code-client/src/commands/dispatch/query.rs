@@ -72,6 +72,7 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
             line,
             col,
             symbol,
+            context,
             also_in,
             build_index,
         } => {
@@ -79,6 +80,9 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
                 Some(symbol) => symbol_args(&symbol, file),
                 None => file_pos_json(file, line, col)?,
             };
+            if context > 0 {
+                args["context"] = serde_json::json!(context);
+            }
             if build_index {
                 args["build_index"] = serde_json::json!(true);
             }
