@@ -793,7 +793,11 @@ async fn code_symbols_returns_prefix_matches_without_scanning_unrelated_nested_p
     );
     // Create an unrelated nested project
     write(&ws, "nested_go/go.mod", "module nested_go\n\ngo 1.22\n");
-    write(&ws, "nested_go/helper.go", "package nested_go\n\nfunc helper() {}\n");
+    write(
+        &ws,
+        "nested_go/helper.go",
+        "package nested_go\n\nfunc helper() {}\n",
+    );
     commit(&ws);
 
     let path = lib.clone();
@@ -913,9 +917,15 @@ async fn tools_call_times_out_with_typed_error_under_budget() {
         .expect("handle request");
 
     let resp_val = resp.expect("response present");
-    let is_error = resp_val.pointer("/result/isError").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_error = resp_val
+        .pointer("/result/isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(is_error, "response must be an error: {resp_val}");
-    let text = resp_val.pointer("/result/content/0/text").and_then(|v| v.as_str()).unwrap_or("");
+    let text = resp_val
+        .pointer("/result/content/0/text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(text.contains("timed out after"), "{text}");
 }
 
@@ -964,7 +974,6 @@ fn resolve_tool_call_timeout_honors_caller_override_or_defaults_to_mcp_ceiling()
         MCP_TOOL_CALL_TIMEOUT
     );
 }
-
 
 #[tokio::test]
 async fn code_definition_reports_locations_or_says_there_are_none() {
@@ -1124,7 +1133,10 @@ async fn code_references_respects_limit_and_provides_refactoring_tip() {
 
     let text = text_of(&result);
     assert!(text.contains("Found 3 reference(s):"), "{text}");
-    assert!(text.contains("display capped at first 2 of 3 references"), "{text}");
+    assert!(
+        text.contains("display capped at first 2 of 3 references"),
+        "{text}"
+    );
     assert!(text.contains("💡 Refactoring Tip:"), "{text}");
     assert!(text.contains("code_rename"), "{text}");
 
@@ -1141,7 +1153,10 @@ async fn code_references_respects_limit_and_provides_refactoring_tip() {
         !text_default.contains("showing first"),
         "should not truncate when limit is omitted: {text_default}"
     );
-    assert!(text_default.contains("💡 Refactoring Tip:"), "{text_default}");
+    assert!(
+        text_default.contains("💡 Refactoring Tip:"),
+        "{text_default}"
+    );
 }
 
 #[tokio::test]
@@ -1682,27 +1697,125 @@ async fn an_unknown_symbol_name_is_reported() {
 #[tokio::test]
 async fn a_symbol_name_with_two_unrelated_hits_is_ambiguous() {
     let ws = workspace();
-    let a = write(&ws, "src/a.rs", "pub fn record() {}\n");
-    let b = write(&ws, "src/b.rs", "pub fn record() {}\n");
+    let a = write(&ws, "src/a.rs", "pub fn record(x: i32) {}\n");
+    let b = write(&ws, "src/b.rs", "pub fn record(y: &str) {}\n");
+    let c = write(&ws, "src/c.rs", "pub fn record(z: bool) {}\n");
+    let d = write(&ws, "src/d.rs", "pub fn record() {}\n");
     commit(&ws);
-    let (a, b) = (a.clone(), b.clone());
-    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+
+    // 1. Two tied candidates on a read-only navigation tool (<= 3 default) return both answers.
+    let (a2, b2) = (a.clone(), b.clone());
+    let remote_two = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::Value::Array(vec![
+            answers::symbol("record", 12, &a2, 1, 8),
+            answers::symbol("record", 12, &b2, 1, 8),
+        ]),
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let both = text_of(
+        &execute_tool(
+            remote_two,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "record" }),
+        )
+        .await
+        .expect("two tied candidates are answered together on read-only navigation tools"),
+    );
+    assert!(both.contains("=== [1/2] [Function] record"), "{both}");
+    assert!(both.contains("=== [2/2] [Function] record"), "{both}");
+    assert!(both.contains("src/a.rs"), "{both}");
+    assert!(both.contains("src/b.rs"), "{both}");
+
+    // 2. Strict max_candidates=1 rejects two tied candidates and includes source signature snippets.
+    let err_strict = execute_tool(
+        remote_two,
+        &ws.root(),
+        "code_hover",
+        serde_json::json!({ "symbol": "record", "max_candidates": 1 }),
+    )
+    .await
+    .expect_err("max_candidates=1 rejects two tied hits");
+    let strict_msg = format!("{err_strict:#}");
+    assert!(strict_msg.contains("is ambiguous"), "{strict_msg}");
+    assert!(strict_msg.contains("pub fn record(x: i32)"), "{strict_msg}");
+    assert!(
+        strict_msg.contains("pub fn record(y: &str)"),
+        "{strict_msg}"
+    );
+
+    // 3. More than 3 tied unqualified candidates (> default limit 3) is rejected as ambiguous.
+    let remote_four = scripted_gateway(Arc::new(move |method, _| match method {
         "workspace/symbol" => serde_json::Value::Array(vec![
             answers::symbol("record", 12, &a, 1, 8),
             answers::symbol("record", 12, &b, 1, 8),
+            answers::symbol("record", 12, &c, 1, 8),
+            answers::symbol("record", 12, &d, 1, 8),
         ]),
         _ => serde_json::Value::Null,
     }))
     .await;
     let err = execute_tool(
-        remote,
+        remote_four,
         &ws.root(),
         "code_hover",
         serde_json::json!({ "symbol": "record" }),
     )
     .await
-    .expect_err("two unrelated hits with the same score cannot be resolved");
-    assert!(format!("{err:#}").contains("is ambiguous"), "{err:#}");
+    .expect_err("four unrelated hits exceed default max_candidates=3");
+    assert!(
+        format!("{err:#}").contains("is ambiguous (4 candidates)"),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
+async fn qualified_symbol_with_field_and_method_or_overloads_returns_all_candidates() {
+    let ws = workspace();
+    let f = write(
+        &ws,
+        "src/lib.rs",
+        "pub struct Config {\n    pub timeout: u64,\n}\nimpl Config {\n    pub fn timeout(&self) -> u64 { self.timeout }\n}\n",
+    );
+    commit(&ws);
+    let f_clone = f.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => {
+            let mut field = answers::symbol("timeout", 8, &f_clone, 2, 9);
+            field["containerName"] = serde_json::json!("Config");
+            let mut method = answers::symbol("timeout", 6, &f_clone, 5, 12);
+            method["containerName"] = serde_json::json!("Config");
+            serde_json::Value::Array(vec![field, method])
+        }
+        "textDocument/hover" => {
+            let line = params["position"]["line"].as_u64().unwrap_or_default();
+            answers::hover(&format!("hover at line {}", line + 1))
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let out = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "Config::timeout", "max_candidates": 1 }),
+        )
+        .await
+        .expect(
+            "exact qualified name always returns both field and method even with max_candidates=1",
+        ),
+    );
+    assert!(
+        out.contains("=== [1/2] [Property] Config::timeout")
+            || out.contains("=== [1/2] [Field] Config::timeout"),
+        "{out}"
+    );
+    assert!(out.contains("=== [2/2] [Method] Config::timeout"), "{out}");
+    assert!(out.contains("hover at line 2"), "{out}");
+    assert!(out.contains("hover at line 5"), "{out}");
 }
 
 /// A hover answer that says which file it was asked in.
@@ -2368,12 +2481,16 @@ async fn a_markdown_outline_supports_crlf_and_toml_front_matter() {
     )]);
     let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
     let root = ws.root();
-    let text = text_of(&execute_tool(
-        remote,
-        &root,
-        "code_outline",
-        serde_json::json!({ "path": "docs/toml.md" }),
-    ).await.expect("outline"));
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "docs/toml.md" }),
+        )
+        .await
+        .expect("outline"),
+    );
     assert!(text.contains("[Heading 1] Intro"), "{text}");
     assert!(text.contains("[Heading 2] Details"), "{text}");
     assert!(!text.contains("not heading"), "{text}");
@@ -2410,14 +2527,21 @@ message HelloRequest {
     let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
     let root = ws.root();
 
-    let full = text_of(&execute_tool(
-        remote,
-        &root,
-        "code_outline",
-        serde_json::json!({ "path": "proto/greeter.proto", "max_depth": 3 }),
-    ).await.expect("full proto outline"));
+    let full = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "proto/greeter.proto", "max_depth": 3 }),
+        )
+        .await
+        .expect("full proto outline"),
+    );
 
-    assert!(full.contains("[Package] acme.greeter.v1 (line 4)"), "{full}");
+    assert!(
+        full.contains("[Package] acme.greeter.v1 (line 4)"),
+        "{full}"
+    );
     assert!(full.contains("[Service] GreeterService (line 8)"), "{full}");
     assert!(full.contains("[Method] SayHello (line 9)"), "{full}");
     assert!(full.contains("[Method] StreamHello (line 10)"), "{full}");
@@ -2425,17 +2549,24 @@ message HelloRequest {
     assert!(full.contains("[Field] name (line 14)"), "{full}");
     assert!(full.contains("[Field] count (line 15)"), "{full}");
     assert!(full.contains("[Enum] Mood (line 17)"), "{full}");
-    assert!(full.contains("[EnumMember] MOOD_UNSPECIFIED (line 18)"), "{full}");
+    assert!(
+        full.contains("[EnumMember] MOOD_UNSPECIFIED (line 18)"),
+        "{full}"
+    );
     assert!(full.contains("[EnumMember] MOOD_HAPPY (line 19)"), "{full}");
     assert!(full.contains("[Field] mood (line 22)"), "{full}");
 
     // Shallow depth (max_depth: 1) only lists top-level items
-    let shallow = text_of(&execute_tool(
-        remote,
-        &root,
-        "code_outline",
-        serde_json::json!({ "path": "proto/greeter.proto", "max_depth": 1 }),
-    ).await.expect("shallow proto outline"));
+    let shallow = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "proto/greeter.proto", "max_depth": 1 }),
+        )
+        .await
+        .expect("shallow proto outline"),
+    );
     assert!(shallow.contains("[Package] acme.greeter.v1"), "{shallow}");
     assert!(shallow.contains("[Service] GreeterService"), "{shallow}");
     assert!(shallow.contains("[Message] HelloRequest"), "{shallow}");
@@ -2443,13 +2574,20 @@ message HelloRequest {
     assert!(!shallow.contains("[Field]"), "{shallow}");
 
     // Kinds filter
-    let services_only = text_of(&execute_tool(
-        remote,
-        &root,
-        "code_outline",
-        serde_json::json!({ "path": "proto/greeter.proto", "kinds": ["service"] }),
-    ).await.expect("service only proto outline"));
-    assert!(services_only.contains("[Service] GreeterService"), "{services_only}");
+    let services_only = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "proto/greeter.proto", "kinds": ["service"] }),
+        )
+        .await
+        .expect("service only proto outline"),
+    );
+    assert!(
+        services_only.contains("[Service] GreeterService"),
+        "{services_only}"
+    );
     assert!(!services_only.contains("[Message]"), "{services_only}");
 }
 
@@ -3407,14 +3545,21 @@ async fn code_validate_edit_incremental_chunk_feeding_defers_prefix_methods_unti
     let text_clone = Arc::clone(&last_text);
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
         "textDocument/didOpen" => {
-            if let Some(t) = params.pointer("/textDocument/text").and_then(|v| v.as_str()) {
+            if let Some(t) = params
+                .pointer("/textDocument/text")
+                .and_then(|v| v.as_str())
+            {
                 *text_clone.lock().unwrap() = t.to_string();
             }
             serde_json::Value::Null
         }
         "textDocument/didChange" => {
             if let Some(changes) = params.pointer("/contentChanges").and_then(|v| v.as_array()) {
-                if let Some(t) = changes.last().and_then(|c| c.get("text")).and_then(|v| v.as_str()) {
+                if let Some(t) = changes
+                    .last()
+                    .and_then(|c| c.get("text"))
+                    .and_then(|v| v.as_str())
+                {
                     *text_clone.lock().unwrap() = t.to_string();
                 }
             }
@@ -3475,7 +3620,10 @@ async fn code_validate_edit_incremental_chunk_feeding_defers_prefix_methods_unti
     )
     .await
     .expect("chunk 2 executes");
-    assert!(!r2.is_error, "an incomplete source prefix is not intercepted");
+    assert!(
+        !r2.is_error,
+        "an incomplete source prefix is not intercepted"
+    );
     let t2 = text_of(&r2);
     assert!(t2.contains("provisional error(s)"), "{t2}");
 
@@ -3721,7 +3869,10 @@ async fn code_validate_edit_stream_session_tombstone_prevents_lost_prefix() {
         }),
     )
     .await;
-    assert!(err.is_err(), "expected chunk to be rejected because session is tombstoned");
+    assert!(
+        err.is_err(),
+        "expected chunk to be rejected because session is tombstoned"
+    );
     let err_str = format!("{:#}", err.unwrap_err());
     assert!(
         err_str.contains("has expired or was terminated"),
@@ -3765,7 +3916,16 @@ async fn code_validate_edit_stream_tombstones_capacity_bounded_and_evicted_sessi
     for i in 0..total {
         let sid = format!("tomb-cap-{i}");
         let res = mgr
-            .feed_chunk(remote, &root, &file, &sid, "pub struct Client;\n", true, true, false)
+            .feed_chunk(
+                remote,
+                &root,
+                &file,
+                &sid,
+                "pub struct Client;\n",
+                true,
+                true,
+                false,
+            )
             .await
             .expect("feed and close succeeds");
         assert!(!res.intercepted);
@@ -3782,18 +3942,40 @@ async fn code_validate_edit_stream_tombstones_capacity_bounded_and_evicted_sessi
     // Session 0 was the earliest, so its tombstone has been evicted by LRU capacity
     // Feeding a chunk without reset: true to the evicted session must STILL be rejected!
     let evicted_err = mgr
-        .feed_chunk(remote, &root, &file, "tomb-cap-0", "impl Client {}\n", false, false, false)
+        .feed_chunk(
+            remote,
+            &root,
+            &file,
+            "tomb-cap-0",
+            "impl Client {}\n",
+            false,
+            false,
+            false,
+        )
         .await;
-    assert!(evicted_err.is_err(), "evicted session without reset must be rejected");
+    assert!(
+        evicted_err.is_err(),
+        "evicted session without reset must be rejected"
+    );
     let err_msg = format!("{:#}", evicted_err.unwrap_err());
     assert!(
-        err_msg.contains("not found or was evicted") || err_msg.contains("has expired or was terminated"),
+        err_msg.contains("not found or was evicted")
+            || err_msg.contains("has expired or was terminated"),
         "error must mention eviction/expiration: {err_msg}"
     );
 
     // But passing reset: true allows starting fresh
     let restarted = mgr
-        .feed_chunk(remote, &root, &file, "tomb-cap-0", "pub struct Client;\n", true, true, false)
+        .feed_chunk(
+            remote,
+            &root,
+            &file,
+            "tomb-cap-0",
+            "pub struct Client;\n",
+            true,
+            true,
+            false,
+        )
         .await
         .expect("reset allows restarting evicted session");
     assert!(!restarted.intercepted);
@@ -3817,7 +3999,16 @@ async fn code_validate_edit_stream_session_private_permissions_and_expiry_disk_p
 
     // 1. Feed chunk to write session to disk
     let r1 = mgr
-        .feed_chunk(remote, &root, &file, sid, "pub struct Client;\n", false, true, false)
+        .feed_chunk(
+            remote,
+            &root,
+            &file,
+            sid,
+            "pub struct Client;\n",
+            false,
+            true,
+            false,
+        )
         .await
         .expect("feed initial chunk");
     assert!(!r1.intercepted);
@@ -3864,9 +4055,21 @@ async fn code_validate_edit_stream_session_private_permissions_and_expiry_disk_p
 
     // 4. Stale session cannot be resurrected without reset: true
     let res_err = mgr
-        .feed_chunk(remote, &root, &file, sid, "impl Client {}\n", false, false, false)
+        .feed_chunk(
+            remote,
+            &root,
+            &file,
+            sid,
+            "impl Client {}\n",
+            false,
+            false,
+            false,
+        )
         .await;
-    assert!(res_err.is_err(), "expired session without reset: true must be rejected");
+    assert!(
+        res_err.is_err(),
+        "expired session without reset: true must be rejected"
+    );
     let err_text = format!("{:#}", res_err.unwrap_err());
     assert!(
         err_text.contains("has expired or was terminated"),
@@ -3875,7 +4078,16 @@ async fn code_validate_edit_stream_session_private_permissions_and_expiry_disk_p
 
     // 5. Reset: true allows clean restart
     let restarted = mgr
-        .feed_chunk(remote, &root, &file, sid, "pub struct Client;\n", true, true, false)
+        .feed_chunk(
+            remote,
+            &root,
+            &file,
+            sid,
+            "pub struct Client;\n",
+            true,
+            true,
+            false,
+        )
         .await
         .expect("reset: true allows starting clean");
     assert!(!restarted.intercepted);
@@ -4726,7 +4938,8 @@ async fn code_inline_parameter_rejects_cargo_compile_verification_for_typescript
         "Cargo.toml",
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
-    let source = "export function clamp(value: number, max: number) { return Math.min(value, max); }\n";
+    let source =
+        "export function clamp(value: number, max: number) { return Math.min(value, max); }\n";
     let file = write(&ws, "src/math.ts", source);
     commit(&ws);
     let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
@@ -5470,7 +5683,10 @@ async fn code_shadow_run_honors_tail_bytes_without_truncating_to_2000() {
         text.contains("TAIL_PROBE_BEGIN"),
         "report must contain TAIL_PROBE_BEGIN when within tail_bytes: {text}"
     );
-    assert!(text.contains("TAIL_PROBE_END"), "report must contain TAIL_PROBE_END: {text}");
+    assert!(
+        text.contains("TAIL_PROBE_END"),
+        "report must contain TAIL_PROBE_END: {text}"
+    );
     assert!(text.contains("of 3533 bytes"), "{text}");
     assert!(!text.contains("last 2000 of"), "{text}");
 }
@@ -6881,7 +7097,8 @@ async fn code_definition_resolves_trait_impl_in_hint_file_and_reads_body() {
         }
         "workspace/symbol" => serde_json::json!([]),
         "textDocument/documentSymbol" if params["textDocument"]["uri"] == stream_uri => {
-            let impl_sym = answers::document_symbol("impl OrderManager for StrategyApi", 23, 4, 8, 6);
+            let impl_sym =
+                answers::document_symbol("impl OrderManager for StrategyApi", 23, 4, 8, 6);
             let method_sym = answers::document_symbol("order_please", 6, 5, 7, 8);
             serde_json::json!([answers::nested(impl_sym, vec![method_sym])])
         }
@@ -6919,9 +7136,9 @@ async fn code_definition_defaults_to_body_true_and_respects_false() {
 
     let lib_uri = format!("file://{}", lib_file.display());
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
-        "workspace/symbol" => serde_json::json!([
-            answers::symbol("compute_sum", 12, &lib_file, 1, 8)
-        ]),
+        "workspace/symbol" => {
+            serde_json::json!([answers::symbol("compute_sum", 12, &lib_file, 1, 8)])
+        }
         "textDocument/definition" => serde_json::json!([
             {
                 "uri": lib_uri,
@@ -6973,7 +7190,8 @@ async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_re
     let stream_uri = format!("file://{}", stream_file.display());
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
         "textDocument/documentSymbol" if params["textDocument"]["uri"] == stream_uri => {
-            let impl_sym = answers::document_symbol("impl OrderManager for StrategyApi", 23, 4, 8, 6);
+            let impl_sym =
+                answers::document_symbol("impl OrderManager for StrategyApi", 23, 4, 8, 6);
             let method_sym = answers::document_symbol("order_please", 6, 5, 7, 8);
             serde_json::json!([answers::nested(impl_sym, vec![method_sym])])
         }
@@ -7077,7 +7295,10 @@ async fn code_references_finds_same_line_recursive_call_as_only_use() {
     .expect("references succeed via same-line recursive call");
 
     let text = text_of(&res);
-    assert!(text.contains("asked from a use of `recurse` in the checkout"), "{text}");
+    assert!(
+        text.contains("asked from a use of `recurse` in the checkout"),
+        "{text}"
+    );
     assert!(text.contains("src/lib.rs:1:20"), "{text}");
     assert!(text.contains("Found 1 reference(s)"), "{text}");
 }
@@ -7124,7 +7345,10 @@ async fn code_references_skips_recursive_declaration_line_without_consuming_cand
     .expect("references succeed via later use in same file");
 
     let text = text_of(&res);
-    assert!(text.contains("asked from a use of `recurse` in the checkout"), "{text}");
+    assert!(
+        text.contains("asked from a use of `recurse` in the checkout"),
+        "{text}"
+    );
     assert!(text.contains("src/lib.rs:2:19"), "{text}");
     assert!(text.contains("Found 1 reference(s)"), "{text}");
 }
@@ -7172,15 +7396,22 @@ async fn code_references_falls_back_to_internal_checkout_use_when_declaration_re
     .expect("references succeed via checkout use");
 
     let text = text_of(&res);
-    assert!(text.contains("asked from a use of `new_from_name` in the checkout"), "{text}");
-    assert!(text.contains("crates/hyperliquid-bot/src/main.rs:3:26"), "{text}");
+    assert!(
+        text.contains("asked from a use of `new_from_name` in the checkout"),
+        "{text}"
+    );
+    assert!(
+        text.contains("crates/hyperliquid-bot/src/main.rs:3:26"),
+        "{text}"
+    );
     assert!(text.contains("Found 1 reference(s)"), "{text}");
 }
 
 #[tokio::test]
 async fn code_references_discovers_references_across_multiple_targets_in_shared_source_tree() {
     let ws = workspace();
-    let shared_source = "pub struct OrderStrategy;\nimpl OrderStrategy {\n    pub fn add_avg_deal(&self) {}\n}\n";
+    let shared_source =
+        "pub struct OrderStrategy;\nimpl OrderStrategy {\n    pub fn add_avg_deal(&self) {}\n}\n";
     let shared_file = write(&ws, "src/strategy2/order.rs", shared_source);
     let tester_source = "use crate::strategy2::order::OrderStrategy;\nfn test_orders() {\n    let s = OrderStrategy;\n    s.add_avg_deal();\n}\n";
     let tester_file = write(&ws, "crates/tester/src/lib.rs", tester_source);
@@ -7241,7 +7472,10 @@ async fn code_references_discovers_references_across_multiple_targets_in_shared_
     let text = text_of(&res);
     assert!(text.contains("Found 3 reference(s)"), "{text}");
     assert!(text.contains("crates/tester/src/lib.rs:4:7"), "{text}");
-    assert!(text.contains("crates/binance-bot/src/main.rs:4:7"), "{text}");
+    assert!(
+        text.contains("crates/binance-bot/src/main.rs:4:7"),
+        "{text}"
+    );
     assert!(text.contains("crates/kucoin-bot/src/main.rs:4:7"), "{text}");
     assert!(
         text.contains("(warning: references may have incomplete coverage across configured targets: unindexed call site(s) found in crates/unindexed/src/main.rs)"),
@@ -7635,4 +7869,3 @@ async fn qualified_symbol_fast_path_queries_type_outline_before_common_member_na
         "fast path must not search workspace/symbol for common method name `new`"
     );
 }
-
