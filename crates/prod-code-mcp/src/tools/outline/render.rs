@@ -73,6 +73,7 @@ pub fn render_outline_with(
         for (depth, sym, in_body) in entries {
             let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
+            let name = crate::tools::symbols::bindings::binding_name(Path::new(path), kind, name);
             // Locals (LSP kind 13, Variable, inside a body) are noise for a structural
             // outline: a 2000-line file lists hundreds of them.
             let (line, _) = symbol_lines(sym);

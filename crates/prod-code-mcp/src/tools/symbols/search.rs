@@ -8,7 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::matching::{bare_symbol_name, match_rank, names_type, qualifier_matches};
+pub(crate) use super::bindings::collect_named;
+use super::bindings::{binding_column, binding_name};
+use super::matching::{bare_symbol_name, names_type, qualifier_matches};
 use super::nested_projects::{read_name_scan_text, representative_source_file};
 use super::types::{MalformedLspCoordinate, SymbolHit, lsp_position, symbol_kind_name};
 use super::unindexed::declared_at;
@@ -146,6 +148,12 @@ fn parse_workspace_symbol_hits(
         if super::nested_projects::is_in_nested_git_worktree(root, &path) {
             continue;
         }
+        let label = name;
+        let name = binding_name(
+            &path,
+            sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0),
+            label,
+        );
         let Some(start) = sym.pointer("/location/range/start") else {
             if bare_symbol_name(name).eq_ignore_ascii_case(bare_symbol_name(query)) {
                 return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
@@ -160,6 +168,7 @@ fn parse_workspace_symbol_hits(
             Err(error) if matching => return Err(error),
             Err(_) => continue,
         };
+        let col = binding_column(&path, label, name, line, col);
         hits.push(SymbolHit {
             path,
             name: name.to_string(),
@@ -180,7 +189,7 @@ fn parse_workspace_symbol_hits(
 }
 
 /// The declarations called `name` in the outlines of `files`, falling back to local source
-/// declaration extraction when `sourcekit-lsp` has not yet indexed a Swift file (#1107).
+/// declaration extraction when the server has not yet indexed a Swift or Rust file.
 pub(crate) async fn declarations_in(
     remote: SocketAddr,
     root: &Path,
@@ -191,6 +200,7 @@ pub(crate) async fn declarations_in(
     for file in files {
         let mut file_hits = Vec::new();
         let is_swift = file.extension().and_then(|e| e.to_str()) == Some("swift");
+        let is_rust = file.extension().and_then(|e| e.to_str()) == Some("rs");
         if let Ok(uri) = Url::from_file_path(file) {
             let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
             let query_fut =
@@ -201,8 +211,23 @@ pub(crate) async fn declarations_in(
                 collect_named(&outline, name, None, file, &mut file_hits)?;
             }
         }
-        if file_hits.is_empty() && is_swift && remote.port() != 9 {
+        if file_hits.is_empty() && (is_swift || is_rust) && remote.port() != 9 {
             file_hits = local_declarations_in_file(file, name);
+            if is_rust {
+                // Locals are absent from workspace/symbol. Keep ordinary declarations on
+                // the indexed path so a malformed index response is still reported.
+                let source = read_name_scan_text(file);
+                file_hits.retain(|hit| {
+                    source
+                        .as_deref()
+                        .and_then(|text| text.lines().nth(hit.line.saturating_sub(1) as usize))
+                        .is_some_and(|row| {
+                            row.trim_start()
+                                .strip_prefix("let")
+                                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+                        })
+                });
+            }
         }
         for hit in file_hits {
             if !hits
@@ -216,58 +241,16 @@ pub(crate) async fn declarations_in(
     Ok(hits)
 }
 
-/// Walks a `textDocument/documentSymbol` answer, nested or flat, for the symbols called `name`.
-pub(crate) fn collect_named(
-    symbols: &serde_json::Value,
-    name: &str,
-    parent: Option<&str>,
-    file: &Path,
-    out: &mut Vec<SymbolHit>,
-) -> Result<()> {
-    for symbol in symbols.as_array().into_iter().flatten() {
-        let own = symbol.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if bare_symbol_name(own).eq_ignore_ascii_case(name) || match_rank(own, name) < 4 {
-            let start = symbol
-                .pointer("/selectionRange/start")
-                .or_else(|| symbol.pointer("/location/range/start"))
-                .or_else(|| symbol.pointer("/range/start"));
-            if let Some(start) = start {
-                let (line, col) = lsp_position(start, &format!("named declaration `{own}`"))?;
-                out.push(SymbolHit {
-                    path: file.to_path_buf(),
-                    name: own.to_string(),
-                    kind: symbol_kind_name(
-                        symbol.get("kind").and_then(|k| k.as_u64()).unwrap_or(0),
-                    ),
-                    container: parent.map(str::to_string).or_else(|| {
-                        symbol
-                            .get("containerName")
-                            .and_then(|c| c.as_str())
-                            .filter(|c| !c.is_empty())
-                            .map(str::to_string)
-                    }),
-                    line,
-                    col,
-                });
-            } else if bare_symbol_name(own).eq_ignore_ascii_case(name) {
-                return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
-                    "malformed LSP named declaration `{own}`: missing selection range start"
-                ))));
-            }
-        }
-        if let Some(children) = symbol.get("children") {
-            collect_named(children, name, Some(own), file, out)?;
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn local_declarations_in_file(file: &Path, name: &str) -> Vec<SymbolHit> {
     let Some(text) = read_name_scan_text(file) else {
         return Vec::new();
     };
-    let code_mask = crate::tools::references::mask_executable_code(&text, file);
-    let masked = crate::tools::references::masked_code_string(&text, &code_mask);
+    local_declarations_in_source(file, &text, name)
+}
+
+fn local_declarations_in_source(file: &Path, text: &str, name: &str) -> Vec<SymbolHit> {
+    let code_mask = crate::tools::references::mask_executable_code(text, file);
+    let masked = crate::tools::references::masked_code_string(text, &code_mask);
     let mut hits = Vec::new();
     let mut current_container: Option<(String, i32)> = None;
     let mut brace_depth: i32 = 0;
