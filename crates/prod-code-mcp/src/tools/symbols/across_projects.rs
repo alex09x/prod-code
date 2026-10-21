@@ -188,15 +188,34 @@ pub(crate) async fn symbol_search_across_projects(
     if named(&hits) {
         return Ok(hits);
     }
+    // Prefix or substring matches in the root still leave an exact declaration in a nested
+    // project to find, but only in a project that declares the name (any case), found within
+    // a short scan: querying every nested project that merely mentions it took 20-47 s
+    // (#1124).
     let has_relevant_hits = hits.iter().any(|hit| match_rank(&hit.name, query) < 4);
+    let anchors_deadline = if has_relevant_hits {
+        deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2))
+    } else {
+        deadline
+    };
+    let mut anchors = projects_naming(root, name, anchors_deadline);
     if has_relevant_hits {
-        return Ok(hits);
+        let wanted = name.to_ascii_lowercase();
+        anchors.retain(|(path, _, _)| {
+            read_name_scan_text(path).is_some_and(|text| {
+                text.lines().any(|line| {
+                    super::declared_at::declared_at(&line.to_ascii_lowercase(), &wanted).is_some()
+                })
+            })
+        });
     }
-    let mut anchors = projects_naming(root, name, deadline);
     if let Some(q) = qualifier_word {
         anchors.sort_by_key(|(path, _, _)| {
             !read_name_scan_text(path).is_some_and(|text| names_word(&text, q))
         });
+    }
+    if anchors.is_empty() && has_relevant_hits {
+        return Ok(hits);
     }
     if anchors.is_empty() {
         for anchor in nested_project_anchors(root, deadline) {
