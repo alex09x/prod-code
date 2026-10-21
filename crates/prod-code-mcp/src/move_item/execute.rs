@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use super::budget::{MoveBudget, document_symbols};
+use super::child::move_to_child;
 use super::imports::{
     add_import, carry_imports, drop_import, has_use_super_glob, requalify,
     source_declares_child_module,
@@ -20,7 +22,7 @@ use super::imports::{
 use super::item::{
     append_item, cut, display, move_inherent_method, offset_of, span_at, with_doc_comment,
 };
-use super::module::{declare_module, extract_inline_module, module_of, parent_module_file};
+use super::module::{declare_module, extract_inline_module, module_of, target_text};
 use super::types::Move;
 
 /// Moves the declaration at `file:line:col` into `target`, rewriting the imports of every file
@@ -48,33 +50,14 @@ pub async fn move_item(
         )
         .await;
     }
+    let budget = MoveBudget::new();
     let source_text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    // A target that does not exist yet is created, and declared by its parent module (#148).
-    let mut new_module_parent = if target.exists() {
-        None
-    } else {
-        anyhow::ensure!(
-            target.extension().is_some_and(|e| e == "rs"),
-            "{} is not a Rust source file",
-            display(root, target)
-        );
-        Some(parent_module_file(target).with_context(|| {
-            format!(
-                "{} does not exist, and neither does a module file to declare it in (for \
-                 `src/a/x.rs`, `src/a.rs` or `src/a/mod.rs`); create the parent module first",
-                display(root, target)
-            )
-        })?)
-    };
-    let target_text = match &new_module_parent {
-        Some(_) => String::new(),
-        None => std::fs::read_to_string(target)
-            .with_context(|| format!("cannot read {}", target.display()))?,
-    };
+    let (mut new_module_parent, target_text) = target_text(root, target)?;
 
-    let (_, from_module) = module_of(file)?;
-    let (_, mut to_module) = module_of(target)?;
+    let (from_dir, from_module) = module_of(file)?;
+    let (to_dir, mut to_module) = module_of(target)?;
+    super::test_crate::ensure_same_crate(file, target, &from_dir, &to_dir)?;
     anyhow::ensure!(
         from_module != to_module,
         "{} and {} are the same module",
@@ -82,7 +65,16 @@ pub async fn move_item(
         display(root, target)
     );
 
-    let symbols = document_symbols(remote, root, file).await?;
+    let symbols = budget
+        .run(
+            "reading document symbols",
+            document_symbols(remote, root, file),
+        )
+        .await?;
+    let child = from_dir == to_dir
+        && from_module.krate == to_module.krate
+        && to_module.segments.len() == from_module.segments.len() + 1
+        && to_module.segments.starts_with(&from_module.segments);
     let (name, decl_start, decl_end) =
         span_at(&symbols, line).with_context(|| format!("no declaration at line {line}"))?;
     // A method belongs to its `impl`; pasted into a module without a verified inherent `impl` of
@@ -95,17 +87,21 @@ pub async fn move_item(
     if let Some((ref owner, impl_at, impl_open, _)) = enclosing_impl {
         let is_inherent = !source_text[impl_at..impl_open].contains(" for ");
         if is_inherent && from_module.krate == to_module.krate && new_module_parent.is_none() {
-            verified_target_impl = super::item::verified_target_impl_index(
-                remote,
-                root,
-                file,
-                &source_text,
-                (impl_at, impl_open),
-                target,
-                &target_text,
-                owner,
-            )
-            .await;
+            verified_target_impl = budget
+                .run("resolving the target impl", async {
+                    Ok(super::item::verified_target_impl_index(
+                        remote,
+                        root,
+                        file,
+                        &source_text,
+                        (impl_at, impl_open),
+                        target,
+                        &target_text,
+                        owner,
+                    )
+                    .await)
+                })
+                .await?;
         }
         if verified_target_impl.is_none() {
             anyhow::bail!(
@@ -132,52 +128,63 @@ pub async fn move_item(
     let start = with_doc_comment(&source_text, decl_start);
     let mut created = None;
     let mut extracted_inline_mod = false;
-    let (source_new, target_new, item, carried) = if let Some((_, impl_at, impl_open, impl_close)) =
-        enclosing_impl
-    {
-        move_inherent_method(
-            &source_text,
-            &target_text,
-            verified_target_impl,
-            (impl_at, impl_open, impl_close),
-            start,
-            decl_start,
-            decl_end,
-        )
-    } else if target_text.trim().is_empty()
-        && let Some((source_new, target_new)) =
-            extract_inline_module(&source_text, start, decl_end, &name, file, target)
-    {
-        new_module_parent = None;
-        extracted_inline_mod = true;
-        let mut segs = from_module.segments.clone();
-        segs.push(name.clone());
-        to_module.segments = segs;
-        created = Some((display(root, target), display(root, file)));
-        let (_, raw_item) = cut(&source_text, start, decl_end);
-        (source_new, target_new, raw_item, Vec::new())
-    } else {
-        let (source_new, item) = cut(&source_text, start, decl_end);
-        let (target_with_imports, carried) = if source_declares_child_module(&source_text, target)
-            && has_use_super_glob(&target_text)
+    let (source_new, target_new, item, carried) =
+        if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
+            move_inherent_method(
+                &source_text,
+                &target_text,
+                verified_target_impl,
+                (impl_at, impl_open, impl_close),
+                start,
+                decl_start,
+                decl_end,
+            )
+        } else if target_text.trim().is_empty()
+            && let Some((source_new, target_new)) =
+                extract_inline_module(&source_text, start, decl_end, &name, file, target)
         {
-            (target_text.clone(), Vec::new())
+            new_module_parent = None;
+            extracted_inline_mod = true;
+            let mut segs = from_module.segments.clone();
+            segs.push(name.clone());
+            to_module.segments = segs;
+            created = Some((display(root, target), display(root, file)));
+            let (_, raw_item) = cut(&source_text, start, decl_end);
+            (source_new, target_new, raw_item, Vec::new())
         } else {
-            carry_imports(&source_text, &item, &target_text)
+            let (source_new, item) = cut(&source_text, start, decl_end);
+            let (target_with_imports, item, carried) = if child {
+                move_to_child(
+                    &source_text,
+                    &item,
+                    &target_text,
+                    file.starts_with(from_dir.join("tests")),
+                )?
+            } else if source_declares_child_module(&source_text, target)
+                && has_use_super_glob(&target_text)
+            {
+                (target_text.clone(), item, Vec::new())
+            } else {
+                let (text, carried) = carry_imports(&source_text, &item, &target_text);
+                (text, item, carried)
+            };
+            let target_new = if target_with_imports.trim().is_empty() {
+                format!("{}\n", item.trim())
+            } else {
+                append_item(&target_with_imports, &item)
+            };
+            (source_new, target_new, item, carried)
         };
-        let target_new = if target_with_imports.trim().is_empty() {
-            format!("{}\n", item.trim())
-        } else {
-            append_item(&target_with_imports, &item)
-        };
-        (source_new, target_new, item, carried)
-    };
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
     let refs = if extracted_inline_mod {
         Vec::new()
     } else {
-        crate::signature::references(remote, root, file, line, col)
+        budget
+            .run(
+                "finding references",
+                crate::signature::references(remote, root, file, line, col),
+            )
             .await
             .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?
     };
@@ -282,7 +289,10 @@ pub async fn move_item(
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let public = item.trim_start().starts_with("pub");
+        let public = source_text
+            .lines()
+            .nth(decl_start.saturating_sub(1) as usize)
+            .is_some_and(|line| line.trim_start().starts_with("pub"));
         let parent_text = match rewritten.get(parent) {
             Some(text) => text.clone(),
             None => std::fs::read_to_string(parent)
@@ -290,7 +300,11 @@ pub async fn move_item(
         };
         rewritten.insert(
             parent.clone(),
-            declare_module(&parent_text, &module_name, public),
+            if source_declares_child_module(&parent_text, target) {
+                parent_text
+            } else {
+                declare_module(&parent_text, &module_name, public)
+            },
         );
         created = Some((display(root, target), display(root, parent)));
     }
@@ -299,24 +313,7 @@ pub async fn move_item(
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &callers).await?;
-    let diagnostics: Vec<String> = reports
-        .iter()
-        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
-        .filter(|(_, d)| d.severity == "error")
-        .map(|(f, d)| {
-            format!(
-                "{}{} ({f}:{}:{})",
-                d.message.lines().next().unwrap_or(""),
-                d.code
-                    .as_deref()
-                    .map(|c| format!(" [{c}]"))
-                    .unwrap_or_default(),
-                d.line,
-                d.col
-            )
-        })
-        .collect();
+    let diagnostics = budget.validate(remote, root, &edits, &callers).await?;
 
     let mut applied = false;
     if apply {
@@ -362,22 +359,4 @@ pub async fn move_item(
         applied,
         created,
     })
-}
-
-pub(crate) async fn document_symbols(
-    remote: SocketAddr,
-    root: &Path,
-    file: &Path,
-) -> Result<serde_json::Value> {
-    let uri = url::Url::from_file_path(file)
-        .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
-        .to_string();
-    crate::tools::execute_lsp_query(
-        remote,
-        root,
-        file,
-        "textDocument/documentSymbol",
-        serde_json::json!({ "textDocument": { "uri": uri } }),
-    )
-    .await
 }

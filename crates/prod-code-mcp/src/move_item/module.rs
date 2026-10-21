@@ -11,7 +11,29 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use super::item::display;
 use super::types::ModulePath;
+
+pub(super) fn target_text(root: &Path, target: &Path) -> Result<(Option<PathBuf>, String)> {
+    if target.exists() {
+        let text = std::fs::read_to_string(target)
+            .with_context(|| format!("cannot read {}", target.display()))?;
+        return Ok((None, text));
+    }
+    anyhow::ensure!(
+        target.extension().is_some_and(|e| e == "rs"),
+        "{} is not a Rust source file",
+        display(root, target)
+    );
+    let parent = parent_module_file(target).with_context(|| {
+        format!(
+            "{} does not exist, and neither does a module file to declare it in (for \
+         `src/a/x.rs`, `src/a.rs` or `src/a/mod.rs`); create the parent module first",
+            display(root, target)
+        )
+    })?;
+    Ok((Some(parent), String::new()))
+}
 
 /// The file that must declare the module `target` would be: `src/lib.rs` or `src/main.rs` for
 /// `src/util.rs`, and `src/a.rs` or `src/a/mod.rs` for `src/a/util.rs`. The first that exists.
@@ -22,7 +44,10 @@ pub fn parent_module_file(target: &Path) -> Option<PathBuf> {
     } else {
         vec![dir.with_extension("rs"), dir.join("mod.rs")]
     };
-    candidates.into_iter().find(|p| p.is_file())
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .or_else(|| super::test_crate::parent_module_file(target))
 }
 
 /// `text` with `mod name;` (or `pub mod name;`) declared after its last top-level `mod` line, or
@@ -38,13 +63,7 @@ pub fn declare_module(text: &str, name: &str, public: bool) -> String {
     };
     let at = match lines.iter().rposition(|l| is_mod(l)) {
         Some(i) => i + 1,
-        None => lines
-            .iter()
-            .position(|l| {
-                let t = l.trim_start();
-                !(t.starts_with("//!") || t.starts_with("#![") || t.is_empty())
-            })
-            .unwrap_or(lines.len()),
+        None => text[..super::preamble::preamble_end(text)].lines().count(),
     };
     // Blank lines above the declaration and nothing else (what an item cut from the top of the
     // file leaves behind) go.
@@ -72,9 +91,10 @@ pub fn declare_module(text: &str, name: &str, public: bool) -> String {
 
 /// The crate directory above `file`, and the module `file` is inside it.
 ///
-/// Only the ordinary layout is understood: `src/lib.rs` and `src/main.rs` are the crate root,
+/// In the ordinary layout `src/lib.rs` and `src/main.rs` are the crate root,
 /// `src/a.rs` and `src/a/mod.rs` are both the module `a`. A file reached through `#[path]` is
-/// not, and the caller is told so rather than moved into the wrong module.
+/// not generally understood. Integration-test targets and their declared path submodules
+/// are resolved separately as independent crate roots.
 pub fn module_of(file: &Path) -> Result<(PathBuf, ModulePath)> {
     let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let crate_dir = file
@@ -85,6 +105,9 @@ pub fn module_of(file: &Path) -> Result<(PathBuf, ModulePath)> {
         .to_path_buf();
     let manifest = std::fs::read_to_string(crate_dir.join("Cargo.toml"))
         .with_context(|| format!("cannot read {}", crate_dir.join("Cargo.toml").display()))?;
+    if let Some(module) = super::test_crate::module_of(&file, &crate_dir)? {
+        return Ok((crate_dir, module));
+    }
     let krate = crate_name(&manifest).with_context(|| {
         format!(
             "{} names no package",

@@ -16,15 +16,19 @@
 //! in one overlay before a byte is written, the same shape as [`crate::signature`] and
 //! [`crate::schema`].
 
+mod budget;
+mod child;
 mod execute;
 mod imports;
 mod item;
 mod module;
+mod preamble;
+mod test_crate;
 #[cfg(test)]
 mod tests;
 mod types;
 
-pub(crate) use execute::document_symbols;
+pub(crate) use budget::document_symbols;
 pub use execute::move_item;
 pub use imports::{add_import, carry_imports, drop_import, requalify};
 pub use item::{append_item, cut, span_at, with_doc_comment};
