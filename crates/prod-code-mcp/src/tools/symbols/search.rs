@@ -228,6 +228,21 @@ pub(crate) async fn declarations_in(
                         })
                 });
             }
+            // A dependency source that exists only on the node (a cargo registry file):
+            // read it from there, bounded, instead of answering "not in the index" (#1141).
+            if file_hits.is_empty()
+                && is_rust
+                && file.is_absolute()
+                && !file.exists()
+                && let Ok(Ok((bytes, false))) = tokio::time::timeout(
+                    std::time::Duration::from_millis(2500),
+                    crate::remote_fs::read_remote_file(remote, &file.to_string_lossy(), 0),
+                )
+                .await
+                && let Ok(text) = std::str::from_utf8(&bytes)
+            {
+                file_hits = local_declarations_in_source(file, text, name);
+            }
         }
         for hit in file_hits {
             if !hits
