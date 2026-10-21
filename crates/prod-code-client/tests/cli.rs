@@ -239,7 +239,12 @@ async fn handle_client(
                         uptime_seconds: 7265,
                         active_sessions: 2,
                         loaded_workspaces: 1,
-                        detected_engines: vec!["rust".to_string(), "go".to_string()],
+                        // A single node is refused for an engine it does not list (#1067).
+                        detected_engines: vec![
+                            "rust".to_string(),
+                            "go".to_string(),
+                            "typescript".to_string(),
+                        ],
                         memory_rss_bytes: Some(1024 * 1024 * 64),
                         total_queries: 42,
                         active_queries: 0,
@@ -3011,8 +3016,10 @@ async fn cli_outline_of_a_file_no_server_serves_is_an_error() {
     let out = run_cli(&ws, gw.addr, &["outline", "scripts/build.sh"]).await;
     assert!(!out.status.success(), "{}", stdout_of(&out));
     let stderr = stderr_of(&out);
+    // Since #1067 the node is refused before the query: it lists no shell server.
     assert!(
-        stderr.contains("no language server serves `.sh` files"),
+        stderr.contains("no reachable gateway serves shell")
+            && stderr.contains("add a node with the shell language server installed"),
         "{stderr}"
     );
     assert!(!stdout_of(&out).contains("null"), "{}", stdout_of(&out));
@@ -3639,16 +3646,39 @@ where
     tokio::spawn(async move {
         let mut connections = 0;
         while let Ok((socket, _)) = listener.accept().await {
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            // The engine check of a single named node (#1067) is its own status connection:
+            // it is answered and not counted, so the script's connections stay the session's.
+            let first = match framed.next().await {
+                Some(Ok(WireMessage::StatusRequest)) => {
+                    let _ = framed
+                        .send(WireMessage::StatusResponse(StatusResponse {
+                            detected_engines: vec!["rust".to_string(), "go".to_string()],
+                            ..Default::default()
+                        }))
+                        .await;
+                    continue;
+                }
+                Some(Ok(msg)) => msg,
+                _ => continue,
+            };
             connections += 1;
             if !later_connections && connections > 1 {
-                drop(socket);
+                drop(framed);
                 continue;
             }
             let (log, connection) = (Arc::clone(&log), connections);
             let (answer, files) = (Arc::clone(&answer), files.clone());
             tokio::spawn(async move {
-                let mut framed = Framed::new(socket, ProdCodeCodec::new());
-                while let Some(Ok(msg)) = framed.next().await {
+                let mut pending = Some(first);
+                loop {
+                    let msg = match pending.take() {
+                        Some(msg) => msg,
+                        None => match framed.next().await {
+                            Some(Ok(msg)) => msg,
+                            _ => break,
+                        },
+                    };
                     let (event, reply) = match msg {
                         WireMessage::SyncProbeRequest(req) => (
                             format!("probe {}", req.base_workspace_name.unwrap_or_default()),
