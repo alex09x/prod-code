@@ -149,8 +149,7 @@ pub fn uncaptured_enclosing_locals(
     }
     let body_start = fn_text.find('{').map_or(0, |i| i + 1);
     let body = &fn_text[body_start..];
-    let internal_locals: std::collections::BTreeSet<String> =
-        bound_names(body).into_iter().collect();
+    let internal_locals = super::patterns::local_bindings(body);
 
     let mut uncaptured = Vec::new();
     for token in super::tokens::tokens(body) {
@@ -158,7 +157,9 @@ pub fn uncaptured_enclosing_locals(
             let word = &body[token.1..token.2];
             if enclosing_scope.contains(word)
                 && !declared_params.contains(word)
-                && !internal_locals.contains(word)
+                && !internal_locals
+                    .iter()
+                    .any(|binding| binding.covers(word, token.1))
             {
                 uncaptured.push(word.to_string());
             }
@@ -167,7 +168,9 @@ pub fn uncaptured_enclosing_locals(
             for word in format_string_interpolations(str_val) {
                 if enclosing_scope.contains(&word)
                     && !declared_params.contains(&word)
-                    && !internal_locals.contains(&word)
+                    && !internal_locals
+                        .iter()
+                        .any(|binding| binding.covers(&word, token.1))
                 {
                     uncaptured.push(word);
                 }

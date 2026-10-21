@@ -12,6 +12,8 @@ pub mod binding;
 pub mod borrows;
 pub mod duplicates;
 pub mod execute;
+mod patterns;
+mod return_borrows;
 pub mod rewrite;
 #[cfg(test)]
 mod tests;
