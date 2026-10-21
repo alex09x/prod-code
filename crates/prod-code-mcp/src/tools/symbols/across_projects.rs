@@ -64,10 +64,13 @@ pub(crate) async fn symbol_search_across_projects(
     };
 
     // Fast-path for explicit file hints: if the caller pointed at a specific source file
-    // that contains the symbol name, check its outline first (#1033, #1036).
+    // that contains the symbol name, check its outline first (#1033, #1036). A dependency
+    // source can exist only on the node; its explicit path still names the authoritative
+    // outline, so that query is not gated on a local read (#1141).
     if let Some(hint_path) = hint
-        && hint_path.is_file()
-        && read_name_scan_text(hint_path).is_some_and(|text| names_word(&text, name))
+        && ((hint_path.is_file()
+            && read_name_scan_text(hint_path).is_some_and(|text| names_word(&text, name)))
+            || (!hint_path.exists() && crate::sync::engine_for_file(hint_path).is_some()))
     {
         let node = match tokio::time::timeout_at(
             deadline,
