@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- **`--path FILE` for the Navigation Commands** (`crates/prod-code-client`):
+  `prod-code def`, `hover`, `refs`, `callers`, `callees`, `impls` and `supertypes` take their file positionally, while `test`, `check` and the MCP tools spell it `path`. Agents carried that spelling over and got `unexpected argument '--path'`. `--path FILE` and `--path=FILE` are now read as the file of those commands (`cli/argv.rs`). None of them has a `--path` of its own, and arguments after `--` are left alone (#1159).
 - **`prod-code pull` and `code_pull` Fetch Build Artifacts From the Exec Node** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-client`, `crates/prod-code-protocol`):
   After `prod-code exec -- cargo build --release --bin NAME`, `prod-code pull target/release/NAME` failed with `... is not a readable source location on this gateway`. It could also ask a different node than the one exec ran on. Pull now uses its own `PullFileRequest`/`PullFileResponse` frames, which start no analyzer. They read from the checkout's own copy on the node, including ignored build outputs and the RAM build target recorded for that copy's last exec (`sync/artifact_pull.rs`, `sync/artifact_target.rs`). Transfers go in 4 MiB chunks and keep the executable bit. Paths outside the copy and symlinks out of it are refused. The client remembers the node of the last `exec` per checkout and pulls from it (`--remote` overrides). Exec, pull and their errors name the node and the copy. The new MCP tool `code_pull` does the same (#1145).
 

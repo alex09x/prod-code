@@ -9,6 +9,7 @@
  */
 
 pub mod args;
+pub mod argv;
 pub mod candidate;
 pub mod commands;
 
