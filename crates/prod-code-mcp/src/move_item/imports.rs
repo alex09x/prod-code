@@ -209,30 +209,7 @@ pub fn add_import(text: &str, use_line: &str) -> String {
     let after = use_statements(text)
         .last()
         .map(|(_, end)| *end)
-        .or_else(|| {
-            // No imports yet: go under the file's own header, not above it.
-            let mut at = 0;
-            let mut in_block_comment = false;
-            for line in text.lines() {
-                let t = line.trim();
-                if in_block_comment {
-                    at += line.len() + 1;
-                    if t.contains("*/") {
-                        in_block_comment = false;
-                    }
-                } else if t.starts_with("/*") {
-                    at += line.len() + 1;
-                    if !t.contains("*/") {
-                        in_block_comment = true;
-                    }
-                } else if t.starts_with("//!") || t.starts_with("#![") || t.is_empty() {
-                    at += line.len() + 1;
-                } else {
-                    break;
-                }
-            }
-            Some(at.min(text.len()))
-        })
+        .or_else(|| Some(super::preamble::preamble_end(text)))
         .unwrap_or(0);
     let mut out = text.to_string();
     let insert = if out[after..].starts_with('\n') {
