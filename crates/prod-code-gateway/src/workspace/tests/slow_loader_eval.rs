@@ -132,17 +132,19 @@ async fn concurrent_engine_loads_are_bounded_by_semaphore() {
     }
 }
 
-/// An unloaded in-flight engine cannot replace a later load of the same path.
+/// Unloading preserves an in-flight engine and its reservation; later sessions join that
+/// same load rather than replacing it (#911).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_unloaded_load_cannot_publish_over_its_replacement() {
+async fn unloading_preserves_an_in_flight_load_for_later_sessions() {
     let SlowLoader {
         load,
         mut started,
         gate,
         loads,
     } = slow_loader();
+    let admission = roomy_admission();
     let manager =
-        Arc::new(WorkspaceManager::with_admission(roomy_admission()).with_rust_loader(load));
+        Arc::new(WorkspaceManager::with_admission(Arc::clone(&admission)).with_rust_loader(load));
     let root = PathBuf::from("/srv/ws/replaced");
     let attach = || {
         let manager = Arc::clone(&manager);
@@ -151,32 +153,34 @@ async fn an_unloaded_load_cannot_publish_over_its_replacement() {
     };
     let old = attach();
     started.recv().await.unwrap();
-    assert_eq!(manager.unload_under(&root).await, 1);
+    assert_eq!(manager.unload_under(&root).await, 0);
+    assert!(manager.is_loaded(&root).await);
+    assert_eq!(admission.reserved_bytes(), 2 << 30);
     let fresh = attach();
-    started.recv().await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), started.recv())
+            .await
+            .is_err(),
+        "the later session must not start a replacement load",
+    );
+    assert!(manager.get_loaded(&root).await.is_none());
     gate.send(()).unwrap();
     let old_result = tokio::time::timeout(Duration::from_secs(30), old)
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        old_result.is_err(),
-        "an unloaded engine was published as ready"
-    );
-    assert!(
-        manager.get_loaded(&root).await.is_none(),
-        "the newer load is still pending"
-    );
-    gate.send(()).unwrap();
+    let original = old_result.unwrap();
     let current = tokio::time::timeout(Duration::from_secs(30), fresh)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
     let registered = manager.get_loaded(&root).await.unwrap();
+    assert!(Arc::ptr_eq(original.workspace(), &registered));
     assert!(Arc::ptr_eq(current.workspace(), &registered));
-    assert_eq!(current.active_sessions.load(Ordering::Relaxed), 1);
-    assert_eq!(loads.load(Ordering::SeqCst), 2);
+    assert_eq!(current.active_sessions.load(Ordering::Relaxed), 2);
+    assert_eq!(loads.load(Ordering::SeqCst), 1);
+    assert_eq!(admission.reserved_bytes(), 0);
 }
 
 /// A load that panics, here while it reads the host's memory, is answered like one that

@@ -899,7 +899,7 @@ async fn validation_under_memory_pressure_redirects_to_available_cluster_peer() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn validation_under_memory_pressure_falls_back_when_redirect_count_reached() {
+async fn validation_under_memory_pressure_refuses_when_redirect_count_reached() {
     let storage = tempfile::tempdir().unwrap();
     let client = tempfile::tempdir().unwrap();
     let client_root = std::fs::canonicalize(client.path()).unwrap();
@@ -1002,10 +1002,23 @@ async fn validation_under_memory_pressure_falls_back_when_redirect_count_reached
         .expect("response frame")
         .expect("wire message");
 
-    assert!(
-        matches!(response, WireMessage::HandshakeResponse(_)),
-        "validation with max redirects under memory pressure must fall back to the main generic engine, got: {response:?}"
-    );
+    match response {
+        WireMessage::Disconnect { reason } => {
+            assert!(
+                reason.contains("private validation engine unavailable"),
+                "{reason}"
+            );
+            assert!(reason.contains("memory 90% used"), "{reason}");
+        }
+        other => panic!(
+            "validation at the redirect limit must refuse sharing the main engine, got: {other:?}"
+        ),
+    }
+    assert!(Arc::ptr_eq(
+        &manager.get_loaded(&server_root).await.unwrap(),
+        &workspace,
+    ));
+    assert_eq!(workspace.active_sessions.load(Ordering::Relaxed), 0);
 
     drop(client);
     let _ = server.join().await;

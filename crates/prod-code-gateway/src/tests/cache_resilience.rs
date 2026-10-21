@@ -34,6 +34,7 @@ fn test_effective_prune_timeouts() {
         storage: PathBuf::from("/tmp/storage"),
         idle_evict_secs: 1800,
         engine_reserve_mib: 0,
+        no_admission: false,
         max_concurrent_engine_loads: 0,
         prune_worktree_secs: 3600,
         prune_worktree_days: None,

@@ -22,8 +22,8 @@ use tokio_util::codec::Framed;
 
 /// A node past 85% of its memory or under 10% of its disk gets no new workspace while
 /// another capable node has room, however quiet it is, and gives up an idle one it holds;
-/// one with a session stays, and when every node is short the quietest still takes it
-/// (#396).
+/// active sessions can reconnect to the roomy node, and when every node is short the quietest
+/// still takes it (#396).
 #[test]
 fn a_node_short_of_memory_or_disk_takes_no_new_workspace() {
     let gib = 1 << 30;
@@ -98,10 +98,16 @@ fn a_node_short_of_memory_or_disk_takes_no_new_workspace() {
     );
 
     held.nodes[0].workspaces[0].sessions = 1;
+    let active = place(&held);
     assert_eq!(
-        place(&held).node.as_deref(),
-        Some("full:9400"),
-        "a workspace in use is not moved"
+        active.node.as_deref(),
+        Some("busy:9400"),
+        "new sessions leave a resource-pressured holder even without rebalance_active"
+    );
+    assert!(
+        active.reason.contains("active, 1 sessions"),
+        "{}",
+        active.reason
     );
 
     let rebalance_answer = place_in(
@@ -167,7 +173,7 @@ fn congested_node_rebalances_active_workspace_when_requested() {
         nodes: vec![congested, quiet],
     };
 
-    // Without rebalance_active, active sessions are not moved:
+    // New sessions avoid a congested holder even without an explicit active rebalance (#1055).
     let normal = place_in(
         &PlaceRequest {
             workspace_name: "repo".to_string(),
@@ -177,8 +183,24 @@ fn congested_node_rebalances_active_workspace_when_requested() {
         },
         view.clone(),
     );
-    assert_eq!(normal.node.as_deref(), Some("congested:9400"));
-    assert!(normal.reason.contains("already loaded"));
+    assert_eq!(normal.node.as_deref(), Some("quiet:9400"));
+    assert!(normal.reason.contains("rebalanced from congested:9400"));
+    assert!(normal.reason.contains("active, 2 sessions"));
+
+    // A holder below the congestion threshold still keeps its active workspace.
+    let mut uncongested = view.clone();
+    uncongested.nodes[0].status.load_average_millis = Some(4_800);
+    let retained = place_in(
+        &PlaceRequest {
+            workspace_name: "repo".to_string(),
+            engine: Some("rust".to_string()),
+            os: None,
+            rebalance_active: false,
+        },
+        uncongested,
+    );
+    assert_eq!(retained.node.as_deref(), Some("congested:9400"));
+    assert!(retained.reason.contains("already loaded"));
 
     // With rebalance_active, active sessions are moved to the quieter node:
     let rebalanced = place_in(
