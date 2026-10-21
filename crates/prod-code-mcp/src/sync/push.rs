@@ -32,11 +32,31 @@ async fn wait_for_message<T>(
     pick: impl Fn(WireMessage) -> Option<T>,
 ) -> Result<T> {
     let timeout_secs = if what.contains("probe") { 30 } else { 180 };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    wait_for_message_within(framed, what, Duration::from_secs(timeout_secs), pick).await
+}
+
+async fn wait_for_message_within<T>(
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    what: &str,
+    limit: Duration,
+    pick: impl Fn(WireMessage) -> Option<T>,
+) -> Result<T> {
+    let deadline = tokio::time::Instant::now() + limit;
+    // Says where it waited and what is known, so a stuck node is not mistaken for a lost
+    // upload (#1143).
+    let node = gateway_node(framed);
+    let timed_out = || {
+        anyhow::anyhow!(
+            "timed out after {}s waiting for {what} from gateway {node}; files sent \
+             before the timeout may already be on that node. Retry the command; if it times \
+             out again, check the node with `prod-code status`",
+            limit.as_secs()
+        )
+    };
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            anyhow::bail!("timed out waiting for {what}");
+            return Err(timed_out());
         }
         match tokio::time::timeout(remaining, framed.next()).await {
             Ok(Some(Ok(WireMessage::LspPayload(_)))) | Ok(Some(Ok(WireMessage::Pong))) => {}
@@ -49,7 +69,7 @@ async fn wait_for_message<T>(
             },
             Ok(Some(Err(e))) => anyhow::bail!("frame decode error while waiting for {what}: {e}"),
             Ok(None) => anyhow::bail!("gateway closed connection while waiting for {what}"),
-            Err(_) => anyhow::bail!("timed out waiting for {what}"),
+            Err(_) => return Err(timed_out()),
         }
     }
 }
@@ -254,4 +274,36 @@ async fn push_sync_round(
             .insert((canonical_root, node));
     }
     Ok(RoundResult::Success(outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_silent_gateway_times_out_naming_the_node_and_the_next_step() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move { listener.accept().await.unwrap().0 });
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // Accepted and never answered, like the stuck sync on the node in #1143.
+        let _silent = accept.await.unwrap();
+        let mut framed = Framed::new(AnyStream::Tcp(stream), ProdCodeCodec::new());
+
+        let err =
+            wait_for_message_within(&mut framed, "sync response", Duration::from_secs(1), |m| {
+                match m {
+                    WireMessage::SyncResponse(r) => Some(r),
+                    _ => None,
+                }
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("after 1s waiting for sync response"), "{err}");
+        assert!(err.contains(&addr.to_string()), "{err}");
+        assert!(err.contains("may already be on that node"), "{err}");
+        assert!(err.contains("prod-code status"), "{err}");
+    }
 }

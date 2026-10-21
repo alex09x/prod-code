@@ -98,6 +98,7 @@ pub async fn apply_sync_with_metrics(
     // client sends them again (#385).
     let mut failed: Vec<String> = Vec::new();
     let mut skipped_pre_exec: Vec<String> = Vec::new();
+    let mut base_paths = Vec::new();
     for delta in req.files {
         let target_path = match safe_sync_target(&server_workspace, &delta.relative_path).await {
             Ok(path) => path,
@@ -140,23 +141,7 @@ pub async fn apply_sync_with_metrics(
                 }
                 files_updated += 1;
                 watched.push((target_path.clone(), kind));
-                if let Ok(text) = std::str::from_utf8(&content_bytes) {
-                    for engine_lock in &loaded_rust {
-                        let mut engine = engine_lock.lock().await;
-                        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            engine.update_base(&target_path, Some(text.to_string()))
-                        }));
-                        match res {
-                            Ok(Err(e)) => {
-                                tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
-                            }
-                            Err(_) => {
-                                tracing::warn!(file = %target_path.display(), "base update panicked; continuing");
-                            }
-                            Ok(Ok(())) => {}
-                        }
-                    }
-                }
+                base_paths.push(target_path);
             }
             None => {
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
@@ -165,21 +150,7 @@ pub async fn apply_sync_with_metrics(
                     watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
                     prune_empty_parents(&server_workspace, target_path.parent());
                 }
-                for engine_lock in &loaded_rust {
-                    let mut engine = engine_lock.lock().await;
-                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        engine.update_base(&target_path, None)
-                    }));
-                    match res {
-                        Ok(Err(e)) => {
-                            tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
-                        }
-                        Err(_) => {
-                            tracing::warn!(file = %target_path.display(), "base removal panicked; continuing");
-                        }
-                        Ok(Ok(())) => {}
-                    }
-                }
+                base_paths.push(target_path);
             }
         }
     }
@@ -187,6 +158,14 @@ pub async fn apply_sync_with_metrics(
         .into_iter()
         .filter(|(path, _)| !failed.contains(path) && !skipped_pre_exec.contains(path))
         .collect();
+    // The files are on disk: the answer does not wait on an engine that a stuck query keeps
+    // locked (#1143).
+    crate::sync::base_updates::push_base_updates(
+        loaded_rust,
+        base_paths,
+        crate::sync::base_updates::BASE_UPDATE_WAIT,
+    )
+    .await;
     workspace::record_synced(&server_workspace, &synced);
     workspace::touch_last_used(&server_workspace);
     let mut stale_paths =
