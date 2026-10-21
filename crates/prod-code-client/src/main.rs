@@ -48,7 +48,7 @@ async fn run_cli() -> Result<()> {
     // subcommand, and until this timer existed none of it was measured: the query timer
     // starts after it. See the report on stderr under `PROD_CODE_TIMING=1`.
     let mut startup = QueryTiming::labelled("startup");
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(cli::argv::normalize_args(env::args()));
     startup.mark("parse_args");
 
     let pinned = env::args().any(|a| a == "-r" || a == "--remote" || a.starts_with("--remote="));
