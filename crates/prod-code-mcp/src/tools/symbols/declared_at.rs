@@ -69,6 +69,18 @@ pub(crate) fn declared_at(line: &str, name: &str) -> Option<usize> {
         {
             return true;
         }
+        // Binding modes are part of a Rust pattern, not part of its identifier (#1148).
+        let mut words = trimmed.split_whitespace().rev();
+        let mut word = words.next();
+        if word == Some("mut") {
+            word = words.next();
+        }
+        if word == Some("ref") {
+            word = words.next();
+        }
+        if word == Some("let") {
+            return true;
+        }
         let after: Vec<char> = chars[col + wanted.len()..]
             .iter()
             .copied()

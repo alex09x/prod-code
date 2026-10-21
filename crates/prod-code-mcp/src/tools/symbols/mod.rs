@@ -12,6 +12,7 @@
 
 pub mod across_projects;
 pub mod alias;
+pub(crate) mod bindings;
 pub mod declared_at;
 pub mod matching;
 pub mod nested_projects;
