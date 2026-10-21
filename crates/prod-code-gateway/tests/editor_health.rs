@@ -23,6 +23,9 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+#[path = "common/live_tools.rs"]
+mod live_tools;
+
 const WAIT: Duration = Duration::from_secs(5);
 const SHORT_WRITE: Duration = Duration::from_millis(300);
 const SHORT_TEARDOWN: Duration = Duration::from_secs(1);
@@ -114,7 +117,9 @@ while True:
         msg_id = msg.get("id")
         log(method, msg_id)
 
-        if method == "prodCode/healthProbe":
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": msg_id, "result": {"capabilities": {}}})
+        elif method == "prodCode/healthProbe":
             if not ignore_probes:
                 send({"jsonrpc": "2.0", "id": msg_id, "result": {"status": "ok"}})
         elif method == "ping":
@@ -209,6 +214,48 @@ async fn start_session_with_options(
             panic!("connect editor timed out; task cleanup: {cleanup:?}");
         }
     }
+    // Health supervision starts only after the server answers initialization.
+    let editor = session.editor.as_mut().unwrap();
+    editor
+        .send(WireMessage::LspPayload(
+            json!({
+                "jsonrpc": "2.0", "id": "initialize-session", "method": "initialize",
+                "params": {"rootUri": "file:///client", "capabilities": {}}
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("send initialize");
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let message = editor
+                .next()
+                .await
+                .expect("initialize stream")
+                .expect("initialize message");
+            if let WireMessage::LspPayload(raw) = message {
+                let value: Value = serde_json::from_str(&raw).expect("initialize JSON");
+                if value.get("id") == Some(&json!("initialize-session")) {
+                    assert!(
+                        value["result"]["capabilities"].is_object(),
+                        "server answered initialize: {value}"
+                    );
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .expect("initialize deadline");
+    editor
+        .send(WireMessage::LspPayload(
+            json!({
+                "jsonrpc": "2.0", "method": "initialized", "params": {}
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("send initialized");
     session
 }
 
@@ -227,7 +274,11 @@ async fn wait_for_pid(path: &Path) -> Result<i32, String> {
     }
 }
 
-async fn wait_for_log_count(path: &Path, method: &str, count: usize) -> Result<Vec<String>, String> {
+async fn wait_for_log_count(
+    path: &Path,
+    method: &str,
+    count: usize,
+) -> Result<Vec<String>, String> {
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
         if let Ok(text) = std::fs::read_to_string(path) {
@@ -241,7 +292,9 @@ async fn wait_for_log_count(path: &Path, method: &str, count: usize) -> Result<V
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!("did not see {count} occurrences of {method} in log"));
+            return Err(format!(
+                "did not see {count} occurrences of {method} in log"
+            ));
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -263,6 +316,21 @@ async fn wait_for_exit(pid: i32) -> Result<(), String> {
     }
 }
 
+async fn wait_for_completions(state: &std::sync::Mutex<ProbeState>, count: u64) {
+    tokio::time::timeout(WAIT, async {
+        while state.lock().unwrap().valid_completions < count {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "expected {count} probe completions, got {:?}",
+            state.lock().unwrap()
+        )
+    });
+}
+
 #[tokio::test]
 async fn editor_health_probes_reach_server_and_replies_are_withheld_from_editor() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -271,13 +339,7 @@ async fn editor_health_probes_reach_server_and_replies_are_withheld_from_editor(
     let log_file = root.join("server.log");
 
     let probe_state = Arc::new(std::sync::Mutex::new(ProbeState::default()));
-    let command = python_command(
-        root,
-        &pid_file,
-        &log_file,
-        false,
-        ReadySignal::default(),
-    );
+    let command = python_command(root, &pid_file, &log_file, false, ReadySignal::default());
     let servers = Arc::new(EditorServers::default());
     let options = EditorProxyOptions {
         write_budget: SHORT_WRITE,
@@ -302,6 +364,8 @@ async fn editor_health_probes_reach_server_and_replies_are_withheld_from_editor(
         );
     }
 
+    // Logging a request happens before the proxy consumes its response.
+    wait_for_completions(&probe_state, 2).await;
     // Verify probe completions counter increased
     assert!(
         probe_state.lock().unwrap().valid_completions >= 2,
@@ -340,7 +404,11 @@ async fn editor_health_probes_reach_server_and_replies_are_withheld_from_editor(
     }
 
     // Check that no leaked probe responses follow
-    let extra = tokio::time::timeout(Duration::from_millis(80), session.editor.as_mut().unwrap().next()).await;
+    let extra = tokio::time::timeout(
+        Duration::from_millis(80),
+        session.editor.as_mut().unwrap().next(),
+    )
+    .await;
     assert!(extra.is_err(), "no probe messages leak to editor stream");
 
     session.finish().await.expect("clean finish");
@@ -355,13 +423,7 @@ async fn editor_ordinary_traffic_defers_health_probes_and_resets_timeouts() {
     let log_file = root.join("server.log");
 
     let probe_state = Arc::new(std::sync::Mutex::new(ProbeState::default()));
-    let command = python_command(
-        root,
-        &pid_file,
-        &log_file,
-        false,
-        ReadySignal::default(),
-    );
+    let command = python_command(root, &pid_file, &log_file, false, ReadySignal::default());
     let servers = Arc::new(EditorServers::default());
     let options = EditorProxyOptions {
         write_budget: SHORT_WRITE,
@@ -412,8 +474,14 @@ async fn editor_ordinary_traffic_defers_health_probes_and_resets_timeouts() {
         "traffic deferred probes"
     );
     if let Ok(text) = std::fs::read_to_string(&log_file) {
-        let probe_count = text.lines().filter(|l| l.starts_with(HEALTH_PROBE_METHOD)).count();
-        assert_eq!(probe_count, 0, "no probe requests logged during continuous traffic");
+        let probe_count = text
+            .lines()
+            .filter(|l| l.starts_with(HEALTH_PROBE_METHOD))
+            .count();
+        assert_eq!(
+            probe_count, 0,
+            "no probe requests logged during continuous traffic"
+        );
     }
 
     session.finish().await.expect("clean finish");
@@ -428,13 +496,7 @@ async fn loaded_project_stress_defers_health_probes_during_indexing_and_in_fligh
     let log_file = root.join("server.log");
 
     let probe_state = Arc::new(std::sync::Mutex::new(ProbeState::default()));
-    let command = python_command(
-        root,
-        &pid_file,
-        &log_file,
-        false,
-        ReadySignal::Progress,
-    );
+    let command = python_command(root, &pid_file, &log_file, false, ReadySignal::Progress);
     let servers = Arc::new(EditorServers::default());
     let options = EditorProxyOptions {
         write_budget: SHORT_WRITE,
@@ -465,7 +527,9 @@ async fn loaded_project_stress_defers_health_probes_during_indexing_and_in_fligh
     // Drain the response and progress notifications on editor socket
     let mut got_start_resp = false;
     while !got_start_resp {
-        if let Some(Ok(WireMessage::LspPayload(raw))) = session.editor.as_mut().unwrap().next().await {
+        if let Some(Ok(WireMessage::LspPayload(raw))) =
+            session.editor.as_mut().unwrap().next().await
+        {
             let val: Value = serde_json::from_str(&raw).unwrap();
             if val.get("id") == Some(&json!(1)) {
                 got_start_resp = true;
@@ -498,7 +562,9 @@ async fn loaded_project_stress_defers_health_probes_during_indexing_and_in_fligh
 
     let mut got_end_resp = false;
     while !got_end_resp {
-        if let Some(Ok(WireMessage::LspPayload(raw))) = session.editor.as_mut().unwrap().next().await {
+        if let Some(Ok(WireMessage::LspPayload(raw))) =
+            session.editor.as_mut().unwrap().next().await
+        {
             let val: Value = serde_json::from_str(&raw).unwrap();
             if val.get("id") == Some(&json!(2)) {
                 got_end_resp = true;
@@ -511,6 +577,7 @@ async fn loaded_project_stress_defers_health_probes_during_indexing_and_in_fligh
         .await
         .expect("probes after indexing ended");
     assert!(!probes.is_empty(), "probes resume after indexing completes");
+    wait_for_completions(&probe_state, 1).await;
 
     // Phase 2: In-flight request stress test
     // Editor issues slowWork request with 120ms delay
@@ -561,13 +628,7 @@ async fn three_consecutive_idle_probe_timeouts_retires_the_editor_session_and_pr
 
     let probe_state = Arc::new(std::sync::Mutex::new(ProbeState::default()));
     // IGNORE_PROBES = true -> server drops health probes without answering
-    let command = python_command(
-        root,
-        &pid_file,
-        &log_file,
-        true,
-        ReadySignal::default(),
-    );
+    let command = python_command(root, &pid_file, &log_file, true, ReadySignal::default());
     let servers = Arc::new(EditorServers::default());
     let options = EditorProxyOptions {
         write_budget: SHORT_WRITE,
@@ -577,12 +638,21 @@ async fn three_consecutive_idle_probe_timeouts_retires_the_editor_session_and_pr
         probe_state: Some(Arc::clone(&probe_state)),
     };
 
-    let session = start_session_with_options(root, command, servers, options).await;
+    let mut session = start_session_with_options(root, command, servers, options).await;
     let pid = wait_for_pid(&pid_file).await.expect("pid");
 
     // Session task should terminate on its own after 3 consecutive probe timeouts
-    let outcome = session.finish().await;
-    assert!(outcome.is_ok(), "session retired cleanly after 3 probe timeouts");
+    // Keep the editor connected: disconnecting it would retire the session without probing.
+    tokio::time::timeout(WAIT, session.task.as_mut().unwrap())
+        .await
+        .expect("idle health supervision retired session")
+        .expect("session task joined")
+        .expect("session retired cleanly");
+    session.task.take();
+    assert_eq!(probe_state.lock().unwrap().consecutive_timeouts, 3);
+    wait_for_log_count(&log_file, HEALTH_PROBE_METHOD, 3)
+        .await
+        .expect("three probes sent");
 
     // The owned process group was retired
     wait_for_exit(pid).await.expect("process group reaped");
@@ -595,13 +665,7 @@ async fn client_request_with_reserved_probe_id_is_rejected() {
     let pid_file = root.join("server.pid");
     let log_file = root.join("server.log");
 
-    let command = python_command(
-        root,
-        &pid_file,
-        &log_file,
-        false,
-        ReadySignal::default(),
-    );
+    let command = python_command(root, &pid_file, &log_file, false, ReadySignal::default());
     let servers = Arc::new(EditorServers::default());
     let options = EditorProxyOptions {
         write_budget: SHORT_WRITE,
@@ -642,7 +706,10 @@ async fn client_request_with_reserved_probe_id_is_rejected() {
         assert_eq!(val["id"], spoof_id);
         assert_eq!(val["error"]["code"], -32600);
         assert!(
-            val["error"]["message"].as_str().unwrap().contains("reserved"),
+            val["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("reserved"),
             "error message explains reserved ID"
         );
     } else {
@@ -663,6 +730,9 @@ async fn client_request_with_reserved_probe_id_is_rejected() {
 
 #[tokio::test]
 async fn real_gopls_editor_session_answers_probes_and_survives_idle_supervision() {
+    if !live_tools::go_tools_available() {
+        return;
+    }
     let Some(gopls) = server_command("go") else {
         eprintln!("skipping real_gopls test: gopls not found");
         return;
@@ -692,56 +762,8 @@ async fn real_gopls_editor_session_answers_probes_and_survives_idle_supervision(
 
     let mut session = start_session_with_options(root, gopls, servers, options).await;
 
-    // Send initialize
-    let init_req = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "rootUri": format!("file://{}", root.display()),
-            "capabilities": {}
-        }
-    });
-    session
-        .editor
-        .as_mut()
-        .unwrap()
-        .send(WireMessage::LspPayload(init_req.to_string()))
-        .await
-        .expect("send initialize");
-
-    let mut initialized_ok = false;
-    let start = tokio::time::Instant::now();
-    while start.elapsed() < WAIT {
-        if let Ok(Some(Ok(WireMessage::LspPayload(raw)))) =
-            tokio::time::timeout(Duration::from_millis(500), session.editor.as_mut().unwrap().next()).await
-        {
-            if let Ok(val) = serde_json::from_str::<Value>(&raw) {
-                if val.get("id") == Some(&json!(1)) && val.get("result").is_some() {
-                    initialized_ok = true;
-                    break;
-                }
-            }
-        }
-    }
-    assert!(initialized_ok, "gopls answered initialize");
-
-    // Send initialized notification
-    let note = json!({
-        "jsonrpc": "2.0",
-        "method": "initialized",
-        "params": {}
-    });
-    session
-        .editor
-        .as_mut()
-        .unwrap()
-        .send(WireMessage::LspPayload(note.to_string()))
-        .await
-        .expect("send initialized");
-
-    // Let session idle for 180ms across multiple probe intervals
-    tokio::time::sleep(Duration::from_millis(180)).await;
+    // Initialization and indexing can take longer than a few probe intervals.
+    wait_for_completions(&probe_state, 2).await;
 
     // Verify gopls answered probes (or method not found errors) and probe completions >= 2
     let completions = probe_state.lock().unwrap().valid_completions;
@@ -771,8 +793,11 @@ async fn real_gopls_editor_session_answers_probes_and_survives_idle_supervision(
     let mut hover_ok = false;
     let start = tokio::time::Instant::now();
     while start.elapsed() < WAIT {
-        if let Ok(Some(Ok(WireMessage::LspPayload(raw)))) =
-            tokio::time::timeout(Duration::from_millis(500), session.editor.as_mut().unwrap().next()).await
+        if let Ok(Some(Ok(WireMessage::LspPayload(raw)))) = tokio::time::timeout(
+            Duration::from_millis(500),
+            session.editor.as_mut().unwrap().next(),
+        )
+        .await
         {
             if let Ok(val) = serde_json::from_str::<Value>(&raw) {
                 if val.get("id") == Some(&json!(2)) {

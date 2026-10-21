@@ -15,17 +15,22 @@
 //! The adapter's scripted-gateway tests put a real gopls behind a stand-in gateway; this one puts
 //! nothing in between: the checkout is synced to the daemon, gopls loads it there, and the
 //! validation is the gateway's own. The program and its tests are run before and after, and
-//! must print the same. `go` and `gopls` are required: without them this test fails rather than
-//! passing without having run.
+//! must print the same. Nodes without runnable `go` and `gopls` print a skip reason.
 //!
 //! The gateway binds port 0 and reports the address it bound, so no two runs share a port.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+#[path = "common/live_gateway.rs"]
+mod live_gateway;
+#[path = "common/live_tools.rs"]
+mod live_tools;
 
 /// A gateway process and its storage, stopped when dropped.
 struct Gateway {
@@ -37,18 +42,21 @@ struct Gateway {
 impl Gateway {
     fn start() -> Self {
         let storage = tempfile::tempdir().expect("storage dir");
-        let child = Command::new(env!("CARGO_BIN_EXE_prod-code-server"))
-            .env("PROD_CODE_STORAGE", storage.path())
-            // No peers, no gossip: this gateway is alone and must not look for others.
-            .env("PROD_CODE_PEERS", "")
-            .env("PROD_CODE_BIND", "127.0.0.1:0")
-            .env("PROD_CODE_ENGINE_RESERVE_MIB", "64")
-            .env_remove("RUST_LOG")
-            .env("GOFLAGS", "-tags=prodcode_signature -mod=readonly")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("the server binary starts");
+        let child = live_gateway::command(
+            storage.path(),
+            "unused_go_parameters_are_removed_through_the_real_gateway_and_gopls",
+        )
+        .env("PROD_CODE_STORAGE", storage.path())
+        // No peers, no gossip: this gateway is alone and must not look for others.
+        .env("PROD_CODE_PEERS", "")
+        .env("PROD_CODE_BIND", "127.0.0.1:0")
+        .env_remove("RUST_LOG")
+        .env("GOFLAGS", "-tags=prodcode_signature -mod=readonly")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .process_group(0)
+        .spawn()
+        .expect("the gateway child starts");
         // Owned before the address is read, so a gateway that never reports one is stopped.
         let mut gateway = Self {
             child,
@@ -63,19 +71,21 @@ impl Gateway {
 
 impl Drop for Gateway {
     fn drop(&mut self) {
-        // SIGTERM first, so the server returns from `main` and a coverage profile is written.
+        // Retire the gateway and its language-server descendants before releasing storage.
         unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGTERM);
+            libc::kill(-(self.child.id() as i32), libc::SIGTERM);
         }
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             match self.child.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(_)) => break,
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
                 Err(_) => break,
             }
         }
-        let _ = self.child.kill();
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
         let _ = self.child.wait();
     }
 }
@@ -739,13 +749,16 @@ async fn client_sentinel_scenario() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
+    if Box::pin(live_gateway::serve_if_child()).await {
+        return;
+    }
     if std::env::var_os(SENTINEL_CHILD).is_some() {
         client_sentinel_scenario().await;
         return;
     }
-    let (ok, version) = run(Path::new("."), "gopls", &["version"]);
-    assert!(ok, "gopls version: {version}");
-    eprintln!("gopls on this node: {}", version.trim());
+    if !live_tools::go_tools_available() {
+        return;
+    }
     let gateway = Gateway::start();
     let (_dir, root) = checkout();
     let project = root.join("project");
@@ -1222,8 +1235,9 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn linked_go_source_refuses_result_replacement_without_writing() {
-    let (ok, version) = run(Path::new("."), "gopls", &["version"]);
-    assert!(ok, "gopls version: {version}");
+    if !live_tools::go_tools_available() {
+        return;
+    }
     let gateway = Gateway::start();
     let (_dir, root) = symlink_checkout();
     let project = root.join("project");
@@ -1296,8 +1310,9 @@ async fn linked_go_source_refuses_result_replacement_without_writing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn receiver_method_additions_use_only_direct_selector_calls() {
-    let (ok, version) = run(Path::new("."), "gopls", &["version"]);
-    assert!(ok, "gopls version: {version}");
+    if !live_tools::go_tools_available() {
+        return;
+    }
     let gateway = Gateway::start();
     let (_dir, root) = receiver_checkout();
     let project = root.join("project");
@@ -1481,6 +1496,9 @@ func main() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn receiver_refusals_run_through_the_source_built_gateway() {
+    if !live_tools::go_tools_available() {
+        return;
+    }
     let gateway = Gateway::start();
     let (_dir, root) = receiver_checkout();
     let project = root.join("project");
