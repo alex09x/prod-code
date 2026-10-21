@@ -211,8 +211,8 @@ async fn change_signature_writes_a_reorder_whose_references_are_all_calls() {
 
 const HOME: &str = "pub fn build(name: &str, width: u32, height: u32) -> String {\n    let area = width * height;\n    format!(\"{name} {area}\")\n}\n\npub fn caller() -> String {\n    build(\"a\", 3, 4)\n}\n\npub fn as_a_value() -> fn(&str, u32, u32) -> String {\n    build\n}\n";
 
-/// Bundling `width` and `height` of `build`, which is also used as a value: `--apply` exits
-/// non-zero with the use named and nothing written, with `--force` and `--verify compile`.
+/// Bundling `width` and `height` of `build`, which is also used as a value: preview and
+/// `--apply` exit non-zero with the use named and nothing written, even with `--force`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parameter_object_does_not_write_past_a_function_used_as_a_value() {
     let files = [
@@ -254,8 +254,12 @@ async fn parameter_object_does_not_write_past_a_function_used_as_a_value() {
 
     let preview = cli(&ws, g.addr(), &bundle).await;
     let text = said(&preview);
-    assert!(preview.status.success(), "{text}");
+    assert!(!preview.status.success(), "{text}");
+    assert!(text.contains("not rewritten (1 reference(s)"), "{text}");
     assert!(text.contains("src/home.rs:11:5"), "{text}");
+    for (rel, original) in files {
+        assert_eq!(ws.read(rel), original, "preview: {rel} was written");
+    }
 
     for extra in [
         &["--apply"][..],

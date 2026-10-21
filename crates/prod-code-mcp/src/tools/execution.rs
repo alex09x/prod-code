@@ -208,7 +208,9 @@ pub async fn execute_tool(
     };
     // A pull names checkout-relative artifact paths that need not exist locally (#1145).
     if tool_name == "code_pull" {
-        return dispatch_tool(remote, workspace_root, tool_name, args).await;
+        // Boxed like the other dispatches: inline, the whole dispatcher's state lands in this
+        // future and overflows a test thread's stack in a debug build.
+        return Box::pin(dispatch_tool(remote, workspace_root, tool_name, args)).await;
     }
     // Normalize path parameter across aliases: path, file_path, file, package, crate (#673, #900)
     let mut args = args;

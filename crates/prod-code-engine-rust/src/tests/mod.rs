@@ -10,7 +10,7 @@
 
 //! Unit tests and test fixture helpers for prod-code-engine-rust.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod config;
 mod diagnostics;
@@ -21,8 +21,19 @@ mod sessions;
 mod vfs;
 mod worktrees;
 
+pub(crate) fn configure_test_workspace(root: &Path) {
+    // These fixtures exercise analysis, not procedural macros. Reserving workers here
+    // makes parallel tests compete with the dedicated proc-macro lifecycle test.
+    std::fs::write(
+        root.join("prod-code.toml"),
+        "[rust]\nproc_macro_srv = \"disabled\"\n",
+    )
+    .unwrap();
+}
+
 pub(crate) fn create_test_fixture() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
+    configure_test_workspace(temp.path());
     let cargo_toml = r#"[package]
 name = "fixture"
 version = "0.1.0"

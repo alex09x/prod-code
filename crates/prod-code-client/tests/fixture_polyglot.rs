@@ -388,7 +388,7 @@ async fn polyglot_cpp_fixture_and_mock_generation() {
     .await
     .unwrap();
     let text = tool_text(&res);
-    assert!(text.contains("DBConfig dBConfig = DBConfig{"), "{text}");
+    assert!(text.contains("auto d_b_config = DBConfig{"), "{text}");
     assert!(text.contains(".host = \"sample_host\","), "{text}");
     assert!(text.contains(".port = 8080,"), "{text}");
     assert!(text.contains(".ssl = true,"), "{text}");

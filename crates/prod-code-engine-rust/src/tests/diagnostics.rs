@@ -56,6 +56,7 @@ fn test_a_use_in_an_enclosing_scope_counts_as_an_import() {
 #[test]
 fn test_diagnostics_report_paths_that_name_nothing() {
     let temp = tempfile::tempdir().unwrap();
+    super::configure_test_workspace(temp.path());
     std::fs::write(
         temp.path().join("Cargo.toml"),
         "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
