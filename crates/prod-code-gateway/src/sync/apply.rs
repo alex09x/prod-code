@@ -28,6 +28,42 @@ pub(crate) fn server_workspace_sync_lock(
         .clone()
 }
 
+/// How often a sync or probe that waits for its workspace's sync lock says so in the log.
+pub(crate) const SYNC_LOCK_REPORT_EVERY: Duration = Duration::from_secs(10);
+
+/// Takes `server_workspace`'s sync lock for `what` (a sync or a probe), logging every
+/// `report_every` while another one holds it. A wait that never ends was invisible: the
+/// client timed out, and the gateway logged nothing for that workspace (#1143, #1155).
+pub(crate) async fn lock_workspace_sync(
+    server_workspace: &std::path::Path,
+    what: &'static str,
+    report_every: Duration,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let started = Instant::now();
+    let mut acquire = Box::pin(server_workspace_sync_lock(server_workspace).lock_owned());
+    loop {
+        match tokio::time::timeout(report_every, &mut acquire).await {
+            Ok(guard) => {
+                if started.elapsed() >= report_every {
+                    tracing::warn!(
+                        workspace = %server_workspace.display(),
+                        what,
+                        waited_ms = started.elapsed().as_millis() as u64,
+                        "took the workspace sync lock after a long wait"
+                    );
+                }
+                return guard;
+            }
+            Err(_) => tracing::warn!(
+                workspace = %server_workspace.display(),
+                what,
+                waited_secs = started.elapsed().as_secs(),
+                "still waiting for the workspace sync lock: an earlier sync or probe of this workspace has not finished"
+            ),
+        }
+    }
+}
+
 pub async fn apply_sync(
     storage_root: &std::path::Path,
     workspace_manager: &WorkspaceManager,
@@ -48,8 +84,7 @@ pub async fn apply_sync_with_metrics(
         &req.client_workspace_root,
         req.base_workspace_name.as_deref(),
     );
-    let sync_lock = server_workspace_sync_lock(&target);
-    let _sync_guard = sync_lock.lock().await;
+    let _sync_guard = lock_workspace_sync(&target, "sync", SYNC_LOCK_REPORT_EVERY).await;
     let server_workspace = workspace::resolve_server_workspace(
         storage_root,
         &req.client_workspace_root,
@@ -285,5 +320,26 @@ mod tests {
         assert!(sync_resp.workspace_was_fresh);
         assert!(ws_dir.join(workspace::LAST_USED_MARKER).exists());
         assert!(ws_dir.join("go.mod").is_file());
+    }
+
+    #[tokio::test]
+    async fn a_reported_sync_lock_wait_keeps_waiting_and_takes_the_lock_once_free() {
+        let workspace = std::path::PathBuf::from("/synthetic/sync-lock-wait");
+        let held = server_workspace_sync_lock(&workspace).lock_owned().await;
+        let waiter = tokio::spawn({
+            let workspace = workspace.clone();
+            async move {
+                let _guard =
+                    lock_workspace_sync(&workspace, "probe", Duration::from_millis(20)).await;
+            }
+        });
+        // Several report intervals pass: the waiter logs, but neither gives up nor gets in.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!waiter.is_finished());
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("the waiter takes the lock once it is released")
+            .unwrap();
     }
 }

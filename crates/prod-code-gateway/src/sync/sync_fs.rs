@@ -163,6 +163,9 @@ pub fn reconcile_manifest(
     (missing, deleted)
 }
 
+/// A probe that takes this long is logged as a warning (#1155).
+const SLOW_PROBE: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Answers a manifest probe: seeds a fresh workspace from the origin repository's copy,
 /// reconciles it with the client's manifest, and reports what the client must still upload.
 pub async fn apply_sync_probe(
@@ -176,8 +179,9 @@ pub async fn apply_sync_probe(
         &req.client_workspace_root,
         req.base_workspace_name.as_deref(),
     );
-    let sync_lock = crate::sync::server_workspace_sync_lock(&target);
-    let _sync_guard = sync_lock.lock().await;
+    let _sync_guard =
+        crate::sync::lock_workspace_sync(&target, "probe", crate::sync::SYNC_LOCK_REPORT_EVERY)
+            .await;
     let fresh = !target.exists()
         || std::fs::read_dir(&target)
             .map(|mut d| d.next().is_none())
@@ -355,6 +359,15 @@ pub async fn apply_sync_probe(
         .await;
     }
 
+    // The client gives a probe 30 s; one this slow (a large seed) is close to failing there.
+    if start.elapsed() >= SLOW_PROBE {
+        tracing::warn!(
+            workspace = %target.display(),
+            seeded,
+            duration_ms = start.elapsed().as_millis() as u64,
+            "🔎 [PROBE] slow manifest probe: the client stops waiting after 30 s"
+        );
+    }
     tracing::info!(
         workspace = %target.display(),
         manifest = manifest_len,
