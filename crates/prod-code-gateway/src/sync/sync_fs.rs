@@ -346,14 +346,13 @@ pub async fn apply_sync_probe(
     if !deleted.is_empty()
         && let Some(ws) = workspace_manager.get_loaded(&target).await
     {
-        for engine_lock in ws.mirrored_rust_engines() {
-            let mut engine = engine_lock.lock().await;
-            for rel in &deleted {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.update_base(&target.join(rel), None)
-                }));
-            }
-        }
+        // Bounded like a sync's: a busy engine must not keep the probe from answering (#1143).
+        crate::sync::base_updates::push_base_updates(
+            ws.mirrored_rust_engines(),
+            deleted.iter().map(|rel| target.join(rel)).collect(),
+            crate::sync::base_updates::BASE_UPDATE_WAIT,
+        )
+        .await;
     }
 
     tracing::info!(

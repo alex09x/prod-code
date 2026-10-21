@@ -9,6 +9,7 @@
  */
 
 pub mod apply;
+pub(crate) mod base_updates;
 pub(crate) mod config_meta;
 pub mod file_write;
 pub mod source_pull;

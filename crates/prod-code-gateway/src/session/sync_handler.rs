@@ -25,6 +25,7 @@ pub async fn handle_session_sync(
     let mut watched = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     let mut safe_paths = Vec::with_capacity(req.files.len());
+    let mut base_paths = Vec::new();
 
     for delta in &req.files {
         let target_path = match safe_sync_target(&view.workspace.root, &delta.relative_path).await {
@@ -69,30 +70,7 @@ pub async fn handle_session_sync(
                 // The workspace is this worktree's own: synced files are its
                 // new base, visible to every session except one that still
                 // holds an unsaved buffer for the same path.
-                if let Ok(text) = std::str::from_utf8(content_bytes) {
-                    for engine_lock in view.workspace.mirrored_rust_engines() {
-                        let mut engine = engine_lock.lock().await;
-                        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            engine.update_base(&target_path, Some(text.to_string()))
-                        }));
-                        match res {
-                            Ok(Err(e)) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    file = %target_path.display(),
-                                    "base update failed"
-                                );
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    file = %target_path.display(),
-                                    "base update panicked; continuing"
-                                );
-                            }
-                            Ok(Ok(())) => {}
-                        }
-                    }
-                }
+                base_paths.push(target_path);
             }
             None => {
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
@@ -102,52 +80,49 @@ pub async fn handle_session_sync(
                     watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
                     prune_empty_parents(&view.workspace.root, target_path.parent());
                 }
-                for engine_lock in view.workspace.mirrored_rust_engines() {
-                    let mut engine = engine_lock.lock().await;
-                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        engine.update_base(&target_path, None)
-                    }));
-                    match res {
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                error = %e,
-                                file = %target_path.display(),
-                                "base removal failed"
-                            );
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                file = %target_path.display(),
-                                "base removal panicked; continuing"
-                            );
-                        }
-                        Ok(Ok(())) => {}
-                    }
-                }
+                base_paths.push(target_path);
             }
         }
     }
+    // A stuck query can keep the engine locked; the answer must not wait for it (#1143).
+    crate::sync::base_updates::push_base_updates(
+        view.workspace.mirrored_rust_engines(),
+        base_paths,
+        crate::sync::base_updates::BASE_UPDATE_WAIT,
+    )
+    .await;
 
     if req.clean_others
         && let Some(engine_lock) = &view.workspace.rust_engine
     {
         // The request is the session's complete dirty set: any other
         // overlay this session still holds is stale (reverted or committed).
-        let mut engine = engine_lock.lock().await;
-        match engine.retain_session_overlays(view.session_id, &safe_paths) {
-            Ok(dropped) if dropped > 0 => tracing::info!(
-                session = view.session_id,
-                dropped,
-                "🧹 [OVERLAY] dropped stale session buffers after full dirty sync"
-            ),
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
+        // A busy engine keeps them until the next full sync rather than stalling this one.
+        match tokio::time::timeout(
+            crate::sync::base_updates::BASE_UPDATE_WAIT,
+            engine_lock.lock(),
+        )
+        .await
+        {
+            Ok(mut engine) => match engine.retain_session_overlays(view.session_id, &safe_paths) {
+                Ok(dropped) if dropped > 0 => tracing::info!(
                     session = view.session_id,
-                    "failed to drop stale session buffers"
-                )
-            }
+                    dropped,
+                    "🧹 [OVERLAY] dropped stale session buffers after full dirty sync"
+                ),
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        session = view.session_id,
+                        "failed to drop stale session buffers"
+                    )
+                }
+            },
+            Err(_) => tracing::warn!(
+                session = view.session_id,
+                "Rust engine busy; stale session buffers are dropped on a later sync"
+            ),
         }
     }
 
