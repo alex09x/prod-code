@@ -45,7 +45,21 @@ pub fn resolve_ram_build_cache(
     enabled: bool,
     custom_dir: Option<&Path>,
 ) -> Option<PathBuf> {
-    if !is_ram_cache_enabled(enabled) {
+    resolve_ram_build_cache_with_space(
+        workspace,
+        is_ram_cache_enabled(enabled),
+        custom_dir,
+        disk_space,
+    )
+}
+
+pub(crate) fn resolve_ram_build_cache_with_space(
+    workspace: &Path,
+    enabled: bool,
+    custom_dir: Option<&Path>,
+    space: impl FnOnce(&Path) -> Option<DiskSpace>,
+) -> Option<PathBuf> {
+    if !enabled {
         return None;
     }
     let default_shm = Path::new("/dev/shm/prod-code-build");
@@ -58,7 +72,7 @@ pub fn resolve_ram_build_cache(
         }
     });
 
-    if let Some(space) = disk_space(base_dir) {
+    if let Some(space) = space(base_dir) {
         let free_share = space.free as f64 / space.total.max(1) as f64;
         pub(crate) const MIN_FREE_RAM_SHARE: f64 = 0.20;
         pub(crate) const MIN_FREE_BYTES: u64 = 256 * 1024 * 1024;

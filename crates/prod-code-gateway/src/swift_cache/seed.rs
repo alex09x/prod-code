@@ -35,6 +35,26 @@ pub fn seed_swift_worktree_within(
     to: &Path,
     space: Option<crate::DiskSpace>,
 ) -> io::Result<Option<u64>> {
+    seed_swift_worktree_with_budget_probe(from, to, space, crate::disk_space)
+}
+
+/// Seeds using independent worktree and shared-cache filesystem budgets. Supplying both
+/// keeps callers with measured budgets independent of subsequent filesystem pressure.
+pub fn seed_swift_worktree_with_budgets(
+    from: &Path,
+    to: &Path,
+    space: Option<crate::DiskSpace>,
+    shared_space: Option<crate::DiskSpace>,
+) -> io::Result<Option<u64>> {
+    seed_swift_worktree_with_budget_probe(from, to, space, |_| shared_space)
+}
+
+fn seed_swift_worktree_with_budget_probe(
+    from: &Path,
+    to: &Path,
+    space: Option<crate::DiskSpace>,
+    shared_space: impl FnOnce(&Path) -> Option<crate::DiskSpace>,
+) -> io::Result<Option<u64>> {
     let packages = find_swift_packages(from);
     if packages.is_empty() {
         return Ok(None);
@@ -90,7 +110,7 @@ pub fn seed_swift_worktree_within(
         || crate::seed_fits(
             "shared Swift module cache",
             module_cache_size,
-            crate::disk_space(&shared_module_cache),
+            shared_space(&shared_module_cache),
         );
     let heavy_fits = cache_seed_fits;
     let module_cache_fits = cache_seed_fits && shared_cache_fits;

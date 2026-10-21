@@ -10,21 +10,23 @@
 
 #![cfg(unix)]
 
-use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::swift_cache::{
-    find_swift_packages, prune_stale_module_cache_in, relocate_swiftpm_workspace_state,
-    seed_swift_worktree, seed_swift_worktree_within, swift_module_cache_dir, swift_module_cache_env,
-    SWIFT_MODULE_CACHE_ENV,
+    SWIFT_MODULE_CACHE_ENV, find_swift_packages, prune_stale_module_cache_in,
+    relocate_swiftpm_workspace_state, seed_swift_worktree_with_budgets, swift_module_cache_dir,
+    swift_module_cache_env,
 };
+use prod_code_gateway::{DiskSpace, polyglot_compiler_cache_env};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[path = "../src/test_cache_support.rs"]
+mod test_cache_support;
+use test_cache_support::ample_disk_space;
 
 #[test]
 fn test_swift_module_cache_dir_and_env_resolution() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("isolated-swift-module-cache");
 
@@ -39,9 +41,18 @@ fn test_swift_module_cache_dir_and_env_resolution() {
     let envs = swift_module_cache_env();
     let cache_str = custom_cache.to_str().unwrap();
 
-    assert!(envs.iter().any(|(k, v)| k == "SWIFTPM_MODULECACHE_OVERRIDE" && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "SWIFT_MODULE_CACHE_PATH" && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "CLANG_MODULE_CACHE_PATH" && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "SWIFTPM_MODULECACHE_OVERRIDE" && v == cache_str)
+    );
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "SWIFT_MODULE_CACHE_PATH" && v == cache_str)
+    );
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "CLANG_MODULE_CACHE_PATH" && v == cache_str)
+    );
 
     unsafe {
         std::env::remove_var(SWIFT_MODULE_CACHE_ENV);
@@ -133,7 +144,7 @@ fn test_relocate_swiftpm_workspace_state_preserves_sibling_paths() {
 
 #[test]
 fn test_seed_swift_worktree_checkouts_repositories_artifacts_and_module_cache() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-module-cache");
 
@@ -165,19 +176,27 @@ fn test_seed_swift_worktree_checkouts_repositories_artifacts_and_module_cache() 
     .unwrap();
 
     // 2. Bare repositories
-    let repo_dir = origin_build.join("repositories").join("swift-algorithms-hash");
+    let repo_dir = origin_build
+        .join("repositories")
+        .join("swift-algorithms-hash");
     fs::create_dir_all(&repo_dir).unwrap();
     fs::write(repo_dir.join("config"), "bare git repo\n").unwrap();
 
     // 3. Artifacts
-    let artifact_dir = origin_build.join("artifacts").join("MyBinaryTarget.xcframework");
+    let artifact_dir = origin_build
+        .join("artifacts")
+        .join("MyBinaryTarget.xcframework");
     fs::create_dir_all(&artifact_dir).unwrap();
     fs::write(artifact_dir.join("Info.plist"), "<plist></plist>\n").unwrap();
 
     // 4. Existing local ModuleCache files
     let local_cache = origin_build.join("ModuleCache");
     fs::create_dir_all(&local_cache).unwrap();
-    fs::write(local_cache.join("Foundation-1234.pcm"), b"precompiled foundation pcm").unwrap();
+    fs::write(
+        local_cache.join("Foundation-1234.pcm"),
+        b"precompiled foundation pcm",
+    )
+    .unwrap();
 
     // 5. workspace-state.json
     let origin_str = origin.to_str().unwrap();
@@ -205,7 +224,13 @@ fn test_seed_swift_worktree_checkouts_repositories_artifacts_and_module_cache() 
     assert_eq!(packages[1], PathBuf::from("clients/macos/ProdUI"));
 
     // Run seed
-    let result = seed_swift_worktree(&origin, &worktree).unwrap();
+    let result = seed_swift_worktree_with_budgets(
+        &origin,
+        &worktree,
+        ample_disk_space(),
+        ample_disk_space(),
+    )
+    .unwrap();
     assert!(result.is_some(), "seed_swift_worktree must seed files");
 
     let wt_build = worktree.join(".build");
@@ -213,18 +238,36 @@ fn test_seed_swift_worktree_checkouts_repositories_artifacts_and_module_cache() 
 
     // 1. Assert checkouts preserved
     assert_eq!(
-        fs::read_to_string(wt_build.join("checkouts").join("swift-algorithms").join("Algorithms.swift")).unwrap(),
+        fs::read_to_string(
+            wt_build
+                .join("checkouts")
+                .join("swift-algorithms")
+                .join("Algorithms.swift")
+        )
+        .unwrap(),
         "public struct Chunked {}\n"
     );
 
     // 2. Assert repositories preserved
     assert_eq!(
-        fs::read_to_string(wt_build.join("repositories").join("swift-algorithms-hash").join("config")).unwrap(),
+        fs::read_to_string(
+            wt_build
+                .join("repositories")
+                .join("swift-algorithms-hash")
+                .join("config")
+        )
+        .unwrap(),
         "bare git repo\n"
     );
 
     // 3. Assert artifacts preserved
-    assert!(wt_build.join("artifacts").join("MyBinaryTarget.xcframework").join("Info.plist").is_file());
+    assert!(
+        wt_build
+            .join("artifacts")
+            .join("MyBinaryTarget.xcframework")
+            .join("Info.plist")
+            .is_file()
+    );
 
     // 4. Assert workspace-state.json relocated
     let wt_state = fs::read_to_string(wt_build.join("workspace-state.json")).unwrap();
@@ -234,7 +277,12 @@ fn test_seed_swift_worktree_checkouts_repositories_artifacts_and_module_cache() 
 
     // 5. Assert ModuleCache symlink points to shared module cache
     let wt_module_cache = wt_build.join("ModuleCache");
-    assert!(fs::symlink_metadata(&wt_module_cache).unwrap().file_type().is_symlink());
+    assert!(
+        fs::symlink_metadata(&wt_module_cache)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     assert_eq!(fs::read_link(&wt_module_cache).unwrap(), custom_cache);
 
     // 6. Assert existing local .pcm cache was merged into shared cache
@@ -245,8 +293,18 @@ fn test_seed_swift_worktree_checkouts_repositories_artifacts_and_module_cache() 
     );
 
     // 7. Assert nested package has its ModuleCache symlink established
-    let nested_wt_cache = worktree.join("clients").join("macos").join("ProdUI").join(".build").join("ModuleCache");
-    assert!(fs::symlink_metadata(&nested_wt_cache).unwrap().file_type().is_symlink());
+    let nested_wt_cache = worktree
+        .join("clients")
+        .join("macos")
+        .join("ProdUI")
+        .join(".build")
+        .join("ModuleCache");
+    assert!(
+        fs::symlink_metadata(&nested_wt_cache)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     assert_eq!(fs::read_link(&nested_wt_cache).unwrap(), custom_cache);
 
     unsafe {
@@ -256,7 +314,7 @@ fn test_seed_swift_worktree_checkouts_repositories_artifacts_and_module_cache() 
 
 #[test]
 fn test_polyglot_compiler_cache_env_contains_swift_module_cache() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("polyglot-swift-cache");
 
@@ -270,9 +328,18 @@ fn test_polyglot_compiler_cache_env_contains_swift_module_cache() {
     let envs = polyglot_compiler_cache_env(&ws, false, None);
     let cache_str = custom_cache.to_str().unwrap();
 
-    assert!(envs.iter().any(|(k, v)| k == "SWIFTPM_MODULECACHE_OVERRIDE" && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "SWIFT_MODULE_CACHE_PATH" && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "CLANG_MODULE_CACHE_PATH" && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "SWIFTPM_MODULECACHE_OVERRIDE" && v == cache_str)
+    );
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "SWIFT_MODULE_CACHE_PATH" && v == cache_str)
+    );
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "CLANG_MODULE_CACHE_PATH" && v == cache_str)
+    );
 
     unsafe {
         std::env::remove_var(SWIFT_MODULE_CACHE_ENV);
@@ -304,7 +371,7 @@ fn test_prune_stale_module_cache_lifecycle() {
 
 #[test]
 fn test_seed_swift_worktree_skips_heavy_dirs_when_disk_space_insufficient() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-module-cache-budget");
 
@@ -341,19 +408,23 @@ fn test_seed_swift_worktree_skips_heavy_dirs_when_disk_space_insufficient() {
         total: 1_000_000,
     });
 
-    let result = seed_swift_worktree_within(&origin, &worktree, restricted_space).unwrap();
+    let result =
+        seed_swift_worktree_with_budgets(&origin, &worktree, restricted_space, ample_disk_space())
+            .unwrap();
     assert!(result.is_some());
 
     let wt_build = worktree.join(".build");
     assert!(wt_build.is_dir());
 
     // Heavy checkouts must NOT be copied because of disk space budget
-    assert!(!wt_build.join("checkouts").exists(), "heavy checkouts must be skipped when disk space is tight");
+    assert!(
+        !wt_build.join("checkouts").exists(),
+        "heavy checkouts must be skipped when disk space is tight"
+    );
 
-    // But ModuleCache symlink MUST still be established
+    // The combined dependency/module budget must fit before establishing shared caches.
     let wt_module_cache = wt_build.join("ModuleCache");
-    assert!(fs::symlink_metadata(&wt_module_cache).unwrap().file_type().is_symlink());
-    assert_eq!(fs::read_link(&wt_module_cache).unwrap(), custom_cache);
+    assert!(fs::symlink_metadata(&wt_module_cache).is_err());
 
     // And workspace-state.json must still be relocated
     let wt_state = fs::read_to_string(wt_build.join("workspace-state.json")).unwrap();
@@ -363,6 +434,39 @@ fn test_seed_swift_worktree_skips_heavy_dirs_when_disk_space_insufficient() {
     unsafe {
         std::env::remove_var(SWIFT_MODULE_CACHE_ENV);
     }
+}
+
+#[test]
+fn test_seed_swift_worktree_preserves_local_cache_when_shared_budget_is_insufficient() {
+    test_cache_support::isolated!();
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join("origin");
+    let worktree = temp.path().join("worktree");
+    fs::create_dir_all(origin.join(".build/ModuleCache")).unwrap();
+    fs::create_dir_all(worktree.join(".build/ModuleCache")).unwrap();
+    fs::write(origin.join("Package.swift"), "// swift-tools-version:5.9\n").unwrap();
+    fs::write(origin.join(".build/ModuleCache/source.pcm"), b"source").unwrap();
+    fs::write(worktree.join(".build/ModuleCache/local.pcm"), b"local").unwrap();
+    let no_space = Some(DiskSpace {
+        free: 0,
+        total: 1_000_000,
+    });
+
+    seed_swift_worktree_with_budgets(&origin, &worktree, ample_disk_space(), no_space).unwrap();
+
+    let local_cache = worktree.join(".build/ModuleCache");
+    assert!(
+        !fs::symlink_metadata(&local_cache)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(local_cache.join("local.pcm")).unwrap(), b"local");
+    assert_eq!(
+        fs::read(origin.join(".build/ModuleCache/source.pcm")).unwrap(),
+        b"source"
+    );
+    assert!(!swift_module_cache_dir().join("source.pcm").exists());
 }
 
 #[test]
@@ -388,11 +492,20 @@ fn test_prune_stale_module_cache_ignores_symlink_directories_and_external_target
     // Prune cache with max_size_bytes 100
     let evicted = prune_stale_module_cache_in(&cache_dir, Duration::from_secs(3600), 100).unwrap();
     assert_eq!(evicted, 1);
-    assert!(!regular_file.exists(), "regular cache file should be pruned");
+    assert!(
+        !regular_file.exists(),
+        "regular cache file should be pruned"
+    );
 
     // Critical assertion: external file MUST NOT be deleted, and directory symlink must not be traversed or removed
-    assert!(external_file.is_file(), "external file outside cache root must never be deleted by pruner");
-    assert!(symlinked_dir.exists(), "directory symlink itself must not be deleted");
+    assert!(
+        external_file.is_file(),
+        "external file outside cache root must never be deleted by pruner"
+    );
+    assert!(
+        symlinked_dir.exists(),
+        "directory symlink itself must not be deleted"
+    );
 }
 
 #[test]
@@ -402,7 +515,8 @@ fn test_prune_stale_module_cache_rejects_root_file_or_symlink_swap() {
     fs::write(&regular_file, b"content").unwrap();
 
     // Passing a non-directory file as cache_dir returns Ok(0) without panic or error
-    let evicted = prune_stale_module_cache_in(&regular_file, Duration::from_secs(3600), 100).unwrap();
+    let evicted =
+        prune_stale_module_cache_in(&regular_file, Duration::from_secs(3600), 100).unwrap();
     assert_eq!(evicted, 0);
     assert!(regular_file.is_file());
 }

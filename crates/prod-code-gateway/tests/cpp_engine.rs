@@ -27,7 +27,9 @@ fn test_clangd_digest_invariants_and_path_sensitivity() {
     // LLVM clangd digest specification
     assert_eq!(digest.len(), 16);
     assert!(
-        digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
+        digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
         "clangd digest must be 16 uppercase ASCII hexadecimal characters"
     );
 
@@ -66,8 +68,7 @@ fn test_riff_shard_relocation_preserves_null_order_and_replaces_paths() {
     }
 
     // Compress string table with zlib
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(&uncompressed).unwrap();
     let compressed = encoder.finish().unwrap();
 
@@ -126,11 +127,21 @@ fn test_riff_shard_relocation_preserves_null_order_and_replaces_paths() {
     assert_eq!(decomp_strings.len(), original_strings.len());
     assert_eq!(decomp_strings[0], "");
     assert_eq!(decomp_strings[1], "/srv/workspaces/trading-engine--wt-feed");
-    assert_eq!(decomp_strings[2], "/srv/workspaces/trading-engine--wt-feed/src/order.cpp");
-    assert_eq!(decomp_strings[3], "file:///srv/workspaces/trading-engine--wt-feed/src/order.cpp");
+    assert_eq!(
+        decomp_strings[2],
+        "/srv/workspaces/trading-engine--wt-feed/src/order.cpp"
+    );
+    assert_eq!(
+        decomp_strings[3],
+        "file:///srv/workspaces/trading-engine--wt-feed/src/order.cpp"
+    );
     assert_eq!(decomp_strings[4], "OrderBook::submit_limit");
     assert_eq!(decomp_strings[5], "int");
-    assert!(!decomp_strings.iter().any(|s| s.contains("trading-engine/src")));
+    assert!(
+        !decomp_strings
+            .iter()
+            .any(|s| s.contains("trading-engine/src"))
+    );
 }
 
 #[test]
@@ -184,8 +195,7 @@ fn test_clangd_relocation_derives_tu_from_shard_identity_and_ignores_included_he
     let origin_digest = clangd_path_digest(source_path);
     let shard_name = format!("z_dispatch.cpp.{origin_digest}.idx");
 
-    let (relocated, source) =
-        relocate_shard(&riff, from, to, Some(&shard_name)).unwrap();
+    let (relocated, source) = relocate_shard(&riff, from, to, Some(&shard_name)).unwrap();
 
     // Must resolve to z_dispatch.cpp, not common.h
     assert_eq!(
@@ -212,8 +222,14 @@ fn test_clangd_relocation_derives_tu_from_shard_identity_and_ignores_included_he
 
     assert_eq!(decomp_strings.len(), original_strings.len());
     assert_eq!(decomp_strings[0], "");
-    assert_eq!(decomp_strings[1], "/srv/workspaces/complex-engine--wt-worker/include/common.h");
-    assert_eq!(decomp_strings[3], "/srv/workspaces/complex-engine--wt-worker/src/z_dispatch.cpp");
+    assert_eq!(
+        decomp_strings[1],
+        "/srv/workspaces/complex-engine--wt-worker/include/common.h"
+    );
+    assert_eq!(
+        decomp_strings[3],
+        "/srv/workspaces/complex-engine--wt-worker/src/z_dispatch.cpp"
+    );
 }
 
 #[test]
@@ -248,8 +264,7 @@ fn test_seed_cpp_worktree_relocates_compile_commands_and_index() {
         source_file.display(),
         source_file.display()
     );
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(uncompressed.as_bytes()).unwrap();
     let compressed = encoder.finish().unwrap();
 
@@ -318,10 +333,13 @@ fn test_compiler_cache_env_contains_pch_sharing_flags() {
             .map(|(_, v)| v.as_str())
     };
 
-    assert_eq!(get("CCACHE_BASEDIR"), Some("/srv/workspaces/cpp-project--wt-test"));
+    assert_eq!(
+        get("CCACHE_BASEDIR"),
+        Some("/srv/workspaces/cpp-project--wt-test")
+    );
     assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
     assert_eq!(get("CCACHE_SLOPPINESS"), Some("pch_defines,time_macros"));
-    assert_eq!(get("CCACHE_PCH_EXTERNAL_CHECKS"), Some("1"));
+    assert_eq!(get("CCACHE_PCH_EXTSUM"), Some("1"));
     assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
     assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
 }
@@ -439,14 +457,22 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
         tokio::time::sleep(Duration::from_millis(100)).await;
         if origin_shard_dir.is_dir()
             && std::fs::read_dir(&origin_shard_dir)
-                .map(|mut d| d.any(|e| e.map(|e| e.path().extension() == Some("idx".as_ref())).unwrap_or(false)))
+                .map(|mut d| {
+                    d.any(|e| {
+                        e.map(|e| e.path().extension() == Some("idx".as_ref()))
+                            .unwrap_or(false)
+                    })
+                })
                 .unwrap_or(false)
         {
             shard_created = true;
             break;
         }
     }
-    assert!(shard_created, "origin clangd must produce index shard in .cache/clangd/index");
+    assert!(
+        shard_created,
+        "origin clangd must produce index shard in .cache/clangd/index"
+    );
 
     // Terminate origin clangd
     drop(stdin);
@@ -458,7 +484,10 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
     std::fs::write(wt_src_dir.join("calc.cpp"), source_code).unwrap();
 
     let seeded_bytes = seed_cpp_worktree(origin, worktree).unwrap();
-    assert!(seeded_bytes.is_some(), "seed_cpp_worktree must seed compile_commands and index");
+    assert!(
+        seeded_bytes.is_some(),
+        "seed_cpp_worktree must seed compile_commands and index"
+    );
 
     // Verify worktree has the relocated shard
     let wt_source_path = wt_src_dir.join("calc.cpp");
@@ -468,7 +497,10 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
         .join("clangd")
         .join("index")
         .join(&wt_expected_shard);
-    assert!(wt_shard_path.is_file(), "worktree must possess relocated shard file");
+    assert!(
+        wt_shard_path.is_file(),
+        "worktree must possess relocated shard file"
+    );
 
     // 5. Start a fresh clangd in the worktree
     let mut wt_child = tokio::process::Command::new("clangd")
@@ -629,8 +661,7 @@ fn test_seed_cpp_worktree_preserves_sibling_dependency_paths() {
         sibling_dep,
         sibling_dep
     );
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(uncompressed.as_bytes()).unwrap();
     let compressed = encoder.finish().unwrap();
 
@@ -700,7 +731,10 @@ fn test_seed_cpp_worktree_preserves_sibling_dependency_paths() {
 
     assert_eq!(decomp_strings[0], "");
     assert_eq!(decomp_strings[1], to_source_file.display().to_string());
-    assert_eq!(decomp_strings[2], format!("file://{}", to_source_file.display()));
+    assert_eq!(
+        decomp_strings[2],
+        format!("file://{}", to_source_file.display())
+    );
     assert_eq!(decomp_strings[3], sibling_dep);
     assert_eq!(decomp_strings[4], format!("file://{sibling_dep}"));
     assert_eq!(decomp_strings[5], format!("-I{sibling_dep}"));

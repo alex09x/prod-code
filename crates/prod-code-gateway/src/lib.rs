@@ -79,4 +79,6 @@ pub(crate) use tokio_util::codec::Framed;
 pub(crate) use workspace::{SessionView, WorkspaceManager};
 
 #[cfg(test)]
+mod test_cache_support;
+#[cfg(test)]
 mod tests;
