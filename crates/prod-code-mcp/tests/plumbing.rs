@@ -368,53 +368,78 @@ async fn run_remote_reports_the_gateway_closing_after_exec_changes() {
     );
 }
 
+/// One chunk of a pulled file, as the gateway answers a `PullFileRequest` (#1145).
+fn pull_chunk(
+    copy: &str,
+    offset: u64,
+    total: u64,
+    content: &[u8],
+    executable: bool,
+) -> prod_code_protocol::PullFileResponse {
+    prod_code_protocol::PullFileResponse {
+        server_workspace_root: copy.to_string(),
+        offset,
+        total_bytes: total,
+        file: ReadFileResponse {
+            path: String::new(),
+            content: Some(content.to_vec()),
+            truncated: offset + (content.len() as u64) < total,
+            is_executable: Some(executable),
+            error: None,
+        },
+    }
+}
+
+/// A node that answers each `PullFileRequest` with the next scripted chunk and closes the
+/// connection when none is left. Returns the requests it saw.
+async fn pull_node(
+    chunks: Vec<prod_code_protocol::PullFileResponse>,
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<Vec<prod_code_protocol::PullFileRequest>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let mut framed = accept_one(listener).await;
+        let mut chunks = chunks.into_iter();
+        let mut seen = Vec::new();
+        while let Some(Ok(message)) = framed.next().await {
+            match message {
+                WireMessage::Auth(_) => {}
+                WireMessage::PullFileRequest(request) => {
+                    seen.push(request.clone());
+                    let Some(mut chunk) = chunks.next() else {
+                        break;
+                    };
+                    chunk.file.path = request.path;
+                    framed
+                        .send(WireMessage::PullFileResponse(chunk))
+                        .await
+                        .unwrap();
+                }
+                WireMessage::Disconnect { .. } => break,
+                other => panic!("a pull must not start an analyzer session: {other:?}"),
+            }
+        }
+        seen
+    });
+    (addr, task)
+}
+
 #[tokio::test]
 async fn pull_remote_files_reads_and_applies_remote_files() {
     let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
     let root = ws.root();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let mut framed = accept_one(listener).await;
-        let _hs_req = match framed.next().await.unwrap().unwrap() {
-            WireMessage::HandshakeRequest(req) => req,
-            other => panic!("expected HandshakeRequest: {other:?}"),
-        };
-        framed
-            .send(WireMessage::HandshakeResponse(
-                prod_code_protocol::HandshakeResponse {
-                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                    server_pid: 1234,
-                    session_id: 1,
-                    server_workspace_root: "/server/ws/fixture".to_string(),
-                    detected_engine: "rust".to_string(),
-                    stale_paths: Vec::new(),
-                    engine_age_ms: Some(100),
-                    index_gated: false,
-                    capabilities: None,
-                },
-            ))
-            .await
-            .unwrap();
-
-        let read_req = match framed.next().await.unwrap().unwrap() {
-            WireMessage::ReadFileRequest(req) => req,
-            other => panic!("expected ReadFileRequest: {other:?}"),
-        };
-        assert_eq!(read_req.path, "/server/ws/fixture/src/lib.rs");
-        framed
-            .send(WireMessage::ReadFileResponse(prod_code_protocol::ReadFileResponse {
-                path: read_req.path,
-                content: Some(b"pub fn pulled() {}\n".to_vec()),
-                truncated: false,
-                is_executable: Some(true),
-                error: None,
-            }))
-            .await
-            .unwrap();
-
-        let _ = framed.next().await; // Disconnect
-    });
+    let content = b"pub fn pulled() {}\n";
+    let (addr, node) = pull_node(vec![pull_chunk(
+        "/server/ws/fixture",
+        0,
+        content.len() as u64,
+        content,
+        true,
+    )])
+    .await;
 
     let pulled = prod_code_mcp::sync::pull_remote_files(
         addr,
@@ -424,6 +449,10 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
     .await
     .expect("files are pulled");
 
+    let requests = node.await.unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].path, "src/lib.rs");
+    assert_eq!(requests[0].offset, 0);
     assert_eq!(pulled, vec!["src/lib.rs".to_string()]);
     assert_eq!(
         std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
@@ -448,47 +477,15 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
 async fn pull_remote_files_honors_explicit_non_executable_shebang_script() {
     let ws = Workspace::new(&[("script.sh", "echo initial\n")]);
     let root = ws.root();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        let mut framed = accept_one(listener).await;
-        let _handshake = framed.next().await;
-        framed
-            .send(WireMessage::HandshakeResponse(
-                prod_code_protocol::HandshakeResponse {
-                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                    server_pid: 1234,
-                    session_id: 1,
-                    server_workspace_root: "/server/ws/fixture".to_string(),
-                    detected_engine: "rust".to_string(),
-                    stale_paths: Vec::new(),
-                    engine_age_ms: Some(100),
-                    index_gated: false,
-                    capabilities: None,
-                },
-            ))
-            .await
-            .unwrap();
-
-        let read_req = match framed.next().await.unwrap().unwrap() {
-            WireMessage::ReadFileRequest(req) => req,
-            other => panic!("expected ReadFileRequest: {other:?}"),
-        };
-        assert_eq!(read_req.path, "/server/ws/fixture/script.sh");
-        framed
-            .send(WireMessage::ReadFileResponse(prod_code_protocol::ReadFileResponse {
-                path: read_req.path,
-                content: Some(b"#!/bin/sh\necho hello\n".to_vec()),
-                truncated: false,
-                is_executable: Some(false),
-                error: None,
-            }))
-            .await
-            .unwrap();
-
-        let _ = framed.next().await; // Disconnect
-    });
+    let content = b"#!/bin/sh\necho hello\n";
+    let (addr, _node) = pull_node(vec![pull_chunk(
+        "/server/ws/fixture",
+        0,
+        content.len() as u64,
+        content,
+        false,
+    )])
+    .await;
 
     let pulled = prod_code_mcp::sync::pull_remote_files(
         addr,
@@ -523,45 +520,15 @@ async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
     let original = "pub fn original() {}\n";
     let ws = Workspace::new(&[("src/lib.rs", original)]);
     let root = ws.root();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let mut framed = accept_one(listener).await;
-        let _ = match framed.next().await.unwrap().unwrap() {
-            WireMessage::HandshakeRequest(req) => req,
-            other => panic!("expected HandshakeRequest: {other:?}"),
-        };
-        framed
-            .send(WireMessage::HandshakeResponse(
-                prod_code_protocol::HandshakeResponse {
-                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                    server_pid: 1234,
-                    session_id: 1,
-                    server_workspace_root: "/server/ws/truncated".to_string(),
-                    detected_engine: "rust".to_string(),
-                    stale_paths: Vec::new(),
-                    engine_age_ms: Some(100),
-                    index_gated: false,
-                    capabilities: None,
-                },
-            ))
-            .await
-            .unwrap();
-        let request = match framed.next().await.unwrap().unwrap() {
-            WireMessage::ReadFileRequest(request) => request,
-            other => panic!("expected ReadFileRequest: {other:?}"),
-        };
-        framed
-            .send(WireMessage::ReadFileResponse(ReadFileResponse {
-                path: request.path,
-                content: Some(b"pub fn partial".to_vec()),
-                truncated: true,
-                is_executable: Some(false),
-                error: None,
-            }))
-            .await
-            .unwrap();
-    });
+    // The first of two chunks, then the node goes away.
+    let (addr, node) = pull_node(vec![pull_chunk(
+        "/server/ws/truncated",
+        0,
+        64,
+        b"pub fn partial",
+        false,
+    )])
+    .await;
 
     let error = prod_code_mcp::sync::pull_remote_files(
         addr,
@@ -569,8 +536,16 @@ async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
         &[std::path::PathBuf::from("src/lib.rs")],
     )
     .await
-    .expect_err("truncated source must never replace the local file");
-    assert!(format!("{error:#}").contains("truncated"), "{error:#}");
+    .expect_err("a partial transfer must never replace the local file");
+    let requests = node.await.unwrap();
+    assert_eq!(
+        requests.iter().map(|r| r.offset).collect::<Vec<_>>(),
+        vec![0, 14],
+        "the second chunk is asked from where the first ended"
+    );
+    let text = format!("{error:#}");
+    assert!(text.contains("closed the connection"), "{text}");
+    assert!(text.contains("nothing was written"), "{text}");
     assert_eq!(
         std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
         original
@@ -578,83 +553,49 @@ async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
 }
 
 #[tokio::test]
-async fn pull_remote_files_follows_a_redirected_handshake() {
-    let ws = Workspace::new(&[("src/lib.rs", "pub fn old() {}\n")]);
+async fn pull_remote_files_reassembles_chunks_and_refuses_a_changed_copy() {
+    let original = "pub fn old() {}\n";
+    let ws = Workspace::new(&[("src/lib.rs", original)]);
     let root = ws.root();
-    let redirect_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let redirect_addr = redirect_listener.local_addr().unwrap();
-    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let target_addr = target_listener.local_addr().unwrap();
-
-    let redirect_task = tokio::spawn(async move {
-        let mut framed = accept_one(redirect_listener).await;
-        let request = match framed.next().await.unwrap().unwrap() {
-            WireMessage::HandshakeRequest(request) => request,
-            other => panic!("expected HandshakeRequest: {other:?}"),
-        };
-        assert!(request.capabilities.unwrap().redirects);
-        framed
-            .send(WireMessage::Redirect {
-                target_addr: target_addr.to_string(),
-                reason: Some("workspace is served by the target node".to_string()),
-            })
-            .await
-            .unwrap();
-    });
-
-    let target_task = tokio::spawn(async move {
-        let mut framed = accept_one(target_listener).await;
-        let request = match framed.next().await.unwrap().unwrap() {
-            WireMessage::HandshakeRequest(request) => request,
-            other => panic!("expected redirected HandshakeRequest: {other:?}"),
-        };
-        assert_eq!(request.redirect_count, 1);
-        framed
-            .send(WireMessage::HandshakeResponse(
-                prod_code_protocol::HandshakeResponse {
-                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                    server_pid: 5678,
-                    session_id: 2,
-                    server_workspace_root: "/server/ws/redirected".to_string(),
-                    detected_engine: "rust".to_string(),
-                    stale_paths: Vec::new(),
-                    engine_age_ms: Some(100),
-                    index_gated: false,
-                    capabilities: None,
-                },
-            ))
-            .await
-            .unwrap();
-        let file_request = match framed.next().await.unwrap().unwrap() {
-            WireMessage::ReadFileRequest(request) => request,
-            other => panic!("expected redirected ReadFileRequest: {other:?}"),
-        };
-        assert_eq!(file_request.path, "/server/ws/redirected/src/lib.rs");
-        framed
-            .send(WireMessage::ReadFileResponse(ReadFileResponse {
-                path: file_request.path,
-                content: Some(b"pub fn redirected() {}\n".to_vec()),
-                truncated: false,
-                is_executable: Some(false),
-                error: None,
-            }))
-            .await
-            .unwrap();
-    });
-
+    let (addr, _node) = pull_node(vec![
+        pull_chunk("/server/ws/a", 0, 22, b"pub fn chu", false),
+        pull_chunk("/server/ws/a", 10, 22, b"nked() {}\n\n\n", false),
+    ])
+    .await;
     let pulled = prod_code_mcp::sync::pull_remote_files(
-        redirect_addr,
+        addr,
         &root,
         &[std::path::PathBuf::from("src/lib.rs")],
     )
     .await
-    .expect("the pull retries at the redirected node");
-    redirect_task.await.unwrap();
-    target_task.await.unwrap();
+    .expect("two chunks make the file");
     assert_eq!(pulled, vec!["src/lib.rs"]);
     assert_eq!(
         std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
-        "pub fn redirected() {}\n"
+        "pub fn chunked() {}\n\n\n"
+    );
+
+    // The second chunk comes from another copy: the transfer is refused and nothing written.
+    std::fs::write(root.join("src/lib.rs"), original).unwrap();
+    let (addr, _node) = pull_node(vec![
+        pull_chunk("/server/ws/a", 0, 22, b"pub fn chu", false),
+        pull_chunk("/server/ws/b", 10, 22, b"nked() {}\n\n\n", false),
+    ])
+    .await;
+    let error = prod_code_mcp::sync::pull_remote_files(
+        addr,
+        &root,
+        &[std::path::PathBuf::from("src/lib.rs")],
+    )
+    .await
+    .expect_err("chunks of different copies must not be joined");
+    assert!(
+        format!("{error:#}").contains("copy or offset changed"),
+        "{error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        original
     );
 }
 

@@ -64,7 +64,7 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         pull: bool,
     },
-    /// Pull files from the remote gateway workspace into the local checkout: prod-code pull <file...>
+    /// Pull files (including build outputs) from the last exec node's checkout copy: prod-code pull <file...>. Override with --remote NODE.
     Pull {
         /// Files or relative paths to pull from the remote gateway workspace.
         #[arg(required = true)]

@@ -266,6 +266,7 @@ pub async fn run_exec(
     if let Some(err) = &exit.error {
         anyhow::bail!("remote exec failed: {err}");
     }
+    prod_code_mcp::exec::remember_exec_node(&root, remote);
     if !outcome.pulled_files.is_empty() {
         eprintln!(
             "[prod-code exec] {} file(s) changed by the command written back: {}",
@@ -286,7 +287,7 @@ pub async fn run_exec(
         eprintln!("[prod-code exec] {warning}");
     }
     eprintln!(
-        "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on {}{}",
+        "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on node {remote}, copy {}{}",
         match (exit.timed_out, exit.exit_code) {
             (true, _) => "timed out".to_string(),
             (false, Some(code)) => format!("exit {code}"),

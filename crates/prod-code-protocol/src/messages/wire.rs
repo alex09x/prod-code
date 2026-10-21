@@ -16,6 +16,7 @@ use super::cluster::{
 };
 use super::exec::{ExecChanges, ExecChunk, ExecExit, ExecRequest};
 use super::handshake::{HandshakeRequest, HandshakeResponse};
+use super::pull::{PullFileRequest, PullFileResponse};
 use super::remote_exec::{RemoteExecRequest, RemoteExecResult, RemoteExecStream};
 use super::search::{SearchRequest, SearchResponse};
 use super::shadow::{ShadowRunRequest, ShadowRunResponse};
@@ -65,6 +66,9 @@ pub enum WireMessage {
     /// registries, SDK headers): what a definition outside the checkout points at.
     ReadFileRequest(ReadFileRequest),
     ReadFileResponse(ReadFileResponse),
+    /// Retrieve a chunk of an owned checkout file without starting an analyzer.
+    PullFileRequest(PullFileRequest),
+    PullFileResponse(PullFileResponse),
     /// Node-to-node heartbeat: a gateway's status, loaded workspaces and known peers. The
     /// receiving node answers with its own `Gossip`.
     Gossip(NodeGossip),

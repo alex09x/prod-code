@@ -35,6 +35,8 @@ pub use engine::{
 };
 pub use filter_path::{is_filesystem_root, is_fixture_path, is_synced_git_path};
 pub use plan::{commit_workspace_sync, prepare_workspace_sync, prepare_workspace_sync_for};
+pub mod artifact;
+pub use artifact::{PullOutcome, pull_remote_files_from};
 pub use pull::{apply_pulled_files, apply_pulled_files_for, pull_remote_files};
 pub use push::{gateway_node, push_workspace_sync};
 pub use relevance::is_relevant_code_or_manifest_file;

@@ -200,7 +200,7 @@ fn external_dependency_source_with_same_suffix_is_not_mapped_to_workspace() {
 #[tokio::test]
 async fn read_remote_file_and_pull_ignore_interleaved_lsp_notifications() {
     use futures_util::{SinkExt, StreamExt};
-    use prod_code_protocol::{HandshakeResponse, ProdCodeCodec, ReadFileResponse, WireMessage};
+    use prod_code_protocol::{ProdCodeCodec, PullFileResponse, ReadFileResponse, WireMessage};
     use tokio::net::TcpListener;
     use tokio_util::codec::Framed;
 
@@ -230,7 +230,7 @@ async fn read_remote_file_and_pull_ignore_interleaved_lsp_notifications() {
             .await
             .unwrap();
 
-        // Second connection: pull_remote_files (handshake + read file)
+        // Second connection: artifact pull needs no analyzer handshake.
         let (stream2, _) = listener.accept().await.unwrap();
         let mut framed2 = Framed::new(stream2, ProdCodeCodec::new());
         let _ = framed2.next().await;
@@ -242,34 +242,17 @@ async fn read_remote_file_and_pull_ignore_interleaved_lsp_notifications() {
             .await
             .unwrap();
         framed2
-            .send(WireMessage::HandshakeResponse(HandshakeResponse {
-                protocol_version: prod_code_protocol::PROTOCOL_VERSION,
-                server_pid: 1,
-                session_id: 1,
-                server_workspace_root: "/remote/ws".to_string(),
-                detected_engine: "rust".to_string(),
-                stale_paths: Vec::new(),
-                engine_age_ms: Some(1000),
-                index_gated: true,
-                capabilities: None,
-            }))
-            .await
-            .unwrap();
-        let _ = framed2.next().await;
-        framed2
-            .send(WireMessage::LspPayload(
-                r#"{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"[prod-code] indexing"}}"#
-                    .to_string(),
-            ))
-            .await
-            .unwrap();
-        framed2
-            .send(WireMessage::ReadFileResponse(ReadFileResponse {
-                path: "dist/out.txt".to_string(),
-                content: Some(b"built-artifact\n".to_vec()),
-                error: None,
-                truncated: false,
-                is_executable: Some(false),
+            .send(WireMessage::PullFileResponse(PullFileResponse {
+                server_workspace_root: "/remote/ws".into(),
+                offset: 0,
+                total_bytes: 15,
+                file: ReadFileResponse {
+                    path: "dist/out.txt".to_string(),
+                    content: Some(b"built-artifact\n".to_vec()),
+                    error: None,
+                    truncated: false,
+                    is_executable: Some(false),
+                },
             }))
             .await
             .unwrap();

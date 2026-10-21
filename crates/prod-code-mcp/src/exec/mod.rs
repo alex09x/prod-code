@@ -11,6 +11,7 @@
 //! Remote command execution: sync the checkout, then run a command inside its server copy and
 //! stream the output back. Shared by the CLI (`prod-code exec`) and the MCP tool `code_exec`.
 
+mod destination;
 pub mod platform;
 pub mod runner;
 pub mod types;
@@ -18,6 +19,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use destination::{last_exec_node, remember_exec_node};
 pub use platform::{layout_only, platform_warning, subdir_of};
 pub use runner::{run_polyglot_remote, run_remote};
 pub use types::{PolyglotRemoteOutcome, RemoteOutcome, TailBuffer};

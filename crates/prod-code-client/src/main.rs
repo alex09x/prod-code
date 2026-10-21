@@ -196,13 +196,28 @@ async fn run_cli() -> Result<()> {
         _ => None,
     };
     startup.mark("macos_only_cgo");
-    let picked = prod_code_mcp::cluster::pick_node(
-        &remotes,
-        &placement_key,
-        cwd_engine,
-        macos_cgo.as_ref().map(|_| "macos"),
-    )
-    .await
+    let artifact_node = if !pinned
+        && matches!(
+            cli.command,
+            Some(Commands::Pull { .. } | Commands::Sync { pull: true, .. })
+        ) {
+        cwd_root
+            .as_deref()
+            .and_then(prod_code_mcp::exec::last_exec_node)
+    } else {
+        None
+    };
+    let picked = if let Some(node) = artifact_node {
+        Ok(node)
+    } else {
+        prod_code_mcp::cluster::pick_node(
+            &remotes,
+            &placement_key,
+            cwd_engine,
+            macos_cgo.as_ref().map(|_| "macos"),
+        )
+        .await
+    }
     .map_err(|err| match &macos_cgo {
         Some((file, named)) => err.context(format!(
             "this Go module uses macOS-only cgo ({file}: {named})"

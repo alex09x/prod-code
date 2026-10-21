@@ -13,6 +13,18 @@ use crate::protocol::McpTool;
 pub fn utility_tools() -> Vec<McpTool> {
     vec![
         McpTool {
+            name: "code_pull".to_string(),
+            description: "Retrieve checkout files, including ignored compiled artifacts, from the node used by the last code_exec. Preserves executable permissions. Transfers large files in bounded chunks without loading an analyzer. The result names the actual node and checkout copy. Use remote to override the last exec node; paths outside this checkout's copy are refused.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "files": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Checkout paths, e.g. target/release/my-program" },
+                    "remote": { "type": "string", "description": "Optional execution node address (HOST:PORT), as printed by code_exec" }
+                },
+                "required": ["files"]
+            }),
+        },
+        McpTool {
             name: "code_report_issue".to_string(),
             description: "Report a bug in prod-code ITSELF (not in the code you are working on) as a GitHub issue in alex09x/prod-code: a wrong or empty answer from a code_* tool, a hang, a crash, an error that does not say what to do, or a missing capability you needed. Use it as soon as you are sure the tool is at fault, then carry on with your task. Give a searchable `title` (what went wrong, in which tool, for which language) and a `body` with the exact tool call or command and its arguments, what it returned (paste the output), what you expected, and how to reproduce it. LAN addresses, the host name and home-directory paths are removed before anything is sent, and the client and node versions are added. Issues with a similar title, open or closed, are listed first and nothing is filed unless `force: true`; comment on an open one that is the same problem, and check whether a closed one is fixed in a newer release. When reproducing needs private details (host names, addresses, internal paths or logs), keep them in your own private record first and pass its id as `private_ref`; never put them in the body. Pass `labels`: one type (bug, enhancement, documentation, perf; bug when none is given) and the areas the issue is about (gateway, client, mcp, cluster, worktree, infra, test). `dry_run: true` shows the issue without filing it."
                 .to_string(),
