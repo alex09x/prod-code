@@ -1310,6 +1310,35 @@ pub enum Commands {
     /// parameters; Go reorders, removes provably unused ones, adds typed literal parameters, or
     /// replaces one primitive result of an ordinary free function or named value/pointer receiver
     /// method.
+    ///
+    /// Rust: refuses changes to argument evaluation or destruction order (including possible
+    /// Deref coercions).
+    ///
+    /// Go (a `.go` file, through gopls v0.23.0): a permutation of the named parameters of a
+    /// declared function or method, optionally omitting unused parameters. Grouped parameters
+    /// (`a, b int`) move one by one; receivers stay as declared. `--returns` replaces only a
+    /// single unnamed, unshadowed primitive result of an ordinary non-generic, non-variadic free
+    /// function or named value/pointer receiver method, and requires the named parameter list to
+    /// be exactly unchanged. A retained variadic parameter stays last; removing it removes its
+    /// entire argument tail.
+    /// Both body inspection and gopls references must prove every removed parameter unused.
+    /// Dropped arguments must be literals or simple variables; calls, selectors, indexing,
+    /// receives, conversions and operators are refused because their evaluation can matter.
+    /// Every call and the declaration must match exactly, and the result is type-checked.
+    /// Go additions retain every old parameter in order and use explicit primitive types with
+    /// numeric/string/rune literals. Ordinary non-generic functions and named value/pointer
+    /// receiver methods are supported. Method values/expressions, interface obligations,
+    /// generic receivers, receiver-name capture, variadics, grouped-parameter interior insertion
+    /// and combined changes refuse.
+    /// Packages and test callers must compile on the node before preview or apply. This preserves
+    /// the node's build flags and does not require Go on the client.
+    /// Refused for Go without writing, whatever `--force` says: arbitrary added values,
+    /// `--visibility`, `--async`, `--verify`, named/multiple/void/composite results, generic or
+    /// variadic result changes, receiver methods with interface obligations or non-call references,
+    /// shadowed primitive names, parameter changes combined with `--returns`, unnamed or `_`
+    /// parameters, any generic removal,
+    /// a generic function that has calls, a function used as a value, an unreconciled call,
+    /// and uncertain argument reordering (`true`, `false` and `nil` count as variables).
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`, `Price`, `Cart.Add`).
         symbol: String,

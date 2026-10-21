@@ -252,7 +252,10 @@ async fn flat_and_nested_members_propagate_malformed_coordinates() {
             } else {
                 "flat member"
             });
-        assert!(format!("{error:#}").contains("malformed LSP member symbol `change`"));
+        assert!(
+            format!("{error:#}").contains("malformed LSP member symbol `change`"),
+            "{error:#}"
+        );
         assert_eq!(gateway.calls(), 3, "{:?}", seen.lock().unwrap());
     }
 }

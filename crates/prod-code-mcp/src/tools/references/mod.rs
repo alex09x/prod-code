@@ -160,7 +160,9 @@ pub(crate) async fn handle_references(
         out.push_str(&note);
     }
 
-    if all_locs.is_empty()
+    // Uses found only by the same-target fallback may be fewer than an index would give, so
+    // the hint to build one stands when the server itself found nothing (#1135).
+    if (all_locs.is_empty() || (initial_was_empty && !build_index))
         && !swift_index_attempted
         && let Some((built, note)) =
             build_swift_index(remote, workspace_root, &file_path, build_index).await

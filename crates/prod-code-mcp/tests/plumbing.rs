@@ -860,14 +860,16 @@ async fn read_remote_file_reports_an_unexpected_reply() {
     tokio::spawn(async move {
         let mut framed = accept_one(listener).await;
         let _ = framed.next().await;
+        // A keepalive answer is skipped (#1078); anything else that is not the file is refused.
         framed.send(WireMessage::Pong).await.unwrap();
+        framed.send(WireMessage::Ping).await.unwrap();
     });
 
     let err = prod_code_mcp::remote_fs::read_remote_file(addr, "/x", 4096)
         .await
         .expect_err("a message that is not a ReadFileResponse is refused");
     let text = format!("{err:#}");
-    assert!(text.contains("unexpected reply"), "{text}");
+    assert!(text.contains("unexpected reply: Ping"), "{text}");
 }
 
 #[tokio::test]
