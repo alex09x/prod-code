@@ -11,6 +11,7 @@
 pub mod cluster;
 pub mod exec;
 pub mod handshake;
+pub mod pull;
 pub mod remote_exec;
 pub mod search;
 pub mod shadow;
@@ -32,6 +33,7 @@ pub use handshake::{
     ANALYZER_PANIC_CODE, ClientCapabilities, HandshakeRequest, HandshakeResponse, PURPOSE_EDITOR,
     PURPOSE_VALIDATION, ServerCapabilities,
 };
+pub use pull::{PULL_CHUNK_BYTES, PullFileRequest, PullFileResponse};
 pub use remote_exec::{
     RemoteExecCommand, RemoteExecDiagnostic, RemoteExecFormat, RemoteExecLanguage,
     RemoteExecRequest, RemoteExecResult, RemoteExecSpan, RemoteExecStream, RemoteExecTestEvent,

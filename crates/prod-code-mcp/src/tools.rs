@@ -62,6 +62,7 @@ pub(crate) async fn dispatch_tool(
         }
         "code_rename" => Box::pin(handle_rename(remote, root, &args)).await,
         "code_exec" => Box::pin(handle_exec(remote, root, &args)).await,
+        "code_pull" => Box::pin(pull_handler::handle_pull(remote, root, &args)).await,
         "code_definition" => Box::pin(handle_definition(remote, root, &args)).await,
 
         "code_callers" | "code_callees" => {
@@ -316,6 +317,7 @@ pub(crate) mod definition;
 pub(crate) use definition::*;
 
 pub(crate) mod exec_handler;
+pub(crate) mod pull_handler;
 pub(crate) use exec_handler::*;
 
 pub(crate) mod editor_handlers;

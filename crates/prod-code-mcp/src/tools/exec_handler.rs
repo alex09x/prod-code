@@ -125,6 +125,9 @@ pub(crate) async fn handle_exec(
     .await?;
     let changed_code = outcome.changed_code();
     let exit = outcome.exit;
+    if exit.error.is_none() {
+        crate::exec::remember_exec_node(workspace_root, remote);
+    }
     let status = match (&exit.error, exit.timed_out, exit.exit_code) {
         (Some(err), _, _) => format!("failed to start: {err}"),
         (None, true, _) => "timed out".to_string(),
@@ -132,7 +135,7 @@ pub(crate) async fn handle_exec(
         (None, false, None) => "killed by signal".to_string(),
     };
     let mut text = format!(
-        "$ {}\n[{status} in {:.1}s{} on {}{}; {} bytes of output{}]\n",
+        "$ {}\n[{status} in {:.1}s{} on node {remote}, copy {}{}; {} bytes of output{}]\n",
         argv.join(" "),
         exit.duration_ms as f64 / 1000.0,
         exit.usage

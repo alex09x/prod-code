@@ -381,6 +381,7 @@ pub async fn run_exec_with_ram(
             refresh_engines(workspace_manager, &workspace, &files).await;
         }
     }
+    crate::sync::artifact_target::record(&workspace, ram_target.as_deref(), &req.env);
     framed
         .send(WireMessage::ExecExit(ExecExit {
             exit_code,

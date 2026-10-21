@@ -27,6 +27,17 @@ pub fn is_ram_cache_enabled(enabled: bool) -> bool {
     is_ram_cache_enabled_with(enabled, env.as_deref())
 }
 
+/// The directory name of `workspace`'s own namespace under a RAM build cache base: its
+/// folder name and a hash of its path. Artifact pulls use it to tell a copy's own build
+/// target from another copy's (#1145).
+pub(crate) fn ram_cache_namespace(workspace: &Path) -> Option<String> {
+    let workspace_name = workspace.file_name()?.to_str()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&workspace, &mut hasher);
+    let hash = std::hash::Hasher::finish(&hasher);
+    Some(format!("{workspace_name}-{hash:016x}"))
+}
+
 /// Resolves or initializes an isolated in-memory RAM-disk build cache for `workspace` (Roadmap 6.2).
 /// Returns `Some(PathBuf)` if enabled and headroom permits (>= 20% free and >= 256 MiB free); otherwise `None`.
 pub fn resolve_ram_build_cache(
@@ -61,11 +72,7 @@ pub fn resolve_ram_build_cache(
         }
     }
 
-    let workspace_name = workspace.file_name()?.to_str()?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(&workspace, &mut hasher);
-    let hash = std::hash::Hasher::finish(&hasher);
-    let ws_cache_dir = base_dir.join(format!("{workspace_name}-{hash:016x}"));
+    let ws_cache_dir = base_dir.join(ram_cache_namespace(workspace)?);
     let target_dir = ws_cache_dir.join("target");
     if let Err(e) = std::fs::create_dir_all(&target_dir) {
         tracing::warn!(%e, dir = %target_dir.display(), "failed to create RAM build cache dir; falling back to disk");

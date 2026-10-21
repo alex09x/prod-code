@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+- **`prod-code pull` and `code_pull` Fetch Build Artifacts From the Exec Node** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-client`, `crates/prod-code-protocol`):
+  After `prod-code exec -- cargo build --release --bin NAME`, `prod-code pull target/release/NAME` failed with `... is not a readable source location on this gateway`. It could also ask a different node than the one exec ran on. Pull now uses its own `PullFileRequest`/`PullFileResponse` frames, which start no analyzer. They read from the checkout's own copy on the node, including ignored build outputs and the RAM build target recorded for that copy's last exec (`sync/artifact_pull.rs`, `sync/artifact_target.rs`). Transfers go in 4 MiB chunks and keep the executable bit. Paths outside the copy and symlinks out of it are refused. The client remembers the node of the last `exec` per checkout and pulls from it (`--remote` overrides). Exec, pull and their errors name the node and the copy. The new MCP tool `code_pull` does the same (#1145).
+
 ### Fixed
 - **Workspace Sync Answers While the Rust Engine Is Busy** (`crates/prod-code-gateway`, `crates/prod-code-mcp`):
   `apply_sync`, `apply_sync_probe` and `handle_session_sync` awaited each loaded Rust engine's lock to update the synced files' base text, holding the workspace sync lock meanwhile. A query stuck on an analysis snapshot keeps that lock, so the sync was never answered and every later probe for the workspace hung behind it (`pre-flight workspace sync failed: workspace sync was not acknowledged: timed out waiting for sync response`, then `timed out waiting for sync probe response`). The files are now written and answered first; `push_base_updates` (`sync/base_updates.rs`) waits at most 5 s for the engines and otherwise lets them take the files in the background, reading each file from disk under the engine's own lock so a late update cannot apply older text. A client that still times out now names the gateway, the wait and the next step (#1143).

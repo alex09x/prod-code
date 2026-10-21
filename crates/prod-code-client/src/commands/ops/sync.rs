@@ -69,11 +69,14 @@ pub async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()
 }
 
 pub async fn run_pull(remote: SocketAddr, root: &Path, files: Vec<PathBuf>) -> Result<()> {
-    let touched = prod_code_mcp::sync::pull_remote_files(remote, root, &files).await?;
+    let outcome = prod_code_mcp::sync::pull_remote_files_from(remote, root, &files).await?;
+    let touched = outcome.files;
     if !touched.is_empty() {
         println!(
-            "📥 Successfully pulled {} file(s) from gateway:\n  {}",
+            "📥 Successfully pulled {} file(s) from gateway (node {}, copy {}):\n  {}",
             touched.len(),
+            outcome.node,
+            outcome.server_workspace_root,
             touched.join("\n  ")
         );
     } else {

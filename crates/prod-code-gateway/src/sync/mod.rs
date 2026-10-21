@@ -9,6 +9,8 @@
  */
 
 pub mod apply;
+pub mod artifact_pull;
+pub(crate) mod artifact_target;
 pub(crate) mod base_updates;
 pub(crate) mod config_meta;
 pub mod file_write;

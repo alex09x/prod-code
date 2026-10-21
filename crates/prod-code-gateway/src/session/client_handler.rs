@@ -249,6 +249,11 @@ pub async fn handle_client(
                 state.metrics.record(ev);
                 framed.send(WireMessage::SearchResponse(resp)).await?;
             }
+            WireMessage::PullFileRequest(req) => {
+                let response =
+                    crate::sync::artifact_pull::pull_workspace_file(&state.storage_root, &req);
+                framed.send(WireMessage::PullFileResponse(response)).await?;
+            }
             WireMessage::ReadFileRequest(req) => {
                 let start = std::time::Instant::now();
                 let resp = read_server_file(&state.storage_root, &req);

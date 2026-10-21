@@ -304,6 +304,7 @@ and SVG vector graphics are validated directly through built-in syntax parsers.
 |---|---|
 | `code_check` · `code_lint` · `code_test` · `code_benchmarks` | compile check, lint, test, and benchmark on the node with parsed diagnostics; `path` narrows scope; `fix: true` applies compiler fixes |
 | `code_exec` | execute any build or toolchain command in remote workspace copy; modified files, formatters, and lockfiles are written back |
+| `code_pull` | retrieve files and compiled artifacts from the last execution node, preserving executable permissions; reports the node and checkout copy |
 | `code_diagnose_failure` | run tests and generate diagnostic failure dossiers with sites, callers, changes, and printed assertion operands |
 
 **Operate it**
@@ -449,6 +450,23 @@ $ prod-code cluster
 files, `package.json`, `pyproject`, `CMakeLists`…). Dependencies live on the node: run
 `prod-code exec -- bun install`, `-- uv sync` or `-- npm ci` once per checkout and the
 language servers and test runners use them.
+
+Retrieve compiled outputs with the same checkout identity used for execution:
+
+```sh
+prod-code exec -- cargo build --release --bin my-program
+prod-code pull target/release/my-program
+```
+
+Exec and pull print the actual node and checkout copy. Pull remembers the last exec node for
+this checkout independently of analyzer placement; `--remote NODE` overrides it. The MCP
+equivalent is `code_pull` with `files: ["target/release/my-program"]` and an optional `remote`.
+Transfers use 4 MiB chunks, so binaries larger than 64 MiB can be retrieved. When exec uses an
+isolated RAM build cache, `target/...` resolves to the target directory recorded for that
+execution. Only files inside that checkout's copy or its recorded build target are eligible;
+symlinks into other copies or host directories are refused.
+Both the client and gateway must support artifact pull. A missing file names the node and copy
+searched and suggests checking the node printed by exec.
 
 ## Configuration
 

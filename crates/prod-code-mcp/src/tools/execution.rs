@@ -206,6 +206,10 @@ pub async fn execute_tool(
     } else {
         WorkspaceMutationGuard::Write(lock.write_owned().await)
     };
+    // A pull names checkout-relative artifact paths that need not exist locally (#1145).
+    if tool_name == "code_pull" {
+        return dispatch_tool(remote, workspace_root, tool_name, args).await;
+    }
     // Normalize path parameter across aliases: path, file_path, file, package, crate (#673, #900)
     let mut args = args;
     let initial_path = args

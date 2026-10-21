@@ -295,6 +295,25 @@ async fn handle_client(
                     }))
                     .await?;
             }
+            WireMessage::PullFileRequest(req) => {
+                let bytes = b"pub fn mocked_remote_source() {}\n".to_vec();
+                framed
+                    .send(WireMessage::PullFileResponse(
+                        prod_code_protocol::PullFileResponse {
+                            server_workspace_root: "/remote/test-copy".into(),
+                            offset: req.offset,
+                            total_bytes: bytes.len() as u64,
+                            file: ReadFileResponse {
+                                path: req.path,
+                                content: Some(bytes),
+                                truncated: false,
+                                is_executable: Some(false),
+                                error: None,
+                            },
+                        },
+                    ))
+                    .await?;
+            }
             WireMessage::ReadFileRequest(req) => {
                 framed
                     .send(WireMessage::ReadFileResponse(ReadFileResponse {
