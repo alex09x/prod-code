@@ -5,6 +5,8 @@
 ### Fixed
 - **Workspace Sync Answers While the Rust Engine Is Busy** (`crates/prod-code-gateway`, `crates/prod-code-mcp`):
   `apply_sync`, `apply_sync_probe` and `handle_session_sync` awaited each loaded Rust engine's lock to update the synced files' base text, holding the workspace sync lock meanwhile. A query stuck on an analysis snapshot keeps that lock, so the sync was never answered and every later probe for the workspace hung behind it (`pre-flight workspace sync failed: workspace sync was not acknowledged: timed out waiting for sync response`, then `timed out waiting for sync probe response`). The files are now written and answered first; `push_base_updates` (`sync/base_updates.rs`) waits at most 5 s for the engines and otherwise lets them take the files in the background, reading each file from disk under the engine's own lock so a late update cannot apply older text. A client that still times out now names the gateway, the wait and the next step (#1143).
+- **Exact Declarations in Nested Projects After Root Prefix Matches** (`crates/prod-code-mcp`):
+  Since v0.3.34, `symbol_search_across_projects` (`tools/symbols/across_projects.rs`) stopped at the root project's prefix or substring matches, so `code_symbols foo` returned `foobar` but missed `func Foo()` in a nested Go module. With such matches it now asks the nested projects that declare the name in any case (`declared_at`), and spends at most 2 s finding them. It still skips projects that only mention the name, so substring queries stay fast (#1124, #1150).
 
 ## v0.3.32 — 2026-10-17
 
