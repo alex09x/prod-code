@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.38 — 2026-10-22
+
 ### Fixed
 - **Rust Engine Writers Revoke Snapshots Before Taking the VFS Lock** (`crates/prod-code-engine-rust`, `crates/prod-code-gateway`):
   The second deadlock between engine writes and analysis snapshots (#1190 was the first). A writer took the VFS write lock and then set Salsa inputs. Salsa waits for every snapshot to be dropped, while a snapshot query waited for the VFS lock. Every snapshot's `Analysis` is now a revocable handle (`snapshot/lifetime.rs`). Before a writer takes the VFS lock, `prepare_mutation` revokes idle handles at once and triggers cancellation for active ones, which release their handle as they unwind. A gateway query that times out or is cancelled now revokes its snapshot instead of leaving it alive in the background (`lsp/bounded_query_control.rs`), and the query preparation runs off the runtime thread (#1210).
