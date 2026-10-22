@@ -53,6 +53,26 @@ pub(crate) async fn execute_batch_symbols(
     base_args: serde_json::Value,
     symbols: &[String],
 ) -> Result<McpToolCallResult> {
+    run_symbol_batch(base_args, symbols, |args| {
+        Box::pin(super::execution::execute_tool(
+            remote,
+            workspace_root,
+            tool_name,
+            args,
+        ))
+    })
+    .await
+}
+
+async fn run_symbol_batch<F, Fut>(
+    base_args: serde_json::Value,
+    symbols: &[String],
+    mut execute: F,
+) -> Result<McpToolCallResult>
+where
+    F: FnMut(serde_json::Value) -> Fut,
+    Fut: std::future::Future<Output = Result<McpToolCallResult>>,
+{
     let total = symbols.len();
     let shared_budget = if let Some(ms) = base_args.get("budget_ms").and_then(|v| v.as_u64()) {
         std::time::Duration::from_millis(ms.max(1))
@@ -71,20 +91,16 @@ pub(crate) async fn execute_batch_symbols(
 
     for (idx, sym) in symbols.iter().enumerate() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            out.push_str(&format!(
-                "\n[Partial result: shared server time budget ({:.1}s) expired after {idx}/{total} symbols.]\n",
-                shared_budget.as_secs_f64()
-            ));
-            break;
-        }
+        // Reserve a share for every remaining symbol. Unused time from a fast lookup is
+        // available to later ones, but one slow lookup cannot spend their shares (#1168).
+        let share = remaining / u32::try_from(total - idx).unwrap_or(u32::MAX);
         let mut sym_args = base_args.clone();
         if let Some(obj) = sym_args.as_object_mut() {
             obj.remove("symbols");
             obj.insert("symbol".into(), serde_json::Value::String(sym.clone()));
             obj.insert(
                 "budget_ms".into(),
-                serde_json::json!((remaining.as_millis() as u64).max(1)),
+                serde_json::json!((share.as_millis() as u64).max(1)),
             );
         }
         if idx > 0 {
@@ -92,17 +108,7 @@ pub(crate) async fn execute_batch_symbols(
         }
         out.push_str(&format!("=== [{}/{total}] {sym} ===\n", idx + 1));
 
-        match tokio::time::timeout(
-            remaining,
-            Box::pin(super::execution::execute_tool(
-                remote,
-                workspace_root,
-                tool_name,
-                sym_args,
-            )),
-        )
-        .await
-        {
+        match tokio::time::timeout(share, execute(sym_args)).await {
             Ok(Ok(res)) => {
                 if !res.is_error {
                     any_ok = true;
@@ -118,11 +124,11 @@ pub(crate) async fn execute_batch_symbols(
             }
             Err(_) => {
                 out.push_str(&format!(
-                    "[Timed out on symbol {}/{total} (`{sym}`) after {:.1}s shared server budget; returning partial batch result.]\n",
+                    "[Timed out on symbol {}/{total} (`{sym}`) after its {:.1}s share of the {:.1}s batch budget; retry this symbol alone or provide its file and position to narrow the lookup. Run `prod-code cluster` if the gateway remains busy.]\n",
                     idx + 1,
+                    share.as_secs_f64(),
                     shared_budget.as_secs_f64()
                 ));
-                break;
             }
         }
     }
@@ -139,6 +145,60 @@ pub(crate) async fn execute_batch_symbols(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn symbol_timeout_regression_preserves_later_results() {
+        let symbols = vec!["Slow".into(), "Fast".into(), "Last".into()];
+        let mut attempted = Vec::new();
+        let result = run_symbol_batch(
+            serde_json::json!({ "symbols": symbols, "budget_ms": 120 }),
+            &symbols,
+            |args| {
+                let symbol = args["symbol"].as_str().unwrap().to_owned();
+                attempted.push(symbol.clone());
+                assert!(args.get("symbols").is_none());
+                if symbol == "Slow" {
+                    assert!(args["budget_ms"].as_u64().unwrap() <= 40);
+                }
+                async move {
+                    if symbol == "Slow" {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(McpToolCallResult::text(format!("definition of {symbol}")))
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(attempted, symbols, "every symbol must get an attempt");
+        assert!(!result.is_error, "later successes must be retained");
+        let McpContentItem::Text { text } = &result.content[0];
+        assert!(text.contains("Timed out on symbol 1/3 (`Slow`)"), "{text}");
+        assert!(text.contains("definition of Fast"), "{text}");
+        assert!(text.contains("definition of Last"), "{text}");
+        assert!(
+            text.contains("retry"),
+            "timeout must say what to do: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn symbol_timeout_regression_reports_every_failure() {
+        let symbols = vec!["Slow".into(), "AlsoSlow".into(), "Last".into()];
+        let result = run_symbol_batch(serde_json::json!({ "budget_ms": 30 }), &symbols, |_| {
+            std::future::pending::<Result<McpToolCallResult>>()
+        })
+        .await
+        .unwrap();
+        assert!(result.is_error);
+        let McpContentItem::Text { text } = &result.content[0];
+        for (idx, symbol) in symbols.iter().enumerate() {
+            assert!(
+                text.contains(&format!("Timed out on symbol {}/3 (`{symbol}`)", idx + 1)),
+                "{text}"
+            );
+        }
+    }
 
     #[test]
     fn extract_batch_symbols_deduplicates_and_preserves_order() {

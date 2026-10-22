@@ -30,6 +30,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+#[path = "cli/outline_paths.rs"]
+mod outline_paths;
+
 /// In-process mock gateway that supports all WireMessage variants and dispatches LSP methods.
 pub struct MockGateway {
     pub addr: SocketAddr,
