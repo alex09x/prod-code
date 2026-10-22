@@ -167,13 +167,17 @@ pub async fn handle_client(
                 );
                 let touched: Vec<String> =
                     req.files.iter().map(|f| f.relative_path.clone()).collect();
-                let resp = apply_sync_with_metrics(
-                    &state.storage_root,
-                    &state.workspace_manager,
-                    Some(&state.metrics),
-                    req,
+                let resp = super::heartbeat::with_heartbeat(
+                    &mut framed,
+                    super::heartbeat::HEARTBEAT_EVERY,
+                    apply_sync_with_metrics(
+                        &state.storage_root,
+                        &state.workspace_manager,
+                        Some(&state.metrics),
+                        req,
+                    ),
                 )
-                .await;
+                .await?;
                 // The files an agent is editing are the ones it validates next: warm them now
                 // (#233).
                 let synced_rust = priming::synced_rust_files(&workspace, &touched);
@@ -193,8 +197,13 @@ pub async fn handle_client(
             }
             WireMessage::SyncProbeRequest(req) => {
                 let start = std::time::Instant::now();
-                let resp =
-                    apply_sync_probe(&state.storage_root, &state.workspace_manager, req).await;
+                // Seeding a new worktree's copy can take longer than the client waits (#1164).
+                let resp = super::heartbeat::with_heartbeat(
+                    &mut framed,
+                    super::heartbeat::HEARTBEAT_EVERY,
+                    apply_sync_probe(&state.storage_root, &state.workspace_manager, req),
+                )
+                .await?;
                 let mut ev = metrics::Event::blank("sync");
                 ev.method = "sync_probe".to_string();
                 ev.duration_ms = start.elapsed().as_millis() as u64;

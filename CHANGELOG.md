@@ -5,6 +5,8 @@
 ### Fixed
 - **Shadow Test Jobs Get Their Own Hypothesis Directories** (`crates/prod-code-gateway`, tests only):
   The test fixture `job()` gave every job nonce 7. Successive overlay and in-place runs in one test shared a hypothesis directory, and a late teardown removed the next run's script (`sh: cannot open .../run.sh`), which failed the coverage gate under load. Each job now takes a distinct nonce (#1183).
+- **A Worktree's First Probe No Longer Times Out While Its Copy Is Seeded** (`crates/prod-code-gateway`, `crates/prod-code-mcp`):
+  The first probe of a new worktree seeds its copy from the main checkout's. Four seeds at once took 67-70 s on one node, past the client's 30 s probe wait, so `exec` and `outline` failed with `pre-flight workspace sync failed: timed out waiting for sync probe response`, although the gateway finished later. Now the gateway sends a `Pong` every 5 s while it answers a probe or a sync (`session/heartbeat.rs`), and the client's wait counts from the last frame instead of from the request, up to 15 minutes in all (`wait_for_message_capped`). Older clients skip the keepalives as before (#1164, #1165, #1166, #1174).
 
 ## v0.3.35 — 2026-10-22
 
