@@ -93,7 +93,7 @@ pub(super) async fn validate_texts_single_engine(
     {
         let checkout = budget
             .run(
-                Duration::from_secs(10),
+                budget.session,
                 "opening baseline session",
                 LspSession::open_for_validation(remote, root, hint),
             )
@@ -180,7 +180,7 @@ pub(super) async fn validate_texts_single_engine(
 
     let session = budget
         .run(
-            Duration::from_secs(10),
+            budget.session,
             "opening proposal session",
             LspSession::open_for_validation(remote, root, hint),
         )

@@ -105,17 +105,23 @@ async fn validate_batch_timeout_preserves_other_files_and_also_check() {
         json!([])
     })
     .await;
-    let reports = validate_texts(
-        gateway.addr(),
-        &ws.root(),
-        &[
-            ("a.rs".into(), "fn proposed_a() {}".into()),
-            ("b.rs".into(), "fn proposed_b() {}".into()),
-        ],
-        &["c.rs".into()],
-    )
-    .await
-    .expect("a slow file must yield a partial batch");
+    let edits = [
+        ("a.rs".into(), "fn proposed_a() {}".into()),
+        ("b.rs".into(), "fn proposed_b() {}".into()),
+    ];
+    // A refactoring's own check refuses to call an unchecked file clean or broken.
+    let refused = validate_texts(gateway.addr(), &ws.root(), &edits, &["c.rs".into()])
+        .await
+        .expect_err("an unchecked file stops a refactoring's check");
+    assert!(
+        refused.to_string().contains("was not validated"),
+        "{refused:#}"
+    );
+    // The agent's own call gets every result it can.
+    let reports =
+        super::validate_texts_interactive(gateway.addr(), &ws.root(), &edits, &["c.rs".into()])
+            .await
+            .expect("a slow file must yield a partial batch");
     assert_eq!(
         reports.iter().map(|r| r.file.as_str()).collect::<Vec<_>>(),
         ["a.rs", "b.rs", "c.rs"]
