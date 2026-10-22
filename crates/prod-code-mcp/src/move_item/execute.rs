@@ -226,7 +226,14 @@ pub async fn move_item(
     } else {
         for (path, positions) in &by_file {
             if path == target {
-                continue; // home already
+                // The declaration now lives here, but an import of its old path (notably a
+                // parent's re-export from the child) still points at the file it left (#1201).
+                let (text, dropped) = drop_import(&rewritten[target], &name);
+                for note in dropped {
+                    imports.push(format!("{}: {note}", display(root, path)));
+                }
+                rewritten.insert(target.to_path_buf(), text);
+                continue;
             }
             let Ok((_, module)) = module_of(path) else {
                 left_alone.push(format!(
