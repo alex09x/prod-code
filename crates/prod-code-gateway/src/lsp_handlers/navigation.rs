@@ -51,15 +51,17 @@ pub(crate) fn lsp_call_hierarchy(
     let translator_task = translator.clone();
     let session_id = view.session_id;
     let is_single_owner = view.is_single_owner();
+    let timeout = semantic_query_budget(params);
 
     tokio::task::spawn(async move {
         let m = method_name.clone();
         let fp = fp_clone.clone();
-        let outcome = execute_bounded_query(
+        let outcome = execute_bounded_query_with_timeout(
             &engine_arc,
             session_id,
             &fp_clone,
             is_single_owner,
+            timeout,
             move |snapshot| hierarchy_query(snapshot, &m, &fp, line, col),
         )
         .await;

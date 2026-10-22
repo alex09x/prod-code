@@ -19,6 +19,8 @@
   `prod-code exec -- cargo fmt --all` printed nothing for over five minutes and had to be killed, and afterwards `prod-code cluster` still listed `cargo fmt --all` as running on a node where no such process existed.
   - `stream_exec` (`runner/exec_stream.rs`, shared by plain and structured exec) drops the running-command record as soon as the process exits, answers the client's `Ping` during a run, and kills the process group when the client leaves.
   - The client (`exec/progress.rs`) names the pre-flight step it waits on once it has waited 10 s, so a quick exec prints nothing extra. During a silent command it pings the gateway every 10 s and prints that it is still waiting, and it stops with an actionable message when the gateway goes 30 s without any frame (#1177).
+- **Batch Edit Validation Survives Writes and Slow Files** (`crates/prod-code-mcp`, `crates/prod-code-gateway`):
+  `code_validate_edits` on a batch of Rust files failed whole with `textDocument/diagnostic failed: cancelled because of pending write` or `query timed out after 60s`. Now a cancelled diagnostic is retried on a fresh snapshot, until a deadline rather than three times. Each file's diagnostic query gets at most 5 s within a shared 90 s batch deadline, which the gateway honours (`prodCodeTimeoutMs`, never above its own 60 s bound). A file that cannot be checked in time is named as incomplete while the other files keep their results (`diagnostics/validate/budget.rs`, `engine.rs`) (#1172, #1175, #1176).
 
 ## v0.3.35 — 2026-10-22
 

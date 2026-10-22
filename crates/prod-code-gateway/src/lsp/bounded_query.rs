@@ -14,9 +14,15 @@ use crate::*;
 /// symbols) may run before being terminated with a server-side timeout error.
 pub(crate) const SEMANTIC_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Maximum transparent retries when a snapshot query is cancelled by a concurrent mutation
-/// (e.g. an edit or sync mutating the Salsa database).
-pub(crate) const MAX_CANCELLATION_RETRIES: usize = 3;
+/// Validation requests carry their remaining per-file budget. Never let a client enlarge
+/// the server's own query bound, including through malformed or oversized hints.
+pub(crate) fn semantic_query_budget(params: &serde_json::Value) -> Duration {
+    params
+        .get("prodCodeTimeoutMs")
+        .and_then(serde_json::Value::as_u64)
+        .map(|ms| Duration::from_millis(ms.max(1)).min(SEMANTIC_QUERY_TIMEOUT))
+        .unwrap_or(SEMANTIC_QUERY_TIMEOUT)
+}
 
 /// Maximum concurrent semantic read queries executing in the blocking pool (#3111).
 pub(crate) const MAX_CONCURRENT_SEMANTIC_QUERIES: usize = 16;
@@ -30,6 +36,19 @@ pub(crate) static SEMANTIC_QUERY_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync:
 
 /// Counter of currently active queries that have timed out and are still running in the background.
 pub(crate) static STALLED_QUERIES_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// `60s` for the usual whole-second bound, milliseconds for a validation's remaining share.
+fn timeout_label(timeout: Duration) -> String {
+    if timeout.subsec_millis() == 0 {
+        format!("{}s", timeout.as_secs())
+    } else {
+        format!("{}ms", timeout.as_millis())
+    }
+}
+
+#[cfg(test)]
+#[path = "validation_query_tests.rs"]
+mod validation_query_tests;
 
 /// Executes a read query on a thread-safe snapshot of `RustEngine`.
 ///
@@ -52,14 +71,40 @@ where
     T: Send + 'static,
     F: Fn(&prod_code_engine_rust::RustEngineSnapshot) -> anyhow::Result<T> + Clone + Send + 'static,
 {
-    let deadline = Instant::now() + SEMANTIC_QUERY_TIMEOUT;
+    execute_bounded_query_with_timeout(
+        engine_lock,
+        session_id,
+        file_path,
+        is_single_owner,
+        SEMANTIC_QUERY_TIMEOUT,
+        query_fn,
+    )
+    .await
+}
+
+/// Uses the caller's remaining validation budget without abandoning the worker's permit.
+/// Cancellation retries share this deadline and always take a new engine snapshot.
+pub(crate) async fn execute_bounded_query_with_timeout<T, F>(
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+    session_id: u64,
+    file_path: &Path,
+    is_single_owner: bool,
+    timeout: Duration,
+    query_fn: F,
+) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: Fn(&prod_code_engine_rust::RustEngineSnapshot) -> anyhow::Result<T> + Clone + Send + 'static,
+{
+    let timeout = timeout.min(SEMANTIC_QUERY_TIMEOUT);
+    let deadline = Instant::now() + timeout;
     let mut retries = 0;
 
     let now = Instant::now();
     if now >= deadline {
         return Err(anyhow::anyhow!(
-            "query timed out after {}s",
-            SEMANTIC_QUERY_TIMEOUT.as_secs()
+            "query timed out after {}",
+            timeout_label(timeout)
         ));
     }
     let remaining = deadline - now;
@@ -90,8 +135,8 @@ where
         let now = Instant::now();
         if now >= deadline {
             return Err(anyhow::anyhow!(
-                "query timed out after {}s",
-                SEMANTIC_QUERY_TIMEOUT.as_secs()
+                "query timed out after {}",
+                timeout_label(timeout)
             ));
         }
         let remaining = deadline - now;
@@ -115,8 +160,8 @@ where
             }
             Err(_elapsed) => {
                 return Err(anyhow::anyhow!(
-                    "query timed out after {}s waiting for engine lock",
-                    SEMANTIC_QUERY_TIMEOUT.as_secs()
+                    "query timed out after {} waiting for engine lock",
+                    timeout_label(timeout)
                 ));
             }
         };
@@ -156,8 +201,8 @@ where
                 STALLED_QUERIES_COUNT.fetch_sub(1, Ordering::Relaxed);
             });
             return Err(anyhow::anyhow!(
-                "query timed out after {}s",
-                SEMANTIC_QUERY_TIMEOUT.as_secs()
+                "query timed out after {}",
+                timeout_label(timeout)
             ));
         }
         let remaining = deadline - now;
@@ -165,10 +210,8 @@ where
         match tokio::time::timeout(remaining, query_task.as_mut()).await {
             Ok(Ok(Ok(val))) => return Ok(val),
             Ok(Ok(Err(err))) => {
-                if prod_code_engine_rust::is_salsa_cancelled(&err)
-                    && retries < MAX_CANCELLATION_RETRIES
-                {
-                    let backoff = Duration::from_millis(5 * (retries + 1) as u64);
+                if prod_code_engine_rust::is_salsa_cancelled(&err) {
+                    let backoff = Duration::from_millis(5 * (retries + 1).min(10) as u64);
                     if Instant::now() + backoff < deadline {
                         retries += 1;
                         tracing::debug!(
@@ -180,6 +223,10 @@ where
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
+                    return Err(anyhow::anyhow!(
+                        "query timed out after {} retrying cancelled snapshots",
+                        timeout_label(timeout)
+                    ));
                 }
                 return Err(err);
             }
@@ -210,8 +257,8 @@ where
                     STALLED_QUERIES_COUNT.fetch_sub(1, Ordering::Relaxed);
                 });
                 return Err(anyhow::anyhow!(
-                    "query timed out after {}s",
-                    SEMANTIC_QUERY_TIMEOUT.as_secs()
+                    "query timed out after {}",
+                    timeout_label(timeout)
                 ));
             }
         }
