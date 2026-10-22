@@ -279,7 +279,12 @@ pub(crate) async fn collect_multi_target_references(
                 };
                 record_file_uses(&uri_str, uses_to_record, wanted_len, seen_locs, all_locs);
 
-                if checkout_use_note.is_none() && initial_was_empty && !is_declaration_file {
+                // Same-file Swift uses are the declaration target's own (#1135); a Rust use in
+                // the declaring file (a recursive call) is still where the answer came from.
+                if checkout_use_note.is_none()
+                    && initial_was_empty
+                    && !(is_declaration_file && is_swift)
+                {
                     let is_external = crate::remote_fs::is_external(
                         workspace_root,
                         &declaration.to_string_lossy(),

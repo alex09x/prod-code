@@ -14,7 +14,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use crate::test_cache_support::{self, ample_disk_space};
 
 #[cfg(unix)]
 #[test]
@@ -37,7 +37,7 @@ fn shared_stub_cache_link_is_recognized_by_canonical_target() {
 
 #[test]
 fn test_python_stub_cache_env_and_path() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("my-custom-python-stubs");
 
@@ -78,7 +78,7 @@ fn test_is_python_project_detection() {
 
 #[test]
 fn test_merge_stubs_and_seed_worktree() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-stubs");
     unsafe {
@@ -275,7 +275,7 @@ fn test_mypypath_view_exposes_stub_only_packages_by_import_name() {
 
 #[test]
 fn test_seed_python_worktree_exposes_mypypath_view() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-stubs-mypypath");
     unsafe {
@@ -296,7 +296,7 @@ fn test_seed_python_worktree_exposes_mypypath_view() {
     fs::create_dir_all(&req_stubs).unwrap();
     fs::write(req_stubs.join("__init__.pyi"), "def get(url: str): ...\n").unwrap();
 
-    seed_python_worktree(&from, &to).unwrap();
+    seed_python_worktree_within(&from, &to, ample_disk_space()).unwrap();
 
     let envs = python_stub_cache_env_for_workspace(&to);
     let mypypath = envs
@@ -367,7 +367,7 @@ fn test_mypypath_view_fallback_on_unready_directory() {
 
 #[test]
 fn test_seed_python_worktree_propagates_mypypath_error() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let cache = temp.path().join("cache");
     unsafe {
@@ -392,7 +392,7 @@ fn test_seed_python_worktree_propagates_mypypath_error() {
     fs::create_dir_all(&target).unwrap();
     fs::write(target.join(".mypypath"), "blocker").unwrap();
 
-    assert!(seed_python_worktree(&from, &to).is_err());
+    assert!(seed_python_worktree_within(&from, &to, ample_disk_space()).is_err());
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
     }

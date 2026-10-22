@@ -67,7 +67,11 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         sweep_ram_build_caches(&build_cache_base);
     }
     state.workspace_manager = Arc::new(WorkspaceManager::with_admission_and_concurrency(
-        Arc::new(admission::Admission::host(cli.engine_reserve_mib)),
+        Arc::new(if cli.no_admission {
+            admission::Admission::unbounded()
+        } else {
+            admission::Admission::host(cli.engine_reserve_mib)
+        }),
         cli.max_concurrent_engine_loads,
     ));
     state.engine_allowlist = cli

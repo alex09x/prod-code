@@ -287,6 +287,7 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
         storage,
         idle_evict_secs: 1800,
         engine_reserve_mib: 0,
+        no_admission: false,
         max_concurrent_engine_loads: 1,
         prune_worktree_secs: 3600,
         prune_worktree_days: Some(7),

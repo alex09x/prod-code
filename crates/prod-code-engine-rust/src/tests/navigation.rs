@@ -149,6 +149,7 @@ fn native_queries_accept_utf16_and_eof_positions() {
 fn an_exact_name_is_found_past_the_fuzzy_matches_that_fill_the_limit() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
+    super::configure_test_workspace(ws);
     std::fs::create_dir_all(ws.join("src")).unwrap();
     std::fs::write(
         ws.join("Cargo.toml"),
@@ -202,6 +203,7 @@ fn symbol_search_falls_back_to_dependency_crates() {
 
     let ws = temp.path().join("app");
     std::fs::create_dir_all(ws.join("src")).unwrap();
+    super::configure_test_workspace(&ws);
     std::fs::create_dir_all(ws.join(".cargo")).unwrap();
     std::fs::write(
         ws.join("Cargo.toml"),

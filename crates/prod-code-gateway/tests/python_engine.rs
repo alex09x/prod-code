@@ -10,21 +10,29 @@
 
 #![cfg(unix)]
 
-use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::python_cache::{
-    find_venv_stubs, is_python_project, merge_stubs, prune_stale_stub_cache_in,
-    prune_stale_stub_cache_with_grace, python_stub_cache_dir, python_stub_cache_env,
-    seed_python_worktree, seed_python_worktree_within, tree_size,
-    PYTHON_STUB_CACHE_ENV, TMP_STUB_GRACE_PERIOD,
+    PYTHON_STUB_CACHE_ENV, TMP_STUB_GRACE_PERIOD, find_venv_stubs, is_python_project, merge_stubs,
+    prune_stale_stub_cache_in, prune_stale_stub_cache_with_grace, python_stub_cache_dir,
+    python_stub_cache_env, seed_python_worktree_within, tree_size,
 };
+use prod_code_gateway::{DiskSpace, polyglot_compiler_cache_env};
 use std::fs;
 use std::time::Duration;
 
-static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[path = "../src/test_cache_support.rs"]
+mod test_cache_support;
+use test_cache_support::ample_disk_space;
+
+fn seed_python_worktree(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<Option<u64>> {
+    seed_python_worktree_within(from, to, ample_disk_space())
+}
 
 #[test]
 fn test_python_stub_cache_dir_and_env_resolution() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("isolated-python-stubs");
 
@@ -39,9 +47,15 @@ fn test_python_stub_cache_dir_and_env_resolution() {
     let envs = python_stub_cache_env();
     let cache_str = custom_cache.to_str().unwrap();
 
-    assert!(envs.iter().any(|(k, v)| k == PYTHON_STUB_CACHE_ENV && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == PYTHON_STUB_CACHE_ENV && v == cache_str)
+    );
     assert!(envs.iter().any(|(k, v)| k == "MYPYPATH" && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "TYPINGS_PATH" && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "TYPINGS_PATH" && v == cache_str)
+    );
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
@@ -50,7 +64,7 @@ fn test_python_stub_cache_dir_and_env_resolution() {
 
 #[test]
 fn test_polyglot_compiler_cache_env_contains_python_stub_cache() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("polyglot-python-cache");
 
@@ -62,11 +76,18 @@ fn test_polyglot_compiler_cache_env_contains_python_stub_cache() {
     fs::create_dir_all(&ws).unwrap();
 
     let envs = polyglot_compiler_cache_env(&ws, false, None);
-    let cache_str = custom_cache.to_str().unwrap();
+    let workspace_typings = ws.join("typings");
+    let cache_str = workspace_typings.to_str().unwrap();
 
-    assert!(envs.iter().any(|(k, v)| k == PYTHON_STUB_CACHE_ENV && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == PYTHON_STUB_CACHE_ENV && v == cache_str)
+    );
     assert!(envs.iter().any(|(k, v)| k == "MYPYPATH" && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "TYPINGS_PATH" && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "TYPINGS_PATH" && v == cache_str)
+    );
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
@@ -87,7 +108,7 @@ fn test_is_python_project_detection() {
 
 #[test]
 fn test_seed_python_worktree_typings_and_symlink() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-stubs");
     unsafe {
@@ -110,7 +131,12 @@ fn test_seed_python_worktree_typings_and_symlink() {
 
     // Verify stubs were merged into this dependency-set's cache view.
     let to_typings = to.join("typings");
-    assert!(fs::symlink_metadata(&to_typings).unwrap().file_type().is_symlink());
+    assert!(
+        fs::symlink_metadata(&to_typings)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     let cache_view = fs::read_link(&to_typings).unwrap();
     assert!(cache_view.starts_with(&custom_cache));
     assert!(cache_view.join("pandas").join("__init__.pyi").is_file());
@@ -123,7 +149,7 @@ fn test_seed_python_worktree_typings_and_symlink() {
 
 #[test]
 fn test_seed_python_worktree_venv_stubs_discovery() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-stubs-venv");
     unsafe {
@@ -136,7 +162,11 @@ fn test_seed_python_worktree_venv_stubs_discovery() {
     fs::write(from.join("requirements.txt"), "torch\n").unwrap();
 
     // Mock virtual environment with *-stubs
-    let sp = from.join(".venv").join("lib").join("python3.11").join("site-packages");
+    let sp = from
+        .join(".venv")
+        .join("lib")
+        .join("python3.11")
+        .join("site-packages");
     let torch_stubs = sp.join("torch-stubs");
     fs::create_dir_all(&torch_stubs).unwrap();
     fs::write(torch_stubs.join("__init__.pyi"), "class Tensor: ...\n").unwrap();
@@ -151,7 +181,12 @@ fn test_seed_python_worktree_venv_stubs_discovery() {
     let to_typings = to.join("typings");
     let cache_view = fs::read_link(&to_typings).unwrap();
     assert!(cache_view.starts_with(&custom_cache));
-    assert!(cache_view.join("torch-stubs").join("__init__.pyi").is_file());
+    assert!(
+        cache_view
+            .join("torch-stubs")
+            .join("__init__.pyi")
+            .is_file()
+    );
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
@@ -160,7 +195,7 @@ fn test_seed_python_worktree_venv_stubs_discovery() {
 
 #[test]
 fn test_seed_python_worktree_updates_pyrightconfig() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-stubs-cfg");
     unsafe {
@@ -179,7 +214,10 @@ fn test_seed_python_worktree_updates_pyrightconfig() {
 
     let cfg_str = fs::read_to_string(to.join("pyrightconfig.json")).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&cfg_str).unwrap();
-    assert_eq!(parsed.get("stubPath").and_then(|s| s.as_str()), Some("typings"));
+    assert_eq!(
+        parsed.get("stubPath").and_then(|s| s.as_str()),
+        Some("typings")
+    );
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
@@ -188,6 +226,7 @@ fn test_seed_python_worktree_updates_pyrightconfig() {
 
 #[test]
 fn test_seed_python_worktree_skips_non_python_projects() {
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let from = temp.path().join("rust-workspace");
     let to = temp.path().join("new-worktree");
@@ -202,7 +241,7 @@ fn test_seed_python_worktree_skips_non_python_projects() {
 
 #[test]
 fn test_seed_python_worktree_skips_when_disk_space_insufficient() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-stubs-tight");
     unsafe {
@@ -226,12 +265,17 @@ fn test_seed_python_worktree_skips_when_disk_space_insufficient() {
     let result = seed_python_worktree_within(&from, &to, restricted_space).unwrap();
     assert!(result.is_some());
 
-    // Heavy stubs not copied due to insufficient space
-    assert!(!custom_cache.join("heavy_module").exists());
-
     // But symlink to typings still established
     let to_typings = to.join("typings");
-    assert!(fs::symlink_metadata(&to_typings).unwrap().file_type().is_symlink());
+    assert!(
+        fs::symlink_metadata(&to_typings)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let cache_view = fs::read_link(&to_typings).unwrap();
+    assert!(cache_view.starts_with(&custom_cache));
+    assert!(!cache_view.join("heavy_module").exists());
 
     unsafe {
         std::env::remove_var(PYTHON_STUB_CACHE_ENV);
@@ -312,7 +356,7 @@ fn test_merge_stubs_direct() {
 
 #[test]
 fn test_seed_python_worktree_skips_venv_stubs_when_disk_space_insufficient() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-stubs-venv-tight");
     unsafe {
@@ -343,7 +387,12 @@ fn test_seed_python_worktree_skips_venv_stubs_when_disk_space_insufficient() {
 
     // venv stubs must NOT be copied due to insufficient space.
     let to_typings = to.join("typings");
-    assert!(fs::symlink_metadata(&to_typings).unwrap().file_type().is_symlink());
+    assert!(
+        fs::symlink_metadata(&to_typings)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     let cache_view = fs::read_link(&to_typings).unwrap();
     assert!(cache_view.starts_with(&custom_cache));
     assert!(!cache_view.join("pandas-stubs").exists());
@@ -399,14 +448,20 @@ fn test_merge_stubs_concurrent_newer_wins_preserved() {
     // 1. Publish newer version first
     let written = merge_stubs(&src_new, &dst).unwrap();
     assert!(written > 0);
-    assert_eq!(fs::read(dst.join("version.pyi")).unwrap(), b"VERSION = '2.0.0'\n");
+    assert_eq!(
+        fs::read(dst.join("version.pyi")).unwrap(),
+        b"VERSION = '2.0.0'\n"
+    );
 
     // 2. An older source merges later (e.g. slow worker racing)
     let re_written = merge_stubs(&src_old, &dst).unwrap();
     assert_eq!(re_written, 0);
 
     // Newer version MUST NOT be overwritten by the older version
-    assert_eq!(fs::read(dst.join("version.pyi")).unwrap(), b"VERSION = '2.0.0'\n");
+    assert_eq!(
+        fs::read(dst.join("version.pyi")).unwrap(),
+        b"VERSION = '2.0.0'\n"
+    );
 }
 
 #[test]
@@ -434,7 +489,10 @@ fn test_tree_size_and_merge_stubs_handle_symlink_cycle() {
     // merge_stubs must terminate safely without stack overflow, copying only real stubs
     let merged = merge_stubs(&src, &dst).unwrap();
     assert!(merged > 0);
-    assert_eq!(fs::read(dst.join("sub").join("types.pyi")).unwrap(), b"x: int = 10\n");
+    assert_eq!(
+        fs::read(dst.join("sub").join("types.pyi")).unwrap(),
+        b"x: int = 10\n"
+    );
     assert!(!dst.join("sub").join("cycle_to_parent").exists());
     assert!(!dst.join("sub").join("cycle_to_self").exists());
 }
@@ -456,10 +514,19 @@ fn test_prune_stale_stub_cache_cleans_abandoned_tmp_files_and_preserves_active()
 
     // Backdate old_tmp modification time to 2 hours ago (> 1h grace period)
     let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
-    let sec = two_hours_ago.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+    let sec = two_hours_ago
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as libc::time_t;
     let times = [
-        libc::timespec { tv_sec: sec, tv_nsec: 0 },
-        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
     ];
     let c_path = std::ffi::CString::new(old_tmp.to_str().unwrap()).unwrap();
     unsafe {
@@ -467,10 +534,17 @@ fn test_prune_stale_stub_cache_cleans_abandoned_tmp_files_and_preserves_active()
     }
 
     // Prune with large size limit so only age matters
-    let evicted = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
+    let evicted =
+        prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
     assert_eq!(evicted, 1, "abandoned temp file must be unlinked");
-    assert!(!old_tmp.exists(), "abandoned temp file must no longer exist");
-    assert!(recent_tmp.is_file(), "active recent temp file must be preserved");
+    assert!(
+        !old_tmp.exists(),
+        "abandoned temp file must no longer exist"
+    );
+    assert!(
+        recent_tmp.is_file(),
+        "active recent temp file must be preserved"
+    );
     assert!(valid_stub.is_file(), "valid stub file must be preserved");
 }
 
@@ -490,10 +564,19 @@ fn test_prune_stale_stub_cache_accounts_for_recent_tmp_files_in_size_budget() {
 
     // Backdate old_stub mtime so it is older than new_stub
     let ten_mins_ago = std::time::SystemTime::now() - Duration::from_secs(600);
-    let sec = ten_mins_ago.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+    let sec = ten_mins_ago
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as libc::time_t;
     let times = [
-        libc::timespec { tv_sec: sec, tv_nsec: 0 },
-        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
     ];
     let c_path = std::ffi::CString::new(old_stub.to_str().unwrap()).unwrap();
     unsafe {
@@ -503,9 +586,13 @@ fn test_prune_stale_stub_cache_accounts_for_recent_tmp_files_in_size_budget() {
     // Total size = 6000 (tmp) + 4000 (old) + 1000 (new) = 11000 bytes.
     // Max budget = 8000 bytes.
     // Active tmp file must NOT be evicted, old_stub must be evicted to satisfy the budget.
-    let evicted = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 8_000).unwrap();
+    let evicted =
+        prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 8_000).unwrap();
     assert_eq!(evicted, 1);
-    assert!(active_tmp.is_file(), "active temp file must not be evicted under size pressure");
+    assert!(
+        active_tmp.is_file(),
+        "active temp file must not be evicted under size pressure"
+    );
     assert!(!old_stub.exists(), "oldest regular stub must be evicted");
     assert!(new_stub.is_file(), "newer regular stub must remain");
 }
@@ -527,7 +614,8 @@ fn test_prune_stale_stub_cache_with_custom_grace_period() {
         Duration::from_secs(3600),
         100_000,
         Duration::from_millis(30),
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(evicted, 1);
     assert!(!fast_tmp.exists());
@@ -546,10 +634,19 @@ fn test_prune_stale_stub_cache_never_unlinks_locked_temp_file_even_if_old() {
 
     // Backdate mtime to 3 hours ago (well beyond 1 hour grace period)
     let three_hours_ago = std::time::SystemTime::now() - Duration::from_secs(3 * 3600);
-    let sec = three_hours_ago.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+    let sec = three_hours_ago
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as libc::time_t;
     let times = [
-        libc::timespec { tv_sec: sec, tv_nsec: 0 },
-        libc::timespec { tv_sec: sec, tv_nsec: 0 },
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: sec,
+            tv_nsec: 0,
+        },
     ];
     let c_path = std::ffi::CString::new(locked_tmp.to_str().unwrap()).unwrap();
     unsafe {
@@ -557,22 +654,42 @@ fn test_prune_stale_stub_cache_never_unlinks_locked_temp_file_even_if_old() {
     }
 
     // Active publisher holds an exclusive OS advisory flock on the file descriptor
-    let file = fs::OpenOptions::new().read(true).write(true).open(&locked_tmp).unwrap();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&locked_tmp)
+        .unwrap();
     let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     assert_eq!(ret, 0);
 
     // Prune with 1 hour grace period: the file is 3 hours old, BUT held by active publisher
-    let evicted = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
-    assert_eq!(evicted, 0, "active publisher's locked temp file must NEVER be unlinked");
-    assert!(locked_tmp.is_file(), "locked file must remain present on disk");
+    let evicted =
+        prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
+    assert_eq!(
+        evicted, 0,
+        "active publisher's locked temp file must NEVER be unlinked"
+    );
+    assert!(
+        locked_tmp.is_file(),
+        "locked file must remain present on disk"
+    );
 
-    // Publisher finishes and releases lock
+    // Explicitly release the lock: a concurrently spawned test child can briefly inherit
+    // this open file description, so closing our descriptor alone may defer the unlock.
+    assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) }, 0);
     drop(file);
 
     // Subsequent prune pass detects file is unlocked and older than 1 hour -> safely unlinks
-    let evicted_after = prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
-    assert_eq!(evicted_after, 1, "abandoned temp file must be unlinked once lock is released");
-    assert!(!locked_tmp.exists(), "abandoned temp file must be cleaned up");
+    let evicted_after =
+        prune_stale_stub_cache_in(&cache_dir, Duration::from_secs(3600 * 24), 100_000).unwrap();
+    assert_eq!(
+        evicted_after, 1,
+        "abandoned temp file must be unlinked once lock is released"
+    );
+    assert!(
+        !locked_tmp.exists(),
+        "abandoned temp file must be cleaned up"
+    );
 }
 
 #[cfg(unix)]
@@ -627,4 +744,3 @@ fn pruning_does_not_remove_a_locked_stub_entry() {
     // Release lock
     drop(lock_file);
 }
-

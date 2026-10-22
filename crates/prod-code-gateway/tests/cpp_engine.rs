@@ -27,7 +27,9 @@ fn test_clangd_digest_invariants_and_path_sensitivity() {
     // LLVM clangd digest specification
     assert_eq!(digest.len(), 16);
     assert!(
-        digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
+        digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
         "clangd digest must be 16 uppercase ASCII hexadecimal characters"
     );
 
@@ -66,8 +68,7 @@ fn test_riff_shard_relocation_preserves_null_order_and_replaces_paths() {
     }
 
     // Compress string table with zlib
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(&uncompressed).unwrap();
     let compressed = encoder.finish().unwrap();
 
@@ -126,11 +127,21 @@ fn test_riff_shard_relocation_preserves_null_order_and_replaces_paths() {
     assert_eq!(decomp_strings.len(), original_strings.len());
     assert_eq!(decomp_strings[0], "");
     assert_eq!(decomp_strings[1], "/srv/workspaces/trading-engine--wt-feed");
-    assert_eq!(decomp_strings[2], "/srv/workspaces/trading-engine--wt-feed/src/order.cpp");
-    assert_eq!(decomp_strings[3], "file:///srv/workspaces/trading-engine--wt-feed/src/order.cpp");
+    assert_eq!(
+        decomp_strings[2],
+        "/srv/workspaces/trading-engine--wt-feed/src/order.cpp"
+    );
+    assert_eq!(
+        decomp_strings[3],
+        "file:///srv/workspaces/trading-engine--wt-feed/src/order.cpp"
+    );
     assert_eq!(decomp_strings[4], "OrderBook::submit_limit");
     assert_eq!(decomp_strings[5], "int");
-    assert!(!decomp_strings.iter().any(|s| s.contains("trading-engine/src")));
+    assert!(
+        !decomp_strings
+            .iter()
+            .any(|s| s.contains("trading-engine/src"))
+    );
 }
 
 #[test]
@@ -184,8 +195,7 @@ fn test_clangd_relocation_derives_tu_from_shard_identity_and_ignores_included_he
     let origin_digest = clangd_path_digest(source_path);
     let shard_name = format!("z_dispatch.cpp.{origin_digest}.idx");
 
-    let (relocated, source) =
-        relocate_shard(&riff, from, to, Some(&shard_name)).unwrap();
+    let (relocated, source) = relocate_shard(&riff, from, to, Some(&shard_name)).unwrap();
 
     // Must resolve to z_dispatch.cpp, not common.h
     assert_eq!(
@@ -212,8 +222,14 @@ fn test_clangd_relocation_derives_tu_from_shard_identity_and_ignores_included_he
 
     assert_eq!(decomp_strings.len(), original_strings.len());
     assert_eq!(decomp_strings[0], "");
-    assert_eq!(decomp_strings[1], "/srv/workspaces/complex-engine--wt-worker/include/common.h");
-    assert_eq!(decomp_strings[3], "/srv/workspaces/complex-engine--wt-worker/src/z_dispatch.cpp");
+    assert_eq!(
+        decomp_strings[1],
+        "/srv/workspaces/complex-engine--wt-worker/include/common.h"
+    );
+    assert_eq!(
+        decomp_strings[3],
+        "/srv/workspaces/complex-engine--wt-worker/src/z_dispatch.cpp"
+    );
 }
 
 #[test]
@@ -248,8 +264,7 @@ fn test_seed_cpp_worktree_relocates_compile_commands_and_index() {
         source_file.display(),
         source_file.display()
     );
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(uncompressed.as_bytes()).unwrap();
     let compressed = encoder.finish().unwrap();
 
@@ -318,10 +333,13 @@ fn test_compiler_cache_env_contains_pch_sharing_flags() {
             .map(|(_, v)| v.as_str())
     };
 
-    assert_eq!(get("CCACHE_BASEDIR"), Some("/srv/workspaces/cpp-project--wt-test"));
+    assert_eq!(
+        get("CCACHE_BASEDIR"),
+        Some("/srv/workspaces/cpp-project--wt-test")
+    );
     assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
     assert_eq!(get("CCACHE_SLOPPINESS"), Some("pch_defines,time_macros"));
-    assert_eq!(get("CCACHE_PCH_EXTERNAL_CHECKS"), Some("1"));
+    assert_eq!(get("CCACHE_PCH_EXTSUM"), Some("1"));
     assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
     assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
 }
@@ -337,7 +355,7 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
         .unwrap_or(false);
 
     if !clangd_available {
-        tracing::warn!("clangd not found on PATH; skipping live clangd subprocess verification");
+        eprintln!("SKIPPED live clangd test: clangd --version is unavailable on PATH");
         return;
     }
 
@@ -379,10 +397,12 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .expect("clangd must spawn");
 
     let mut stdin = origin_child.stdin.take().unwrap();
+    let mut origin_stdout = tokio::io::BufReader::new(origin_child.stdout.take().unwrap());
 
     async fn send_rpc(stdin: &mut tokio::process::ChildStdin, val: serde_json::Value) {
         use tokio::io::AsyncWriteExt;
@@ -390,6 +410,30 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
         let frame = format!("Content-Length: {}\r\n\r\n{}", msg.len(), msg);
         stdin.write_all(frame.as_bytes()).await.unwrap();
         stdin.flush().await.unwrap();
+    }
+
+    async fn response(
+        stdout: &mut tokio::io::BufReader<tokio::process::ChildStdout>,
+        id: u64,
+    ) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let frame = prod_code_protocol::transport::read_lsp_frame(stdout)
+                    .await
+                    .unwrap()
+                    .expect("clangd response stream");
+                let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+                if value.get("id") == Some(&json!(id)) {
+                    assert!(
+                        value.get("error").is_none(),
+                        "clangd request failed: {value}"
+                    );
+                    return value;
+                }
+            }
+        })
+        .await
+        .expect("clangd response deadline")
     }
 
     send_rpc(
@@ -406,6 +450,7 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
         }),
     )
     .await;
+    response(&mut origin_stdout, 1).await;
     send_rpc(
         &mut stdin,
         json!({
@@ -432,25 +477,32 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
     )
     .await;
 
-    // Wait for origin clangd to write the index shard to .cache/clangd/index
-    let origin_shard_dir = origin.join(".cache").join("clangd").join("index");
+    // clangd stores shards beside compile_commands.json, which lives in build/.
+    let origin_shard_dir = build_dir.join(".cache").join("clangd").join("index");
     let mut shard_created = false;
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if origin_shard_dir.is_dir()
             && std::fs::read_dir(&origin_shard_dir)
-                .map(|mut d| d.any(|e| e.map(|e| e.path().extension() == Some("idx".as_ref())).unwrap_or(false)))
+                .map(|mut d| {
+                    d.any(|e| {
+                        e.map(|e| e.path().extension() == Some("idx".as_ref()))
+                            .unwrap_or(false)
+                    })
+                })
                 .unwrap_or(false)
         {
             shard_created = true;
             break;
         }
     }
-    assert!(shard_created, "origin clangd must produce index shard in .cache/clangd/index");
-
     // Terminate origin clangd
     drop(stdin);
-    let _ = origin_child.kill().await;
+    origin_child.kill().await.expect("reap origin clangd");
+    assert!(
+        shard_created,
+        "origin clangd must produce an index shard beside the compile database"
+    );
 
     // 4. Mirror source to worktree and seed the C/C++ cache
     let wt_src_dir = worktree.join("src");
@@ -458,34 +510,43 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
     std::fs::write(wt_src_dir.join("calc.cpp"), source_code).unwrap();
 
     let seeded_bytes = seed_cpp_worktree(origin, worktree).unwrap();
-    assert!(seeded_bytes.is_some(), "seed_cpp_worktree must seed compile_commands and index");
+    assert!(
+        seeded_bytes.is_some(),
+        "seed_cpp_worktree must seed compile_commands and index"
+    );
 
     // Verify worktree has the relocated shard
     let wt_source_path = wt_src_dir.join("calc.cpp");
     let wt_expected_shard = shard_filename_for_path(&wt_source_path).unwrap();
     let wt_shard_path = worktree
+        .join("build")
         .join(".cache")
         .join("clangd")
         .join("index")
         .join(&wt_expected_shard);
-    assert!(wt_shard_path.is_file(), "worktree must possess relocated shard file");
+    assert!(
+        wt_shard_path.is_file(),
+        "worktree must possess relocated shard file"
+    );
 
     // 5. Start a fresh clangd in the worktree
+    let wt_log = worktree.join("clangd.log");
     let mut wt_child = tokio::process::Command::new("clangd")
         .args([
             "--background-index",
             "--compile-commands-dir=build",
-            "--log=error",
+            "--log=verbose",
         ])
         .current_dir(worktree)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&wt_log).unwrap())
+        .kill_on_drop(true)
         .spawn()
         .expect("worktree clangd must spawn");
 
     let mut wt_stdin = wt_child.stdin.take().unwrap();
-    let wt_stdout = wt_child.stdout.take().unwrap();
+    let mut wt_stdout = tokio::io::BufReader::new(wt_child.stdout.take().unwrap());
 
     send_rpc(
         &mut wt_stdin,
@@ -501,6 +562,7 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
         }),
     )
     .await;
+    response(&mut wt_stdout, 1).await;
     send_rpc(
         &mut wt_stdin,
         json!({
@@ -511,76 +573,97 @@ async fn test_real_clangd_indexes_origin_and_worktree_loads_seeded_index_instant
     )
     .await;
 
-    // Ask for workspace symbol WITHOUT opening any file!
-    // If the index was successfully seeded and loaded, clangd knows the symbol immediately!
+    // clangd discovers the compilation database on the first document request, rather than
+    // on initialize. An empty driver activates that discovery without opening calc.cpp.
+    let driver = worktree.join("driver.cpp");
+    std::fs::write(&driver, "").unwrap();
     send_rpc(
         &mut wt_stdin,
         json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/symbol",
-            "params": {
-                "query": "super_fast_cpp_calculation"
-            }
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": format!("file://{}", driver.display()), "languageId": "cpp",
+                "version": 1, "text": ""
+            }}
         }),
     )
     .await;
 
-    // Read responses from clangd until we get id == 2
-    let mut reader = tokio::io::BufReader::new(wt_stdout);
+    // Loading the seeded background index is asynchronous. Query without opening calc.cpp,
+    // allowing the reader to finish loading shards rather than racing the first request.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut found_symbol = false;
-
-    for _ in 0..10 {
-        use tokio::io::AsyncBufReadExt;
-        let mut header_line = String::new();
-        if reader.read_line(&mut header_line).await.unwrap() == 0 {
-            break;
-        }
-        if header_line.starts_with("Content-Length: ") {
-            let len: usize = header_line
-                .trim_start_matches("Content-Length: ")
-                .trim()
-                .parse()
-                .unwrap();
-            let mut empty = String::new();
-            reader.read_line(&mut empty).await.unwrap();
-
-            let mut body_bytes = vec![0u8; len];
-            use tokio::io::AsyncReadExt;
-            reader.read_exact(&mut body_bytes).await.unwrap();
-
-            let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-            if resp.get("id") == Some(&json!(2)) {
-                let results = resp.get("result").and_then(|r| r.as_array());
-                if let Some(symbols) = results {
-                    for sym in symbols {
-                        if sym.get("name") == Some(&json!("super_fast_cpp_calculation")) {
-                            found_symbol = true;
-                            // Check that URI points to the worktree, not origin!
-                            let uri = sym["location"]["uri"].as_str().unwrap();
-                            assert!(
-                                uri.contains(&worktree.display().to_string()),
-                                "symbol location URI must point to worktree, got: {uri}"
-                            );
-                            assert!(
-                                !uri.contains(&origin.display().to_string()),
-                                "symbol location URI must not point to origin"
-                            );
-                        }
-                    }
+    let last_response = loop {
+        send_rpc(
+            &mut wt_stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "workspace/symbol",
+                "params": {
+                    "query": "super_fast_cpp_calculation"
                 }
-                break;
+            }),
+        )
+        .await;
+
+        // Read responses from clangd until we get id == 2
+        let resp = response(&mut wt_stdout, 2).await;
+        let results = resp.get("result").and_then(|r| r.as_array());
+        if let Some(symbols) = results {
+            for sym in symbols {
+                if sym.get("name") == Some(&json!("super_fast_cpp_calculation")) {
+                    found_symbol = true;
+                    // Check that URI points to the worktree, not origin!
+                    let uri = sym["location"]["uri"].as_str().unwrap();
+                    assert!(
+                        uri.contains(&worktree.display().to_string()),
+                        "symbol location URI must point to worktree, got: {uri}"
+                    );
+                    assert!(
+                        !uri.contains(&origin.display().to_string()),
+                        "symbol location URI must not point to origin"
+                    );
+                }
             }
         }
-    }
-
-    assert!(
-        found_symbol,
-        "clangd in worktree must instantly answer workspace/symbol from seeded index without opening file"
-    );
+        if found_symbol || tokio::time::Instant::now() >= deadline {
+            break resp;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
 
     drop(wt_stdin);
-    let _ = wt_child.kill().await;
+    wt_child.kill().await.expect("reap worktree clangd");
+    let index_log = std::fs::read_to_string(wt_log).unwrap();
+    let loaded_from_disk = index_log.lines().any(|line| {
+        line.contains("BackgroundIndex:") && line.contains("after loading index from disk")
+    });
+    let rebuilt_source = index_log
+        .lines()
+        .any(|line| line.contains("Indexed ") && line.contains(wt_source_path.to_str().unwrap()));
+    let index_log = index_log
+        .lines()
+        .filter(|line| {
+            line.contains("index")
+                || line.contains("shard")
+                || line.contains("compilation database")
+        })
+        .take(20)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        found_symbol,
+        "clangd in worktree must answer workspace/symbol from seeded index without opening the indexed file; last response: {last_response}; log: {index_log}"
+    );
+    assert!(
+        loaded_from_disk,
+        "clangd must load the seeded index from disk: {index_log}"
+    );
+    assert!(
+        !rebuilt_source,
+        "symbol lookup must use the seed without reindexing calc.cpp: {index_log}"
+    );
 }
 
 #[test]
@@ -629,8 +712,7 @@ fn test_seed_cpp_worktree_preserves_sibling_dependency_paths() {
         sibling_dep,
         sibling_dep
     );
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(uncompressed.as_bytes()).unwrap();
     let compressed = encoder.finish().unwrap();
 
@@ -700,7 +782,10 @@ fn test_seed_cpp_worktree_preserves_sibling_dependency_paths() {
 
     assert_eq!(decomp_strings[0], "");
     assert_eq!(decomp_strings[1], to_source_file.display().to_string());
-    assert_eq!(decomp_strings[2], format!("file://{}", to_source_file.display()));
+    assert_eq!(
+        decomp_strings[2],
+        format!("file://{}", to_source_file.display())
+    );
     assert_eq!(decomp_strings[3], sibling_dep);
     assert_eq!(decomp_strings[4], format!("file://{sibling_dep}"));
     assert_eq!(decomp_strings[5], format!("-I{sibling_dep}"));

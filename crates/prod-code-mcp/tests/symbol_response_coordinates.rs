@@ -252,8 +252,13 @@ async fn flat_and_nested_members_propagate_malformed_coordinates() {
             } else {
                 "flat member"
             });
-        assert!(format!("{error:#}").contains("malformed LSP member symbol `change`"));
-        assert_eq!(gateway.calls(), 3, "{:?}", seen.lock().unwrap());
+        assert!(
+            format!("{error:#}").contains("malformed LSP member symbol `change`"),
+            "{error:#}"
+        );
+        // The qualified fast path asks for the type and its outline; malformed evidence
+        // must abort before a bare-member search or any other fallback.
+        assert_eq!(gateway.calls(), 2, "{:?}", seen.lock().unwrap());
     }
 }
 

@@ -15,13 +15,15 @@ use std::path::Path;
 use super::compile_gate::resolve_file_path;
 use super::dispatch_tool;
 use super::inspection_handlers::with_indexing_notes;
-use super::list_tools;
 use super::references::references_across;
-use super::schemas::{POSITION_ARGUMENTS, SYMBOL_ADDRESSABLE};
+use super::schemas::SYMBOL_ADDRESSABLE;
 use super::symbols::{
     DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT, resolve_symbol, resolve_symbol_candidates,
 };
 use crate::protocol::McpToolCallResult;
+
+mod positions;
+use positions::validate_position_arguments;
 
 fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
     matches!(
@@ -48,52 +50,6 @@ pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -
                 u32::MAX
             )
         })
-}
-
-/// Check only position properties the tool actually advertises. Keeping this registry derived
-/// from discovery means a newly exposed position tool gets the same input contract immediately.
-fn validate_position_arguments(tool_name: &str, args: &serde_json::Value) -> Result<()> {
-    static POSITION_TOOLS: std::sync::OnceLock<Vec<(String, Vec<&'static str>)>> =
-        std::sync::OnceLock::new();
-    let positions = POSITION_TOOLS.get_or_init(|| {
-        list_tools()
-            .into_iter()
-            .filter_map(|tool| {
-                let properties = tool.input_schema.get("properties")?.as_object()?;
-                let fields: Vec<_> = POSITION_ARGUMENTS
-                    .into_iter()
-                    .filter(|name| properties.contains_key(*name))
-                    .collect();
-                (!fields.is_empty()).then_some((tool.name, fields))
-            })
-            .collect()
-    });
-    let Some((_, fields)) = positions.iter().find(|(name, _)| name == tool_name) else {
-        return Ok(());
-    };
-    for name in fields {
-        if let Some(value) = args.get(*name) {
-            checked_position_argument(value, name)?;
-        }
-    }
-    if fields.contains(&"end_line") && fields.contains(&"end_character") {
-        let end = match (args.get("end_line"), args.get("end_character")) {
-            (None, None) => return Ok(()),
-            (Some(line), Some(character)) => (
-                checked_position_argument(line, "end_line")?,
-                checked_position_argument(character, "end_character")?,
-            ),
-            _ => anyhow::bail!("a selection requires both 'end_line' and 'end_character'"),
-        };
-        if let (Some(line), Some(character)) = (args.get("line"), args.get("character")) {
-            let start = (
-                checked_position_argument(line, "line")?,
-                checked_position_argument(character, "character")?,
-            );
-            anyhow::ensure!(end >= start, "selection end precedes its start");
-        }
-    }
-    Ok(())
 }
 
 static WORKSPACE_MUTATION_LOCKS: std::sync::LazyLock<
@@ -159,240 +115,245 @@ enum WorkspaceMutationGuard {
     Write(#[allow(dead_code)] tokio::sync::OwnedRwLockWriteGuard<()>),
 }
 
-/// Execute an MCP tool call against the remote gateway.
-pub async fn execute_tool(
+/// Execute an MCP tool call against the remote gateway. Keep dispatch state on the heap so
+/// callers can compose many tool calls without growing their own future by every dispatch.
+pub fn execute_tool<'a>(
     remote: SocketAddr,
-    workspace_root: &Path,
-    tool_name: &str,
+    workspace_root: &'a Path,
+    tool_name: &'a str,
     args: serde_json::Value,
-) -> Result<McpToolCallResult> {
-    // Invalid explicit positions are refused before symbol lookup, routing or any write.
-    validate_position_arguments(tool_name, &args)?;
-    let mut args = args;
-    if SYMBOL_ADDRESSABLE.contains(&tool_name) {
-        let batch_symbols = super::batch::extract_batch_symbols(&args);
-        if batch_symbols.len() > 1 && is_multi_candidate_navigation_tool(tool_name) {
-            return super::batch::execute_batch_symbols(
-                remote,
-                workspace_root,
-                tool_name,
-                args,
-                &batch_symbols,
-            )
-            .await;
-        } else if batch_symbols.len() == 1 && args.get("symbol").and_then(|v| v.as_str()).is_none()
-        {
-            if let Some(obj) = args.as_object_mut() {
-                obj.remove("symbols");
-                obj.insert(
-                    "symbol".into(),
-                    serde_json::Value::String(batch_symbols[0].clone()),
-                );
+) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
+    Box::pin(async move {
+        // Invalid explicit positions are refused before symbol lookup, routing or any write.
+        validate_position_arguments(tool_name, &args)?;
+        let mut args = args;
+        if SYMBOL_ADDRESSABLE.contains(&tool_name) {
+            let batch_symbols = super::batch::extract_batch_symbols(&args);
+            if batch_symbols.len() > 1 && is_multi_candidate_navigation_tool(tool_name) {
+                return super::batch::execute_batch_symbols(
+                    remote,
+                    workspace_root,
+                    tool_name,
+                    args,
+                    &batch_symbols,
+                )
+                .await;
+            } else if batch_symbols.len() == 1
+                && args.get("symbol").and_then(|v| v.as_str()).is_none()
+            {
+                if let Some(obj) = args.as_object_mut() {
+                    obj.remove("symbols");
+                    obj.insert(
+                        "symbol".into(),
+                        serde_json::Value::String(batch_symbols[0].clone()),
+                    );
+                }
             }
         }
-    }
-    // Notes left by an earlier call are not this answer's (#391).
-    let _ = crate::session::take_indexing_notes(workspace_root);
-    if tool_name == "code_references"
-        && let Some(dirs) = args.get("also_in").and_then(|v| v.as_array())
-        && !dirs.is_empty()
-    {
-        let dirs = dirs.clone();
-        return references_across(remote, workspace_root, args, &dirs).await;
-    }
-    let lock = workspace_mutation_lock(workspace_root);
-    let _guard = if is_read_only_tool(tool_name, &args) {
-        WorkspaceMutationGuard::Read(lock.read_owned().await)
-    } else {
-        WorkspaceMutationGuard::Write(lock.write_owned().await)
-    };
-    // A pull names checkout-relative artifact paths that need not exist locally (#1145).
-    if tool_name == "code_pull" {
-        return dispatch_tool(remote, workspace_root, tool_name, args).await;
-    }
-    // Normalize path parameter across aliases: path, file_path, file, package, crate (#673, #900)
-    let mut args = args;
-    let initial_path = args
-        .get("path")
-        .or_else(|| args.get("file_path"))
-        .or_else(|| args.get("file"))
-        .or_else(|| args.get("package"))
-        .or_else(|| args.get("crate"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    if let Some(ref p) = initial_path
-        && let Some(obj) = args.as_object_mut()
-        && !obj.contains_key("path")
-    {
-        obj.insert("path".into(), serde_json::Value::String(p.clone()));
-    }
-
-    // A path in a nested project of another language goes to a node that serves it (#125, #673).
-    // Route before resolving symbols so cross-language symbol lookups hit the right language engine.
-    let remote =
-        crate::cluster::route_for_path(remote, workspace_root, initial_path.as_deref()).await?;
-
-    // `symbol` instead of line/character: resolve the name through the workspace symbol
-    // index, then run the tool at that position.
-    let args = if SYMBOL_ADDRESSABLE.contains(&tool_name)
-        && let Some(symbol) = args.get("symbol").and_then(|v| v.as_str())
-        && !symbol.trim().is_empty()
-    {
-        let symbol_trimmed = symbol.trim().to_string();
-        let hint = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .filter(|p| !p.trim().is_empty())
-            .map(|p| resolve_file_path(workspace_root, p));
-        let candidates = if is_multi_candidate_navigation_tool(tool_name) {
-            let max_candidates = args
-                .get("max_candidates")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as usize)
-                .unwrap_or(DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT);
-            Box::pin(resolve_symbol_candidates(
-                remote,
-                workspace_root,
-                &symbol_trimmed,
-                hint.as_deref(),
-                max_candidates,
-            ))
-            .await?
+        // Notes left by an earlier call are not this answer's (#391).
+        let _ = crate::session::take_indexing_notes(workspace_root);
+        if tool_name == "code_references"
+            && let Some(dirs) = args.get("also_in").and_then(|v| v.as_array())
+            && !dirs.is_empty()
+        {
+            let dirs = dirs.clone();
+            return references_across(remote, workspace_root, args, &dirs).await;
+        }
+        let lock = workspace_mutation_lock(workspace_root);
+        let _guard = if is_read_only_tool(tool_name, &args) {
+            WorkspaceMutationGuard::Read(lock.read_owned().await)
         } else {
-            vec![
-                Box::pin(resolve_symbol(
+            WorkspaceMutationGuard::Write(lock.write_owned().await)
+        };
+        // A pull names checkout-relative artifact paths that need not exist locally (#1145).
+        if tool_name == "code_pull" {
+            return dispatch_tool(remote, workspace_root, tool_name, args).await;
+        }
+        // Normalize path parameter across aliases: path, file_path, file, package, crate (#673, #900)
+        let mut args = args;
+        let initial_path = args
+            .get("path")
+            .or_else(|| args.get("file_path"))
+            .or_else(|| args.get("file"))
+            .or_else(|| args.get("package"))
+            .or_else(|| args.get("crate"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if let Some(ref p) = initial_path
+            && let Some(obj) = args.as_object_mut()
+            && !obj.contains_key("path")
+        {
+            obj.insert("path".into(), serde_json::Value::String(p.clone()));
+        }
+
+        // A path in a nested project of another language goes to a node that serves it (#125, #673).
+        // Route before resolving symbols so cross-language symbol lookups hit the right language engine.
+        let remote =
+            crate::cluster::route_for_path(remote, workspace_root, initial_path.as_deref()).await?;
+
+        // `symbol` instead of line/character: resolve the name through the workspace symbol
+        // index, then run the tool at that position.
+        let args = if SYMBOL_ADDRESSABLE.contains(&tool_name)
+            && let Some(symbol) = args.get("symbol").and_then(|v| v.as_str())
+            && !symbol.trim().is_empty()
+        {
+            let symbol_trimmed = symbol.trim().to_string();
+            let hint = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| resolve_file_path(workspace_root, p));
+            let candidates = if is_multi_candidate_navigation_tool(tool_name) {
+                let max_candidates = args
+                    .get("max_candidates")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT);
+                Box::pin(resolve_symbol_candidates(
                     remote,
                     workspace_root,
                     &symbol_trimmed,
                     hint.as_deref(),
+                    max_candidates,
                 ))
-                .await?,
-            ]
-        };
-
-        if candidates.len() > 1 {
-            let total = candidates.len();
-            let shared_budget = if let Some(ms) = args.get("budget_ms").and_then(|v| v.as_u64()) {
-                std::time::Duration::from_millis(ms.max(1))
-            } else if let Some(secs) = args
-                .get("budget_secs")
-                .or_else(|| args.get("timeout_secs"))
-                .and_then(|v| v.as_u64())
-            {
-                std::time::Duration::from_secs(secs.clamp(1, 90))
+                .await?
             } else {
-                crate::call_tree::DEFAULT_CALL_TREE_BUDGET
+                vec![
+                    Box::pin(resolve_symbol(
+                        remote,
+                        workspace_root,
+                        &symbol_trimmed,
+                        hint.as_deref(),
+                    ))
+                    .await?,
+                ]
             };
-            let deadline = std::time::Instant::now() + shared_budget;
-            let mut out = format!("`{symbol_trimmed}` matched {total} candidates:\n");
-            let mut any_ok = false;
-            for (idx, hit) in candidates.iter().enumerate() {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    out.push_str(&format!(
+
+            if candidates.len() > 1 {
+                let total = candidates.len();
+                let shared_budget = if let Some(ms) = args.get("budget_ms").and_then(|v| v.as_u64())
+                {
+                    std::time::Duration::from_millis(ms.max(1))
+                } else if let Some(secs) = args
+                    .get("budget_secs")
+                    .or_else(|| args.get("timeout_secs"))
+                    .and_then(|v| v.as_u64())
+                {
+                    std::time::Duration::from_secs(secs.clamp(1, 90))
+                } else {
+                    crate::call_tree::DEFAULT_CALL_TREE_BUDGET
+                };
+                let deadline = std::time::Instant::now() + shared_budget;
+                let mut out = format!("`{symbol_trimmed}` matched {total} candidates:\n");
+                let mut any_ok = false;
+                for (idx, hit) in candidates.iter().enumerate() {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        out.push_str(&format!(
                         "\n[Partial result: shared server time budget ({:.1}s) expired after {idx}/{total} candidates; pass `path` or a more specific symbol to inspect remaining candidates.]\n",
                         shared_budget.as_secs_f64()
                     ));
-                    break;
-                }
-                let mut cand_args = args.clone();
-                if let Some(obj) = cand_args.as_object_mut() {
-                    obj.insert(
-                        "path".into(),
-                        serde_json::Value::String(hit.path.to_string_lossy().into_owned()),
-                    );
-                    obj.insert("line".into(), serde_json::json!(hit.line));
-                    obj.insert("character".into(), serde_json::json!(hit.col));
-                    obj.insert(
-                        "budget_ms".into(),
-                        serde_json::json!((remaining.as_millis() as u64).max(1)),
-                    );
-                }
-                validate_position_arguments(tool_name, &cand_args)?;
-                let cand_remote = crate::cluster::route_for_path(
-                    remote,
-                    workspace_root,
-                    cand_args.get("path").and_then(|v| v.as_str()),
-                )
-                .await?;
-                out.push_str(&format!(
-                    "\n=== [{}/{total}] {} ===\n",
-                    idx + 1,
-                    hit.render(workspace_root)
-                ));
-                match tokio::time::timeout(
-                    remaining,
-                    Box::pin(dispatch_tool(
-                        cand_remote,
+                        break;
+                    }
+                    let mut cand_args = args.clone();
+                    if let Some(obj) = cand_args.as_object_mut() {
+                        obj.insert(
+                            "path".into(),
+                            serde_json::Value::String(hit.path.to_string_lossy().into_owned()),
+                        );
+                        obj.insert("line".into(), serde_json::json!(hit.line));
+                        obj.insert("character".into(), serde_json::json!(hit.col));
+                        obj.insert(
+                            "budget_ms".into(),
+                            serde_json::json!((remaining.as_millis() as u64).max(1)),
+                        );
+                    }
+                    validate_position_arguments(tool_name, &cand_args)?;
+                    let cand_remote = crate::cluster::route_for_path(
+                        remote,
                         workspace_root,
-                        tool_name,
-                        cand_args,
-                    )),
-                )
-                .await
-                {
-                    Ok(Ok(res)) => {
-                        if !res.is_error {
-                            any_ok = true;
+                        cand_args.get("path").and_then(|v| v.as_str()),
+                    )
+                    .await?;
+                    out.push_str(&format!(
+                        "\n=== [{}/{total}] {} ===\n",
+                        idx + 1,
+                        hit.render(workspace_root)
+                    ));
+                    match tokio::time::timeout(
+                        remaining,
+                        Box::pin(dispatch_tool(
+                            cand_remote,
+                            workspace_root,
+                            tool_name,
+                            cand_args,
+                        )),
+                    )
+                    .await
+                    {
+                        Ok(Ok(res)) => {
+                            if !res.is_error {
+                                any_ok = true;
+                            }
+                            for item in &res.content {
+                                let crate::protocol::McpContentItem::Text { text } = item;
+                                out.push_str(text.trim_end());
+                                out.push('\n');
+                            }
                         }
-                        for item in &res.content {
-                            let crate::protocol::McpContentItem::Text { text } = item;
-                            out.push_str(text.trim_end());
-                            out.push('\n');
+                        Ok(Err(err)) => {
+                            out.push_str(&format!("Error: {err:#}\n"));
                         }
-                    }
-                    Ok(Err(err)) => {
-                        out.push_str(&format!("Error: {err:#}\n"));
-                    }
-                    Err(_) => {
-                        out.push_str(&format!(
+                        Err(_) => {
+                            out.push_str(&format!(
                             "[Timed out on candidate {}/{total} after {:.1}s shared server budget; returning partial multi-candidate result.]\n",
                             idx + 1,
                             shared_budget.as_secs_f64()
                         ));
-                        if idx + 1 < total {
-                            out.push_str(&format!(
+                            if idx + 1 < total {
+                                out.push_str(&format!(
                                 "\n[Partial result: shared server time budget ({:.1}s) expired at candidate {}/{total}; pass `path` or a more specific symbol to inspect remaining candidates.]\n",
                                 shared_budget.as_secs_f64(),
                                 idx + 1,
                             ));
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
+                let combined = if any_ok {
+                    Ok(McpToolCallResult::text(out.trim_end().to_string()))
+                } else {
+                    Ok(McpToolCallResult::error(out.trim_end().to_string()))
+                };
+                return with_indexing_notes(combined, workspace_root);
             }
-            let combined = if any_ok {
-                Ok(McpToolCallResult::text(out.trim_end().to_string()))
-            } else {
-                Ok(McpToolCallResult::error(out.trim_end().to_string()))
-            };
-            return with_indexing_notes(combined, workspace_root);
-        }
 
-        let hit = &candidates[0];
-        let mut owned = args.clone();
-        if let Some(obj) = owned.as_object_mut() {
-            obj.insert(
-                "path".into(),
-                serde_json::Value::String(hit.path.to_string_lossy().into_owned()),
-            );
-            obj.insert("line".into(), serde_json::json!(hit.line));
-            obj.insert("character".into(), serde_json::json!(hit.col));
-        }
-        owned
-    } else {
-        args
-    };
-    // Resolved symbol positions obey the same contract, including a supplied selection end.
-    validate_position_arguments(tool_name, &args)?;
-    // A path in a nested project of another language goes to a node that serves it (#125).
-    let remote = crate::cluster::route_for_path(
-        remote,
-        workspace_root,
-        args.get("path").and_then(|v| v.as_str()),
-    )
-    .await?;
-    let result = Box::pin(dispatch_tool(remote, workspace_root, tool_name, args)).await;
-    with_indexing_notes(result, workspace_root)
+            let hit = &candidates[0];
+            let mut owned = args.clone();
+            if let Some(obj) = owned.as_object_mut() {
+                obj.insert(
+                    "path".into(),
+                    serde_json::Value::String(hit.path.to_string_lossy().into_owned()),
+                );
+                obj.insert("line".into(), serde_json::json!(hit.line));
+                obj.insert("character".into(), serde_json::json!(hit.col));
+            }
+            owned
+        } else {
+            args
+        };
+        // Resolved symbol positions obey the same contract, including a supplied selection end.
+        validate_position_arguments(tool_name, &args)?;
+        // A path in a nested project of another language goes to a node that serves it (#125).
+        let remote = crate::cluster::route_for_path(
+            remote,
+            workspace_root,
+            args.get("path").and_then(|v| v.as_str()),
+        )
+        .await?;
+        let result = Box::pin(dispatch_tool(remote, workspace_root, tool_name, args)).await;
+        with_indexing_notes(result, workspace_root)
+    })
 }

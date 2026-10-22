@@ -53,6 +53,9 @@ impl Gateway {
             .env("PROD_CODE_STORAGE", storage.path())
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
+            // The analyzers are under test, not the build node's memory: a busy shared node
+            // refused every engine and failed the whole file.
+            .env("PROD_CODE_NO_ADMISSION", "true")
             .env_remove("RUST_LOG")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
@@ -309,8 +312,29 @@ fn text_of(result: &prod_code_mcp::protocol::McpToolCallResult) -> String {
 
 /// One test, not several: a workspace load is the expensive part and every query after it is
 /// cheap, so they share one gateway and one checkout. Each step asserts on its own.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_gateway_answers_a_real_checkout() {
+#[test]
+fn the_gateway_answers_a_real_checkout() {
+    // This scenario polls the finite MCP symbol-resolution future chain on the calling
+    // thread, just as the MCP binary does on its main thread. The harness's default 2 MiB
+    // stack is too small for those debug-build frames; match the binary's 8 MiB stack.
+    let test = std::thread::Builder::new()
+        .name("the_gateway_answers_a_real_checkout".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .expect("test runtime starts")
+                .block_on(real_checkout_scenario());
+        })
+        .expect("test thread starts");
+    if let Err(panic) = test.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn real_checkout_scenario() {
     let gateway = Gateway::start();
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
@@ -2195,7 +2219,8 @@ async fn the_remaining_branches_of_the_dispatch() {
 
 /// An editor's session on the wire: synced, handshaken as an editor, initialised.
 struct EditorSession {
-    framed: tokio_util::codec::Framed<prod_code_protocol::AnyStream, prod_code_protocol::ProdCodeCodec>,
+    framed:
+        tokio_util::codec::Framed<prod_code_protocol::AnyStream, prod_code_protocol::ProdCodeCodec>,
     next_id: u64,
     notes: Vec<serde_json::Value>,
 }
@@ -2232,7 +2257,9 @@ impl EditorSession {
         purpose: Option<String>,
     ) -> (Self, serde_json::Value) {
         use futures_util::{SinkExt, StreamExt};
-        let stream = prod_code_protocol::transport::connect(addr).await.expect("connect");
+        let stream = prod_code_protocol::transport::connect(addr)
+            .await
+            .expect("connect");
         let mut framed =
             tokio_util::codec::Framed::new(stream, prod_code_protocol::ProdCodeCodec::new());
         let identity = prod_code_mcp::sync::workspace_identity(root);
@@ -4093,7 +4120,9 @@ async fn test_gateway_http_health_probe() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // 1. GET /health -> 200 OK
-    let mut stream = tokio::net::TcpStream::connect(gateway.addr).await.expect("connect");
+    let mut stream = tokio::net::TcpStream::connect(gateway.addr)
+        .await
+        .expect("connect");
     stream
         .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .await
@@ -4115,7 +4144,9 @@ async fn test_gateway_http_health_probe() {
     );
 
     // 2. GET /some/path -> 426 Upgrade Required
-    let mut stream2 = tokio::net::TcpStream::connect(gateway.addr).await.expect("connect");
+    let mut stream2 = tokio::net::TcpStream::connect(gateway.addr)
+        .await
+        .expect("connect");
     stream2
         .write_all(b"GET /some/path HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .await

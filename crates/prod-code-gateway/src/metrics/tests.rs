@@ -394,6 +394,7 @@ instance = "gateway-custom-1"
         storage: std::path::PathBuf::from("/srv/prod-code/workspaces"),
         idle_evict_secs: 1800,
         engine_reserve_mib: 0,
+        no_admission: false,
         max_concurrent_engine_loads: 0,
         prune_worktree_secs: 3600,
         prune_worktree_days: None,

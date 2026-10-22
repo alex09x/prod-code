@@ -13,7 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use crate::test_cache_support::{self, ample_disk_space};
 
 #[cfg(unix)]
 #[test]
@@ -87,7 +87,7 @@ fn merging_module_cache_skips_symlink_files_and_directories() {
 
 #[test]
 fn test_swift_module_cache_env_and_path() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("my-custom-swift-cache");
 
@@ -206,7 +206,7 @@ fn test_find_swift_packages_root_and_nested() {
 
 #[test]
 fn test_seed_swift_worktree_basic() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let from = temp.path().join("seed-workspace");
     let to = temp.path().join("new-worktree");
@@ -235,7 +235,9 @@ fn test_seed_swift_worktree_basic() {
     fs::write(from_build.join("workspace-state.json"), state_content).unwrap();
 
     // Run seed
-    let result = seed_swift_worktree(&from, &to).unwrap();
+    let result =
+        seed_swift_worktree_with_budgets(&from, &to, ample_disk_space(), ample_disk_space())
+            .unwrap();
     assert!(result.is_some());
 
     let to_build = to.join(".build");
@@ -276,7 +278,7 @@ fn test_seed_swift_worktree_basic() {
 
 #[test]
 fn test_seed_swift_worktree_skips_non_swift_projects() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let from = temp.path().join("rust-workspace");
     let to = temp.path().join("new-worktree");
@@ -284,14 +286,16 @@ fn test_seed_swift_worktree_skips_non_swift_projects() {
     fs::create_dir_all(&from).unwrap();
     fs::write(from.join("Cargo.toml"), "[package]\nname=\"foo\"\n").unwrap();
 
-    let result = seed_swift_worktree(&from, &to).unwrap();
+    let result =
+        seed_swift_worktree_with_budgets(&from, &to, ample_disk_space(), ample_disk_space())
+            .unwrap();
     assert!(result.is_none());
     assert!(!to.exists());
 }
 
 #[test]
 fn test_prune_stale_module_cache() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("prune-cache");
     unsafe {
@@ -312,6 +316,7 @@ fn test_prune_stale_module_cache() {
 
     // Direct directory pruning
     fs::write(&old_file, vec![0u8; 1024]).unwrap();
+    fs::write(&new_file, vec![0u8; 1024]).unwrap();
     let pruned_in =
         prune_stale_module_cache_in(&custom_cache, Duration::from_secs(3600), 1500).unwrap();
     assert_eq!(pruned_in, 1);

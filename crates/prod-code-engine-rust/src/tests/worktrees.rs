@@ -29,6 +29,7 @@ fn test_worktree_refactor_paths_resolve_to_worktree() {
     )
     .unwrap();
 
+    super::configure_test_workspace(&base_dir);
     let mut engine = RustEngine::load(&base_dir).expect("Must load base fixture");
 
     let wt_dir = temp.path().join("wt_repo");
@@ -100,6 +101,7 @@ fn test_worktree_attachment_refcounting() {
     .unwrap();
     std::fs::write(base_dir.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
 
+    super::configure_test_workspace(&base_dir);
     let mut engine = RustEngine::load(&base_dir).unwrap();
 
     let wt_dir = temp.path().join("base--wt-test");
@@ -147,6 +149,7 @@ fn test_failed_worktree_attach_does_not_poison_refcount() {
     .unwrap();
     std::fs::write(base_dir.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
 
+    super::configure_test_workspace(&base_dir);
     let mut engine = RustEngine::load(&base_dir).unwrap();
 
     let invalid_wt = temp.path().join("invalid-wt");
@@ -191,6 +194,7 @@ fn test_worktree_file_id_for_path_isolation() {
     .unwrap();
     std::fs::write(base_dir.join("src/lib.rs"), "pub fn base_fn() {}\n").unwrap();
 
+    super::configure_test_workspace(&base_dir);
     let mut engine = RustEngine::load(&base_dir).unwrap();
 
     let wt1_dir = temp.path().join("wt1");
@@ -265,6 +269,7 @@ fn test_worktree_reloads_when_cargo_manifest_changes() {
     .unwrap();
     std::fs::write(base_dir.join("src/lib.rs"), "pub fn base_fn() {}\n").unwrap();
 
+    super::configure_test_workspace(&base_dir);
     let mut engine = RustEngine::load(&base_dir).unwrap();
 
     let wt_dir = temp.path().join("base--wt-test");
@@ -365,6 +370,7 @@ fn test_worktree_reloads_when_worktree_only_member_manifest_changes() {
     .unwrap();
     std::fs::write(core_dir.join("src/lib.rs"), "pub fn core_fn() {}\n").unwrap();
 
+    super::configure_test_workspace(&base_dir);
     let mut engine = RustEngine::load(&base_dir).unwrap();
 
     // Create worktree copy

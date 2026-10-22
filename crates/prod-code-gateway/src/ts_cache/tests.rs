@@ -12,11 +12,11 @@ use super::*;
 use std::fs;
 use std::time::{Duration, SystemTime};
 
-static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use crate::test_cache_support;
 
 #[test]
 fn test_ts_types_cache_dir_and_env() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom = temp.path().join("custom-ts-types");
 

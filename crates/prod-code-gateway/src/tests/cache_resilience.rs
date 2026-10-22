@@ -34,6 +34,7 @@ fn test_effective_prune_timeouts() {
         storage: PathBuf::from("/tmp/storage"),
         idle_evict_secs: 1800,
         engine_reserve_mib: 0,
+        no_admission: false,
         max_concurrent_engine_loads: 0,
         prune_worktree_secs: 3600,
         prune_worktree_days: None,
@@ -92,6 +93,7 @@ fn test_prewarm_virtualenv_pycache_safe_on_missing_or_invalid() {
 
 #[test]
 fn test_polyglot_compiler_cache_env_composition() {
+    crate::test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path().join("my-project");
     std::fs::create_dir_all(&ws).unwrap();
@@ -124,6 +126,8 @@ fn test_polyglot_compiler_cache_env_composition() {
 
 #[test]
 fn test_resolve_ram_build_cache_workspace_isolation() {
+    use crate::runner::ram_cache::resolve_ram_build_cache_with_space;
+    use crate::test_cache_support::ample_disk_space;
     let temp = tempfile::tempdir().unwrap();
     let ws1 = temp.path().join("repo-a");
     let ws2 = temp.path().join("repo-b");
@@ -132,11 +136,18 @@ fn test_resolve_ram_build_cache_workspace_isolation() {
 
     let custom_ram = temp.path().join("custom-shm");
     // Disabled returns None
-    assert!(resolve_ram_build_cache(&ws1, false, Some(&custom_ram)).is_none());
+    assert!(
+        resolve_ram_build_cache_with_space(&ws1, false, Some(&custom_ram), |_| ample_disk_space())
+            .is_none()
+    );
 
     // Enabled creates isolated target directories
-    let target1 = resolve_ram_build_cache(&ws1, true, Some(&custom_ram)).expect("target1");
-    let target2 = resolve_ram_build_cache(&ws2, true, Some(&custom_ram)).expect("target2");
+    let target1 =
+        resolve_ram_build_cache_with_space(&ws1, true, Some(&custom_ram), |_| ample_disk_space())
+            .expect("target1");
+    let target2 =
+        resolve_ram_build_cache_with_space(&ws2, true, Some(&custom_ram), |_| ample_disk_space())
+            .expect("target2");
 
     assert!(target1.exists());
     assert!(target2.exists());
@@ -148,6 +159,26 @@ fn test_resolve_ram_build_cache_workspace_isolation() {
     assert!(target2.ends_with("target"));
     assert!(target1.parent().unwrap().join(".last_used").exists());
     assert!(target2.parent().unwrap().join(".last_used").exists());
+
+    for space in [
+        DiskSpace {
+            free: 0,
+            total: 1 << 30,
+        },
+        DiskSpace {
+            free: 300 << 20,
+            total: 2 << 30,
+        },
+        DiskSpace {
+            free: 128 << 20,
+            total: 256 << 20,
+        },
+    ] {
+        assert!(
+            resolve_ram_build_cache_with_space(&ws1, true, Some(&custom_ram), |_| Some(space))
+                .is_none()
+        );
+    }
 }
 
 #[test]

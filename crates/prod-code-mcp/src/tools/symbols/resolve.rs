@@ -17,7 +17,7 @@ use super::sources::{
     remote_sources, source_text,
 };
 use super::type_members::type_members;
-use super::types::SymbolHit;
+use super::types::{MalformedLspCoordinate, SymbolHit};
 use super::unindexed::{
     find_loaded_unindexed_declarations, find_unindexed_declarations, unindexed_declarations,
     unindexed_members,
@@ -48,9 +48,14 @@ pub(crate) async fn resolve_symbol_ties(
         // owning type's outline first. The type itself (`qualifiers.last()`) is almost always
         // unique or has very few candidates, whereas common method names (`new`, `get`, `run`, `init`)
         // return 200+ unrelated candidates across the entire workspace and lead to expensive scans.
-        let members = type_members(remote, root, qualifiers, name, hint)
-            .await
-            .unwrap_or_default();
+        // Malformed evidence aborts the lookup; any other failure falls back to the search.
+        let members = match type_members(remote, root, qualifiers, name, hint).await {
+            Ok(members) => members,
+            Err(error) if error.downcast_ref::<MalformedLspCoordinate>().is_some() => {
+                return Err(error);
+            }
+            Err(_) => Vec::new(),
+        };
         if !members.is_empty() {
             members
         } else {

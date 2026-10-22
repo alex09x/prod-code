@@ -602,7 +602,12 @@ async fn code_diagnostics_and_validate_edit_require_a_path_and_new_text() {
     .await
     .expect("a missing new_text is reported as a tool error, not a Rust error");
     assert!(result.is_error);
-    assert_eq!(text_of(&result), "Missing 'new_text' argument");
+    // The message goes on to name the accepted spellings (#1125).
+    assert!(
+        text_of(&result).starts_with("Missing 'new_text' argument"),
+        "{}",
+        text_of(&result)
+    );
 }
 
 #[tokio::test]

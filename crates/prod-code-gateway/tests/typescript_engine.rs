@@ -10,22 +10,30 @@
 
 #![cfg(unix)]
 
-use prod_code_gateway::{polyglot_compiler_cache_env, DiskSpace};
 use prod_code_gateway::ts_cache::{
-    approved_target, build_approved_roots, find_project_types, has_declaration_files,
-    is_typescript_project, merge_types, prune_stale_types_cache_in,
-    prune_stale_types_cache_with_grace, ts_types_cache_dir, ts_types_cache_env,
-    seed_typescript_worktree, seed_typescript_worktree_within, tree_size,
-    TS_TYPES_CACHE_ENV,
+    TS_TYPES_CACHE_ENV, approved_target, build_approved_roots, find_project_types,
+    has_declaration_files, is_typescript_project, merge_types, prune_stale_types_cache_in,
+    prune_stale_types_cache_with_grace, seed_typescript_worktree_within, tree_size,
+    ts_types_cache_dir, ts_types_cache_env,
 };
+use prod_code_gateway::{DiskSpace, polyglot_compiler_cache_env};
 use std::fs;
 use std::time::Duration;
 
-static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[path = "../src/test_cache_support.rs"]
+mod test_cache_support;
+use test_cache_support::ample_disk_space;
+
+fn seed_typescript_worktree(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<Option<u64>> {
+    seed_typescript_worktree_within(from, to, ample_disk_space())
+}
 
 #[test]
 fn test_ts_types_cache_dir_and_env_resolution() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("isolated-ts-types");
 
@@ -40,8 +48,14 @@ fn test_ts_types_cache_dir_and_env_resolution() {
     let envs = ts_types_cache_env();
     let cache_str = custom_cache.to_str().unwrap();
 
-    assert!(envs.iter().any(|(k, v)| k == TS_TYPES_CACHE_ENV && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "TS_TYPES_CACHE" && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == TS_TYPES_CACHE_ENV && v == cache_str)
+    );
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "TS_TYPES_CACHE" && v == cache_str)
+    );
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -50,7 +64,7 @@ fn test_ts_types_cache_dir_and_env_resolution() {
 
 #[test]
 fn test_polyglot_compiler_cache_env_contains_ts_types_cache() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("polyglot-ts-cache");
 
@@ -64,8 +78,14 @@ fn test_polyglot_compiler_cache_env_contains_ts_types_cache() {
     let envs = polyglot_compiler_cache_env(&ws, false, None);
     let cache_str = custom_cache.to_str().unwrap();
 
-    assert!(envs.iter().any(|(k, v)| k == TS_TYPES_CACHE_ENV && v == cache_str));
-    assert!(envs.iter().any(|(k, v)| k == "TS_TYPES_CACHE" && v == cache_str));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == TS_TYPES_CACHE_ENV && v == cache_str)
+    );
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "TS_TYPES_CACHE" && v == cache_str)
+    );
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -103,7 +123,7 @@ fn test_is_typescript_project_detection() {
 
 #[test]
 fn test_seed_typescript_worktree_at_types_and_symlink() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("shared-ts-types");
     unsafe {
@@ -118,8 +138,16 @@ fn test_seed_typescript_worktree_at_types_and_symlink() {
     // node_modules/@types/react with index.d.ts
     let react_types = from.join("node_modules").join("@types").join("react");
     fs::create_dir_all(&react_types).unwrap();
-    fs::write(react_types.join("index.d.ts"), "export declare function useState<T>(init: T): [T, (v: T) => void];\n").unwrap();
-    fs::write(react_types.join("package.json"), "{\"name\": \"@types/react\", \"types\": \"index.d.ts\"}\n").unwrap();
+    fs::write(
+        react_types.join("index.d.ts"),
+        "export declare function useState<T>(init: T): [T, (v: T) => void];\n",
+    )
+    .unwrap();
+    fs::write(
+        react_types.join("package.json"),
+        "{\"name\": \"@types/react\", \"types\": \"index.d.ts\"}\n",
+    )
+    .unwrap();
 
     let result = seed_typescript_worktree(&from, &to).unwrap();
     assert!(result.is_some());
@@ -133,16 +161,27 @@ fn test_seed_typescript_worktree_at_types_and_symlink() {
 
     let cached_react = target.join("react").join("index.d.ts");
     assert!(cached_react.is_file());
-    assert!(fs::read_to_string(&cached_react).unwrap().contains("useState"));
+    assert!(
+        fs::read_to_string(&cached_react)
+            .unwrap()
+            .contains("useState")
+    );
 
     // Verify to sees the cached declaration
     let to_react_dts = to_at_types.join("react").join("index.d.ts");
     assert!(to_react_dts.is_file());
-    assert!(fs::read_to_string(&to_react_dts).unwrap().contains("useState"));
+    assert!(
+        fs::read_to_string(&to_react_dts)
+            .unwrap()
+            .contains("useState")
+    );
 
     // A changed resolver lock must select a new cache namespace and retarget this worktree.
-    fs::write(from.join("package-lock.json"), "{\"lockfileVersion\": 3, \"version\": 1}\n")
-        .unwrap();
+    fs::write(
+        from.join("package-lock.json"),
+        "{\"lockfileVersion\": 3, \"version\": 1}\n",
+    )
+    .unwrap();
     fs::write(
         react_types.join("index.d.ts"),
         "export declare function useStateV2<T>(init: T): [T, (v: T) => void];\n",
@@ -150,9 +189,11 @@ fn test_seed_typescript_worktree_at_types_and_symlink() {
     .unwrap();
     assert!(seed_typescript_worktree(&from, &to).unwrap().is_some());
     let next_target = fs::read_link(&to_at_types).unwrap();
-    assert_ne!(next_target, target, "the new lock must not reuse the old cache view");
-    let next_content =
-        fs::read_to_string(next_target.join("react").join("index.d.ts")).unwrap();
+    assert_ne!(
+        next_target, target,
+        "the new lock must not reuse the old cache view"
+    );
+    let next_content = fs::read_to_string(next_target.join("react").join("index.d.ts")).unwrap();
     assert!(next_content.contains("useStateV2"), "{next_content}");
 
     unsafe {
@@ -162,7 +203,7 @@ fn test_seed_typescript_worktree_at_types_and_symlink() {
 
 #[test]
 fn test_seed_typescript_worktree_monorepo_discovery() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("monorepo-cache");
     unsafe {
@@ -172,17 +213,34 @@ fn test_seed_typescript_worktree_monorepo_discovery() {
     let from = temp.path().join("monorepo");
     let to = temp.path().join("worktree-monorepo");
     fs::create_dir_all(&from).unwrap();
-    fs::write(from.join("package.json"), "{\"workspaces\": [\"packages/*\"]}\n").unwrap();
+    fs::write(
+        from.join("package.json"),
+        "{\"workspaces\": [\"packages/*\"]}\n",
+    )
+    .unwrap();
 
     // Nested package: packages/web/node_modules/@types/node
-    let web_node_types = from.join("packages").join("web").join("node_modules").join("@types").join("node");
+    let web_node_types = from
+        .join("packages")
+        .join("web")
+        .join("node_modules")
+        .join("@types")
+        .join("node");
     fs::create_dir_all(&web_node_types).unwrap();
-    fs::write(web_node_types.join("index.d.ts"), "declare module 'fs' { export function readFileSync(): string; }\n").unwrap();
+    fs::write(
+        web_node_types.join("index.d.ts"),
+        "declare module 'fs' { export function readFileSync(): string; }\n",
+    )
+    .unwrap();
 
     // Project-level custom types: types/global.d.ts
     let custom_types = from.join("types");
     fs::create_dir_all(&custom_types).unwrap();
-    fs::write(custom_types.join("global.d.ts"), "declare const __VERSION__: string;\n").unwrap();
+    fs::write(
+        custom_types.join("global.d.ts"),
+        "declare const __VERSION__: string;\n",
+    )
+    .unwrap();
 
     let discovered = find_project_types(&from);
     assert!(discovered.iter().any(|d| d.ends_with("@types")));
@@ -191,8 +249,10 @@ fn test_seed_typescript_worktree_monorepo_discovery() {
     let result = seed_typescript_worktree(&from, &to).unwrap();
     assert!(result.is_some());
 
-    assert!(custom_cache.join("node").join("index.d.ts").is_file());
-    assert!(custom_cache.join("types").join("global.d.ts").is_file() || custom_cache.join("global.d.ts").is_file());
+    let cache_view = fs::read_link(to.join("node_modules/@types")).unwrap();
+    assert!(cache_view.starts_with(&custom_cache));
+    assert!(cache_view.join("node/index.d.ts").is_file());
+    assert!(cache_view.join("types/global.d.ts").is_file());
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -201,7 +261,7 @@ fn test_seed_typescript_worktree_monorepo_discovery() {
 
 #[test]
 fn test_seed_typescript_worktree_deduplicates_existing_dir() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("dedup-cache");
     unsafe {
@@ -217,7 +277,11 @@ fn test_seed_typescript_worktree_deduplicates_existing_dir() {
     let to_at_types = to.join("node_modules").join("@types");
     let to_express = to_at_types.join("express");
     fs::create_dir_all(&to_express).unwrap();
-    fs::write(to_express.join("index.d.ts"), "export declare function express(): any;\n").unwrap();
+    fs::write(
+        to_express.join("index.d.ts"),
+        "export declare function express(): any;\n",
+    )
+    .unwrap();
 
     let result = seed_typescript_worktree(&from, &to).unwrap();
     assert!(result.is_some());
@@ -236,7 +300,7 @@ fn test_seed_typescript_worktree_deduplicates_existing_dir() {
 
 #[test]
 fn test_seed_typescript_worktree_respects_disk_budget() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let custom_cache = temp.path().join("budget-cache");
     unsafe {
@@ -260,7 +324,9 @@ fn test_seed_typescript_worktree_respects_disk_budget() {
 
     let _ = seed_typescript_worktree_within(&from, &to, zero_space).unwrap();
     // Cache directory should not contain the large stub since disk headroom was 0
-    assert!(!custom_cache.join("large").join("index.d.ts").exists());
+    let cache_view = fs::read_link(to.join("node_modules/@types")).unwrap();
+    assert!(cache_view.starts_with(&custom_cache));
+    assert!(!cache_view.join("large/index.d.ts").exists());
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -269,6 +335,7 @@ fn test_seed_typescript_worktree_respects_disk_budget() {
 
 #[test]
 fn test_seed_typescript_worktree_preserves_client_type_roots() {
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let tsconfig = temp.path().join("tsconfig.json");
 
@@ -290,7 +357,11 @@ fn test_seed_typescript_worktree_preserves_client_type_roots() {
     let val: serde_json::Value = serde_json::from_str(&content).unwrap();
     let type_roots = val["compilerOptions"]["typeRoots"].as_array().unwrap();
     assert_eq!(type_roots.len(), 1);
-    assert!(type_roots.iter().any(|v| v.as_str() == Some("./custom_types")));
+    assert!(
+        type_roots
+            .iter()
+            .any(|v| v.as_str() == Some("./custom_types"))
+    );
 }
 
 #[test]
@@ -340,7 +411,10 @@ fn test_prune_stale_types_cache_evicts_old_and_respects_capacity() {
     // Capacity limit 1500 bytes: one 1000-byte file must be evicted
     let evicted = prune_stale_types_cache_in(&cache_dir, Duration::from_secs(3600), 1500).unwrap();
     assert_eq!(evicted, 1);
-    let remaining = [file1.exists(), file2.exists()].iter().filter(|&&e| e).count();
+    let remaining = [file1.exists(), file2.exists()]
+        .iter()
+        .filter(|&&e| e)
+        .count();
     assert_eq!(remaining, 1);
 }
 
@@ -367,23 +441,32 @@ fn test_prune_stale_types_cache_never_unlinks_locked_temp_file_even_if_old() {
     assert_eq!(ret, 0);
 
     // Prune with 0-sec grace period
-    let removed = prune_stale_types_cache_with_grace(&cache_dir, Duration::ZERO, 1_000_000, Duration::ZERO).unwrap();
+    let removed =
+        prune_stale_types_cache_with_grace(&cache_dir, Duration::ZERO, 1_000_000, Duration::ZERO)
+            .unwrap();
     assert_eq!(removed, 0);
-    assert!(tmp_locked.exists(), "Locked temporary file must never be unlinked!");
+    assert!(
+        tmp_locked.exists(),
+        "Locked temporary file must never be unlinked!"
+    );
 
     // Release lock
-    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN); }
+    unsafe {
+        libc::flock(f.as_raw_fd(), libc::LOCK_UN);
+    }
     drop(f);
 
     // Now unlocked: prune should unlink the abandoned temp file
-    let removed_after = prune_stale_types_cache_with_grace(&cache_dir, Duration::ZERO, 1_000_000, Duration::ZERO).unwrap();
+    let removed_after =
+        prune_stale_types_cache_with_grace(&cache_dir, Duration::ZERO, 1_000_000, Duration::ZERO)
+            .unwrap();
     assert_eq!(removed_after, 1);
     assert!(!tmp_locked.exists());
 }
 
 #[test]
 fn test_seed_typescript_worktree_pnpm_symlink_package() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("ts-cache-pnpm");
     unsafe {
@@ -406,8 +489,16 @@ fn test_seed_typescript_worktree_pnpm_symlink_package() {
         .join("@types")
         .join("node");
     fs::create_dir_all(&pnpm_pkg).unwrap();
-    fs::write(pnpm_pkg.join("index.d.ts"), "declare const pnpmProcess: any;\n").unwrap();
-    fs::write(pnpm_pkg.join("package.json"), "{\"name\":\"@types/node\"}\n").unwrap();
+    fs::write(
+        pnpm_pkg.join("index.d.ts"),
+        "declare const pnpmProcess: any;\n",
+    )
+    .unwrap();
+    fs::write(
+        pnpm_pkg.join("package.json"),
+        "{\"name\":\"@types/node\"}\n",
+    )
+    .unwrap();
 
     // Create from/node_modules/@types/node as symlink into pnpm store
     let at_types = from.join("node_modules").join("@types");
@@ -417,7 +508,10 @@ fn test_seed_typescript_worktree_pnpm_symlink_package() {
 
     // Verify tree_size measures the dereferenced types (> 0)
     let size = tree_size(&at_types);
-    assert!(size > 0, "tree_size must dereference valid package symlinks");
+    assert!(
+        size > 0,
+        "tree_size must dereference valid package symlinks"
+    );
 
     // Seed worktree
     let result = seed_typescript_worktree(&from, &to).unwrap();
@@ -448,7 +542,7 @@ fn test_seed_typescript_worktree_pnpm_symlink_package() {
 
 #[test]
 fn test_seed_typescript_worktree_deduplicates_pnpm_concrete_at_types_dir() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("ts-cache-pnpm-dedup");
     unsafe {
@@ -470,7 +564,11 @@ fn test_seed_typescript_worktree_deduplicates_pnpm_concrete_at_types_dir() {
         .join("@types")
         .join("react");
     fs::create_dir_all(&pnpm_react).unwrap();
-    fs::write(pnpm_react.join("index.d.ts"), "export declare function useState(): void;\n").unwrap();
+    fs::write(
+        pnpm_react.join("index.d.ts"),
+        "export declare function useState(): void;\n",
+    )
+    .unwrap();
 
     let to_at_types = to.join("node_modules").join("@types");
     fs::create_dir_all(&to_at_types).unwrap();
@@ -486,7 +584,10 @@ fn test_seed_typescript_worktree_deduplicates_pnpm_concrete_at_types_dir() {
 
     // Declarations must NOT be dropped!
     let to_react_index = to_at_types.join("react").join("index.d.ts");
-    assert!(to_react_index.exists(), "Type declarations must not be dropped after deduplication");
+    assert!(
+        to_react_index.exists(),
+        "Type declarations must not be dropped after deduplication"
+    );
     let content = fs::read_to_string(&to_react_index).unwrap();
     assert!(content.contains("useState"));
 
@@ -503,7 +604,7 @@ fn test_seed_typescript_worktree_deduplicates_pnpm_concrete_at_types_dir() {
 
 #[test]
 fn test_seed_typescript_worktree_rejects_out_of_root_symlinks() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("ts-cache-security");
     unsafe {
@@ -513,8 +614,16 @@ fn test_seed_typescript_worktree_rejects_out_of_root_symlinks() {
     // External directory simulating sensitive host files
     let outside_dir = temp.path().join("outside_host_data");
     fs::create_dir_all(&outside_dir).unwrap();
-    fs::write(outside_dir.join("secret_credentials.json"), "{\"token\": \"SECRET_HOST_TOKEN\"}\n").unwrap();
-    fs::write(outside_dir.join("host_lib.d.ts"), "declare const hostSecret: string;\n").unwrap();
+    fs::write(
+        outside_dir.join("secret_credentials.json"),
+        "{\"token\": \"SECRET_HOST_TOKEN\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        outside_dir.join("host_lib.d.ts"),
+        "declare const hostSecret: string;\n",
+    )
+    .unwrap();
 
     let from = temp.path().join("from");
     let to = temp.path().join("to");
@@ -542,7 +651,11 @@ fn test_seed_typescript_worktree_rejects_out_of_root_symlinks() {
         .join("@types")
         .join("valid");
     fs::create_dir_all(&pnpm_valid).unwrap();
-    fs::write(pnpm_valid.join("index.d.ts"), "export declare const validPkg: boolean;\n").unwrap();
+    fs::write(
+        pnpm_valid.join("index.d.ts"),
+        "export declare const validPkg: boolean;\n",
+    )
+    .unwrap();
 
     let valid_link = from_at_types.join("valid");
     let _ = std::os::unix::fs::symlink(&pnpm_valid, &valid_link);
@@ -551,13 +664,21 @@ fn test_seed_typescript_worktree_rejects_out_of_root_symlinks() {
     let _ = seed_typescript_worktree(&from, &to).unwrap();
 
     // The legitimate in-root package must be present in the shared cache
-    assert!(cache_dir.join("valid").join("index.d.ts").is_file());
+    let cache_view = fs::read_link(to.join("node_modules/@types")).unwrap();
+    assert!(cache_view.starts_with(&cache_dir));
+    assert!(cache_view.join("valid/index.d.ts").is_file());
 
     // Out-of-root symlinks must NEVER be dereferenced or copied into the shared cache
-    assert!(!cache_dir.join("outside_pkg").exists(), "Out-of-root directory symlinks must be rejected!");
-    assert!(!cache_dir.join("stolen.json").exists(), "Out-of-root file symlinks must be rejected!");
-    assert!(!cache_dir.join("secret_credentials.json").exists());
-    assert!(!cache_dir.join("host_lib.d.ts").exists());
+    assert!(
+        !cache_view.join("outside_pkg").exists(),
+        "Out-of-root directory symlinks must be rejected!"
+    );
+    assert!(
+        !cache_view.join("stolen.json").exists(),
+        "Out-of-root file symlinks must be rejected!"
+    );
+    assert!(!cache_view.join("secret_credentials.json").exists());
+    assert!(!cache_view.join("host_lib.d.ts").exists());
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -566,7 +687,7 @@ fn test_seed_typescript_worktree_rejects_out_of_root_symlinks() {
 
 #[test]
 fn test_seed_typescript_worktree_rejects_out_of_root_traversal_root() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("ts-cache-root-security");
     unsafe {
@@ -576,8 +697,16 @@ fn test_seed_typescript_worktree_rejects_out_of_root_traversal_root() {
     // External directory simulating sensitive host files
     let outside_dir = temp.path().join("outside_sensitive_dir");
     fs::create_dir_all(&outside_dir).unwrap();
-    fs::write(outside_dir.join("config.json"), "{\"secret\": \"OUTSIDE_SECRET\"}\n").unwrap();
-    fs::write(outside_dir.join("types.d.ts"), "declare const sensitive: any;\n").unwrap();
+    fs::write(
+        outside_dir.join("config.json"),
+        "{\"secret\": \"OUTSIDE_SECRET\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        outside_dir.join("types.d.ts"),
+        "declare const sensitive: any;\n",
+    )
+    .unwrap();
 
     let from_evil = temp.path().join("from_evil");
     let to_evil = temp.path().join("to_evil");
@@ -594,20 +723,31 @@ fn test_seed_typescript_worktree_rejects_out_of_root_traversal_root() {
 
     // find_project_types must reject this out-of-root traversal root
     let discovered = find_project_types(&from_evil);
-    assert!(discovered.is_empty(), "find_project_types must reject out-of-root traversal root symlink");
+    assert!(
+        discovered.is_empty(),
+        "find_project_types must reject out-of-root traversal root symlink"
+    );
 
     // tree_size must return 0
     let size = tree_size(&evil_at_types);
-    assert_eq!(size, 0, "tree_size must reject out-of-root traversal root symlink");
+    assert_eq!(
+        size, 0,
+        "tree_size must reject out-of-root traversal root symlink"
+    );
 
     // merge_types must return 0 and not copy anything
     let merged = merge_types(&evil_at_types, &cache_dir).unwrap();
-    assert_eq!(merged, 0, "merge_types must return 0 for out-of-root traversal root");
+    assert_eq!(
+        merged, 0,
+        "merge_types must return 0 for out-of-root traversal root"
+    );
 
     // seed_typescript_worktree must not copy any external files
     let _ = seed_typescript_worktree(&from_evil, &to_evil).unwrap();
-    assert!(!cache_dir.join("config.json").exists());
-    assert!(!cache_dir.join("types.d.ts").exists());
+    let cache_view = fs::read_link(to_evil.join("node_modules/@types")).unwrap();
+    assert!(cache_view.starts_with(&cache_dir));
+    assert!(!cache_view.join("config.json").exists());
+    assert!(!cache_view.join("types.d.ts").exists());
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -616,7 +756,7 @@ fn test_seed_typescript_worktree_rejects_out_of_root_traversal_root() {
 
 #[test]
 fn test_find_project_types_symlink_cycle_and_out_of_root_custom_types() {
-    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("ts-cache-cycle-test");
     unsafe {
@@ -630,7 +770,11 @@ fn test_find_project_types_symlink_cycle_and_out_of_root_custom_types() {
     // 1. External out-of-root directory with declaration files
     let outside_dir = temp.path().join("outside_custom");
     fs::create_dir_all(&outside_dir).unwrap();
-    fs::write(outside_dir.join("global.d.ts"), "declare const outside: string;\n").unwrap();
+    fs::write(
+        outside_dir.join("global.d.ts"),
+        "declare const outside: string;\n",
+    )
+    .unwrap();
 
     // A malicious custom "typings" directory symlink pointing to outside_dir
     let evil_typings = root.join("typings");
@@ -650,7 +794,11 @@ fn test_find_project_types_symlink_cycle_and_out_of_root_custom_types() {
     assert!(!has_declaration_files(&custom_types));
 
     // Case B: Now add a valid declaration file inside types/
-    fs::write(custom_types.join("local.d.ts"), "export declare const local: boolean;\n").unwrap();
+    fs::write(
+        custom_types.join("local.d.ts"),
+        "export declare const local: boolean;\n",
+    )
+    .unwrap();
     // has_declaration_files must terminate, not get trapped in cycle, and return true!
     assert!(has_declaration_files(&custom_types));
 
@@ -665,8 +813,10 @@ fn test_find_project_types_symlink_cycle_and_out_of_root_custom_types() {
     fs::create_dir_all(&dest).unwrap();
     let seeded = seed_typescript_worktree(&root, &dest).unwrap();
     assert!(seeded.is_some());
-    assert!(cache_dir.join("types").join("local.d.ts").is_file());
-    assert!(!cache_dir.join("global.d.ts").exists());
+    let cache_view = fs::read_link(dest.join("node_modules/@types")).unwrap();
+    assert!(cache_view.starts_with(&cache_dir));
+    assert!(cache_view.join("types/local.d.ts").is_file());
+    assert!(!cache_view.join("global.d.ts").exists());
 
     unsafe {
         std::env::remove_var(TS_TYPES_CACHE_ENV);
@@ -681,11 +831,19 @@ fn test_approved_target_and_canonical_dereferencing() {
 
     let outside = temp.path().join("outside");
     fs::create_dir_all(&outside).unwrap();
-    fs::write(outside.join("secret.d.ts"), "declare const secret: string;\n").unwrap();
+    fs::write(
+        outside.join("secret.d.ts"),
+        "declare const secret: string;\n",
+    )
+    .unwrap();
 
     let inside = root.join("valid_types");
     fs::create_dir_all(&inside).unwrap();
-    fs::write(inside.join("index.d.ts"), "export declare const ok: boolean;\n").unwrap();
+    fs::write(
+        inside.join("index.d.ts"),
+        "export declare const ok: boolean;\n",
+    )
+    .unwrap();
 
     let approved = build_approved_roots(&[&root]);
 

@@ -25,6 +25,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+#[path = "common/live_gateway.rs"]
+mod live_gateway;
+#[path = "common/live_tools.rs"]
+mod live_tools;
+
 const SENTINEL_CHILD: &str = "PROD_CODE_SAFE_DELETE_GO_SENTINEL_CHILD";
 const SENTINEL_ROOT: &str = "PROD_CODE_SAFE_DELETE_GO_SENTINEL_ROOT";
 const SENTINEL_ADDR: &str = "PROD_CODE_SAFE_DELETE_GO_SENTINEL_ADDR";
@@ -41,16 +46,18 @@ struct Gateway {
 impl Gateway {
     fn start() -> Self {
         let storage = tempfile::tempdir().expect("storage dir");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
+        let mut command = live_gateway::command(
+            storage.path(),
+            "go_function_safe_delete_has_real_gateway_cli_and_mcp_proof",
+        );
         command
             .env("PROD_CODE_STORAGE", storage.path())
             .env("PROD_CODE_SHADOW_ROOT", storage.path().join("owned-shadow"))
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
-            .env("PROD_CODE_ENGINE_RESERVE_MIB", "64")
             .env_remove("RUST_LOG")
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .process_group(0);
         Self::from_child(command.spawn().expect("gateway starts"), storage)
     }
@@ -382,12 +389,16 @@ async fn sentinel_child() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
+    if Box::pin(live_gateway::serve_if_child()).await {
+        return;
+    }
     if std::env::var_os(SENTINEL_CHILD).is_some() {
         sentinel_child().await;
         return;
     }
-    let (gopls_ok, version) = run(Path::new("."), "gopls", &["version"]);
-    assert!(gopls_ok, "gopls version: {version}");
+    if !live_tools::go_tools_available() {
+        return;
+    }
     let gateway = Gateway::start();
 
     let (_cli_dir, cli_root) = checkout(SOURCE, TEST);
