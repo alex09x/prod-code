@@ -38,10 +38,8 @@ impl RustEngineSnapshot {
         col: u32,
         scope: Option<&Path>,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
-        let file_id = self
-            .file_id_for_path(context)
-            .with_context(|| format!("File not found in VFS: {:?}", context))?;
-        let text = self.analysis.file_text(file_id)?;
+        let file_id = self.require_file_id(context)?;
+        let text = self.analysis()?.file_text(file_id)?;
         // The pattern's paths are resolved as if they appeared at this position, so it has to
         // be inside an item: at offset 0 a file has no scope and nothing resolves, which looks
         // exactly like "no matches". When the caller has no position of its own, use the body
@@ -60,10 +58,8 @@ impl RustEngineSnapshot {
         let selections = match scope {
             None => Vec::new(),
             Some(path) => {
-                let scope_id = self
-                    .file_id_for_path(path)
-                    .with_context(|| format!("File not found in VFS: {:?}", path))?;
-                let scope_text = self.analysis.file_text(scope_id)?;
+                let scope_id = self.require_file_id(path)?;
+                let scope_text = self.analysis()?.file_text(scope_id)?;
                 vec![FileRange {
                     file_id: scope_id,
                     range: TextRange::new(
@@ -81,7 +77,7 @@ impl RustEngineSnapshot {
             "🔧 [SSR] resolving"
         );
         let change = match self
-            .analysis
+            .analysis()?
             .structural_search_replace(rule, false, position, selections)?
         {
             Ok(change) => change,
@@ -103,7 +99,8 @@ impl RustEngineSnapshot {
     /// An offset inside the first function of `file_id`, for resolving a pattern's paths.
     fn first_body_offset(&self, file_id: FileId) -> Option<TextSize> {
         let structure = self
-            .analysis
+            .analysis()
+            .ok()?
             .file_structure(
                 &FileStructureConfig {
                     exclude_locals: true,

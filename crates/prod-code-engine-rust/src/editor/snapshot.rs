@@ -36,7 +36,7 @@ impl RustEngineSnapshot {
             .and_then(Value::as_str)
             .and_then(|s| s.chars().next());
         let items = self
-            .analysis
+            .analysis()?
             .completions(&completion_config(), position, trigger)?
             .unwrap_or_default();
         let incomplete = items.len() >= COMPLETION_LIMIT;
@@ -79,7 +79,7 @@ impl RustEngineSnapshot {
             })
             .unwrap_or_default();
         let edits =
-            self.analysis
+            self.analysis()?
                 .resolve_completion_edits(&completion_config(), position, imports)?;
         let mut additional: Vec<Value> = item
             .get("additionalTextEdits")
@@ -103,7 +103,7 @@ impl RustEngineSnapshot {
             file_id,
             offset: lines.offset_of(&params["position"]),
         };
-        let Some(help) = self.analysis.signature_help(position)? else {
+        let Some(help) = self.analysis()?.signature_help(position)? else {
             return Ok(Value::Null);
         };
         let label = help.signature.clone();
@@ -140,7 +140,7 @@ impl RustEngineSnapshot {
             .map(|range| lines.range_of(range))
             .unwrap_or_else(|| TextRange::up_to(TextSize::of(text.as_str())));
         let hints = self
-            .analysis
+            .analysis()?
             .inlay_hints(&inlay_config(), file_id, Some(range))?;
         let hints: Vec<Value> = hints
             .into_iter()
@@ -185,7 +185,7 @@ impl RustEngineSnapshot {
             branch_exit_points: true,
         };
         let ranges = self
-            .analysis
+            .analysis()?
             .highlight_related(config, position)?
             .unwrap_or_default();
         let highlights: Vec<Value> = ranges
@@ -214,7 +214,7 @@ impl RustEngineSnapshot {
             range: lines.range_of(&params["range"]),
         };
         let (assist_config, diagnostics_config) = Self::assist_configs();
-        let assists = self.analysis.assists_with_fixes(
+        let assists = self.analysis()?.assists_with_fixes(
             &assist_config,
             &diagnostics_config,
             AssistResolveStrategy::None,
@@ -260,7 +260,7 @@ impl RustEngineSnapshot {
         let id = data["id"].as_str().unwrap_or_default();
         let subtype = data["subtype"].as_u64().map(|s| s as usize);
         let (assist_config, diagnostics_config) = Self::assist_configs();
-        let offered = self.analysis.assists_with_fixes(
+        let offered = self.analysis()?.assists_with_fixes(
             &assist_config,
             &diagnostics_config,
             AssistResolveStrategy::None,
@@ -276,7 +276,7 @@ impl RustEngineSnapshot {
             assist_subtype: target.id.2,
         });
         let change = self
-            .analysis
+            .analysis()?
             .assists_with_fixes(&assist_config, &diagnostics_config, resolve, frange)?
             .into_iter()
             .find(|a| a.id.0 == id && (subtype.is_none() || a.id.2 == subtype))
@@ -305,7 +305,7 @@ impl RustEngineSnapshot {
             let Some(path) = self.path_for_file_id(*file_id) else {
                 continue;
             };
-            let text = self.analysis.file_text(*file_id)?;
+            let text = self.analysis()?.file_text(*file_id)?;
             let lines = Lines::new(&text);
             document_changes.push(json!({
                 "textDocument": { "uri": uri_of(&path), "version": null },

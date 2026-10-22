@@ -10,7 +10,7 @@
 
 //! Code navigation queries: hover, definitions, implementations, references, and symbols.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ra_ap_ide::{
     FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig,
     GotoImplementationConfig, HoverConfig, HoverDocFormat, RaFixtureConfig, StructureNodeKind,
@@ -46,7 +46,7 @@ impl RustEngineSnapshot {
             ra_fixture: RaFixtureConfig::default(),
         };
 
-        let res = self.analysis.hover(&config, file_range)?;
+        let res = self.analysis()?.hover(&config, file_range)?;
         Ok(res.map(|h| h.info.markup.to_string()))
     }
 
@@ -65,7 +65,7 @@ impl RustEngineSnapshot {
             ra_fixture: RaFixtureConfig::default(),
         };
 
-        let targets = match self.analysis.goto_definition(file_pos, &config)? {
+        let targets = match self.analysis()?.goto_definition(file_pos, &config)? {
             Some(range_info) => range_info.info,
             None => return Ok(vec![]),
         };
@@ -78,7 +78,7 @@ impl RustEngineSnapshot {
             if let Some(target_path) =
                 self.path_for_file_id_in_view(target.file_id, overlay.as_ref())
             {
-                let target_text = self.analysis.file_text(target.file_id)?;
+                let target_text = self.analysis()?.file_text(target.file_id)?;
                 let focus = target.focus_range.unwrap_or(target.full_range);
                 let (target_line, target_col) = offset_to_line_col(&target_text, focus.start());
                 results.push(DefinitionTarget {
@@ -107,7 +107,7 @@ impl RustEngineSnapshot {
         let config = GotoImplementationConfig {
             filter_adjacent_derive_implementations: false,
         };
-        let targets = match self.analysis.goto_implementation(&config, pos)? {
+        let targets = match self.analysis()?.goto_implementation(&config, pos)? {
             Some(info) => info.info,
             None => return Ok(vec![]),
         };
@@ -139,7 +139,7 @@ impl RustEngineSnapshot {
             exclude_tests: false,
         };
 
-        let search_res = match self.analysis.find_all_refs(file_pos, &config)? {
+        let search_res = match self.analysis()?.find_all_refs(file_pos, &config)? {
             Some(res) => res,
             None => return Ok(vec![]),
         };
@@ -152,7 +152,7 @@ impl RustEngineSnapshot {
                 }
                 if let (Some(ref_path), Ok(ref_text)) = (
                     self.path_for_file_id_in_view(ref_file_id, overlay.as_ref()),
-                    self.analysis.file_text(ref_file_id),
+                    self.analysis()?.file_text(ref_file_id),
                 ) {
                     for (range, _) in refs {
                         let (ref_line, ref_col) = offset_to_line_col(&ref_text, range.start());
@@ -171,20 +171,19 @@ impl RustEngineSnapshot {
 
     /// Generate outline / document symbols for a file.
     pub fn document_symbols(&self, path: &Path) -> Result<Vec<SymbolTarget>> {
+        drop(self.analysis()?);
         anyhow::ensure!(
             is_rust_source(path),
             "{} is not a Rust file, and no language server of this workspace outlines it",
             path.display()
         );
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let file_id = self.require_file_id(path)?;
 
-        let text = self.analysis.file_text(file_id)?;
+        let text = self.analysis()?.file_text(file_id)?;
         let config = FileStructureConfig {
             exclude_locals: false,
         };
-        let nodes = self.analysis.file_structure(&config, file_id)?;
+        let nodes = self.analysis()?.file_structure(&config, file_id)?;
 
         let labels: Vec<String> = nodes.iter().map(|n| n.label.clone()).collect();
         let parents: Vec<Option<usize>> = nodes.iter().map(|n| n.parent).collect();

@@ -11,9 +11,7 @@
 //! Thread-safe Salsa database analysis snapshot for concurrent queries.
 
 use anyhow::{Context, Result};
-use ra_ap_ide::{
-    Analysis, AssistConfig, DiagnosticsConfig, FileId, FilePosition, NavigationTarget,
-};
+use ra_ap_ide::{AssistConfig, DiagnosticsConfig, FileId, FilePosition, NavigationTarget};
 use ra_ap_ide_db::SnippetCap;
 use ra_ap_load_cargo::worktree::Overlay;
 use ra_ap_load_cargo::worktrees::Views;
@@ -27,9 +25,12 @@ use crate::vfs::{is_safe_file_id, line_col_to_offset, normalize_vfs_path, offset
 
 pub mod diagnostics;
 pub mod hierarchy;
+pub(crate) mod lifetime;
 pub mod navigation;
 pub mod refactor;
 pub mod ssr;
+pub use lifetime::SnapshotCancellation;
+use lifetime::{AnalysisGuard, SnapshotAnalysis};
 
 /// Thread-safe, multi-core analysis snapshot backed by warm Salsa database.
 ///
@@ -38,7 +39,7 @@ pub mod ssr;
 /// to execute simultaneously across all available CPU cores without blocking.
 pub struct RustEngineSnapshot {
     pub workspace_root: PathBuf,
-    pub(crate) analysis: Analysis,
+    pub(crate) analysis: SnapshotAnalysis,
     pub(crate) vfs: Arc<std::sync::RwLock<Vfs>>,
     pub views: Views,
     pub overlay: Option<Overlay>,
@@ -52,7 +53,7 @@ pub struct RustEngineSnapshot {
 impl RustEngineSnapshot {
     pub(crate) fn new(
         workspace_root: PathBuf,
-        analysis: Analysis,
+        analysis: SnapshotAnalysis,
         vfs: Arc<std::sync::RwLock<Vfs>>,
         views: Views,
         overlay: Option<Overlay>,
@@ -70,6 +71,22 @@ impl RustEngineSnapshot {
         }
     }
 
+    pub fn cancellation_handle(&self) -> SnapshotCancellation {
+        self.analysis.cancellation_handle()
+    }
+
+    pub(crate) fn analysis(&self) -> Result<AnalysisGuard<'_>> {
+        self.analysis.lock()
+    }
+
+    pub(crate) fn require_file_id(&self, path: &Path) -> Result<FileId> {
+        let file_id = self.file_id_for_path(path);
+        // Path lookup uses an Option API. Preserve cancellation instead of turning it into
+        // a misleading missing-file error, so the gateway can retry a fresh revision.
+        drop(self.analysis()?);
+        file_id.with_context(|| format!("File not found in VFS: {:?}", path))
+    }
+
     /// Lookup Vfs FileId for a filesystem path with safe 24-bit EditionedFileId validation.
     pub fn file_id_for_path(&self, path: &Path) -> Option<FileId> {
         let norm = normalize_vfs_path(path, &self.workspace_root);
@@ -77,7 +94,8 @@ impl RustEngineSnapshot {
         let guard = self.vfs.read().ok()?;
         let file_id = self.views.file(&guard, &abs)?;
         let file_id = self.views.analyzed_file(&guard, file_id, |f| {
-            self.analysis.crates_for(f).is_ok_and(|c| !c.is_empty())
+            self.analysis()
+                .is_ok_and(|a| a.crates_for(f).is_ok_and(|c| !c.is_empty()))
         });
         if is_safe_file_id(file_id) {
             let overlay = self.current_overlay();
@@ -86,7 +104,8 @@ impl RustEngineSnapshot {
             // On a node that wedged every request: priming held a read, a didChange's
             // `apply_file_change` queued its write, the second read never came (#1190).
             let in_view = self.views.in_view(&guard, overlay.as_ref(), file_id, |f| {
-                self.analysis.crates_for(f).is_ok_and(|c| !c.is_empty())
+                self.analysis()
+                    .is_ok_and(|a| a.crates_for(f).is_ok_and(|c| !c.is_empty()))
             });
             if !in_view {
                 return None;
@@ -128,7 +147,8 @@ impl RustEngineSnapshot {
             return false;
         };
         self.views.in_view(&guard, overlay, file_id, |f| {
-            self.analysis.crates_for(f).is_ok_and(|c| !c.is_empty())
+            self.analysis()
+                .is_ok_and(|a| a.crates_for(f).is_ok_and(|c| !c.is_empty()))
         })
     }
 
@@ -152,10 +172,9 @@ impl RustEngineSnapshot {
     }
 
     pub(crate) fn file_position(&self, path: &Path, line: u32, col: u32) -> Result<FilePosition> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
-        let text = self.analysis.file_text(file_id)?;
+        drop(self.analysis()?);
+        let file_id = self.require_file_id(path)?;
+        let text = self.analysis()?.file_text(file_id)?;
         let offset = line_col_to_offset(&text, line, col)
             .with_context(|| format!("Invalid position {line}:{col} in {}", path.display()))?;
         Ok(FilePosition { file_id, offset })
@@ -167,7 +186,7 @@ impl RustEngineSnapshot {
         overlay: Option<&Overlay>,
     ) -> Option<HierarchyItem> {
         let path = self.path_for_file_id_in_view(target.file_id, overlay)?;
-        let text = self.analysis.file_text(target.file_id).ok()?;
+        let text = self.analysis().ok()?.file_text(target.file_id).ok()?;
         let focus = target.focus_range.unwrap_or(target.full_range);
         let (line, col) = offset_to_line_col(&text, focus.start());
         let (end_line, end_col) = offset_to_line_col(&text, target.full_range.end());

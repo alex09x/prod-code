@@ -18,6 +18,7 @@ mod engine;
 mod navigation;
 mod refactoring;
 mod sessions;
+mod snapshot_cancellation;
 mod vfs;
 mod worktrees;
 

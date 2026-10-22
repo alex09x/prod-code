@@ -19,8 +19,14 @@ use crate::RustEngineSnapshot;
 impl RustEngineSnapshot {
     /// The edition the crate of `file_id` is written in, as rustfmt spells it.
     pub(crate) fn edition_of(&self, file_id: FileId) -> Option<String> {
-        let krate = self.analysis.crates_for(file_id).ok()?.into_iter().next()?;
-        Some(self.analysis.crate_edition(krate).ok()?.to_string())
+        let krate = self
+            .analysis()
+            .ok()?
+            .crates_for(file_id)
+            .ok()?
+            .into_iter()
+            .next()?;
+        Some(self.analysis().ok()?.crate_edition(krate).ok()?.to_string())
     }
 
     /// The whole document formatted by rustfmt on this node, under the checkout's

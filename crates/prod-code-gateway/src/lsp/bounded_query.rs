@@ -10,12 +10,13 @@
 
 use crate::*;
 
-/// Maximum duration a semantic read query (references, definition, hover, call hierarchy,
-/// symbols) may run before being terminated with a server-side timeout error.
+#[path = "bounded_query_control.rs"]
+mod control;
+use control::CancelOnDrop;
+
 pub(crate) const SEMANTIC_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Validation requests carry their remaining per-file budget. Never let a client enlarge
-/// the server's own query bound, including through malformed or oversized hints.
+/// Validation hints may shorten, but never enlarge, the server's query budget.
 pub(crate) fn semantic_query_budget(params: &serde_json::Value) -> Duration {
     params
         .get("prodCodeTimeoutMs")
@@ -24,20 +25,13 @@ pub(crate) fn semantic_query_budget(params: &serde_json::Value) -> Duration {
         .unwrap_or(SEMANTIC_QUERY_TIMEOUT)
 }
 
-/// Maximum concurrent semantic read queries executing in the blocking pool (#3111).
 pub(crate) const MAX_CONCURRENT_SEMANTIC_QUERIES: usize = 16;
-
-/// Global semaphore bounding concurrent semantic queries to strictly limit the number
-/// of outstanding blocking query tasks, preventing exhaustion of Tokio's blocking pool (#3111).
 pub(crate) static SEMANTIC_QUERY_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| {
         Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SEMANTIC_QUERIES))
     });
-
-/// Counter of currently active queries that have timed out and are still running in the background.
 pub(crate) static STALLED_QUERIES_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// `60s` for the usual whole-second bound, milliseconds for a validation's remaining share.
 fn timeout_label(timeout: Duration) -> String {
     if timeout.subsec_millis() == 0 {
         format!("{}s", timeout.as_secs())
@@ -50,16 +44,6 @@ fn timeout_label(timeout: Duration) -> String {
 #[path = "validation_query_tests.rs"]
 mod validation_query_tests;
 
-/// Executes a read query on a thread-safe snapshot of `RustEngine`.
-///
-/// Holds the engine lock only briefly (<10 µs) to activate session overlays and take
-/// an `Analysis` snapshot. The query then runs on a blocking thread pool worker without
-/// retaining the shared engine lock, bounded by `SEMANTIC_QUERY_TIMEOUT`.
-///
-/// Bounded by `SEMANTIC_QUERY_SEMAPHORE` so outstanding blocking queries cannot accumulate
-/// or exhaust Tokio's blocking pool. If timed-out queries accumulate and threaten capacity,
-/// the engine is cooperatively recycled to purge stuck workers while active queries transparently
-/// retry on fresh snapshots (#3109, #3111).
 pub(crate) async fn execute_bounded_query<T, F>(
     engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
     session_id: u64,
@@ -82,8 +66,8 @@ where
     .await
 }
 
-/// Uses the caller's remaining validation budget without abandoning the worker's permit.
-/// Cancellation retries share this deadline and always take a new engine snapshot.
+/// Preparation, execution and cancellation retries share one deadline. The worker retains
+/// its capacity permit until it exits, but its Salsa handle is revocable independently.
 pub(crate) async fn execute_bounded_query_with_timeout<T, F>(
     engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
     session_id: u64,
@@ -98,168 +82,102 @@ where
 {
     let timeout = timeout.min(SEMANTIC_QUERY_TIMEOUT);
     let deadline = Instant::now() + timeout;
+    let timed_out = || anyhow::anyhow!("query timed out after {}", timeout_label(timeout));
+    let permit = tokio::time::timeout(timeout, SEMANTIC_QUERY_SEMAPHORE.clone().acquire_owned())
+        .await
+        .map_err(|_| anyhow::anyhow!("query timed out waiting for available execution slot"))?
+        .map_err(|_| anyhow::anyhow!("semantic query semaphore closed"))?;
+    let permit = Arc::new(permit);
     let mut retries = 0;
 
-    let now = Instant::now();
-    if now >= deadline {
-        return Err(anyhow::anyhow!(
-            "query timed out after {}",
-            timeout_label(timeout)
-        ));
-    }
-    let remaining = deadline - now;
-
-    let permit =
-        match tokio::time::timeout(remaining, SEMANTIC_QUERY_SEMAPHORE.clone().acquire_owned())
-            .await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_closed)) => anyhow::bail!("semantic query semaphore closed"),
-            Err(_elapsed) => {
-                if STALLED_QUERIES_COUNT.load(Ordering::Relaxed) > 0 {
-                    let engine_for_recycle = Arc::clone(engine_lock);
-                    tokio::task::spawn(async move {
-                        if let Ok(mut engine) =
-                            tokio::time::timeout(Duration::from_secs(2), engine_for_recycle.lock())
-                                .await
-                        {
-                            engine.trigger_cancellation();
-                        }
-                    });
-                }
-                anyhow::bail!("query timed out waiting for available execution slot");
-            }
-        };
-
     loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(anyhow::anyhow!(
-                "query timed out after {}",
-                timeout_label(timeout)
-            ));
+        if Instant::now() >= deadline {
+            return Err(timed_out());
         }
-        let remaining = deadline - now;
-
-        let snapshot = match tokio::time::timeout(remaining, engine_lock.lock()).await {
-            Ok(mut engine) => {
+        // Bound lock acquisition asynchronously, then move all synchronous preparation
+        // (including session writes and manifest reloads) off the runtime thread.
+        let engine = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            Arc::clone(engine_lock).lock_owned(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "query timed out after {} waiting for engine lock",
+                timeout_label(timeout)
+            )
+        })?;
+        let mut cancellation = CancelOnDrop::new(engine_lock);
+        let control = Arc::clone(&cancellation.control);
+        let path = file_path.to_path_buf();
+        let q_fn = query_fn.clone();
+        let held_permit = Arc::clone(&permit);
+        let mut query_task = tokio::task::spawn_blocking(move || {
+            let _permit = held_permit;
+            let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut engine = engine;
+                if Instant::now() >= deadline {
+                    anyhow::bail!("query deadline expired before preparation");
+                }
                 if !is_single_owner
                     && engine.has_session_overlays()
                     && let Err(e) = engine.activate_session(session_id)
                 {
                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
                 }
-                if let Err(e) = engine.ensure_fresh_for_path(file_path) {
-                    tracing::warn!(error = %e, file = %file_path.display(), "failed to ensure engine freshness");
+                if let Err(e) = engine.ensure_fresh_for_path(&path) {
+                    tracing::warn!(error = %e, file = %path.display(), "failed to ensure engine freshness");
                 }
-                if file_path.is_dir() {
-                    engine.snapshot_for(file_path)
+                let snapshot = if path.is_dir() {
+                    engine.snapshot_for(&path)
                 } else {
-                    engine.snapshot_for_path(file_path)
+                    engine.snapshot_for_path(&path)
+                };
+                control.install(&snapshot)?;
+                drop(engine);
+                if Instant::now() >= deadline {
+                    anyhow::bail!("query deadline expired before execution");
                 }
-            }
-            Err(_elapsed) => {
-                return Err(anyhow::anyhow!(
-                    "query timed out after {} waiting for engine lock",
-                    timeout_label(timeout)
-                ));
-            }
-        };
-
-        let q_fn = query_fn.clone();
-        let mut query_task = Box::pin(tokio::task::spawn_blocking(move || {
-            let panic_res =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| q_fn(&snapshot)));
+                q_fn(&snapshot)
+            }));
             match panic_res {
                 Ok(res) => res,
-                Err(panic_payload) => {
-                    let msg = panic_message(panic_payload);
-                    Err(anyhow::anyhow!("analyzer panic: {msg}"))
-                }
+                Err(payload) => Err(anyhow::anyhow!(
+                    "analyzer panic: {}",
+                    panic_message(payload)
+                )),
             }
-        }));
+        });
 
-        let now = Instant::now();
-        if now >= deadline {
-            let stalled = STALLED_QUERIES_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            let engine_for_recycle = Arc::clone(engine_lock);
-            tokio::task::spawn(async move {
-                let _held_permit = permit;
-                if stalled >= (MAX_CONCURRENT_SEMANTIC_QUERIES / 2) {
-                    tracing::warn!(
-                        stalled,
-                        "Stalled semantic queries reached threshold; recycling engine to reclaim blocking pool workers"
-                    );
-                    if let Ok(mut engine) =
-                        tokio::time::timeout(Duration::from_secs(2), engine_for_recycle.lock())
-                            .await
-                    {
-                        engine.trigger_cancellation();
-                    }
-                }
-                let _ = query_task.await;
-                STALLED_QUERIES_COUNT.fetch_sub(1, Ordering::Relaxed);
-            });
-            return Err(anyhow::anyhow!(
-                "query timed out after {}",
-                timeout_label(timeout)
-            ));
+        let outcome = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            &mut query_task,
+        )
+        .await;
+        if outcome.is_ok() {
+            cancellation.disarm();
         }
-        let remaining = deadline - now;
-
-        match tokio::time::timeout(remaining, query_task.as_mut()).await {
+        match outcome {
             Ok(Ok(Ok(val))) => return Ok(val),
-            Ok(Ok(Err(err))) => {
-                if prod_code_engine_rust::is_salsa_cancelled(&err) {
-                    let backoff = Duration::from_millis(5 * (retries + 1).min(10) as u64);
-                    if Instant::now() + backoff < deadline {
-                        retries += 1;
-                        tracing::debug!(
-                            session = session_id,
-                            file = %file_path.display(),
-                            attempt = retries,
-                            "Salsa query was cancelled by concurrent mutation; retrying with fresh snapshot"
-                        );
-                        tokio::time::sleep(backoff).await;
-                        continue;
-                    }
-                    return Err(anyhow::anyhow!(
-                        "query timed out after {} retrying cancelled snapshots",
-                        timeout_label(timeout)
-                    ));
+            Ok(Ok(Err(err))) if prod_code_engine_rust::is_salsa_cancelled(&err) => {
+                let backoff = Duration::from_millis(5 * (retries + 1).min(10) as u64);
+                if Instant::now() + backoff >= deadline {
+                    return Err(timed_out());
                 }
-                return Err(err);
+                retries += 1;
+                tokio::time::sleep(backoff).await;
             }
-            Ok(Err(join_err)) => {
-                return Err(anyhow::anyhow!("native query task failed: {join_err}"));
-            }
-            Err(_elapsed) => {
-                // The query timed out. Retain the permit while the detached task continues,
-                // so that running timed-out tasks count against the concurrency bound and
-                // cannot accumulate beyond MAX_CONCURRENT_SEMANTIC_QUERIES (#3111).
-                let stalled = STALLED_QUERIES_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                let engine_for_recycle = Arc::clone(engine_lock);
+            Ok(Ok(Err(err))) => return Err(err),
+            Ok(Err(err)) => return Err(anyhow::anyhow!("native query task failed: {err}")),
+            Err(_) => {
+                // Revoke now, even when q_fn is blocked on unrelated work.
+                drop(cancellation);
+                STALLED_QUERIES_COUNT.fetch_add(1, Ordering::Relaxed);
                 tokio::task::spawn(async move {
-                    let _held_permit = permit;
-                    if stalled >= (MAX_CONCURRENT_SEMANTIC_QUERIES / 2) {
-                        tracing::warn!(
-                            stalled,
-                            "Stalled semantic queries reached threshold; recycling engine to reclaim blocking pool workers"
-                        );
-                        if let Ok(mut engine) =
-                            tokio::time::timeout(Duration::from_secs(2), engine_for_recycle.lock())
-                                .await
-                        {
-                            engine.trigger_cancellation();
-                        }
-                    }
                     let _ = query_task.await;
                     STALLED_QUERIES_COUNT.fetch_sub(1, Ordering::Relaxed);
                 });
-                return Err(anyhow::anyhow!(
-                    "query timed out after {}",
-                    timeout_label(timeout)
-                ));
+                return Err(timed_out());
             }
         }
     }
