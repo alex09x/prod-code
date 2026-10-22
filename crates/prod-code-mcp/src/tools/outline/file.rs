@@ -21,6 +21,11 @@ use super::protobuf::protobuf_outline;
 use super::render::render_outline_with;
 use crate::tools::execute_lsp_query;
 
+#[cfg(test)]
+mod tests;
+
+const OUTLINE_QUERY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// A file's outline, for the MCP tool and the CLI alike (#362): a Markdown file's headings,
 /// read here since no language server serves Markdown; an error for a file no language server
 /// serves, rather than the empty answer the checkout's server gives for it; otherwise the file's
@@ -32,6 +37,13 @@ pub async fn outline_file(
     path_str: &str,
     options: &OutlineOptions,
 ) -> Result<String> {
+    if !file_path.exists() {
+        anyhow::bail!(crate::remote_fs::missing_file_context(
+            workspace_root,
+            file_path,
+            "cannot outline: file does not exist:",
+        ));
+    }
     let extension = file_path
         .extension()
         .and_then(|e| e.to_str())
@@ -82,12 +94,12 @@ pub async fn outline_file(
         "textDocument": { "uri": file_uri }
     });
     let source = std::fs::read_to_string(file_path).ok();
-    let query_fut = execute_lsp_query(
+    let query_fut = outline_query(
         remote,
         workspace_root,
         file_path,
-        "textDocument/documentSymbol",
         params,
+        OUTLINE_QUERY_BUDGET,
     );
     let (res, warmup_note) = if engine == Some("swift") {
         match tokio::time::timeout(std::time::Duration::from_secs(4), query_fut).await {
@@ -112,6 +124,35 @@ pub async fn outline_file(
         options.max_items.unwrap_or(usize::MAX),
     );
     Ok(text)
+}
+
+async fn outline_query(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    file_path: &Path,
+    params: serde_json::Value,
+    budget: std::time::Duration,
+) -> Result<serde_json::Value> {
+    // The pooled session's 180s opening allowance is useful for heavy operations, but an
+    // interactive outline must also bound routing, sync, engine load and lock waits (#1178).
+    tokio::time::timeout(
+        budget,
+        execute_lsp_query(
+            remote,
+            workspace_root,
+            file_path,
+            "textDocument/documentSymbol",
+            params,
+        ),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "outline timed out after {} ms while waiting for sync, engine load or another query; \
+             run `prod-code cluster` to inspect capacity, then retry the outline or select another node",
+            budget.as_millis()
+        )
+    })?
 }
 
 pub(crate) fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
