@@ -35,6 +35,7 @@ impl RustEngine {
             Some(text) => self.apply_file_change(norm, text),
             None => {
                 let abs = AbsPathBuf::assert_utf8(norm.to_path_buf());
+                self.prepare_mutation();
                 let db = self.host.raw_database_mut();
                 let mut vfs = self
                     .vfs
@@ -112,6 +113,7 @@ impl RustEngine {
             self.worktree_manifest_mtimes.remove(copy_root);
         }
         let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
+        self.prepare_mutation();
         let db = self.host.raw_database_mut();
         let Ok(mut vfs) = self.vfs.write() else {
             return false;
@@ -148,6 +150,7 @@ impl RustEngine {
     pub fn reload_file(&mut self, path: &Path) -> Result<()> {
         let norm = normalize_vfs_path(path, &self.workspace_root);
         let abs = AbsPathBuf::assert_utf8(norm);
+        self.prepare_mutation();
         let db = self.host.raw_database_mut();
         let mut vfs = self
             .vfs
@@ -164,7 +167,11 @@ impl RustEngine {
             return Ok(());
         }
         let norm = normalize_vfs_path(path, &self.workspace_root);
+        if self.current_db_text(&norm).as_deref() == Some(new_text.as_str()) {
+            return Ok(());
+        }
         let abs = AbsPathBuf::assert_utf8(norm);
+        self.prepare_mutation();
         let db = self.host.raw_database_mut();
         let mut vfs = self
             .vfs

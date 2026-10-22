@@ -38,7 +38,7 @@ impl RustEngineSnapshot {
             prefer_prelude: true,
             prefer_absolute: false,
         };
-        let change = match self.analysis.rename(position, new_name, &config)? {
+        let change = match self.analysis()?.rename(position, new_name, &config)? {
             Ok(change) => change,
             Err(refused) => return Ok(Err(refused.to_string())),
         };
@@ -52,7 +52,7 @@ impl RustEngineSnapshot {
             let Some(edited_path) = self.path_for_file_id(*edited_id) else {
                 continue;
             };
-            let old = self.analysis.file_text(*edited_id)?;
+            let old = self.analysis()?.file_text(*edited_id)?;
             let mut new_text = old.to_string();
             let edits = edit.iter().count();
             edit.apply(&mut new_text);
@@ -133,7 +133,7 @@ impl RustEngineSnapshot {
     ) -> Result<Vec<AssistInfo>> {
         let frange = self.file_range(path, line, col, end)?;
         let (assist_config, diagnostics_config) = Self::assist_configs();
-        let assists = self.analysis.assists_with_fixes(
+        let assists = self.analysis()?.assists_with_fixes(
             &assist_config,
             &diagnostics_config,
             AssistResolveStrategy::None,
@@ -164,7 +164,7 @@ impl RustEngineSnapshot {
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
         let frange = self.file_range(path, line, col, end)?;
         let (assist_config, diagnostics_config) = Self::assist_configs();
-        let offered = self.analysis.assists_with_fixes(
+        let offered = self.analysis()?.assists_with_fixes(
             &assist_config,
             &diagnostics_config,
             AssistResolveStrategy::None,
@@ -200,7 +200,7 @@ impl RustEngineSnapshot {
             assist_kind: target.id.1,
             assist_subtype: target.id.2,
         });
-        let resolved = self.analysis.assists_with_fixes(
+        let resolved = self.analysis()?.assists_with_fixes(
             &assist_config,
             &diagnostics_config,
             resolve,
@@ -219,7 +219,7 @@ impl RustEngineSnapshot {
     /// The path of the innermost macro call whose input contains `frange`, if any.
     fn macro_call_around(&self, frange: FileRange) -> Option<String> {
         use ra_ap_syntax::AstNode;
-        let file = self.analysis.parse(frange.file_id).ok()?;
+        let file = self.analysis().ok()?.parse(frange.file_id).ok()?;
         let token = file
             .syntax()
             .token_at_offset(frange.range.start())
@@ -262,12 +262,12 @@ impl RustEngineSnapshot {
             )));
         }
         let file_id = position.file_id;
-        let text = self.analysis.file_text(file_id)?;
+        let text = self.analysis()?.file_text(file_id)?;
         let offset = position.offset;
         let config = FileStructureConfig {
             exclude_locals: false,
         };
-        let nodes = self.analysis.file_structure(&config, file_id)?;
+        let nodes = self.analysis()?.file_structure(&config, file_id)?;
         // Only the item whose name is at the position. Falling back to the smallest item that
         // merely contains it deleted a line of a function's body for a position on a parameter
         // (#138): a position that names no item is refused instead.

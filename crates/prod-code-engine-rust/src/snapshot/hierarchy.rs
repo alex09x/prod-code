@@ -38,7 +38,7 @@ impl RustEngineSnapshot {
             exclude_tests: false,
             ra_fixture: RaFixtureConfig::default(),
         };
-        let targets = match self.analysis.call_hierarchy(pos, &config)? {
+        let targets = match self.analysis()?.call_hierarchy(pos, &config)? {
             Some(info) => info.info,
             None => return Ok(vec![]),
         };
@@ -60,7 +60,7 @@ impl RustEngineSnapshot {
             ra_fixture: RaFixtureConfig::default(),
         };
         let calls = self
-            .analysis
+            .analysis()?
             .incoming_calls(&config, pos)?
             .unwrap_or_default();
         let mut edges = self.call_edges(calls, overlay.as_ref());
@@ -69,13 +69,12 @@ impl RustEngineSnapshot {
             exclude_tests: true,
             ra_fixture: RaFixtureConfig::default(),
         };
+        let calls_without_tests = self
+            .analysis()?
+            .incoming_calls(&without_tests, pos)?
+            .unwrap_or_default();
         let non_test: HashSet<(PathBuf, u32, u32)> = self
-            .call_edges(
-                self.analysis
-                    .incoming_calls(&without_tests, pos)?
-                    .unwrap_or_default(),
-                overlay.as_ref(),
-            )
+            .call_edges(calls_without_tests, overlay.as_ref())
             .into_iter()
             .map(|e| (e.item.path, e.item.line, e.item.col))
             .collect();
@@ -97,7 +96,7 @@ impl RustEngineSnapshot {
             ra_fixture: RaFixtureConfig::default(),
         };
         let calls = self
-            .analysis
+            .analysis()?
             .outgoing_calls(&config, pos)?
             .unwrap_or_default();
         Ok(self.call_edges(calls, overlay.as_ref()))
@@ -118,7 +117,7 @@ impl RustEngineSnapshot {
                     .iter()
                     .filter(|range| self.is_in_view(range.file_id, overlay))
                     .filter_map(|range| {
-                        let text = self.analysis.file_text(range.file_id).ok()?;
+                        let text = self.analysis().ok()?.file_text(range.file_id).ok()?;
                         Some(offset_to_line_col(&text, range.range.start()))
                     })
                     .collect();
@@ -138,17 +137,15 @@ impl RustEngineSnapshot {
         let limit = limit.max(1);
         let mut exact_local = ra_ap_ide::Query::new(query.to_string());
         exact_local.exact();
-        let mut out: Vec<WorkspaceSymbol> = self
-            .analysis
-            .symbol_search(exact_local, limit)?
+        let exact_targets = self.analysis()?.symbol_search(exact_local, limit)?;
+        let mut out: Vec<WorkspaceSymbol> = exact_targets
             .into_iter()
             .filter(|target| self.is_in_view(target.file_id, overlay.as_ref()))
             .filter_map(|target| self.workspace_symbol(target, None))
             .collect();
         let local = ra_ap_ide::Query::new(query.to_string());
-        for symbol in self
-            .analysis
-            .symbol_search(local, limit)?
+        let local_targets = self.analysis()?.symbol_search(local, limit)?;
+        for symbol in local_targets
             .into_iter()
             .filter(|target| self.is_in_view(target.file_id, overlay.as_ref()))
             .filter_map(|target| self.workspace_symbol(target, None))
@@ -174,10 +171,10 @@ impl RustEngineSnapshot {
                 .collect();
             let mut item_query = ra_ap_ide::Query::new(item_name.to_string());
             item_query.exact();
-            let mut candidates = self.analysis.symbol_search(item_query, limit.max(200))?;
+            let mut candidates = self.analysis()?.symbol_search(item_query, limit.max(200))?;
             if candidates.is_empty() {
                 candidates = self
-                    .analysis
+                    .analysis()?
                     .symbol_search(ra_ap_ide::Query::new(item_name.to_string()), limit.max(200))?;
             }
             for target in candidates
@@ -239,12 +236,12 @@ impl RustEngineSnapshot {
         overlay: Option<&Overlay>,
     ) -> Result<Vec<WorkspaceSymbol>> {
         let out = Vec::new();
-        let targets = self.analysis.symbol_search(query, limit)?;
+        let targets = self.analysis()?.symbol_search(query, limit)?;
         if targets.is_empty() {
             return Ok(out);
         }
         let crate_names: HashMap<FileId, String> = self
-            .analysis
+            .analysis()?
             .fetch_crates()?
             .into_iter()
             .filter_map(|info| Some((info.root_file_id, info.name?.replace('-', "_"))))
@@ -254,11 +251,12 @@ impl RustEngineSnapshot {
             .filter(|target| self.is_in_view(target.file_id, overlay))
             .filter_map(|target| {
                 let module = self.module_path(&target).or_else(|| {
-                    self.analysis
+                    let analysis = self.analysis().ok()?;
+                    analysis
                         .crates_for(target.file_id)
                         .ok()?
                         .into_iter()
-                        .find_map(|k| crate_names.get(&self.analysis.crate_root(k).ok()?))
+                        .find_map(|k| crate_names.get(&analysis.crate_root(k).ok()?))
                         .cloned()
                 });
                 self.workspace_symbol(target, module)
@@ -273,7 +271,7 @@ impl RustEngineSnapshot {
             file_id: target.file_id,
             offset: focus.start(),
         };
-        let monikers = self.analysis.moniker(position).ok()??.info;
+        let monikers = self.analysis().ok()?.moniker(position).ok()??.info;
         monikers.into_iter().find_map(|result| {
             let MonikerResult::Moniker(moniker) = result else {
                 return None;
@@ -301,7 +299,7 @@ impl RustEngineSnapshot {
         module: Option<String>,
     ) -> Option<WorkspaceSymbol> {
         let path = self.path_for_file_id(target.file_id)?;
-        let text = self.analysis.file_text(target.file_id).ok()?;
+        let text = self.analysis().ok()?.file_text(target.file_id).ok()?;
         let focus = target.focus_range.unwrap_or(target.full_range);
         let (line, col) = offset_to_line_col(&text, focus.start());
         let (end_line, _) = offset_to_line_col(&text, target.full_range.end());

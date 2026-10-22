@@ -112,9 +112,7 @@ pub(crate) fn document(
         .and_then(Value::as_str)
         .context("the request names no textDocument.uri")?;
     let path = path_of(uri);
-    let file_id = snapshot
-        .file_id_for_path(&path)
-        .with_context(|| format!("File not found in VFS: {}", path.display()))?;
-    let text = snapshot.analysis.file_text(file_id)?.to_string();
+    let file_id = snapshot.require_file_id(&path)?;
+    let text = snapshot.analysis()?.file_text(file_id)?.to_string();
     Ok((path, file_id, text))
 }

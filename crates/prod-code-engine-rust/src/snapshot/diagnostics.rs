@@ -10,7 +10,7 @@
 
 //! Diagnostic computation, unresolved path checks, and unused import warnings.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ra_ap_ide::{
     AssistResolveStrategy, DiagnosticsConfig, FileId, FileRange, HighlightConfig, HlTag,
     RaFixtureConfig, SymbolKind, TextRange, TextSize,
@@ -27,14 +27,12 @@ impl RustEngineSnapshot {
     /// errors, unresolved names, type mismatches, unused items and the like. This is what a
     /// proposed edit can be validated against before it touches disk.
     pub fn diagnostics(&self, path: &Path) -> Result<Vec<FileDiagnostic>> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
-        let text = self.analysis.file_text(file_id)?;
+        let file_id = self.require_file_id(path)?;
+        let text = self.analysis()?.file_text(file_id)?;
         let config = DiagnosticsConfig::test_sample();
         let started = std::time::Instant::now();
         let diagnostics =
-            self.analysis
+            self.analysis()?
                 .full_diagnostics(&config, AssistResolveStrategy::None, file_id)?;
         let analyzer = started.elapsed();
         let unused_imports = self.unused_imports(file_id, &text);
@@ -107,12 +105,15 @@ impl RustEngineSnapshot {
             syntactic_name_ref_highlighting: false,
             ra_fixture: RaFixtureConfig::default(),
         };
-        let (Ok(highlights), Ok(file)) = (
-            self.analysis.highlight(config, file_id),
-            self.analysis.parse(file_id),
-        ) else {
+        let Ok(analysis) = self.analysis() else {
             return Vec::new();
         };
+        let (Ok(highlights), Ok(file)) =
+            (analysis.highlight(config, file_id), analysis.parse(file_id))
+        else {
+            return Vec::new();
+        };
+        drop(analysis);
         let tags: HashMap<TextRange, HlTag> = highlights
             .into_iter()
             .map(|h| (h.range, h.highlight.tag))
@@ -221,7 +222,10 @@ impl RustEngineSnapshot {
                 file_id,
                 range: TextRange::empty(at),
             };
-            let Ok(assists) = self.analysis.assists_with_fixes(
+            let Ok(analysis) = self.analysis() else {
+                return Vec::new();
+            };
+            let Ok(assists) = analysis.assists_with_fixes(
                 &assist_config,
                 &diagnostics_config,
                 AssistResolveStrategy::None,
@@ -229,6 +233,7 @@ impl RustEngineSnapshot {
             ) else {
                 continue;
             };
+            drop(analysis);
             if !assists.iter().any(|a| a.id.0 == "remove_unused_imports") {
                 continue;
             }

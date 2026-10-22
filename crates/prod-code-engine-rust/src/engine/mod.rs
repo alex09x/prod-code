@@ -39,6 +39,7 @@ pub struct RustEngine {
     pub workspace_root: PathBuf,
     pub(crate) host: AnalysisHost,
     pub(crate) vfs: Arc<std::sync::RwLock<Vfs>>,
+    pub(crate) snapshots: crate::snapshot::lifetime::SnapshotRegistry,
     pub worktrees: Worktrees,
     pub(crate) worktree_attachments: HashMap<PathBuf, usize>,
     pub(crate) worktree_manifest_mtimes:
@@ -63,7 +64,7 @@ impl RustEngine {
     pub fn snapshot(&self) -> RustEngineSnapshot {
         RustEngineSnapshot::new(
             self.workspace_root.clone(),
-            self.host.analysis(),
+            self.snapshots.track(self.host.analysis()),
             Arc::clone(&self.vfs),
             self.worktrees.views(),
             None,
@@ -79,7 +80,7 @@ impl RustEngine {
         let overlay = views.overlay_of(&abs).cloned();
         RustEngineSnapshot::new(
             root.to_path_buf(),
-            self.host.analysis(),
+            self.snapshots.track(self.host.analysis()),
             Arc::clone(&self.vfs),
             views,
             overlay,
@@ -97,7 +98,7 @@ impl RustEngine {
         if let Some(ref o) = overlay {
             RustEngineSnapshot::new(
                 PathBuf::from(o.worktree_root.as_str()),
-                self.host.analysis(),
+                self.snapshots.track(self.host.analysis()),
                 Arc::clone(&self.vfs),
                 views,
                 overlay,
@@ -112,7 +113,14 @@ impl RustEngine {
     /// Trigger cooperative Salsa cancellation on all active snapshots of this engine,
     /// recycling stuck worker queries when capacity is threatened.
     pub fn trigger_cancellation(&mut self) {
+        self.snapshots.cancel();
         self.host.trigger_cancellation();
+    }
+
+    pub(crate) fn prepare_mutation(&mut self) {
+        if self.snapshots.cancel() {
+            self.host.trigger_cancellation();
+        }
     }
 
     pub fn workspace_symbols_for(

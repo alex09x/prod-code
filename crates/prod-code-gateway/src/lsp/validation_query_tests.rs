@@ -50,6 +50,67 @@ fn validation_query_budget_is_clamped() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validation_deadline_releases_snapshot_before_blocking_closure_returns() {
+    let (_dir, engine, path) = engine();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let started_tx = Arc::new(std::sync::Mutex::new(Some(started_tx)));
+    let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
+    let query_path = path.clone();
+    let query = execute_bounded_query_with_timeout(
+        &engine,
+        1,
+        &path,
+        true,
+        Duration::from_millis(100),
+        move |snapshot| {
+            started_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+            release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            cancelled_tx
+                .send(snapshot.document_symbols(&query_path).is_err())
+                .unwrap();
+            release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        },
+    );
+    let (result, started) = tokio::join!(query, started_rx);
+    started.unwrap();
+    assert!(result.unwrap_err().to_string().contains("timed out"));
+    release_tx.send(()).unwrap();
+    let cancelled_before_write = cancelled_rx.recv_timeout(Duration::from_secs(2));
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let writer_engine = Arc::clone(&engine);
+    let writer = std::thread::spawn(move || {
+        let result = writer_engine.blocking_lock().set_session_overlay(
+            1,
+            &path,
+            Some("pub fn updated() {}\n".into()),
+        );
+        done_tx.send(result).unwrap();
+    });
+    let completed = done_rx.recv_timeout(Duration::from_millis(500));
+    // Always release and join, including on the unfixed implementation.
+    release_tx.send(()).unwrap();
+    writer.join().unwrap();
+    assert!(
+        cancelled_before_write.unwrap(),
+        "deadline did not revoke idle snapshot"
+    );
+    completed
+        .expect("deadline left a Salsa snapshot in the blocking task")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn validation_retries_more_than_three_cancellations_on_fresh_snapshots() {
     let (_dir, engine, path) = engine();
     let attempts = Arc::new(AtomicUsize::new(0));

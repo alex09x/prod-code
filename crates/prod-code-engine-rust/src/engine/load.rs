@@ -191,6 +191,7 @@ impl RustEngine {
             workspace_root: workspace_root.to_path_buf(),
             host,
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
+            snapshots: Default::default(),
             worktrees,
             worktree_attachments: HashMap::new(),
             worktree_manifest_mtimes: HashMap::new(),

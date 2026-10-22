@@ -164,6 +164,7 @@ impl RustEngine {
             ws.set_build_scripts(scripts);
         }
         {
+            self.prepare_mutation();
             let db = self.host.raw_database_mut();
             let mut vfs = self
                 .vfs
@@ -207,6 +208,7 @@ impl RustEngine {
         self.changes += 1;
         self.record_worktree_manifests(copy_root, Some(&workspace));
         {
+            self.prepare_mutation();
             let db = self.host.raw_database_mut();
             let mut vfs = self
                 .vfs

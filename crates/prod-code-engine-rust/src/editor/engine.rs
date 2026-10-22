@@ -31,7 +31,7 @@ impl RustEngine {
         let file_id = snapshot
             .file_id_for_path(path)
             .with_context(|| format!("File not found in VFS: {}", path.display()))?;
-        let text = snapshot.analysis.file_text(file_id)?;
+        let text = snapshot.analysis()?.file_text(file_id)?;
         let lines = Lines::new(&text);
         let items: Vec<Value> = diagnostics
             .into_iter()
