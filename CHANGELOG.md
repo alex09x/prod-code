@@ -24,7 +24,7 @@
   - `prod-code change-signature --help` has its Rust and Go long description back, lost in #937.
   - The gateway has a hidden `--no-admission` (`PROD_CODE_NO_ADMISSION`). `.cargo/config.toml` sets it for every gateway a test suite starts, so live tests no longer fail when a shared build node's memory is busy with other services.
 
-  Test fixes: engine seed and cache tests get injected disk budgets and isolated environments. The Rust engine's library tests no longer exhaust the proc-macro farm. Stale expectations were traced to the commits that changed the behaviour on purpose, among them #911 and #1055 (#1163).
+  Test fixes: engine seed and cache tests get injected disk budgets and isolated environments. The Rust engine's library tests no longer exhaust the proc-macro farm. Stale expectations were traced to the commits that changed the behaviour on purpose, among them #911 and #1055 (#1179).
 - **Rust `mut`/`ref` Bindings Resolve by Their Name** (`crates/prod-code-mcp`):
   rust-analyzer labels a local by its whole pattern (`mut items`, `ref mut items`). Position-free lookups (`code_references`, `code_definition`, `code_hover` with `symbol`) answered `no symbol named \`items\`` and suggested `mut items`, and `code_outline --locals` listed `mut items`. `binding_name` and `binding_column` (`tools/symbols/bindings.rs`) strip the binding mode from Rust variable labels and move the position to the identifier. `collect_named` and `parse_workspace_symbol_hits` use them, and `declared_at` reads `let mut NAME` as a declaration. For a Rust file whose outline has nothing, the file-local declaration fallback now applies to `let` bindings too (#1148).
 - **Explicit Dependency Files Answer `--symbol` From Their Own Outline** (`crates/prod-code-mcp`):
