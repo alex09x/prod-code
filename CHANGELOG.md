@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Moving an Item Into Its Parent Updates the Parent's Re-Export** (`crates/prod-code-mcp`):
+  `code_move` of `run_stdio_mcp_server` from `server/transport.rs` into `server/mod.rs` refused with `unresolved import [E0432]`. The parent still re-exported the function from the child (`pub use transport::{...}`), because references inside the destination file were skipped. The destination's import of the moved name is now dropped like any other stale import: grouped siblings stay, and an emptied `use` goes (#1201).
+
 ## v0.3.38 — 2026-10-22
 
 ### Fixed
