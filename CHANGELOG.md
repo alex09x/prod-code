@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## v0.3.37 — 2026-10-22
+
+v0.3.36 was tagged but never published or deployed: its full test run caught the validation-budget regression fixed below (#1205). Everything listed under v0.3.36 ships in this release.
+
 ### Fixed
 - **MCP Hot Reload Answers Every Call It Was Running** (`crates/prod-code-mcp`):
   When the installed client binary changed, the MCP server waited for an empty task set with no deadline, while it kept accepting new calls. Reload now stops reading new requests, delivers the calls that finish within 30 s and answers the rest with a retryable `-32001` "Server is reloading" error before it re-executes. It keeps a partially read request for the new process, and the re-executed binary inherits the same stdin and stdout, so the client connection survives (`server/reload.rs`). The `Transport closed` in #1182 came from the rollout overwriting the signed executable in place, which macOS answers by killing the process. Installers replace the binary by rename now (#1182).
