@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Shadow Test Jobs Get Their Own Hypothesis Directories** (`crates/prod-code-gateway`, tests only):
+  The test fixture `job()` gave every job nonce 7. Successive overlay and in-place runs in one test shared a hypothesis directory, and a late teardown removed the next run's script (`sh: cannot open .../run.sh`), which failed the coverage gate under load. Each job now takes a distinct nonce (#1183).
+
 ## v0.3.35 — 2026-10-22
 
 ### Added

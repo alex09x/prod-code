@@ -42,9 +42,13 @@ pub(crate) fn job(
         shadow_root: shadow_root.to_path_buf(),
         fallback_shadow_root: None,
         ran_in_ram: None,
-        nonce: 7,
+        // Distinct per job: with one fixed nonce, a test's runs shared one shadow directory,
+        // and a late overlay teardown of the previous run removed the next run's script.
+        nonce: NEXT_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     }
 }
+
+static NEXT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(7);
 
 pub(crate) fn delta(path: &str, content: Option<&str>) -> FileDelta {
     FileDelta {
