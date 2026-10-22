@@ -11,18 +11,14 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{
-    ExecRequest, ProdCodeCodec, RemoteExecRequest, RemoteExecStream, WireMessage,
-};
-use tokio_util::codec::Framed;
+use anyhow::Result;
+use futures_util::SinkExt;
+use prod_code_protocol::{ExecRequest, RemoteExecRequest, RemoteExecStream, WireMessage};
 
 use super::platform::{edited_since, layout_only};
+use super::progress::{ExecMonitor, prepare};
 use super::types::{PolyglotRemoteOutcome, RemoteOutcome};
-use crate::sync::{
-    WorkspaceIdentity, apply_pulled_files_for, push_workspace_sync, workspace_identity,
-};
+use crate::sync::{WorkspaceIdentity, apply_pulled_files_for, workspace_identity};
 
 /// Runs `command` in the server copy of `root`, calling `on_output(is_stderr, bytes)` for
 /// every chunk as it arrives. With `pull_changes`, files the command created, changed or
@@ -43,33 +39,30 @@ pub async fn run_remote(
     // Taken before the pre-flight sync: a file modified after this may not be what the node
     // ran on, so the node's version must not replace it.
     let started = std::time::SystemTime::now();
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
-    push_workspace_sync(&mut framed, root, &identity, None)
-        .await
-        .context("pre-flight workspace sync failed")?;
-
-    framed
-        .send(WireMessage::ExecRequest(ExecRequest {
-            client_workspace_root: root.to_string_lossy().to_string(),
-            base_workspace_name: Some(identity.name.clone()),
-            command,
-            env,
-            timeout_secs,
-            pull_changes,
-            subdir: subdir.map(str::to_string),
-            client_agent: Some(prod_code_protocol::detect_client_agent()),
-            client_host: Some(prod_code_protocol::client_host()),
-        }))
+    let mut framed = prepare(remote, root, &identity, &mut on_output).await?;
+    let mut monitor = ExecMonitor::new(timeout_secs);
+    monitor
+        .send(
+            &mut framed,
+            WireMessage::ExecRequest(ExecRequest {
+                client_workspace_root: root.to_string_lossy().to_string(),
+                base_workspace_name: Some(identity.name.clone()),
+                command,
+                env,
+                timeout_secs,
+                pull_changes,
+                subdir: subdir.map(str::to_string),
+                client_agent: Some(prod_code_protocol::detect_client_agent()),
+                client_host: Some(prod_code_protocol::client_host()),
+            }),
+        )
         .await?;
 
     let mut pulled_files = Vec::new();
     let mut relaid_files = Vec::new();
     let mut kept_files = Vec::new();
     loop {
-        match framed.next().await {
+        match monitor.next(&mut framed, &mut on_output).await? {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
                 if let Some(data) = chunk.data.as_deref() {
                     on_output(chunk.stderr, data);
@@ -153,21 +146,29 @@ pub async fn run_polyglot_remote(
 ) -> Result<PolyglotRemoteOutcome> {
     let identity: WorkspaceIdentity = workspace_identity(root);
     let started = std::time::SystemTime::now();
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
-    push_workspace_sync(&mut framed, root, &identity, None)
-        .await
-        .context("pre-flight workspace sync failed")?;
-
-    framed.send(WireMessage::RemoteExecRequest(req)).await?;
+    let mut progress = |stderr, data: &[u8]| {
+        on_stream(RemoteExecStream::Chunk(prod_code_protocol::ExecChunk {
+            stderr,
+            data: Some(data.to_vec()),
+        }))
+    };
+    let mut framed = prepare(remote, root, &identity, &mut progress).await?;
+    let mut monitor = ExecMonitor::new(req.timeout_secs);
+    monitor
+        .send(&mut framed, WireMessage::RemoteExecRequest(req))
+        .await?;
 
     let mut pulled_files = Vec::new();
     let mut relaid_files = Vec::new();
     let mut kept_files = Vec::new();
     loop {
-        match framed.next().await {
+        let mut progress = |stderr, data: &[u8]| {
+            on_stream(RemoteExecStream::Chunk(prod_code_protocol::ExecChunk {
+                stderr,
+                data: Some(data.to_vec()),
+            }))
+        };
+        match monitor.next(&mut framed, &mut progress).await? {
             Some(Ok(WireMessage::RemoteExecStream(stream_ev))) => {
                 on_stream(stream_ev);
             }

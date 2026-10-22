@@ -13,9 +13,12 @@
 
 mod destination;
 pub mod platform;
+mod progress;
 pub mod runner;
 pub mod types;
 
+#[cfg(test)]
+mod progress_tests;
 #[cfg(test)]
 mod tests;
 

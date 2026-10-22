@@ -104,12 +104,24 @@ pub async fn push_workspace_sync(
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
 ) -> Result<SyncOutcome> {
+    push_workspace_sync_with_progress(framed, root, identity, subpath, &mut |_| {}).await
+}
+
+/// Like `push_workspace_sync`, with the current pre-flight phase exposed to exec callers.
+pub async fn push_workspace_sync_with_progress(
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    root: &Path,
+    identity: &WorkspaceIdentity,
+    subpath: Option<&Path>,
+    on_phase: &mut (dyn FnMut(&'static str) + Send),
+) -> Result<SyncOutcome> {
     const MAX_RESET_RETRIES: usize = 2;
+    on_phase("waiting for local workspace sync lock");
     let sync_lock = workspace_sync_lock(root, &gateway_node(framed));
     let _sync_guard = sync_lock.lock().await;
     let mut resets = 0;
     loop {
-        let mut outcome = match push_sync_round(framed, root, identity, subpath).await? {
+        let mut outcome = match push_sync_round(framed, root, identity, subpath, on_phase).await? {
             RoundResult::Success(outcome) => outcome,
             RoundResult::NeedsFullResync => {
                 resets += 1;
@@ -128,7 +140,7 @@ pub async fn push_workspace_sync(
         // the checkout's version of them; a second report waits for the next sync.
         if !outcome.stale_paths.is_empty() {
             resend_lost_files(root, &gateway_node(framed), &outcome.stale_paths);
-            match push_sync_round(framed, root, identity, subpath).await? {
+            match push_sync_round(framed, root, identity, subpath, on_phase).await? {
                 RoundResult::Success(again) => {
                     outcome.files_updated += again.files_updated;
                     outcome.files_deleted += again.files_deleted;
@@ -166,7 +178,9 @@ async fn push_sync_round(
     root: &Path,
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
+    on_phase: &mut (dyn FnMut(&'static str) + Send),
 ) -> Result<RoundResult> {
+    on_phase("preparing workspace sync");
     let node = gateway_node(framed);
     let mut plan = prepare_workspace_sync_for(root, &node, subpath)?;
     let root_str = root.to_string_lossy().to_string();
@@ -185,6 +199,7 @@ async fn push_sync_round(
 
     let mut uploading_full_manifest = false;
     if needs_probe {
+        on_phase("waiting for sync probe response");
         let probed_manifest = plan.manifest();
         framed
             .send(WireMessage::SyncProbeRequest(SyncProbeRequest {
@@ -248,6 +263,7 @@ async fn push_sync_round(
             .into_iter()
             .enumerate()
         {
+            on_phase("uploading workspace sync batch");
             framed
                 .send(WireMessage::SyncRequest(SyncRequest {
                     client_workspace_root: root_str.clone(),
@@ -256,6 +272,7 @@ async fn push_sync_round(
                     base_workspace_name: Some(identity.name.clone()),
                 }))
                 .await?;
+            on_phase("waiting for workspace sync acknowledgement");
             let resp = wait_for_message(framed, "sync response", |m| match m {
                 WireMessage::SyncResponse(r) => Some(r),
                 _ => None,
@@ -295,104 +312,5 @@ async fn push_sync_round(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn a_silent_gateway_times_out_naming_the_node_and_the_next_step() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let accept = tokio::spawn(async move { listener.accept().await.unwrap().0 });
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        // Accepted and never answered, like the stuck sync on the node in #1143.
-        let _silent = accept.await.unwrap();
-        let mut framed = Framed::new(AnyStream::Tcp(stream), ProdCodeCodec::new());
-
-        let err =
-            wait_for_message_within(&mut framed, "sync response", Duration::from_secs(1), |m| {
-                match m {
-                    WireMessage::SyncResponse(r) => Some(r),
-                    _ => None,
-                }
-            })
-            .await
-            .unwrap_err()
-            .to_string();
-
-        assert!(err.contains("after 1s waiting for sync response"), "{err}");
-        assert!(err.contains(&addr.to_string()), "{err}");
-        assert!(err.contains("may already be on that node"), "{err}");
-        assert!(err.contains("prod-code status"), "{err}");
-    }
-
-    /// A gateway that sends keepalives every 300 ms; with `answer_after`, it then answers.
-    async fn keepalive_gateway(answer_after: Option<Duration>) -> Framed<AnyStream, ProdCodeCodec> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let mut gateway = Framed::new(socket, ProdCodeCodec::new());
-            let started = tokio::time::Instant::now();
-            loop {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                if answer_after.is_some_and(|after| started.elapsed() >= after) {
-                    let _ = gateway
-                        .send(WireMessage::SyncProbeResponse(
-                            prod_code_protocol::SyncProbeResponse {
-                                server_workspace_root: "/srv/ws".to_string(),
-                                seeded: true,
-                                files_deleted: 0,
-                                missing: Vec::new(),
-                            },
-                        ))
-                        .await;
-                    return;
-                }
-                if gateway.send(WireMessage::Pong).await.is_err() {
-                    return;
-                }
-            }
-        });
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        Framed::new(AnyStream::Tcp(stream), ProdCodeCodec::new())
-    }
-
-    fn probe_response(m: WireMessage) -> Option<prod_code_protocol::SyncProbeResponse> {
-        match m {
-            WireMessage::SyncProbeResponse(r) => Some(r),
-            _ => None,
-        }
-    }
-
-    #[tokio::test]
-    async fn keepalives_extend_the_wait_past_the_idle_limit_up_to_the_cap() {
-        // A seed that outlasts the 1 s idle limit is still answered (#1164).
-        let mut framed = keepalive_gateway(Some(Duration::from_millis(1500))).await;
-        let probe = wait_for_message_capped(
-            &mut framed,
-            "sync probe response",
-            Duration::from_secs(1),
-            Duration::from_secs(10),
-            probe_response,
-        )
-        .await
-        .expect("keepalives keep the probe alive");
-        assert!(probe.seeded);
-
-        // Keepalives without an answer stop at the cap.
-        let mut framed = keepalive_gateway(None).await;
-        let started = tokio::time::Instant::now();
-        let err = wait_for_message_capped(
-            &mut framed,
-            "sync probe response",
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-            probe_response,
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-        assert!(started.elapsed() < Duration::from_secs(4), "{err}");
-        assert!(err.contains("waiting for sync probe response"), "{err}");
-    }
-}
+#[path = "push_tests.rs"]
+mod tests;
