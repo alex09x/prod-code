@@ -11,6 +11,10 @@
   The gate required every Rust source to appear in the llvm-cov report. llvm-cov reports no file without a function (a `mod.rs` or `lib.rs` that only declares modules, a file of types and constants), and it instruments neither test sources nor build scripts. Since the modular split (#937, #942), about 80 such files failed every run with `no coverage data for: ...`. `omitted_by_llvm_cov` now excuses those files, and modules declared only under `#[cfg(not(unix))]`/`#[cfg(windows)]`. A file with a real function that is missing from the report still fails the gate (#636). A broken fixture in `test_coverage.py` gets its member manifest (#1188).
 - **Metrics Server Test Waits for the Server to Listen** (`crates/prod-code-gateway`, tests only):
   `prometheus_http_server_serves_metrics_and_health` connected once after a fixed 50 ms sleep. On a loaded node it got ConnectionRefused and failed the coverage gate. It now retries the connection for up to 10 s (#1192).
+- **Batched Lookups, Outline Waits and Missing Paths** (`crates/prod-code-mcp`):
+  - `prod-code def --symbol A --symbol B --symbol C` timed out on the third symbol after the second used up the shared 60 s budget. Each remaining symbol now has its own share, a fast lookup leaves its unused time to the later ones, and a timed-out symbol is reported with what to try next while the others still answer (#1168).
+  - An outline now gives up after 60 s on routing, sync, engine load or another query's lock, with an actionable message, instead of waiting minutes (#1178).
+  - An outline of a checkout path that does not exist says so and suggests close paths (`did you mean src/manager/mod.rs`) before any engine is loaded, instead of `Invalid file path for URI`. Dependency sources that exist only on the node are not affected (#1163).
 
 ## v0.3.35 — 2026-10-22
 

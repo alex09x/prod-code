@@ -37,7 +37,12 @@ pub async fn outline_file(
     path_str: &str,
     options: &OutlineOptions,
 ) -> Result<String> {
-    if !file_path.exists() {
+    // Only a checkout path can be judged missing here: a dependency source can exist on the
+    // node alone and still have an outline there (#1141).
+    let in_checkout = file_path.is_relative()
+        || file_path.starts_with(workspace_root)
+        || std::fs::canonicalize(workspace_root).is_ok_and(|root| file_path.starts_with(root));
+    if !file_path.exists() && in_checkout {
         anyhow::bail!(crate::remote_fs::missing_file_context(
             workspace_root,
             file_path,
