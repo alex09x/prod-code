@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.35 — 2026-10-22
+
 ### Added
 - **`--path FILE` for the Navigation Commands** (`crates/prod-code-client`):
   `prod-code def`, `hover`, `refs`, `callers`, `callees`, `impls` and `supertypes` take their file positionally, while `test`, `check` and the MCP tools spell it `path`. Agents carried that spelling over and got `unexpected argument '--path'`. `--path FILE` and `--path=FILE` are now read as the file of those commands (`cli/argv.rs`). None of them has a `--path` of its own, and arguments after `--` are left alone (#1159).
