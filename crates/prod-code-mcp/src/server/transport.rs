@@ -17,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::hot_reload;
 use crate::protocol::{SERVER_NAME, SERVER_VERSION};
 use crate::server::dispatch::handle_mcp_request;
+use crate::server::reload::{ActiveCalls, Reload, ToolCalls, deliver_response, drain_for_reload};
 
 /// Run full stdio MCP server loop.
 pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -> Result<()> {
@@ -30,8 +31,7 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
         "Starting prod-code stdio MCP server"
     );
 
-    // Hot reload: watch our own executable and swap to a newly installed one between
-    // requests (see `hot_reload`).
+    // Watch the installed executable for reloads between requests.
     let exe = std::env::current_exe().ok();
     serve_mcp_requests(
         remote,
@@ -44,34 +44,42 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
     .await
 }
 
-/// The request/response loop, generic over its transport so it can be driven by a test without
-/// touching the process's real stdio. `run_stdio_mcp_server` is a thin wrapper around this with
-/// the real standard streams; `exe` is `None` there only when the running binary's own path
-/// could not be resolved, in which case hot reload is simply not offered.
+/// Serve MCP requests over a testable transport. `exe: None` disables hot reload.
 pub async fn serve_mcp_requests<R, W>(
-    mut remote: SocketAddr,
+    remote: SocketAddr,
     workspace_root: PathBuf,
     exe: Option<PathBuf>,
     resumed: bool,
-    mut reader: BufReader<R>,
-    mut writer: W,
+    reader: BufReader<R>,
+    writer: W,
 ) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let reload_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reload_notify = std::sync::Arc::new(tokio::sync::Notify::new());
-    if let Some(exe) = &exe
-        && let Some(initial) = hot_reload::stamp(exe)
-    {
-        hot_reload::spawn_watch(
-            exe.clone(),
-            initial,
-            std::sync::Arc::clone(&reload_flag),
-            std::sync::Arc::clone(&reload_notify),
-        );
-    }
+    serve_with_reload(
+        remote,
+        workspace_root,
+        resumed,
+        reader,
+        writer,
+        Reload::new(exe),
+    )
+    .await
+}
+
+pub(super) async fn serve_with_reload<R, W>(
+    mut remote: SocketAddr,
+    workspace_root: PathBuf,
+    resumed: bool,
+    mut reader: BufReader<R>,
+    mut writer: W,
+    mut reload: Reload,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
     if resumed {
         writer
             .write_all(hot_reload::tools_list_changed().as_bytes())
@@ -81,30 +89,43 @@ where
 
     let mut pending: Vec<u8> = Vec::new();
     let mut eof = false;
-    let mut in_flight: tokio::task::JoinSet<(Option<String>, Option<SocketAddr>, Option<String>)> =
-        tokio::task::JoinSet::new();
-    let mut active_aborts: std::collections::HashMap<String, tokio::task::AbortHandle> =
-        std::collections::HashMap::new();
+    let mut in_flight = ToolCalls::new();
+    let mut active_aborts = ActiveCalls::new();
+    let mut reload_deadline = None;
     let period = std::time::Duration::from_secs(30);
     let mut rebalance_interval =
         tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     rebalance_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        if reload_flag.load(std::sync::atomic::Ordering::Acquire)
-            && in_flight.is_empty()
-            && pending.is_empty()
-            && reader.buffer().is_empty()
-            && let Some(exe) = &exe
+        if reload.requested.load(std::sync::atomic::Ordering::Acquire)
+            && let Some(exe) = &reload.exe
         {
-            writer
-                .write_all(hot_reload::tools_list_changed().as_bytes())
-                .await?;
-            writer.flush().await?;
-            tracing::info!(exe = %exe.display(), "re-executing the installed binary");
-            let err = hot_reload::reexec(exe);
-            tracing::error!(error = %err, "hot reload failed; continuing with the current binary");
-            reload_flag.store(false, std::sync::atomic::Ordering::Release);
+            let deadline = *reload_deadline
+                .get_or_insert_with(|| tokio::time::Instant::now() + reload.timeout);
+            drain_for_reload(
+                &mut in_flight,
+                &mut active_aborts,
+                &mut remote,
+                &mut writer,
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )
+            .await?;
+            // Bytes already read from stdin cannot be recovered by exec. Finish the input
+            // frame before swapping, without granting newly dispatched calls another budget.
+            if pending.is_empty() && reader.buffer().is_empty() {
+                writer
+                    .write_all(hot_reload::tools_list_changed().as_bytes())
+                    .await?;
+                writer.flush().await?;
+                tracing::info!(exe = %exe.display(), "re-executing the installed binary");
+                let err = (reload.reexec)(exe);
+                tracing::error!(error = %err, "hot reload failed; continuing with the current binary");
+                reload
+                    .requested
+                    .store(false, std::sync::atomic::Ordering::Release);
+                reload_deadline = None;
+            }
         }
 
         if eof && in_flight.is_empty() {
@@ -122,23 +143,10 @@ where
                 }
             }
             Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => {
-                if let Ok((id_key, changed_remote, maybe_out)) = joined {
-                    if let Some(k) = id_key {
-                        active_aborts.remove(&k);
-                    }
-                    if let Some(new_remote) = changed_remote {
-                        remote = new_remote;
-                    }
-                    if let Some(out) = maybe_out
-                        && (writer.write_all(out.as_bytes()).await.is_err()
-                            || writer.flush().await.is_err())
-                    {
-                        break;
-                    }
-                }
+                deliver_response(joined, &mut active_aborts, &mut remote, &mut writer).await?;
                 0
             }
-            _ = reload_notify.notified(), if !eof => 0,
+            _ = reload.notify.notified(), if !eof => 0,
             _ = rebalance_interval.tick(), if !eof => {
                 crate::server::rebalance::handle_cluster_rebalance_tick(
                     &mut remote,

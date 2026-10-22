@@ -13,10 +13,14 @@
 //! An agent session starts `prod-code mcp` once and keeps it for hours, so a newly installed
 //! client binary (new tools, schema fixes) stayed invisible until the session was restarted.
 //! The server now watches its own executable; when the file on disk changes and no request is
-//! in flight, it announces `notifications/tools/list_changed`, flushes, and re-executes the new
+//! in flight (or the bounded drain has returned retryable errors), it announces
+//! `notifications/tools/list_changed`, flushes, and re-executes the new
 //! binary with the same standard streams and arguments. The agent keeps its server, the
 //! re-executed process serves the next request with the new code. Nothing is lost: the swap
 //! happens only when the input buffer holds no partial or queued request.
+//!
+//! Installers must replace the executable by rename. On macOS, overwriting a running signed
+//! executable in place can cause the kernel to kill it before this reload code can run.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -98,6 +102,9 @@ pub fn reexec(exe: &Path) -> std::io::Error {
         std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
             .env(RESUMED_ENV, "1")
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .exec()
     }
     #[cfg(not(unix))]

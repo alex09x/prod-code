@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **MCP Hot Reload Answers Every Call It Was Running** (`crates/prod-code-mcp`):
+  When the installed client binary changed, the MCP server waited for an empty task set with no deadline, while it kept accepting new calls. Reload now stops reading new requests, delivers the calls that finish within 30 s and answers the rest with a retryable `-32001` "Server is reloading" error before it re-executes. It keeps a partially read request for the new process, and the re-executed binary inherits the same stdin and stdout, so the client connection survives (`server/reload.rs`). The `Transport closed` in #1182 came from the rollout overwriting the signed executable in place, which macOS answers by killing the process. Installers replace the binary by rename now (#1182).
 - **Refactorings Validate Against a Cold Engine Again** (`crates/prod-code-mcp`):
   The batch validation budget from #1172 (5 s per file, 10 s to open a session, 90 s per batch) also applied to the check every refactoring runs before it writes. Against a cold rust-analyzer, `code_change_signature`, `code_move` and the rest refused with "was not validated", and an injected diagnostic failure read as "does not type-check". A refactoring's check (`validate_texts`) now waits up to 180 s for a session, 60 s per file and 10 minutes in all. It fails with "was not validated" instead of reporting a compile error when a file cannot be checked. Only `code_validate_edits` keeps the 120 s budget with partial results (`validate_texts_interactive`), which still answers below the MCP client's 150 s limit (#1205).
 - **A Rust Engine Can No Longer Deadlock a Gateway on Its VFS Lock** (`crates/prod-code-engine-rust`):
