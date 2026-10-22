@@ -39,8 +39,19 @@ pub(super) async fn prepare(
     identity: &WorkspaceIdentity,
     output: &mut impl FnMut(bool, &[u8]),
 ) -> Result<Framed<AnyStream, ProdCodeCodec>> {
+    prepare_reporting_after(remote, root, identity, output, REPORT_EVERY).await
+}
+
+/// `prepare`, naming each pre-flight step it reaches once `quiet_for` has passed: a quick
+/// exec prints nothing extra, a slow one says where it waits.
+pub(super) async fn prepare_reporting_after(
+    remote: SocketAddr,
+    root: &Path,
+    identity: &WorkspaceIdentity,
+    output: &mut impl FnMut(bool, &[u8]),
+    quiet_for: Duration,
+) -> Result<Framed<AnyStream, ProdCodeCodec>> {
     let started = Instant::now();
-    report(output, "connecting to gateway", started);
     let stream = tokio::time::timeout(IDLE_LIMIT, prod_code_protocol::transport::connect(remote))
         .await
         .context("timed out connecting to gateway; check `prod-code status`")?
@@ -62,9 +73,12 @@ pub(super) async fn prepare(
         loop {
             tokio::select! {
                 result = &mut sync => { result.context("pre-flight workspace sync failed")?; break; }
+                // A quick pre-flight stays silent; one that drags on says each step it reaches.
                 Some(next) = changes.recv() => {
                     phase = next;
-                    report(output, phase, started);
+                    if started.elapsed() >= quiet_for {
+                        report(output, phase, started);
+                    }
                 }
                 _ = reports.tick() => report(output, phase, started),
                 _ = &mut limit => anyhow::bail!(

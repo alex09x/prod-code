@@ -88,9 +88,10 @@ async fn exec_reports_probe_wait_and_silent_execution_then_returns_exit() {
     .unwrap();
     server.await.unwrap();
     assert_eq!(result.exit.exit_code, Some(7));
+    // The 50 ms pre-flight is quick, so its steps are not printed.
     assert!(
-        output.contains("sync probe response"),
-        "missing pre-flight phase: {output}"
+        !output.contains("sync probe response"),
+        "a quick pre-flight stays silent: {output}"
     );
     assert!(
         output.contains("waiting for command output or exit"),
@@ -123,13 +124,20 @@ async fn exec_preflight_identifies_local_sync_lock_wait() {
     let mut output = String::new();
     let result = tokio::time::timeout(
         Duration::from_secs(3),
-        super::progress::prepare(address, root.path(), &identity, &mut |_, bytes| {
-            let text = String::from_utf8_lossy(bytes);
-            if text.contains("waiting for local workspace sync lock") {
-                held.take();
-            }
-            output.push_str(&text);
-        }),
+        // Reporting from the start, as a pre-flight that has already dragged on does.
+        super::progress::prepare_reporting_after(
+            address,
+            root.path(),
+            &identity,
+            &mut |_, bytes| {
+                let text = String::from_utf8_lossy(bytes);
+                if text.contains("waiting for local workspace sync lock") {
+                    held.take();
+                }
+                output.push_str(&text);
+            },
+            Duration::ZERO,
+        ),
     )
     .await
     .expect("lock wait was reported and released");

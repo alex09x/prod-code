@@ -15,6 +15,10 @@
   - `prod-code def --symbol A --symbol B --symbol C` timed out on the third symbol after the second used up the shared 60 s budget. Each remaining symbol now has its own share, a fast lookup leaves its unused time to the later ones, and a timed-out symbol is reported with what to try next while the others still answer (#1168).
   - An outline now gives up after 60 s on routing, sync, engine load or another query's lock, with an actionable message, instead of waiting minutes (#1178).
   - An outline of a checkout path that does not exist says so and suggests close paths (`did you mean src/manager/mod.rs`) before any engine is loaded, instead of `Invalid file path for URI`. Dependency sources that exist only on the node are not affected (#1163).
+- **Silent Execs Stay Visible and Never Leave a Stale Running Command** (`crates/prod-code-gateway`, `crates/prod-code-mcp`):
+  `prod-code exec -- cargo fmt --all` printed nothing for over five minutes and had to be killed, and afterwards `prod-code cluster` still listed `cargo fmt --all` as running on a node where no such process existed.
+  - `stream_exec` (`runner/exec_stream.rs`, shared by plain and structured exec) drops the running-command record as soon as the process exits, answers the client's `Ping` during a run, and kills the process group when the client leaves.
+  - The client (`exec/progress.rs`) names the pre-flight step it waits on once it has waited 10 s, so a quick exec prints nothing extra. During a silent command it pings the gateway every 10 s and prints that it is still waiting, and it stops with an actionable message when the gateway goes 30 s without any frame (#1177).
 
 ## v0.3.35 — 2026-10-22
 
