@@ -323,7 +323,8 @@ pub(crate) async fn handle_validate_edits(
         })
         .unwrap_or_default();
     let reports =
-        crate::diagnostics::validate_texts(remote, workspace_root, &edits, &also_check).await?;
+        crate::diagnostics::validate_texts_interactive(remote, workspace_root, &edits, &also_check)
+            .await?;
     let errors: usize = reports.iter().map(|r| r.errors).sum();
     let warnings: usize = reports.iter().map(|r| r.warnings).sum();
     let excluded: usize = reports

@@ -30,12 +30,40 @@ pub async fn validate_texts(
     edits: &[(std::path::PathBuf, String)],
     also_check: &[std::path::PathBuf],
 ) -> Result<Vec<DiagnosticsReport>> {
-    Box::pin(validate_texts_with_budget(
+    let reports = Box::pin(validate_texts_with_budget(
         remote,
         root,
         edits,
         also_check,
         &ValidationBudget::new(),
+    ))
+    .await?;
+    // A refactoring decides whether to write from this: a file that was not checked is not a
+    // compile error, and must read as "could not be validated", as before partial results.
+    if let Some(item) = reports
+        .iter()
+        .flat_map(|r| r.items.iter())
+        .find(|d| d.code.as_deref() == Some("prod-code-validation-incomplete"))
+    {
+        anyhow::bail!("{}", item.message);
+    }
+    Ok(reports)
+}
+
+/// `validate_texts` for an agent's own `code_validate_edits` call: it answers before the MCP
+/// client's tool timeout, naming the files it could not check in time.
+pub async fn validate_texts_interactive(
+    remote: SocketAddr,
+    root: &Path,
+    edits: &[(std::path::PathBuf, String)],
+    also_check: &[std::path::PathBuf],
+) -> Result<Vec<DiagnosticsReport>> {
+    Box::pin(validate_texts_with_budget(
+        remote,
+        root,
+        edits,
+        also_check,
+        &ValidationBudget::interactive(),
     ))
     .await
 }
