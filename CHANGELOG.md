@@ -9,6 +9,8 @@
   The first probe of a new worktree seeds its copy from the main checkout's. Four seeds at once took 67-70 s on one node, past the client's 30 s probe wait, so `exec` and `outline` failed with `pre-flight workspace sync failed: timed out waiting for sync probe response`, although the gateway finished later. Now the gateway sends a `Pong` every 5 s while it answers a probe or a sync (`session/heartbeat.rs`), and the client's wait counts from the last frame instead of from the request, up to 15 minutes in all (`wait_for_message_capped`). Older clients skip the keepalives as before (#1164, #1165, #1166, #1174).
 - **The Coverage Gate Can Pass Again** (`scripts/coverage.py`):
   The gate required every Rust source to appear in the llvm-cov report. llvm-cov reports no file without a function (a `mod.rs` or `lib.rs` that only declares modules, a file of types and constants), and it instruments neither test sources nor build scripts. Since the modular split (#937, #942), about 80 such files failed every run with `no coverage data for: ...`. `omitted_by_llvm_cov` now excuses those files, and modules declared only under `#[cfg(not(unix))]`/`#[cfg(windows)]`. A file with a real function that is missing from the report still fails the gate (#636). A broken fixture in `test_coverage.py` gets its member manifest (#1188).
+- **Metrics Server Test Waits for the Server to Listen** (`crates/prod-code-gateway`, tests only):
+  `prometheus_http_server_serves_metrics_and_health` connected once after a fixed 50 ms sleep. On a loaded node it got ConnectionRefused and failed the coverage gate. It now retries the connection for up to 10 s (#1192).
 
 ## v0.3.35 — 2026-10-22
 

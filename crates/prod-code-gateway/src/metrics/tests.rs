@@ -265,11 +265,20 @@ async fn prometheus_http_server_serves_metrics_and_health() {
         let _ = super::run_prometheus_server(addr, server_m, "test-host".to_string()).await;
     });
 
-    // Wait a moment for server to bind
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait until the server listens: a fixed 50 ms pause lost the race on a loaded node and
+    // failed the coverage gate with ConnectionRefused (#1192).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut client = loop {
+        match TcpStream::connect(addr).await {
+            Ok(client) => break client,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("the metrics server never listened on {addr}: {e}"),
+        }
+    };
 
     // Test GET /metrics
-    let mut client = TcpStream::connect(addr).await.expect("connect");
     client
         .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .await
