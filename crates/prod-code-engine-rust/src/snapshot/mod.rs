@@ -81,7 +81,14 @@ impl RustEngineSnapshot {
         });
         if is_safe_file_id(file_id) {
             let overlay = self.current_overlay();
-            if !self.is_in_view(file_id, overlay.as_ref()) {
+            // Under the guard already held: `is_in_view` takes the VFS lock again, and a
+            // second read waits behind any queued writer while this one blocks that writer.
+            // On a node that wedged every request: priming held a read, a didChange's
+            // `apply_file_change` queued its write, the second read never came (#1190).
+            let in_view = self.views.in_view(&guard, overlay.as_ref(), file_id, |f| {
+                self.analysis.crates_for(f).is_ok_and(|c| !c.is_empty())
+            });
+            if !in_view {
                 return None;
             }
             Some(file_id)
