@@ -119,14 +119,16 @@ pub(crate) fn lsp_document_symbol(
     let translator_task = translator.clone();
     let session_id = view.session_id;
     let is_single_owner = view.is_single_owner();
+    let timeout = semantic_query_budget(params);
 
     tokio::task::spawn(async move {
         let fp = fp_clone.clone();
-        let syms = execute_bounded_query(
+        let syms = execute_bounded_query_with_timeout(
             &engine_arc,
             session_id,
             &fp_clone,
             is_single_owner,
+            timeout,
             move |snapshot| {
                 // An error is the answer, not an empty file: a README in a Rust workspace is
                 // refused with the reason, and an agent must be able to tell that from a file

@@ -9,7 +9,12 @@
  */
 
 pub mod batch;
+mod budget;
+mod engine;
 pub mod single;
+
+#[cfg(test)]
+mod tests;
 
 pub use batch::*;
 pub use single::*;
