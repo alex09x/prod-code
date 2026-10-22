@@ -39,6 +39,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -130,6 +131,39 @@ def cargo_workspace_search_dirs(root_path: pathlib.Path) -> list[pathlib.Path]:
     if not dirs:
         raise ValueError("Cargo metadata returned no workspace member packages")
     return dirs
+
+
+_NOT_INSTRUMENTED = re.compile(r"(^|/)(tests|examples|benches)(/|\.rs$)|_tests\.rs$|(^|/)build\.rs$")
+_FN_ITEM = re.compile(r"\bfn\s+[A-Za-z_]")
+_OFF_UNIX = re.compile(r"#\[cfg\((not\(unix\)|windows)\)\]\s*(pub(\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
+
+
+def omitted_by_llvm_cov(root: str, rel: str) -> bool:
+    """Whether llvm-cov leaves `rel` out of its report on its own, so its absence measures
+    nothing: test, example and bench sources and build scripts, which are not instrumented;
+    a module its parent declares only off Unix, which a Linux node never compiles; and a file
+    with no function at all, such as a `mod.rs` that only declares modules or a file of types
+    and constants. Since the modules were split up (#937), dozens of such files failed every
+    gate run as "no coverage data"."""
+    rel_posix = rel.replace(os.sep, "/")
+    if _NOT_INSTRUMENTED.search(rel_posix):
+        return True
+    path = pathlib.Path(root, rel)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    stem = path.stem if path.name != "mod.rs" else path.parent.name
+    module_dir = path.parent if path.name != "mod.rs" else path.parent.parent
+    for parent in (module_dir / "mod.rs", module_dir.with_suffix(".rs")):
+        try:
+            declared = parent.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(m.group(4) == stem for m in _OFF_UNIX.finditer(declared)):
+            return True
+    code = "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+    return not _FN_ITEM.search(code)
 
 
 def find_rust_source_files(root: str) -> set[str]:
@@ -395,7 +429,10 @@ def main(argv: list[str] | None = None) -> int:
 
         repo_files = find_rust_source_files(root)
         report_files = {r[0] for r in rows} | zero_region_files
-        missing = repo_files - report_files
+        missing = {
+            path for path in repo_files - report_files
+            if not omitted_by_llvm_cov(root, path)
+        }
         if missing:
             print(f"no coverage data for: {', '.join(sorted(missing))}", file=sys.stderr)
             return 2

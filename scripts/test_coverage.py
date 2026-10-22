@@ -702,6 +702,9 @@ version = "0.1.0"
 [workspace]
 members = ["crates/member"]
 """)
+            # `cargo metadata` refuses a workspace whose member has no manifest.
+            with open(os.path.join(repo_dir, "crates", "member", "Cargo.toml"), "w", encoding="utf-8") as f:
+                _ = f.write('[package]\nname = "member"\nversion = "0.1.0"\n')
             root_file = os.path.join(root_src, "lib.rs")
             member_file = os.path.join(member_src, "lib.rs")
             with open(root_file, "w", encoding="utf-8") as f:
@@ -723,6 +726,37 @@ members = ["crates/member"]
                 code, _, err = run_coverage(["--report", report_path, "--min", "80"])
                 self.assertEqual(code, 2)
                 self.assertIn("no coverage data for: src/lib.rs", err)
+
+
+class TestFilesLlvmCovLeavesOut(unittest.TestCase):
+    """llvm-cov reports no file without a function, and none it ignores by default."""
+
+    def test_declaration_only_and_test_sources_need_no_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            src = pathlib.Path(root, "src")
+            (src / "a").mkdir(parents=True)
+            (src / "a" / "mod.rs").write_text("//! A module.\npub mod b;\npub use b::*;\n")
+            (src / "types.rs").write_text("pub const N: u32 = 1; // fn in a comment\npub struct T;\n")
+            (src / "tests.rs").write_text("#[test]\nfn t() {}\n")
+            (src / "real.rs").write_text("pub fn f() -> u32 { 1 }\n")
+            (src / "keywords.rs").write_text('pub const K: &[&str] = &["fn", "let"];\n')
+            (src / "a" / "b.rs").write_text("pub fn on_unix() {}\n")
+            (src / "a" / "fallback.rs").write_text("pub fn elsewhere() {}\n")
+            (src / "a" / "mod.rs").write_text(
+                "//! A module.\npub mod b;\n#[cfg(not(unix))]\nmod fallback;\npub use b::*;\n"
+            )
+            (src / "x_tests.rs").write_text("#[test]\nfn t() {}\n")
+            pathlib.Path(root, "build.rs").write_text("fn main() {}\n")
+            self.assertTrue(coverage.omitted_by_llvm_cov(root, "src/a/mod.rs"))
+            self.assertTrue(coverage.omitted_by_llvm_cov(root, "src/types.rs"))
+            self.assertTrue(coverage.omitted_by_llvm_cov(root, "src/keywords.rs"))
+            self.assertTrue(coverage.omitted_by_llvm_cov(root, "src/a/fallback.rs"))
+            self.assertFalse(coverage.omitted_by_llvm_cov(root, "src/a/b.rs"))
+            self.assertTrue(coverage.omitted_by_llvm_cov(root, "src/tests.rs"))
+            self.assertTrue(coverage.omitted_by_llvm_cov(root, "src/x_tests.rs"))
+            self.assertTrue(coverage.omitted_by_llvm_cov(root, "build.rs"))
+            self.assertFalse(coverage.omitted_by_llvm_cov(root, "src/real.rs"))
+            self.assertFalse(coverage.omitted_by_llvm_cov(root, "src/gone.rs"))
 
 
 if __name__ == "__main__":
