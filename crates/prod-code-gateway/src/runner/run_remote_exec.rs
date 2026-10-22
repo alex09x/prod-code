@@ -167,7 +167,7 @@ pub async fn run_remote_exec_with_ram(
         cmd.process_group(0);
     }
 
-    let mut child = match cmd.spawn() {
+    let child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
             framed
@@ -185,73 +185,26 @@ pub async fn run_remote_exec_with_ram(
         language = ?req.language,
         "🛠️ [REMOTE_EXEC] started"
     );
-    let _running = RunningEntry::start(&workspace, &argv);
-
-    let (tx, mut rx) = rapidfire::mpsc::bounded::<ExecChunk>(256);
-    let readers = spawn_pipe_readers(&mut child, tx.clone());
-    drop(tx);
-
-    let pid = child.id();
-    let exited = Arc::new(std::sync::Mutex::new(false));
-    let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
-    {
-        let exited = exited.clone();
-        tokio::task::spawn_blocking(move || {
-            let _ = exit_tx.send(wait_with_usage(pid as i32, &exited));
-            drop(child);
-        });
-    }
-
-    let mut timed_out = false;
-    let mut status = None;
-    let mut chunks_open = true;
-    let mut client_left = false;
-
-    let mut accumulator = JsonStreamAccumulator::new();
-
-    loop {
-        tokio::select! {
-            chunk = rx.recv(), if chunks_open => match chunk {
-                Ok(chunk) => {
-                    let is_stderr = chunk.stderr;
-                    let chunk_data = chunk.data.clone();
-                    if framed.send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(chunk))).await.is_err() {
-                        client_left = true;
-                    } else if (req.format == RemoteExecFormat::Json || matches!(req.command, RemoteExecCommand::Test | RemoteExecCommand::Bench)) && !is_stderr
-                        && let Some(ref bytes) = chunk_data {
-                            if !accumulator.push_chunk(bytes, req.language, framed).await? {
-                                client_left = true;
-                            }
-                        }
-                }
-                Err(_) => chunks_open = false,
-            },
-            exit = &mut exit_rx, if status.is_none() => {
-                status = Some(exit.ok().flatten());
-            }
-            _ = tokio::time::sleep_until(deadline), if !timed_out && status.is_none() => {
-                timed_out = true;
-                kill_exec_group(pid, &exited);
-            }
-            incoming = framed.next(), if status.is_none() => match incoming {
-                Some(Ok(WireMessage::Ping)) => {
-                    client_left = framed.send(WireMessage::Pong).await.is_err();
-                }
-                Some(Ok(WireMessage::Disconnect { .. })) | Some(Err(_)) | None => client_left = true,
-                _ => {}
-            }
-        }
-        if client_left || (!chunks_open && status.is_some()) {
-            break;
-        }
-    }
-
+    let finished = runner::exec_stream::stream_exec(
+        child,
+        RunningEntry::start(&workspace, &argv),
+        framed,
+        deadline,
+        Some((
+            req.language,
+            req.format == RemoteExecFormat::Json
+                || matches!(
+                    req.command,
+                    RemoteExecCommand::Test | RemoteExecCommand::Bench
+                ),
+        )),
+    )
+    .await?;
+    let timed_out = finished.timed_out;
+    let status = finished.status;
+    let client_left = finished.client_left;
+    let mut accumulator = finished.accumulator;
     if client_left {
-        kill_exec_group(pid, &exited);
-        drop(rx);
-        if status.is_none() {
-            let _ = exit_rx.await;
-        }
         if req.pull_changes {
             let restored =
                 restore_after_lost_client(workspace_manager, &workspace, before, snapshot_started)
@@ -266,10 +219,6 @@ pub async fn run_remote_exec_with_ram(
         return Ok(());
     }
 
-    for reader in readers {
-        let _ = reader.await;
-    }
-
     if req.format == RemoteExecFormat::Json
         || matches!(
             req.command,
@@ -280,7 +229,7 @@ pub async fn run_remote_exec_with_ram(
     }
 
     let report_status = report.as_ref().and_then(exec_shim::ReportFile::read);
-    let shim_raw_status = status.flatten();
+    let shim_raw_status = status;
     let had_report = report.is_some();
     drop(report);
     let (exit_code, usage, exec_err) = if let Some((raw, usage)) = report_status {
