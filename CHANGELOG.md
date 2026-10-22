@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Rust Engine Can No Longer Deadlock a Gateway on Its VFS Lock** (`crates/prod-code-engine-rust`):
+  A gateway on a Linux node stopped answering anything for over an hour. Its accept queue was full (129 of 128), its log stopped, and every thread waited on a futex. Two stacks explained it: a priming task was in `RustEngineSnapshot::file_id_for_path` waiting for a second VFS read lock, and a `didChange` was in `RustEngine::apply_file_change` waiting for the write lock. `file_id_for_path` took the read lock and then called `is_in_view`, which took it again. `std`'s `RwLock` makes a new reader wait behind a queued writer, so the second read waited for the writer, and the writer waited for the first read. The visibility check now runs under the guard already held. `path_lookups_never_deadlock_against_a_vfs_writer` deadlocks on the old code within seconds and passes now (#1190).
 - **`validate` Compares Against the Real Pre-Edit Text** (`crates/prod-code-mcp`):
   `prod-code validate FILE --from FILE --with OTHER=OTHER` passed a file with six new E0425 errors and listed them as pre-existing. When the proposed text is already on disk, the disk and the node's synced copy both hold the edit, so the baseline was the edited file itself. Now the baseline of an already-written proposal is the committed `HEAD` blob, while a separate proposal still compares against the checkout. Batch and single-file validation share this choice (`diagnostics/validate/baseline.rs`), and every baseline is opened before diagnostics are requested (#1191).
 

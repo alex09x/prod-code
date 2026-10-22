@@ -162,3 +162,46 @@ fn test_safe_file_id_bounds() {
         MAX_SAFE_FILE_ID + 1
     )));
 }
+
+/// Readers resolving paths while a writer keeps taking the VFS lock always finish. With a
+/// nested read, a reader holding the lock and waiting for its second read behind a queued
+/// writer deadlocked both, as it wedged a gateway in production (#1190).
+#[test]
+fn path_lookups_never_deadlock_against_a_vfs_writer() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    let (_temp, lib) = super::create_test_fixture();
+    let engine = RustEngine::load(lib.parent().unwrap().parent().unwrap()).expect("load engine");
+    let stop = Arc::new(AtomicBool::new(false));
+    let vfs = Arc::clone(&engine.snapshot().vfs);
+    let writer = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                drop(vfs.write().unwrap());
+                std::thread::yield_now();
+            }
+        })
+    };
+    let (done_tx, done_rx) = mpsc::channel();
+    for _ in 0..4 {
+        let snapshot = engine.snapshot();
+        let lib = lib.clone();
+        let done_tx = done_tx.clone();
+        std::thread::spawn(move || {
+            for _ in 0..2_000 {
+                assert!(snapshot.file_id_for_path(&lib).is_some());
+            }
+            let _ = done_tx.send(());
+        });
+    }
+    for reader in 0..4 {
+        done_rx
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("reader {reader} deadlocked against the VFS writer"));
+    }
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+}
