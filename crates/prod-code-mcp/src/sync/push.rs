@@ -41,7 +41,23 @@ async fn wait_for_message_within<T>(
     limit: Duration,
     pick: impl Fn(WireMessage) -> Option<T>,
 ) -> Result<T> {
-    let deadline = tokio::time::Instant::now() + limit;
+    wait_for_message_capped(framed, what, limit, MAX_SYNC_WAIT, pick).await
+}
+
+/// The longest a sync or probe is waited for while the gateway keeps sending keepalives.
+const MAX_SYNC_WAIT: Duration = Duration::from_secs(15 * 60);
+
+/// Waits until `limit` passes with no frame at all, or `cap` in total. A gateway that is still
+/// working, seeding a new worktree's copy say, sends keepalives meanwhile (#1164).
+async fn wait_for_message_capped<T>(
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    what: &str,
+    limit: Duration,
+    cap: Duration,
+    pick: impl Fn(WireMessage) -> Option<T>,
+) -> Result<T> {
+    let started = tokio::time::Instant::now();
+    let mut deadline = started + limit;
     // Says where it waited and what is known, so a stuck node is not mistaken for a lost
     // upload (#1143).
     let node = gateway_node(framed);
@@ -50,7 +66,7 @@ async fn wait_for_message_within<T>(
             "timed out after {}s waiting for {what} from gateway {node}; files sent \
              before the timeout may already be on that node. Retry the command; if it times \
              out again, check the node with `prod-code status`",
-            limit.as_secs()
+            started.elapsed().as_secs()
         )
     };
     loop {
@@ -59,7 +75,9 @@ async fn wait_for_message_within<T>(
             return Err(timed_out());
         }
         match tokio::time::timeout(remaining, framed.next()).await {
-            Ok(Some(Ok(WireMessage::LspPayload(_)))) | Ok(Some(Ok(WireMessage::Pong))) => {}
+            Ok(Some(Ok(WireMessage::LspPayload(_)))) | Ok(Some(Ok(WireMessage::Pong))) => {
+                deadline = (tokio::time::Instant::now() + limit).min(started + cap);
+            }
             Ok(Some(Ok(WireMessage::Disconnect { reason }))) => {
                 anyhow::bail!("gateway disconnected while waiting for {what}: {reason}")
             }
@@ -305,5 +323,76 @@ mod tests {
         assert!(err.contains(&addr.to_string()), "{err}");
         assert!(err.contains("may already be on that node"), "{err}");
         assert!(err.contains("prod-code status"), "{err}");
+    }
+
+    /// A gateway that sends keepalives every 300 ms; with `answer_after`, it then answers.
+    async fn keepalive_gateway(answer_after: Option<Duration>) -> Framed<AnyStream, ProdCodeCodec> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut gateway = Framed::new(socket, ProdCodeCodec::new());
+            let started = tokio::time::Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                if answer_after.is_some_and(|after| started.elapsed() >= after) {
+                    let _ = gateway
+                        .send(WireMessage::SyncProbeResponse(
+                            prod_code_protocol::SyncProbeResponse {
+                                server_workspace_root: "/srv/ws".to_string(),
+                                seeded: true,
+                                files_deleted: 0,
+                                missing: Vec::new(),
+                            },
+                        ))
+                        .await;
+                    return;
+                }
+                if gateway.send(WireMessage::Pong).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        Framed::new(AnyStream::Tcp(stream), ProdCodeCodec::new())
+    }
+
+    fn probe_response(m: WireMessage) -> Option<prod_code_protocol::SyncProbeResponse> {
+        match m {
+            WireMessage::SyncProbeResponse(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn keepalives_extend_the_wait_past_the_idle_limit_up_to_the_cap() {
+        // A seed that outlasts the 1 s idle limit is still answered (#1164).
+        let mut framed = keepalive_gateway(Some(Duration::from_millis(1500))).await;
+        let probe = wait_for_message_capped(
+            &mut framed,
+            "sync probe response",
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            probe_response,
+        )
+        .await
+        .expect("keepalives keep the probe alive");
+        assert!(probe.seeded);
+
+        // Keepalives without an answer stop at the cap.
+        let mut framed = keepalive_gateway(None).await;
+        let started = tokio::time::Instant::now();
+        let err = wait_for_message_capped(
+            &mut framed,
+            "sync probe response",
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            probe_response,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(started.elapsed() < Duration::from_secs(4), "{err}");
+        assert!(err.contains("waiting for sync probe response"), "{err}");
     }
 }

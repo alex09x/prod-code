@@ -10,6 +10,7 @@
 
 pub mod client_handler;
 pub mod handshake;
+pub(crate) mod heartbeat;
 pub mod loop_run;
 pub mod lsp_intercept;
 pub mod lsp_managed;
