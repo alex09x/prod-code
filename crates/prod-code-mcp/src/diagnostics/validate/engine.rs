@@ -81,6 +81,15 @@ pub(super) async fn validate_texts_single_engine(
     }
 
     let mut before_symbols = Vec::with_capacity(order.len());
+    let before_texts: Vec<_> = edits
+        .iter()
+        .map(|(file, text)| super::baseline::text(root, file, Some(text)))
+        .chain(
+            also_check
+                .iter()
+                .map(|file| super::baseline::text(root, file, None)),
+        )
+        .collect();
     {
         let checkout = budget
             .run(
@@ -93,13 +102,32 @@ pub(super) async fn validate_texts_single_engine(
             Ok(session) => session,
             Err(err) => return Ok(unavailable(&err)),
         };
-        for file in edits.iter().map(|(f, _)| f).chain(also_check) {
-            let abs = if file.is_absolute() {
-                file.clone()
-            } else {
-                root.join(file)
-            };
-            let Ok(text) = std::fs::read_to_string(abs) else {
+        // Install the entire before-state first: a baseline queried against another
+        // file's already-written proposal would otherwise hide cross-file errors.
+        for (file, text) in edits
+            .iter()
+            .map(|(f, _)| f)
+            .chain(also_check)
+            .zip(&before_texts)
+        {
+            if let Err(err) = budget
+                .run(
+                    budget.auxiliary,
+                    "opening baseline text",
+                    checkout.open_text(file, text.as_deref().unwrap_or("")),
+                )
+                .await
+            {
+                return Ok(unavailable(&err));
+            }
+        }
+        for (file, text) in edits
+            .iter()
+            .map(|(f, _)| f)
+            .chain(also_check)
+            .zip(&before_texts)
+        {
+            let Some(text) = text else {
                 continue;
             };
             let uri = checkout.uri_for(file)?;
@@ -115,12 +143,12 @@ pub(super) async fn validate_texts_single_engine(
                 .await
             {
                 let shown = display(root, file);
-                baselines.insert(shown.clone(), (parse_items(&shown, &result), text));
+                baselines.insert(shown.clone(), (parse_items(&shown, &result), text.clone()));
             }
         }
         for &i in &order {
             let file = &edits[i].0;
-            let symbols = if root.join(file).is_file() || file.is_file() {
+            let symbols = if before_texts[i].is_some() {
                 let uri = checkout.uri_for(file)?;
                 budget
                     .query(

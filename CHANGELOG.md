@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`validate` Compares Against the Real Pre-Edit Text** (`crates/prod-code-mcp`):
+  `prod-code validate FILE --from FILE --with OTHER=OTHER` passed a file with six new E0425 errors and listed them as pre-existing. When the proposed text is already on disk, the disk and the node's synced copy both hold the edit, so the baseline was the edited file itself. Now the baseline of an already-written proposal is the committed `HEAD` blob, while a separate proposal still compares against the checkout. Batch and single-file validation share this choice (`diagnostics/validate/baseline.rs`), and every baseline is opened before diagnostics are requested (#1191).
+
 ## v0.3.36 — 2026-10-22
 
 ### Fixed

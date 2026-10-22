@@ -32,6 +32,8 @@ use tokio_util::codec::Framed;
 
 #[path = "cli/outline_paths.rs"]
 mod outline_paths;
+#[path = "cli/validate_baseline.rs"]
+mod validate_baseline;
 
 /// In-process mock gateway that supports all WireMessage variants and dispatches LSP methods.
 pub struct MockGateway {

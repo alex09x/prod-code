@@ -43,6 +43,16 @@ pub async fn on_disk(
         root.join(file)
     };
     let text = std::fs::read_to_string(&abs).ok()?;
+    on_text(session, file, shown, text).await
+}
+
+async fn on_text(
+    session: &mut LspSession,
+    file: &Path,
+    shown: &str,
+    text: String,
+) -> Option<(DiagnosticsReport, String)> {
+    session.open_text(file, &text).await.ok()?;
     let uri = session.uri_for(file).ok()?;
     let query_params = serde_json::json!({ "textDocument": { "uri": uri } });
     let result = match session
@@ -118,17 +128,11 @@ pub async fn validate_text(
     }
     ensure_source_file(file)?;
     let shown = display(root, file);
-    // The file as it is on disk, read on the validation engine: it has no overlay for this
-    // session, and it is the engine the gateway warms. The main engine is cold for the file's
-    // diagnostics after a restart, and asking it cost 21 s of a 24 s validation (#235).
-    let abs = if file.is_absolute() {
-        file.to_path_buf()
-    } else {
-        root.join(file)
-    };
-    let before = if abs.is_file() {
+    // Use the validation engine for both snapshots, explicitly opening the pre-edit text
+    // so an already-written proposal cannot become its own baseline (#1191).
+    let before = if let Some(text) = super::baseline::text(root, file, Some(new_text)) {
         let mut checkout = LspSession::open_for_validation(remote, root, Some(file)).await?;
-        let before = on_disk(&mut checkout, root, file, &shown).await;
+        let before = on_text(&mut checkout, file, &shown, text).await;
         checkout.close().await;
         before
     } else {
