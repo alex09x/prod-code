@@ -15,6 +15,16 @@
   Since v0.3.34, `symbol_search_across_projects` (`tools/symbols/across_projects.rs`) stopped at the root project's prefix or substring matches, so `code_symbols foo` returned `foobar` but missed `func Foo()` in a nested Go module. With such matches it now asks the nested projects that declare the name in any case (`declared_at`), and spends at most 2 s finding them. It still skips projects that only mention the name, so substring queries stay fast (#1124, #1150).
 - **Client CLI Tests Follow the Single-Node Engine Check** (`crates/prod-code-client/tests`):
   Nine mock-gateway tests in `tests/cli.rs` had failed since #1067 made the client refuse a single named node whose status does not list the engine. The mock's status now lists `typescript`. The `.sh` outline test expects the earlier refusal. The recording gateway answers the engine check's status connection without counting it, so the `lsp_*` sessions get the connections they script. `cargo test -p prod-code-client --test cli` passes again (112 of 112) (#1161).
+- **The Whole Workspace Test Suite Passes Again** (all crates):
+  `cargo test --workspace` failed 46 tests on `main`. Most had been red since releases that did not run it. Product fixes:
+  - `execute_tool` keeps its dispatch state on the heap (7130a00e had inlined it, and the `code_pull` branch inlined it again). A tool future had embedded 14,624 bytes in every caller and overflowed debug test stacks; `tests/execution_stack.rs` keeps it under 1 KiB.
+  - A malformed member coordinate in a type's outline aborts a qualified lookup again, instead of turning into "no symbol named" (052a967e).
+  - A Rust recursive call in the declaring file is again reported as where the references came from. Only same-file Swift uses stay unannotated (#1135).
+  - A Swift search whose results came only from the same-target fallback still suggests `build_index: true`.
+  - `prod-code change-signature --help` has its Rust and Go long description back, lost in #937.
+  - The gateway has a hidden `--no-admission` (`PROD_CODE_NO_ADMISSION`). `.cargo/config.toml` sets it for every gateway a test suite starts, so live tests no longer fail when a shared build node's memory is busy with other services.
+
+  Test fixes: engine seed and cache tests get injected disk budgets and isolated environments. The Rust engine's library tests no longer exhaust the proc-macro farm. Stale expectations were traced to the commits that changed the behaviour on purpose, among them #911 and #1055 (#1163).
 - **Rust `mut`/`ref` Bindings Resolve by Their Name** (`crates/prod-code-mcp`):
   rust-analyzer labels a local by its whole pattern (`mut items`, `ref mut items`). Position-free lookups (`code_references`, `code_definition`, `code_hover` with `symbol`) answered `no symbol named \`items\`` and suggested `mut items`, and `code_outline --locals` listed `mut items`. `binding_name` and `binding_column` (`tools/symbols/bindings.rs`) strip the binding mode from Rust variable labels and move the position to the identifier. `collect_named` and `parse_workspace_symbol_hits` use them, and `declared_at` reads `let mut NAME` as a declaration. For a Rust file whose outline has nothing, the file-local declaration fallback now applies to `let` bindings too (#1148).
 - **Explicit Dependency Files Answer `--symbol` From Their Own Outline** (`crates/prod-code-mcp`):

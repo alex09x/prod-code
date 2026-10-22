@@ -1,0 +1,5 @@
+# Gateways that the test suites start judge the analyzers, not the build node: on a shared node
+# whose memory other services fill, admission refused every engine and failed whole files of
+# live tests. `cargo test` passes this to every server it spawns; installed gateways never see it.
+[env]
+PROD_CODE_NO_ADMISSION = "true"
