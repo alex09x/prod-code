@@ -11,8 +11,11 @@
 pub mod dispatch;
 pub mod failover;
 pub mod rebalance;
+mod reload;
 pub mod transport;
 
+#[cfg(test)]
+mod reload_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
