@@ -8,11 +8,14 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod baseline;
 pub mod batch;
 mod budget;
 mod engine;
 pub mod single;
 
+#[cfg(test)]
+mod baseline_tests;
 #[cfg(test)]
 mod tests;
 
