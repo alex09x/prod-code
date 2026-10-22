@@ -47,7 +47,12 @@ pub struct ServerCli {
 
     /// Admit every engine whatever the host's memory says. For gateways started by tests on
     /// shared build nodes, whose verdict must not depend on what else the node runs.
-    #[arg(long, env = "PROD_CODE_NO_ADMISSION", default_value_t = false, hide = true)]
+    #[arg(
+        long,
+        env = "PROD_CODE_NO_ADMISSION",
+        default_value_t = false,
+        hide = true
+    )]
     pub no_admission: bool,
 
     /// Maximum concurrent cold engine loads permitted simultaneously (0: automatic based on CPU count).
