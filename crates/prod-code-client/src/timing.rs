@@ -10,6 +10,9 @@
 
 use std::env;
 
+#[cfg(test)]
+mod tests;
+
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
 /// Phase timings for one part of an invocation, printed to stderr when `PROD_CODE_TIMING=1`.
 /// `label` says which part, so the work before a query is reported separately from the query.

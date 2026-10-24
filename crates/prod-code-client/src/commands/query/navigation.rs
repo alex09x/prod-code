@@ -15,6 +15,10 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "navigation_tests.rs"]
+mod tests;
+
 /// Runs `code_references` tool from the current checkout and prints references; exit 1 on error or no references.
 pub async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;

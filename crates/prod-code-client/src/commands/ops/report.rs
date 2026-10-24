@@ -13,6 +13,10 @@ use prod_code_mcp::report::ReportRequest;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod coverage_tests;
+
 /// The arguments of `report-issue`, as given.
 pub struct ReportArgs {
     pub title: String,
