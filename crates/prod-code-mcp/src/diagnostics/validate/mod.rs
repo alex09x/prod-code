@@ -12,12 +12,16 @@ mod baseline;
 pub mod batch;
 mod budget;
 mod engine;
+mod progress;
 pub mod single;
 
 #[cfg(test)]
 mod baseline_tests;
 #[cfg(test)]
+mod progress_tests;
+#[cfg(test)]
 mod tests;
 
 pub use batch::*;
+pub use progress::ValidationProgress;
 pub use single::*;

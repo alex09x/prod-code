@@ -20,16 +20,21 @@ use crate::diagnostics::parse::invalid_report;
 use crate::diagnostics::types::DiagnosticsReport;
 use crate::session::LspSession;
 
+use super::progress::ValidationProgress;
+
 /// One deadline shared by all language groups, session setup and optional enrichment, with a
 /// cap on each step. A refactoring's own check waits for a cold analyzer as long as a session
 /// can take to open: with 5 s per file and 10 s to open, every check against a cold
 /// rust-analyzer came back "not validated" and refactorings refused to write. The interactive
 /// tool answers before the MCP client gives up on it instead (#1172, #1176).
+#[derive(Clone)]
 pub(crate) struct ValidationBudget {
     pub(super) deadline: Instant,
     pub(super) diagnostic: Duration,
     pub(super) auxiliary: Duration,
     pub(super) session: Duration,
+    pub(super) baseline: Duration,
+    pub(super) progress: Option<ValidationProgress>,
 }
 
 impl ValidationBudget {
@@ -40,6 +45,8 @@ impl ValidationBudget {
             diagnostic: Duration::from_secs(60),
             auxiliary: Duration::from_secs(30),
             session: Duration::from_secs(180),
+            baseline: Duration::from_secs(600),
+            progress: None,
         }
     }
 
@@ -48,7 +55,17 @@ impl ValidationBudget {
     pub(crate) fn interactive() -> Self {
         Self {
             deadline: Instant::now() + Duration::from_secs(120),
+            baseline: Duration::from_secs(30),
             ..Self::new()
+        }
+    }
+
+    /// Optional before-state diagnostics and symbols share a small part of an
+    /// interactive request, leaving time to check the actual proposal.
+    pub(super) fn baseline(&self) -> Self {
+        Self {
+            deadline: self.deadline.min(Instant::now() + self.baseline),
+            ..self.clone()
         }
     }
 
@@ -58,6 +75,9 @@ impl ValidationBudget {
         stage: &str,
         future: impl Future<Output = Result<T>>,
     ) -> Result<T> {
+        if let Some(progress) = &self.progress {
+            progress.phase(stage);
+        }
         let deadline = self.deadline.min(Instant::now() + cap);
         if deadline <= Instant::now() {
             anyhow::bail!("validation batch budget exhausted before {stage}");
@@ -65,6 +85,12 @@ impl ValidationBudget {
         tokio::time::timeout_at(deadline, future)
             .await
             .map_err(|_| anyhow::anyhow!("validation budget exhausted during {stage}"))?
+    }
+
+    pub(super) fn completed(&self, count: usize) {
+        if let Some(progress) = &self.progress {
+            progress.completed(count);
+        }
     }
 
     pub(super) async fn query(

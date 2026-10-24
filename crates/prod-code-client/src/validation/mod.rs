@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod progress;
 pub mod runner;
 pub mod session_state;
 

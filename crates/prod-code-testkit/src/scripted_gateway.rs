@@ -24,6 +24,10 @@ use tokio_util::codec::Framed;
 /// JSON-RPC `error` object.
 pub const LSP_ERROR: &str = "prod-code/lsp-error";
 
+/// An answer with this key set to true leaves the request unanswered, while the
+/// connection remains available for subsequent requests.
+pub const NO_RESPONSE: &str = "prod-code/no-response";
+
 /// Answers one LSP request: the JSON-RPC method and its params, in, the `result` out. An
 /// answer made by [`answers::failure`] goes back as the JSON-RPC `error` instead.
 pub type Answer = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
@@ -191,6 +195,9 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     calls.fetch_add(1, Ordering::Relaxed);
                     answer(method, &params)
                 };
+                if result.get(NO_RESPONSE).and_then(|v| v.as_bool()) == Some(true) {
+                    continue;
+                }
                 if let Some(target_addr) = result.get("redirect").and_then(|v| v.as_str()) {
                     let reason = result
                         .get("reason")

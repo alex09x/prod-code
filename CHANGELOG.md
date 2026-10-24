@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **`prod-code validate` Answers Within Two Minutes and Shows Progress** (`crates/prod-code-client`, `crates/prod-code-mcp`):
+  A 14-file Rust batch printed nothing for several minutes, until it was interrupted. The CLI used the 600 s refactoring validator, which also discards every result once one file stays unchecked. The CLI now uses the same 120 s interactive budget as `code_validate_edits` and keeps per-file results, naming any file it could not check. Baseline diagnostics, which are optional, get at most 30 s of that budget, so the proposal is still checked. After 10 s of silence, and every 15 s after that, a progress line on stderr gives the phase and the number of files done. A fast batch prints none (#1220).
 - **Qualified Lookup Finds a Dependency Type's Method** (`crates/prod-code-mcp`, `crates/prod-code-gateway`, `crates/prod-code-engine-rust`):
   `def --symbol Analysis::parent_module` in this repository exited 1 with unrelated suggestions, although the `ra_ap_ide` dependency declares that method. Qualified library queries were searched under their full text, which the index does not match, and any workspace hit hid the dependencies. When no workspace declaration matches, lookup now asks the gateway for dependency symbols by the bare member name, keeps those whose owner matches, and returns them. Workspace declarations still win. A miss suggests that type's own methods. The dependency search is bounded to 5 s, and the deadline also reaches the gateway (#1218).
 - **Rust Move Apply Reads LSP Columns as UTF-16** (`crates/prod-code-mcp`):

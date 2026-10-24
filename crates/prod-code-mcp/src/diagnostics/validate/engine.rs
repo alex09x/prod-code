@@ -104,6 +104,7 @@ pub(super) async fn validate_texts_single_engine(
         };
         // Install the entire before-state first: a baseline queried against another
         // file's already-written proposal would otherwise hide cross-file errors.
+        let baseline_budget = budget.baseline();
         for (file, text) in edits
             .iter()
             .map(|(f, _)| f)
@@ -132,7 +133,7 @@ pub(super) async fn validate_texts_single_engine(
             };
             let uri = checkout.uri_for(file)?;
             // Baselines are optional evidence, and must not consume the proposal's budget.
-            if let Ok(result) = budget
+            if let Ok(result) = baseline_budget
                 .query(
                     &mut checkout,
                     file,
@@ -150,7 +151,7 @@ pub(super) async fn validate_texts_single_engine(
             let file = &edits[i].0;
             let symbols = if before_texts[i].is_some() {
                 let uri = checkout.uri_for(file)?;
-                budget
+                baseline_budget
                     .query(
                         &mut checkout,
                         file,
@@ -268,6 +269,7 @@ pub(super) async fn validate_texts_single_engine(
                     Some(reason) => platform_excluded_report(&shown, &reason),
                     None => incomplete_report(&shown, &err.to_string()),
                 });
+                budget.completed(1);
                 continue;
             }
         };
@@ -280,6 +282,7 @@ pub(super) async fn validate_texts_single_engine(
         }
         refuse_unchecked(&mut report);
         reports.push(report);
+        budget.completed(1);
     }
     let _ = budget
         .run(budget.auxiliary, "checking re-exports", async {
