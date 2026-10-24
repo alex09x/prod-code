@@ -134,13 +134,17 @@ impl RustEngineSnapshot {
             let name_text = name.text().to_string();
             // A workspace loaded without the sysroot resolves no `std`; that is its setting,
             // not the edit's error.
+            // Imports have native diagnostics; a grouped import's prefix can lie outside
+            // the leaf ranges already covered by those diagnostics.
             if !unresolved(&name)
                 || matches!(name_text.as_str(), "std" | "core" | "alloc")
                 || covered.iter().any(|c| c.intersect(range).is_some())
-                || segment
-                    .syntax()
-                    .ancestors()
-                    .any(|n| n.kind() == ra_ap_syntax::SyntaxKind::ATTR)
+                || segment.syntax().ancestors().any(|n| {
+                    matches!(
+                        n.kind(),
+                        ra_ap_syntax::SyntaxKind::ATTR | ra_ap_syntax::SyntaxKind::USE
+                    )
+                })
             {
                 continue;
             }

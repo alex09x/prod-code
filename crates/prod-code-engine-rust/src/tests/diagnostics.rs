@@ -207,6 +207,9 @@ fn test_diagnostics_respect_module_boundaries_import_bindings_and_inline_uses() 
             "use std::fmt; use std::collections::HashMap;\n",
             "#[allow(dead_code)] use std::collections::BTreeMap;\n",
             "pub fn fmt_user(_: &dyn fmt::Debug) {}\n",
+            "use missing_grouped::{UnusedA, UnusedB};\n",
+            "use crate::missing_grouped_local::{UnusedC, UnusedD};\n",
+            "pub fn uses_grouped(_: UnusedA, _: UnusedB, _: UnusedC, _: UnusedD) {}\n",
         ),
     )
     .unwrap();
@@ -239,5 +242,19 @@ fn test_diagnostics_respect_module_boundaries_import_bindings_and_inline_uses() 
             vec![(28, 15, 28, 45), (29, 21, 29, 52)],
         ),
         "{diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d.code == "E0432" && matches!(d.line, 31 | 32))
+            .map(|d| (d.line, d.col, d.end_line, d.end_col))
+            .collect::<Vec<_>>(),
+        vec![
+            (31, 23, 31, 30),
+            (31, 32, 31, 39),
+            (32, 36, 32, 43),
+            (32, 45, 32, 52)
+        ],
+        "native unresolved-import errors must remain visible"
     );
 }
