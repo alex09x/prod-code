@@ -12,6 +12,9 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 pub fn collect_cargo_dependencies(
     workspace_root: &Path,
     adj: &mut BTreeMap<String, (PathBuf, BTreeSet<String>)>,
@@ -83,6 +86,13 @@ pub fn collect_cargo_dependencies(
             crate_names.insert(name.to_string());
             crate_map.insert(name.to_string(), (dir.clone(), parsed_toml));
         }
+    }
+
+    // Index every member before resolving renamed path dependencies. HashMap
+    // iteration order must not decide whether the target is visible in adj.
+    for (name, (dir, _)) in &crate_map {
+        adj.entry(name.clone())
+            .or_insert_with(|| (dir.clone(), BTreeSet::new()));
     }
 
     for (name, (dir, toml_val)) in crate_map {
