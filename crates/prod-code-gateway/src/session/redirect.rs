@@ -220,3 +220,6 @@ pub async fn try_validation_redirect(
 
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests;

@@ -344,3 +344,6 @@ pub async fn run_exec_with_ram(
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

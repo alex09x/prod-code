@@ -150,3 +150,6 @@ pub(crate) fn with_probe_line(text: &str) -> (String, u64) {
     probe.push('\n');
     (probe, line)
 }
+
+#[cfg(test)]
+mod tests;

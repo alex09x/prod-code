@@ -298,4 +298,103 @@ mod tests {
         assert!(!symlink_write.exists());
         assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
     }
+
+    fn delta(path: &str, content: Option<&str>, is_executable: bool) -> FileDelta {
+        FileDelta {
+            relative_path: path.to_string(),
+            content: content.map(|c| c.as_bytes().to_vec()),
+            is_executable,
+        }
+    }
+
+    /// Writes, overwrites and deletions are counted, an unwritable target is reported for a
+    /// retry, and a deletion that empties a directory takes the directory with it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_sync_writes_deletes_and_reports_what_it_could_not_write() {
+        let storage = tempfile::tempdir().unwrap();
+        let root = storage.path().join("ws");
+        for (rel, body) in [
+            ("exists.txt", "old"),
+            ("gone.txt", "bye"),
+            ("old/dir/gone.txt", "x"),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        std::fs::create_dir_all(root.join("blocked")).unwrap();
+        let workspace = Arc::new(workspace::SharedWorkspace::new(
+            root.clone(),
+            "generic-lsp".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        let manager = workspace::WorkspaceManager::new();
+        let lease = workspace::WorkspaceLease::acquire(workspace);
+        let view = manager.register_session_view(1, root.clone(), lease).await;
+        let (raw_tx, mut raw_rx) = rapidfire::mpsc::bounded(8);
+        let out_tx = SharedOutputSender::new(raw_tx, std::time::Duration::from_secs(1));
+
+        handle_session_sync(
+            SyncRequest {
+                client_workspace_root: "/tmp/ws".to_string(),
+                files: vec![
+                    delta("new/dir/created.txt", Some("fresh"), false),
+                    delta("exists.txt", Some("newer text"), false),
+                    delta("run.sh", Some("#!/bin/sh\n"), true),
+                    delta("blocked", Some("a file where a directory is"), false),
+                    delta("gone.txt", None, false),
+                    delta("old/dir/gone.txt", None, false),
+                    delta("never-there.txt", None, false),
+                ],
+                clean_others: true,
+                base_workspace_name: Some("ws".to_string()),
+            },
+            &view,
+            &out_tx,
+        )
+        .await;
+
+        let WireMessage::SyncResponse(response) = raw_rx.recv().await.unwrap().message else {
+            panic!("expected sync response");
+        };
+        assert_eq!(response.files_updated, 3);
+        assert_eq!(response.files_deleted, 2);
+        assert_eq!(
+            response.bytes_transferred,
+            "fresh".len()
+                + "newer text".len()
+                + "#!/bin/sh\n".len()
+                + "a file where a directory is".len()
+        );
+        assert_eq!(response.stale_paths, ["blocked"]);
+        assert_eq!(response.server_workspace_root, root.to_string_lossy());
+        assert!(!response.workspace_was_fresh);
+        assert_eq!(
+            std::fs::read_to_string(root.join("new/dir/created.txt")).unwrap(),
+            "fresh"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("exists.txt")).unwrap(),
+            "newer text"
+        );
+        assert!(
+            root.join("blocked").is_dir(),
+            "the directory was not replaced"
+        );
+        assert!(!root.join("gone.txt").exists());
+        assert!(
+            !root.join("old").exists(),
+            "the emptied directories are pruned too"
+        );
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(root.join("run.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111);
+    }
 }

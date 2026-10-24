@@ -245,3 +245,6 @@ pub async fn fallback_empty_lsp(
     }
     None
 }
+
+#[cfg(test)]
+mod tests;
