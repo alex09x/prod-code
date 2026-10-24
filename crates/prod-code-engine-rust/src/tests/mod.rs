@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 mod config;
 mod diagnostics;
 mod engine;
+mod extract_function;
 mod navigation;
 mod refactoring;
 mod sessions;
