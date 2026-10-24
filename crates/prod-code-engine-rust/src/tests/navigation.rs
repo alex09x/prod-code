@@ -197,7 +197,13 @@ fn symbol_search_falls_back_to_dependency_crates() {
     .unwrap();
     std::fs::write(
         dep.join("src/lib.rs"),
-        "pub mod parts {\n    pub struct DepOnlyGadget;\n}\n\npub struct SharedName;\n\npub struct Analysis;\n\nimpl Analysis {\n    pub fn completions(&self) {}\n}\n",
+        concat!(
+            "pub mod parts {\n    pub struct DepOnlyGadget;\n}\n\npub struct SharedName;\n\npub struct Analysis;\n\nimpl Analysis {\n    pub fn completions(&self) {}\n",
+            "    pub fn parent_module(&self) -> u8 { 7 }\n}\n",
+            "pub struct Dep;\nimpl Dep {\n    pub fn method(&self) -> u8 { 8 }\n    pub fn method_more(&self) {}\n}\n",
+            "pub trait DepTrait {\n    fn trait_method(&self);\n}\n",
+            "impl SharedName {\n    pub fn method(&self) -> u8 { 9 }\n}\n",
+        ),
     )
     .unwrap();
 
@@ -207,7 +213,7 @@ fn symbol_search_falls_back_to_dependency_crates() {
     std::fs::create_dir_all(ws.join(".cargo")).unwrap();
     std::fs::write(
         ws.join("Cargo.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngadget = \"0.1\"\n",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngadget = \"0.1\"\npath_dep = { path = \"../path-dep\" }\n",
     )
     .unwrap();
     std::fs::write(
@@ -220,7 +226,23 @@ fn symbol_search_falls_back_to_dependency_crates() {
     .unwrap();
     std::fs::write(
         ws.join("src/lib.rs"),
-        "pub struct SharedName;\n\npub struct RustAnalysisOptions;\n\npub fn make() -> gadget::parts::DepOnlyGadget {\n    gadget::parts::DepOnlyGadget\n}\n",
+        concat!(
+            "pub struct SharedName;\n\npub struct RustAnalysisOptions;\n\npub fn make() -> gadget::parts::DepOnlyGadget {\n    gadget::parts::DepOnlyGadget\n}\n",
+            "impl SharedName {\n    pub fn method(&self) -> u8 { 1 }\n}\n",
+            "pub fn parent_module_file() {}\n",
+        ),
+    )
+    .unwrap();
+    let path_dep = temp.path().join("path-dep");
+    std::fs::create_dir_all(path_dep.join("src")).unwrap();
+    std::fs::write(
+        path_dep.join("Cargo.toml"),
+        "[package]\nname = \"path_dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        path_dep.join("src/lib.rs"),
+        "pub struct PathDep;\nimpl PathDep {\n    pub fn method(&self) -> u8 { 2 }\n}\n",
     )
     .unwrap();
     let engine = RustEngine::load(&ws).expect("Must load fixture");
@@ -263,4 +285,6 @@ fn symbol_search_falls_back_to_dependency_crates() {
         }),
         "a workspace hit suppresses the fallback: {shared:?}"
     );
+
+    super::dependency_cases::assert_cases(&engine, &dep, &ws, &path_dep);
 }

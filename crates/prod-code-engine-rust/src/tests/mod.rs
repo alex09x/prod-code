@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 mod config;
+mod dependency_cases;
 mod diagnostics;
 mod engine;
 mod extract_function;

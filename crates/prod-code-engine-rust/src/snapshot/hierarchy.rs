@@ -200,6 +200,7 @@ impl RustEngineSnapshot {
             if !out.is_empty() {
                 return Ok(out);
             }
+            return self.dependency_symbols(query, limit);
         }
         let query_lower = query.to_ascii_lowercase();
         if !out.is_empty()
@@ -227,7 +228,7 @@ impl RustEngineSnapshot {
     }
 
     /// Library symbols matching `query`, each with the module path it is declared in.
-    fn library_symbols(
+    pub(super) fn library_symbols(
         &self,
         query: ra_ap_ide::Query,
         limit: usize,
