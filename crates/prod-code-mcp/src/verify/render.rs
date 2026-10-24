@@ -21,8 +21,14 @@ pub(crate) fn append_diagnostics(
 ) -> usize {
     let mut rendered = 0;
     let diagnostic_budget = budget.saturating_sub(OMITTED_DIAGNOSTIC_MARKER_RESERVE);
+    // Errors first, each level in compiler order: cargo prints a library's warnings before
+    // the error of the test target built on it, and a cap would otherwise drop that error.
+    let ordered = diagnostics
+        .iter()
+        .filter(|d| d.level == "error")
+        .chain(diagnostics.iter().filter(|d| d.level != "error"));
 
-    for diagnostic in diagnostics.iter().take(max_items) {
+    for diagnostic in ordered.take(max_items) {
         let remaining = diagnostic_budget.saturating_sub(out.len());
         let line_overhead = "  ".len() + "\n".len();
         if remaining <= line_overhead {

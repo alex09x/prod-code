@@ -9,6 +9,7 @@
  */
 
 mod diagnostic_budget;
+mod failure_cause;
 mod matrix;
 mod parse;
 mod plan;
