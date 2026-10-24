@@ -11,13 +11,27 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
+/// Drops a leading `pub` / `pub(crate)` so re-exports and `pub mod` count as imports.
+fn strip_visibility(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix("pub") else {
+        return line;
+    };
+    if let Some(declaration) = rest.strip_prefix(' ') {
+        return declaration.trim_start();
+    }
+    match rest.strip_prefix('(').and_then(|r| r.split_once(')')) {
+        Some((_, declaration)) => declaration.trim_start(),
+        None => line,
+    }
+}
+
 pub fn parse_rust_imports(
     content: &str,
     known_modules: &HashMap<String, PathBuf>,
     deps: &mut BTreeSet<String>,
 ) {
     for line in content.lines() {
-        let trimmed = line.trim();
+        let trimmed = strip_visibility(line.trim());
         if trimmed.starts_with("use crate::") || trimmed.starts_with("use super::") {
             let path_part = trimmed
                 .trim_start_matches("use crate::")

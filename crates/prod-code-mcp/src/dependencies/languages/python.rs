@@ -23,9 +23,13 @@ pub fn parse_python_imports(
                 .trim_start_matches("import ")
                 .split([' ', ','])
                 .next()
-                .unwrap_or("");
+                .unwrap_or("")
+                .replace('.', "::");
+            if mod_part.is_empty() {
+                continue;
+            }
             for m in known_modules.keys() {
-                if m.ends_with(mod_part) {
+                if m.ends_with(&mod_part) {
                     deps.insert(m.clone());
                 }
             }
@@ -35,9 +39,13 @@ pub fn parse_python_imports(
                 .split(' ')
                 .next()
                 .unwrap_or("");
-            let clean = mod_part.trim_start_matches('.');
+            // `from . import x` has no module name to match.
+            let clean = mod_part.trim_start_matches('.').replace('.', "::");
+            if clean.is_empty() {
+                continue;
+            }
             for m in known_modules.keys() {
-                if m.ends_with(clean) {
+                if m.ends_with(&clean) {
                     deps.insert(m.clone());
                 }
             }

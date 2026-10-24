@@ -14,6 +14,10 @@ pub mod languages;
 mod modules;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_languages;
+#[cfg(test)]
+mod tests_modules;
 mod types;
 pub mod workspace;
 
