@@ -342,7 +342,7 @@ pub async fn run_validate_together(
         edits.push((abs(Path::new(target)), new_text));
     }
     let started = std::time::Instant::now();
-    let reports = prod_code_mcp::diagnostics::validate_texts(remote, &root, &edits, &[]).await?;
+    let reports = super::progress::validate_with_progress(remote, &root, &edits).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&reports)?);
     } else {

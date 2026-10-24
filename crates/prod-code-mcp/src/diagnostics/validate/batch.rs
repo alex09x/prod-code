@@ -15,6 +15,7 @@ use std::path::Path;
 
 use super::budget::{ValidationBudget, incomplete_report};
 use super::engine::validate_texts_single_engine;
+use super::progress::ValidationProgress;
 use crate::diagnostics::reexport::display;
 use crate::diagnostics::syntax::{
     ensure_source_file, is_parser_validated_file, validate_file_content,
@@ -68,6 +69,25 @@ pub async fn validate_texts_interactive(
     .await
 }
 
+/// The interactive batch deadline and partial reports, with phase and completion
+/// snapshots for a CLI progress reporter. Refactoring validation keeps its own budget.
+pub async fn validate_texts_interactive_with_progress(
+    remote: SocketAddr,
+    root: &Path,
+    edits: &[(std::path::PathBuf, String)],
+    also_check: &[std::path::PathBuf],
+    progress: ValidationProgress,
+) -> Result<Vec<DiagnosticsReport>> {
+    let budget = ValidationBudget {
+        progress: Some(progress),
+        ..ValidationBudget::interactive()
+    };
+    Box::pin(validate_texts_with_budget(
+        remote, root, edits, also_check, &budget,
+    ))
+    .await
+}
+
 pub(super) async fn validate_texts_with_budget(
     remote: SocketAddr,
     root: &Path,
@@ -98,6 +118,7 @@ pub(super) async fn validate_texts_with_budget(
     if edits.iter().all(|(f, _)| is_parser_validated_file(f))
         && also_check.iter().all(|f| is_parser_validated_file(f))
     {
+        budget.completed(edits.len() + also_check.len());
         return Ok(edits
             .iter()
             .map(|(file, text)| (file, text))
@@ -123,12 +144,14 @@ pub(super) async fn validate_texts_with_budget(
                 if crate::lang::engine_group_for_path(file) == engine {
                     final_reports[i] =
                         Some(validate_file_content(&display(root, file), file, text));
+                    budget.completed(1);
                 }
             }
             for (i, (file, text)) in also_check.iter().zip(&also_texts).enumerate() {
                 if crate::lang::engine_group_for_path(file) == engine {
                     final_reports[edits.len() + i] =
                         Some(validate_file_content(&display(root, file), file, text));
+                    budget.completed(1);
                 }
             }
             continue;
