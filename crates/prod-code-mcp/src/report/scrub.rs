@@ -12,6 +12,21 @@ use anyhow::Result;
 
 use super::types::Draft;
 
+/// Refuse checkout-specific names before scrubbing or publishing any report text.
+pub(super) fn check_private_names(request: &super::types::ReportRequest<'_>) -> Result<()> {
+    if !request.allow_private_names {
+        super::private_names::check(
+            request.root,
+            &[
+                request.title,
+                request.body,
+                request.private_ref.unwrap_or(""),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 /// `text` without the reporter's private details: IPv4 addresses become `<node>` (loopback,
 /// the unspecified address and the documentation ranges stay), the home directory and any
 /// `/Users/<name>` or `/home/<name>` become `~`, and `host` (with its first label alone) becomes

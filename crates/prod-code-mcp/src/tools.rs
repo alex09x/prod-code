@@ -267,10 +267,12 @@ pub(crate) async fn dispatch_tool(
             match crate::report::report(
                 Some(remote),
                 ReportRequest {
+                    root,
                     title: text("title"),
                     body: text("body"),
                     force: flag("force"),
                     dry_run: flag("dry_run"),
+                    allow_private_names: flag("allow_private_names"),
                     private_ref: args.get("private_ref").and_then(|v| v.as_str()),
                     labels: &labels,
                 },

@@ -224,8 +224,9 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Report a bug in prod-code itself as a GitHub issue (private details are removed first;
-    /// similar issues, open or closed, are listed and nothing is filed unless --force)
+    /// Report a prod-code bug publicly. Outside the public prod-code checkout, refuses tracked
+    /// source paths, filenames, stems and declared identifiers, including in dry runs. Use a
+    /// neutral reproduction and keep private details in a private incident store with --private-ref.
     ReportIssue {
         /// A searchable title: what went wrong, in which tool or command
         #[arg(long)]
@@ -245,6 +246,9 @@ pub enum Commands {
         /// Show the scrubbed issue without filing it
         #[arg(long)]
         dry_run: bool,
+        /// Permit checkout names explicitly when this is another public repository
+        #[arg(long)]
+        allow_private_names: bool,
         /// A label, repeated for each: one type (bug, enhancement, documentation, perf; bug when
         /// none is given) and the areas it is about (gateway, client, mcp, cluster, worktree,
         /// infra, test)

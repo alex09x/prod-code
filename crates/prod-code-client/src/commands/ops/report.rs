@@ -21,6 +21,7 @@ pub struct ReportArgs {
     pub private_ref: Option<String>,
     pub force: bool,
     pub dry_run: bool,
+    pub allow_private_names: bool,
     pub labels: Vec<String>,
 }
 
@@ -50,10 +51,12 @@ pub async fn run_report_issue(
     let outcome = prod_code_mcp::report::report(
         remote,
         ReportRequest {
+            root: &std::env::current_dir()?,
             title: &args.title,
             body: &body,
             force: args.force,
             dry_run: args.dry_run,
+            allow_private_names: args.allow_private_names,
             private_ref: args.private_ref.as_deref(),
             labels: &args.labels,
         },
@@ -62,4 +65,47 @@ pub async fn run_report_issue(
     .await?;
     println!("{}", outcome.render());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn report_private_names_override_is_explicit() {
+        // Match the CLI parser tests: Clap's full command tree needs a larger debug stack.
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                for allow in [false, true] {
+                    let mut args = vec![
+                        "prod-code",
+                        "report-issue",
+                        "--title",
+                        "A lookup returned no results",
+                        "--body",
+                        "A neutral reproduction returned no results instead of a declaration.",
+                        "--dry-run",
+                    ];
+                    if allow {
+                        args.push("--allow-private-names");
+                    }
+                    let parsed = Cli::try_parse_from(args).unwrap();
+                    let Some(Commands::ReportIssue {
+                        allow_private_names,
+                        dry_run,
+                        ..
+                    }) = parsed.command
+                    else {
+                        panic!("expected report command")
+                    };
+                    assert_eq!(allow_private_names, allow);
+                    assert!(dry_run);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }

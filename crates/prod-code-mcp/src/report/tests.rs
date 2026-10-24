@@ -184,6 +184,8 @@ async fn a_report_is_filed_when_nothing_similar_is_open() {
     let outcome = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: false,
@@ -219,6 +221,8 @@ async fn a_similar_open_issue_stops_the_report_unless_forced() {
     let outcome = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: false,
@@ -247,6 +251,8 @@ async fn a_similar_open_issue_stops_the_report_unless_forced() {
     let forced = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: true,
@@ -269,6 +275,8 @@ async fn a_private_reference_is_named_in_the_issue() {
     let outcome = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: false,
@@ -289,6 +297,8 @@ async fn a_private_reference_is_named_in_the_issue() {
     let dry = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: false,
@@ -314,6 +324,8 @@ async fn a_dry_run_sends_nothing_and_a_failing_gh_is_reported() {
     let outcome = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: false,
@@ -338,6 +350,8 @@ async fn a_dry_run_sends_nothing_and_a_failing_gh_is_reported() {
     let err = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: false,
@@ -356,6 +370,8 @@ async fn a_dry_run_sends_nothing_and_a_failing_gh_is_reported() {
     let err = report(
         None,
         ReportRequest {
+            root: Path::new(env!("CARGO_MANIFEST_DIR")),
+            allow_private_names: true,
             title: "outline prints nothing for Markdown",
             body: BODY,
             force: false,
