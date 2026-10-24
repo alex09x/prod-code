@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Extract-Function Names the Loop Exit It Cannot Carry** (`crates/prod-code-engine-rust`, `crates/prod-code-mcp`):
+  Extracting a loop body that mixes `let ... else { break }`, `continue` and `?` failed with `rust-analyzer cannot extract a function from this selection`, followed by a list of unrelated assists. A syntax preflight now refuses such a selection before the assist runs, and names each exit with its line: mixed loop exits, a labelled `break`/`continue` aimed at an outer loop, and a `return` owned by a closure or nested function inside the selection. Selections the assist does handle, such as only `break` or only `continue`, extract as before (#1217).
 - **Moving an Item Into Its Parent Updates the Parent's Re-Export** (`crates/prod-code-mcp`):
   `code_move` of `run_stdio_mcp_server` from `server/transport.rs` into `server/mod.rs` refused with `unresolved import [E0432]`. The parent still re-exported the function from the child (`pub use transport::{...}`), because references inside the destination file were skipped. The destination's import of the moved name is now dropped like any other stale import: grouped siblings stay, and an emptied `use` goes (#1201).
 
