@@ -79,11 +79,14 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
-const ITEM: &str = "pub struct DexOracleState {\n    pub value: u32,\n    // Snapshot metadata.\n    // 01\n    // 02\n    // 03\n    // 04\n    // 05\n    // 06\n    // 07\n    // 08\n    // 09\n    // 10\n    // 11\n    // 12\n    // 13\n    // 14\n    // 15\n    // 16\n    // 17\n    // 18\n}\n";
-const USES: &str = "\npub struct Holder {\n    pub state: /* 😀 */ DexOracleState,\n}\n\npub fn make(value: u32) -> /* 😀 */ DexOracleState {\n    /* 😀 */ DexOracleState { value }\n}\n";
+const ITEM: &str = "pub struct QuoteFeedState {\n    pub value: u32,\n    // Snapshot metadata.\n    // 01\n    // 02\n    // 03\n    // 04\n    // 05\n    // 06\n    // 07\n    // 08\n    // 09\n    // 10\n    // 11\n    // 12\n    // 13\n    // 14\n    // 15\n    // 16\n    // 17\n    // 18\n}\n";
+const USES: &str = "\npub struct Holder {\n    pub state: /* 😀 */ QuoteFeedState,\n}\n\npub fn make(value: u32) -> /* 😀 */ QuoteFeedState {\n    /* 😀 */ QuoteFeedState { value }\n}\n";
 
-// Case table: main/overlay × first apply/dry run then apply × ASCII/UTF-16 × LF/CRLF.
-// Every row preserves field, signature and body uses with exactly the expected import.
+// Case table over main/overlay, direct apply/dry run then apply, ASCII/UTF-16 and LF/CRLF.
+// Every row preserves field, signature and body uses with exactly the expected import. Each
+// row loads a cold analyzer (about a minute), so the table is the half fraction in which the
+// line ending follows the parity of the other three: every pair of factor values still
+// meets, in 8 rows instead of 16.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn move_views_match_disk() {
     if live_gateway::serve_if_child().await {
@@ -93,20 +96,12 @@ async fn move_views_match_disk() {
     // Start with the reproduced workflow, then cover its nearest controls.
     for (worktree, preview, unicode, ending) in [
         (true, true, true, "\n"),
-        (false, true, true, "\n"),
-        (true, false, true, "\n"),
-        (false, false, true, "\n"),
-        (true, true, false, "\n"),
-        (false, true, false, "\n"),
-        (true, false, false, "\n"),
-        (false, false, false, "\n"),
-        (true, true, true, "\r\n"),
         (false, true, true, "\r\n"),
         (true, false, true, "\r\n"),
-        (false, false, true, "\r\n"),
+        (false, false, true, "\n"),
         (true, true, false, "\r\n"),
-        (false, true, false, "\r\n"),
-        (true, false, false, "\r\n"),
+        (false, true, false, "\n"),
+        (true, false, false, "\n"),
         (false, false, false, "\r\n"),
     ] {
         let temp = tempfile::tempdir().unwrap();
@@ -126,8 +121,8 @@ async fn move_views_match_disk() {
                 "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
             ),
             ("prod-code.toml", "[rust]\nproc_macro_srv = \"disabled\"\n"),
-            ("src/lib.rs", "pub mod dex_oracle;\n"),
-            ("src/dex_oracle.rs", source_text.as_str()),
+            ("src/lib.rs", "pub mod quote_feed;\n"),
+            ("src/quote_feed.rs", source_text.as_str()),
         ] {
             std::fs::write(base.join(path), text).unwrap();
         }
@@ -148,7 +143,7 @@ async fn move_views_match_disk() {
         let root = if worktree {
             // Warm the main checkout before attaching its detached overlay. Its text is
             // deliberately different, so a reference from the wrong view cannot pass.
-            let source = base.join("src/dex_oracle.rs");
+            let source = base.join("src/quote_feed.rs");
             prod_code_mcp::signature::references(gateway.addr, &base, &source, 1, 12)
                 .await
                 .unwrap();
@@ -164,7 +159,7 @@ async fn move_views_match_disk() {
                 ],
             );
             std::fs::write(
-                copy.join("src/dex_oracle.rs"),
+                copy.join("src/quote_feed.rs"),
                 format!("// detached view\n\n{source_text}"),
             )
             .unwrap();
@@ -172,8 +167,8 @@ async fn move_views_match_disk() {
         } else {
             base
         };
-        let source = root.join("src/dex_oracle.rs");
-        let target = root.join("src/dex_oracle_types.rs");
+        let source = root.join("src/quote_feed.rs");
+        let target = root.join("src/quote_feed_types.rs");
         let original = std::fs::read_to_string(&source).unwrap();
         let line = if worktree { 3 } else { 1 };
         let mut references =
@@ -185,7 +180,7 @@ async fn move_views_match_disk() {
             .lines()
             .enumerate()
             .filter_map(|(index, text)| {
-                let at = text.find("DexOracleState")?;
+                let at = text.find("QuoteFeedState")?;
                 Some((
                     source.clone(),
                     line + 21 + index as u32 + 1,
@@ -243,7 +238,7 @@ async fn move_views_match_disk() {
         let expected = original.replace("\r\n", "\n").replacen(ITEM, "", 1);
         let insert = expected.find("pub struct Holder").unwrap();
         let expected = format!(
-            "{}use crate::dex_oracle_types::DexOracleState;\n{}",
+            "{}use crate::quote_feed_types::QuoteFeedState;\n{}",
             &expected[..insert],
             &expected[insert..]
         );
@@ -251,12 +246,12 @@ async fn move_views_match_disk() {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), ITEM);
         assert_eq!(
             std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
-            "pub mod dex_oracle;\npub mod dex_oracle_types;\n"
+            "pub mod quote_feed;\npub mod quote_feed_types;\n"
         );
         if worktree {
             assert_eq!(
                 std::fs::read_to_string(temp.path().join(format!(
-                    "base-{worktree}-{preview}-{unicode}/src/dex_oracle.rs"
+                    "base-{worktree}-{preview}-{unicode}/src/quote_feed.rs"
                 )))
                 .unwrap(),
                 source_text

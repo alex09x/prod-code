@@ -11,14 +11,14 @@
 use prod_code_mcp::move_item::move_item;
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 
-const ITEM: &str = "pub struct DexOracleState {\n    pub value: u32,\n}\n";
-const USES: &str = "\npub struct Holder {\n    pub state: MARKDexOracleState,\n}\n\npub fn make(value: u32) -> MARKDexOracleState {\n    MARKDexOracleState { value }\n}\n";
+const ITEM: &str = "pub struct QuoteFeedState {\n    pub value: u32,\n}\n";
+const USES: &str = "\npub struct Holder {\n    pub state: MARKQuoteFeedState,\n}\n\npub fn make(value: u32) -> MARKQuoteFeedState {\n    MARKQuoteFeedState { value }\n}\n";
 
 fn positions(text: &str) -> Vec<(u32, u32)> {
     text.lines()
         .enumerate()
         .filter_map(|(line, text)| {
-            let at = text.find("DexOracleState")?;
+            let at = text.find("QuoteFeedState")?;
             Some((
                 line as u32 + 1,
                 text[..at].encode_utf16().count() as u32 + 1,
@@ -40,26 +40,26 @@ async fn move_position_encoding_table() {
         let uses = USES.replace("MARK", mark);
         let original = format!("{ITEM}{uses}").replace('\n', ending);
         let caller = uses
-            .replace("DexOracleState", "crate::dex_oracle::DexOracleState")
+            .replace("QuoteFeedState", "crate::quote_feed::QuoteFeedState")
             .replace('\n', ending);
         let ws = Workspace::new(&[
             (
                 "Cargo.toml",
                 "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
             ),
-            ("src/lib.rs", "pub mod dex_oracle;\npub mod caller;\n"),
-            ("src/dex_oracle.rs", &original),
+            ("src/lib.rs", "pub mod quote_feed;\npub mod caller;\n"),
+            ("src/quote_feed.rs", &original),
             ("src/caller.rs", &caller),
         ]);
-        let source = ws.path("src/dex_oracle.rs");
-        let target = ws.path("src/dex_oracle_types.rs");
+        let source = ws.path("src/quote_feed.rs");
+        let target = ws.path("src/quote_feed_types.rs");
         let source_refs = positions(&original).into_iter().skip(1).collect::<Vec<_>>();
         let caller_refs = positions(&caller);
         let source_path = source.clone();
         let caller_path = ws.path("src/caller.rs");
         let remote = ScriptedGateway::start(move |method, _| match method {
             "textDocument/documentSymbol" => {
-                serde_json::json!([answers::document_symbol("DexOracleState", 23, 1, 3, 12)])
+                serde_json::json!([answers::document_symbol("QuoteFeedState", 23, 1, 3, 12)])
             }
             "textDocument/references" => {
                 let mut refs = answers::locations(&source_path, &source_refs);
@@ -87,7 +87,7 @@ async fn move_position_encoding_table() {
         )
         .await
         .unwrap();
-        assert_eq!(ws.read("src/dex_oracle.rs"), original, "{case}");
+        assert_eq!(ws.read("src/quote_feed.rs"), original, "{case}");
         assert!(!target.exists(), "{case}");
         let applied = move_item(
             remote.addr(),
@@ -104,26 +104,26 @@ async fn move_position_encoding_table() {
         assert!(dry.unmatched.is_empty(), "{case}: {:?}", dry.unmatched);
         assert_eq!(dry.rewritten, applied.rewritten, "{case}");
         assert_eq!(
-            ws.read("src/dex_oracle.rs"),
+            ws.read("src/quote_feed.rs"),
             uses.replacen(
                 "pub struct Holder",
-                "use crate::dex_oracle_types::DexOracleState;\npub struct Holder",
+                "use crate::quote_feed_types::QuoteFeedState;\npub struct Holder",
                 1,
             ),
             "{case}"
         );
-        assert_eq!(ws.read("src/dex_oracle_types.rs"), ITEM, "{case}");
+        assert_eq!(ws.read("src/quote_feed_types.rs"), ITEM, "{case}");
         assert_eq!(
             ws.read("src/caller.rs"),
             caller.replace(
-                "crate::dex_oracle::DexOracleState",
-                "crate::dex_oracle_types::DexOracleState",
+                "crate::quote_feed::QuoteFeedState",
+                "crate::quote_feed_types::QuoteFeedState",
             ),
             "{case}"
         );
         assert_eq!(
             ws.read("src/lib.rs"),
-            "pub mod dex_oracle;\npub mod caller;\npub mod dex_oracle_types;\n",
+            "pub mod quote_feed;\npub mod caller;\npub mod quote_feed_types;\n",
             "{case}"
         );
     }
@@ -141,14 +141,14 @@ async fn move_genuinely_stale_reference_still_refuses_every_write() {
                 "Cargo.toml",
                 "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
             ),
-            ("src/lib.rs", "pub mod dex_oracle;\n"),
-            ("src/dex_oracle.rs", &source),
+            ("src/lib.rs", "pub mod quote_feed;\n"),
+            ("src/quote_feed.rs", &source),
         ]);
-        let file = ws.path("src/dex_oracle.rs");
+        let file = ws.path("src/quote_feed.rs");
         let path = file.clone();
         let remote = ScriptedGateway::start(move |method, _| match method {
             "textDocument/documentSymbol" => serde_json::json!([answers::document_symbol(
-                "DexOracleState",
+                "QuoteFeedState",
                 23,
                 declaration,
                 declaration + 2,
@@ -159,9 +159,9 @@ async fn move_genuinely_stale_reference_still_refuses_every_write() {
             _ => serde_json::Value::Null,
         })
         .await;
-        let target = ws.path("src/dex_oracle_types.rs");
+        let target = ws.path("src/quote_feed_types.rs");
         let expected = format!(
-            "src/dex_oracle.rs:{stale_line}:8 (the analyzer places `DexOracleState` here, but the file says otherwise)"
+            "src/quote_feed.rs:{stale_line}:8 (the analyzer places `QuoteFeedState` here, but the file says otherwise)"
         );
         let dry = move_item(
             remote.addr(),
@@ -193,11 +193,11 @@ async fn move_genuinely_stale_reference_still_refuses_every_write() {
             assert_eq!(
                 error,
                 format!(
-                    "1 reference(s) to `DexOracleState` were not rewritten; nothing was written:\n  {expected}"
+                    "1 reference(s) to `QuoteFeedState` were not rewritten; nothing was written:\n  {expected}"
                 )
             );
-            assert_eq!(ws.read("src/dex_oracle.rs"), source);
-            assert_eq!(ws.read("src/lib.rs"), "pub mod dex_oracle;\n");
+            assert_eq!(ws.read("src/quote_feed.rs"), source);
+            assert_eq!(ws.read("src/lib.rs"), "pub mod quote_feed;\n");
             assert!(!target.exists());
         }
     }
