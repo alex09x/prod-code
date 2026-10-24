@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.39 — 2026-10-24
+
 ### Fixed
 - **`prod-code validate` Answers Within Two Minutes and Shows Progress** (`crates/prod-code-client`, `crates/prod-code-mcp`):
   A 14-file Rust batch printed nothing for several minutes, until it was interrupted. The CLI used the 600 s refactoring validator, which also discards every result once one file stays unchecked. The CLI now uses the same 120 s interactive budget as `code_validate_edits` and keeps per-file results, naming any file it could not check. Baseline diagnostics, which are optional, get at most 30 s of that budget, so the proposal is still checked. After 10 s of silence, and every 15 s after that, a progress line on stderr gives the phase and the number of files done. A fast batch prints none (#1220).
