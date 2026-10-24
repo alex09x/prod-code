@@ -69,6 +69,7 @@ use import_go::{go_imported_symbols, is_go_namespace_import};
 #[path = "import_python.rs"]
 mod import_python;
 use import_python::python_imported_symbols;
+pub(super) use import_python::python_simple_statements;
 
 #[path = "import_ts.rs"]
 mod import_ts;

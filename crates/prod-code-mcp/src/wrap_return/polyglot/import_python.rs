@@ -126,7 +126,7 @@ fn split_semicolon_statements(line: &str) -> Vec<&str> {
     stmts
 }
 
-fn python_simple_statements(content: &str) -> Vec<String> {
+pub(crate) fn python_simple_statements(content: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut lines = content.lines().peekable();
     while let Some(line) = lines.next() {

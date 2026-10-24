@@ -236,6 +236,44 @@ fn test_python_local_import_as_shadows() {
 }
 
 #[test]
+fn test_python_multiline_local_import_shadowing() {
+    let cases = [
+        ("    from other import (\n        retry,\n    )\n", true),
+        (
+            "    from other import (\n        fetch as retry,\n    )\n",
+            true,
+        ),
+        (
+            "    from other import (\n        retry as local,\n    )\n",
+            false,
+        ),
+        (
+            concat!("    from other import ", "\\", "\n        retry\n"),
+            true,
+        ),
+        (
+            concat!("    import other as ", "\\", "\n        retry\n"),
+            true,
+        ),
+        (
+            "    def helper():\n        from other import (\n            retry,\n        )\n",
+            false,
+        ),
+    ];
+    for (binding, expected) in cases {
+        let content = format!(
+            "from selected import retry\n\nasync def run():\n{binding}    return retry()\n"
+        );
+        let call_at = content.rfind("retry()").unwrap();
+        assert_eq!(
+            is_locally_shadowed(&content, call_at, "retry", Language::Python),
+            expected,
+            "unexpected binding resolution for {binding:?}"
+        );
+    }
+}
+
+#[test]
 fn test_object_literal_property_does_not_shadow_imported_binding() {
     let content = "async function run() {\n    const handlers = { retry };\n    retry();\n}\n";
     let call_at = content.rfind("retry();").unwrap();
