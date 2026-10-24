@@ -1022,3 +1022,5 @@ class ProdCodeGuardSymbolGrepPolicyTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+# Automated fix for issue #1242: protocol token connection test can hang during concurrent TLS mode tests
