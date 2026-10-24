@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Qualified Lookup Finds a Dependency Type's Method** (`crates/prod-code-mcp`, `crates/prod-code-gateway`, `crates/prod-code-engine-rust`):
+  `def --symbol Analysis::parent_module` in this repository exited 1 with unrelated suggestions, although the `ra_ap_ide` dependency declares that method. Qualified library queries were searched under their full text, which the index does not match, and any workspace hit hid the dependencies. When no workspace declaration matches, lookup now asks the gateway for dependency symbols by the bare member name, keeps those whose owner matches, and returns them. Workspace declarations still win. A miss suggests that type's own methods. The dependency search is bounded to 5 s, and the deadline also reaches the gateway (#1218).
 - **Rust Move Apply Reads LSP Columns as UTF-16** (`crates/prod-code-mcp`):
   A struct move whose dry run succeeded refused on `--apply` with `3 reference(s) ... were not rewritten`, although nothing had changed. The analyzer's references were right, but move turned their LSP columns, which count UTF-16 code units, into byte offsets by counting `char`s, and it split lines only on `\n`. An emoji or another non-BMP character earlier on a reference's line, or CRLF line endings, moved every offset after it, and the stale-reference check refused. Move now uses the shared UTF-16 and CRLF converter. A refusal names the on-disk position of the reference (#1215).
 - **Module-Qualified Rust Lookups Keep the Module** (`crates/prod-code-mcp`, `crates/prod-code-gateway`, `crates/prod-code-engine-rust`):
