@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Completed LSP Responses Survive Server Exit** (`crates/prod-code-engine-generic`, `crates/prod-code-engine-go`):
+  If a language server exits after delivering a response but before its waiter resumes, the completed request now returns that response. New requests to a retired engine and requests whose reply channel closes without a response still fail (#1249).
 - **Python Local Imports Keep Their Binding During `code_wrap_return`** (`crates/prod-code-mcp`):
   Parenthesized and explicitly continued function-local imports now shadow an imported callable just like single-line imports. The empty-reference fallback reuses the import-statement collector, keeps aliases distinct, and excludes imports inside nested functions, so it does not treat an unrelated local call as a caller of the function being wrapped (#1244).
 - **`code_test` Shows What Failed the Run** (`crates/prod-code-mcp`):

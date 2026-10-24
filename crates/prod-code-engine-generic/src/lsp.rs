@@ -253,16 +253,7 @@ impl GenericLspEngine {
 
         match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(mut val)) => {
-                if !self.is_alive.load(Ordering::Acquire) {
-                    let details = self
-                        .exit_details()
-                        .await
-                        .map(|d| format!(": {d}"))
-                        .unwrap_or_default();
-                    anyhow::bail!(
-                        "Language server process has exited while answering '{method}'{details}"
-                    );
-                }
+                // A delivered response remains valid even if the reader has since observed EOF.
                 if let Some(busy) = busy {
                     val[BUSY_MEMBER] = serde_json::to_value(busy)?;
                 }

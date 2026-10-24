@@ -158,9 +158,7 @@ impl GoEngine {
 
         match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(mut val)) => {
-                if !self.is_alive.load(Ordering::Acquire) {
-                    anyhow::bail!("gopls has exited while answering '{method}'");
-                }
+                // A delivered response remains valid even if the reader has since observed EOF.
                 normalize_diagnostic_response(method, &mut val);
                 if let Some(busy) = busy {
                     val[BUSY_MEMBER] = serde_json::to_value(busy)?;
