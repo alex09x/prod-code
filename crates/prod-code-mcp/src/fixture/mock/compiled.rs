@@ -10,6 +10,9 @@
 
 use super::MethodSignature;
 
+#[cfg(test)]
+mod tests;
+
 /// C++ mock generator: class inheriting interface with call tracking.
 pub(crate) fn generate_cpp_mock(
     type_name: &str,
@@ -151,7 +154,7 @@ pub(crate) fn generate_java_mock(
             m.name, params_sig
         ));
         out.push_str(&format!("        calls.add(\"{}\");\n", m.name));
-        if ret != "void" && ret != "Void" {
+        if ret != "void" {
             let default_val = java_default_for_type(ret);
             out.push_str(&format!("        return {default_val};\n"));
         }

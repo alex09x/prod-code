@@ -12,6 +12,10 @@
 
 use crate::diagnostics::{DiagnosticsReport, DocDiagnostic};
 
+#[cfg(test)]
+#[path = "markdown/coverage_tests.rs"]
+mod coverage_tests;
+
 /// Validates Markdown documentation with optional YAML or TOML frontmatter (#778).
 pub fn validate_markdown(shown: &str, text: &str) -> DiagnosticsReport {
     let mut diagnostics = Vec::new();

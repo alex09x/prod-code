@@ -12,6 +12,36 @@ use super::*;
 use crate::parameter_object::Language;
 
 #[test]
+fn language_aliases_and_empty_templates() {
+    assert_eq!(
+        generate_mock(Language::Swift, "Store", &[], &[]),
+        "final class MockStore: Store {\n    var calls: [String] = []\n\n}"
+    );
+    assert_eq!(
+        generate_mock(Language::Java, "Store", &[], &[]),
+        "public class MockStore implements Store {\n    public java.util.List<String> calls = new java.util.ArrayList<>();\n\n}\n"
+    );
+    for (language, canonical) in [
+        (Language::C, Language::Cpp),
+        (Language::JavaScript, Language::TypeScript),
+    ] {
+        assert_eq!(
+            generate_mock(language, "Store", &[], &[]),
+            generate_mock(canonical, "Store", &[], &[])
+        );
+    }
+    assert_eq!(
+        generate_mock(
+            Language::Go,
+            "Store",
+            &[],
+            &[("Ready".into(), "bool".into())]
+        ),
+        "// MockStore is a mock implementation of Store for testing.\ntype MockStore struct {\n    Ready bool\n    Calls []string\n}"
+    );
+}
+
+#[test]
 fn generates_go_mock_for_interface() {
     let methods = vec![
         MethodSignature {

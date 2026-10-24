@@ -10,6 +10,9 @@
 
 use super::MethodSignature;
 
+#[cfg(test)]
+mod tests;
+
 /// Python mock generator: mock class with calls recording and stubs dict.
 pub(crate) fn generate_python_mock(
     type_name: &str,

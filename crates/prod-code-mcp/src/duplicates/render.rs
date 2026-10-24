@@ -10,6 +10,9 @@
 
 use super::types::DuplicationReport;
 
+#[cfg(test)]
+mod tests;
+
 /// Formats the duplication report into a clean readable summary.
 pub fn format_duplication_report(report: &DuplicationReport) -> String {
     let mut out = String::new();

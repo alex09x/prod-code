@@ -9,8 +9,10 @@
  */
 
 use super::MethodSignature;
+
+#[cfg(test)]
+mod tests;
 use super::helpers::inner_bracket_type;
-use crate::fixture::polyglot::split_comma_top_level;
 
 /// Go mock generator: idiomatic struct with func fields and method delegations.
 pub(crate) fn generate_go_mock(
@@ -121,7 +123,25 @@ pub(crate) fn generate_go_mock(
 
 fn go_default_returns(ret: &str) -> String {
     let clean = ret.trim().trim_start_matches('(').trim_end_matches(')');
-    let parts = split_comma_top_level(clean);
+    // Go uses square brackets for type arguments; `<-` is a channel direction,
+    // not an opening generic bracket. Split only outside Go's grouping tokens.
+    let mut depth = 0;
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (i, c) in clean.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&clean[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if !clean[start..].trim().is_empty() {
+        parts.push(&clean[start..]);
+    }
     parts
         .iter()
         .map(|p| match p.trim() {

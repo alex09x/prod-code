@@ -10,6 +10,9 @@
 
 use crate::diagnostics::DocDiagnostic;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn is_known_xml_entity(s: &str) -> bool {
     matches!(s, "amp" | "lt" | "gt" | "quot" | "apos")
         || (s.starts_with('#') && {
