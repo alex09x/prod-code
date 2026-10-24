@@ -126,52 +126,84 @@ pub(crate) fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
     (line, col)
 }
 
-/// Whether a `use` in a scope enclosing `node` (a block, a module or the file) imports `name`
-/// (#181). An import rust-analyzer cannot resolve is reported at the `use`, so its uses are
-/// not reported again. Inside a function that an attribute macro such as `#[tokio::test]`
-/// expands, rust-analyzer also does not resolve a type in a `let` annotation through a `use`
-/// in the body, which rustc does.
+/// Whether `tree` in a `use` item binds `name` in the importing scope.
+fn use_tree_binds(tree: &ra_ap_syntax::ast::UseTree, name: &str) -> bool {
+    use ra_ap_syntax::ast::{self, HasName, PathSegmentKind};
+    if let Some(list) = tree.use_tree_list() {
+        return list.use_trees().any(|sub| use_tree_binds(&sub, name));
+    }
+    if tree.star_token().is_some() {
+        return false;
+    }
+    if let Some(rename) = tree.rename() {
+        return rename.name().is_some_and(|n| n.text() == name);
+    }
+    if tree.path().is_none() {
+        return false;
+    }
+    let bound = std::iter::successors(Some(tree.clone()), |t| {
+        t.parent_use_tree_list().map(|l| l.parent_use_tree())
+    })
+    .filter_map(|t| t.path())
+    .flat_map(|p| std::iter::successors(Some(p), ast::Path::qualifier))
+    .filter_map(|p| p.segment())
+    .find(|s| s.self_token().is_none());
+    matches!(
+        bound.and_then(|s| s.kind()),
+        Some(PathSegmentKind::Name(n)) if n.text() == name
+    )
+}
+
+/// Whether a `use` in a scope enclosing `node` (an enclosing block or the current module or
+/// file) imports `name` (#181, #1248). An import rust-analyzer cannot resolve is reported at
+/// the `use`, so its uses are not reported again. Inside a function that an attribute macro
+/// such as `#[tokio::test]` expands, rust-analyzer also does not resolve a type in a `let`
+/// annotation through a `use` in the body, which rustc does.
 pub(crate) fn imported_in_scope(node: &ra_ap_syntax::SyntaxNode, name: &str) -> bool {
     use ra_ap_syntax::AstNode;
     use ra_ap_syntax::ast::{self, HasModuleItem};
     let imports = |item: ast::Item| match item {
         ast::Item::Use(import) => import
-            .syntax()
-            .descendants()
-            .filter_map(ast::NameRef::cast)
-            .any(|n| n.text() == name),
+            .use_tree()
+            .is_some_and(|tree| use_tree_binds(&tree, name)),
         _ => false,
     };
-    node.ancestors().any(|scope| {
+    for scope in node.ancestors() {
         if let Some(block) = ast::StmtList::cast(scope.clone()) {
-            block.statements().any(|stmt| match stmt {
+            if block.statements().any(|stmt| match stmt {
                 ast::Stmt::Item(item) => imports(item),
                 _ => false,
-            })
+            }) {
+                return true;
+            }
         } else if let Some(module) = ast::ItemList::cast(scope.clone()) {
-            module.items().any(imports)
+            return module.items().any(imports);
         } else if let Some(file) = ast::SourceFile::cast(scope) {
-            file.items().any(imports)
-        } else {
-            false
+            return file.items().any(imports);
         }
-    })
+    }
+    false
 }
 
-/// Where the path of a `use` item starts, when `item` (the text from the item's first
-/// non-blank character on) is one: `use a::b;`, `pub use`, `pub(crate) use`.
-pub(crate) fn use_path_start(item: &str) -> Option<usize> {
-    let mut rest = item;
-    if let Some(after) = rest.strip_prefix("pub") {
-        rest = match after.strip_prefix('(') {
-            Some(scoped) => &scoped[scoped.find(')')? + 1..],
-            None if after.starts_with(char::is_whitespace) => after,
-            None => return None,
-        };
-        rest = rest.trim_start();
-    }
-    let after_use = rest.strip_prefix("use")?;
-    let path = after_use.trim_start();
-    (after_use.starts_with(char::is_whitespace) && !path.is_empty())
-        .then(|| item.len() - path.len())
+/// Each `use` item in `file`, as the offset where its imported path starts and the range of
+/// the item itself (from its visibility or `use` keyword through its semicolon).
+pub(crate) fn use_items(
+    file: &ra_ap_syntax::SourceFile,
+) -> Vec<(ra_ap_ide::TextSize, ra_ap_ide::TextRange)> {
+    use ra_ap_syntax::AstNode;
+    use ra_ap_syntax::ast::{self, HasVisibility};
+    file.syntax()
+        .descendants()
+        .filter_map(ast::Use::cast)
+        .filter_map(|item| {
+            let at = item.use_tree()?.syntax().text_range().start();
+            let start = item
+                .visibility()
+                .map(|v| v.syntax().text_range().start())
+                .or_else(|| item.use_token().map(|t| t.text_range().start()))
+                .unwrap_or_else(|| item.syntax().text_range().start());
+            let range = ra_ap_ide::TextRange::new(start, item.syntax().text_range().end());
+            Some((at, range))
+        })
+        .collect()
 }
