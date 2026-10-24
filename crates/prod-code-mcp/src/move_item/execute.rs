@@ -258,7 +258,14 @@ pub async fn move_item(
             // still reach it where it was (#446). Its edits end at each position, so the text it
             // sees there is this one.
             for (l, c) in positions {
-                let site = format!("{}:{l}:{c}", display(root, path));
+                // Diagnostics name the original on-disk position, not the line after cutting
+                // the declaration out of the proposed text.
+                let original_line = if path == file && *l >= start {
+                    *l + removed
+                } else {
+                    *l
+                };
+                let site = format!("{}:{original_line}:{c}", display(root, path));
                 match offset_of(&current, *l, *c) {
                     None => unmatched.push(format!("{site} (the position is not in the file)")),
                     Some(at)
