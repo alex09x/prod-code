@@ -16,3 +16,5 @@ mod fake_server;
 mod framing;
 mod lifecycle;
 mod probes;
+#[cfg(unix)]
+mod response_exit;
