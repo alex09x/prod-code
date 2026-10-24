@@ -108,11 +108,21 @@ pub fn find_method_at_line(code: &str, line_1based: u32) -> Option<(String, Opti
         return None;
     }
     let target_idx = (line_1based - 1) as usize;
-    let start_idx = target_idx.saturating_sub(2);
     let end_idx = std::cmp::min(target_idx + 2, lines.len().saturating_sub(1));
 
-    for line in lines.iter().take(end_idx + 1).skip(start_idx) {
-        let trimmed = line.trim();
+    // The asked line first, then the lines around it nearest first: two short methods in a row
+    // must not both answer with the earlier one.
+    let mut nearest = vec![target_idx];
+    for distance in 1..=2 {
+        if target_idx >= distance {
+            nearest.push(target_idx - distance);
+        }
+        if target_idx + distance <= end_idx {
+            nearest.push(target_idx + distance);
+        }
+    }
+    for idx in nearest {
+        let trimmed = lines[idx].trim();
         if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
             let rest = trimmed.strip_prefix("async ").unwrap_or(trimmed);
             if let Some(after_def) = rest.strip_prefix("def ")

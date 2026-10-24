@@ -53,8 +53,10 @@ pub fn is_side_effect_free_argument(argument: &str, lang: Language) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'));
     }
     if let Some(quote) = argument.chars().next().filter(|c| matches!(c, '\'' | '"')) {
-        return argument.ends_with(quote)
-            && !argument[1..argument.len().saturating_sub(1)].contains('\n');
+        // A lone quote opens a string that nothing closes.
+        return argument.len() >= 2
+            && argument.ends_with(quote)
+            && !argument[1..argument.len() - 1].contains('\n');
     }
     false
 }
@@ -181,7 +183,8 @@ pub fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String>
         Language::Swift => {
             if let Some(pos) = trimmed.find("func ") {
                 let after = &trimmed[pos + 5..];
-                let paren = after.find('(').or_else(|| after.find('<'))?;
+                // The name ends where its generic parameters or its parameter list begin.
+                let paren = after.find(['(', '<'])?;
                 let name = after[..paren].trim();
                 return Some(name.to_string());
             }
@@ -189,7 +192,7 @@ pub fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String>
         Language::TypeScript | Language::JavaScript => {
             if let Some(pos) = trimmed.find("function ") {
                 let after = &trimmed[pos + 9..];
-                let paren = after.find('(').or_else(|| after.find('<'))?;
+                let paren = after.find(['(', '<'])?;
                 let name = after[..paren].trim();
                 return Some(name.to_string());
             }
@@ -218,7 +221,7 @@ pub fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String>
                 } else {
                     after
                 };
-                if let Some(paren) = rest.find('(').or_else(|| rest.find('[')) {
+                if let Some(paren) = rest.find(['(', '[']) {
                     let name = rest[..paren].trim();
                     if name.chars().all(is_ident) && !name.is_empty() {
                         return Some(name.to_string());

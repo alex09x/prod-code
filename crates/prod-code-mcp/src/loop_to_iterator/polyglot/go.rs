@@ -154,8 +154,10 @@ pub fn recognise_go(text: &str, at: usize) -> Result<PolyglotLoop> {
             whole_word_count(body, "break") == 0,
             "the loop's body has `break`, which an iterator chain cannot express"
         );
+        // `acc = append(acc, x)` names the accumulator twice, as its target and its source.
+        let appends = body.contains(&format!("{acc} = append({acc},"));
         anyhow::ensure!(
-            whole_word_count(body, &acc) == 1,
+            whole_word_count(body, &acc) == if appends { 2 } else { 1 },
             "the loop's body uses `{acc}` for more than the one accumulating statement"
         );
         let (cond, stmt) = match body.strip_prefix("if ") {

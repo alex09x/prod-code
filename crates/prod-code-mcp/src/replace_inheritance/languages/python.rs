@@ -115,9 +115,12 @@ pub fn transform_python(
         if body_slice.trim() == "pass" {
             let pass_start = cur_sub.body_start + body_slice.find("pass").unwrap_or(0);
             let pass_end = pass_start + 4;
-            out.replace_range(pass_start..pass_end, &block);
+            // The block carries its own indentation, so it replaces the whole line.
+            let line_start = out[..pass_start].rfind('\n').map_or(0, |i| i + 1);
+            out.replace_range(line_start..pass_end, &block);
         } else {
-            let insert_pos = cur_sub.body_end;
+            // After the last statement, so the body's trailing newline stays the last one.
+            let insert_pos = cur_sub.body_start + body_slice.trim_end().len();
             let formatted = format!("\n\n{block}");
             out.insert_str(insert_pos, &formatted);
         }
