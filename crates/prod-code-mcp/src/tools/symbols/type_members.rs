@@ -277,9 +277,14 @@ pub(crate) fn collect_members(
     out: &mut Vec<(String, u64, u32, u32)>,
 ) -> Result<()> {
     let type_name = owner.last().copied().unwrap_or_default();
+    // A Rust type's members are fields, methods and associated items, never a Variable (13):
+    // that kind is a local binding, which a flat outline files under its function's name.
+    // Python class attributes are Variables, so this holds for Rust only.
+    let rust = path.extension().is_some_and(|ext| ext == "rs");
     let is_member = |sym: &serde_json::Value| {
         let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        bare_symbol_name(name).eq_ignore_ascii_case(member)
+        let kind = sym.get("kind").and_then(|kind| kind.as_u64()).unwrap_or(0);
+        bare_symbol_name(name).eq_ignore_ascii_case(member) && !(rust && kind == 13)
     };
     for sym in symbols.as_array().into_iter().flatten() {
         let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
@@ -297,14 +302,20 @@ pub(crate) fn collect_members(
         };
         let mut declared = ancestors.to_vec();
         declared.extend(owner_segments(name));
-        if names_type(name, type_name) && owner_path_matches(root, path, owner, &declared) {
+        let kind = sym.get("kind").and_then(|kind| kind.as_u64()).unwrap_or(0);
+        // A function's children are its locals, never members: `fn noise` must not own the
+        // `let state` that `Noise::state` asks about (names compare without case).
+        let owns_members = !matches!(kind, 6..=9 | 12..=14);
+        if owns_members
+            && names_type(name, type_name)
+            && owner_path_matches(root, path, owner, &declared)
+        {
             for child in children.as_array().into_iter().flatten() {
                 if is_member(child) {
                     out.push(member_at(child)?);
                 }
             }
         }
-        let kind = sym.get("kind").and_then(|kind| kind.as_u64()).unwrap_or(0);
         let nested_ancestors = if matches!(kind, 2..=5 | 10 | 11 | 23) {
             declared
         } else {

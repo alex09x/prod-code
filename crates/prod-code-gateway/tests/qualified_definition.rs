@@ -24,24 +24,27 @@ const FILES: &[(&str, &str)] = &[
     ("prod-code.toml", "[rust]\nproc_macro_srv = \"disabled\"\n"),
     (
         "src/lib.rs",
-        "pub mod risk_math;\npub mod identity;\npub mod risk_tests;\npub mod left { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 1;\n    }\n} }\npub mod right { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 2;\n    }\n} }\npub fn noise(state: u32, order: u32) {\n    let state = state;\n    let order = order;\n}\n",
+        "pub mod pricing;\npub mod accounts;\npub mod fixtures;\npub mod left { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 1;\n    }\n} }\npub mod right { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 2;\n    }\n} }\npub fn noise(state: u32, order: u32) {\n    let state = state;\n    let order = order;\n}\n",
     ),
     (
-        "src/risk_math.rs",
-        "#[path = \"risk_fallback.rs\"]\npub mod fallback;\npub fn size_caps() {\n    let cap = 1;\n}\n",
-    ),
-    ("src/risk_fallback.rs", "pub fn cap() -> u32 {\n    42\n}\n"),
-    (
-        "src/financial_action.rs",
-        "pub fn signer() -> u32 {\n    7\n}\n",
+        "src/pricing.rs",
+        "#[path = \"pricing_fallback.rs\"]\npub mod fallback;\npub fn limits() {\n    let cap = 1;\n}\n",
     ),
     (
-        "src/identity.rs",
-        "#[path = \"financial_action.rs\"]\npub mod financial_action;\npub fn identities() {\n    let signer = 1;\n    let signer = 2;\n    let signer = 3;\n    let signer = 4;\n    let signer = 5;\n    let signer = 6;\n    let signer = 7;\n    let signer = 8;\n}\n",
+        "src/pricing_fallback.rs",
+        "pub fn cap() -> u32 {\n    42\n}\n",
     ),
     (
-        "src/risk_tests.rs",
-        "pub fn state() {}\npub fn order() {}\npub struct Noise { pub state: u32, pub order: u32 }\npub fn noise(state: u32, order: u32) {\n    let state = state;\n    let order = order;\n}\npub struct Type<T>(pub T);\nimpl<T> Type<T> {\n    pub fn method() {}\n}\npub trait Trait {\n    fn method();\n}\npub fn stateful() {}\nimpl<T> Type<T> {\n    pub fn locals() {\n        let local_only = 1;\n    }\n    pub fn parameters(\n        parameter_only: u32,\n    ) {}\n}\n",
+        "src/account_action.rs",
+        "pub fn approver() -> u32 {\n    7\n}\n",
+    ),
+    (
+        "src/accounts.rs",
+        "#[path = \"account_action.rs\"]\npub mod account_action;\npub fn approvals() {\n    let approver = 1;\n    let approver = 2;\n    let approver = 3;\n    let approver = 4;\n    let approver = 5;\n    let approver = 6;\n    let approver = 7;\n    let approver = 8;\n}\n",
+    ),
+    (
+        "src/fixtures.rs",
+        "pub fn state() {}\npub fn order() {}\npub struct Noise { pub state: u32, pub order: u32 }\npub fn noise(state: u32, order: u32) {\n    let state = state;\n    let order = order;\n}\npub struct Type<T>(pub T);\nimpl<T> Type<T> {\n    pub fn method() {}\n}\npub trait Trait {\n    fn method();\n}\npub fn stateful() {}\nimpl<T> Type<T> {\n    pub fn locals() {\n        let local_only = 1;\n    }\n    pub fn parameters(\n        parameter_only: u32,\n    ) {}\n}\npub static LIMIT: u32 = 3;\npub const MAX_ITEMS: usize = 4;\n",
     ),
 ];
 
@@ -109,12 +112,12 @@ async fn qualified_definition_real_analyzer_table() {
         remote,
         &root,
         "code_outline",
-        json!({ "path": "src/risk_fallback.rs" }),
+        json!({ "path": "src/pricing_fallback.rs" }),
     )
     .await
     .unwrap();
     assert!(text(&outline).contains("cap"), "{}", text(&outline));
-    for query in ["risk_math::fallback::cap", "cap"] {
+    for query in ["pricing::fallback::cap", "cap"] {
         let index = prod_code_mcp::tools::execute_lsp_query(
             remote,
             &root,
@@ -133,14 +136,14 @@ async fn qualified_definition_real_analyzer_table() {
         assert!(!declarations.is_empty(), "{query}: {index}");
         for declaration in declarations {
             assert_eq!(
-                declaration["containerName"], "qualified_fixture::risk_math::fallback",
+                declaration["containerName"], "qualified_fixture::pricing::fallback",
                 "{query}: {index}"
             );
             assert!(
                 declaration["location"]["uri"]
                     .as_str()
                     .unwrap()
-                    .ends_with("/src/risk_fallback.rs"),
+                    .ends_with("/src/pricing_fallback.rs"),
                 "{query}: {index}"
             );
             assert_eq!(
@@ -152,42 +155,50 @@ async fn qualified_definition_real_analyzer_table() {
     }
 
     let cases = [
-        ("risk_math::fallback::cap", None, "src/risk_fallback.rs:1:8"),
         (
-            "crate::risk_math::fallback::cap",
+            "pricing::fallback::cap",
             None,
-            "src/risk_fallback.rs:1:8",
+            "src/pricing_fallback.rs:1:8",
         ),
         (
-            "qualified_fixture::risk_math::fallback::cap",
+            "crate::pricing::fallback::cap",
             None,
-            "src/risk_fallback.rs:1:8",
+            "src/pricing_fallback.rs:1:8",
         ),
         (
-            "financial_action::signer",
+            "qualified_fixture::pricing::fallback::cap",
             None,
-            "src/financial_action.rs:1:8",
+            "src/pricing_fallback.rs:1:8",
         ),
         (
-            "crate::identity::financial_action::signer",
+            "account_action::approver",
             None,
-            "src/financial_action.rs:1:8",
+            "src/account_action.rs:1:8",
         ),
-        ("risk_tests::state", None, "src/risk_tests.rs:1:8"),
-        ("risk_tests::order", None, "src/risk_tests.rs:2:8"),
-        ("risk_tests::Type::method", None, "src/risk_tests.rs:10:12"),
-        ("risk_tests::Trait::method", None, "src/risk_tests.rs:13:8"),
-        ("Type::method", None, "src/risk_tests.rs:10:12"),
-        ("Trait::method", None, "src/risk_tests.rs:13:8"),
+        (
+            "crate::accounts::account_action::approver",
+            None,
+            "src/account_action.rs:1:8",
+        ),
+        ("fixtures::state", None, "src/fixtures.rs:1:8"),
+        ("fixtures::order", None, "src/fixtures.rs:2:8"),
+        ("fixtures::Type::method", None, "src/fixtures.rs:10:12"),
+        ("fixtures::Trait::method", None, "src/fixtures.rs:13:8"),
+        // A qualified static, const or field is a declaration, not a local binding.
+        ("fixtures::LIMIT", None, "src/fixtures.rs:24:12"),
+        ("fixtures::MAX_ITEMS", None, "src/fixtures.rs:25:11"),
+        ("fixtures::Noise::state", None, "src/fixtures.rs:3:24"),
+        ("Type::method", None, "src/fixtures.rs:10:12"),
+        ("Trait::method", None, "src/fixtures.rs:13:8"),
         (
             "self::fallback::cap",
-            Some("src/risk_math.rs"),
-            "src/risk_fallback.rs:1:8",
+            Some("src/pricing.rs"),
+            "src/pricing_fallback.rs:1:8",
         ),
         (
             "super::fallback::cap",
-            Some("src/risk_fallback.rs"),
-            "src/risk_fallback.rs:1:8",
+            Some("src/pricing_fallback.rs"),
+            "src/pricing_fallback.rs:1:8",
         ),
     ];
     let mut failures = Vec::new();
@@ -245,11 +256,11 @@ async fn qualified_definition_real_analyzer_table() {
         }
     }
     for (symbol, closest) in [
-        ("risk_tests::states", "risk_tests::state"),
-        ("risk_tests::Type::state", "risk_tests::state"),
-        ("missing::state", "risk_tests::state"),
-        ("risk_tests::Type::local_only", "Type<T>::locals"),
-        ("risk_tests::Type::parameter_only", "Type<T>::parameters"),
+        ("fixtures::states", "fixtures::state"),
+        ("fixtures::Type::state", "fixtures::state"),
+        ("missing::state", "fixtures::state"),
+        ("fixtures::Type::local_only", "Type<T>::locals"),
+        ("fixtures::Type::parameter_only", "Type<T>::parameters"),
     ] {
         let outcome = execute_tool(
             remote,
