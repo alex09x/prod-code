@@ -117,3 +117,6 @@ pub fn mentions(text: &str, word: &str) -> bool {
             && !text[i + word.len()..].chars().next().is_some_and(is_ident)
     })
 }
+
+#[cfg(test)]
+mod tests;

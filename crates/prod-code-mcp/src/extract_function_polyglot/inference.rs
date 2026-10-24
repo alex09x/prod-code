@@ -11,6 +11,31 @@
 use super::lang::{Language, is_ident};
 use super::tokenize::is_keyword;
 
+/// Go predeclared types, which `is_keyword` also lists so they are never taken as variable names.
+fn is_go_builtin_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "string"
+            | "float32"
+            | "float64"
+            | "bool"
+            | "byte"
+            | "rune"
+            | "error"
+            | "any"
+    )
+}
+
 pub fn infer_param_type(name: &str, scope: &str, lang: Language) -> Option<String> {
     match lang {
         Language::Python | Language::JavaScript => None,
@@ -51,7 +76,7 @@ pub fn infer_param_type(name: &str, scope: &str, lang: Language) -> Option<Strin
                     .chars()
                     .take_while(|c| is_ident(*c) || *c == '[' || *c == ']' || *c == '*')
                     .collect();
-                if !ty.is_empty() && !is_keyword(&ty, lang) {
+                if !ty.is_empty() && (!is_keyword(&ty, lang) || is_go_builtin_type(&ty)) {
                     return Some(ty);
                 }
             }
@@ -298,3 +323,6 @@ pub fn infer_param_type(name: &str, scope: &str, lang: Language) -> Option<Strin
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

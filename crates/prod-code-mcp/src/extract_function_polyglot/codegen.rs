@@ -368,3 +368,6 @@ pub fn generate_function_code(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
