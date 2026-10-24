@@ -24,7 +24,10 @@ const FILES: &[(&str, &str)] = &[
     ("prod-code.toml", "[rust]\nproc_macro_srv = \"disabled\"\n"),
     (
         "src/lib.rs",
-        "pub mod pricing;\npub mod accounts;\npub mod fixtures;\npub mod left { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 1;\n    }\n} }\npub mod right { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 2;\n    }\n} }\npub fn noise(state: u32, order: u32) {\n    let state = state;\n    let order = order;\n}\n",
+        concat!(
+            "pub mod pricing;\npub mod accounts;\npub mod fixtures;\npub mod left { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 1;\n    }\n} }\npub mod right { pub mod shared {\n    pub fn repeat() {\n        let body_marker = 2;\n    }\n} }\npub fn noise(state: u32, order: u32) {\n    let state = state;\n    let order = order;\n}\n",
+            "pub mod a;\npub mod b;\npub mod nested;\n",
+        ),
     ),
     (
         "src/pricing.rs",
@@ -45,6 +48,18 @@ const FILES: &[(&str, &str)] = &[
     (
         "src/fixtures.rs",
         "pub fn state() {}\npub fn order() {}\npub struct Noise { pub state: u32, pub order: u32 }\npub fn noise(state: u32, order: u32) {\n    let state = state;\n    let order = order;\n}\npub struct Type<T>(pub T);\nimpl<T> Type<T> {\n    pub fn method() {}\n}\npub trait Trait {\n    fn method();\n}\npub fn stateful() {}\nimpl<T> Type<T> {\n    pub fn locals() {\n        let local_only = 1;\n    }\n    pub fn parameters(\n        parameter_only: u32,\n    ) {}\n}\npub static LIMIT: u32 = 3;\npub const MAX_ITEMS: usize = 4;\n",
+    ),
+    (
+        "src/a.rs",
+        "pub fn name() {}\npub fn relative_name() {}\npub(crate) fn internal_name() {}\npub(crate) fn internal_relative_name() {}\npub struct Type;\nimpl Type {\n    pub fn name() { crate::a::name(); }\n}\n",
+    ),
+    (
+        "src/b.rs",
+        "use crate::a;\npub fn name() { crate::a::name(); }\npub fn relative_name() { a::relative_name(); }\npub fn internal_name() { crate::a::internal_name(); }\npub fn internal_relative_name() { a::internal_relative_name(); }\n",
+    ),
+    (
+        "src/nested.rs",
+        "pub mod b {\n    use crate::a;\n    pub fn name() { crate::a::name(); }\n    pub fn relative_name() { a::relative_name(); }\n    pub fn internal_name() { crate::a::internal_name(); }\n    pub fn internal_relative_name() { a::internal_relative_name(); }\n}\n",
     ),
 ];
 
@@ -190,6 +205,25 @@ async fn qualified_definition_real_analyzer_table() {
         ("fixtures::Noise::state", None, "src/fixtures.rs:3:24"),
         ("Type::method", None, "src/fixtures.rs:10:12"),
         ("Trait::method", None, "src/fixtures.rs:13:8"),
+        // Same-named wrappers must resolve to their own declarations in both directions,
+        // regardless of the qualified call in their bodies or the original's visibility.
+        ("a::name", None, "src/a.rs:1:8"),
+        ("b::name", None, "src/b.rs:2:8"),
+        ("nested::b::name", None, "src/nested.rs:3:12"),
+        ("a::relative_name", None, "src/a.rs:2:8"),
+        ("b::relative_name", None, "src/b.rs:3:8"),
+        ("nested::b::relative_name", None, "src/nested.rs:4:12"),
+        ("a::internal_name", None, "src/a.rs:3:15"),
+        ("b::internal_name", None, "src/b.rs:4:8"),
+        ("nested::b::internal_name", None, "src/nested.rs:5:12"),
+        ("a::internal_relative_name", None, "src/a.rs:4:15"),
+        ("b::internal_relative_name", None, "src/b.rs:5:8"),
+        (
+            "nested::b::internal_relative_name",
+            None,
+            "src/nested.rs:6:12",
+        ),
+        ("a::Type::name", None, "src/a.rs:7:12"),
         (
             "self::fallback::cap",
             Some("src/pricing.rs"),
@@ -210,10 +244,15 @@ async fn qualified_definition_real_analyzer_table() {
         match execute_tool(remote, &root, "code_definition", args).await {
             Ok(result) => {
                 let text = text(&result);
-                if result.is_error
-                    || !text.contains(expected)
-                    || text.matches("📍 Definition:").count() != 1
-                {
+                let definitions: Vec<_> = text
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("📍 Definition: "))
+                    .collect();
+                let expected_location = format!(
+                    "{}{expected}",
+                    url::Url::from_directory_path(&root).unwrap()
+                );
+                if result.is_error || definitions != [expected_location.as_str()] {
                     failures.push(format!("{symbol}: expected only {expected}; got {text}"));
                 }
             }
