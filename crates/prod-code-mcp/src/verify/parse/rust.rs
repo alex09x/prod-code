@@ -74,6 +74,8 @@ pub fn parse_rustc_text(text: &str) -> Vec<Diagnostic> {
                 || msg.contains("warnings emitted")
                 || msg.starts_with("could not compile")
                 || msg.starts_with("build failed")
+                // cargo's summary of a failed test binary; the cause is above or in the tail.
+                || msg.starts_with("test failed, to rerun pass")
             {
                 continue;
             }

@@ -188,11 +188,13 @@ impl VerifyReport {
             self.command.join(" "),
             self.summary()
         ));
-        let diag_budget = if self.failures.is_empty() {
+        // A failed run that no error or failed test explains shows its output tail.
+        let needs_tail = !self.ok() && self.failures.is_empty() && self.errors() == 0;
+        let diag_budget = if self.failures.is_empty() && !needs_tail {
             MAX_RENDER_BYTES
         } else {
-            // Reserve space for structured test failures so verbose compiler warnings
-            // or diagnostics never crowd out failed-test details and traces.
+            // Reserve space for structured test failures or the tail so verbose compiler
+            // warnings never crowd out what explains the failure.
             MAX_RENDER_BYTES / 2
         };
         let rendered_diags =
@@ -225,7 +227,7 @@ impl VerifyReport {
                 self.failures.len() - rendered_failures
             ));
         }
-        if !self.ok() && self.diagnostics.is_empty() && self.failures.is_empty() {
+        if needs_tail {
             out.push_str("--- output tail ---\n");
             let formatted_tail = format_failure_output(&self.tail, MAX_FAILURE_OUTPUT_BYTES);
             out.push_str(&formatted_tail);
