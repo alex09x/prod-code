@@ -44,10 +44,11 @@ pub fn try_auth_token() -> std::io::Result<Option<String>> {
 ///
 /// # Panics
 ///
-/// Panics (failing closed) if [`AUTH_TOKEN_ENV`] or [`AUTH_TOKEN_FILE_ENV`] is explicitly
-/// configured with an unreadable, invalid-UTF-8, or empty token (#1246), so that legacy
-/// callers expecting `Option<String>` never silently treat broken authentication configuration
-/// as tokenless (`None`) mode.
+/// Panics (failing closed) if [`AUTH_TOKEN_ENV`] is not valid UTF-8, or if the selected
+/// [`AUTH_TOKEN_FILE_ENV`] path is empty, unreadable, not valid UTF-8, or has no nonblank
+/// first line (#1246). A blank direct token falls back to the file; without a configured
+/// file it preserves tokenless (`None`) mode. Legacy callers expecting `Option<String>`
+/// never silently treat a broken selected token file as tokenless mode.
 pub fn auth_token() -> Option<String> {
     try_auth_token()
         .unwrap_or_else(|err| panic!("invalid cluster authentication token configuration: {err}"))
