@@ -16,18 +16,38 @@ use std::path::{Path, PathBuf};
 use crate::engine::RustEngine;
 use crate::vfs::{
     MAX_SAFE_FILE_ID, is_safe_file_id, line_col_to_offset, normalize_vfs_path, offset_to_line_col,
-    use_path_start,
+    use_items,
 };
 
 #[test]
 fn a_use_item_is_found_behind_its_visibility() {
-    assert_eq!(use_path_start("use std::fmt;"), Some(4));
-    assert_eq!(use_path_start("pub use sync::scan;"), Some(8));
-    assert_eq!(use_path_start("pub(crate) use a::b;"), Some(15));
-    assert_eq!(use_path_start("pub(in crate::x) use a::b;"), Some(21));
-    assert_eq!(use_path_start("user.name = 1;"), None);
-    assert_eq!(use_path_start("pub fn used() {}"), None);
-    assert_eq!(use_path_start("public use"), None);
+    use ra_ap_ide::TextRange;
+    use ra_ap_syntax::{Edition, SourceFile};
+    let parse = |src: &str| use_items(&SourceFile::parse(src, Edition::Edition2021).tree());
+    assert_eq!(
+        parse("use std::fmt;"),
+        vec![(TextSize::from(4), TextRange::new(0.into(), 13.into()))]
+    );
+    assert_eq!(
+        parse("pub use sync::scan;"),
+        vec![(TextSize::from(8), TextRange::new(0.into(), 19.into()))]
+    );
+    assert_eq!(
+        parse("pub(crate) use a::b;"),
+        vec![(TextSize::from(15), TextRange::new(0.into(), 20.into()))]
+    );
+    assert_eq!(
+        parse("pub(in crate::x) use a::b;"),
+        vec![(TextSize::from(21), TextRange::new(0.into(), 26.into()))]
+    );
+    assert_eq!(
+        parse("use std::fmt; #[allow(dead_code)] pub use a::b;"),
+        vec![
+            (TextSize::from(4), TextRange::new(0.into(), 13.into())),
+            (TextSize::from(42), TextRange::new(34.into(), 47.into())),
+        ]
+    );
+    assert_eq!(parse("fn f() { user.name = 1; }\npub fn used() {}"), vec![]);
 }
 
 #[test]

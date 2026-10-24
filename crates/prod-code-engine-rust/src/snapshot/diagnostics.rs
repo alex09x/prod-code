@@ -13,14 +13,14 @@
 use anyhow::Result;
 use ra_ap_ide::{
     AssistResolveStrategy, DiagnosticsConfig, FileId, FileRange, HighlightConfig, HlTag,
-    RaFixtureConfig, SymbolKind, TextRange, TextSize,
+    RaFixtureConfig, SymbolKind, TextRange,
 };
 use std::collections::HashMap;
 use std::path::Path;
 
 use super::RustEngineSnapshot;
 use crate::types::FileDiagnostic;
-use crate::vfs::{imported_in_scope, offset_to_line_col, use_path_start};
+use crate::vfs::{imported_in_scope, offset_to_line_col, use_items};
 
 impl RustEngineSnapshot {
     /// All diagnostics rust-analyzer computes for `path` from the in-memory database: syntax
@@ -134,13 +134,17 @@ impl RustEngineSnapshot {
             let name_text = name.text().to_string();
             // A workspace loaded without the sysroot resolves no `std`; that is its setting,
             // not the edit's error.
+            // Imports have native diagnostics; a grouped import's prefix can lie outside
+            // the leaf ranges already covered by those diagnostics.
             if !unresolved(&name)
                 || matches!(name_text.as_str(), "std" | "core" | "alloc")
                 || covered.iter().any(|c| c.intersect(range).is_some())
-                || segment
-                    .syntax()
-                    .ancestors()
-                    .any(|n| n.kind() == ra_ap_syntax::SyntaxKind::ATTR)
+                || segment.syntax().ancestors().any(|n| {
+                    matches!(
+                        n.kind(),
+                        ra_ap_syntax::SyntaxKind::ATTR | ra_ap_syntax::SyntaxKind::USE
+                    )
+                })
             {
                 continue;
             }
@@ -203,21 +207,21 @@ impl RustEngineSnapshot {
         out
     }
 
-    /// The `use` items of `file_id` that import something unused (#134). rust-analyzer computes
-    /// no diagnostic for an unused import — rustc does, and `-D warnings` rejects it — but it
-    /// offers `remove_unused_imports` exactly on a `use` item that has one. So each `use` item is
-    /// asked for its assists, and the ones that offer it are reported as rustc would.
+    /// The `use` items of `file_id` that import something unused (#134, #1248). rust-analyzer
+    /// computes no diagnostic for an unused import — rustc does, and `-D warnings` rejects it —
+    /// but it offers `remove_unused_imports` exactly on a `use` item that has one. So each `use`
+    /// item is asked for its assists, and the ones that offer it are reported as rustc would.
     fn unused_imports(&self, file_id: FileId, text: &str) -> Vec<FileDiagnostic> {
+        let Ok(analysis) = self.analysis() else {
+            return Vec::new();
+        };
+        let Ok(file) = analysis.parse(file_id) else {
+            return Vec::new();
+        };
+        drop(analysis);
         let (assist_config, diagnostics_config) = Self::assist_configs();
         let mut out = Vec::new();
-        let mut offset = 0usize;
-        for line in text.split_inclusive('\n') {
-            let item_start = offset + (line.len() - line.trim_start().len());
-            offset += line.len();
-            let Some(path_start) = use_path_start(&text[item_start..]) else {
-                continue;
-            };
-            let at = TextSize::from((item_start + path_start) as u32);
+        for (at, item_range) in use_items(&file) {
             let range = FileRange {
                 file_id,
                 range: TextRange::empty(at),
@@ -237,11 +241,8 @@ impl RustEngineSnapshot {
             if !assists.iter().any(|a| a.id.0 == "remove_unused_imports") {
                 continue;
             }
-            let end = text[item_start..]
-                .find(';')
-                .map_or(text.len(), |i| item_start + i + 1);
-            let (line_no, col) = offset_to_line_col(text, TextSize::from(item_start as u32));
-            let (end_line, end_col) = offset_to_line_col(text, TextSize::from(end as u32));
+            let (line_no, col) = offset_to_line_col(text, item_range.start());
+            let (end_line, end_col) = offset_to_line_col(text, item_range.end());
             out.push(FileDiagnostic {
                 code: "unused_imports".to_string(),
                 message: "unused import".to_string(),
