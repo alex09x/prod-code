@@ -19,6 +19,9 @@ use super::symbols::{
 };
 use crate::protocol::McpToolCallResult;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) async fn handle_symbols(
     remote: SocketAddr,
     workspace_root: &Path,

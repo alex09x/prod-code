@@ -10,6 +10,8 @@
 
 use super::*;
 
+mod handler_coverage;
+
 #[test]
 fn name_scan_source_read_stops_at_the_per_file_budget() {
     let dir = tempfile::tempdir().unwrap();
