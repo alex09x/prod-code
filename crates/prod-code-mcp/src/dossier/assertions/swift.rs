@@ -10,6 +10,10 @@
 
 use crate::dossier::types::AssertionEvidence;
 
+#[cfg(test)]
+#[path = "swift_tests.rs"]
+mod tests;
+
 /// Swift XCTest assertion parser.
 /// Format: `XCTAssertEqual failed: ("1") is not equal to ("2")`
 pub(crate) fn parse_swift_xctest_assertion(

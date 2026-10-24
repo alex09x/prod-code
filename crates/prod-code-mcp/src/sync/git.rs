@@ -18,6 +18,10 @@ use prod_code_protocol::FileDelta;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "git_tests.rs"]
+mod tests;
+
 /// Which of `paths` git lists (tracked, or untracked and not ignored). An ignored file is never
 /// sent, even when the gateway names it.
 pub(crate) fn git_listed_paths(root: &Path, paths: &[String]) -> HashSet<String> {

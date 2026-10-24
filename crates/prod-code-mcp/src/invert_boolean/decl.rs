@@ -13,6 +13,10 @@ use anyhow::{Context, Result};
 
 use super::syntax::is_ident;
 
+#[cfg(test)]
+#[path = "decl_tests.rs"]
+mod tests;
+
 pub struct PolyglotPredDecl {
     pub fn_name: String,
     pub decl_name_at: usize,

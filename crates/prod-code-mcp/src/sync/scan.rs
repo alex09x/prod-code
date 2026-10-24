@@ -20,6 +20,10 @@ use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "scan_tests.rs"]
+mod tests;
+
 /// Scan workspace directory and generate FileDelta list, filtering out build artifacts and VCS.
 ///
 /// In a git checkout the list is git's (see [`is_synced_git_path`]); elsewhere the directory is

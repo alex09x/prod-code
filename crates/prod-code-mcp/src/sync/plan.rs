@@ -21,6 +21,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+#[path = "plan_tests.rs"]
+mod tests;
+
 /// Build a sync plan from the last acknowledged git base plus the current working tree.
 ///
 /// The first plan for a worktree includes tracked source/manifest files. Later plans use both

@@ -11,6 +11,10 @@
 use super::types::HypothesisOutcome;
 use crate::verify;
 
+#[cfg(test)]
+#[path = "rank_tests.rs"]
+mod tests;
+
 /// Best first: passed before failed, then fewer failing tests, more passing tests, a smaller
 /// diff, and finally the order the hypotheses were given in.
 pub fn rank(results: &[HypothesisOutcome]) -> Vec<usize> {

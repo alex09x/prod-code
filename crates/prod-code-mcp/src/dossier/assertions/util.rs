@@ -98,3 +98,7 @@ pub(crate) fn closes(value: &str, rust_chars: bool) -> bool {
     }
     !in_string && open.is_empty()
 }
+
+#[cfg(test)]
+#[path = "util_tests.rs"]
+mod tests;

@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 
 use super::syntax::display;
 
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;
+
 /// What the move did, or would do if it were applied.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MovedMethod {
