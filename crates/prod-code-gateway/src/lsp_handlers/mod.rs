@@ -9,11 +9,13 @@
  */
 
 pub(crate) mod editor;
+mod module_path;
 pub(crate) mod navigation;
 pub(crate) mod refactor;
 pub(crate) mod symbols;
 
 pub(crate) use editor::*;
+pub(crate) use module_path::*;
 pub(crate) use navigation::*;
 pub(crate) use refactor::*;
 pub(crate) use symbols::*;

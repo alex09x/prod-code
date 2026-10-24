@@ -34,7 +34,8 @@ pub(crate) async fn resolve_symbol_ties(
     symbol: &str,
     hint: Option<&Path>,
 ) -> Result<(bool, Vec<SymbolHit>)> {
-    let parts: Vec<&str> = symbol
+    let absolute = super::relative::absolute_symbol(remote, root, symbol, hint).await?;
+    let parts: Vec<&str> = absolute
         .split(['.', ':', '#', '/'])
         .map(|p| p.trim().trim_end_matches("()"))
         .filter(|p| !p.is_empty())
@@ -59,16 +60,23 @@ pub(crate) async fn resolve_symbol_ties(
         if !members.is_empty() {
             members
         } else {
-            let mut hits = symbol_search_across_projects(remote, root, symbol, hint, 200).await?;
+            let mut hits =
+                symbol_search_across_projects(remote, root, &absolute, hint, 200).await?;
             if !hits.iter().any(|hit| {
                 bare_symbol_name(&hit.name).eq_ignore_ascii_case(name)
                     && qualifier_matches(root, hit, qualifiers)
             }) {
                 hits.extend(symbol_search_across_projects(remote, root, name, hint, 200).await?);
             }
-            let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
+            let (exact, mut others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
                 .into_iter()
                 .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
+            others.extend(
+                exact
+                    .iter()
+                    .filter(|hit| !qualifier_matches(root, hit, qualifiers))
+                    .cloned(),
+            );
             let eligible: Vec<SymbolHit> = exact
                 .into_iter()
                 .filter(|hit| qualifier_matches(root, hit, qualifiers))
@@ -97,6 +105,12 @@ pub(crate) async fn resolve_symbol_ties(
                     if !unindexed_qualified.is_empty() {
                         unindexed_qualified
                     } else {
+                        if others.is_empty() {
+                            let prefix: String = name.chars().take(3).collect();
+                            others = symbol_search_across_projects(remote, root, &prefix, hint, 30)
+                                .await
+                                .unwrap_or_default();
+                        }
                         anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
                     }
                 }

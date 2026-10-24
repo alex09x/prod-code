@@ -231,6 +231,16 @@ pub fn execute_tool<'a>(
             };
 
             if candidates.len() > 1 {
+                if tool_name == "code_definition" {
+                    return Ok(McpToolCallResult::text(
+                        super::symbols::matching::ambiguous_candidates_error(
+                            workspace_root,
+                            &symbol_trimmed,
+                            &candidates,
+                        )
+                        .to_string(),
+                    ));
+                }
                 let total = candidates.len();
                 let shared_budget = if let Some(ms) = args.get("budget_ms").and_then(|v| v.as_u64())
                 {

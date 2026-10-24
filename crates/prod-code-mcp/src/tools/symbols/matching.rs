@@ -16,6 +16,11 @@ use std::path::Path;
 /// its file's module path has every qualifier. This deliberately never uses substring matching:
 /// `Consumer::recv` must not resolve to `AsyncConsumer::recv`.
 pub(crate) fn qualifier_matches(root: &Path, hit: &SymbolHit, qualifiers: &[&str]) -> bool {
+    if hit.path.extension().is_some_and(|ext| ext == "rs")
+        && matches!(hit.kind, "Variable" | "Property")
+    {
+        return false;
+    }
     let decorated = decorated_owner(&hit.name);
     let mut owner = hit
         .container
@@ -144,6 +149,15 @@ pub(crate) fn owner_path_matches(
                 .iter()
                 .zip(shorter)
                 .all(|(a, b)| equals(a, b))
+    };
+    let requested = if requested.first().is_some_and(|q| *q == "crate")
+        && declared
+            .first()
+            .is_some_and(|q| module_root_alias(root, path, q))
+    {
+        &requested[1..]
+    } else {
+        requested
     };
     if requested.is_empty() || declared.is_empty() {
         return false;
@@ -288,31 +302,7 @@ pub(crate) fn dedup_ties(ties: &[&SymbolHit]) -> Vec<SymbolHit> {
     out
 }
 
-/// Formats an ambiguity error listing candidates along with a one-line signature/snippet (#1120).
-pub(crate) fn ambiguous_candidates_error(
-    root: &Path,
-    symbol: &str,
-    ties: &[SymbolHit],
-) -> anyhow::Error {
-    let mut msg = format!(
-        "`{symbol}` is ambiguous ({} candidates); qualify it (Type::name) or pass `path`:\n",
-        ties.len()
-    );
-    for hit in ties.iter().take(10) {
-        let snippet = std::fs::read_to_string(&hit.path).ok().and_then(|text| {
-            text.lines()
-                .nth(hit.line.saturating_sub(1) as usize)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        });
-        match snippet {
-            Some(s) => msg.push_str(&format!("  {} — `{s}`\n", hit.render(root))),
-            None => msg.push_str(&format!("  {}\n", hit.render(root))),
-        }
-    }
-    anyhow::anyhow!("{}", msg.trim_end())
-}
+pub(crate) use super::ambiguity::ambiguous_candidates_error;
 
 /// A symbol name without the decoration some servers put around it: a trailing parameter list
 /// (`bar()`, `bar(x: u32)`) and a leading qualifier (`Type.bar`, `Type::bar`, `(*T).Bar`).
@@ -354,15 +344,19 @@ pub(crate) fn bare_symbol_name(name: &str) -> &str {
 /// pick the symbol it meant instead of the tool guessing one.
 pub(crate) fn no_symbol_message(symbol: &str, name: &str, others: &[SymbolHit]) -> String {
     let wanted = name.to_ascii_lowercase();
-    let mut close: Vec<(usize, &str)> = Vec::new();
+    let mut close: Vec<(usize, String)> = Vec::new();
     for hit in others {
         let bare = bare_symbol_name(&hit.name);
-        if !close.iter().any(|(_, n)| *n == bare) {
-            close.push((edit_distance(&wanted, &bare.to_ascii_lowercase()), bare));
+        let declared = hit
+            .container
+            .as_ref()
+            .map_or_else(|| bare.to_string(), |owner| format!("{owner}::{bare}"));
+        if !close.iter().any(|(_, n)| *n == declared) {
+            close.push((edit_distance(&wanted, &bare.to_ascii_lowercase()), declared));
         }
     }
     close.sort();
-    let close: Vec<&str> = close.into_iter().take(5).map(|(_, n)| n).collect();
+    let close: Vec<String> = close.into_iter().take(5).map(|(_, n)| n).collect();
     if close.is_empty() {
         format!(
             "no symbol named `{symbol}` in the workspace index (try code_symbols with a shorter name)"

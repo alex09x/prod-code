@@ -11,9 +11,7 @@
 //! Call hierarchy and workspace symbol queries.
 
 use anyhow::Result;
-use ra_ap_ide::{
-    CallHierarchyConfig, FileId, FilePosition, MonikerResult, NavigationTarget, RaFixtureConfig,
-};
+use ra_ap_ide::{CallHierarchyConfig, FileId, FilePosition, NavigationTarget, RaFixtureConfig};
 use ra_ap_load_cargo::worktree::Overlay;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -265,30 +263,13 @@ impl RustEngineSnapshot {
     }
 
     /// `crate::module::path` a hit is declared in, from its moniker (#328, #1109).
-    fn module_path(&self, target: &NavigationTarget) -> Option<String> {
+    pub(super) fn module_path(&self, target: &NavigationTarget) -> Option<String> {
         let focus = target.focus_range.unwrap_or(target.full_range);
         let position = FilePosition {
             file_id: target.file_id,
             offset: focus.start(),
         };
-        let monikers = self.analysis().ok()?.moniker(position).ok()??.info;
-        monikers.into_iter().find_map(|result| {
-            let MonikerResult::Moniker(moniker) = result else {
-                return None;
-            };
-            let identifier = moniker.identifier;
-            let mut path = identifier.crate_name;
-            for descriptor in identifier
-                .description
-                .iter()
-                .take(identifier.description.len().saturating_sub(1))
-                .filter(|d| d.name != "impl")
-            {
-                path.push_str("::");
-                path.push_str(&descriptor.name);
-            }
-            Some(path)
-        })
+        self.moniker_container(position)
     }
 
     /// One search hit as a `WorkspaceSymbol`; `None` when its file is not on disk. `module`
@@ -299,6 +280,13 @@ impl RustEngineSnapshot {
         module: Option<String>,
     ) -> Option<WorkspaceSymbol> {
         let path = self.path_for_file_id(target.file_id)?;
+        let module = module.or_else(|| self.module_path(&target)).or_else(|| {
+            target
+                .container_name
+                .is_none()
+                .then(|| self.module_path_for_file(&path).ok().flatten())
+                .flatten()
+        });
         let text = self.analysis().ok()?.file_text(target.file_id).ok()?;
         let focus = target.focus_range.unwrap_or(target.full_range);
         let (line, col) = offset_to_line_col(&text, focus.start());
