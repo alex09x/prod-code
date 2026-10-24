@@ -20,8 +20,8 @@ use tokio::net::TcpStream;
 use tokio_util::codec::Encoder;
 
 /// Resolves the cluster authentication token from [`AUTH_TOKEN_ENV`] or [`AUTH_TOKEN_FILE_ENV`],
-/// distinguishing absent configuration (`Ok(None)`) from an invalid or unreadable token file
-/// (`Err`) (#1246).
+/// distinguishing absent configuration (`Ok(None)`) from an invalid or unreadable selected
+/// token file or a non-UTF-8 direct token (`Err`) (#1246).
 pub fn try_auth_token() -> std::io::Result<Option<String>> {
     let env = match std::env::var(AUTH_TOKEN_ENV) {
         Ok(val) => Some(val),
