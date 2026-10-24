@@ -24,6 +24,7 @@ pub async fn report(
     gh: &Path,
 ) -> Result<Outcome> {
     let labels = issue_labels(request.labels)?;
+    super::scrub::check_private_names(&request)?;
     let node = match remote {
         Some(addr) => crate::cluster::node_status(addr).await.ok(),
         None => None,

@@ -125,12 +125,16 @@ impl Outcome {
 
 /// A report as the reporter gives it.
 pub struct ReportRequest<'a> {
+    /// The reporting checkout, never inferred from the process working directory.
+    pub root: &'a std::path::Path,
     pub title: &'a str,
     pub body: &'a str,
     /// File it even when issues with a similar title exist.
     pub force: bool,
     /// Draft it and send nothing.
     pub dry_run: bool,
+    /// Explicitly permit checkout names when reporting from another public repository.
+    pub allow_private_names: bool,
     /// The id of a private record of the details the issue cannot carry, kept by the reporter
     /// elsewhere; the issue names it so that the details can be looked up.
     pub private_ref: Option<&'a str>,

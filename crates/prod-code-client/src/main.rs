@@ -233,6 +233,7 @@ async fn run_cli() -> Result<()> {
         private_ref,
         force,
         dry_run,
+        allow_private_names,
         labels,
     }) = cli.command
     {
@@ -248,6 +249,7 @@ async fn run_cli() -> Result<()> {
                 private_ref,
                 force,
                 dry_run,
+                allow_private_names,
                 labels,
             },
         )

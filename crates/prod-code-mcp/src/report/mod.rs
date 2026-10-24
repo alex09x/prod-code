@@ -10,10 +10,14 @@
 
 //! Reporting a bug in prod-code itself as a GitHub issue, from the agent that hit it (#290).
 
+mod declarations;
 pub mod gh;
+mod private_names;
 pub mod scrub;
 pub mod types;
 
+#[cfg(test)]
+mod privacy_tests;
 #[cfg(test)]
 mod tests;
 
