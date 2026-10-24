@@ -100,22 +100,9 @@ pub fn append_item(text: &str, item: &str) -> String {
     out
 }
 
-/// The byte offset of a 1-based line and column.
+/// Move references use the same UTF-16 columns and CRLF line breaks as every LSP query.
 pub(crate) fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
-    let mut at = 0;
-    for (n, l) in text.lines().enumerate() {
-        if n as u32 + 1 == line {
-            let mut chars = l.char_indices();
-            return Some(
-                at + chars
-                    .nth(col as usize - 1)
-                    .map(|(i, _)| i)
-                    .unwrap_or(l.len()),
-            );
-        }
-        at += l.len() + 1;
-    }
-    None
+    crate::signature::offset_of(text, line, col)
 }
 
 fn owner_token_pos(
