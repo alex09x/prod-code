@@ -95,8 +95,14 @@ mod tests {
     fn child_move_widens_items_but_not_impls_or_macros() {
         let widened = |item: &str| move_to_child("", item, "", false).unwrap().1;
         assert_eq!(widened("fn f() {}"), "pub(super) fn f() {}");
-        assert_eq!(widened("#[inline]\nfn f() {}"), "#[inline]\npub(super) fn f() {}");
-        assert_eq!(widened("pub(super) fn f() {}"), "pub(in super::super) fn f() {}");
+        assert_eq!(
+            widened("#[inline]\nfn f() {}"),
+            "#[inline]\npub(super) fn f() {}"
+        );
+        assert_eq!(
+            widened("pub(super) fn f() {}"),
+            "pub(in super::super) fn f() {}"
+        );
         assert_eq!(widened("pub(self) fn f() {}"), "pub(super) fn f() {}");
         for item in [
             "impl Foo { fn f() {} }",

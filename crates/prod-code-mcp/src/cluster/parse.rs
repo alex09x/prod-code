@@ -123,23 +123,23 @@ fn discovery_seeds(cache_path: Option<&std::path::Path>, specs: &[String]) -> Ve
         }
     }
     for seeds_spec in specs {
-            let spec = seeds_spec.trim();
-            if !spec.eq_ignore_ascii_case("auto")
-                && !spec.eq_ignore_ascii_case("10g")
-                && !spec.eq_ignore_ascii_case("true")
-                && !spec.eq_ignore_ascii_case("1")
-                && !spec.eq_ignore_ascii_case("lan")
-            {
-                for s in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                    if let Ok(addrs) = s.to_socket_addrs() {
-                        for addr in addrs {
-                            if !seeds.contains(&addr) {
-                                seeds.push(addr);
-                            }
+        let spec = seeds_spec.trim();
+        if !spec.eq_ignore_ascii_case("auto")
+            && !spec.eq_ignore_ascii_case("10g")
+            && !spec.eq_ignore_ascii_case("true")
+            && !spec.eq_ignore_ascii_case("1")
+            && !spec.eq_ignore_ascii_case("lan")
+        {
+            for s in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if let Ok(addrs) = s.to_socket_addrs() {
+                    for addr in addrs {
+                        if !seeds.contains(&addr) {
+                            seeds.push(addr);
                         }
                     }
                 }
             }
+        }
     }
     seeds
 }

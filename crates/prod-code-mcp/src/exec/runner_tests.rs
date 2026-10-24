@@ -15,9 +15,9 @@ use super::runner::{run_polyglot_remote, run_remote};
 use super::types::PolyglotRemoteOutcome;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ExecChanges, ExecChunk, ExecExit, FileDelta, ProdCodeCodec, RemoteExecCommand, RemoteExecFormat,
-    RemoteExecLanguage, RemoteExecRequest, RemoteExecResult, RemoteExecStream, SyncProbeResponse,
-    SyncResponse, WireMessage,
+    ExecChanges, ExecChunk, ExecExit, FileDelta, ProdCodeCodec, RemoteExecCommand,
+    RemoteExecFormat, RemoteExecLanguage, RemoteExecRequest, RemoteExecResult, RemoteExecStream,
+    SyncProbeResponse, SyncResponse, WireMessage,
 };
 use std::net::SocketAddr;
 use std::path::Path;
@@ -116,9 +116,18 @@ fn changes(files: Vec<FileDelta>) -> WireMessage {
 async fn exec_error(script: Vec<WireMessage>, end: End) -> String {
     let root = tempfile::tempdir().unwrap();
     let (address, server) = gateway(script, end).await;
-    let err = run_remote(address, root.path(), None, vec!["x".into()], vec![], 20, true, |_, _| {})
-        .await
-        .expect_err("the stream ends before an exit");
+    let err = run_remote(
+        address,
+        root.path(),
+        None,
+        vec!["x".into()],
+        vec![],
+        20,
+        true,
+        |_, _| {},
+    )
+    .await
+    .expect_err("the stream ends before an exit");
     server.await.unwrap();
     format!("{err:#}")
 }
@@ -152,7 +161,8 @@ async fn polyglot_error(script: Vec<WireMessage>, end: End) -> String {
 
 fn make_future(path: &Path) {
     let file = std::fs::File::options().write(true).open(path).unwrap();
-    file.set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();
+    file.set_modified(SystemTime::now() + Duration::from_secs(3600))
+        .unwrap();
 }
 
 /// Local files the scripted command "changed": one of every kind of delta.
@@ -184,11 +194,18 @@ fn assert_pulled(root: &Path, pulled: &[String], relaid: &[String], kept: &[Stri
     let read = |name: &str| std::fs::read_to_string(root.join(name)).ok();
     assert_eq!(read("same.txt").as_deref(), Some("same\n"));
     assert_eq!(read("fmt.rs").as_deref(), Some("use a::A;\nuse b::B;\n"));
-    assert_eq!(read("edit.rs").as_deref(), Some("local edit\n"), "a local edit is kept");
+    assert_eq!(
+        read("edit.rs").as_deref(),
+        Some("local edit\n"),
+        "a local edit is kept"
+    );
     assert_eq!(read("gone.txt"), None, "a deletion is applied");
     assert_eq!(read("new/created.txt").as_deref(), Some("created\n"));
     let outside = root.parent().unwrap().join("runner-escape-probe.txt");
-    assert!(!outside.exists(), "the node never writes outside the checkout");
+    assert!(
+        !outside.exists(),
+        "the node never writes outside the checkout"
+    );
 }
 
 #[tokio::test]
@@ -220,8 +237,16 @@ async fn run_remote_streams_output_and_writes_back_changed_files() {
     .unwrap();
     assert_eq!(outcome.exit.exit_code, Some(3));
     assert_eq!(outcome.exit.server_workspace_root, "/srv/ws");
-    assert_eq!(seen, [(false, "out ".to_string()), (true, "err".to_string())]);
-    assert_pulled(root.path(), &outcome.pulled_files, &outcome.relaid_files, &outcome.kept_files);
+    assert_eq!(
+        seen,
+        [(false, "out ".to_string()), (true, "err".to_string())]
+    );
+    assert_pulled(
+        root.path(),
+        &outcome.pulled_files,
+        &outcome.relaid_files,
+        &outcome.kept_files,
+    );
     let mut code = outcome.changed_code();
     code.sort();
     assert_eq!(code, ["gone.txt", "new/created.txt"]);
@@ -239,9 +264,18 @@ async fn run_remote_streams_output_and_writes_back_changed_files() {
 async fn run_remote_refuses_an_empty_command() {
     let root = tempfile::tempdir().unwrap();
     let address: SocketAddr = "127.0.0.1:1".parse().unwrap();
-    let err = run_remote(address, root.path(), None, vec![], vec![], 1, false, |_, _| {})
-        .await
-        .unwrap_err();
+    let err = run_remote(
+        address,
+        root.path(),
+        None,
+        vec![],
+        vec![],
+        1,
+        false,
+        |_, _| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.to_string(), "empty command");
 }
 
@@ -270,7 +304,9 @@ async fn run_remote_names_what_is_unknown_when_the_stream_breaks() {
             "lost the connection to the gateway after receiving and applying 1 changed file(s) (Frame size 4294967295 exceeds maximum 268435456); the command's exit code is unknown",
         ),
         (
-            vec![WireMessage::Disconnect { reason: "bye".into() }],
+            vec![WireMessage::Disconnect {
+                reason: "bye".into(),
+            }],
             End::Close,
             "unexpected message during exec: Disconnect { reason: \"bye\" }",
         ),
@@ -322,7 +358,12 @@ async fn run_polyglot_remote_forwards_the_stream_and_writes_back_changed_files()
     assert_eq!(events, [streamed]);
     assert_eq!(outcome.result, result(1));
     assert!(!outcome.result.ok());
-    assert_pulled(root.path(), &outcome.pulled_files, &outcome.relaid_files, &outcome.kept_files);
+    assert_pulled(
+        root.path(),
+        &outcome.pulled_files,
+        &outcome.relaid_files,
+        &outcome.kept_files,
+    );
     let mut code = outcome.changed_code();
     code.sort();
     assert_eq!(code, ["gone.txt", "new/created.txt"]);
@@ -357,7 +398,9 @@ async fn run_polyglot_remote_names_what_is_unknown_when_the_stream_breaks() {
             "lost the connection to the gateway after receiving and applying 1 changed file(s) (Frame size 4294967295 exceeds maximum 268435456); the command's exit code is unknown",
         ),
         (
-            vec![WireMessage::Disconnect { reason: "bye".into() }],
+            vec![WireMessage::Disconnect {
+                reason: "bye".into(),
+            }],
             End::Close,
             "unexpected message during remote exec: Disconnect { reason: \"bye\" }",
         ),

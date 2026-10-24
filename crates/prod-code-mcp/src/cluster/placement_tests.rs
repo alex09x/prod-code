@@ -22,12 +22,18 @@ fn runtime_paths_2_placement_updates_preserve_other_workspaces() {
     remember_placement_at(Some(&path), "a", a);
     remember_placement_at(Some(&path), "b", b);
     remember_placement_at(Some(&path), "a", b);
-    assert_eq!(load_placement(&path).workspaces, BTreeMap::from([("a".into(), b), ("b".into(), b)]));
+    assert_eq!(
+        load_placement(&path).workspaces,
+        BTreeMap::from([("a".into(), b), ("b".into(), b)])
+    );
     let bytes = std::fs::read(&path).unwrap();
     forget_placement_at(Some(&path), "missing");
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     forget_placement_at(Some(&path), "a");
-    assert_eq!(load_placement(&path).workspaces, BTreeMap::from([("b".into(), b)]));
+    assert_eq!(
+        load_placement(&path).workspaces,
+        BTreeMap::from([("b".into(), b)])
+    );
     forget_placement_at(Some(&path), "b");
     assert_eq!(load_placement(&path).workspaces, BTreeMap::new());
     std::fs::write(&path, "bad JSON").unwrap();

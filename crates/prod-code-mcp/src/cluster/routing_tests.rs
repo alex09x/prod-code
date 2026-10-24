@@ -16,7 +16,12 @@ async fn runtime_paths_2_routing_unknown_projects_and_directory_engine_selection
     let root = temp.path().canonicalize().unwrap();
     let default = "127.0.0.1:1".parse().unwrap();
     assert_eq!(engine_for_path(&root, "missing"), None);
-    assert_eq!(route_in(&[], "sample", default, &root, "missing", None).await.unwrap(), default);
+    assert_eq!(
+        route_in(&[], "sample", default, &root, "missing", None)
+            .await
+            .unwrap(),
+        default
+    );
     assert_eq!(route_for_path(default, &root, None).await.unwrap(), default);
     assert_eq!(route_for_checkout(default, &root).await.unwrap(), default);
     assert_eq!(known_cluster_nodes(), None);
@@ -28,7 +33,10 @@ async fn runtime_paths_2_routing_unknown_projects_and_directory_engine_selection
     std::fs::write(root.join("code/02.py"), "x = 1").unwrap();
     std::fs::write(root.join("code/03.rs"), "fn a() {}").unwrap();
     assert_eq!(engine_for_path(&root, "code"), Some("python"));
-    assert_eq!(engine_for_path(&root, root.join("code/03.rs").to_str().unwrap()), Some("rust"));
+    assert_eq!(
+        engine_for_path(&root, root.join("code/03.rs").to_str().unwrap()),
+        Some("rust")
+    );
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"sample\"\n").unwrap();
     assert_eq!(engine_for_path(&root, "code"), Some("rust"));
     assert_eq!(engine_for_path(&root, "missing"), Some("rust"));

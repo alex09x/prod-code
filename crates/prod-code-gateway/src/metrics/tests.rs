@@ -262,12 +262,9 @@ async fn prometheus_http_server_serves_metrics_and_health() {
 
     let server_m = Arc::clone(&m);
     tokio::spawn(async move {
-        let _ = super::prometheus_server::serve_prometheus(
-            listener,
-            server_m,
-            "test-host".to_string(),
-        )
-        .await;
+        let _ =
+            super::prometheus_server::serve_prometheus(listener, server_m, "test-host".to_string())
+                .await;
     });
 
     // Wait until the server listens: a fixed 50 ms pause lost the race on a loaded node and

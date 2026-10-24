@@ -15,15 +15,28 @@ fn coverage_escapes_and_balancing() {
         ("α\x1b[31mβ\x1b[0m", "αβ"),
         ("\x1b]0;title\x07body", "body"),
         ("\x1b]link\x1b\\body", "body"),
-        ("x\x1b[31", "x"), ("x\x1b]unfinished", "x"),
-        ("x\x1b", "x"), ("x\x1b?y", "x?y"),
-    ] { assert_eq!(strip_ansi(text), expected); }
+        ("x\x1b[31", "x"),
+        ("x\x1b]unfinished", "x"),
+        ("x\x1b", "x"),
+        ("x\x1b?y", "x?y"),
+    ] {
+        assert_eq!(strip_ansi(text), expected);
+    }
     for (text, rust, expected) in [
-        ("", false, true), ("([{}])", false, true), ("([)]", false, false),
-        ("\"[\\\"]\"", false, true), ("\"unfinished", false, false),
-        ("'{'", true, true), ("'\\''", true, true), ("'", true, true),
-        ("'['", false, false), ("'ab", true, true), ("}", false, false),
-    ] { assert_eq!(closes(text, rust), expected, "{text:?}"); }
+        ("", false, true),
+        ("([{}])", false, true),
+        ("([)]", false, false),
+        ("\"[\\\"]\"", false, true),
+        ("\"unfinished", false, false),
+        ("'{'", true, true),
+        ("'\\''", true, true),
+        ("'", true, true),
+        ("'['", false, false),
+        ("'ab", true, true),
+        ("}", false, false),
+    ] {
+        assert_eq!(closes(text, rust), expected, "{text:?}");
+    }
     assert_eq!(indent_of("  α"), 2);
     assert_eq!(indent_of("\tα"), 0);
     assert_eq!(raw_excerpt(&["first", "α", "last"], 1, 2), "α\nlast");

@@ -156,7 +156,8 @@ mod tests {
         server.abort();
     }
 
-    type Asked = std::sync::Arc<std::sync::Mutex<Vec<(SocketAddr, String, Option<String>, Option<String>)>>>;
+    type Asked =
+        std::sync::Arc<std::sync::Mutex<Vec<(SocketAddr, String, Option<String>, Option<String>)>>>;
 
     /// Runs the tick on `root` with `verdict` as the cluster's answer; returns the remote
     /// after the tick and every question the cluster was asked.
@@ -164,17 +165,17 @@ mod tests {
         root: &Path,
         remote: SocketAddr,
         verdict: Option<(SocketAddr, String)>,
-    ) -> (SocketAddr, Vec<(SocketAddr, String, Option<String>, Option<String>)>) {
+    ) -> (
+        SocketAddr,
+        Vec<(SocketAddr, String, Option<String>, Option<String>)>,
+    ) {
         let asked: Asked = Default::default();
         let log = asked.clone();
         let mut remote = remote;
         rebalance_tick_with(&mut remote, root, move |node, ws, engine, os| {
-            log.lock().unwrap().push((
-                node,
-                ws,
-                engine.map(String::from),
-                os.map(String::from),
-            ));
+            log.lock()
+                .unwrap()
+                .push((node, ws, engine.map(String::from), os.map(String::from)));
             std::future::ready(verdict)
         })
         .await;
@@ -222,11 +223,16 @@ mod tests {
         // The cluster names a better node: the session moves and the node is pre-warmed.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let better = listener.local_addr().unwrap();
-        let (remote, asked) = tick(temp.path(), closed_port(), Some((better, "roomier".into()))).await;
+        let (remote, asked) =
+            tick(temp.path(), closed_port(), Some((better, "roomier".into()))).await;
         assert_eq!(remote, better);
         assert_eq!(asked.len(), 1);
-        let warmed = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept()).await;
-        assert!(warmed.is_ok(), "the new node is connected to for the pre-warm sync");
+        let warmed =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept()).await;
+        assert!(
+            warmed.is_ok(),
+            "the new node is connected to for the pre-warm sync"
+        );
     }
 
     #[tokio::test]
@@ -236,7 +242,10 @@ mod tests {
         let plain = "package main\n\nfunc main() {}\n";
         std::fs::write(temp.path().join("main.go"), plain).unwrap();
         let (_, asked) = tick(temp.path(), closed_port(), None).await;
-        assert_eq!((asked[0].2.as_deref(), asked[0].3.as_deref()), (Some("go"), None));
+        assert_eq!(
+            (asked[0].2.as_deref(), asked[0].3.as_deref()),
+            (Some("go"), None)
+        );
 
         let cgo = "package c\n\n/*\n#include <libproc.h>\n*/\nimport \"C\"\n";
         std::fs::write(temp.path().join("proc.go"), cgo).unwrap();

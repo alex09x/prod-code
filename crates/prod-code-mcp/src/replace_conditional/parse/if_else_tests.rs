@@ -18,8 +18,19 @@ fn coverage_b2_if_else_python_cascades() {
     assert_eq!(result.end_offset, text.find("after()").unwrap());
     assert_eq!(result.indent, "  ");
     assert_eq!(result.discriminator, "kind");
-    let branches: Vec<_> = result.branches.iter().map(|b| (b.tag.as_str(), b.body.as_str(), b.is_default)).collect();
-    assert_eq!(branches, vec![("'a'", "    first()", false), ("'b'", "    second()", false), ("default", "    fallback()", true)]);
+    let branches: Vec<_> = result
+        .branches
+        .iter()
+        .map(|b| (b.tag.as_str(), b.body.as_str(), b.is_default))
+        .collect();
+    assert_eq!(
+        branches,
+        vec![
+            ("'a'", "    first()", false),
+            ("'b'", "    second()", false),
+            ("default", "    fallback()", true)
+        ]
+    );
     let text = "if ready:\n    go()\n\nelse:\n    stop()";
     let result = parse_if_else_block(text, text.len()).unwrap();
     assert_eq!(result.end_offset, text.len());
@@ -31,18 +42,56 @@ fn coverage_b2_if_else_python_cascades() {
 #[test]
 fn coverage_b2_if_else_curly_and_refusals() {
     for (text, discriminator, tags, bodies) in [
-        ("if (kind === 'a') { one(); } else if(kind == 'b') { two(); } else { three(); } tail", "kind", vec!["'a'", "'b'", "default"], vec!["one();", "two();", "three();"]),
-        ("if ready { go(); } else { stop(); }", "", vec!["ready", "default"], vec!["go();", "stop();"]),
-        ("if x == 1 { a(); } else if x == 2 { b(); } tail", "x", vec!["1", "2"], vec!["a();", "b();"]),
+        (
+            "if (kind === 'a') { one(); } else if(kind == 'b') { two(); } else { three(); } tail",
+            "kind",
+            vec!["'a'", "'b'", "default"],
+            vec!["one();", "two();", "three();"],
+        ),
+        (
+            "if ready { go(); } else { stop(); }",
+            "",
+            vec!["ready", "default"],
+            vec!["go();", "stop();"],
+        ),
+        (
+            "if x == 1 { a(); } else if x == 2 { b(); } tail",
+            "x",
+            vec!["1", "2"],
+            vec!["a();", "b();"],
+        ),
     ] {
         let result = parse_if_else_block(text, 0).unwrap();
         assert_eq!(result.discriminator, discriminator);
         assert_eq!(result.start_offset, 0);
         assert_eq!(&text[result.end_offset - 1..result.end_offset], "}");
-        assert_eq!(result.branches.iter().map(|b| b.tag.as_str()).collect::<Vec<_>>(), tags);
-        assert_eq!(result.branches.iter().map(|b| b.body.as_str()).collect::<Vec<_>>(), bodies);
+        assert_eq!(
+            result
+                .branches
+                .iter()
+                .map(|b| b.tag.as_str())
+                .collect::<Vec<_>>(),
+            tags
+        );
+        assert_eq!(
+            result
+                .branches
+                .iter()
+                .map(|b| b.body.as_str())
+                .collect::<Vec<_>>(),
+            bodies
+        );
     }
-    for text in ["", "nothing", "if ready", "if x { a(); }", "if x {", "if x {} else {", "if x:\n    a()", "if x:\n    a()\nafter()"] {
+    for text in [
+        "",
+        "nothing",
+        "if ready",
+        "if x { a(); }",
+        "if x {",
+        "if x {} else {",
+        "if x:\n    a()",
+        "if x:\n    a()\nafter()",
+    ] {
         assert!(parse_if_else_block(text, 0).is_none(), "{text}");
     }
 }

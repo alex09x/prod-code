@@ -16,7 +16,13 @@ fn coverage_b2_history_tracks_only_the_written_version() {
     let path = dir.path().join("file");
     assert_eq!(text_before_apply(&path), "");
     std::fs::write(&path, b"new").unwrap();
-    remember_applied(dir.path(), &[("file".into(), Some(b"old".to_vec())), ("missing".into(), None)]);
+    remember_applied(
+        dir.path(),
+        &[
+            ("file".into(), Some(b"old".to_vec())),
+            ("missing".into(), None),
+        ],
+    );
     assert_eq!(text_before_apply(&path), "old");
     std::fs::write(&path, b"later").unwrap();
     assert_eq!(text_before_apply(&path), "later");

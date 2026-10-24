@@ -13,17 +13,37 @@ use super::*;
 fn coverage_enclosing_headers() {
     use Language::*;
     for (lang, source, expected) in [
-        (Python, "async def f() -> int:\n    work()", Some(("int", true))),
+        (
+            Python,
+            "async def f() -> int:\n    work()",
+            Some(("int", true)),
+        ),
         (Python, "def f():\n    work()", Some(("None", false))),
         (Python, "def f():\nwork()", None),
         (Python, "work()", None),
         (Swift, "func f() { work() }", Some(("Void", false))),
-        (Go, "func (r Item) f(x int) (int, error) { work() }", Some(("(int, error)", false))),
+        (
+            Go,
+            "func (r Item) f(x int) (int, error) { work() }",
+            Some(("(int, error)", false)),
+        ),
         (Go, "func f() { work() }", Some(("", false))),
-        (Cpp, "static int f() { work() }", Some(("static int", false))),
+        (
+            Cpp,
+            "static int f() { work() }",
+            Some(("static int", false)),
+        ),
         (C, "f() { work() }", Some(("f", false))),
-        (JavaScript, "const f = async () => { work() }", Some(("", true))),
-        (TypeScript, "const f = (): number => { work() }", Some(("number", false))),
+        (
+            JavaScript,
+            "const f = async () => { work() }",
+            Some(("", true)),
+        ),
+        (
+            TypeScript,
+            "const f = (): number => { work() }",
+            Some(("number", false)),
+        ),
         (Go, "func f( { work() }", Some(("", false))),
         (Go, "func (r Item) f { work() }", Some(("", false))),
         (Go, "func (r Item f { work() }", Some(("", false))),
@@ -34,7 +54,11 @@ fn coverage_enclosing_headers() {
         (TypeScript, "function f() { work()", None),
     ] {
         let at = source.find("work").unwrap();
-        assert_eq!(enclosing_polyglot_info(source, at, lang), expected.map(|(s,b)| (s.into(),b)), "{source}");
+        assert_eq!(
+            enclosing_polyglot_info(source, at, lang),
+            expected.map(|(s, b)| (s.into(), b)),
+            "{source}"
+        );
     }
     assert_eq!(enclosing_polyglot_info("", 0, Python), None);
 }

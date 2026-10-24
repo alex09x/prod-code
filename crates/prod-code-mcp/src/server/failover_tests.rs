@@ -48,7 +48,10 @@ fn retryable_errors_are_the_ones_where_nothing_ran() {
     ];
     for msg in retryable {
         let e = anyhow!("{msg}");
-        assert!(is_retryable_connection_error("code_definition", &e), "{msg}");
+        assert!(
+            is_retryable_connection_error("code_definition", &e),
+            "{msg}"
+        );
         // The exec tool is never replayed, whatever the message says.
         assert!(!is_retryable_connection_error("code_exec", &e), "{msg}");
     }
@@ -76,7 +79,13 @@ fn workspace(name: &str) -> LoadedWorkspace {
     }
 }
 
-fn node(port: u16, engines: &[&str], mem_avail_mb: u64, load: f64, loaded: &[&str]) -> DiscoveredNode {
+fn node(
+    port: u16,
+    engines: &[&str],
+    mem_avail_mb: u64,
+    load: f64,
+    loaded: &[&str],
+) -> DiscoveredNode {
     DiscoveredNode {
         addr: addr(port),
         engines: engines.iter().map(|e| e.to_string()).collect(),
@@ -103,7 +112,10 @@ fn checkout(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
 }
 
 const OLD: u16 = 9400;
-const CARGO: (&str, &str) = ("Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n");
+const CARGO: (&str, &str) = (
+    "Cargo.toml",
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+);
 
 async fn pick(
     root: &std::path::Path,
@@ -132,39 +144,61 @@ async fn discovery_picks_the_roomiest_quiet_node_and_never_the_dead_one() {
     let (_dir, root) = checkout(&[]);
     // (nodes answering, expected pick, why)
     let cases: Vec<(Vec<DiscoveredNode>, Option<u16>, &str)> = vec![
-        (vec![], None, "nobody answered and there is nothing to fall back on"),
+        (
+            vec![],
+            None,
+            "nobody answered and there is nothing to fall back on",
+        ),
         (
             vec![node(OLD, &[], 4000, 0.1, &[])],
             Some(OLD),
             "the old node is the only one that answered",
         ),
         (
-            vec![node(OLD, &[], 9000, 0.0, &[]), node(9411, &[], 2000, 0.0, &[])],
+            vec![
+                node(OLD, &[], 9000, 0.0, &[]),
+                node(9411, &[], 2000, 0.0, &[]),
+            ],
             Some(9411),
             "the old node is excluded when another answered",
         ),
         (
-            vec![node(9411, &[], 4000, 0.1, &[]), node(9412, &[], 8000, 0.9, &[])],
+            vec![
+                node(9411, &[], 4000, 0.1, &[]),
+                node(9412, &[], 8000, 0.9, &[]),
+            ],
             Some(9411),
             "load costs 10000 MB per CPU of load: 4000-1000 beats 8000-9000",
         ),
         (
-            vec![node(9411, &[], 8000, 0.0, &[]), node(9412, &[], 600, 0.0, &["app"])],
+            vec![
+                node(9411, &[], 8000, 0.0, &[]),
+                node(9412, &[], 600, 0.0, &["app"]),
+            ],
             Some(9412),
             "a node with the workspace loaded and 512 MB or more wins over a roomier one",
         ),
         (
-            vec![node(9411, &[], 8000, 0.0, &[]), node(9412, &[], 100, 0.0, &["app"])],
+            vec![
+                node(9411, &[], 8000, 0.0, &[]),
+                node(9412, &[], 100, 0.0, &["app"]),
+            ],
             Some(9411),
             "a warm node short of memory is not preferred",
         ),
         (
-            vec![node(9411, &[], 8000, 0.0, &[]), node(9412, &[], 9000, 0.0, &["other"])],
+            vec![
+                node(9411, &[], 8000, 0.0, &[]),
+                node(9412, &[], 9000, 0.0, &["other"]),
+            ],
             Some(9412),
             "another workspace's residency is not warmth: the roomiest wins",
         ),
         (
-            vec![node(9411, &[], 100, 0.5, &[]), node(9412, &[], 300, 0.1, &[])],
+            vec![
+                node(9411, &[], 100, 0.5, &[]),
+                node(9412, &[], 300, 0.1, &[]),
+            ],
             Some(9412),
             "every node is short of memory: the best score of all candidates",
         ),
@@ -191,8 +225,10 @@ async fn discovery_only_picks_nodes_that_serve_the_checkouts_engine() {
     let (_swift_dir, swift) = checkout(&[("Package.swift", "// swift-tools-version:5.9\n")]);
     let go_src = "package c\n\n/*\n#include <libproc.h>\n*/\nimport \"C\"\n";
     let (_go_dir, cgo) = checkout(&[("go.mod", "module app\n\ngo 1.22\n"), ("proc.go", go_src)]);
-    let (_plain_dir, plain_go) =
-        checkout(&[("go.mod", "module app\n\ngo 1.22\n"), ("main.go", "package main\n")]);
+    let (_plain_dir, plain_go) = checkout(&[
+        ("go.mod", "module app\n\ngo 1.22\n"),
+        ("main.go", "package main\n"),
+    ]);
     let peers = |engines: &[&str]| vec![node(9411, engines, 4000, 0.0, &[])];
     // (checkout, engines the peer lists, expected)
     let cases: Vec<(&PathBuf, &[&str], Option<u16>)> = vec![
@@ -234,14 +270,7 @@ async fn fallback(
         root,
         Some(known),
         |_| std::future::ready(vec![]),
-        |a| {
-            std::future::ready(
-                table
-                    .get(&a)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("{a} is down")),
-            )
-        },
+        |a| std::future::ready(table.get(&a).cloned().ok_or_else(|| anyhow!("{a} is down"))),
     )
     .await
 }
@@ -261,16 +290,25 @@ async fn without_a_udp_answer_the_known_nodes_are_asked_over_tcp() {
         (9411, linux(&[], 900)),
         (9412, linux(&[], 100)),
     ];
-    assert_eq!(fallback(&plain, known.clone(), busy_and_quiet).await, Some(addr(9412)));
+    assert_eq!(
+        fallback(&plain, known.clone(), busy_and_quiet).await,
+        Some(addr(9412))
+    );
     assert_eq!(fallback(&plain, known.clone(), vec![]).await, None);
-    assert_eq!(fallback(&plain, vec![], vec![(OLD, linux(&[], 0))]).await, None);
+    assert_eq!(
+        fallback(&plain, vec![], vec![(OLD, linux(&[], 0))]).await,
+        None
+    );
 
     // The engine filter.
     let by_engine = vec![
         (9411, linux(&["go"], 0)),
         (9412, linux(&["rust (rust-analyzer)"], 800)),
     ];
-    assert_eq!(fallback(&rust, known.clone(), by_engine).await, Some(addr(9412)));
+    assert_eq!(
+        fallback(&rust, known.clone(), by_engine).await,
+        Some(addr(9412))
+    );
 
     // A Swift checkout needs a macOS node that serves swift.
     let by_os = vec![

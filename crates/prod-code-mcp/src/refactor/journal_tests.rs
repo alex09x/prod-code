@@ -20,24 +20,57 @@ fn coverage_b2_copy_and_remove_tree() {
     std::os::unix::fs::symlink("missing", source.join("link")).unwrap();
     let dest = dir.path().join("dest");
     copy_path_without_following_links(&source, &dest).unwrap();
-    assert_eq!(std::fs::read(dest.join("nested/data")).unwrap(), b"\0payload");
+    assert_eq!(
+        std::fs::read(dest.join("nested/data")).unwrap(),
+        b"\0payload"
+    );
     #[cfg(unix)]
     {
-        assert_eq!(std::fs::read_link(dest.join("link")).unwrap(), Path::new("missing"));
+        assert_eq!(
+            std::fs::read_link(dest.join("link")).unwrap(),
+            Path::new("missing")
+        );
         remove_path(&dest.join("link")).unwrap();
         assert!(std::fs::symlink_metadata(dest.join("link")).is_err());
     }
     let error = copy_path_without_following_links(&source, &dest).unwrap_err();
-    assert_eq!(error.to_string(), format!("cannot create directory {}", dest.display()));
+    assert_eq!(
+        error.to_string(),
+        format!("cannot create directory {}", dest.display())
+    );
     let missing = dir.path().join("absent");
-    assert_eq!(copy_path_without_following_links(&missing, &dest).unwrap_err().to_string(), format!("cannot inspect {} for cross-volume rename", missing.display()));
-    assert_eq!(copy_path_without_following_links(&source.join("nested/data"), &missing.join("data")).unwrap_err().to_string(), format!("cannot copy {} to {}", source.join("nested/data").display(), missing.join("data").display()));
+    assert_eq!(
+        copy_path_without_following_links(&missing, &dest)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "cannot inspect {} for cross-volume rename",
+            missing.display()
+        )
+    );
+    assert_eq!(
+        copy_path_without_following_links(&source.join("nested/data"), &missing.join("data"))
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "cannot copy {} to {}",
+            source.join("nested/data").display(),
+            missing.join("data").display()
+        )
+    );
     remove_path(&dest).unwrap();
     remove_path(&dest).unwrap();
     assert!(!dest.exists());
     let transfer = unique_transfer_path(&source);
     assert_eq!(transfer.parent(), source.parent());
-    assert!(transfer.file_name().unwrap().to_str().unwrap().starts_with(".source.prod-code-transfer-"));
+    assert!(
+        transfer
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(".source.prod-code-transfer-")
+    );
     assert!(!transfer.exists());
 }
 
@@ -51,7 +84,14 @@ fn coverage_b2_rollback_all_step_kinds_and_failures() {
     std::fs::create_dir_all(p("tree/child")).unwrap();
     std::fs::write(p("moved"), b"moved").unwrap();
     let mut journal = Journal::default();
-    journal.undo = vec![Undo::Write(p("written"), b"old".to_vec()), Undo::Write(p("same"), b"old".to_vec()), Undo::RemoveFile(p("created")), Undo::RemoveFile(p("absent")), Undo::RemovePath(p("tree")), Undo::Move(p("moved"), p("original"))];
+    journal.undo = vec![
+        Undo::Write(p("written"), b"old".to_vec()),
+        Undo::Write(p("same"), b"old".to_vec()),
+        Undo::RemoveFile(p("created")),
+        Undo::RemoveFile(p("absent")),
+        Undo::RemovePath(p("tree")),
+        Undo::Move(p("moved"), p("original")),
+    ];
     assert_eq!(journal.roll_back(), (4, vec![]));
     assert_eq!(std::fs::read(p("written")).unwrap(), b"old");
     assert_eq!(std::fs::read(p("original")).unwrap(), b"moved");
@@ -96,7 +136,10 @@ fn coverage_b2_set_aside_commit_and_move_paths() {
     assert!(!aside.exists());
     journal.set_aside = vec![dir.path().join("old/a"), dir.path().join("other")];
     journal.moved(&dir.path().join("old"), &dir.path().join("new"));
-    assert_eq!(journal.set_aside, vec![dir.path().join("new/a"), dir.path().join("other")]);
+    assert_eq!(
+        journal.set_aside,
+        vec![dir.path().join("new/a"), dir.path().join("other")]
+    );
     journal.commit(); // Missing aside paths are harmless and are still drained.
     assert!(journal.set_aside.is_empty());
 }
