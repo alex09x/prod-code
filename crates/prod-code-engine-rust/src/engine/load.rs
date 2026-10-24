@@ -233,3 +233,6 @@ mod tests {
         assert!(ensure_requested_proc_macro_workers(1, 1, 8).is_ok());
     }
 }
+
+#[cfg(test)]
+mod load_tests;
