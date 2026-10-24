@@ -58,6 +58,7 @@ async fn a_connection_has_keepalive_and_no_nagle_on_both_ends() {
 /// before the caller's own frames (#402).
 #[tokio::test]
 async fn a_connection_opens_with_the_token_when_there_is_one() {
+    let _lock = crate::tls::tests::TEST_ENV_LOCK.lock().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (client, accepted) = tokio::join!(

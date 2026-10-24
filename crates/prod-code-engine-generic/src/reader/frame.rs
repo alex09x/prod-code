@@ -18,6 +18,9 @@ use tokio::sync::{Mutex, oneshot};
 
 use crate::types::{FrameWrite, lock_unpoisoned};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn spawn_stderr_reader(
     mut stderr: ChildStderr,
     stderr_tail: Arc<StdMutex<VecDeque<String>>>,

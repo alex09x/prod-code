@@ -12,6 +12,9 @@ use super::types::{DnsAnswer, DnsQueryType, DnsQuestion, DnsRecordData, DnsSrvRe
 use std::net::SocketAddr;
 use std::time::Duration;
 
+#[cfg(test)]
+mod tests;
+
 /// Encodes a dotted domain name into DNS wire format (`\x04shop\x04code\x08internal\x00`).
 pub fn encode_dns_name(name: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(name.len() + 2);

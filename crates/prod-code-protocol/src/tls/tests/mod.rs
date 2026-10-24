@@ -11,5 +11,7 @@
 pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 mod config;
+mod coverage;
 mod handshake;
 mod pki;
+mod pki_edges;

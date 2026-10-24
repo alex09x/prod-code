@@ -14,6 +14,9 @@ use bytes::{Buf, BytesMut};
 use std::io;
 use tokio_util::codec::Decoder;
 
+#[cfg(test)]
+mod tests;
+
 /// RFC 9110 Section 5.6.2 token character:
 /// `tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA`
 #[inline]

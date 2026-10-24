@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(unix)]
 fn current_uid() -> u32 {
     unsafe extern "C" {

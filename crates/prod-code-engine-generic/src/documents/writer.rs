@@ -17,6 +17,9 @@ use crate::diagnostics::Sent;
 use crate::engine::GenericLspEngine;
 use crate::reader::write_frame_until;
 
+#[cfg(test)]
+mod tests;
+
 impl GenericLspEngine {
     pub(crate) async fn record_and_write_notification_until(
         &self,
