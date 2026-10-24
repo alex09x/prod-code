@@ -40,10 +40,30 @@ pub(crate) fn top_import_insertion_pos(content: &str) -> usize {
     pos.min(content.len())
 }
 
+/// True when `line` is an import whose module specifier is exactly `rel_path`
+/// (an extension on the written specifier does not matter).
+fn ts_import_is_from(line: &str, rel_path: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("import ") {
+        return false;
+    }
+    let Some((_, tail)) = trimmed.rsplit_once(" from ") else {
+        return false;
+    };
+    let spec = tail
+        .trim()
+        .trim_end_matches(';')
+        .trim_matches(['"', '\x27']);
+    let spec = [".d.ts", ".tsx", ".ts", ".jsx", ".js"]
+        .iter()
+        .find_map(|ext| spec.strip_suffix(ext))
+        .unwrap_or(spec);
+    spec == rel_path
+}
+
 pub fn insert_or_merge_ts_import(content: &str, sym: &str, rel_path: &str) -> (String, bool) {
     for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("import ") && trimmed.contains(rel_path) {
+        if ts_import_is_from(line, rel_path) {
             if is_symbol_used(line, sym) {
                 return (content.to_string(), false);
             }
@@ -56,7 +76,7 @@ pub fn insert_or_merge_ts_import(content: &str, sym: &str, rel_path: &str) -> (S
                 } else {
                     format!("{inside}, {sym}")
                 };
-                let new_line = format!("{}{new_inside}{}", &line[..open + 1], &line[close..]);
+                let new_line = format!("{} {new_inside} {}", &line[..open + 1], &line[close..]);
                 let replaced = content.replace(line, &new_line);
                 return (replaced, true);
             }
@@ -71,13 +91,15 @@ pub fn insert_or_merge_ts_import(content: &str, sym: &str, rel_path: &str) -> (S
     (out, true)
 }
 
+/// The module of a `from <module> import ...` line.
+pub(crate) fn py_from_module(line: &str) -> Option<&str> {
+    line.trim().strip_prefix("from ")?.split_whitespace().next()
+}
+
 pub fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str) -> (String, bool) {
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("from ")
-            && trimmed.contains(mod_spec)
-            && trimmed.contains(" import ")
-        {
+        if py_from_module(trimmed) == Some(mod_spec) && trimmed.contains(" import ") {
             if is_symbol_used(line, sym) {
                 return (content.to_string(), false);
             }

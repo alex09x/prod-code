@@ -26,6 +26,18 @@ pub mod target;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_callers;
+#[cfg(test)]
+mod tests_decl;
+#[cfg(test)]
+mod tests_go_refs;
+#[cfg(test)]
+mod tests_header;
+#[cfg(test)]
+mod tests_imports;
+#[cfg(test)]
+mod tests_target;
 
 pub use callers::rewrite_caller_imports;
 pub use decl::{find_matching_brace_end, find_polyglot_decl, with_doc_comment_polyglot};

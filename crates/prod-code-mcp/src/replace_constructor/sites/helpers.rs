@@ -115,3 +115,6 @@ pub(crate) fn go_literal_values(
         .map(|field| site.field_values.get(&field.name).cloned())
         .collect())
 }
+
+#[cfg(test)]
+mod tests;
