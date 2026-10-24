@@ -146,6 +146,14 @@ fn pruning_preserves_active_locked_recent_and_non_session_files() {
     }
     assert!(!dir.path().join("stale.json").exists());
     drop(locked);
-    prune_expired_cli_stream_sessions(dir.path(), &active).unwrap();
+    // A process forked by a parallel test can hold a copy of the descriptor, and with it the
+    // lock, until it execs; the released session goes on the next prune after that.
+    for _ in 0..100 {
+        prune_expired_cli_stream_sessions(dir.path(), &active).unwrap();
+        if !dir.path().join("locked.json").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert!(!dir.path().join("locked.json").exists());
 }

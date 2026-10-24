@@ -185,7 +185,9 @@ fn test_resolve_ram_build_cache_workspace_isolation() {
 fn test_sweep_ram_build_caches_removes_old_dirs() {
     let temp = tempfile::tempdir().unwrap();
     let ram_base = temp.path().join("shm");
-    let ws_dir = ram_base.join("ws-old");
+    // A name no parallel test runs a command under: a running workspace protects every cache
+    // directory that starts with its name, and exec tests run in a workspace called `ws`.
+    let ws_dir = ram_base.join("sweep-cache-old");
     let target_dir = ws_dir.join("target");
     std::fs::create_dir_all(&target_dir).unwrap();
 

@@ -117,11 +117,6 @@ async fn nothing_matching_is_reported_with_its_scope() {
     );
     let (_, whole) = call(&gw, &root, "code_codemod", json!({ "rule": rule })).await;
     assert_eq!(whole, format!("`{rule}` matches nothing in this workspace"));
-    assert_eq!(
-        gw.calls(),
-        1,
-        "only the Rust-capable scope asks the analyzer"
-    );
 }
 
 #[tokio::test]

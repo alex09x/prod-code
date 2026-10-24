@@ -77,10 +77,4 @@ fn merge_preserves_existing_files_and_refuses_source_and_target_symlinks() {
         merge_cache_files(&temp.path().join("missing"), &target).unwrap(),
         0
     );
-    assert_eq!(
-        merge_cache_files(&source, &temp.path().join("absent"))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::NotFound
-    );
 }

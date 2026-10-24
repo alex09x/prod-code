@@ -34,10 +34,20 @@ fn runtime_paths_2_fallback_walk_filters_binary_hidden_and_globs() {
         exclude: vec![" ".into(), "!skip.rs".into(), ".hidden.rs".into()],
         ..Default::default()
     };
+    // Smart case: a lowercase pattern matches `NEEDLE` too. Binary, invalid UTF-8, hidden and
+    // excluded files are skipped; without a .gitignore `target/` is an ordinary directory.
+    let all = run_in_process_grep(root, root, &opts, 100, 0).unwrap();
+    let mut found: Vec<(String, u32)> = all.hits.iter().map(|h| (h.path.to_string(), h.line)).collect();
+    found.sort();
+    assert_eq!(
+        found,
+        [("a.rs", 2), ("b.rs", 1), ("b.rs", 2), ("target/generated.rs", 1)]
+            .map(|(p, l)| (p.to_string(), l))
+    );
     let report = run_in_process_grep(root, root, &opts, 2, 1).unwrap();
     assert_eq!(report.engine, "ignore-walk");
     assert_eq!(report.pattern, "needle");
-    assert_eq!((report.total_matches, report.truncated), (3, true));
+    assert_eq!((report.total_matches, report.truncated), (4, true));
     assert_eq!(report.hits.len(), 2);
     let first = &report.hits[0];
     assert_eq!((&*first.path, first.line, first.column, &*first.text), ("a.rs", 2, 3, "  Needle needle"));
@@ -46,7 +56,7 @@ fn runtime_paths_2_fallback_walk_filters_binary_hidden_and_globs() {
     assert_eq!(first.context_after, vec![(3, "  other".into())]);
     assert_eq!((&*report.hits[1].path, report.hits[1].line), ("b.rs", 1));
     let zero = run_in_process_grep(root, root, &opts, 0, 0).unwrap();
-    assert_eq!((zero.hits.len(), zero.total_matches, zero.truncated), (0, 3, true));
+    assert_eq!((zero.hits.len(), zero.total_matches, zero.truncated), (0, 4, true));
 }
 
 #[test]

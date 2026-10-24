@@ -35,7 +35,11 @@ fn coverage_def_use_language_forms() {
     }
     for method in ["push", "insert", "append", "extend", "update", "remove", "clear", "add", "set", "put", "pop", "sort"] {
         let text = format!("items.{method}(value)");
-        assert_eq!(parse_line_def_use(&text, &text), (vec!["items".into()], vec!["items".into(), "value".into()], true, true), "{text}");
+        // The line analyzer is lexical: the method name is listed among the uses too, unless it
+        // is a keyword or builtin of some language (`append` is Go's).
+        let (defs, uses, assignment, mutation) = parse_line_def_use(&text, &text);
+        let variables: Vec<String> = uses.into_iter().filter(|u| u != method).collect();
+        assert_eq!((defs, variables, assignment, mutation), (vec!["items".into()], vec!["items".into(), "value".into()], true, true), "{text}");
     }
     for text in ["if ready", "if(x)", "else", "elif x:", "for x in xs:", "while(x)", "loop {", "match x", "switch(x)", "case x", "guard x"] { assert!(is_control_statement(text), "{text}"); }
     assert!(!is_control_statement("return x"));

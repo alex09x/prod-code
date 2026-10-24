@@ -75,7 +75,11 @@ fn seeding_rejects_non_utf8_roots_before_creating_a_target() {
     use std::os::unix::ffi::OsStringExt;
     let temp = tempfile::tempdir().unwrap();
     let invalid = temp.path().join(std::ffi::OsString::from_vec(vec![0xff]));
-    fs::create_dir(&invalid).unwrap();
+    // Some filesystems (UTF-8-only ZFS datasets, APFS) refuse such a name outright; the seed's
+    // own check is then unreachable from a real path.
+    if fs::create_dir(&invalid).is_err() {
+        return;
+    }
     fs::write(invalid.join("Package.swift"), "// package").unwrap();
     let target = temp.path().join("target");
     assert_eq!(

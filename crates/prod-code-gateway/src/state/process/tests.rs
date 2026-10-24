@@ -100,8 +100,9 @@ fn sockets_reject_active_and_non_socket_paths_and_clean_only_the_bound_inode() {
         )
     );
     drop(listener);
-    remove_stale_unix_socket(&path).unwrap();
-    assert!(!path.exists());
+    // Not `remove_stale_unix_socket` here: a process forked by a parallel test can still hold
+    // the closed listener's descriptor for a moment, and the probe then sees it accepting.
+    fs::remove_file(&path).unwrap();
     let listener = UnixListener::bind(&path).unwrap();
     let cleaner = SocketCleaner::new(&path).unwrap();
     drop(cleaner);

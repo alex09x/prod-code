@@ -27,7 +27,7 @@ fn runtime_paths_2_platform_exclusions_have_precise_reasons() {
         let report = platform_excluded_report("file.go", &reason);
         assert_eq!((report.file.as_str(), report.errors, report.warnings, report.items.len()), ("file.go", 0, 0, 1));
         assert_eq!((report.items[0].severity.as_str(), report.items[0].code.as_deref(), report.items[0].message.as_str(), report.items[0].line, report.items[0].col), ("info", Some("platform-excluded"), expected, 1, 1));
-        assert!(report.is_platform_excluded());
+        assert_eq!(report.is_platform_excluded(), Some(expected));
     }
     for message in ["no packages found", "build constraints exclude all go files", "cannot find package", "no such package"] {
         assert_eq!(platform_exclusion_reason(Path::new("a.go"), &anyhow::anyhow!(message)), Some(format!("excluded by platform build constraints: {message}")));
