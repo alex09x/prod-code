@@ -201,3 +201,6 @@ pub async fn run_cert(cmd: CertCommands) -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
