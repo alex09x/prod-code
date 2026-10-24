@@ -35,7 +35,7 @@ async fn connect_to_redirect_target(remote: SocketAddr) -> Result<prod_code_prot
     .context(
         "refusing gateway redirect without server-authenticated TLS; configure a trusted CA or certificate pin",
     )?;
-    let token = prod_code_protocol::transport::auth_token();
+    let token = prod_code_protocol::transport::try_auth_token()?;
     let stream = prod_code_protocol::transport::connect_stream_with_client_config(
         remote,
         token.as_deref(),

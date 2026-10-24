@@ -236,3 +236,59 @@ fn native_methods_validate_positions_without_breaking_positionless_requests() {
         .is_ok()
     );
 }
+
+#[test]
+fn auth_token_configuration_refuses_gateway_startup_before_side_effects() {
+    crate::test_cache_support::isolated!();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-token");
+        let empty = dir.path().join("empty-token");
+        std::fs::write(&empty, "   \nsecond-line-canary\n").unwrap();
+        let non_utf8 = dir.path().join("non-utf8-token");
+        std::fs::write(&non_utf8, [0xff, 0xfe, b'\n']).unwrap();
+        let unreadable_dir = dir.path().join("unreadable-dir");
+        std::fs::create_dir_all(&unreadable_dir).unwrap();
+
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bind = occupied.local_addr().unwrap();
+        unsafe {
+            std::env::remove_var(prod_code_protocol::TLS_MODE_ENV);
+            std::env::remove_var(prod_code_protocol::transport::AUTH_TOKEN_ENV);
+        }
+        for (idx, bad_path) in [&missing, &empty, &non_utf8, &unreadable_dir]
+            .into_iter()
+            .enumerate()
+        {
+            unsafe {
+                std::env::set_var(prod_code_protocol::transport::AUTH_TOKEN_FILE_ENV, bad_path);
+            }
+            let case_dir = dir.path().join(format!("case-{idx}"));
+            let storage = case_dir.join("storage");
+            let shadow = case_dir.join("shadow");
+            let cli = ServerCli::parse_from([
+                "prod-code-gateway",
+                "--bind",
+                &bind.to_string(),
+                "--storage",
+                storage.to_str().unwrap(),
+                "--shadow-dir",
+                shadow.to_str().unwrap(),
+            ]);
+            let err = crate::server::run(cli).await.unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("PROD_CODE_AUTH_TOKEN_FILE"), "{msg}");
+            assert!(!msg.contains("second-line-canary"), "{msg}");
+            assert!(!shadow.exists(), "shadow dir created before auth check");
+            assert!(!storage.exists(), "storage dir created before auth check");
+        }
+        unsafe {
+            std::env::remove_var(prod_code_protocol::transport::AUTH_TOKEN_ENV);
+            std::env::remove_var(prod_code_protocol::transport::AUTH_TOKEN_FILE_ENV);
+        }
+    });
+}

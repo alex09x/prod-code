@@ -12,6 +12,7 @@ use crate::*;
 
 /// Runs the gateway: bind, serve, and return when a signal says to stop.
 pub async fn run(cli: ServerCli) -> Result<()> {
+    let auth_token = prod_code_protocol::transport::try_auth_token()?;
     ensure_blocking_stdio();
     prefer_rustup_toolchain();
     let shadow_root = cli
@@ -84,7 +85,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         tracing::info!(engines = ?state.engine_allowlist, "serving only the listed engines");
     }
     // The same token the clients send, from the same variables; its value is never logged.
-    state.auth_token = prod_code_protocol::transport::auth_token();
+    state.auth_token = auth_token;
     tracing::info!(
         required = state.auth_token.is_some(),
         "connection token (PROD_CODE_AUTH_TOKEN or PROD_CODE_AUTH_TOKEN_FILE)"

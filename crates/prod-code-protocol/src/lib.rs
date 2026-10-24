@@ -48,10 +48,10 @@ pub use tls::{
     cert_sha256_fingerprint, parse_pins,
 };
 pub use transport::{
-    AnyStream, ScrubSecrets, clear_client_tls_cache, connect, connect_stream, connect_stream_with,
-    connect_stream_with_client_config, connect_stream_with_tls, connect_with,
+    AnyStream, ScrubSecrets, auth_token, clear_client_tls_cache, connect, connect_stream,
+    connect_stream_with, connect_stream_with_client_config, connect_stream_with_tls, connect_with,
     default_client_tls_built, init_client_tls_from_env, set_default_client_tls,
-    set_default_client_tls_built,
+    set_default_client_tls_built, try_auth_token,
 };
 #[cfg(unix)]
 pub use transport::{connect_unix, connect_unix_with};

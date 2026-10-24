@@ -19,25 +19,79 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio_util::codec::Encoder;
 
+/// Resolves the cluster authentication token from [`AUTH_TOKEN_ENV`] or [`AUTH_TOKEN_FILE_ENV`],
+/// distinguishing absent configuration (`Ok(None)`) from an invalid or unreadable token file
+/// (`Err`) (#1246).
+pub fn try_auth_token() -> std::io::Result<Option<String>> {
+    let env = match std::env::var(AUTH_TOKEN_ENV) {
+        Ok(val) => Some(val),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{AUTH_TOKEN_ENV} contains invalid UTF-8"),
+            ));
+        }
+    };
+    let file = std::env::var_os(AUTH_TOKEN_FILE_ENV).map(PathBuf::from);
+    resolve_token(env.as_deref(), file.as_deref())
+}
+
 /// The token every connection of this cluster opens with (#402), for clients and gateways
 /// alike: [`AUTH_TOKEN_ENV`], else the first line of the file [`AUTH_TOKEN_FILE_ENV`] names.
+///
+/// Prefer [`try_auth_token`] in callers that can propagate [`std::io::Result`].
+///
+/// # Panics
+///
+/// Panics (failing closed) if [`AUTH_TOKEN_ENV`] or [`AUTH_TOKEN_FILE_ENV`] is explicitly
+/// configured with an unreadable, invalid-UTF-8, or empty token (#1246), so that legacy
+/// callers expecting `Option<String>` never silently treat broken authentication configuration
+/// as tokenless (`None`) mode.
 pub fn auth_token() -> Option<String> {
-    let file = std::env::var_os(AUTH_TOKEN_FILE_ENV).map(PathBuf::from);
-    resolve_token(
-        std::env::var(AUTH_TOKEN_ENV).ok().as_deref(),
-        file.as_deref(),
-    )
+    try_auth_token()
+        .unwrap_or_else(|err| panic!("invalid cluster authentication token configuration: {err}"))
 }
 
 /// The token from the variable's value `env` when it has one, otherwise from the first line of
-/// `file`; blank ones do not count.
-pub(crate) fn resolve_token(env: Option<&str>, file: Option<&Path>) -> Option<String> {
+/// `file`; blank direct values fall back to `file`, while a configured `file` that cannot be
+/// read, is not valid UTF-8, or has a blank first line is an error (#1246).
+pub(crate) fn resolve_token(
+    env: Option<&str>,
+    file: Option<&Path>,
+) -> std::io::Result<Option<String>> {
     if let Some(token) = env.map(str::trim).filter(|t| !t.is_empty()) {
-        return Some(token.to_string());
+        return Ok(Some(token.to_string()));
     }
-    let text = std::fs::read_to_string(file?).ok()?;
-    let token = text.lines().next()?.trim();
-    (!token.is_empty()).then(|| token.to_string())
+    let Some(path) = file else {
+        return Ok(None);
+    };
+    if path.as_os_str().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{AUTH_TOKEN_FILE_ENV} is set to an empty path"),
+        ));
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!(
+                "failed to read auth token file {} ({AUTH_TOKEN_FILE_ENV}): {e}",
+                path.display()
+            ),
+        )
+    })?;
+    let token = text.lines().next().map(str::trim).unwrap_or("");
+    if token.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "auth token file {} ({AUTH_TOKEN_FILE_ENV}) is empty or has a blank first line",
+                path.display()
+            ),
+        ));
+    }
+    Ok(Some(token.to_string()))
 }
 
 /// Establishes a raw tuned TCP connection to `addr` with backoff retries for transient ARP/network errors.
@@ -140,7 +194,8 @@ pub fn clear_client_tls_cache() {
 /// Connects to `addr`, negotiating TLS 1.3 / mTLS if configured in the environment,
 /// and sending the cluster's auth token strictly inside the encrypted channel.
 pub async fn connect_stream(addr: SocketAddr) -> std::io::Result<AnyStream> {
-    connect_stream_with(addr, auth_token().as_deref()).await
+    let token = try_auth_token()?;
+    connect_stream_with(addr, token.as_deref()).await
 }
 
 /// Connects to `addr`, negotiating TLS 1.3 / mTLS using the provided client TLS configuration.
@@ -217,10 +272,11 @@ pub async fn connect(addr: SocketAddr) -> std::io::Result<AnyStream> {
     connect_stream(addr).await
 }
 
-/// Connects to the Unix domain socket at `path` and opens it with the cluster's [`auth_token`].
+/// Connects to the Unix domain socket at `path` and opens it with the cluster's [`try_auth_token`].
 #[cfg(unix)]
 pub async fn connect_unix(path: impl AsRef<Path>) -> std::io::Result<tokio::net::UnixStream> {
-    connect_unix_with(path, auth_token().as_deref()).await
+    let token = try_auth_token()?;
+    connect_unix_with(path, token.as_deref()).await
 }
 
 /// Connects to the Unix domain socket at `path` and sends `token` as its first frame when one is given.
@@ -239,12 +295,13 @@ pub async fn connect_unix_with(
     Ok(stream)
 }
 
-/// Connects to the Windows named pipe at `path` and opens it with the cluster's [`auth_token`].
+/// Connects to the Windows named pipe at `path` and opens it with the cluster's [`try_auth_token`].
 #[cfg(windows)]
 pub async fn connect_named_pipe(
     path: impl AsRef<Path>,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    connect_named_pipe_with(path, auth_token().as_deref()).await
+    let token = try_auth_token()?;
+    connect_named_pipe_with(path, token.as_deref()).await
 }
 
 /// Connects to the Windows named pipe at `path` and sends `token` as its first frame when one is given.

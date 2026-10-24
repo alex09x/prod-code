@@ -24,7 +24,7 @@ pub use client::{
     BuiltClientTls, auth_token, clear_client_tls_cache, connect, connect_stream,
     connect_stream_with, connect_stream_with_client_config, connect_stream_with_tls, connect_with,
     default_client_tls_built, init_client_tls_from_env, set_default_client_tls,
-    set_default_client_tls_built,
+    set_default_client_tls_built, try_auth_token,
 };
 #[cfg(windows)]
 pub use client::{connect_named_pipe, connect_named_pipe_with};
