@@ -324,6 +324,9 @@ pub(crate) async fn hover_in_session(
             (t_resp - t_sent).as_secs_f64() * 1000.0
         );
     }
+    if let Some(error) = response.get("error") {
+        bail!("hover request failed for {}: {error}", wt.symbol);
+    }
     let result = response.get("result").unwrap_or(&serde_json::Value::Null);
     if result.is_null() {
         bail!(

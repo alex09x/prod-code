@@ -158,3 +158,7 @@ pub fn spawn_editor_frame_reader() -> (tokio::task::JoinHandle<()>, EditorFrameR
     });
     (task, Arc::new(tokio::sync::Mutex::new(rx)))
 }
+
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod tests;

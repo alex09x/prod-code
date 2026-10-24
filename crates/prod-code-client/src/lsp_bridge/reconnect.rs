@@ -23,6 +23,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tokio_util::codec::Framed;
 
+#[cfg(test)]
+#[path = "reconnect_tests.rs"]
+mod tests;
+
 pub async fn replay_lsp_state(
     socket_tx: &mut SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
     socket_rx: &mut SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,

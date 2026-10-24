@@ -183,3 +183,7 @@ pub fn write_cli_stream_session(
     file.sync_data()?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "session_state_tests.rs"]
+mod tests;

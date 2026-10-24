@@ -129,6 +129,13 @@ pub fn parse_release_asset(json_val: &serde_json::Value, target: &str) -> Result
 
 /// Fetches release info via `gh` CLI or `curl`.
 pub async fn fetch_release_info(specific_tag: Option<&str>) -> Result<serde_json::Value> {
+    fetch_release_info_with(specific_tag, &mut |cmd| cmd.output())
+}
+
+fn fetch_release_info_with(
+    specific_tag: Option<&str>,
+    output: &mut dyn FnMut(&mut Command) -> std::io::Result<std::process::Output>,
+) -> Result<serde_json::Value> {
     // 1. Try `gh release view` if gh is present
     let mut cmd = Command::new("gh");
     cmd.args(["release", "view"]);
@@ -137,7 +144,7 @@ pub async fn fetch_release_info(specific_tag: Option<&str>) -> Result<serde_json
     }
     cmd.args(["--repo", REPOSITORY, "--json", "tagName,assets"]);
 
-    if let Ok(output) = cmd.output()
+    if let Ok(output) = output(&mut cmd)
         && output.status.success()
         && let Ok(mut val) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
     {
@@ -154,17 +161,15 @@ pub async fn fetch_release_info(specific_tag: Option<&str>) -> Result<serde_json
         None => format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
     };
 
-    let curl_output = Command::new("curl")
-        .args([
-            "-fsSL",
-            "-H",
-            "User-Agent: prod-code-updater",
-            "-H",
-            "Accept: application/vnd.github.v3+json",
-            &url,
-        ])
-        .output()
-        .with_context(|| "failed to run curl to check releases")?;
+    let curl_output = output(Command::new("curl").args([
+        "-fsSL",
+        "-H",
+        "User-Agent: prod-code-updater",
+        "-H",
+        "Accept: application/vnd.github.v3+json",
+        &url,
+    ]))
+    .with_context(|| "failed to run curl to check releases")?;
 
     if !curl_output.status.success() {
         let err_msg = String::from_utf8_lossy(&curl_output.stderr);
@@ -178,11 +183,29 @@ pub async fn fetch_release_info(specific_tag: Option<&str>) -> Result<serde_json
 
 /// Runs the update command.
 pub async fn run_update(check_only: bool, force: bool, specific_tag: Option<String>) -> Result<()> {
+    let current_exe = std::env::current_exe().context("failed to locate current executable")?;
+    run_update_with(
+        check_only,
+        force,
+        specific_tag,
+        &current_exe,
+        &mut |cmd| cmd.output(),
+        &mut |cmd| cmd.status(),
+    )
+}
+
+fn run_update_with(
+    check_only: bool,
+    force: bool,
+    specific_tag: Option<String>,
+    current_exe: &Path,
+    output: &mut dyn FnMut(&mut Command) -> std::io::Result<std::process::Output>,
+    status: &mut dyn FnMut(&mut Command) -> std::io::Result<std::process::ExitStatus>,
+) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let target = current_target()?;
-    let current_exe = std::env::current_exe().context("failed to locate current executable")?;
 
-    if let Some(pm_hint) = is_package_managed(&current_exe) {
+    if let Some(pm_hint) = is_package_managed(current_exe) {
         println!("Note: prod-code binary is managed by {pm_hint}");
         if !force {
             return Ok(());
@@ -190,7 +213,7 @@ pub async fn run_update(check_only: bool, force: bool, specific_tag: Option<Stri
     }
 
     println!("Checking for updates (current version: v{current_version}, target: {target})...");
-    let release_val = fetch_release_info(specific_tag.as_deref()).await?;
+    let release_val = fetch_release_info_with(specific_tag.as_deref(), output)?;
     let (tag, download_url) = parse_release_asset(&release_val, target)?;
 
     let is_newer = is_newer_version(current_version, &tag);
@@ -223,16 +246,14 @@ pub async fn run_update(check_only: bool, force: bool, specific_tag: Option<Stri
     ));
 
     // Download via curl
-    let dl_status = Command::new("curl")
-        .args([
-            "-fL",
-            "--progress-bar",
-            "-o",
-            temp_download.to_str().unwrap(),
-            &download_url,
-        ])
-        .status()
-        .with_context(|| "failed to download update binary with curl")?;
+    let dl_status = status(Command::new("curl").args([
+        "-fL",
+        "--progress-bar",
+        "-o",
+        temp_download.to_str().unwrap(),
+        &download_url,
+    ]))
+    .with_context(|| "failed to download update binary with curl")?;
 
     if !dl_status.success() {
         let _ = std::fs::remove_file(&temp_download);
@@ -264,7 +285,7 @@ pub async fn run_update(check_only: bool, force: bool, specific_tag: Option<Stri
     }
 
     // Atomic replace via rename
-    std::fs::rename(&temp_download, &current_exe).with_context(|| {
+    std::fs::rename(&temp_download, current_exe).with_context(|| {
         format!(
             "failed to replace {} with downloaded update",
             current_exe.display()
@@ -278,6 +299,10 @@ pub async fn run_update(check_only: bool, force: bool, specific_tag: Option<Stri
     println!("Running MCP server sessions will hot-reload automatically.");
     Ok(())
 }
+
+#[cfg(all(test, unix))]
+#[path = "update_tests.rs"]
+mod behavior_tests;
 
 #[cfg(test)]
 mod tests {

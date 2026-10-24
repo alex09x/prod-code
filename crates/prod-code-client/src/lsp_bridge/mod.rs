@@ -17,6 +17,9 @@ pub mod state;
 pub mod sync;
 pub mod transport;
 
+#[cfg(test)]
+mod test_support;
+
 pub use bridge::run_lsp_bridge;
 pub use session::resolve_redirect_target;
 pub use transport::refuse_lsp;

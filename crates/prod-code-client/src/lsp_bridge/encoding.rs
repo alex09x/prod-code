@@ -49,3 +49,7 @@ pub fn lsp_offset(
     }
     text.len()
 }
+
+#[cfg(test)]
+#[path = "encoding_tests.rs"]
+mod tests;

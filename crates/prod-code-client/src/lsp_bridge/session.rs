@@ -138,3 +138,7 @@ pub async fn open_editor_session(
         return Ok((framed, handshake_resp, remote));
     }
 }
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;
