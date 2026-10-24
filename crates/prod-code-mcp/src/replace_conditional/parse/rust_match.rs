@@ -12,6 +12,10 @@ use super::super::types::{
     ConditionalBlock, ConditionalBranch, ConditionalKind, line_indentation, tag_to_variant_name,
 };
 
+#[cfg(test)]
+#[path = "rust_match_tests.rs"]
+mod tests;
+
 /// Parse a Rust `match` statement.
 pub fn parse_rust_match(text: &str, search_offset: usize) -> Option<ConditionalBlock> {
     let match_kw_idx = text[search_offset..]

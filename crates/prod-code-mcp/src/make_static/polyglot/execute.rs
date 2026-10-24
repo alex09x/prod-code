@@ -9,6 +9,10 @@
  */
 
 use anyhow::{Context, Result};
+
+#[cfg(test)]
+#[path = "execute_tests.rs"]
+mod tests;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow, bail};
 use url::Url;
 
+#[cfg(test)]
+#[path = "uri_tests.rs"]
+mod tests;
+
 pub fn uri_to_root_and_relative<'a>(
     canonical_roots: &'a [PathBuf],
     uri: &str,

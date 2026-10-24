@@ -10,6 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "journal_tests.rs"]
+mod tests;
+
 use anyhow::{Context, Result};
 
 /// One step of an edit taken back.

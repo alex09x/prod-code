@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(test)]
+#[path = "history_tests.rs"]
+mod tests;
+
 /// What each file held before the last edit applied to it, and what the edit left there.
 pub type Applied = HashMap<PathBuf, (String, Vec<u8>)>;
 
