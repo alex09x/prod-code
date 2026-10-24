@@ -112,6 +112,7 @@ fn package_level_type_declarations_are_found_with_their_alias_and_generic_shape(
     const PLAIN: (bool, bool) = (false, false);
     const ALIAS: (bool, bool) = (true, false);
     const GENERIC: (bool, bool) = (false, true);
+    #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, Vec<(bool, bool)>)] = &[
         ("type T struct{}\n", "T", vec![PLAIN]),
         ("type T = int\n", "T", vec![ALIAS]),

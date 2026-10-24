@@ -75,6 +75,7 @@ fn matching_brace_end_table() {
 
 #[test]
 fn find_decl_ranges() {
+    #[allow(clippy::type_complexity)]
     let cases: &[(Language, &str, u32, (&str, u32, u32))] = &[
         (
             Python,

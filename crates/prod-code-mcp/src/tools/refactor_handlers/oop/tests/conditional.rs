@@ -52,7 +52,7 @@ async fn conditional_forwards_positions_filtered_params_and_diagnostics() {
             assert_eq!(expected.base_name, "Action");
             assert_eq!(expected.method_name, "run");
             assert_eq!(expected.variants, ["Fast", "Default"]);
-            assert_eq!(expected.applied, false);
+            assert!(!expected.applied);
             assert_eq!(expected.diagnostics.is_empty(), !reject);
             let response = handle_replace_conditional_with_polymorphism(gw.addr(), &root, &args)
                 .await
@@ -143,6 +143,6 @@ async fn conditional_apply_writes_the_exact_preview() {
     let response = handle_replace_conditional_with_polymorphism(gw.addr(), &root, &args)
         .await
         .unwrap();
-    assert_eq!(response.is_error, false);
+    assert!(!response.is_error);
     assert_eq!(ws.read("action.ts"), expected.overlays[0].1);
 }

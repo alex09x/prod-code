@@ -37,6 +37,7 @@ fn custom(s: &str) -> C {
 #[test]
 fn argv_table_covers_every_language_command_and_format() {
     #[rustfmt::skip]
+    #[allow(clippy::type_complexity)]
     let cases: Vec<(L, C, RemoteExecFormat, Vec<&str>, Vec<&str>)> = vec![
         (L::Rust, C::Check, Raw, vec![], vec!["cargo", "check", "--workspace", "--all-targets"]),
         (L::Rust, C::Check, Json, vec![], vec!["cargo", "check", "--workspace", "--all-targets", "--message-format=json"]),

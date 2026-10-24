@@ -72,7 +72,7 @@ async fn pull_and_push_forward_aliases_filtered_members_and_options() {
             );
             assert_eq!(expected.members, ["run"]);
             assert_eq!(expected.files_modified, ["classes.py"]);
-            assert_eq!(expected.applied, false);
+            assert!(!expected.applied);
             assert_eq!(expected.diagnostics.is_empty(), !reject);
             let response = if push {
                 handle_push_down(gw.addr(), &root, &args).await.unwrap()
@@ -149,7 +149,7 @@ async fn delegation_forwards_all_three_class_aliases_and_method_filtering() {
             );
             assert_eq!(expected.forwarded_methods, ["run"]);
             assert_eq!(expected.files_modified, ["classes.py"]);
-            assert_eq!(expected.applied, false);
+            assert!(!expected.applied);
             assert_eq!(expected.diagnostics.is_empty(), !reject);
             let response = handle_replace_inheritance_with_delegation(gw.addr(), &root, &args)
                 .await
@@ -229,7 +229,7 @@ async fn hierarchy_apply_writes_exactly_the_preview() {
             _ => handle_replace_inheritance_with_delegation(gw.addr(), &root, &args).await,
         }
         .unwrap();
-        assert_eq!(response.is_error, false);
+        assert!(!response.is_error);
         assert_eq!(ws.read("classes.py"), expected[0].1);
     }
 }

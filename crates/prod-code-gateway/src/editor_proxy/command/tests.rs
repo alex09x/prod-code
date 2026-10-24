@@ -134,6 +134,7 @@ fn a_server_is_offered_only_for_a_language_the_node_has_installed() {
         "vue",
         "assembly",
     ] {
+        #[allow(clippy::manual_flatten)]
         for found in [
             server_command(engine),
             server_command_for_workspace(engine, workspace.path()),

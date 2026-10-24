@@ -256,12 +256,11 @@ async fn structural_search_and_expression_proposals_in_both_forms() {
 
     let location = format!("{abs}:6");
     for file in ["src/lib.rs", abs.as_str()] {
-        let report =
-            json_of(&run!(vec!["propose-expression", file, "6", "String", "--json"]).await);
+        let report = json_of(&run!(&["propose-expression", file, "6", "String", "--json"]).await);
         assert_eq!(report["target_type"], "String");
         assert_eq!(report["location"], location.as_str());
         assert_eq!(report["candidate_count"], 0);
-        let text = succeeded(&run!(vec!["propose-expression", file, "6", "String"]).await);
+        let text = succeeded(&run!(&["propose-expression", file, "6", "String"]).await);
         assert!(
             text.contains(&format!("Target Type: `String` at {location}")),
             "{text}"

@@ -120,6 +120,7 @@ fn some(value: &str) -> Option<String> {
 #[test]
 fn go_literal_values_follow_declaration_order() {
     let d = decl();
+    #[allow(clippy::type_complexity)]
     let cases: &[(&[(&str, &str)], Vec<Option<String>>)] = &[
         (&[], vec![None, None, None]),
         (

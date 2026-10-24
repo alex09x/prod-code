@@ -63,6 +63,8 @@ fn a_group_is_killed_unless_its_leader_was_already_reaped() {
 
 #[test]
 fn waiting_reports_the_raw_status_and_marks_the_child_exited() {
+    // Reaped by `wait_with_usage` through its pid, which is what this test checks.
+    #[allow(clippy::zombie_processes)]
     let child = std::process::Command::new("sh")
         .args(["-c", "exit 3"])
         .spawn()

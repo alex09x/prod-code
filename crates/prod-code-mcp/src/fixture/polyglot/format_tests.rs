@@ -222,6 +222,7 @@ fn mock_flag_routes_every_shape_to_the_mock_generator() {
     let no_m: &[MethodSignature] = &[];
     let no_f: &[(String, String)] = &[];
     // (shape, methods and fields the mock generator must receive)
+    #[allow(clippy::type_complexity)]
     let cases: Vec<(PolyglotShape, &[MethodSignature], &[(String, String)])> = vec![
         (
             PolyglotShape::Interface {

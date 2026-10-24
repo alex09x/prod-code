@@ -154,6 +154,7 @@ async fn unresolved_symbols_leave_every_access_unmatched() {
 #[tokio::test]
 async fn references_that_do_not_add_up_are_named() {
     let ws = workspace(USE);
+    #[allow(clippy::type_complexity)]
     let table: Vec<(Vec<(&str, u32, u32)>, Vec<&str>)> = vec![
         (
             vec![("use.py", 3, 9), ("use.py", 4, 3)],

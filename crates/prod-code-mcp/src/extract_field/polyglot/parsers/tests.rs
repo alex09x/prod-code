@@ -130,8 +130,8 @@ fn member_detection_handles_declaration_forms_and_incomplete_types() {
             expected,
             "{source}"
         );
-        assert_eq!(has_member_named(source, lang, "Absent", "value"), false);
-        assert_eq!(has_member_named(source, lang, "Store", "missing"), false);
+        assert!(!has_member_named(source, lang, "Absent", "value"));
+        assert!(!has_member_named(source, lang, "Store", "missing"));
     }
     for lang in [
         Language::Go,
@@ -149,7 +149,7 @@ fn member_detection_handles_declaration_forms_and_incomplete_types() {
             "type Store struct",
             "type Store struct {",
         ] {
-            assert_eq!(has_member_named(source, lang, "Store", "value"), false);
+            assert!(!has_member_named(source, lang, "Store", "value"));
         }
     }
 }

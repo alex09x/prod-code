@@ -112,17 +112,16 @@ impl Node {
                                         break;
                                     }
                                 }
-                                if !text.is_empty() {
-                                    if framed
+                                if !text.is_empty()
+                                    && framed
                                         .send(WireMessage::ExecChunk(ExecChunk {
                                             stderr: true,
                                             data: Some(text.as_bytes().to_vec()),
                                         }))
                                         .await
                                         .is_err()
-                                    {
-                                        break;
-                                    }
+                                {
+                                    break;
                                 }
                                 WireMessage::ExecExit(ExecExit {
                                     exit_code: code,

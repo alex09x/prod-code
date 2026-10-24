@@ -302,18 +302,10 @@ async fn a_polyglot_request_that_cannot_be_planned_fails_before_the_analyzer_is_
     let root = dir.path();
     let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
     let run = |file: std::path::PathBuf| async move {
-        convert_to_method_polyglot(
-            addr,
-            &root.to_path_buf(),
-            &file,
-            Some("C"),
-            "nope",
-            false,
-            false,
-        )
-        .await
-        .unwrap_err()
-        .to_string()
+        convert_to_method_polyglot(addr, root, &file, Some("C"), "nope", false, false)
+            .await
+            .unwrap_err()
+            .to_string()
     };
     let gone = root.join("gone.ts");
     assert_eq!(

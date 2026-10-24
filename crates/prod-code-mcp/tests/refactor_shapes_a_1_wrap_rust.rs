@@ -191,6 +191,7 @@ async fn wrapping_refusals_name_the_reason() {
     let count = ws.path("src/count.rs");
     let assist_ok = || answers::whole_file(&count, COUNT, COUNT_OPTION);
     // (file, symbol, line, col, wrapper, error, assist answer, expected message)
+    #[allow(clippy::type_complexity)]
     let cases: Vec<(
         &str,
         Option<&str>,

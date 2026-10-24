@@ -46,7 +46,7 @@ fn coverage_swift_diagnostic_variants() {
         ("ready", None, None),
     ] {
         let text = format!("Expectation failed: {expression}");
-        let got = parse_swift_testing_assertion(&[&text], &[text.clone()])
+        let got = parse_swift_testing_assertion(&[&text], std::slice::from_ref(&text))
             .flatten()
             .unwrap();
         assert_eq!(

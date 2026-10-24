@@ -36,6 +36,7 @@ fn rewrite(
 #[test]
 fn typescript_caller_table() {
     let (caller, source, target) = ("/w/src/caller.ts", "/w/src/a.ts", "/w/src/b.ts");
+    #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, Option<(&str, &str)>)] = &[
         (
             "Foo",
@@ -97,6 +98,7 @@ fn typescript_caller_table() {
 fn python_caller_table() {
     let caller = "/w/pkg/c.py";
     let files = ("/w/pkg/a.py", "/w/pkg/b.py");
+    #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, Option<(&str, &str)>)] = &[
         (
             "foo",

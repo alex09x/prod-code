@@ -58,9 +58,7 @@ async fn writer_refuses_dead_process_before_sending() {
         error.to_string(),
         "Language server process has exited before message 'test'"
     );
-    let mut process = child.lock().unwrap();
-    process.start_kill().unwrap();
-    drop(process);
+    child.lock().unwrap().start_kill().unwrap();
     let mut process = Arc::try_unwrap(child).ok().unwrap().into_inner().unwrap();
     process.wait().await.unwrap();
 }

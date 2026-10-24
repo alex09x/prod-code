@@ -211,6 +211,7 @@ fn test_enclosing_symbol_lookup() {
 #[test]
 fn root_entry_points_are_classified_by_name_kind_path_and_export() {
     // (language, path, name, kind, exported, include_exported, expected reason)
+    #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, &str, &str, bool, bool, Option<&str>)] = &[
         (
             "go",

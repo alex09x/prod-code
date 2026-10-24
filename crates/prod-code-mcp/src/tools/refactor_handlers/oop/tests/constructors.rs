@@ -65,7 +65,7 @@ async fn constructor_handlers_forward_defaults_names_and_diagnostics() {
             );
             assert_eq!(expected.declared_fields, ["value: i32"]);
             assert_eq!(expected.instantiations_rewritten, 1);
-            assert_eq!(expected.applied, false);
+            assert!(!expected.applied);
             assert_eq!(expected.diagnostics.is_empty(), !reject);
             let response = if builder {
                 handle_replace_constructor_with_builder(gw.addr(), &root, &args)
@@ -126,7 +126,7 @@ async fn constructors_apply_the_exact_preview_and_preserve_absolute_paths() {
                 .await
                 .unwrap()
         };
-        assert_eq!(result.is_error, false);
+        assert!(!result.is_error);
         assert_eq!(expected.rewritten[0].0, file.to_string_lossy());
         assert_eq!(ws.read("item.rs"), expected.rewritten[0].1);
     }

@@ -83,15 +83,17 @@ fn coverage_b2_rollback_all_step_kinds_and_failures() {
     std::fs::write(p("created"), b"created").unwrap();
     std::fs::create_dir_all(p("tree/child")).unwrap();
     std::fs::write(p("moved"), b"moved").unwrap();
-    let mut journal = Journal::default();
-    journal.undo = vec![
-        Undo::Write(p("written"), b"old".to_vec()),
-        Undo::Write(p("same"), b"old".to_vec()),
-        Undo::RemoveFile(p("created")),
-        Undo::RemoveFile(p("absent")),
-        Undo::RemovePath(p("tree")),
-        Undo::Move(p("moved"), p("original")),
-    ];
+    let mut journal = Journal {
+        undo: vec![
+            Undo::Write(p("written"), b"old".to_vec()),
+            Undo::Write(p("same"), b"old".to_vec()),
+            Undo::RemoveFile(p("created")),
+            Undo::RemoveFile(p("absent")),
+            Undo::RemovePath(p("tree")),
+            Undo::Move(p("moved"), p("original")),
+        ],
+        ..Default::default()
+    };
     assert_eq!(journal.roll_back(), (4, vec![]));
     assert_eq!(std::fs::read(p("written")).unwrap(), b"old");
     assert_eq!(std::fs::read(p("original")).unwrap(), b"moved");

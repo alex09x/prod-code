@@ -111,14 +111,14 @@ pub fn discover_auto_nodes_sync() -> Vec<prod_code_protocol::discovery::Discover
 fn discovery_seeds(cache_path: Option<&std::path::Path>, specs: &[String]) -> Vec<SocketAddr> {
     let mut seeds = Vec::new();
     if let Some(path) = cache_path
-        && let Ok(bytes) = std::fs::read(&path)
+        && let Ok(bytes) = std::fs::read(path)
         && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
     {
         for n in cache.nodes {
-            if let Ok(addr) = n.parse::<SocketAddr>() {
-                if !seeds.contains(&addr) {
-                    seeds.push(addr);
-                }
+            if let Ok(addr) = n.parse::<SocketAddr>()
+                && !seeds.contains(&addr)
+            {
+                seeds.push(addr);
             }
         }
     }
