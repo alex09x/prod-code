@@ -14,6 +14,10 @@ use anyhow::{Result, anyhow};
 
 use super::discover::{ClusterCache, cluster_cache_path};
 
+#[cfg(test)]
+#[path = "parse_tests.rs"]
+mod tests;
+
 /// Parses `host:port[,host:port...]` (spaces allowed) or `auto` into resolved addresses, in order.
 ///
 /// Supports `*.code.internal` virtual domains (e.g. `shop.code.internal`), resolving them via
@@ -76,41 +80,11 @@ pub fn parse_remotes(spec: &str) -> Result<Vec<SocketAddr>> {
 
 /// Discovers live cluster nodes synchronously using active UDP probes and cached gossip.
 pub fn discover_auto_nodes_sync() -> Vec<prod_code_protocol::discovery::DiscoveredNode> {
-    let mut seeds = Vec::new();
-    if let Some(path) = cluster_cache_path()
-        && let Ok(bytes) = std::fs::read(&path)
-        && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
-    {
-        for n in cache.nodes {
-            if let Ok(addr) = n.parse::<SocketAddr>() {
-                if !seeds.contains(&addr) {
-                    seeds.push(addr);
-                }
-            }
-        }
-    }
-    for env_var in &["PROD_CODE_SEEDS", "PROD_CODE_CLUSTER"] {
-        if let Ok(seeds_spec) = std::env::var(env_var) {
-            let spec = seeds_spec.trim();
-            if !spec.eq_ignore_ascii_case("auto")
-                && !spec.eq_ignore_ascii_case("10g")
-                && !spec.eq_ignore_ascii_case("true")
-                && !spec.eq_ignore_ascii_case("1")
-                && !spec.eq_ignore_ascii_case("lan")
-            {
-                for s in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                    if let Ok(addrs) = s.to_socket_addrs() {
-                        for addr in addrs {
-                            if !seeds.contains(&addr) {
-                                seeds.push(addr);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    let specs: Vec<_> = ["PROD_CODE_SEEDS", "PROD_CODE_CLUSTER"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .collect();
+    let seeds = discovery_seeds(cluster_cache_path().as_deref(), &specs);
     let mut discovered = prod_code_protocol::discovery::discover(&seeds);
 
     // Also populate stub DiscoveredNode for any cached nodes that didn't reply to UDP in 250ms
@@ -132,6 +106,42 @@ pub fn discover_auto_nodes_sync() -> Vec<prod_code_protocol::discovery::Discover
     }
 
     discovered
+}
+
+fn discovery_seeds(cache_path: Option<&std::path::Path>, specs: &[String]) -> Vec<SocketAddr> {
+    let mut seeds = Vec::new();
+    if let Some(path) = cache_path
+        && let Ok(bytes) = std::fs::read(&path)
+        && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
+    {
+        for n in cache.nodes {
+            if let Ok(addr) = n.parse::<SocketAddr>() {
+                if !seeds.contains(&addr) {
+                    seeds.push(addr);
+                }
+            }
+        }
+    }
+    for seeds_spec in specs {
+            let spec = seeds_spec.trim();
+            if !spec.eq_ignore_ascii_case("auto")
+                && !spec.eq_ignore_ascii_case("10g")
+                && !spec.eq_ignore_ascii_case("true")
+                && !spec.eq_ignore_ascii_case("1")
+                && !spec.eq_ignore_ascii_case("lan")
+            {
+                for s in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    if let Ok(addrs) = s.to_socket_addrs() {
+                        for addr in addrs {
+                            if !seeds.contains(&addr) {
+                                seeds.push(addr);
+                            }
+                        }
+                    }
+                }
+            }
+    }
+    seeds
 }
 
 /// Resolves cluster seed addresses automatically from UDP multicast discovery,

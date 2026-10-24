@@ -19,6 +19,10 @@ use ignore::overrides::OverrideBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "fallback_tests.rs"]
+mod tests;
+
 pub(super) fn run_in_process_grep(
     root: &Path,
     search_path: &Path,

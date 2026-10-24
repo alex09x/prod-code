@@ -12,6 +12,10 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;
+
 /// Maximum size of a single stream chunk (1 MB).
 pub const MAX_STREAM_CHUNK_BYTES: usize = 1024 * 1024;
 /// Maximum accumulated source buffer allowed per stream session (16 MB).

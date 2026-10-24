@@ -22,6 +22,10 @@ use crate::diagnostics::stream::types::{
 use crate::diagnostics::types::{HallucinationInterception, HallucinationKind, StreamChunkResult};
 use crate::diagnostics::validate::single::validate_text;
 
+#[cfg(test)]
+#[path = "feed_tests.rs"]
+mod tests;
+
 impl StreamSessionManager {
     /// Feed a chunk into a stateful streaming session and validate incrementally.
     pub async fn feed_chunk(
