@@ -267,3 +267,6 @@ pub(crate) async fn handle_encapsulate_field(
         McpToolCallResult::error(text)
     })
 }
+
+#[cfg(test)]
+mod tests;

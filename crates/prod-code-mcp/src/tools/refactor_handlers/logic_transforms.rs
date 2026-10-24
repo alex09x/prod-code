@@ -234,3 +234,6 @@ pub(crate) async fn handle_invert_boolean(
         McpToolCallResult::error(text)
     })
 }
+
+#[cfg(test)]
+mod tests;

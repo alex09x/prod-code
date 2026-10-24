@@ -326,3 +326,6 @@ pub(crate) async fn handle_wrap_return(
         McpToolCallResult::error(text)
     })
 }
+
+#[cfg(test)]
+mod tests;
