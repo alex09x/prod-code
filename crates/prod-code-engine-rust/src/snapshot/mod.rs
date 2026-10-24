@@ -23,6 +23,7 @@ use std::sync::Arc;
 use crate::types::HierarchyItem;
 use crate::vfs::{is_safe_file_id, line_col_to_offset, normalize_vfs_path, offset_to_line_col};
 
+mod dependency_symbols;
 pub mod diagnostics;
 mod extract_control_flow;
 pub mod hierarchy;

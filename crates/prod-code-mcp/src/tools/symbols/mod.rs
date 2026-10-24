@@ -15,6 +15,7 @@ pub mod alias;
 mod ambiguity;
 pub(crate) mod bindings;
 pub mod declared_at;
+mod dependencies;
 pub mod matching;
 pub mod nested_projects;
 mod relative;

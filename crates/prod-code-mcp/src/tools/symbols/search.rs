@@ -117,7 +117,7 @@ pub(crate) async fn workspace_symbol_search_with_retry_policy(
     Ok(hits)
 }
 
-fn parse_workspace_symbol_hits(
+pub(super) fn parse_workspace_symbol_hits(
     root: &Path,
     query: &str,
     res: &serde_json::Value,

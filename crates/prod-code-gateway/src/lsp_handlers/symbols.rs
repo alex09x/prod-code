@@ -24,6 +24,8 @@ pub(crate) fn lsp_workspace_symbol(
         .unwrap_or("")
         .to_string();
     let limit = params.get("limit").and_then(|l| l.as_u64()).unwrap_or(64) as usize;
+    let dependencies = params.get("searchScope").and_then(|s| s.as_str()) == Some("dependencies");
+    let timeout = semantic_query_budget(params);
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -40,12 +42,19 @@ pub(crate) fn lsp_workspace_symbol(
 
     tokio::task::spawn(async move {
         let q = query.clone();
-        let syms = execute_bounded_query(
+        let syms = execute_bounded_query_with_timeout(
             &engine_arc,
             session_id,
             &ws_root,
             is_single_owner,
-            move |snapshot| snapshot.workspace_symbols(&q, limit),
+            timeout,
+            move |snapshot| {
+                if dependencies {
+                    snapshot.dependency_symbols(&q, limit)
+                } else {
+                    snapshot.workspace_symbols(&q, limit)
+                }
+            },
         )
         .await
         .unwrap_or_default();

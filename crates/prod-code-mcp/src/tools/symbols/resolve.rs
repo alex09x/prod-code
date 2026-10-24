@@ -105,13 +105,28 @@ pub(crate) async fn resolve_symbol_ties(
                     if !unindexed_qualified.is_empty() {
                         unindexed_qualified
                     } else {
-                        if others.is_empty() {
-                            let prefix: String = name.chars().take(3).collect();
-                            others = symbol_search_across_projects(remote, root, &prefix, hint, 30)
-                                .await
-                                .unwrap_or_default();
+                        let dependencies = super::dependencies::dependency_symbol_search(
+                            remote, root, &absolute, qualifiers, hint,
+                        )
+                        .await?;
+                        let (found, nearby): (Vec<_>, Vec<_>) =
+                            dependencies.into_iter().partition(|hit| {
+                                bare_symbol_name(&hit.name).eq_ignore_ascii_case(name)
+                            });
+                        if !found.is_empty() {
+                            found
+                        } else {
+                            if !nearby.is_empty() {
+                                others = nearby;
+                            } else if others.is_empty() {
+                                let prefix: String = name.chars().take(3).collect();
+                                others =
+                                    symbol_search_across_projects(remote, root, &prefix, hint, 30)
+                                        .await
+                                        .unwrap_or_default();
+                            }
+                            anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
                         }
-                        anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
                     }
                 }
             }
