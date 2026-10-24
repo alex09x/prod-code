@@ -55,6 +55,12 @@ pub async fn handle_rust_lsp(
                 return Some(Flow::Next);
             }
         }
+        Some("prodCode/modulePath") => {
+            if let Some(params) = val.get("params") {
+                lsp_module_path(out_tx, translator, view, id, params, engine_lock);
+                return Some(Flow::Next);
+            }
+        }
         Some("prodCode/assists") | Some("prodCode/applyAssist") => {
             if let Some(params) = val.get("params") {
                 lsp_assists(out_tx, translator, view, method, id, params, engine_lock);

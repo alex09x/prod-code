@@ -12,12 +12,15 @@
 
 pub mod across_projects;
 pub mod alias;
+mod ambiguity;
 pub(crate) mod bindings;
 pub mod declared_at;
 pub mod matching;
 pub mod nested_projects;
+mod relative;
 pub mod resolve;
 pub mod search;
+mod source_members;
 pub mod sources;
 pub mod type_members;
 pub mod types;

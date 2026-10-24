@@ -25,67 +25,7 @@ use url::Url;
 
 pub(crate) const TYPE_MEMBERS_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 
-pub(crate) fn find_source_members(
-    root: &Path,
-    path: &Path,
-    owner: &[&str],
-    member: &str,
-) -> Vec<SymbolHit> {
-    let Some(text) = read_name_scan_text(path) else {
-        return Vec::new();
-    };
-    let type_name = owner.last().copied().unwrap_or_default();
-    if !names_word(&text, member) || (!type_name.is_empty() && !names_word(&text, type_name)) {
-        return Vec::new();
-    }
-    if !type_name.is_empty() && !owner_path_matches(root, path, owner, &[type_name.to_string()]) {
-        return Vec::new();
-    }
-    let is_go = path.extension().and_then(|e| e.to_str()) == Some("go");
-    let file_declares_type =
-        type_name.is_empty() || text.lines().any(|l| declared_at(l, type_name).is_some());
-    let mut hits = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        let Some(col) = declared_at(line, member) else {
-            continue;
-        };
-        let trimmed = line.trim_start();
-        if is_go {
-            if trimmed.starts_with("func") {
-                let prefix: String = line.chars().take(col).collect();
-                if !type_name.is_empty() && !names_word(&prefix, type_name) {
-                    continue;
-                }
-            } else {
-                // Go struct fields do not use `name: Value`; a colon after `member` in Go is a
-                // composite literal key or label, not a member declaration (#1110).
-                let after: String = line.chars().skip(col + member.chars().count()).collect();
-                if !file_declares_type || after.trim_start().starts_with(':') {
-                    continue;
-                }
-            }
-        } else if ["struct ", "enum ", "trait ", "class ", "interface ", "mod "]
-            .iter()
-            .any(|kw| trimmed.starts_with(kw) || trimmed.contains(&format!(" {kw}")))
-            || (!file_declares_type && !trimmed.contains("fn "))
-        {
-            continue;
-        }
-        hits.push(SymbolHit {
-            path: path.to_path_buf(),
-            name: member.to_string(),
-            kind: if trimmed.starts_with("func") || trimmed.contains("fn ") {
-                "Method"
-            } else {
-                "Property"
-            },
-            container: Some(owner.join("::")),
-            line: index as u32 + 1,
-            col: col as u32 + 1,
-        });
-    }
-    hits
-}
+pub(crate) use super::source_members::find_source_members;
 
 /// The members called `member` of the type called `type_name`, read from the outline of each
 /// file that declares the type. The type is resolved the way a symbol is, by its exact name;
@@ -104,6 +44,16 @@ pub(crate) async fn type_members(
     let types = symbol_search_across_projects(remote, root, type_name, hint, 50)
         .await
         .unwrap_or_default();
+    if types.iter().any(|hit| {
+        hit.path.extension().is_some_and(|ext| ext == "rs")
+            && bare_symbol_name(&hit.name).eq_ignore_ascii_case(type_name)
+            && matches!(hit.kind, "Module" | "Namespace")
+    }) && !types.iter().any(|hit| {
+        bare_symbol_name(&hit.name).eq_ignore_ascii_case(type_name)
+            && matches!(hit.kind, "Struct" | "Class" | "Enum" | "Interface")
+    }) {
+        return Ok(Vec::new());
+    }
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     if let Some(h) = hint {
         let p = if h.is_absolute() {
@@ -327,9 +277,14 @@ pub(crate) fn collect_members(
     out: &mut Vec<(String, u64, u32, u32)>,
 ) -> Result<()> {
     let type_name = owner.last().copied().unwrap_or_default();
+    // A Rust type's members are fields, methods and associated items, never a Variable (13):
+    // that kind is a local binding, which a flat outline files under its function's name.
+    // Python class attributes are Variables, so this holds for Rust only.
+    let rust = path.extension().is_some_and(|ext| ext == "rs");
     let is_member = |sym: &serde_json::Value| {
         let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        bare_symbol_name(name).eq_ignore_ascii_case(member)
+        let kind = sym.get("kind").and_then(|kind| kind.as_u64()).unwrap_or(0);
+        bare_symbol_name(name).eq_ignore_ascii_case(member) && !(rust && kind == 13)
     };
     for sym in symbols.as_array().into_iter().flatten() {
         let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
@@ -347,14 +302,20 @@ pub(crate) fn collect_members(
         };
         let mut declared = ancestors.to_vec();
         declared.extend(owner_segments(name));
-        if names_type(name, type_name) && owner_path_matches(root, path, owner, &declared) {
+        let kind = sym.get("kind").and_then(|kind| kind.as_u64()).unwrap_or(0);
+        // A function's children are its locals, never members: `fn noise` must not own the
+        // `let state` that `Noise::state` asks about (names compare without case).
+        let owns_members = !matches!(kind, 6..=9 | 12..=14);
+        if owns_members
+            && names_type(name, type_name)
+            && owner_path_matches(root, path, owner, &declared)
+        {
             for child in children.as_array().into_iter().flatten() {
                 if is_member(child) {
                     out.push(member_at(child)?);
                 }
             }
         }
-        let kind = sym.get("kind").and_then(|kind| kind.as_u64()).unwrap_or(0);
         let nested_ancestors = if matches!(kind, 2..=5 | 10 | 11 | 23) {
             declared
         } else {

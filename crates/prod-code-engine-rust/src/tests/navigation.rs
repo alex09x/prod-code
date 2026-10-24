@@ -258,9 +258,9 @@ fn symbol_search_falls_back_to_dependency_crates() {
     let shared = engine.workspace_symbols("SharedName", 10).unwrap();
     assert!(!shared.is_empty(), "the workspace struct is found");
     assert!(
-        shared
-            .iter()
-            .all(|s| !s.path.to_string_lossy().contains("/vendor/") && s.container.is_none()),
+        shared.iter().all(|s| {
+            !s.path.to_string_lossy().contains("/vendor/") && s.container.as_deref() == Some("app")
+        }),
         "a workspace hit suppresses the fallback: {shared:?}"
     );
 }

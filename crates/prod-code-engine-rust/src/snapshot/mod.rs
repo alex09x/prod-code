@@ -27,6 +27,7 @@ pub mod diagnostics;
 mod extract_control_flow;
 pub mod hierarchy;
 pub(crate) mod lifetime;
+mod module_path;
 pub mod navigation;
 pub mod refactor;
 pub mod ssr;
