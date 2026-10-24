@@ -271,3 +271,6 @@ fn collect_functions(symbols: &[serde_json::Value], out: &mut Vec<(String, u32, 
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -85,3 +85,6 @@ fn the_report_says_what_the_signature_became_and_who_was_checked() {
     ok.applied = true;
     assert!(ok.render().contains("0 errors") && ok.render().contains("[applied]"));
 }
+
+mod decl_param;
+mod syntax;

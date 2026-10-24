@@ -207,3 +207,154 @@ fn test_enclosing_symbol_lookup() {
     // Reference outside should return None
     assert_eq!(graph.find_enclosing_symbol("src/lib.rs", 25, 1), None);
 }
+
+#[test]
+fn root_entry_points_are_classified_by_name_kind_path_and_export() {
+    // (language, path, name, kind, exported, include_exported, expected reason)
+    let cases: &[(&str, &str, &str, &str, bool, bool, Option<&str>)] = &[
+        (
+            "go",
+            "a.go",
+            "main(args)",
+            "function",
+            false,
+            true,
+            Some("entry-point function `main`"),
+        ),
+        (
+            "rust",
+            "a.rs",
+            "draw",
+            "trait-method",
+            false,
+            true,
+            Some("trait or interface implementation (dynamic dispatch)"),
+        ),
+        (
+            "python",
+            "a.py",
+            "run",
+            "method",
+            false,
+            true,
+            Some("trait or interface implementation (dynamic dispatch)"),
+        ),
+        ("rust", "a.rs", "run", "method", false, true, None),
+        (
+            "rust",
+            "a.rs",
+            "fmt",
+            "method",
+            false,
+            true,
+            Some("standard lifecycle/protocol hook `fmt`"),
+        ),
+        (
+            "python",
+            "a.py",
+            "__enter__",
+            "function",
+            false,
+            true,
+            Some("standard lifecycle/protocol hook `__enter__`"),
+        ),
+        (
+            "rust",
+            "a.rs",
+            "drop",
+            "function",
+            false,
+            true,
+            Some("standard lifecycle/protocol hook `drop`"),
+        ),
+        (
+            "go",
+            "a_test.go",
+            "TestParse",
+            "function",
+            false,
+            true,
+            Some("test entry point `TestParse`"),
+        ),
+        (
+            "python",
+            "pkg/__main__.py",
+            "run",
+            "function",
+            false,
+            true,
+            Some("entry script item in `pkg/__main__.py`"),
+        ),
+        (
+            "python",
+            "__MAIN__.py",
+            "run",
+            "function",
+            false,
+            true,
+            Some("entry script item in `__MAIN__.py`"),
+        ),
+        (
+            "python",
+            "pkg/other.py",
+            "run",
+            "function",
+            false,
+            true,
+            None,
+        ),
+        (
+            "typescript",
+            "index.ts",
+            "start",
+            "function",
+            true,
+            true,
+            Some("entry script item in `index.ts`"),
+        ),
+        (
+            "javascript",
+            "Server.js",
+            "start",
+            "function",
+            true,
+            true,
+            Some("entry script item in `Server.js`"),
+        ),
+        (
+            "typescript",
+            "index.ts",
+            "start",
+            "function",
+            false,
+            true,
+            None,
+        ),
+        (
+            "typescript",
+            "src/index.ts",
+            "start",
+            "function",
+            true,
+            true,
+            None,
+        ),
+        ("go", "index.ts", "start", "function", true, true, None),
+        (
+            "go",
+            "a.go",
+            "Serve",
+            "function",
+            true,
+            false,
+            Some("exported public API (library root entry point)"),
+        ),
+        ("go", "a.go", "Serve", "function", true, true, None),
+        ("go", "a.go", "helper", "function", false, false, None),
+    ];
+    for (lang, path, name, kind, exported, include, want) in cases {
+        let got = is_root_entry_point(lang, path, name, kind, *exported, *include);
+        assert_eq!(got.1.as_deref(), *want, "{lang} {path} {name} {kind}");
+        assert_eq!(got.0, want.is_some());
+    }
+}

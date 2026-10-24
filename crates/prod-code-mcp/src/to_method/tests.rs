@@ -222,3 +222,124 @@ func main() {
     assert!(transformed.contains("func (s *Service) Process(data string) string {"));
     assert!(transformed.contains("svc.Process(\"test\")"));
 }
+
+fn made(file: &str, owner: &str, receiver: &str) -> MadeMethod {
+    MadeMethod {
+        owner: owner.into(),
+        method: "m".into(),
+        root: "/nonexistent".into(),
+        file: file.into(),
+        parameter: "p: T".into(),
+        receiver: receiver.into(),
+        renamed_uses: 3,
+        rewritten_calls: 4,
+        unchanged: vec![],
+        unmatched: vec![],
+        rewritten: vec![],
+        diagnostics: vec![],
+        applied: false,
+    }
+}
+
+#[test]
+fn the_report_spells_the_call_target_and_receiver_per_language() {
+    // (file, owner, receiver, call target, receiver spelled in the body)
+    let cases = [
+        ("a.ts", "C", "this", "C.m", "this"),
+        ("a.tsx", "C", "this", "C.m", "this"),
+        ("a.js", "C", "this", "C.m", "this"),
+        ("a.jsx", "C", "this", "C.m", "this"),
+        ("a.py", "C", "self", "C.m", "self"),
+        ("a.swift", "C", "self", "C.m", "self"),
+        ("a.go", "S", "(s *S)", "S.m", "(s *S)"),
+        ("a.go", "", "(s *S)", "m", "(s *S)"),
+        ("a.cpp", "C", "*this", "C::m", "this"),
+        ("a.cc", "C", "*this", "C::m", "this"),
+        ("a.cxx", "C", "*this", "C::m", "this"),
+        ("a.h", "C", "*this", "C::m", "this"),
+        ("a.hpp", "C", "*this", "C::m", "this"),
+        ("a.rs", "C", "&self", "C::m", "self"),
+        ("a.rs", "", "&self", "m", "self"),
+    ];
+    for (file, owner, receiver, target, in_body) in cases {
+        let text = made(file, owner, receiver).render(100);
+        let want = format!(
+            "`{target}` ({file})\n\n- the parameter `p: T` becomes the receiver `{receiver}`; 3 use(s) of it in the body are now `{in_body}`\n- 4 call site(s) now call it as a method\n\n0 changed line(s) in 0 file(s)\n\n\nthe analyzer accepts the result: 0 errors\n\nnothing was written; pass `apply: true` to make these edits\n"
+        );
+        assert_eq!(text, want, "{file} {owner:?}");
+    }
+}
+
+#[test]
+fn the_report_shows_the_diff_cut_to_budget_unmatched_positions_and_rejections() {
+    let dir = tempfile::Builder::new().prefix("tm").tempdir().unwrap();
+    let path = dir.path().join("lib.rs");
+    std::fs::write(&path, "fn a() {}\nfn b() {}\n").unwrap();
+    let mut done = made("lib.rs", "C", "&self");
+    done.root = dir.path().to_path_buf();
+    done.rewritten = vec![(
+        path.to_string_lossy().into_owned(),
+        "fn a() {}\nfn c() {}\n".into(),
+    )];
+    done.unmatched = vec!["lib.rs:7:1".into()];
+    done.diagnostics = vec!["lib.rs:2: nope".into()];
+    done.applied = true;
+    let full = done.render(10_000);
+    assert!(full.contains("2 changed line(s) in 1 file(s)\n\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1,2 +1,2 @@\n fn a() {}\n-fn b() {}\n+fn c() {}\n"));
+    assert!(full.contains(
+        "\nnot rewritten; nothing is written while any remains, forced or not:\n  lib.rs:7:1\n"
+    ));
+    assert!(full.contains("\nthe analyzer rejects the result:\n  lib.rs:2: nope\n"));
+    assert!(full.ends_with("\n[applied to 1 file(s)]\n"));
+    let cut = done.render(5);
+    assert!(cut.contains("file(s)\n\n--- a\n… diff truncated\n"));
+}
+
+#[tokio::test]
+async fn a_polyglot_request_that_cannot_be_planned_fails_before_the_analyzer_is_asked() {
+    use super::polyglot::convert_to_method_polyglot;
+    let dir = tempfile::Builder::new().prefix("tm").tempdir().unwrap();
+    let root = dir.path();
+    let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+    let run = |file: std::path::PathBuf| async move {
+        convert_to_method_polyglot(
+            addr,
+            &root.to_path_buf(),
+            &file,
+            Some("C"),
+            "nope",
+            false,
+            false,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+    };
+    let gone = root.join("gone.ts");
+    assert_eq!(
+        run(gone.clone()).await,
+        format!("Cannot read {}", gone.display())
+    );
+    let notes = root.join("notes.txt");
+    std::fs::write(&notes, "class C {}\n").unwrap();
+    assert_eq!(
+        run(notes.clone()).await,
+        format!("Unsupported language for file: {}", notes.display())
+    );
+    let mut seen = Vec::new();
+    for name in ["a.ts", "a.py", "a.cpp", "a.swift", "a.go"] {
+        let file = root.join(name);
+        std::fs::write(&file, "").unwrap();
+        seen.push(format!("{name}: {}", run(file).await));
+    }
+    assert_eq!(
+        seen,
+        [
+            "a.ts: Could not find class in TypeScript/JavaScript file",
+            "a.py: Could not find class in Python file",
+            "a.cpp: Could not find class/struct in C++ file",
+            "a.swift: Could not find class/struct in Swift file",
+            "a.go: Function `nope` not found in Go file",
+        ]
+    );
+}

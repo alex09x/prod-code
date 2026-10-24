@@ -19,3 +19,6 @@ pub(crate) mod types;
 
 pub use self::execute::delete_function;
 pub use self::types::DeletedFunction;
+
+#[cfg(test)]
+mod tests;

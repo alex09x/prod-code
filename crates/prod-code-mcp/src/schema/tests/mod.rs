@@ -9,5 +9,7 @@
  */
 
 mod casing;
+mod detect;
 mod edits;
 mod structure;
+mod types;
