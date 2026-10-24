@@ -14,6 +14,9 @@
 - **Moving an Item Into Its Parent Updates the Parent's Re-Export** (`crates/prod-code-mcp`):
   `code_move` of `run_stdio_mcp_server` from `server/transport.rs` into `server/mod.rs` refused with `unresolved import [E0432]`. The parent still re-exported the function from the child (`pub use transport::{...}`), because references inside the destination file were skipped. The destination's import of the moved name is now dropped like any other stale import: grouped siblings stay, and an emptied `use` goes (#1201).
 
+### Tests
+- **Qualified Lookup Against Same-Named Wrappers** (`crates/prod-code-gateway`): the real-analyzer table for qualified Rust definitions gains 13 rows, among them a same-named wrapper that calls the original (`signature::offset_of` against `move_item::offset_of`), nested wrappers, `pub(crate)` originals and a method next to a free function. The behaviour itself was fixed by #1224 (#1221).
+
 ## v0.3.38 — 2026-10-22
 
 ### Fixed
