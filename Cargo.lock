@@ -2158,6 +2158,7 @@ dependencies = [
  "notify",
  "prod-code-protocol",
  "prod-code-testkit",
+ "regex",
  "serde",
  "serde_json",
  "similar",

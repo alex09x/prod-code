@@ -72,16 +72,31 @@ pub(super) fn check(root: &Path, texts: &[&str]) -> Result<()> {
             continue;
         };
         let absolute = root.join(relative);
-        for name in [
-            Some(path),
-            relative.file_name().and_then(|name| name.to_str()),
-            relative.file_stem().and_then(|name| name.to_str()),
-            absolute.to_str(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            record(texts, name, false, &mut offending);
+        // Every checkout has an error.rs, src/main.rs or a config module: a name built only
+        // from generic words identifies nothing, and refusing it would refuse every report.
+        let generic_path = relative.iter().all(|part| {
+            let part = Path::new(part);
+            part.file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(declarations::generic)
+        });
+        if let Some(absolute) = absolute.to_str() {
+            record(texts, absolute, false, &mut offending);
+        }
+        if !generic_path {
+            for name in [
+                Some(path),
+                relative.file_name().and_then(|name| name.to_str()),
+                relative
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .filter(|stem| !declarations::generic(stem)),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                record(texts, name, false, &mut offending);
+            }
         }
         let Ok(metadata) = std::fs::symlink_metadata(&absolute) else {
             continue;

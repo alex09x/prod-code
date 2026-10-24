@@ -163,6 +163,47 @@ async fn report_lists_all_tokens_checks_titles_and_allows_neutral_reports() {
 }
 
 #[tokio::test]
+async fn report_generic_file_names_do_not_refuse_ordinary_words() {
+    let dir = checkout();
+    for (path, text) in [
+        ("src/main.rs", "fn main() {}\n"),
+        ("src/error.rs", "pub enum Error {}\n"),
+        ("src/config/mod.rs", "pub struct Config;\n"),
+        ("src/types.rs", "pub type Id = u64;\n"),
+    ] {
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+        git(dir.path(), &["add", path]);
+    }
+    let body = format!(
+        "{BODY} The error came from src/main.rs; a config module and types in error.rs were involved."
+    );
+    assert!(matches!(
+        attempt(dir.path(), "A lookup returned an error", &body, true, false)
+            .await
+            .unwrap(),
+        Outcome::DryRun(_)
+    ));
+    // A specific name next to the generic ones is still refused.
+    let error = attempt(
+        dir.path(),
+        "A lookup returned an error",
+        &format!("{body} sample_record.rs"),
+        true,
+        false,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("`sample_record.rs`"), "{error}");
+    assert!(
+        !error.contains("`main.rs`") && !error.contains("`error`"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn report_explicit_override_and_public_remote_keep_existing_behavior() {
     let dir = checkout();
     let body = format!("{BODY} SampleRecord src/sample_record.rs");
@@ -300,7 +341,12 @@ async fn report_checks_private_reference_and_schema_explains_the_policy() {
         .into_iter()
         .find(|tool| tool.name == "code_report_issue")
         .unwrap();
-    assert!(schema.description.starts_with("PUBLIC REPORT:"));
+    assert!(
+        schema
+            .description
+            .starts_with("Report a bug in prod-code ITSELF")
+    );
+    assert!(schema.description.contains("The issue is PUBLIC"));
     assert!(schema.description.contains("comments"));
     assert_eq!(
         schema.input_schema["properties"]["allow_private_names"]["default"],
