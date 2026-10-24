@@ -131,63 +131,74 @@ async fn move_position_encoding_table() {
 
 #[tokio::test]
 async fn move_genuinely_stale_reference_still_refuses_every_write() {
-    let source = format!("{ITEM}pub fn unrelated() {{}}\n");
-    let ws = Workspace::new(&[
-        (
-            "Cargo.toml",
-            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-        ),
-        ("src/lib.rs", "pub mod dex_oracle;\n"),
-        ("src/dex_oracle.rs", &source),
-    ]);
-    let file = ws.path("src/dex_oracle.rs");
-    let path = file.clone();
-    let remote = ScriptedGateway::start(move |method, _| match method {
-        "textDocument/documentSymbol" => {
-            serde_json::json!([answers::document_symbol("DexOracleState", 23, 1, 3, 12)])
-        }
-        "textDocument/references" => answers::locations(&path, &[(4, 8)]),
-        "textDocument/diagnostic" => answers::no_diagnostics(),
-        _ => serde_json::Value::Null,
-    })
-    .await;
-    let target = ws.path("src/dex_oracle_types.rs");
-    let expected = "src/dex_oracle.rs:1:8 (the analyzer places `DexOracleState` here, but the file says otherwise)";
-    let dry = move_item(
-        remote.addr(),
-        &ws.root(),
-        &file,
-        1,
-        12,
-        &target,
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    assert_eq!(dry.unmatched, [expected]);
-    for force in [false, true] {
-        let error = move_item(
+    // Positions on either side of the cut must name the unchanged on-disk file.
+    for (source, declaration, stale_line) in [
+        (format!("{ITEM}pub fn unrelated() {{}}\n"), 1, 4),
+        (format!("pub fn unrelated() {{}}\n{ITEM}"), 2, 1),
+    ] {
+        let ws = Workspace::new(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            ("src/lib.rs", "pub mod dex_oracle;\n"),
+            ("src/dex_oracle.rs", &source),
+        ]);
+        let file = ws.path("src/dex_oracle.rs");
+        let path = file.clone();
+        let remote = ScriptedGateway::start(move |method, _| match method {
+            "textDocument/documentSymbol" => serde_json::json!([answers::document_symbol(
+                "DexOracleState",
+                23,
+                declaration,
+                declaration + 2,
+                12
+            )]),
+            "textDocument/references" => answers::locations(&path, &[(stale_line, 8)]),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        })
+        .await;
+        let target = ws.path("src/dex_oracle_types.rs");
+        let expected = format!(
+            "src/dex_oracle.rs:{stale_line}:8 (the analyzer places `DexOracleState` here, but the file says otherwise)"
+        );
+        let dry = move_item(
             remote.addr(),
             &ws.root(),
             &file,
-            1,
+            declaration,
             12,
             &target,
-            true,
-            force,
+            false,
+            false,
         )
         .await
-        .unwrap_err()
-        .to_string();
-        assert_eq!(
-            error,
-            format!(
-                "1 reference(s) to `DexOracleState` were not rewritten; nothing was written:\n  {expected}"
+        .unwrap();
+        assert_eq!(dry.unmatched, [expected.clone()]);
+        for force in [false, true] {
+            let error = move_item(
+                remote.addr(),
+                &ws.root(),
+                &file,
+                declaration,
+                12,
+                &target,
+                true,
+                force,
             )
-        );
-        assert_eq!(ws.read("src/dex_oracle.rs"), source);
-        assert_eq!(ws.read("src/lib.rs"), "pub mod dex_oracle;\n");
-        assert!(!target.exists());
+            .await
+            .unwrap_err()
+            .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "1 reference(s) to `DexOracleState` were not rewritten; nothing was written:\n  {expected}"
+                )
+            );
+            assert_eq!(ws.read("src/dex_oracle.rs"), source);
+            assert_eq!(ws.read("src/lib.rs"), "pub mod dex_oracle;\n");
+            assert!(!target.exists());
+        }
     }
 }

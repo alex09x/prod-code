@@ -82,7 +82,7 @@ fn git(root: &Path, args: &[&str]) {
 const ITEM: &str = "pub struct DexOracleState {\n    pub value: u32,\n    // Snapshot metadata.\n    // 01\n    // 02\n    // 03\n    // 04\n    // 05\n    // 06\n    // 07\n    // 08\n    // 09\n    // 10\n    // 11\n    // 12\n    // 13\n    // 14\n    // 15\n    // 16\n    // 17\n    // 18\n}\n";
 const USES: &str = "\npub struct Holder {\n    pub state: /* 😀 */ DexOracleState,\n}\n\npub fn make(value: u32) -> /* 😀 */ DexOracleState {\n    /* 😀 */ DexOracleState { value }\n}\n";
 
-// Case table: main/overlay × first apply/dry run then apply × ASCII/UTF-16.
+// Case table: main/overlay × first apply/dry run then apply × ASCII/UTF-16 × LF/CRLF.
 // Every row preserves field, signature and body uses with exactly the expected import.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn move_views_match_disk() {
@@ -91,15 +91,23 @@ async fn move_views_match_disk() {
     }
     let gateway = Gateway::start();
     // Start with the reproduced workflow, then cover its nearest controls.
-    for (worktree, preview, unicode) in [
-        (true, true, true),
-        (false, true, true),
-        (true, false, true),
-        (false, false, true),
-        (true, true, false),
-        (false, true, false),
-        (true, false, false),
-        (false, false, false),
+    for (worktree, preview, unicode, ending) in [
+        (true, true, true, "\n"),
+        (false, true, true, "\n"),
+        (true, false, true, "\n"),
+        (false, false, true, "\n"),
+        (true, true, false, "\n"),
+        (false, true, false, "\n"),
+        (true, false, false, "\n"),
+        (false, false, false, "\n"),
+        (true, true, true, "\r\n"),
+        (false, true, true, "\r\n"),
+        (true, false, true, "\r\n"),
+        (false, false, true, "\r\n"),
+        (true, true, false, "\r\n"),
+        (false, true, false, "\r\n"),
+        (true, false, false, "\r\n"),
+        (false, false, false, "\r\n"),
     ] {
         let temp = tempfile::tempdir().unwrap();
         let base = temp
@@ -110,7 +118,7 @@ async fn move_views_match_disk() {
         } else {
             USES.replace("/* 😀 */ ", "")
         };
-        let source_text = format!("{ITEM}{uses}");
+        let source_text = format!("{ITEM}{uses}").replace('\n', ending);
         std::fs::create_dir_all(base.join("src")).unwrap();
         for (path, text) in [
             (
@@ -202,6 +210,7 @@ async fn move_views_match_disk() {
             )
             .await
             .unwrap();
+            assert!(!dry.applied);
             assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
             assert!(!target.exists());
             let mut after =
@@ -221,6 +230,7 @@ async fn move_views_match_disk() {
             .await
             .unwrap_or_else(|e| panic!("worktree={worktree}, preview={preview}: {e:#}"));
         assert!(applied.unmatched.is_empty());
+        assert!(applied.applied);
         assert_eq!(applied.moved_lines, 22);
         assert!(applied.diagnostics.is_empty(), "{:?}", applied.diagnostics);
         if let Some(dry) = dry {
@@ -230,7 +240,7 @@ async fn move_views_match_disk() {
         for (path, text) in &applied.rewritten {
             assert_eq!(std::fs::read_to_string(path).unwrap(), *text);
         }
-        let expected = original.replacen(ITEM, "", 1);
+        let expected = original.replace("\r\n", "\n").replacen(ITEM, "", 1);
         let insert = expected.find("pub struct Holder").unwrap();
         let expected = format!(
             "{}use crate::dex_oracle_types::DexOracleState;\n{}",
@@ -252,6 +262,8 @@ async fn move_views_match_disk() {
                 source_text
             );
         }
-        eprintln!("move case passed: worktree={worktree}, preview={preview}, unicode={unicode}");
+        eprintln!(
+            "move case passed: worktree={worktree}, preview={preview}, unicode={unicode}, ending={ending:?}"
+        );
     }
 }
