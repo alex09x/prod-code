@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Python Local Imports Keep Their Binding During `code_wrap_return`** (`crates/prod-code-mcp`):
+  Parenthesized and explicitly continued function-local imports now shadow an imported callable just like single-line imports. The empty-reference fallback reuses the import-statement collector, keeps aliases distinct, and excludes imports inside nested functions, so it does not treat an unrelated local call as a caller of the function being wrapped (#1244).
 - **`code_test` Shows What Failed the Run** (`crates/prod-code-mcp`):
   A failed Rust test run reported `1 error(s), 92 warning(s)` but listed only warnings, so the cause stayed hidden. There were two reasons. First, cargo prints a library's warnings before the error of the test target built on it, and `code_test` renders only 40 diagnostics, so an error after the 40th warning was cut off. Second, when a test binary crashed, cargo's own `error: test failed, to rerun pass …` line was counted as the compiler error, which suppressed the output tail that carries the signal. Errors now come first, with each level kept in compiler order. That cargo summary is no longer a diagnostic. A failed run that no error or failed test explains shows its output tail, with room reserved for it next to the warnings (#1230).
 

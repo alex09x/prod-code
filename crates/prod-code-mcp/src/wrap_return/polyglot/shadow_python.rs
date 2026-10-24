@@ -8,6 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::super::import::python_simple_statements;
+
 pub(crate) fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
     let lines: Vec<&str> = content[..at].lines().collect();
     let target_line = match lines.last() {
@@ -45,6 +47,7 @@ pub(crate) fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
                     }
                 }
                 let mut nested_fn_indent: Option<usize> = None;
+                let mut local_body = String::new();
                 for body_line in &lines[body_start..lines.len() - 1] {
                     if body_line.trim().is_empty() {
                         continue;
@@ -67,9 +70,20 @@ pub(crate) fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
                         continue;
                     }
 
+                    local_body.push_str(body_line);
+                    local_body.push('\n');
                     if line_binds_python_name(b_trimmed, name) {
                         return true;
                     }
+                }
+                if python_simple_statements(&local_body)
+                    .iter()
+                    .any(|statement| {
+                        (statement.starts_with("from ") || statement.starts_with("import "))
+                            && line_binds_python_name(statement, name)
+                    })
+                {
+                    return true;
                 }
                 break;
             }
