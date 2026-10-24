@@ -11,6 +11,9 @@
 use super::lang::{Language, is_ident};
 use super::types::{PolyToken, PolyTokenKind};
 
+#[cfg(test)]
+mod tests;
+
 pub fn tokenize_polyglot(text: &str, lang: Language) -> Vec<PolyToken> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();

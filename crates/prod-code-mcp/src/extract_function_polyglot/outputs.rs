@@ -14,6 +14,9 @@ use super::lang::{Language, mentions};
 use super::tokenize::{is_keyword, tokenize_polyglot};
 use super::types::{OutputKind, PolyTokenKind};
 
+#[cfg(test)]
+mod tests;
+
 pub fn analyze_outputs(
     selection: &str,
     scope_after: &str,
