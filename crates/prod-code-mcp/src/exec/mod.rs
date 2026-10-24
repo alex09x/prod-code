@@ -20,6 +20,8 @@ pub mod types;
 #[cfg(test)]
 mod progress_tests;
 #[cfg(test)]
+mod runner_tests;
+#[cfg(test)]
 mod tests;
 
 pub use destination::{last_exec_node, remember_exec_node};
