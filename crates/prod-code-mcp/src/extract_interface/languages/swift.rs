@@ -174,3 +174,6 @@ pub(crate) fn split_swift_inheritance(inheritance: &str) -> Vec<String> {
     }
     parts
 }
+
+#[cfg(test)]
+mod tests;

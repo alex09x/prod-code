@@ -13,6 +13,9 @@ use std::path::Path;
 use crate::extract_field::helpers::is_ident;
 use crate::parameter_object::Language;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn language_matches_extension(lang: Language, path: &Path) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     match lang {

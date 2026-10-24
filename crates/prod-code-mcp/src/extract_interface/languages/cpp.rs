@@ -10,6 +10,9 @@
 
 use anyhow::{Context, Result, bail};
 
+#[cfg(test)]
+mod tests;
+
 pub fn extract_interface_cpp(
     text: &str,
     symbol: &str,

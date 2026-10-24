@@ -47,7 +47,7 @@ impl ExtractInterfaceResult {
         if !self.diff.is_empty() {
             out.push_str("\nDiff:\n```diff\n");
             if self.diff.len() > max_diff_len {
-                out.push_str(&self.diff[..max_diff_len]);
+                out.push_str(&self.diff[..self.diff.floor_char_boundary(max_diff_len)]);
                 out.push_str("\n... [truncated]\n");
             } else {
                 out.push_str(&self.diff);
@@ -57,3 +57,6 @@ impl ExtractInterfaceResult {
         out
     }
 }
+
+#[cfg(test)]
+mod tests;

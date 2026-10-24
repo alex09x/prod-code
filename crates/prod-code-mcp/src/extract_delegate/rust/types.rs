@@ -100,3 +100,6 @@ impl Extracted {
         out
     }
 }
+
+#[cfg(test)]
+mod tests;

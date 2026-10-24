@@ -169,3 +169,6 @@ pub fn find_constructors(
     }
     constructors
 }
+
+#[cfg(test)]
+mod tests;

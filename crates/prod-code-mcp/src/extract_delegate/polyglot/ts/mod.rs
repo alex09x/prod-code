@@ -10,6 +10,9 @@
 
 pub mod methods;
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
