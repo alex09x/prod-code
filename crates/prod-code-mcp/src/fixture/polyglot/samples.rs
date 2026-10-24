@@ -10,7 +10,7 @@
 
 use crate::parameter_object::Language;
 
-fn inner_of_rust<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
+pub(super) fn inner_of_rust<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
     let t = ty.trim();
     let open = t.find('<')?;
     let close = t.rfind('>')?;
@@ -20,6 +20,11 @@ fn inner_of_rust<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+/// The container name of a Python annotation: `List[int]` -> `List`, `Settings` -> `Settings`.
+fn py_base(t: &str) -> &str {
+    t.split('[').next().unwrap_or(t).trim()
 }
 
 /// Generates a sample value for a type in the specified language, either default or randomized.
@@ -72,7 +77,7 @@ pub fn sample_value_for_type(
                         }
                     }
                     "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
-                    | "uint32" | "uint64" | "uintptr" => {
+                    | "uint32" | "uint64" | "uintptr" | "byte" | "rune" => {
                         if fn_ref.contains("port") {
                             "8080".to_string()
                         } else if fn_ref.contains("age") {
@@ -92,6 +97,7 @@ pub fn sample_value_for_type(
                     }
                     "time.Time" => "time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)".to_string(),
                     "time.Duration" => "5 * time.Second".to_string(),
+                    "error" => "nil".to_string(),
                     "[]string" => "[]string{\"sample_1\", \"sample_2\"}".to_string(),
                     "[]byte" => "[]byte(\"sample_bytes\")".to_string(),
                     "[]int" => "[]int{1, 2, 3}".to_string(),
@@ -150,10 +156,12 @@ pub fn sample_value_for_type(
                             "42".to_string()
                         }
                     }
+                    "void" => "undefined".to_string(),
+                    "any" | "unknown" => "null".to_string(),
                     "Date" => "\"2026-01-01T00:00:00.000Z\"".to_string(),
                     "string[]" => "[\"sample_1\", \"sample_2\"]".to_string(),
                     "number[]" => "[10, 20, 30]".to_string(),
-                    t if t.ends_with("[]") => "[]".to_string(),
+                    t if t.ends_with("[]") || t.starts_with("Array<") => "[]".to_string(),
                     t if t.starts_with("Record<") => "{\"key\": \"sample_val\"}".to_string(),
                     other => format!("{{}} as {other}"),
                 }
@@ -167,10 +175,10 @@ pub fn sample_value_for_type(
                     "float" => "0.0".to_string(),
                     "str" => "\"\"".to_string(),
                     "None" => "None".to_string(),
-                    t if t.starts_with("list") || t.starts_with("List") => "[]".to_string(),
-                    t if t.starts_with("dict") || t.starts_with("Dict") => "{}".to_string(),
-                    t if t.starts_with("set") || t.starts_with("Set") => "set()".to_string(),
-                    t if t.starts_with("Optional") => "None".to_string(),
+                    t if matches!(py_base(t), "list" | "List") => "[]".to_string(),
+                    t if matches!(py_base(t), "dict" | "Dict") => "{}".to_string(),
+                    t if matches!(py_base(t), "set" | "Set") => "set()".to_string(),
+                    t if py_base(t) == "Optional" => "None".to_string(),
                     other => format!("{other}()"),
                 }
             } else {
@@ -203,10 +211,13 @@ pub fn sample_value_for_type(
                     }
                     "list[str]" | "List[str]" => "[\"sample_1\", \"sample_2\"]".to_string(),
                     "list[int]" | "List[int]" => "[1, 2, 3]".to_string(),
-                    t if t.starts_with("list") || t.starts_with("List") => "[]".to_string(),
-                    t if t.starts_with("dict") || t.starts_with("Dict") => {
+                    t if matches!(py_base(t), "list" | "List") => "[]".to_string(),
+                    t if matches!(py_base(t), "dict" | "Dict") => {
                         "{\"key\": \"sample_val\"}".to_string()
                     }
+                    t if matches!(py_base(t), "set" | "Set") => "set()".to_string(),
+                    t if py_base(t) == "Optional" => "None".to_string(),
+                    "None" => "None".to_string(),
                     other => format!("{other}()"),
                 }
             }
@@ -314,6 +325,7 @@ pub fn sample_value_for_type(
                         }
                     }
                     "Double" | "Float" => "3.14".to_string(),
+                    t if t.ends_with('?') => "nil".to_string(),
                     _ => format!("{t}()"),
                 }
             }
@@ -342,8 +354,9 @@ pub fn sample_value_for_type(
                 match t {
                     "boolean" => "true".to_string(),
                     "String" => format!("\"test_{}\"", fn_ref),
-                    "int" | "long" => "42".to_string(),
-                    "double" | "float" => "3.14".to_string(),
+                    "byte" | "short" | "int" | "long" => "42".to_string(),
+                    "float" => "3.14f".to_string(),
+                    "double" => "3.14".to_string(),
                     _ => "null".to_string(),
                 }
             }

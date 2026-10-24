@@ -17,6 +17,16 @@ pub mod samples;
 pub mod types;
 
 #[cfg(test)]
+mod format_tests;
+#[cfg(test)]
+mod parsers_go_ts_tests;
+#[cfg(test)]
+mod parsers_others_tests;
+#[cfg(test)]
+mod samples_go_ts_tests;
+#[cfg(test)]
+mod samples_other_tests;
+#[cfg(test)]
 mod tests;
 
 pub use format::*;

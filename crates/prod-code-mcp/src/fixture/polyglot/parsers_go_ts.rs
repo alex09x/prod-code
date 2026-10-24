@@ -17,7 +17,7 @@ use super::types::{
 pub fn parse_go_shape(decl: &str) -> Option<PolyglotShape> {
     let t = decl.trim();
     let open = t.find('{')?;
-    let close = t.rfind('}')?;
+    let close = t.rfind('}').filter(|c| *c > open)?;
     let header = &t[..open];
     let body = &t[open + 1..close];
 
@@ -223,7 +223,7 @@ pub fn parse_ts_shape(decl: &str) -> Option<PolyglotShape> {
     let t = decl.trim();
     if t.contains("enum ") {
         let open = t.find('{')?;
-        let close = t.rfind('}')?;
+        let close = t.rfind('}').filter(|c| *c > open)?;
         let variants = t[open + 1..close]
             .lines()
             .map(strip_comments)
@@ -238,7 +238,7 @@ pub fn parse_ts_shape(decl: &str) -> Option<PolyglotShape> {
     }
 
     let open = t.find('{')?;
-    let close = t.rfind('}')?;
+    let close = t.rfind('}').filter(|c| *c > open)?;
     let body = &t[open + 1..close];
 
     let mut fields = Vec::new();

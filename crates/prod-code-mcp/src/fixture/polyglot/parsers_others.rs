@@ -74,8 +74,7 @@ pub fn parse_python_shape(decl: &str) -> Option<PolyglotShape> {
                 let rest = &sig[open + 1..];
                 if let Some(close) = find_matching_paren(rest) {
                     let params_str = &rest[..close];
-                    let ret_part = rest[close + 1..].trim().trim_end_matches(':').trim();
-                    let return_type = ret_part.strip_prefix("->").map(|r| r.trim().to_string());
+                    let return_type = python_return_type(&rest[close + 1..]);
 
                     let mut params = Vec::new();
                     for part in split_comma_top_level(params_str) {
@@ -126,12 +125,32 @@ pub fn parse_python_shape(decl: &str) -> Option<PolyglotShape> {
     }
 }
 
+/// The `-> T` annotation after a `def` parameter list, without the `:` and any one-line body.
+fn python_return_type(after_params: &str) -> Option<String> {
+    let ret = after_params.trim().strip_prefix("->")?;
+    let mut depth = 0i32;
+    let mut end = ret.len();
+    for (i, c) in ret.char_indices() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            ':' if depth == 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let ty = ret[..end].trim();
+    (!ty.is_empty()).then(|| ty.to_string())
+}
+
 /// Parses Rust `struct`, `enum`, or `trait`.
 pub fn parse_rust_shape(decl: &str) -> Option<PolyglotShape> {
     let t = decl.trim();
     if t.starts_with("pub trait ") || t.starts_with("trait ") {
         let open = t.find('{')?;
-        let close = t.rfind('}')?;
+        let close = t.rfind('}').filter(|c| *c > open)?;
         let body = &t[open + 1..close];
         let mut methods = Vec::new();
         for line in body.lines() {
@@ -187,12 +206,19 @@ pub fn parse_rust_shape(decl: &str) -> Option<PolyglotShape> {
 pub fn parse_cpp_shape(decl: &str) -> Option<PolyglotShape> {
     let t = decl.trim();
     let open = t.find('{')?;
-    let close = t.rfind('}')?;
+    let close = t.rfind('}').filter(|c| *c > open)?;
     let body = &t[open + 1..close];
 
     let mut fields = Vec::new();
     let mut methods = Vec::new();
 
+    // Comments end at the line, not at the `;`: a trailing `// note` must not swallow the
+    // next field.
+    let body = body
+        .lines()
+        .map(strip_comments)
+        .collect::<Vec<_>>()
+        .join("\n");
     for raw in body.split(';') {
         let line = strip_comments(raw);
         let line = line
@@ -248,7 +274,12 @@ pub fn parse_cpp_shape(decl: &str) -> Option<PolyglotShape> {
         let tokens: Vec<&str> = decl_part.split_whitespace().collect();
         if tokens.len() >= 2 {
             let name = tokens.last()?.trim_start_matches('*');
-            let ty = tokens[..tokens.len() - 1].join(" ");
+            let ty = tokens[..tokens.len() - 1]
+                .iter()
+                .filter(|t| !matches!(**t, "public" | "private" | "protected" | "static" | "final"))
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
             if name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                 fields.push((name.to_string(), ty));
             }
@@ -266,7 +297,7 @@ pub fn parse_cpp_shape(decl: &str) -> Option<PolyglotShape> {
 pub fn parse_swift_shape(decl: &str) -> Option<PolyglotShape> {
     let t = decl.trim();
     let open = t.find('{')?;
-    let close = t.rfind('}')?;
+    let close = t.rfind('}').filter(|c| *c > open)?;
     let header = &t[..open];
     let body = &t[open + 1..close];
 
