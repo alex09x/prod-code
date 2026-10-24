@@ -23,3 +23,4 @@ mod refactoring;
 mod seeding;
 mod sync_limits;
 mod sync_probe;
+mod sync_restore_transaction;

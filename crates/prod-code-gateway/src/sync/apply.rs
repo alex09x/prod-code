@@ -84,18 +84,151 @@ pub async fn apply_sync_with_metrics(
         &req.client_workspace_root,
         req.base_workspace_name.as_deref(),
     );
-    let _sync_guard = lock_workspace_sync(&target, "sync", SYNC_LOCK_REPORT_EVERY).await;
-    let server_workspace = workspace::resolve_server_workspace(
-        storage_root,
-        &req.client_workspace_root,
-        req.base_workspace_name.as_deref(),
-    );
-    // A directory nobody handshook or probed into is either brand new or was reset behind the
-    // client's back; a delta landing there must not pass for a complete workspace.
-    let workspace_was_fresh = !server_workspace.join(workspace::LAST_USED_MARKER).exists();
-    if !workspace_was_fresh {
+    let sync_guard = lock_workspace_sync(&target, "sync", SYNC_LOCK_REPORT_EVERY).await;
+    let storage_root_buf = storage_root.to_path_buf();
+    let (
+        _sync_guard,
+        server_workspace,
+        workspace_was_fresh,
+        files_updated,
+        files_deleted,
+        bytes_transferred,
+        project_config_changed,
+        watched,
+        base_paths,
+        stale_paths,
+    ) = tokio::spawn(async move {
+        let sync_guard = sync_guard;
+        let server_workspace = workspace::resolve_server_workspace(
+            &storage_root_buf,
+            &req.client_workspace_root,
+            req.base_workspace_name.as_deref(),
+        );
+        // A directory nobody handshook or probed into is either brand new or was reset behind the
+        // client's back; a delta landing there must not pass for a complete workspace.
+        let workspace_was_fresh = !server_workspace.join(workspace::LAST_USED_MARKER).exists();
+        if !workspace_was_fresh {
+            workspace::touch_last_used(&server_workspace);
+        }
+        let mut files_updated = 0;
+        let mut files_deleted = 0;
+        let mut bytes_transferred = 0;
+        let arrived: Vec<String> = req.files.iter().map(|f| f.relative_path.clone()).collect();
+        let active_exec = workspace::active_exec_snapshot(&server_workspace);
+        let synced_during_exec = active_exec
+            .as_ref()
+            .map(|(started, _)| workspace::synced_since(&server_workspace, *started))
+            .unwrap_or_default();
+        let mut project_config_changed = false;
+        let mut watched = Vec::new();
+        // Files that could not be written or deleted: not recorded as synced, and reported stale
+        // so that the client sends them again (#385, #1251).
+        let mut failed: Vec<String> = Vec::new();
+        let mut synced: Vec<(String, Option<u64>)> = Vec::with_capacity(req.files.len());
+        let mut base_paths = Vec::new();
+        for delta in req.files {
+            let target_path = match safe_sync_target(&server_workspace, &delta.relative_path).await
+            {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::warn!(error = %error, file = %delta.relative_path, "sync rejected unsafe path");
+                    failed.push(delta.relative_path);
+                    continue;
+                }
+            };
+            project_config_changed |= is_project_config_file(&delta.relative_path);
+            match delta.content {
+                Some(content_bytes) => {
+                    let content_digest = content_hash(&content_bytes);
+                    let incoming_stamp = (content_bytes.len() as u64, content_digest);
+                    if target_path.exists()
+                        && active_exec.as_ref().is_some_and(|(_, before)| {
+                            before.get(delta.relative_path.as_str()) == Some(&incoming_stamp)
+                        })
+                        && !synced_during_exec.contains_key(delta.relative_path.as_str())
+                    {
+                        continue;
+                    }
+                    bytes_transferred += content_bytes.len();
+                    let kind = if target_path.exists() {
+                        workspace::WatchedChange::Changed
+                    } else {
+                        workspace::WatchedChange::Created
+                    };
+                    if let Err(e) = write_synced_file_for_workspace(
+                        &server_workspace,
+                        &target_path,
+                        &content_bytes,
+                        delta.is_executable,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, file = %target_path.display(), "sync write failed; the client sends it again");
+                        failed.push(delta.relative_path);
+                        continue;
+                    }
+                    files_updated += 1;
+                    synced.push((delta.relative_path, Some(content_digest)));
+                    watched.push((target_path.clone(), kind));
+                    base_paths.push(target_path);
+                }
+                None => {
+                    if target_path.exists() {
+                        match tokio::fs::remove_file(&target_path).await {
+                            Ok(()) => {
+                                let _ = crate::sync::config_meta::forget(
+                                    &server_workspace,
+                                    &target_path,
+                                )
+                                .await;
+                                files_deleted += 1;
+                                watched
+                                    .push((target_path.clone(), workspace::WatchedChange::Deleted));
+                                prune_empty_parents(&server_workspace, target_path.parent());
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    file = %target_path.display(),
+                                    "sync delete failed; the client sends it again"
+                                );
+                                failed.push(delta.relative_path);
+                                continue;
+                            }
+                        }
+                    }
+                    synced.push((delta.relative_path, None));
+                    base_paths.push(target_path);
+                }
+            }
+        }
+        workspace::record_synced(&server_workspace, &synced);
         workspace::touch_last_used(&server_workspace);
-    }
+        let mut stale_paths =
+            workspace::clear_stale_paths(&server_workspace, arrived.iter().map(String::as_str));
+        workspace::record_stale_paths(&server_workspace, &failed);
+        for path in failed {
+            if !stale_paths.contains(&path) {
+                stale_paths.push(path);
+            }
+        }
+        (
+            sync_guard,
+            server_workspace,
+            workspace_was_fresh,
+            files_updated,
+            files_deleted,
+            bytes_transferred,
+            project_config_changed,
+            watched,
+            base_paths,
+            stale_paths,
+        )
+    })
+    .await
+    .expect("sync disk commit task must not panic");
+
     let folder_name = server_workspace
         .file_name()
         .and_then(|n| n.to_str())
@@ -106,93 +239,6 @@ pub async fn apply_sync_with_metrics(
         .await
         .map(|ws| ws.mirrored_rust_engines())
         .unwrap_or_default();
-
-    let mut files_updated = 0;
-    let mut files_deleted = 0;
-    let mut bytes_transferred = 0;
-
-    let arrived: Vec<String> = req.files.iter().map(|f| f.relative_path.clone()).collect();
-    let synced: Vec<(String, Option<u64>)> = req
-        .files
-        .iter()
-        .map(|f| {
-            (
-                f.relative_path.clone(),
-                f.content.as_deref().map(content_hash),
-            )
-        })
-        .collect();
-    let active_exec = workspace::active_exec_snapshot(&server_workspace);
-    let synced_during_exec = active_exec
-        .as_ref()
-        .map(|(started, _)| workspace::synced_since(&server_workspace, *started))
-        .unwrap_or_default();
-    let mut project_config_changed = false;
-    let mut watched = Vec::new();
-    // Files that could not be written: not recorded as synced, and reported stale so that the
-    // client sends them again (#385).
-    let mut failed: Vec<String> = Vec::new();
-    let mut skipped_pre_exec: Vec<String> = Vec::new();
-    let mut base_paths = Vec::new();
-    for delta in req.files {
-        let target_path = match safe_sync_target(&server_workspace, &delta.relative_path).await {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(error = %error, file = %delta.relative_path, "sync rejected unsafe path");
-                failed.push(delta.relative_path);
-                continue;
-            }
-        };
-        project_config_changed |= is_project_config_file(&delta.relative_path);
-        match delta.content {
-            Some(content_bytes) => {
-                let incoming_stamp = (content_bytes.len() as u64, content_hash(&content_bytes));
-                if target_path.exists()
-                    && active_exec.as_ref().is_some_and(|(_, before)| {
-                        before.get(delta.relative_path.as_str()) == Some(&incoming_stamp)
-                    })
-                    && !synced_during_exec.contains_key(delta.relative_path.as_str())
-                {
-                    skipped_pre_exec.push(delta.relative_path);
-                    continue;
-                }
-                bytes_transferred += content_bytes.len();
-                let kind = if target_path.exists() {
-                    workspace::WatchedChange::Changed
-                } else {
-                    workspace::WatchedChange::Created
-                };
-                if let Err(e) = write_synced_file_for_workspace(
-                    &server_workspace,
-                    &target_path,
-                    &content_bytes,
-                    delta.is_executable,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, file = %target_path.display(), "sync write failed; the client sends it again");
-                    failed.push(delta.relative_path);
-                    continue;
-                }
-                files_updated += 1;
-                watched.push((target_path.clone(), kind));
-                base_paths.push(target_path);
-            }
-            None => {
-                if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
-                    let _ = crate::sync::config_meta::forget(&server_workspace, &target_path).await;
-                    files_deleted += 1;
-                    watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
-                    prune_empty_parents(&server_workspace, target_path.parent());
-                }
-                base_paths.push(target_path);
-            }
-        }
-    }
-    let synced: Vec<(String, Option<u64>)> = synced
-        .into_iter()
-        .filter(|(path, _)| !failed.contains(path) && !skipped_pre_exec.contains(path))
-        .collect();
     // The files are on disk: the answer does not wait on an engine that a stuck query keeps
     // locked (#1143).
     crate::sync::base_updates::push_base_updates(
@@ -201,16 +247,6 @@ pub async fn apply_sync_with_metrics(
         crate::sync::base_updates::BASE_UPDATE_WAIT,
     )
     .await;
-    workspace::record_synced(&server_workspace, &synced);
-    workspace::touch_last_used(&server_workspace);
-    let mut stale_paths =
-        workspace::clear_stale_paths(&server_workspace, arrived.iter().map(String::as_str));
-    workspace::record_stale_paths(&server_workspace, &failed);
-    for path in failed {
-        if !stale_paths.contains(&path) {
-            stale_paths.push(path);
-        }
-    }
     // gopls does not watch the tree itself: without this it went on answering from the content
     // a file no session had open had when it first read it (#317).
     for loaded in workspace_manager.loaded_under(&server_workspace).await {

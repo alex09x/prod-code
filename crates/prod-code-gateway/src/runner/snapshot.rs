@@ -209,15 +209,22 @@ pub async fn restore_after_lost_client(
     before: Arc<TreeSnapshot>,
     started: Instant,
 ) -> usize {
+    let sync_guard =
+        crate::sync::lock_workspace_sync(workspace, "restore", crate::sync::SYNC_LOCK_REPORT_EVERY)
+            .await;
     let root = workspace.to_path_buf();
-    let restored = tokio::task::spawn_blocking(move || {
+    let (_sync_guard, restored) = match tokio::task::spawn_blocking(move || {
+        let _sync_guard = sync_guard;
         let synced = workspace::synced_since(&root, started);
         let restored = restore_tree(&root, &before, &synced);
         workspace::record_stale_paths(&root, &restored.stale);
-        restored
+        (_sync_guard, restored)
     })
     .await
-    .unwrap_or_default();
+    {
+        Ok(pair) => pair,
+        Err(_) => return 0,
+    };
     let unkept = restored
         .files
         .iter()
