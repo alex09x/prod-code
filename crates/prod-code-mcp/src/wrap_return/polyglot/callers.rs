@@ -12,6 +12,9 @@ use anyhow::Result;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 use super::enclosing::enclosing_polyglot_info;
 use super::find::find_polyglot_decl;
 use super::import::{

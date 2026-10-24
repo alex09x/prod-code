@@ -11,6 +11,9 @@
 use super::super::parse::split_balanced_commas;
 use super::super::types::StructDecl;
 
+#[cfg(test)]
+mod tests;
+
 /// Generates the factory code to add to the target file.
 pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
     let name = &decl.name;

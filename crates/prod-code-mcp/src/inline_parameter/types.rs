@@ -10,6 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 /// What the inlining did, or would do if it were applied.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct InlinedParameter {

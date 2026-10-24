@@ -13,6 +13,9 @@ use crate::parameter_object::Language;
 use crate::wrap_return::types::{PolyglotFuncDecl, Wrapper};
 use anyhow::{Context, Result};
 
+#[cfg(test)]
+mod tests;
+
 /// Restructures the declaring file: signature and return expressions in the body.
 pub fn restructure_declaring_file(
     text: &str,

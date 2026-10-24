@@ -17,6 +17,9 @@ pub mod ts;
 use super::types::StructDecl;
 use anyhow::Result;
 
+#[cfg(test)]
+mod tests;
+
 pub use cpp_swift::{
     parse_cpp_fields, parse_cpp_struct_decl, parse_swift_fields, parse_swift_struct_decl,
 };

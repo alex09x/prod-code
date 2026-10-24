@@ -14,6 +14,9 @@ use anyhow::{Context, Result};
 use super::syntax::is_ident;
 use super::types::PolyglotDecl;
 
+#[cfg(test)]
+mod tests;
+
 pub fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String> {
     let trimmed = line.trim();
     match lang {

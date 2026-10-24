@@ -13,6 +13,9 @@ use crate::wrap_return::types::PolyglotFuncDecl;
 use crate::wrap_return::utils::{cpp_return_type_span, is_ident};
 use anyhow::{Context, Result};
 
+#[cfg(test)]
+mod tests;
+
 /// Finds the declaration info for a function in non-Rust languages.
 pub fn find_polyglot_decl(
     text: &str,
