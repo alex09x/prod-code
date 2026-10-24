@@ -15,6 +15,12 @@ use anyhow::Result;
 use std::path::Path;
 
 pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()> {
+    let (tool, args) = tool_call(cmd)?;
+    run_tool(cx.remote, tool, args).await
+}
+
+/// The MCP tool a class-level refactoring command runs, and its arguments.
+pub(crate) fn tool_call(cmd: Commands) -> Result<(&'static str, serde_json::Value)> {
     match cmd {
         Commands::Generify {
             symbol,
@@ -56,7 +62,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
                     args["symbol"] = serde_json::Value::String(symbol);
                 }
             }
-            run_tool(cx.remote, "code_generify", args).await
+            Ok(("code_generify", args))
         }
         Commands::InvertBoolean {
             symbol,
@@ -91,7 +97,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
             }
-            run_tool(cx.remote, "code_invert_boolean", args).await
+            Ok(("code_invert_boolean", args))
         }
         Commands::ConvertToMethod {
             symbol,
@@ -134,7 +140,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
             }
-            run_tool(cx.remote, "code_convert_to_method", args).await
+            Ok(("code_convert_to_method", args))
         }
         Commands::InlineParameter {
             file,
@@ -167,7 +173,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            run_tool(cx.remote, "code_inline_parameter", args).await
+            Ok(("code_inline_parameter", args))
         }
         Commands::ExtractDelegate {
             file,
@@ -204,7 +210,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            run_tool(cx.remote, "code_extract_delegate", args).await
+            Ok(("code_extract_delegate", args))
         }
         Commands::ExtractTrait {
             file,
@@ -217,8 +223,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             force,
         } => {
             let abs = std::fs::canonicalize(&file).unwrap_or(file);
-            run_tool(
-                cx.remote,
+            Ok((
                 "code_extract_trait",
                 serde_json::json!({
                     "path": abs.to_string_lossy(),
@@ -230,8 +235,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
                     "apply": apply,
                     "force": force,
                 }),
-            )
-            .await
+            ))
         }
         Commands::LoopToIterator {
             file,
@@ -256,7 +260,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             if let Some(s) = symbol {
                 payload["symbol"] = serde_json::json!(s);
             }
-            run_tool(cx.remote, "code_loop_to_iterator", payload).await
+            Ok(("code_loop_to_iterator", payload))
         }
         Commands::MakeStatic {
             symbol,
@@ -299,7 +303,7 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
             }
-            run_tool(cx.remote, "code_make_static", args).await
+            Ok(("code_make_static", args))
         }
         Commands::WrapReturn {
             symbol,
@@ -346,8 +350,11 @@ pub async fn dispatch_refactor_class(cmd: Commands, cx: &DispatchContext<'_>) ->
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
             }
-            run_tool(cx.remote, "code_wrap_return", args).await
+            Ok(("code_wrap_return", args))
         }
         _ => unreachable!(),
     }
 }
+
+#[cfg(test)]
+mod tests;

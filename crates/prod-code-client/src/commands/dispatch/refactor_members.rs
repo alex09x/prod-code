@@ -30,7 +30,24 @@ async fn exec_tool(remote: SocketAddr, tool_name: &str, args: serde_json::Value)
     Ok(())
 }
 
+/// How a member-level refactoring reaches its MCP tool: `run_tool` retries on another node
+/// and refuses an empty definition, `exec_tool` runs the tool once as it is.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Runner {
+    Tool,
+    Exec,
+}
+
 pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()> {
+    let (runner, tool, args) = tool_call(cmd)?;
+    match runner {
+        Runner::Tool => run_tool(cx.remote, tool, args).await,
+        Runner::Exec => exec_tool(cx.remote, tool, args).await,
+    }
+}
+
+/// The MCP tool a member-level refactoring command runs, how it is run, and its arguments.
+pub(crate) fn tool_call(cmd: Commands) -> Result<(Runner, &'static str, serde_json::Value)> {
     match cmd {
         Commands::ExtractFunction {
             file,
@@ -66,7 +83,7 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
             }
-            run_tool(cx.remote, "code_extract_function", args).await
+            Ok((Runner::Tool, "code_extract_function", args))
         }
         Commands::IntroduceVariable {
             file,
@@ -82,8 +99,8 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
                 .and_then(|(l, c)| Some((l.parse::<u32>().ok()?, c.parse::<u32>().ok()?)))
                 .context("--to takes LINE:COL")?;
             let abs = std::fs::canonicalize(&file).unwrap_or(file);
-            run_tool(
-                cx.remote,
+            Ok((
+                Runner::Tool,
                 "code_introduce_variable",
                 serde_json::json!({
                     "path": abs.to_string_lossy(),
@@ -95,8 +112,7 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
                     "apply": apply,
                     "force": force,
                 }),
-            )
-            .await
+            ))
         }
         Commands::ReplaceConstructorWithFactory {
             file,
@@ -118,7 +134,7 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(cx.remote, "code_replace_constructor_with_factory", args).await
+            Ok((Runner::Exec, "code_replace_constructor_with_factory", args))
         }
         Commands::ReplaceConstructorWithBuilder {
             file,
@@ -140,7 +156,7 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(cx.remote, "code_replace_constructor_with_builder", args).await
+            Ok((Runner::Exec, "code_replace_constructor_with_builder", args))
         }
         Commands::PullUp {
             file,
@@ -166,7 +182,7 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(cx.remote, "code_pull_up", args).await
+            Ok((Runner::Exec, "code_pull_up", args))
         }
         Commands::PushDown {
             file,
@@ -195,7 +211,7 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(cx.remote, "code_push_down", args).await
+            Ok((Runner::Exec, "code_push_down", args))
         }
         Commands::ReplaceInheritanceWithDelegation {
             file,
@@ -227,7 +243,11 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(cx.remote, "code_replace_inheritance_with_delegation", args).await
+            Ok((
+                Runner::Exec,
+                "code_replace_inheritance_with_delegation",
+                args,
+            ))
         }
         Commands::ReplaceConditionalWithPolymorphism {
             file,
@@ -269,12 +289,11 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(
-                cx.remote,
+            Ok((
+                Runner::Exec,
                 "code_replace_conditional_with_polymorphism",
                 args,
-            )
-            .await
+            ))
         }
         Commands::ExtractInterface {
             file,
@@ -318,7 +337,7 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(v) = verify {
                 args["verify"] = serde_json::Value::String(v);
             }
-            exec_tool(cx.remote, "code_extract_interface", args).await
+            Ok((Runner::Exec, "code_extract_interface", args))
         }
         Commands::ExtractField {
             file,
@@ -371,8 +390,11 @@ pub async fn dispatch_refactor_members(cmd: Commands, cx: &DispatchContext<'_>) 
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
             }
-            exec_tool(cx.remote, "code_extract_field", args).await
+            Ok((Runner::Exec, "code_extract_field", args))
         }
         _ => unreachable!(),
     }
 }
+
+#[cfg(test)]
+mod tests;
