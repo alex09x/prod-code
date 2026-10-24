@@ -15,6 +15,7 @@ use ra_ap_ide::{
     AssistResolveStrategy, FileRange, FileStructureConfig, RenameConfig, SingleResolve, TextRange,
 };
 use ra_ap_ide_db::source_change::{FileSystemEdit, SourceChange};
+use ra_ap_syntax::AstNode;
 use std::path::Path;
 
 use super::RustEngineSnapshot;
@@ -163,6 +164,14 @@ impl RustEngineSnapshot {
         subtype: Option<usize>,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
         let frange = self.file_range(path, line, col, end)?;
+        if id == "extract_function" {
+            let parsed = self.analysis()?.parse(frange.file_id)?;
+            if let Some(reason) =
+                super::extract_control_flow::refusal(parsed.syntax(), frange.range)
+            {
+                return Ok(Err(reason));
+            }
+        }
         let (assist_config, diagnostics_config) = Self::assist_configs();
         let offered = self.analysis()?.assists_with_fixes(
             &assist_config,
@@ -218,7 +227,6 @@ impl RustEngineSnapshot {
 
     /// The path of the innermost macro call whose input contains `frange`, if any.
     fn macro_call_around(&self, frange: FileRange) -> Option<String> {
-        use ra_ap_syntax::AstNode;
         let file = self.analysis().ok()?.parse(frange.file_id).ok()?;
         let token = file
             .syntax()

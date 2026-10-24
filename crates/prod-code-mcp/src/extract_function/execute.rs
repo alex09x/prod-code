@@ -88,7 +88,7 @@ pub async fn extract_function(
         }),
     )
     .await
-    .context("rust-analyzer cannot extract a function from this selection")?;
+    .map_err(|error| anyhow::anyhow!("extract function failed: {error:#}"))?;
     let (planned, _) = crate::refactor::planned_texts(root, &edit)?;
     let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let extracted = planned

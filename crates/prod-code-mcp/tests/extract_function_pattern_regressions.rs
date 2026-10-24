@@ -174,3 +174,42 @@ async fn extract_function_loop_local_with_explicit_borrowed_return_is_accepted()
     assert!(written.contains("fn append_path_remaps<'a>"), "{written}");
     assert!(written.contains("for p in inv.paths"), "{written}");
 }
+
+#[tokio::test]
+async fn extract_function_control_flow_refusal_keeps_the_construct_and_line() {
+    let source = "fn f() { for i in 0..3 { if i == 1 { break; } continue; } }\n";
+    let ws = Workspace::new(&[("src/lib.rs", source)]);
+    let root = ws.root();
+    let file = root.join("src/lib.rs");
+    let reason = "cannot extract function: `break` at line 1, `continue` at line 1 cross the selection boundary; extracting mixed loop exits is not supported. Select the enclosing loop or move the exits outside the selection.";
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "prodCode/applyAssist" => answers::failure(reason),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let start = (1, source.find("if i").unwrap() as u32 + 1);
+    let end = (1, source.rfind(" } }").unwrap() as u32 + 1);
+    let error = extract_function(
+        gateway.addr(),
+        &root,
+        &file,
+        start,
+        end,
+        "candidate",
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.starts_with("extract function failed:"), "{error}");
+    assert!(error.ends_with(reason), "{error}");
+    assert!(!error.contains("available:"), "{error}");
+    assert_eq!(
+        gateway.calls(),
+        1,
+        "a refusal must stop after the assist request"
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), source);
+}
