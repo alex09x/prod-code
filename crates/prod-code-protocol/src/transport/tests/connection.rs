@@ -91,16 +91,20 @@ fn the_token_comes_from_the_variable_or_the_file_and_never_shows() {
     let file = dir.join("auth-token");
     std::fs::write(&file, "  from-file  \nsecond line\n").unwrap();
     assert_eq!(
-        resolve_token(Some(" from-env "), Some(&file)).as_deref(),
+        resolve_token(Some(" from-env "), Some(&file))
+            .unwrap()
+            .as_deref(),
         Some("from-env")
     );
     assert_eq!(
-        resolve_token(Some("   "), Some(&file)).as_deref(),
+        resolve_token(Some("   "), Some(&file)).unwrap().as_deref(),
         Some("from-file")
     );
-    assert_eq!(resolve_token(None, Some(&dir.join("none"))), None);
+    assert_eq!(resolve_token(None, None).unwrap(), None);
+    assert_eq!(resolve_token(Some("   "), None).unwrap(), None);
+    assert!(resolve_token(None, Some(&dir.join("none"))).is_err());
     std::fs::write(&file, "\n").unwrap();
-    assert_eq!(resolve_token(None, Some(&file)), None);
+    assert!(resolve_token(None, Some(&file)).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 
     let message = WireMessage::Auth(AuthToken("s3cret".to_string()));

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Invalid Token Files Fail Closed** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-client`):
+  A configured token file that is missing, unreadable, invalid UTF-8, or has a blank first line now stops gateway startup before storage or listener initialization and makes default client connections return an error. A nonblank direct token retains precedence. The checked `try_auth_token` API distinguishes absent configuration from failure; the legacy `auth_token` API panics on invalid selected configuration instead of silently disabling authentication (#1246).
 - **Completed LSP Responses Survive Server Exit** (`crates/prod-code-engine-generic`, `crates/prod-code-engine-go`):
   If a language server exits after delivering a response but before its waiter resumes, the completed request now returns that response. New requests to a retired engine and requests whose reply channel closes without a response still fail (#1249).
 - **Python Local Imports Keep Their Binding During `code_wrap_return`** (`crates/prod-code-mcp`):

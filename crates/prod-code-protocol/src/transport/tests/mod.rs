@@ -8,5 +8,6 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod auth_token_configuration;
 mod connection;
 mod lsp;

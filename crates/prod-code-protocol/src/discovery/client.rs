@@ -54,7 +54,14 @@ pub fn generate_nonce() -> std::io::Result<String> {
 
 /// Discover nodes by sending probes and collecting authenticated replies.
 pub fn discover(seeds: &[SocketAddr]) -> Vec<DiscoveredNode> {
-    discover_with_token(seeds, crate::transport::auth_token().as_deref())
+    let token = match crate::transport::try_auth_token() {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!(%e, "cannot discover nodes: invalid auth token configuration");
+            return Vec::new();
+        }
+    };
+    discover_with_token(seeds, token.as_deref())
 }
 
 /// Discover nodes with an explicit cluster auth token and replay-resistant challenge nonce verification.
