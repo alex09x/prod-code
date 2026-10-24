@@ -32,8 +32,18 @@ pub async fn run_prometheus_server(
     metrics: Arc<Metrics>,
     node: String,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(listen_addr).await?;
-    let local_addr = listener.local_addr().unwrap_or(listen_addr);
+    serve_prometheus(TcpListener::bind(listen_addr).await?, metrics, node).await
+}
+
+/// [`run_prometheus_server`] on a listener that is already bound.
+pub(crate) async fn serve_prometheus(
+    listener: TcpListener,
+    metrics: Arc<Metrics>,
+    node: String,
+) -> anyhow::Result<()> {
+    let Ok(local_addr) = listener.local_addr() else {
+        anyhow::bail!("the Prometheus listener has no local address");
+    };
     tracing::info!(
         addr = %local_addr,
         endpoint = %format!("http://{local_addr}/metrics"),

@@ -255,14 +255,19 @@ async fn prometheus_http_server_serves_metrics_and_health() {
     let temp = tempfile::tempdir().unwrap();
     let m = Arc::new(Metrics::new(temp.path().join("metrics")));
 
-    // Bind on random ephemeral port
+    // The server gets the bound listener: releasing the port first let a parallel test take it
+    // before the server bound it, and the request then reached that test's socket.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
 
     let server_m = Arc::clone(&m);
     tokio::spawn(async move {
-        let _ = super::run_prometheus_server(addr, server_m, "test-host".to_string()).await;
+        let _ = super::prometheus_server::serve_prometheus(
+            listener,
+            server_m,
+            "test-host".to_string(),
+        )
+        .await;
     });
 
     // Wait until the server listens: a fixed 50 ms pause lost the race on a loaded node and
