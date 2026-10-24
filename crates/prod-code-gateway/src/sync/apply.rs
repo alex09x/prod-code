@@ -155,7 +155,7 @@ pub async fn apply_sync_with_metrics(
                     } else {
                         workspace::WatchedChange::Created
                     };
-                    if let Err(e) = write_synced_file_for_workspace(
+                    let committed_digest = match write_synced_file_for_workspace(
                         &server_workspace,
                         &target_path,
                         &content_bytes,
@@ -163,12 +163,15 @@ pub async fn apply_sync_with_metrics(
                     )
                     .await
                     {
-                        tracing::warn!(error = %e, file = %target_path.display(), "sync write failed; the client sends it again");
-                        failed.push(delta.relative_path);
-                        continue;
-                    }
+                        Ok(digest) => digest,
+                        Err(e) => {
+                            tracing::warn!(error = %e, file = %target_path.display(), "sync write failed; the client sends it again");
+                            failed.push(delta.relative_path);
+                            continue;
+                        }
+                    };
                     files_updated += 1;
-                    synced.push((delta.relative_path, Some(content_digest)));
+                    synced.push((delta.relative_path, Some(committed_digest)));
                     watched.push((target_path.clone(), kind));
                     base_paths.push(target_path);
                 }
@@ -203,6 +206,8 @@ pub async fn apply_sync_with_metrics(
                 }
             }
         }
+        #[cfg(test)]
+        crate::sync::test_hooks::post_write(&server_workspace).await;
         workspace::record_synced(&server_workspace, &synced);
         workspace::touch_last_used(&server_workspace);
         let mut stale_paths =

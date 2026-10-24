@@ -63,14 +63,13 @@ pub async fn handle_session_sync(
             safe_paths.push(target_path.clone());
             match delta.content {
                 Some(content_bytes) => {
-                    let content_digest = content_hash(&content_bytes);
                     bytes_transferred += content_bytes.len();
                     let kind = if target_path.exists() {
                         workspace::WatchedChange::Changed
                     } else {
                         workspace::WatchedChange::Created
                     };
-                    if let Err(e) = write_synced_file_for_workspace(
+                    let committed_digest = match write_synced_file_for_workspace(
                         &workspace_root,
                         &target_path,
                         &content_bytes,
@@ -78,16 +77,19 @@ pub async fn handle_session_sync(
                     )
                     .await
                     {
-                        tracing::warn!(
-                            error = %e,
-                            file = %target_path.display(),
-                            "sync write failed; the client sends it again"
-                        );
-                        failed.push(delta.relative_path);
-                        continue;
-                    }
+                        Ok(digest) => digest,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                file = %target_path.display(),
+                                "sync write failed; the client sends it again"
+                            );
+                            failed.push(delta.relative_path);
+                            continue;
+                        }
+                    };
                     files_updated += 1;
-                    synced.push((delta.relative_path, Some(content_digest)));
+                    synced.push((delta.relative_path, Some(committed_digest)));
                     watched.push((target_path.clone(), kind));
                     // The workspace is this worktree's own: synced files are its
                     // new base, visible to every session except one that still
@@ -123,6 +125,8 @@ pub async fn handle_session_sync(
                 }
             }
         }
+        #[cfg(test)]
+        crate::sync::test_hooks::post_write(&workspace_root).await;
         workspace::record_synced(&workspace_root, &synced);
         let mut stale_paths =
             workspace::clear_stale_paths(&workspace_root, arrived.iter().map(String::as_str));

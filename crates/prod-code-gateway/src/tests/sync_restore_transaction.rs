@@ -14,7 +14,10 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+mod config_hash;
+mod engine_wait;
 mod failed_deletes;
+mod interleaving;
 
 fn noop_waker() -> Waker {
     Waker::noop().clone()
@@ -183,137 +186,5 @@ async fn sync_restore_transaction_session_sync_records_synced_and_protects_resto
     assert_eq!(
         std::fs::read_to_string(root.join(cmd_rel)).unwrap(),
         "pub fn cmd() -> u32 { 1 }\n"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sync_restore_transaction_restore_shares_sync_lock_across_write_to_record_and_cancellation()
-{
-    let storage = tempfile::tempdir().unwrap();
-    let root = workspace::resolve_server_workspace(
-        storage.path(),
-        "/tmp/race-restore-ws",
-        Some("race-restore-ws"),
-    );
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(
-        root.join("Cargo.toml"),
-        "[package]\nname = \"race_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
-    )
-    .unwrap();
-    std::fs::write(root.join("src/lib.rs"), "pub const V: u32 = 1;\n").unwrap();
-    std::fs::write(root.join("src/cmd_only.rs"), "pub const CMD: u32 = 1;\n").unwrap();
-    workspace::touch_last_used(&root);
-
-    let engine = prod_code_engine_rust::RustEngine::load(&root).expect("load minimal rust engine");
-    let engine_arc = Arc::new(tokio::sync::Mutex::new(engine));
-    let ws = Arc::new(workspace::SharedWorkspace::new(
-        root.clone(),
-        "rust".to_string(),
-        Some(Arc::clone(&engine_arc)),
-        None,
-        None,
-        None,
-    ));
-    let manager = Arc::new(WorkspaceManager::new());
-    manager.insert_ready_for_test(Arc::clone(&ws)).await;
-
-    let snapshot_started = Instant::now();
-    let before = Arc::new(snapshot_tree(&root));
-    std::fs::write(root.join("src/cmd_only.rs"), "pub const CMD: u32 = 99;\n").unwrap();
-
-    // Hold the engine lock so standalone apply_sync pauses inside push_base_updates after disk write.
-    let held_engine = engine_arc.lock_owned().await;
-    let sync_task = tokio::spawn({
-        let storage_root = storage.path().to_path_buf();
-        let manager = Arc::clone(&manager);
-        async move {
-            apply_sync(
-                &storage_root,
-                &manager,
-                SyncRequest {
-                    client_workspace_root: "/tmp/race-restore-ws".to_string(),
-                    files: vec![write_delta("src/lib.rs", "pub const V: u32 = 2;\n")],
-                    clean_others: false,
-                    base_workspace_name: Some("race-restore-ws".to_string()),
-                },
-            )
-            .await
-        }
-    });
-
-    while std::fs::read_to_string(root.join("src/lib.rs"))
-        .ok()
-        .as_deref()
-        != Some("pub const V: u32 = 2;\n")
-    {
-        tokio::task::yield_now().await;
-    }
-
-    let mut restore_task = tokio::spawn({
-        let manager = Arc::clone(&manager);
-        let root = root.clone();
-        let before = Arc::clone(&before);
-        async move { restore_after_lost_client(&manager, &root, before, snapshot_started).await }
-    });
-
-    let mut raced_during_sync = false;
-    for _ in 0..2_000 {
-        if std::fs::read_to_string(root.join("src/cmd_only.rs"))
-            .ok()
-            .as_deref()
-            == Some("pub const CMD: u32 = 1;\n")
-            || restore_task.is_finished()
-        {
-            raced_during_sync = true;
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-
-    drop(held_engine);
-    let sync_resp = sync_task.await.unwrap();
-    let restored = (&mut restore_task).await.unwrap();
-
-    assert!(
-        !raced_during_sync,
-        "restore_after_lost_client entered disk reconciliation while standalone sync held the workspace sync lock"
-    );
-    assert_eq!(sync_resp.files_updated, 1);
-    assert_eq!(restored, 1);
-    assert_eq!(
-        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
-        "pub const V: u32 = 2;\n",
-        "client sync written before restore must not be overwritten in the write-to-record interval"
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.join("src/cmd_only.rs")).unwrap(),
-        "pub const CMD: u32 = 1;\n"
-    );
-
-    // Verify cancelling the restore future after acquiring the lock retains ownership through disk work.
-    std::fs::write(root.join("src/cmd_only.rs"), "pub const CMD: u32 = 777;\n").unwrap();
-    let mut cancelled_restore = Box::pin(restore_after_lost_client(
-        &manager,
-        &root,
-        Arc::clone(&before),
-        snapshot_started,
-    ));
-    let waker = noop_waker();
-    let mut cx = Context::from_waker(&waker);
-    let _ = cancelled_restore.as_mut().poll(&mut cx);
-    drop(cancelled_restore);
-
-    let _after_guard = crate::sync::server_workspace_sync_lock(&root)
-        .lock_owned()
-        .await;
-    assert_eq!(
-        std::fs::read_to_string(root.join("src/cmd_only.rs")).unwrap(),
-        "pub const CMD: u32 = 1;\n",
-        "sync lock must stay held until blocking restore disk work finishes even if future is dropped"
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
-        "pub const V: u32 = 2;\n"
     );
 }
