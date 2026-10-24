@@ -10,6 +10,9 @@
 
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn is_project_config_file(rel_path: &str) -> bool {
     let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
     matches!(

@@ -22,6 +22,9 @@ use tokio::net::{TcpListener, TcpStream};
 use super::Metrics;
 use super::prometheus_format::format_prometheus_metrics;
 
+#[cfg(test)]
+mod tests;
+
 /// Starts the Prometheus HTTP metrics server on `listen_addr`.
 /// Runs indefinitely until the async task or runtime is cancelled.
 pub async fn run_prometheus_server(
@@ -125,7 +128,7 @@ async fn handle_http_client(
                 \r\n\
                 {}",
                 not_found.len(),
-                not_found
+                if method == "GET" { not_found } else { "" }
             );
             stream.write_all(resp.as_bytes()).await?;
         }

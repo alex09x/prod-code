@@ -11,6 +11,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 pub fn python_manifest_fingerprint(root: &Path) -> Option<String> {
     const MANIFESTS: &[&str] = &[
         "pyproject.toml",

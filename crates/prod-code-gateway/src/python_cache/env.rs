@@ -12,6 +12,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 /// The environment variable name used to explicitly configure the shared Python stub cache directory.
 pub const PYTHON_STUB_CACHE_ENV: &str = "PROD_CODE_PYTHON_STUB_CACHE";
 

@@ -10,6 +10,9 @@
 
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "prod-code-server",

@@ -8,6 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) enum ManagedLsp<'a> {
     Go(&'a prod_code_engine_go::GoEngine),
     Generic(&'a prod_code_engine_generic::GenericLspEngine),

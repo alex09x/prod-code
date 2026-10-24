@@ -10,6 +10,9 @@
 
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 /// The address this gateway advertises: the bind address when it names a host, otherwise
 /// the IPv4 of the interface that routes to the first peer (or to a public address) plus
 /// the bind port.

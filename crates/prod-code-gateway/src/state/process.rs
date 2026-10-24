@@ -10,6 +10,9 @@
 
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 pub static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
 pub static ACTIVE_QUERIES: AtomicUsize = AtomicUsize::new(0);
 

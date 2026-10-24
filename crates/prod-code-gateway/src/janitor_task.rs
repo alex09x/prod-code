@@ -10,6 +10,9 @@
 
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 /// Periodically unloads idle engines and prunes stale worktree workspace directories.
 /// How long an engine may sit idle on a host short of memory before it is unloaded, however
 /// long `--idle-evict-secs` lets it stay otherwise (#396).
@@ -33,7 +36,28 @@ pub(crate) async fn janitor(
     prune_workspace_secs: u64,
     prune_below_free_percent: u64,
 ) {
-    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+    janitor_with_probe(
+        state,
+        idle_evict_secs,
+        prune_worktree_secs,
+        prune_workspace_secs,
+        prune_below_free_percent,
+        Duration::from_secs(60),
+        memory::host_resources,
+    )
+    .await;
+}
+
+async fn janitor_with_probe(
+    state: Arc<ServerState>,
+    idle_evict_secs: u64,
+    prune_worktree_secs: u64,
+    prune_workspace_secs: u64,
+    prune_below_free_percent: u64,
+    period: Duration,
+    host_resources: impl Fn(&Path) -> prod_code_protocol::HostResources,
+) {
+    let mut ticker = tokio::time::interval(period);
     ticker.tick().await;
     let mut was_short: Option<String> = None;
     let mut tick_counter: u64 = 0;
@@ -95,7 +119,7 @@ pub(crate) async fn janitor(
         }
         // The memory and disk watchdog (#396): placement already keeps new workspaces off a
         // node that is short; the log says when it starts and stops being short.
-        let host = memory::host_resources(&state.storage_root);
+        let host = host_resources(&state.storage_root);
         let short = host.pressure();
         match (&was_short, &short) {
             (None, Some(why)) => tracing::warn!(

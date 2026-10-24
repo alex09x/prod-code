@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::workspace::tree_size;
 
+#[cfg(test)]
+mod tests;
+
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Merges non-hidden cache files from `src_dir` into `dst_dir`.

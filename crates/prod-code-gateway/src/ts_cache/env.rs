@@ -12,6 +12,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 /// The environment variable name used to explicitly configure the shared TypeScript `@types` cache directory.
 pub const TS_TYPES_CACHE_ENV: &str = "PROD_CODE_TS_TYPES_CACHE";
 
@@ -25,6 +28,13 @@ pub const TS_TYPES_CACHE_ENV: &str = "PROD_CODE_TS_TYPES_CACHE";
 ///
 /// Ensures the directory exists with mode `0700` on Unix systems.
 pub fn ts_types_cache_dir() -> PathBuf {
+    cache_dir_with_fallbacks(
+        PathBuf::from("/var/tmp/prod-code/typescript-types"),
+        std::env::temp_dir().join("prod-code-typescript-types"),
+    )
+}
+
+fn cache_dir_with_fallbacks(var_tmp: PathBuf, temp: PathBuf) -> PathBuf {
     if let Some(custom) = std::env::var_os(TS_TYPES_CACHE_ENV) {
         let p = PathBuf::from(custom);
         let _ = ensure_cache_dir(&p);
@@ -41,12 +51,10 @@ pub fn ts_types_cache_dir() -> PathBuf {
         }
     }
 
-    let var_tmp = PathBuf::from("/var/tmp/prod-code/typescript-types");
     if ensure_cache_dir(&var_tmp).is_ok() {
         return var_tmp;
     }
 
-    let temp = std::env::temp_dir().join("prod-code-typescript-types");
     let _ = ensure_cache_dir(&temp);
     temp
 }

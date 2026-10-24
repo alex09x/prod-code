@@ -18,6 +18,9 @@ use std::time::{Duration, SystemTime};
 
 use super::timestamp::parse_tmp_stub_timestamp;
 
+#[cfg(test)]
+mod tests;
+
 pub struct CacheEntry {
     pub rel_components: Vec<std::ffi::CString>,
     pub file_name: std::ffi::CString,

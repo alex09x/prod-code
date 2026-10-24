@@ -21,6 +21,9 @@ use super::super::shared::SharedWorkspace;
 use super::super::types::WorkspaceKey;
 use super::types::WorkspaceManager;
 
+#[cfg(test)]
+mod tests;
+
 impl WorkspaceManager {
     /// Retrieve or load a shared workspace using leader-follower coalescing.
     pub async fn get_or_load(

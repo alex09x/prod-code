@@ -17,6 +17,9 @@
 
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 /// How long a sync answer waits for the engines to take the new base before it is sent anyway.
 pub(crate) const BASE_UPDATE_WAIT: Duration = Duration::from_secs(5);
 
