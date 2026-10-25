@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A Rebalance Redirect Right After the Handshake Is No Longer Lost** (`crates/prod-code-gateway`):
+  The session subscribed to rebalance redirects only once its loop started. A redirect issued between the handshake response and the first loop turn reached nobody, so `trigger_rebalance` reported 0 sessions. Under the loaded coverage run this failed `editor_session_receives_rebalance_redirect`. The subscription is now taken before the handshake response is sent. The live cluster test now retries a refused connect until its deadline, instead of failing on the first try while the second gateway starts. Under parallel load, each test passes 10 times out of 10 (#1264).
+
 ### Tests
 - **Coverage Campaign, Wave 2** (all crates):
   Workspace region coverage rose from 90.30% to 90.84%, and files under the 80% gate fell from 32 to 8. New tables cover:
