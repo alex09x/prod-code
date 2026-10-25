@@ -21,6 +21,7 @@ pub async fn run_session_loop(
     translator: &PathTranslator,
     view: &SessionView,
     meta: Arc<SessionMeta>,
+    mut rebalance_rx: tokio::sync::broadcast::Receiver<(String, Option<String>)>,
 ) -> Result<()> {
     let (mut socket_tx, mut socket_rx) = framed.split();
     // rapidfire MPSC: every engine task sends, one writer drains in batches and flushes the
@@ -114,7 +115,6 @@ pub async fn run_session_loop(
         view.workspace.backend.as_ref().map(|b| b.subscribe())
     };
 
-    let mut rebalance_rx = view.accounted.subscribe_rebalance();
     let mut writer_finished = false;
     let mut session_result = Ok(());
     loop {
