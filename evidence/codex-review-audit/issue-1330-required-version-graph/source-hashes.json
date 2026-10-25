@@ -1,0 +1,38 @@
+{
+  "pinned_base": "f6063f7399342f220c93a2013e8e99be82749633",
+  "repair_input": "3948c9d305525d4db6fa7ba5448f9b0cc515bb29",
+  "before_production_sha256": {
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "a320582d92463ec923276c02764bd0d69a4fd4af99c0ac3cfc535629b0e89803"
+  },
+  "red_fixture_sha256": {
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "910d0f365b2ec44994c4f8f44a78ebe072ec4301141379a68eaa47321a6b2391",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_graph.rs": "08c1a46a5db471a262e557a6f44552ca2bd96259339f0f35841294661b268281"
+  },
+  "final_source_sha256": {
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs": "09d3fd0b1444a199fc0169d5ce2961414b5f50ee71dde61ddbdbbfba0ea32c3d",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_graph.rs": "9ef5d8a299a78db48bc46d03b11e18255a03a6f431dc95359fb8dabbce6ad1bf",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_literals.rs": "5f05de2710ab4320ab7e3fdce9f3d9fcb9e6b0f73e9a6b4b5ca2e2c9b58ea289",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_pruning.rs": "ab9cfd80b2dd2b378b9071a532054b2da397de5816fcdc33da9966b83f57ac22",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "910d0f365b2ec44994c4f8f44a78ebe072ec4301141379a68eaa47321a6b2391",
+    "crates/prod-code-mcp/src/cluster/tests/route_regressions.rs": "d624c9707a1915e7c903c96f9766ff2292105fc6f1ceeef958834f4f5ba4417c",
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "7fc302fc53aa43a5fb5834c16c457633f8d9a34a8ec4cb88a4f2eac3884dc787",
+    "crates/prod-code-mcp/src/sync/engine/go_tokens.rs": "cc49c2861c85bc8cf7922d695ad6805332250f9f3b6e2821f13859bdc0e2dde4",
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "e1428e1156a24c9dd352d9e2eae5037d0a50042ac31d95c7cf045a49cba8c50e",
+    "crates/prod-code-mcp/src/sync/engine/mod.rs": "8765a5d1ea53adae9b54e122db811b955c4958b42356d4a98419e9cdae173495"
+  },
+  "final_source_line_counts": {
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": 347,
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": 293,
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_graph.rs": 85
+  },
+  "prior_tracked_audit_file_count": 73,
+  "prior_tracked_audit_evidence_unchanged": true,
+  "evidence_sha256": {
+    "evidence/codex-review-audit/issue-1330-required-version-graph/README.md": "e605d1e4e1ddc47138e295cbb165fc7b885dda14fab0568422c4779f8464de7a",
+    "evidence/codex-review-audit/issue-1330-required-version-graph/after.txt": "e91c9769742245b870c09de8bb120a6e33faed1f1a4676d9387699012834de4e",
+    "evidence/codex-review-audit/issue-1330-required-version-graph/before.txt": "ca272ae96c050295496df7a8cc498036bf9f885fc975567ac4f05274fed22763",
+    "evidence/codex-review-audit/issue-1330-required-version-graph/format.txt": "3186f573a0db2fcc27933f0f26f633f0be5490980afa33df7bdab835aadf11a7",
+    "evidence/codex-review-audit/issue-1330-required-version-graph/lint.json": "f2d2c8d9a92eeb58bbc3c51201d9f5bd9f9694bebcdca7ff15bb92a2876e19c4",
+    "evidence/codex-review-audit/issue-1330-required-version-graph/tool-failures.txt": "5ad5643671aa338d0f71230093333dfafa53deb0c66c25eea5d377f65527fe58"
+  }
+}

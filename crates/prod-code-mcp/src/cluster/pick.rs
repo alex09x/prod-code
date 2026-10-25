@@ -17,7 +17,7 @@ use super::discover::{ask_placement, node_status};
 use super::placement::{load_placement, placement_path, save_placement};
 use super::rebalance::evaluate_cluster_rebalance_with;
 use super::selection::{
-    RESTART_RETRIES, RESTART_WAIT, choose_best_node, is_alive, node_fits, os_name,
+    RESTART_RETRIES, RESTART_WAIT, choose_best_node, is_alive, node_fits, os_name, prefer_non_mac,
     rendezvous_order, runs_os, status_fits,
 };
 
@@ -74,7 +74,10 @@ pub async fn pick_node_with(
                     still_fits = node_fits(remembered, engine, os).await;
                 }
                 if still_fits && let Ok(status) = node_status(remembered).await {
-                    if status.host.pressure().is_some() {
+                    if !status_fits(&status, engine, os)
+                        || status.host.pressure().is_some()
+                        || prefer_non_mac(nodes, remembered, &status, engine, os).await
+                    {
                         still_fits = false;
                     } else if status.congestion_score() >= 0.80 && nodes.len() > 1 {
                         // If remembered node has become congested, evaluate whether a significantly
@@ -120,9 +123,14 @@ pub async fn pick_node_with(
                 .node
                 .as_deref()
                 .and_then(|a| a.parse::<SocketAddr>().ok())
-                && node_fits(chosen, None, os).await
+                && node_fits(chosen, engine, os).await
             {
                 if let Ok(status) = node_status(chosen).await {
+                    if !status_fits(&status, engine, os)
+                        || prefer_non_mac(nodes, chosen, &status, engine, os).await
+                    {
+                        continue;
+                    }
                     if status.host.pressure().is_some() && nodes.len() > 1 {
                         continue;
                     }
@@ -184,19 +192,18 @@ pub async fn pick_node_with(
                     if engine.is_none() && os.is_none() && is_alive(candidate).await {
                         candidates.push((candidate, 500.0));
                     } else if first_failure.is_none() {
-                        first_failure = Some(format!("{candidate}: {}", err.root_cause()));
+                        first_failure = Some(err.context(format!("probing {candidate}")));
                     }
                 }
             }
         }
-        // A macOS node is a developer's Mac: work that does not need macOS goes there only when
-        // no other node can take it, however quiet the Mac is (#308).
-        if os.is_none() && candidates.iter().any(|(c, _)| !on_macos.contains(c)) {
-            candidates.retain(|(c, _)| !on_macos.contains(c));
-        }
         // A node short of memory or disk only when every other one is too (#396).
         if candidates.iter().any(|(c, _)| !short.contains(c)) {
             candidates.retain(|(c, _)| !short.contains(c));
+        }
+        // Prefer non-Mac nodes among those with viable resource capacity (#308).
+        if os.is_none() && candidates.iter().any(|(c, _)| !on_macos.contains(c)) {
+            candidates.retain(|(c, _)| !on_macos.contains(c));
         }
         if let Some(chosen) = choose_best_node(&candidates) {
             if let Some(path) = placement_file {
@@ -207,7 +214,7 @@ pub async fn pick_node_with(
             }
             return Ok(chosen);
         }
-        return Err(match (os, engine) {
+        let error = match (os, engine) {
             (Some(os), _) if unsupported.is_empty() => anyhow!(
                 "no reachable gateway runs {} (none of {} answered)",
                 os_name(os),
@@ -222,8 +229,9 @@ pub async fn pick_node_with(
                 "no reachable gateway serves {engine} (reachable without it: {}); add a node with the {engine} language server installed",
                 listed(&unsupported)
             ),
-            _ => match first_failure {
+            _ => match first_failure.as_ref() {
                 Some(why) => {
+                    let why = format!("{why:#}");
                     let hint = if why.contains("No route to host")
                         || why.contains("os error 65")
                         || why.contains("Connection refused")
@@ -236,7 +244,16 @@ pub async fn pick_node_with(
                 }
                 None => anyhow!("no gateway reachable among {}", listed(nodes)),
             },
-        });
+        };
+        return Err(
+            if os.is_some()
+                && let Some(failure) = first_failure
+            {
+                failure.context(error.to_string())
+            } else {
+                error
+            },
+        );
     };
     let loopback: SocketAddr = "127.0.0.1:9400".parse().unwrap();
     if *only == loopback
@@ -253,13 +270,22 @@ pub async fn pick_node_with(
     }
     // One node is used without asking, unless the checkout needs an OS it has to be shown to
     // run: a build there would fail on headers that do not exist (#248).
-    if let Some(os) = os
-        && !node_fits(*only, None, Some(os)).await
-    {
-        return Err(anyhow!(
-            "no reachable gateway runs {} (reachable without it: {only})",
-            os_name(os)
-        ));
+    if let Some(os) = os {
+        match node_status(*only).await {
+            Ok(status) if runs_os(&status, os) => {}
+            Ok(_) => {
+                return Err(anyhow!(
+                    "no reachable gateway runs {} (reachable without it: {only})",
+                    os_name(os)
+                ));
+            }
+            Err(error) => {
+                return Err(error.context(format!(
+                    "no reachable gateway runs {} (probing {only})",
+                    os_name(os)
+                )));
+            }
+        }
     }
     if let Some(engine) = engine
         && let Ok(status) = node_status(*only).await

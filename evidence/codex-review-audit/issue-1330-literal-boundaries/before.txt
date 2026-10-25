@@ -1,0 +1,41 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --lib cluster::tests::route_regressions::local_deps::review::literals:: -- --nocapture
+Terminal exit: 101
+Production input: 9b9822516a0aa7368958c03a636fd8fa8f386a9c
+Test fixtures added; production files unchanged. Initial dependency compilation output omitted.
+
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.27s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 3 tests
+
+thread 'cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_comments_with_dependency' (2907972) panicked at crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs:82:5:
+assertion `left == right` failed: detector, checkout, compatible-default routing, Linux-only routing
+  left: (None, false, false, true)
+ right: (Some(("apple/apple.go", "libproc.h")), true, true, false)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_comments_with_dependency ... FAILED
+
+thread 'cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_non_utf8_preserves_imports' (2907973) panicked at crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs:82:5:
+assertion `left == right` failed: detector, checkout, compatible-default routing, Linux-only routing
+  left: (None, false, false, true)
+ right: (Some(("apple/apple.go", "libproc.h")), true, true, false)
+
+thread 'cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_comment_import_boundary' (2907971) panicked at crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs:82:5:
+assertion `left == right` failed: detector, checkout, compatible-default routing, Linux-only routing
+  left: (Some(("apple/apple.go", "libproc.h")), false, false, false)
+ right: (None, true, true, true)
+test cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_non_utf8_preserves_imports ... FAILED
+test cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_comment_import_boundary ... FAILED
+
+failures:
+
+failures:
+    cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_comment_import_boundary
+    cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_comments_with_dependency
+    cluster::tests::route_regressions::local_deps::review::literals::issue_1330_review_literals_non_utf8_preserves_imports
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 1435 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p prod-code-mcp --lib`
+[prod-code exec] exit 101 in 33.7s (server 32.4s, cpu 44.2s user 7.2s sys, peak 2662 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)

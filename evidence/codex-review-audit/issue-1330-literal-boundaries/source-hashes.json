@@ -1,0 +1,33 @@
+{
+  "pinned_base": "f6063f7399342f220c93a2013e8e99be82749633",
+  "repair_input": "9b9822516a0aa7368958c03a636fd8fa8f386a9c",
+  "before_production_sha256": {
+    "crates/prod-code-mcp/src/sync/engine/go_tokens.rs": "58273b681084ef0d5fe99f243e6d20afbc5c18cc8c4ab85bf71f874326079fae",
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "21031c3d0b9f1e9cf15f7f274dfdb9a8793aa4cd18c7095081b236da1ff1403c"
+  },
+  "red_fixture_sha256": {
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "a241a1381fd741e80ae06964e32bc4c796eedb1e00a3664fa2556cc8d70f3e12",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_literals.rs": "5f05de2710ab4320ab7e3fdce9f3d9fcb9e6b0f73e9a6b4b5ca2e2c9b58ea289"
+  },
+  "final_source_sha256": {
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs": "09d3fd0b1444a199fc0169d5ce2961414b5f50ee71dde61ddbdbbfba0ea32c3d",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_literals.rs": "5f05de2710ab4320ab7e3fdce9f3d9fcb9e6b0f73e9a6b4b5ca2e2c9b58ea289",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_pruning.rs": "ab9cfd80b2dd2b378b9071a532054b2da397de5816fcdc33da9966b83f57ac22",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "a241a1381fd741e80ae06964e32bc4c796eedb1e00a3664fa2556cc8d70f3e12",
+    "crates/prod-code-mcp/src/cluster/tests/route_regressions.rs": "d624c9707a1915e7c903c96f9766ff2292105fc6f1ceeef958834f4f5ba4417c",
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "7fc302fc53aa43a5fb5834c16c457633f8d9a34a8ec4cb88a4f2eac3884dc787",
+    "crates/prod-code-mcp/src/sync/engine/go_tokens.rs": "cc49c2861c85bc8cf7922d695ad6805332250f9f3b6e2821f13859bdc0e2dde4",
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "a320582d92463ec923276c02764bd0d69a4fd4af99c0ac3cfc535629b0e89803",
+    "crates/prod-code-mcp/src/sync/engine/mod.rs": "8765a5d1ea53adae9b54e122db811b955c4958b42356d4a98419e9cdae173495"
+  },
+  "earlier_tracked_evidence_changed_from_repair_input": [],
+  "evidence_sha256": {
+    "evidence/codex-review-audit/issue-1330-literal-boundaries/README.md": "2fac2986e421f3e10c111772b585c7dd965d5b5de2687e808838931e8cf1868d",
+    "evidence/codex-review-audit/issue-1330-literal-boundaries/after.txt": "835c7eaf2cd5fc10cf762d45f25aef33432cb045b90aa9e430e175741fe419ec",
+    "evidence/codex-review-audit/issue-1330-literal-boundaries/before.txt": "103afba5875cde05ec06b15dbea74c4f0f2924707e3d01a8ae1f966edc9b3b9c",
+    "evidence/codex-review-audit/issue-1330-literal-boundaries/format.txt": "9ac41945f9bf108e0a46fe1f42cfa840fbb55b1b71845a4dfe2870c4fe613e73",
+    "evidence/codex-review-audit/issue-1330-literal-boundaries/lint-summary.json": "fe08a2a4728afe1c07110892c3d1a2f515c99067fcff4eaedc87ea577ce162ed",
+    "evidence/codex-review-audit/issue-1330-literal-boundaries/lint.txt": "33d5fdd5aef20a1191d22deca348470c49f2b6e5ee7b46f546a51c79bb571340",
+    "evidence/codex-review-audit/issue-1330-literal-boundaries/tool-failures.txt": "7ba82918118e5387e726c04af76318e56ce1de0e56dee3fa8297438d2560d3de"
+  }
+}

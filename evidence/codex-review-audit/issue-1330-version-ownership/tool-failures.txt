@@ -1,0 +1,8 @@
+Exact attempted discovery command (hook rejected; not executed):
+prod-code outline crates/prod-code-mcp/src/sync/engine/local_go.rs && prod-code outline crates/prod-code-mcp/src/sync/engine/cgo.rs && git log -3 --oneline && find evidence/codex-review-audit/issue-1330-local-dependency-review -maxdepth 1 -type f
+
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+
+Fallback: replaced the final find expression with ls evidence/codex-review-audit/issue-1330-local-dependency-review and reran the two prod-code outlines and git log; observed terminal exit 0.
+
+The expected red test exit 101 and strict lint CLI exit 1 are separately preserved in before.txt and lint.txt. No publication or issue reporting was allowed in this bounded task. No command was left running.

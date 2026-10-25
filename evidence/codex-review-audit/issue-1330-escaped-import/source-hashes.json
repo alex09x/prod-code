@@ -1,0 +1,23 @@
+{
+  "pinned_base": "f6063f7399342f220c93a2013e8e99be82749633",
+  "repair_input": "0a9c56a2878ab96aeea70c246b3032c0efc36b5d",
+  "before_production_sha256": {
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "9ff5eca9a45ec467b440e0a7bc0f593ece66e479c8bbba09a128301f831e8f1c"
+  },
+  "red_fixture_sha256": {
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "7212ba3f57c92bdfd61863d89ba61f515efa55cf02e01df8b7e2ff5c742a0486"
+  },
+  "final_source_sha256": {
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "21031c3d0b9f1e9cf15f7f274dfdb9a8793aa4cd18c7095081b236da1ff1403c",
+    "crates/prod-code-mcp/src/sync/engine/go_tokens.rs": "58273b681084ef0d5fe99f243e6d20afbc5c18cc8c4ab85bf71f874326079fae",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "143bb19c49a71992b93ea288a436a8a58bda8e6fb63c2736e059122f8567b8d3"
+  },
+  "evidence_sha256": {
+    "evidence/codex-review-audit/issue-1330-escaped-import/README.md": "64dbf5b519acbae3fde0e527bf82922bb7518b9a7d0ba522cecf3a38e0dfb2ea",
+    "evidence/codex-review-audit/issue-1330-escaped-import/after.txt": "cfefbe9906087033e085e58d8686be7be8009318ee452d7f382e2ae271e0169c",
+    "evidence/codex-review-audit/issue-1330-escaped-import/before.txt": "d3133e6bdd2147b80f1bca5f86fb36bc6689977f67ef9242ab977246a1a72faa",
+    "evidence/codex-review-audit/issue-1330-escaped-import/format.txt": "06af097eef9430fb54e98cb57416799d2bbcb7985dffe887abbbe0fcefa06943",
+    "evidence/codex-review-audit/issue-1330-escaped-import/lint.json": "805721ab6b6e7e64d9cfe566fced5c53f2bf4de86c274b3ad2063a9e8a7ef1f7",
+    "evidence/codex-review-audit/issue-1330-escaped-import/tool-failures.txt": "9a75db82e06b656395bfccd3d59c2eeee0b90416d28e64f5b2c8f23fefba2ec0"
+  }
+}

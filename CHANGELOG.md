@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Go Project Routing and Placement Evidence** (`crates/prod-code-mcp`, #1330):
+  Nested Go requests retain their selected module's OS constraints, including imported local replacement dependencies within bounded inspection. Independent child modules stay separate. Plain workloads reconsider remembered Mac placements when a compatible unpressured non-Mac node returns, and OS-constrained failures retain the underlying probe error.
 - **Exec Writeback Preservation** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1324):
   Returned files preserve concurrent local deletions and renames, including ignored outputs and file-to-directory replacements. Unverified optional outputs stay untouched without blocking execution. Cross-platform warnings retain pre-write evidence and nested `cfg` predicates; only confirmed Rust formatter whitespace changes are exempted.
 - **MCP Stdin Reload Ownership** (`crates/prod-code-mcp`, #1325):

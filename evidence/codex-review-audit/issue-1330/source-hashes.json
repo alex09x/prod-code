@@ -1,0 +1,42 @@
+{
+  "base_commit": "65c6e5a62e69fafae17820ae9548925b74711187",
+  "files": [
+    {
+      "path": "crates/prod-code-mcp/src/cluster/pick.rs",
+      "base_sha256": "9611e866e49798a4ecaa3bd01336acc674e659ff4f61d316d0aa4df90d78df49",
+      "final_sha256": "44364db7d40b20e768bfb90a949b8aa1251cd80f0d6cc20d2640ced91e9e8c5d",
+      "final_lines": 299
+    },
+    {
+      "path": "crates/prod-code-mcp/src/cluster/routing.rs",
+      "base_sha256": "1c0694d6de5f3025592ba5fa655d9060dfa481db64b67fbf016885e1b9ab331e",
+      "final_sha256": "1613d49bc834ed78e6039542c2526879d5888cba77f27a7e90a311221b5a9d76",
+      "final_lines": 222
+    },
+    {
+      "path": "crates/prod-code-mcp/src/cluster/selection.rs",
+      "base_sha256": "5faf0754572dafe0f8e4357afacc8605926d5e7af2cb2ffde41d6554d6e7de08",
+      "final_sha256": "4460bb33fe357570195046e3bbab62016a495fddd36d5fcd69288388769d6e83",
+      "final_lines": 139
+    },
+    {
+      "path": "crates/prod-code-mcp/src/cluster/tests/mod.rs",
+      "base_sha256": "b0ed1f83c3123c52a7dda24c5817241df060d23c17c28b7a7554ee881f4f3d33",
+      "final_sha256": "398e273c674371bbfbeb17292df2a023dd60d5233af49974fd391d61ac06a9c1",
+      "final_lines": 15
+    },
+    {
+      "path": "crates/prod-code-mcp/src/cluster/tests/route_regressions.rs",
+      "base_sha256": null,
+      "final_sha256": "04caeb0c7fde08ea501aa43038212d4b757e2f6a0e71ffbf5ef45823b6fa3e2a",
+      "final_lines": 245
+    },
+    {
+      "path": "crates/prod-code-mcp/src/cluster/tests/route_placement_regressions.rs",
+      "base_sha256": null,
+      "final_sha256": "8a97fde6cf516679f1f3c65e4225b384334d3e0bea3ae4f1745357465068e97a",
+      "final_lines": 113
+    }
+  ],
+  "snapshot_before_production_edits": "1c0694d6de5f3025592ba5fa655d9060dfa481db64b67fbf016885e1b9ab331e  crates/prod-code-mcp/src/cluster/routing.rs\n9611e866e49798a4ecaa3bd01336acc674e659ff4f61d316d0aa4df90d78df49  crates/prod-code-mcp/src/cluster/pick.rs\n5faf0754572dafe0f8e4357afacc8605926d5e7af2cb2ffde41d6554d6e7de08  crates/prod-code-mcp/src/cluster/selection.rs\nbd6fd9e4c9d3e5a5e7baba1b7f25e3d2c4b6433c3923ed29f3010289d1f2cd60  crates/prod-code-mcp/src/cluster/tests/route_regressions.rs\n"
+}

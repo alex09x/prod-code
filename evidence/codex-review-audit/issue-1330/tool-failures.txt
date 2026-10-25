@@ -1,0 +1,21 @@
+1. Command:
+gh api repos/alex09x/prod-code/issues/1330 && gh api repos/alex09x/prod-code/issues/comments/4096478753 && gh api repos/alex09x/prod-code/issues/comments/4101373412 && gh api repos/alex09x/prod-code/issues/comments/4102626382 && prod-code def --symbol engine_project
+Exit: 1.
+Output: issue 1330 was returned successfully; first original comment lookup returned {"message":"Not Found","documentation_url":"https://docs.github.com/rest/issues/comments#get-an-issue-comment","status":"404"}gh: Not Found (HTTP 404)
+The remaining chained requests did not execute. Bounded fallback: used the fetched issue's body and independently inspected source with prod-code def --symbol engine_project. No issue or comment was published.
+
+2. Command:
+prod-code def --symbol engine_project && sed -n '1,130p' crates/prod-code-mcp/src/cluster/discover.rs && sed -n '265,310p' crates/prod-code-mcp/src/cluster/discover.rs && sed -n '1,100p' crates/prod-code-mcp/src/cluster/tests.rs
+Exit: 1.
+Error: sed: crates/prod-code-mcp/src/cluster/tests.rs: No such file or directory
+The semantic definition and discover.rs slices succeeded. Bounded fallback: read the existing crates/prod-code-mcp/src/cluster/tests/mod.rs and its named modules.
+
+3. Command:
+rg --files crates/prod-code-mcp/src/cluster/tests && sed -n '1,100p' crates/prod-code-mcp/src/cluster/tests/mod.rs && prod-code def --symbol PlaceResponse
+The pre-tool hook blocked the command before execution.
+Error: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+Bounded fallback: sed -n '1,100p' crates/prod-code-mcp/src/cluster/tests/mod.rs && prod-code def --symbol PlaceResponse (exit 0).
+
+4. Lint argument rejection and corrected-directory lint failure are recorded verbatim, with private paths sanitized, in lint.log and lint-scoped.log. Neither is reported as passed.
+
+5. Expected red reproductions are in before-initial.log, before-separated.log, before-fallback.log. The subsequent test-only deterministic ordering failure is in after-development.log. The placement correction and final acceptance results are in after-placement.log and after-final.log.

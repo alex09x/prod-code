@@ -1,0 +1,24 @@
+1. Exact discovery command:
+prod-code outline crates/prod-code-mcp/src/sync/engine/cgo.rs && prod-code outline crates/prod-code-mcp/src/sync/engine/local_go.rs && prod-code outline crates/prod-code-mcp/src/cluster/route_local_deps.rs
+
+Observed terminal exit: 1. The first two outlines succeeded.
+Error: cannot outline: file does not exist: crates/prod-code-mcp/src/cluster/route_local_deps.rs (did you mean `crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs`?)
+
+Fallback: explicit bounded reads of crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs; terminal exit 0. Semantic prod-code definition queries for macos_only_cgo and LocalDependencies::imported_roots also exited 0.
+
+2. Exact attempted discovery command (rejected by the hook; not executed):
+git diff --stat f6063f7399342f220c93a2013e8e99be82749633 && rg --files evidence/codex-review-audit && sed -n '1,155p' crates/prod-code-mcp/src/sync/engine/cgo.rs && sed -n '1,245p' crates/prod-code-mcp/src/sync/engine/local_go.rs && sed -n '1,110p' crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs
+
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+
+Fallback: git ls-files evidence/codex-review-audit and the explicit source windows above (with route_local_deps.rs ending at line 160); terminal exit 0.
+
+3. Exact source/log inspection command:
+sed -n '1,60p' crates/prod-code-mcp/src/cluster/tests.rs && sed -n '1,40p' evidence/codex-review-audit/issue-1330-local-dependency/format.txt && sed -n '1,25p' evidence/codex-review-audit/issue-1330-local-dependency/lint.txt
+
+Observed terminal exit: 1.
+sed: crates/prod-code-mcp/src/cluster/tests.rs: No such file or directory
+
+Fallback: reused the already read parent-module Node import and explicitly read format.txt lines 1-40 and lint.txt lines 1-22; terminal exit 0. No alternate source-file location was guessed.
+
+The expected red test failure and inherited strict-lint failure have separate evidence in before.txt and lint.txt. Publication/report-issue was prohibited by this bounded task; no issue or message was sent.

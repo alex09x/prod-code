@@ -1,0 +1,320 @@
+[
+  {
+    "file": "crates/prod-code-mcp/src/config/mod.rs",
+    "base_sha256": "e347f1978f5a056ffd8406fa53ede300e658d83666f95b227666752da9dadbb4",
+    "final_sha256": "e347f1978f5a056ffd8406fa53ede300e658d83666f95b227666752da9dadbb4",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+    "base_sha256": "450f53c69c9d9bf00900f0c97ebb10c41d585092cced2c84580cf735bfea1cc4",
+    "final_sha256": "450f53c69c9d9bf00900f0c97ebb10c41d585092cced2c84580cf735bfea1cc4",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+    "base_sha256": "8a9926e1c5bb7f70afa125e34c5afee3c50f0f14b7bb9f41ab557affae498295",
+    "final_sha256": "8a9926e1c5bb7f70afa125e34c5afee3c50f0f14b7bb9f41ab557affae498295",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/diagnostics/tests/regressions.rs",
+    "base_sha256": "ac45606c3634e716e533f781785b3224d5a9347e6b285747a6efb230a80e53ca",
+    "final_sha256": "ac45606c3634e716e533f781785b3224d5a9347e6b285747a6efb230a80e53ca",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/dossier/assertions/cpp.rs",
+    "base_sha256": "539963e0a8165ddc46d24ed0a0997fa01e5d3af2106c07157030855f37285b51",
+    "final_sha256": "539963e0a8165ddc46d24ed0a0997fa01e5d3af2106c07157030855f37285b51",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/dossier/assertions/go.rs",
+    "base_sha256": "d3e3d1791d6994d364fa11a78e182a23604fbb4b7a19e544d93088d5b71affc8",
+    "final_sha256": "d3e3d1791d6994d364fa11a78e182a23604fbb4b7a19e544d93088d5b71affc8",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/dossier/assertions/python.rs",
+    "base_sha256": "1dd6c293bfd39dd64891a030cc0dcaca5c7ceba7870fe7e9eb252c8b8ee0743d",
+    "final_sha256": "1dd6c293bfd39dd64891a030cc0dcaca5c7ceba7870fe7e9eb252c8b8ee0743d",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/dossier/locations.rs",
+    "base_sha256": "e4ffe663da21a5175ab0398c6ec50feadf858104c323a5230d25f115e06c0d0b",
+    "final_sha256": "e4ffe663da21a5175ab0398c6ec50feadf858104c323a5230d25f115e06c0d0b",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/encapsulate_field/polyglot/lsp.rs",
+    "base_sha256": "2176b5bb6b61f051e51914945cba1c7601e1741f5777cdeda0caabef6ea214f9",
+    "final_sha256": "2176b5bb6b61f051e51914945cba1c7601e1741f5777cdeda0caabef6ea214f9",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/encapsulate_field/polyglot/mod.rs",
+    "base_sha256": "d6bdafe78413852f33ad96952d0e0da410fddd1b49840d2f94dfccdb8e9e2057",
+    "final_sha256": "d6bdafe78413852f33ad96952d0e0da410fddd1b49840d2f94dfccdb8e9e2057",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/extract_delegate/polyglot/execute.rs",
+    "base_sha256": "01bebc86c6dfe943d8b116161be4df1bb4a48a5ebbacad1a9428b644e6b95afa",
+    "final_sha256": "01bebc86c6dfe943d8b116161be4df1bb4a48a5ebbacad1a9428b644e6b95afa",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/extract_function/binding.rs",
+    "base_sha256": "949684263377a9a83594f9df32c2c744bb6fe5f41f4f3c61261e1983b7fe7a59",
+    "final_sha256": "949684263377a9a83594f9df32c2c744bb6fe5f41f4f3c61261e1983b7fe7a59",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/extract_function/duplicates/search.rs",
+    "base_sha256": "c15471c29fd2e22168f2c356f9a90b80cd45060309c35bd50a68d1ab9117110a",
+    "final_sha256": "c15471c29fd2e22168f2c356f9a90b80cd45060309c35bd50a68d1ab9117110a",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/fixture/builder/lexer.rs",
+    "base_sha256": "491ed4da5ee0770ebbe3f2b96d25f20d9ef4b3d2a621367d52a16ce8419abc24",
+    "final_sha256": "491ed4da5ee0770ebbe3f2b96d25f20d9ef4b3d2a621367d52a16ce8419abc24",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/fixture/polyglot/parsers_go_ts.rs",
+    "base_sha256": "e54c6c4a1b222f9c7e45510ced60e1f423be8152bf7073c7b419fec69025bdc2",
+    "final_sha256": "e54c6c4a1b222f9c7e45510ced60e1f423be8152bf7073c7b419fec69025bdc2",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/generify/polyglot.rs",
+    "base_sha256": "db0d4482e1d71b6d239704ca88f6853d1aaf851f7e46207d031bce5b7762f90e",
+    "final_sha256": "db0d4482e1d71b6d239704ca88f6853d1aaf851f7e46207d031bce5b7762f90e",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/impact/signatures.rs",
+    "base_sha256": "29dbbf2ffc70c695273f2baa4378c0d1a9edc61540bca612940a697487332916",
+    "final_sha256": "29dbbf2ffc70c695273f2baa4378c0d1a9edc61540bca612940a697487332916",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/impact/test_cmd.rs",
+    "base_sha256": "bcf705d7f25949e331de9bba7b56de3323dc522aa225628c92acbda045bd5a08",
+    "final_sha256": "bcf705d7f25949e331de9bba7b56de3323dc522aa225628c92acbda045bd5a08",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/move_item/item.rs",
+    "base_sha256": "d7d4193a38e321da8064f81943e73ef0f5c640fd67c974a3d6b3d38ab02fd624",
+    "final_sha256": "d7d4193a38e321da8064f81943e73ef0f5c640fd67c974a3d6b3d38ab02fd624",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/move_item/tests.rs",
+    "base_sha256": "73bc44708e9264548b5968c6fa0a789d1bcdddfdf80eed9cf43930333d6bb7bb",
+    "final_sha256": "73bc44708e9264548b5968c6fa0a789d1bcdddfdf80eed9cf43930333d6bb7bb",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/move_method/tests.rs",
+    "base_sha256": "028620bec6ce8ed7b53cc984c59c6ed08de83b9a8ae4f9a578b6a344e891f654",
+    "final_sha256": "028620bec6ce8ed7b53cc984c59c6ed08de83b9a8ae4f9a578b6a344e891f654",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/parameter_object/binding.rs",
+    "base_sha256": "d89e939db2c843d895991c771bf173db361eb70cebbb3728aea20cdd3569f689",
+    "final_sha256": "d89e939db2c843d895991c771bf173db361eb70cebbb3728aea20cdd3569f689",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/parameter_object/polyglot_callers.rs",
+    "base_sha256": "6dcfa6f409beb2d42443db04dddf88d9f9f88683d836ced4f376bd1950b3ec1b",
+    "final_sha256": "6dcfa6f409beb2d42443db04dddf88d9f9f88683d836ced4f376bd1950b3ec1b",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/prune/execute.rs",
+    "base_sha256": "0ecdeae884883ab0c01c9662de9edbc3f2462c097c544e422f0d5971e9ebbe2f",
+    "final_sha256": "0ecdeae884883ab0c01c9662de9edbc3f2462c097c544e422f0d5971e9ebbe2f",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/remote_fs/mod.rs",
+    "base_sha256": "511bff05828a5871759405de96bdc3976714d885b8165230fe50505e9ff5faa7",
+    "final_sha256": "511bff05828a5871759405de96bdc3976714d885b8165230fe50505e9ff5faa7",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/replace_constructor/sites/helpers.rs",
+    "base_sha256": "a556d5f8337b443cdeea6d95e543d949572d3a4e06e9e9cf06c4bd89e72f0c22",
+    "final_sha256": "a556d5f8337b443cdeea6d95e543d949572d3a4e06e9e9cf06c4bd89e72f0c22",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/replace_inheritance/languages/cpp.rs",
+    "base_sha256": "b990480007da89f734a4064c1df2d985fb56135347bd6abcf4d866ce63587842",
+    "final_sha256": "b990480007da89f734a4064c1df2d985fb56135347bd6abcf4d866ce63587842",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs",
+    "base_sha256": "6bca3bc2d7851254fc8aca047d2a7844c1cf397cb888fee44dd9f083e165f2cb",
+    "final_sha256": "6bca3bc2d7851254fc8aca047d2a7844c1cf397cb888fee44dd9f083e165f2cb",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/replace_inheritance/tests.rs",
+    "base_sha256": "3672f483b7e438249ea9ad12c7cfd375269bc75bffba5de853498f8c98e5572e",
+    "final_sha256": "3672f483b7e438249ea9ad12c7cfd375269bc75bffba5de853498f8c98e5572e",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/server/failover.rs",
+    "base_sha256": "d88ce1ab57f6059387886aa0f7394916b5530d3cd8f0d26da7e0f78cd5eac0c8",
+    "final_sha256": "d88ce1ab57f6059387886aa0f7394916b5530d3cd8f0d26da7e0f78cd5eac0c8",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/session/pool.rs",
+    "base_sha256": "d6b23398793cc014f6e641ce687db26e2ef0819de94fbf0fcb9c78b95a3c5b0a",
+    "final_sha256": "d6b23398793cc014f6e641ce687db26e2ef0819de94fbf0fcb9c78b95a3c5b0a",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/signature/call_sites.rs",
+    "base_sha256": "19e7df48fd50b5d0b0932c9507535d4f56e9bb3226180f37f1761a48d781ac8c",
+    "final_sha256": "19e7df48fd50b5d0b0932c9507535d4f56e9bb3226180f37f1761a48d781ac8c",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/signature/modifiers.rs",
+    "base_sha256": "7901e5bd72ea6eea8afc06182fd29a6178c9dd47c34d9ed5e7613c6f59e73e0f",
+    "final_sha256": "7901e5bd72ea6eea8afc06182fd29a6178c9dd47c34d9ed5e7613c6f59e73e0f",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/signature_go/reorder_verify.rs",
+    "base_sha256": "6090dfda31910d7a2d4a7bfa306f369169277093b0d60ab5423eb93a612f6588",
+    "final_sha256": "6090dfda31910d7a2d4a7bfa306f369169277093b0d60ab5423eb93a612f6588",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/supertypes/rust.rs",
+    "base_sha256": "8851a07db2a4e6f795160eaf2ef6f195250e9c0be3c890eaca6cef5784c47a3e",
+    "final_sha256": "8851a07db2a4e6f795160eaf2ef6f195250e9c0be3c890eaca6cef5784c47a3e",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/sync/cache.rs",
+    "base_sha256": "c5fa72ef4316d4fcbc06173166c85b71f1656209070f9ccd6684aba788bc93ad",
+    "final_sha256": "c5fa72ef4316d4fcbc06173166c85b71f1656209070f9ccd6684aba788bc93ad",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/sync/read.rs",
+    "base_sha256": "7554125d2cf29e7a0af9c0587918f2116a0826daedaaa5bea191cd3c56561f64",
+    "final_sha256": "7554125d2cf29e7a0af9c0587918f2116a0826daedaaa5bea191cd3c56561f64",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/sync/scan.rs",
+    "base_sha256": "789abdabc0e746846567c88cba46331417595af8f02bfb51536f60ce7fbc8872",
+    "final_sha256": "789abdabc0e746846567c88cba46331417595af8f02bfb51536f60ce7fbc8872",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/to_method/helpers.rs",
+    "base_sha256": "f2ad58c273e2a63c9115c8fedd2e1846db12cde63295373b8d811abc6b4ac17f",
+    "final_sha256": "f2ad58c273e2a63c9115c8fedd2e1846db12cde63295373b8d811abc6b4ac17f",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/tools/execution.rs",
+    "base_sha256": "619757e7272877d43665e45d5c63d7330b014cc923cd3d8d3d319c8e57a0752a",
+    "final_sha256": "619757e7272877d43665e45d5c63d7330b014cc923cd3d8d3d319c8e57a0752a",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/tools/symbols/alias.rs",
+    "base_sha256": "111ed9f65fdbbd15858e6b6427fe76ac936b9f987c8a26dca2c05f2c9457584f",
+    "final_sha256": "111ed9f65fdbbd15858e6b6427fe76ac936b9f987c8a26dca2c05f2c9457584f",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/tools/symbols/resolve.rs",
+    "base_sha256": "6f332b05a40568c2e0ab64d856e96b9195c2916de761ff593aa2cbec5796c0de",
+    "final_sha256": "6f332b05a40568c2e0ab64d856e96b9195c2916de761ff593aa2cbec5796c0de",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/tools/symbols/type_members.rs",
+    "base_sha256": "f2e95d547f2c17e36d1eeda98d0ed97eea5873f03b9e7303d439c164f7388750",
+    "final_sha256": "f2e95d547f2c17e36d1eeda98d0ed97eea5873f03b9e7303d439c164f7388750",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/import.rs",
+    "base_sha256": "0529d95e7ee90c08ec214e1c2007548b2a5c811fad64a57fa0c494da05d44ced",
+    "final_sha256": "0529d95e7ee90c08ec214e1c2007548b2a5c811fad64a57fa0c494da05d44ced",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+    "base_sha256": "ebac73c0dcf745414269d8f2ffdba90b1048ffe18d772b0ad8381a083c55aefc",
+    "final_sha256": "ebac73c0dcf745414269d8f2ffdba90b1048ffe18d772b0ad8381a083c55aefc",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "base_sha256": "69abfec0bbc849e2c0cff5ae76362ed46768b4fdf732fe2d40171db31f36b591",
+    "final_sha256": "69abfec0bbc849e2c0cff5ae76362ed46768b4fdf732fe2d40171db31f36b591",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "base_sha256": "5d2d2cfedea03c7369dac5f9dd4598822a09c2fd9b5b12179f35df620f11525e",
+    "final_sha256": "5d2d2cfedea03c7369dac5f9dd4598822a09c2fd9b5b12179f35df620f11525e",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs",
+    "base_sha256": "7dacb0e7bdebaa90a0f7273b1c58806ed3dae90125c9f896b11f8b268e8ff832",
+    "final_sha256": "7dacb0e7bdebaa90a0f7273b1c58806ed3dae90125c9f896b11f8b268e8ff832",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/restructure.rs",
+    "base_sha256": "951eb2e0350d876030d10057b0dd455282b269c2d320b8045e4b89fafb2c6f74",
+    "final_sha256": "951eb2e0350d876030d10057b0dd455282b269c2d320b8045e4b89fafb2c6f74",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "base_sha256": "39f2d54d6a16e17af040f321abf27598c4e699f36e72dd52b2d578aef757e737",
+    "final_sha256": "39f2d54d6a16e17af040f321abf27598c4e699f36e72dd52b2d578aef757e737",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs",
+    "base_sha256": "2c8d75a64120e864a5801a69060abc55f6e2313f16e99be19983261c6647197c",
+    "final_sha256": "2c8d75a64120e864a5801a69060abc55f6e2313f16e99be19983261c6647197c",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/wrap_return/utils.rs",
+    "base_sha256": "87dca96274915b87ea1737f9a11aa349c53ddca20b562e0312aa6c012563b76e",
+    "final_sha256": "87dca96274915b87ea1737f9a11aa349c53ddca20b562e0312aa6c012563b76e",
+    "byte_identical_to_base": true
+  },
+  {
+    "file": "crates/prod-code-mcp/src/xml_svg/lexer.rs",
+    "base_sha256": "4fb5ca8d5f62312a925ca4da2c912d691daf7bf2c3ffbbba2cef437d13dddb23",
+    "final_sha256": "4fb5ca8d5f62312a925ca4da2c912d691daf7bf2c3ffbbba2cef437d13dddb23",
+    "byte_identical_to_base": true
+  }
+]

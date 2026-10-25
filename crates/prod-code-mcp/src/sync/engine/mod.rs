@@ -10,6 +10,7 @@
 
 pub mod cgo;
 pub mod detect;
+mod local_go;
 pub mod project;
 pub mod workspace;
 

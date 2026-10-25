@@ -1,0 +1,13 @@
+Exact attempted discovery command (no command executed):
+git log -3 --oneline; git diff --stat f6063f7399342f220c93a2013e8e99be82749633; rg --files evidence/codex-review-audit crates/prod-code-mcp/src/sync/engine crates/prod-code-mcp/src/cluster | head -100
+
+Exact error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed..
+
+Bounded fallback:
+git log -3 --oneline; git diff --stat f6063f7399342f220c93a2013e8e99be82749633; ls evidence/codex-review-audit
+prod-code outline crates/prod-code-mcp/src/sync/engine/local_go.rs
+Both observed terminal exit 0. Explicit source windows were read after the successful outline. No tool defect publication or messages under the task's prohibition.
+
+Expected red test failures: before.txt. Existing strict lint failure: lint.json. All started processes reached terminal completion.
+

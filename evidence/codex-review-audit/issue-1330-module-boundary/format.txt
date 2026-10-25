@@ -1,0 +1,4 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/cluster/pick.rs crates/prod-code-mcp/src/cluster/routing.rs crates/prod-code-mcp/src/cluster/selection.rs crates/prod-code-mcp/src/cluster/tests/mod.rs crates/prod-code-mcp/src/cluster/tests/route_placement_regressions.rs crates/prod-code-mcp/src/cluster/tests/route_regressions.rs crates/prod-code-mcp/src/sync/engine/cgo.rs
+Observed terminal exit: 0
+
+[prod-code exec] exit 0 in 0.5s (server 0.1s, cpu 0.0s user 0.0s sys, peak 38 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)

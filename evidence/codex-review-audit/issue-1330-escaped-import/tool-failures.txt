@@ -1,0 +1,7 @@
+Command: git diff --check
+Observed terminal exit: 2
+crates/prod-code-mcp/src/sync/engine/local_go.rs:321: new blank line at EOF.
+
+The single planned scoped remote rustfmt invocation removed this trailing blank line.
+The pre-fix regression failure is preserved in before.txt; strict lint failure is recorded
+in lint.json against the retained complete diagnostic record. No tool calls were abandoned.
