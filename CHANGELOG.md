@@ -5,6 +5,8 @@
 ### Fixed
 - **Ordered Workspace Edits and File Move History** (`crates/prod-code-mcp`, #1288):
   Preflight defers state checks affected by earlier operations to transactional execution, so a binary file or moved directory can be replaced with a new text file in the same edit. Single-file moves carry their original text for reports through overwrites and sequential renames, including moves between repository roots. Failed later steps still restore the original paths, bytes and permissions.
+- **Occurrence-Based Dependency Slices** (`crates/prod-code-mcp`, #1290):
+  Slices resolve separate identifier occurrences before deduplicating target declarations, so equal method names on different receivers retain both dependencies. Dataflow slices preserve original query positions, and occurrence-budget exhaustion is reported as incomplete.
 - **Literal CTest Selection** (`crates/prod-code-mcp`, #1284):
   Impact-generated CTest filters escape registered test names before joining them, so regex punctuation in a name neither selects unrelated tests nor hides the intended one.
 - **clang-tidy Filename Boundaries** (`crates/prod-code-mcp`, #1282):

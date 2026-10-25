@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 pub const DEFAULT_MAX_BYTES: usize = 24 * 1024;
 /// How far to follow dependencies from the seed by default.
 pub const DEFAULT_DEPTH: u32 = 2;
-/// Distinct names resolved per item; a body that mentions more is reported as a gap.
+/// Identifier occurrences resolved per item; exceeding this budget is reported as a gap.
 pub(crate) const MAX_NAMES_PER_ITEM: usize = 64;
 /// Names from outside the workspace listed in the report before it says "and N more".
 pub(crate) const EXTERNAL_SHOWN: usize = 12;

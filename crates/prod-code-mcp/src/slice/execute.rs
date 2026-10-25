@@ -146,7 +146,7 @@ async fn slice_with(
             );
             let formatted = df.formatted_slice.clone();
             let mut names = Vec::new();
-            let mut seen_names = HashSet::new();
+            let mut seen_positions = HashSet::new();
             for statement in &df.statements {
                 if let Some(source_line) = lines_of(
                     &facts[&file].text,
@@ -155,7 +155,9 @@ async fn slice_with(
                     statement.line,
                 ) {
                     for candidate in candidate_names(&source_line, statement.line) {
-                        if seen_names.insert(candidate.0.clone()) {
+                        // Several retained statements can share a source line. Resolve each
+                        // position once, without merging equal names at different positions.
+                        if seen_positions.insert((candidate.1, candidate.2)) {
                             names.push(candidate);
                         }
                     }
@@ -197,7 +199,7 @@ async fn slice_with(
                 kind: GapKind::NameLimit,
                 item: decl.name.clone(),
                 detail: format!(
-                    "its body names {} distinct names; only the first {MAX_NAMES_PER_ITEM} were \
+                    "its body has {} identifier occurrences; only the first {MAX_NAMES_PER_ITEM} were \
                      resolved, and the other {} (from `{}` on) were not looked up",
                     names.len(),
                     names.len() - MAX_NAMES_PER_ITEM,

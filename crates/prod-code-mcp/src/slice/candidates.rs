@@ -8,18 +8,16 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use std::collections::HashSet;
 use std::ops::Range;
 use std::path::Path;
 
 use super::lsp::{Pos, Span};
 
-/// Identifier-shaped tokens of a body, in order, deduplicated, with the 1-based line and the
-/// 1-based column in UTF-16 code units of the first occurrence of each. Words inside line
-/// comments and string literals are skipped: they cost a round trip and never resolve to
+/// Identifier-shaped occurrences of a body, in order, with their 1-based line and
+/// 1-based column in UTF-16 code units. Equal spellings can resolve to different declarations.
+/// Words inside line comments and string literals are skipped: they cost a round trip and never resolve to
 /// anything useful.
 pub fn candidate_names(text: &str, start_line: u32) -> Vec<(String, u32, u32)> {
-    let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let Some(line) = u32::try_from(i)
@@ -47,7 +45,7 @@ pub fn candidate_names(text: &str, start_line: u32) -> Vec<(String, u32, u32)> {
                 }
             }
             let word = &code[start..col];
-            if word.len() > 1 && !is_keyword(word) && seen.insert(word.to_string()) {
+            if word.len() > 1 && !is_keyword(word) {
                 // `strip_noise` keeps byte offsets, so `start` is the word's offset in `raw`.
                 let Some(utf16) = u32::try_from(raw[..start].encode_utf16().count())
                     .ok()
