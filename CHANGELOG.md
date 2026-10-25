@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Fixture Completeness** (`crates/prod-code-mcp`, #1307):
+  Default Rust generation includes every record field and retains enum variant shapes to produce values. Visibility stripping preserves identifiers beginning with `pub`; balanced attributes, raw field names and function-return arrows retain their declaration boundaries.
 - **Rust Supertype Header Preservation** (`crates/prod-code-mcp`, #1305):
   Restricted-visibility traits retain their supertraits, higher-ranked `Self` predicates retain their binders, and implementation lookup follows complete headers through nested const-argument items. Unrelated bodies and declarations are excluded, with one shared lexical mask per header search.
 - **Type-Migration Error and Syntax Preservation** (`crates/prod-code-mcp`, #1310):

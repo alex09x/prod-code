@@ -44,7 +44,16 @@ fn shapes_are_read_from_declarations() {
     assert_eq!(parse_shape("struct C;").unwrap(), Shape::Unit);
     assert_eq!(
         parse_shape("pub enum D {\n    First,\n    Second(u8),\n}").unwrap(),
-        Shape::Enum(vec!["First".into(), "Second".into()])
+        Shape::Enum(vec![
+            EnumVariant {
+                name: "First".into(),
+                shape: Shape::Unit
+            },
+            EnumVariant {
+                name: "Second".into(),
+                shape: Shape::Tuple(vec!["u8".into()])
+            }
+        ])
     );
 }
 

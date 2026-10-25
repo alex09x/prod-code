@@ -196,7 +196,9 @@ pub fn parse_rust_shape(decl: &str) -> Option<PolyglotShape> {
             super::super::types::Shape::Record(f) => PolyglotShape::Record(f),
             super::super::types::Shape::Tuple(t) => PolyglotShape::Tuple(t),
             super::super::types::Shape::Unit => PolyglotShape::Unit,
-            super::super::types::Shape::Enum(v) => PolyglotShape::Enum(v),
+            super::super::types::Shape::Enum(v) => {
+                PolyglotShape::Enum(v.into_iter().map(|variant| variant.name).collect())
+            }
         });
     }
     None

@@ -13,8 +13,6 @@ use std::path::PathBuf;
 
 /// How deep to build nested workspace types before falling back to `Default::default()`.
 pub const DEFAULT_DEPTH: u32 = 2;
-/// Fields generated for one type; a bigger struct is still generated, just noted.
-pub(crate) const MANY_FIELDS: usize = 40;
 
 /// Options for fixture and mock generation.
 #[derive(Debug, Clone, Default)]
@@ -109,45 +107,69 @@ pub enum Shape {
     Tuple(Vec<String>),
     /// A unit struct.
     Unit,
-    /// An enum: its variant names, first one usable as a value when it takes no fields.
-    Enum(Vec<String>),
+    /// An enum with each variant's value-bearing shape intact.
+    Enum(Vec<EnumVariant>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub shape: Shape,
 }
 
 pub(crate) fn strip_visibility(line: &str) -> &str {
     let t = line.trim_start();
-    for prefix in ["pub(crate)", "pub(super)", "pub(in crate)", "pub"] {
-        if let Some(rest) = t.strip_prefix(prefix) {
-            return rest.trim_start();
-        }
+    let Some(rest) = t.strip_prefix("pub") else {
+        return t;
+    };
+    // `public_key` and other identifiers beginning with `pub` are not visibility.
+    let separated = rest.is_empty() || rest.starts_with(char::is_whitespace);
+    if !separated && !rest.starts_with('(') {
+        return t;
     }
-    t
+    let rest = rest.trim_start();
+    if let Some(scope) = rest.strip_prefix('(')
+        && let Some((scope, tail)) = scope.split_once(')')
+        && (matches!(scope.trim(), "crate" | "super" | "self")
+            || scope
+                .trim()
+                .strip_prefix("in")
+                .is_some_and(|s| s.starts_with(char::is_whitespace)))
+    {
+        return tail.trim_start();
+    }
+    // After a plain `pub`, parentheses may belong to the field's tuple type.
+    // Only the recognized scopes above are restricted visibility.
+    if separated { rest } else { t }
 }
 
-/// Splits on commas that are not inside brackets, so `HashMap<String, u64>` stays whole.
+/// Splits Rust commas outside delimiters, keeping generics and payloads whole.
 pub(crate) fn split_top_level(text: &str) -> Vec<String> {
+    use super::builder::lexer::{Kind, Source};
+
+    // Keep unreadable input intact for the caller to reject or report as a fallback.
+    let Ok(source) = Source::new(text) else {
+        return vec![text.to_string()];
+    };
     let mut out = Vec::new();
     let mut depth = 0i32;
-    let mut current = String::new();
-    for c in text.chars() {
-        match c {
-            '<' | '(' | '[' => {
-                depth += 1;
-                current.push(c);
+    let mut start = 0;
+    for (i, token) in source.tokens.iter().enumerate() {
+        if token.kind != Kind::Punct {
+            continue;
+        }
+        // In particular, `->` is one token, not an angle-bracket closer.
+        match source.t(i) {
+            "<" | "(" | "[" | "{" => depth += 1,
+            ">" | ")" | "]" | "}" => depth -= 1,
+            "," if depth == 0 => {
+                out.push(text[start..token.start].to_string());
+                start = token.end;
             }
-            '>' | ')' | ']' => {
-                depth -= 1;
-                current.push(c);
-            }
-            ',' if depth == 0 => {
-                out.push(std::mem::take(&mut current));
-            }
-            '\n' if depth == 0 => {
-                out.push(std::mem::take(&mut current));
-            }
-            _ => current.push(c),
+            _ => {}
         }
     }
-    out.push(current);
+    out.push(text[start..].to_string());
     out
 }
 
