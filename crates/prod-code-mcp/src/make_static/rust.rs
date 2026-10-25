@@ -14,7 +14,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use crate::make_static::helpers::{
-    display, is_ident, mentions, receiver_has_effects, split_receiver,
+    display, is_ident, mentions, receiver_has_effects, rust_impl_is_trait,
+    rust_receiver_is_borrowed, split_receiver,
 };
 use crate::make_static::types::MadeStatic;
 
@@ -47,6 +48,12 @@ pub async fn make_static(
     let (receiver, rest) = split_receiver(&text[open..close]).with_context(|| {
         format!("`{name}` takes no `self`: it is already an associated function")
     })?;
+    anyhow::ensure!(
+        rust_receiver_is_borrowed(&receiver),
+        "`{name}` has an owning receiver `{receiver}`; removing it can change consumption and \
+         Drop timing, even for a plain receiver expression. Nothing was planned or written; \
+         `force` cannot preserve ownership"
+    );
     let body_open = text[close..]
         .find('{')
         .map(|i| close + i)
@@ -57,14 +64,17 @@ pub async fn make_static(
         !mentions(&text[body_open..body_close], "self"),
         "`{name}` uses `self`; only a method that never does can lose its receiver"
     );
-    let (owner, impl_at, impl_open, _) = crate::extract_field::impl_blocks(&text)
+    // Reuse the locator without letting comment contents masquerade as header syntax.
+    let code = crate::parameter_object::rust_code(&text);
+    let code = std::str::from_utf8(&code).expect("blanking Rust trivia preserves UTF-8");
+    let (owner, impl_at, impl_open, _) = crate::extract_field::impl_blocks(code)
         .into_iter()
         .filter(|(_, _, o, c)| *o < start && start < *c)
         .min_by_key(|(_, _, o, c)| c - o)
         .context("the method is not inside an `impl` block")?;
     // A trait decides whether its methods take a receiver; an implementation cannot drop it.
     anyhow::ensure!(
-        !text[impl_at..impl_open].contains(" for "),
+        !rust_impl_is_trait(&text[impl_at..impl_open]),
         "`{name}` implements a trait method, and the trait decides whether it takes `self`; \
          change the trait instead"
     );

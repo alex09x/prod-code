@@ -51,11 +51,76 @@ pub fn split_receiver(params: &str) -> Option<(String, String)> {
     Some((first, rest.join(", ")))
 }
 
-/// Whether evaluating `receiver` can do anything: a call, `?`, `.await` or a macro. A path, a
-/// field access, `self` or a literal can be dropped without changing what the program does.
+/// Whether evaluating `receiver` can do anything: a call, `?`, `.await` or a macro. This does
+/// not account for consuming an owning Rust receiver or running its destructor.
 pub fn receiver_has_effects(receiver: &str) -> bool {
     let r = receiver.trim();
     r.contains('(') || r.contains('?') || r.contains('!') || r.contains(".await") || r.contains('[')
+}
+
+/// Only an outer reference is known not to consume the receiver. An owning wrapper such as
+/// `Box<Self>` is not made safe by a plain-looking caller expression (or a nested `&`).
+pub fn rust_receiver_is_borrowed(receiver: &str) -> bool {
+    let code = crate::parameter_object::rust_code(receiver);
+    let code = std::str::from_utf8(&code).expect("blanking Rust trivia preserves UTF-8");
+    let mut ty = code.split_once(':').map_or(code, |(_, ty)| ty).trim();
+    while ty.starts_with('(')
+        && crate::parameter_object::matching_bracket(ty, 0) == Some(ty.len() - 1)
+    {
+        ty = ty[1..ty.len() - 1].trim();
+    }
+    ty.starts_with('&')
+}
+
+/// The trait/self-type separator is a top-level `for` before `where`. Higher-ranked bounds
+/// occur inside generics/nested types or after `where`; comments and raw identifiers
+/// are not keywords.
+pub fn rust_impl_is_trait(header: &str) -> bool {
+    let code = crate::parameter_object::rust_code(header);
+    let text = std::str::from_utf8(&code).expect("blanking Rust trivia preserves UTF-8");
+    let mut nesting = Vec::new();
+    let mut i = 0;
+    while i < code.len() {
+        let b = code[i];
+        let tail = &text[i..];
+        let raw = tail.starts_with("r#");
+        let ident = tail.strip_prefix("r#").unwrap_or(tail);
+        if ident
+            .chars()
+            .next()
+            .is_some_and(|c| c == '_' || unicode_ident::is_xid_start(c))
+        {
+            let start = i;
+            i += if raw { 2 } else { 0 };
+            i += ident
+                .chars()
+                .take_while(|&c| unicode_ident::is_xid_continue(c))
+                .map(char::len_utf8)
+                .sum::<usize>();
+            if !raw && nesting.is_empty() {
+                match &code[start..i] {
+                    b"where" => return false,
+                    b"for" => return true,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        match b {
+            b'<' | b'(' | b'[' | b'{' => nesting.push(b),
+            b'>' if i == 0 || code[i - 1] != b'-' => {
+                if nesting.last() == Some(&b'<') {
+                    nesting.pop();
+                }
+            }
+            b')' | b']' | b'}' => {
+                nesting.pop();
+            }
+            _ => {}
+        }
+        i += tail.chars().next().expect("nonempty tail").len_utf8();
+    }
+    false
 }
 
 pub fn extract_receiver(before: &str) -> Option<&str> {
