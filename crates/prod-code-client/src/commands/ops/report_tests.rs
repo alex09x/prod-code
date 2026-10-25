@@ -9,6 +9,28 @@
  */
 
 use super::*;
+
+#[tokio::test]
+async fn report_issue_help_labels_reach_shared_validation() {
+    let error = run_report_issue(
+        None,
+        None,
+        ReportArgs {
+            title: "Synthetic report with conflicting types".into(),
+            body: Some("A synthetic lookup returned no results instead of a declaration.".into()),
+            body_file: None,
+            private_ref: None,
+            force: false,
+            dry_run: true,
+            allow_private_names: true,
+            labels: vec![" Bug ".into(), "PERF".into()],
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("one type"));
+}
+
 #[tokio::test]
 async fn unplaced_checkout_still_validates_report_title() {
     let error = run_report_issue(

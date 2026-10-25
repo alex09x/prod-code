@@ -47,7 +47,16 @@ pub fn issue_labels(asked: &[String]) -> Result<Vec<String>> {
             labels.push(label);
         }
     }
-    if !labels.iter().any(|l| TYPE_LABELS.contains(&l.as_str())) {
+    let type_count = labels
+        .iter()
+        .filter(|l| TYPE_LABELS.contains(&l.as_str()))
+        .count();
+    anyhow::ensure!(
+        type_count <= 1,
+        "give only one type ({}) per report; multiple distinct types were requested",
+        TYPE_LABELS.join(", ")
+    );
+    if type_count == 0 {
         labels.insert(0, "bug".to_string());
     }
     Ok(labels)

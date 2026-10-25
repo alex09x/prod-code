@@ -27,7 +27,7 @@ pub(super) fn check_private_names(request: &super::types::ReportRequest<'_>) -> 
     Ok(())
 }
 
-/// `text` without the reporter's private details: IPv4 addresses become `<node>` (loopback,
+/// `text` without the reporter's private details: IP addresses become `<node>` (loopback,
 /// the unspecified address and the documentation ranges stay), the home directory and any
 /// `/Users/<name>` or `/home/<name>` become `~`, and `host` (with its first label alone) becomes
 /// `<host>`.
@@ -39,6 +39,7 @@ pub fn scrub(text: &str, home: Option<&str>, host: Option<&str>) -> String {
     for prefix in ["/Users/", "/home/"] {
         out = replace_user_dirs(&out, prefix);
     }
+    out = super::ipv6::replace_ipv6(&out);
     out = replace_ipv4(&out);
     if let Some(host) = host.filter(|h| !h.is_empty() && *h != "unknown") {
         let short = host.split('.').next().unwrap_or(host);
@@ -149,7 +150,7 @@ fn ipv4_at(text: &str) -> Option<usize> {
 }
 
 /// Addresses that identify nothing: loopback, unspecified, and the documentation ranges.
-fn keeps(address: &str) -> bool {
+pub(super) fn keeps(address: &str) -> bool {
     address.starts_with("127.")
         || address == "0.0.0.0"
         || address.starts_with("192.0.2.")

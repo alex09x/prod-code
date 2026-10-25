@@ -77,6 +77,41 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn report_issue_help_advertises_roadmap_and_parses_labels() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let help = Cli::try_parse_from(["prod-code", "report-issue", "--help"])
+                    .unwrap_err()
+                    .to_string();
+                assert!(help.contains("roadmap"), "report labels help omits roadmap");
+                let parsed = Cli::try_parse_from([
+                    "prod-code",
+                    "report-issue",
+                    "--title",
+                    "Synthetic report request",
+                    "--label",
+                    "enhancement",
+                    "--label",
+                    "mcp",
+                    "--label",
+                    "roadmap",
+                ])
+                .unwrap();
+                let Some(Commands::ReportIssue { labels, .. }) = parsed.command else {
+                    panic!("expected report command")
+                };
+                assert_eq!(
+                    prod_code_mcp::report::issue_labels(&labels).unwrap(),
+                    ["enhancement", "mcp", "roadmap"]
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn report_private_names_override_is_explicit() {
         // Match the CLI parser tests: Clap's full command tree needs a larger debug stack.
         std::thread::Builder::new()

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Report Privacy and Labels** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1323):
+  Public reports scrub IPv6 endpoints, including zones and compact error suffixes, before drafting or filing. Reports reject multiple distinct type labels, retain normalized duplicates and optional `roadmap`, and expose that marker in CLI and MCP guidance.
 - **Complete Compiler Proposals** (`crates/prod-code-mcp`, #1256):
   Diff validation stages file deletions together with additions and replacements in every compiler shadow request. Unsupported resource operations and escaping paths refuse the whole proposal. Reports identify the configured command and unresolved command roots, without claiming broader target or feature coverage.
 - **Rust Fixture Completeness** (`crates/prod-code-mcp`, #1307):

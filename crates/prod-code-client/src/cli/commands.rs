@@ -251,7 +251,7 @@ pub enum Commands {
         allow_private_names: bool,
         /// A label, repeated for each: one type (bug, enhancement, documentation, perf; bug when
         /// none is given) and the areas it is about (gateway, client, mcp, cluster, worktree,
-        /// infra, test)
+        /// infra, test), optionally with the roadmap marker
         #[arg(long = "label")]
         labels: Vec<String>,
     },
