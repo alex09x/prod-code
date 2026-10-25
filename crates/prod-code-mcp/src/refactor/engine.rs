@@ -10,6 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod tests;
+
 use anyhow::{Context, Result, bail};
 
 use super::edits::{apply_text_edits, read_existing, text_for_edit};

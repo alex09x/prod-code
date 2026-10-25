@@ -12,6 +12,9 @@ use ignore::WalkBuilder;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 pub fn collect_dotnet_dependencies(
     workspace_root: &Path,
     adj: &mut BTreeMap<String, (PathBuf, BTreeSet<String>)>,

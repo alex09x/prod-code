@@ -14,6 +14,9 @@ use crate::parameter_object::Language;
 use crate::tools::symbols::declared_at;
 use crate::wrap_return::polyglot::shadow::{body_has_local_decl, is_locally_shadowed};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImportMatch {
     Proven,
@@ -340,8 +343,10 @@ pub(crate) fn imports_declaration(
             } else if let Some((binding_part, spec_part)) = stmt
                 .rsplit_once(" from ")
                 .or_else(|| stmt.rsplit_once("}from "))
-                .or_else(|| stmt.rsplit_once("}from'"))
-                .or_else(|| stmt.rsplit_once("}from\""))
+                .or_else(|| {
+                    stmt.rsplit_once("}from")
+                        .filter(|(_, spec)| spec.starts_with(['\'', '"']))
+                })
             {
                 let binding_full = if binding_part.contains('{') && !binding_part.ends_with('}') {
                     format!("{binding_part}}}")

@@ -12,6 +12,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 /// The environment variable name used to explicitly configure the shared Swift module cache directory.
 pub const SWIFT_MODULE_CACHE_ENV: &str = "PROD_CODE_SWIFT_MODULE_CACHE";
 

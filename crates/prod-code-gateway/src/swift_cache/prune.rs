@@ -15,6 +15,9 @@ use std::time::{Duration, SystemTime};
 
 use super::env::swift_module_cache_dir;
 
+#[cfg(test)]
+mod tests;
+
 /// Evicts stale `.pcm` and `.swiftmodule` cache files from `swift_module_cache_dir()`
 /// that are older than `max_age`, or when total cache size exceeds `max_size_bytes`
 /// (least recently modified files evicted first).

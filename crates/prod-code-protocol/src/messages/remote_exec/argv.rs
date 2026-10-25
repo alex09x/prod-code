@@ -220,3 +220,6 @@ pub fn build_argv(req: &RemoteExecRequest) -> Vec<String> {
     cmd.extend(req.args.clone());
     cmd
 }
+
+#[cfg(test)]
+mod tests;

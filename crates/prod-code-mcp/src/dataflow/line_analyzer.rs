@@ -10,6 +10,10 @@
 
 use super::parser::extract_used_variables;
 
+#[cfg(test)]
+#[path = "line_analyzer_tests.rs"]
+mod tests;
+
 /// Internal representation of a parsed line in the function.
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedLine {

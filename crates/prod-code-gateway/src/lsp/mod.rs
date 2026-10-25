@@ -14,6 +14,9 @@ pub(crate) mod hierarchy;
 pub(crate) mod managed;
 pub(crate) mod rename_helper;
 
+#[cfg(test)]
+mod test_support;
+
 pub(crate) use actions::*;
 pub(crate) use bounded_query::*;
 pub(crate) use hierarchy::*;

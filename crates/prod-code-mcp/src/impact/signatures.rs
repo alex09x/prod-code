@@ -10,6 +10,10 @@
 
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "signatures_tests.rs"]
+mod tests;
+
 use super::diff::Hunk;
 use super::types::Symbol;
 
@@ -298,7 +302,7 @@ pub(crate) fn find_function_in_text(
                     || trimmed.contains(&format!("{name} :"))
                     || trimmed.contains(&format!("{name}<"));
                 if has_decl {
-                    if let Some(pos) = trimmed.find(name) {
+                    trimmed.match_indices(name).any(|(pos, _)| {
                         let before_ok = if pos == 0 {
                             true
                         } else {
@@ -311,9 +315,7 @@ pub(crate) fn find_function_in_text(
                             .next()
                             .is_none_or(|c| !c.is_alphanumeric() && c != '_');
                         before_ok && after_ok
-                    } else {
-                        false
-                    }
+                    })
                 } else {
                     false
                 }
@@ -326,7 +328,7 @@ pub(crate) fn find_function_in_text(
                     || trimmed.contains(&format!("{name}("))
                     || trimmed.contains(&format!("{name}<"));
                 if has_decl {
-                    if let Some(pos) = trimmed.find(name) {
+                    trimmed.match_indices(name).any(|(pos, _)| {
                         let before_ok = if pos == 0 {
                             true
                         } else {
@@ -339,9 +341,7 @@ pub(crate) fn find_function_in_text(
                             .next()
                             .is_none_or(|c| !c.is_alphanumeric() && c != '_');
                         before_ok && after_ok
-                    } else {
-                        false
-                    }
+                    })
                 } else {
                     false
                 }

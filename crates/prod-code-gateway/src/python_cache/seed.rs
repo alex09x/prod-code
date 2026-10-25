@@ -22,6 +22,9 @@ use super::env::{ensure_cache_dir, ensure_mypypath_view, python_stub_cache_dir};
 use super::fingerprint::python_stub_cache_namespace;
 use super::merge::{merge_stubs, tree_size};
 
+#[cfg(test)]
+mod tests;
+
 #[allow(dead_code)]
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(1);
 

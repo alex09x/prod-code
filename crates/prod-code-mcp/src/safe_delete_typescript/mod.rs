@@ -18,3 +18,6 @@ pub mod types;
 
 pub use execute::delete_function;
 pub use types::DeletedFunction;
+
+#[cfg(test)]
+mod tests;

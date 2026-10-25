@@ -10,6 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "import_python_tests.rs"]
+mod coverage_tests;
+
 fn strip_py_ext(p: &Path) -> PathBuf {
     if p.extension().is_some_and(|e| e == "py" || e == "pyi") {
         p.with_extension("")

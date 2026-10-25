@@ -16,6 +16,9 @@ use anyhow::{Context, Result};
 use crate::protocol::McpToolCallResult;
 use crate::tools::{compile_gate, refuse_incomplete, resolve_file_path};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) async fn handle_extract_parameter(
     remote: SocketAddr,
     workspace_root: &Path,

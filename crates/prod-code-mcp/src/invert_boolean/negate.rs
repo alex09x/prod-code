@@ -10,6 +10,10 @@
 
 use super::syntax::{own_returns, return_value_end};
 
+#[cfg(test)]
+#[path = "negate_tests.rs"]
+mod tests;
+
 pub fn negate_expr_python(expr: &str) -> String {
     let t = expr.trim();
     if t == "True" {

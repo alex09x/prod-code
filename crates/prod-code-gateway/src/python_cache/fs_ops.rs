@@ -16,6 +16,9 @@ use std::time::SystemTime;
 
 use super::env::ensure_cache_dir;
 
+#[cfg(test)]
+mod tests;
+
 struct TargetLock {
     #[cfg(unix)]
     _file: std::fs::File,

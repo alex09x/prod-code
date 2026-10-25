@@ -12,6 +12,9 @@ pub fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+#[cfg(test)]
+mod tests;
+
 pub fn mentions(text: &str, name: &str) -> bool {
     text.match_indices(name).any(|(at, _)| {
         let before_ok = at == 0 || !is_ident(text[..at].chars().last().unwrap());
@@ -123,7 +126,12 @@ pub(crate) struct ActiveBinding {
 }
 
 pub(crate) fn is_field_path_of(expr: &str, parent: &str) -> bool {
-    let expr = expr.trim().trim_matches(['(', ')']).trim();
+    let mut expr = expr.trim();
+    while expr.starts_with('(')
+        && crate::parameter_object::matching_bracket(expr, 0) == Some(expr.len() - 1)
+    {
+        expr = expr[1..expr.len() - 1].trim();
+    }
     expr == parent
         || expr
             .strip_prefix(parent)
@@ -276,6 +284,7 @@ pub(crate) fn active_let_bindings(code: &str) -> BTreeMap<String, ActiveBinding>
             for (_, ident) in pending_shadows.iter().filter(|(pd, _)| *pd == d) {
                 frame.insert(ident.clone(), None);
             }
+            pending_shadows.retain(|(pd, _)| *pd != d);
             scopes.push(frame);
             i += 1;
             continue;

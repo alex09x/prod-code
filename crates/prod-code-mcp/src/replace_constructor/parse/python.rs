@@ -12,6 +12,9 @@ use super::super::types::{FieldDecl, StructDecl};
 use super::{is_ident, is_ident_str, split_balanced_commas};
 use anyhow::Result;
 
+#[cfg(test)]
+mod tests;
+
 /// Parses Python class fields from `def __init__` or dataclass annotations.
 pub fn parse_python_fields(text: &str) -> Vec<FieldDecl> {
     let mut fields = Vec::new();

@@ -352,3 +352,6 @@ pub async fn encapsulate_polyglot(
         applied,
     })
 }
+
+#[cfg(test)]
+mod tests;

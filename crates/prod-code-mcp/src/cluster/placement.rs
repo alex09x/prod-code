@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+#[path = "placement_tests.rs"]
+mod tests;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Placement {
     #[serde(default)]
@@ -77,23 +81,31 @@ fn save_placement_unlocked(path: &Path, placement: &Placement) {
 
 /// Remember the chosen node for `workspace_name` in the placement file.
 pub fn remember_placement(workspace_name: &str, node: SocketAddr) {
+    remember_placement_at(placement_path().as_deref(), workspace_name, node);
+}
+
+fn remember_placement_at(path: Option<&Path>, workspace_name: &str, node: SocketAddr) {
     let _guard = placement_lock().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(path) = placement_path() {
-        let mut placement = load_placement_unlocked(&path);
+    if let Some(path) = path {
+        let mut placement = load_placement_unlocked(path);
         placement
             .workspaces
             .insert(workspace_name.to_string(), node);
-        save_placement_unlocked(&path, &placement);
+        save_placement_unlocked(path, &placement);
     }
 }
 
 /// Remove a stale remembered placement for `workspace_name` from the placement file.
 pub fn forget_placement(workspace_name: &str) {
+    forget_placement_at(placement_path().as_deref(), workspace_name);
+}
+
+fn forget_placement_at(path: Option<&Path>, workspace_name: &str) {
     let _guard = placement_lock().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(path) = placement_path() {
-        let mut placement = load_placement_unlocked(&path);
+    if let Some(path) = path {
+        let mut placement = load_placement_unlocked(path);
         if placement.workspaces.remove(workspace_name).is_some() {
-            save_placement_unlocked(&path, &placement);
+            save_placement_unlocked(path, &placement);
         }
     }
 }

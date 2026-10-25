@@ -306,3 +306,6 @@ impl RustEngineSnapshot {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

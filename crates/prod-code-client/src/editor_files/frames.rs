@@ -8,6 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+#[cfg(test)]
+mod tests;
+
 /// One bounded, UTF-8 LSP frame, or `None` only at a clean frame boundary.
 pub async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,

@@ -10,6 +10,10 @@
 
 use serde::Serialize;
 
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;
+
 pub const CARGO_TEST_THRESHOLD: usize = 8;
 pub const FAN_IN_FALLBACK_THRESHOLD: usize = 30;
 pub const COLD_RETRIES: usize = 3;

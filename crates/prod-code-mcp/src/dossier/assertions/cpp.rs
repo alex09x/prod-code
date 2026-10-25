@@ -11,6 +11,10 @@
 use super::util::raw_excerpt;
 use crate::dossier::types::AssertionEvidence;
 
+#[cfg(test)]
+#[path = "cpp_tests.rs"]
+mod tests;
+
 /// C++ GoogleTest (gtest) assertion parser.
 pub(crate) fn parse_gtest_assertion(
     raw: &[&str],

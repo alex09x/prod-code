@@ -262,3 +262,6 @@ impl RustEngine {
         Ok(reloaded)
     }
 }
+
+#[cfg(test)]
+mod tests;

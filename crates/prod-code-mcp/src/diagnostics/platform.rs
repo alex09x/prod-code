@@ -16,6 +16,10 @@ use std::path::Path;
 use crate::diagnostics::filter::refresh_hallucinations;
 use crate::diagnostics::types::{DiagnosticsReport, DocDiagnostic};
 
+#[cfg(test)]
+#[path = "platform_tests.rs"]
+mod tests;
+
 /// Returns a reason string if the error indicates the file was excluded by platform build tags or constraints.
 pub fn platform_exclusion_reason(file: &Path, err: &anyhow::Error) -> Option<String> {
     let err_str = err.to_string();

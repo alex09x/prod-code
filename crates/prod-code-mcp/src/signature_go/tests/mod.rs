@@ -12,3 +12,4 @@ mod edits_and_evidence;
 mod regressions;
 mod reorder_and_hazards;
 mod syntax_and_types;
+mod verify_and_interface;

@@ -14,6 +14,8 @@ use super::across::{
 };
 use std::path::Path;
 
+mod handler_coverage;
+
 #[test]
 fn imports_declaration_resolves_relative_paths_and_filters_strings_urls_and_shadowing() {
     let caller = Path::new("/ws/src/pages/index.astro");

@@ -266,3 +266,6 @@ impl RemoteExecResult {
         self.exit_code == Some(0) && !self.timed_out && self.error.is_none()
     }
 }
+
+#[cfg(test)]
+mod tests;

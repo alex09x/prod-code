@@ -16,6 +16,9 @@ use super::params::extract_param_names_cpp;
 use crate::extract_delegate::common::{is_ident, is_ident_str, reindent};
 use crate::parameter_object::Language;
 
+#[cfg(test)]
+mod tests;
+
 pub fn restructure_cpp(
     text: &str,
     symbol_opt: Option<&str>,

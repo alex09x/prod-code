@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 /// Top-level gateway configuration file schema.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GatewayConfigFile {
@@ -142,15 +145,19 @@ pub fn load_config_file(explicit_path: Option<&Path>) -> Result<Option<GatewayCo
         return Ok(Some(config));
     }
 
-    for path in default_config_paths() {
+    Ok(load_first_config(default_config_paths()))
+}
+
+fn load_first_config(paths: impl IntoIterator<Item = PathBuf>) -> Option<GatewayConfigFile> {
+    for path in paths {
         if path.is_file()
             && let Ok(content) = std::fs::read_to_string(&path)
             && let Ok(config) = toml::from_str::<GatewayConfigFile>(&content)
         {
             tracing::info!(config_file = %path.display(), "Loaded gateway configuration file");
-            return Ok(Some(config));
+            return Some(config);
         }
     }
 
-    Ok(None)
+    None
 }

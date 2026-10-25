@@ -17,13 +17,14 @@ pub fn extract_param_names_ts(params: &str) -> Vec<String> {
         if p.is_empty() {
             continue;
         }
-        let before_colon = p.split(':').next().unwrap_or(p).trim();
+        let before_colon = p.split([':', '=']).next().unwrap_or(p).trim();
         let name = before_colon
             .split_whitespace()
             .last()
             .unwrap_or("")
-            .trim_start_matches("...");
-        if is_ident_str(name) {
+            .trim_end_matches('?');
+        let ident = name.trim_start_matches("...");
+        if is_ident_str(ident) {
             names.push(name.to_string());
         }
     }
@@ -135,3 +136,6 @@ pub fn extract_param_names_go(params: &str) -> Vec<String> {
     }
     names
 }
+
+#[cfg(test)]
+mod tests;

@@ -10,6 +10,10 @@
 
 use anyhow::{Context, Result};
 
+#[cfg(test)]
+#[path = "find_tests.rs"]
+mod tests;
+
 use crate::parameter_object::{Language, matching_bracket};
 
 use crate::signature_polyglot::syntax::{
@@ -25,6 +29,10 @@ pub fn find_polyglot_declaration(
     _col: u32,
 ) -> Result<PolyglotDecl> {
     let lines: Vec<&str> = text.lines().collect();
+    anyhow::ensure!(
+        !lines.is_empty(),
+        "could not determine function declaration name"
+    );
     let l_idx = (line.saturating_sub(1) as usize).min(lines.len().saturating_sub(1));
 
     let mut candidate_name = None;
@@ -50,6 +58,11 @@ pub fn find_polyglot_declaration(
     }
 
     let clean_name = candidate_name.context("could not determine function declaration name")?;
+    let clean_name = clean_name
+        .split('<')
+        .next()
+        .unwrap_or(&clean_name)
+        .to_string();
 
     let needle_paren = format!("{clean_name}(");
     let needle_space_paren = format!("{clean_name} (");

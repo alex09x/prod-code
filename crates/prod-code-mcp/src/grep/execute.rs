@@ -19,6 +19,10 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "execute_tests.rs"]
+mod tests;
+
 pub(super) const DEFAULT_EXCLUDES: &[&str] = &[
     "!target/**",
     "!node_modules/**",

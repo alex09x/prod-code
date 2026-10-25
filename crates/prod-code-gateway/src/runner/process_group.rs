@@ -163,3 +163,6 @@ pub fn check_node_disk_headroom(workspace: &Path, storage_root: &Path) -> DiskCh
     }
     DiskCheckOutcome::Ok
 }
+
+#[cfg(test)]
+mod tests;

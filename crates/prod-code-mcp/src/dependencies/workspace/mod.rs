@@ -18,6 +18,9 @@ mod gradle;
 pub mod helpers;
 mod maven;
 
+#[cfg(test)]
+mod tests;
+
 pub use helpers::{extract_gradle_project_block, extract_maven_artifact_id, kebab_to_camel};
 
 use super::modules::build_graph_report;

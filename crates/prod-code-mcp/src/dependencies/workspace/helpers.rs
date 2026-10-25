@@ -82,3 +82,6 @@ pub fn kebab_to_camel(s: &str) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests;

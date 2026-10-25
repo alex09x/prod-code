@@ -369,3 +369,6 @@ pub(crate) async fn handle_introduce_variable(
         McpToolCallResult::error(text)
     })
 }
+
+#[cfg(test)]
+mod tests;

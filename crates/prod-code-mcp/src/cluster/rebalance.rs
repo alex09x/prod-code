@@ -15,6 +15,10 @@ use super::parse::resolve_auto_remotes;
 use super::routing::ROUTING;
 use super::selection::{choose_best_node, runs_os, status_fits};
 
+#[cfg(test)]
+#[path = "rebalance_tests.rs"]
+mod tests;
+
 /// Evaluates whether the current remote node has degraded or become congested, and whether
 /// a significantly more efficient, roomier node is available in the cluster.
 /// Returns Some((new_addr, reason)) if rebalancing is recommended; None to remain on current node.

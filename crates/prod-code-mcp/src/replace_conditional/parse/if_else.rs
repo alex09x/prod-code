@@ -12,6 +12,10 @@ use super::super::types::{
     ConditionalBlock, ConditionalBranch, ConditionalKind, line_indentation, tag_to_variant_name,
 };
 
+#[cfg(test)]
+#[path = "if_else_tests.rs"]
+mod tests;
+
 /// Parse an `if / else if / else` or Python `if / elif / else` cascade.
 pub fn parse_if_else_block(text: &str, search_offset: usize) -> Option<ConditionalBlock> {
     let if_idx = text[search_offset..]
@@ -112,8 +116,8 @@ fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<
 
     // Compute end offset from end_line_count
     let mut end_offset = if_idx;
-    for l in lines.iter().take(end_line_count) {
-        end_offset += l.len() + 1;
+    for l in text[if_idx..].split_inclusive('\n').take(end_line_count) {
+        end_offset += l.len();
     }
     end_offset = end_offset.min(text.len());
 

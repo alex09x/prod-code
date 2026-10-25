@@ -10,6 +10,9 @@
 
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn range_line(value: &serde_json::Value, end: bool) -> u64 {
     value
         .get(if end { "end" } else { "start" })

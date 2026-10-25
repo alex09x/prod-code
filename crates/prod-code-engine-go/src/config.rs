@@ -46,36 +46,57 @@ impl Default for GoConfig {
     }
 }
 
+/// Fixed locations checked last, after `$PATH`, `$HOME` and `$GOPATH`.
+const FIXED_GOPLS_CANDIDATES: [&str; 3] = [
+    "/usr/local/bin/gopls",
+    "/snap/bin/gopls",
+    "/opt/homebrew/bin/gopls",
+];
+
 /// Discovers the `gopls` executable on the host system.
 pub fn find_gopls_binary(explicit: Option<&Path>) -> Option<PathBuf> {
+    let fixed = FIXED_GOPLS_CANDIDATES.map(PathBuf::from);
+    find_gopls_with(explicit, which_gopls, |k| std::env::var(k).ok(), &fixed)
+}
+
+/// [`find_gopls_binary`] with the `$PATH` lookup, the environment and the fixed locations
+/// injected: an existing explicit path wins, then `$PATH`, then `$HOME/go/bin`,
+/// `$HOME/.local/bin`, `$GOPATH/bin`, then the fixed locations.
+fn find_gopls_with(
+    explicit: Option<&Path>,
+    which: impl FnOnce() -> Result<PathBuf>,
+    env: impl Fn(&str) -> Option<String>,
+    fixed: &[PathBuf],
+) -> Option<PathBuf> {
     if let Some(path) = explicit.filter(|p| p.exists()) {
         return Some(path.to_path_buf());
     }
 
-    // Check $PATH via which
-    if let Ok(path) = which_gopls() {
+    if let Ok(path) = which() {
         return Some(path);
     }
 
-    // Standard Go installation locations
     let mut candidates = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
+    if let Some(home) = env("HOME") {
         candidates.push(PathBuf::from(&home).join("go/bin/gopls"));
         candidates.push(PathBuf::from(&home).join(".local/bin/gopls"));
     }
-    if let Ok(gopath) = std::env::var("GOPATH") {
+    if let Some(gopath) = env("GOPATH") {
         candidates.push(PathBuf::from(gopath).join("bin/gopls"));
     }
-    candidates.push(PathBuf::from("/usr/local/bin/gopls"));
-    candidates.push(PathBuf::from("/snap/bin/gopls"));
-    candidates.push(PathBuf::from("/opt/homebrew/bin/gopls"));
+    candidates.extend(fixed.iter().cloned());
 
     candidates.into_iter().find(|p| p.exists())
 }
 
 fn which_gopls() -> Result<PathBuf> {
+    which_binary("gopls")
+}
+
+/// The first `name` on `$PATH`, from `which`.
+fn which_binary(name: &str) -> Result<PathBuf> {
     let output = std::process::Command::new("which")
-        .arg("gopls")
+        .arg(name)
         .output()
         .context("which command failed")?;
     if output.status.success() {
@@ -84,5 +105,8 @@ fn which_gopls() -> Result<PathBuf> {
             return Ok(PathBuf::from(path_str));
         }
     }
-    anyhow::bail!("gopls not found in PATH")
+    anyhow::bail!("{name} not found in PATH")
 }
+
+#[cfg(test)]
+mod tests;

@@ -15,6 +15,10 @@ use super::extract_specifier;
 use super::is_ident_boundary;
 use super::specifier_matches_decl;
 
+#[cfg(test)]
+#[path = "import_ts_cjs/tests.rs"]
+mod tests;
+
 pub(crate) fn ts_js_require_symbols(
     content: &str,
     caller_path: &Path,

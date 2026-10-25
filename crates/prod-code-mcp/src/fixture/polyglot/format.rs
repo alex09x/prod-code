@@ -104,11 +104,8 @@ pub fn format_polyglot_fixture(
                     (val, snippet)
                 }
                 Language::Java => {
-                    let mut lines = Vec::new();
-                    for (_, v) in &pairs {
-                        lines.push(format!("    {v}"));
-                    }
-                    let val = format!("new {type_name}({})", lines.join(", "));
+                    let args: Vec<&str> = pairs.iter().map(|(_, v)| v.as_str()).collect();
+                    let val = format!("new {type_name}({})", args.join(", "));
                     let var_name = lower_camel_case(type_name);
                     let snippet = format!("{type_name} {var_name} = {val};");
                     (val, snippet)

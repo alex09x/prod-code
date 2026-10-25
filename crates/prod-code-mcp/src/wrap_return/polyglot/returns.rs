@@ -12,6 +12,9 @@ use crate::parameter_object::Language;
 use crate::wrap_return::types::Wrapper;
 use crate::wrap_return::utils::{format_constructor_call, is_ident};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn python_owned_return_offsets(body: &str) -> Vec<usize> {
     let mut offsets = Vec::new();
     let mut nested_def_indent = None;

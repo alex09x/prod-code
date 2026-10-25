@@ -53,6 +53,15 @@ pub struct DivergentBenchReport {
 
 impl DivergentBenchReport {
     pub fn print(&self) {
+        print!("{}", self.render());
+    }
+
+    fn render(&self) -> String {
+        use std::fmt::Write;
+        let mut output = String::new();
+        macro_rules! println {
+            ($($arg:tt)*) => { writeln!(&mut output, $($arg)*).expect("writing to a string") };
+        }
         println!("\n📊 Divergent Worktree Benchmark Results:");
         println!("────────────────────────────────────────────────────────────────");
         println!("Language:            {}", self.language.label());
@@ -141,5 +150,10 @@ impl DivergentBenchReport {
             "Overall Status:      {}",
             if self.all_passed { "PASS" } else { "FAIL" }
         );
+        output
     }
 }
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;

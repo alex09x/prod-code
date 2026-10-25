@@ -295,3 +295,6 @@ pub async fn handle_client(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

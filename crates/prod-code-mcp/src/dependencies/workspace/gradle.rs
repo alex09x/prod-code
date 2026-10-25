@@ -62,9 +62,10 @@ pub fn collect_gradle_dependencies(
                     break;
                 }
             }
-            if (!trimmed.ends_with(',') && !trimmed.starts_with("include"))
-                || trimmed.ends_with(')')
-            {
+            // An include statement goes on while the line ends with a comma or an open
+            // parenthesis; blank and comment-only lines inside it change nothing.
+            let tail = code_part.trim_end();
+            if !tail.is_empty() && !tail.ends_with(',') && !tail.ends_with('(') {
                 in_include = false;
             }
         }
@@ -212,3 +213,6 @@ pub fn collect_gradle_dependencies(
         adj.insert(proj_name.clone(), (dir.clone(), deps));
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -22,6 +22,10 @@ use crate::diagnostics::syntax::{
 };
 use crate::diagnostics::types::DiagnosticsReport;
 
+#[cfg(test)]
+#[path = "batch_tests.rs"]
+mod tests;
+
 /// Validates a complete proposal in a private overlay. A file whose diagnostics are
 /// unavailable gets an unsuccessful report without discarding the rest of the batch.
 /// Nothing is written anywhere.

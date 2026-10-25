@@ -10,6 +10,10 @@
 
 use crate::parameter_object::Language;
 
+#[cfg(test)]
+#[path = "format_tests.rs"]
+mod tests;
+
 pub fn format_polyglot_param(name: &str, ty: &str, value: &str, lang: Language) -> String {
     match lang {
         Language::TypeScript => {

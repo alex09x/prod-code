@@ -11,6 +11,10 @@
 use super::util::raw_excerpt;
 use crate::dossier::types::AssertionEvidence;
 
+#[cfg(test)]
+#[path = "python_tests.rs"]
+mod tests;
+
 /// Python pytest assertion parser.
 /// Format: `E   AssertionError: assert left == right` or `E   assert left == right`
 pub(crate) fn parse_pytest_assertion(

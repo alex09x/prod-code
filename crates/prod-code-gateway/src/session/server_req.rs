@@ -48,3 +48,6 @@ pub async fn send_busy_note(resp: &mut serde_json::Value, out_tx: &SharedOutputS
     });
     let _ = out_tx.send(WireMessage::LspPayload(note.to_string())).await;
 }
+
+#[cfg(test)]
+mod tests;

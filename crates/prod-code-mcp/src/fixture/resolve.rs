@@ -64,7 +64,7 @@ pub fn parse_shape(decl: &str) -> Option<Shape> {
         }
         return Some(Shape::Unit);
     };
-    let close = decl.rfind('}')?;
+    let close = decl.rfind('}').filter(|c| *c > open)?;
     let body = &decl[open + 1..close];
     if is_enum {
         let variants = body

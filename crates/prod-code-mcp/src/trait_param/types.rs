@@ -10,6 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;
+
 /// Where a method is declared: in a trait, or in an implementation of one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Owner {

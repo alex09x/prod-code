@@ -19,6 +19,10 @@ use super::pick::pick_node_with;
 use super::placement::placement_path;
 use super::selection::supports_engine;
 
+#[cfg(test)]
+#[path = "routing_tests.rs"]
+mod tests;
+
 /// How long a node has to accept a TCP connection before it counts as down.
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 

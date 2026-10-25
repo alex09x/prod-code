@@ -22,6 +22,9 @@ use tokio::net::{TcpListener, TcpStream};
 use super::Metrics;
 use super::prometheus_format::format_prometheus_metrics;
 
+#[cfg(test)]
+mod tests;
+
 /// Starts the Prometheus HTTP metrics server on `listen_addr`.
 /// Runs indefinitely until the async task or runtime is cancelled.
 pub async fn run_prometheus_server(
@@ -29,8 +32,18 @@ pub async fn run_prometheus_server(
     metrics: Arc<Metrics>,
     node: String,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(listen_addr).await?;
-    let local_addr = listener.local_addr().unwrap_or(listen_addr);
+    serve_prometheus(TcpListener::bind(listen_addr).await?, metrics, node).await
+}
+
+/// [`run_prometheus_server`] on a listener that is already bound.
+pub(crate) async fn serve_prometheus(
+    listener: TcpListener,
+    metrics: Arc<Metrics>,
+    node: String,
+) -> anyhow::Result<()> {
+    let Ok(local_addr) = listener.local_addr() else {
+        anyhow::bail!("the Prometheus listener has no local address");
+    };
     tracing::info!(
         addr = %local_addr,
         endpoint = %format!("http://{local_addr}/metrics"),
@@ -125,7 +138,7 @@ async fn handle_http_client(
                 \r\n\
                 {}",
                 not_found.len(),
-                not_found
+                if method == "GET" { not_found } else { "" }
             );
             stream.write_all(resp.as_bytes()).await?;
         }

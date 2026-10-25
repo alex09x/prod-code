@@ -9,7 +9,10 @@
  */
 
 use super::checksum::parse_checksums_file;
-use super::types::{PackageType, detect_package_type, detect_package_type_with_fs};
+use super::types::{
+    PackageSubcommands, PackageType, detect_package_type, detect_package_type_with_fs,
+};
+use clap::Parser;
 use std::path::Path;
 
 #[test]
@@ -96,4 +99,144 @@ fn test_package_scripts_exist_and_executable() {
     assert!(arch_script.exists(), "package-arch.sh must exist");
     assert!(deb_script.exists(), "package-deb.py must exist");
     assert!(build_all.exists(), "build-all-packages.sh must exist");
+}
+
+#[test]
+fn package_type_display_names() {
+    let cases = [
+        (PackageType::MacosPkg, "macOS Package (.pkg)"),
+        (PackageType::Debian, "Debian Package (.deb)"),
+        (PackageType::Rpm, "RPM Package (.rpm)"),
+        (
+            PackageType::ArchLinux,
+            "Arch Linux Package (pacman/PKGBUILD)",
+        ),
+        (PackageType::Homebrew, "Homebrew Formula"),
+        (
+            PackageType::LocalUserBinary,
+            "Local User Binary (~/.local/bin)",
+        ),
+        (PackageType::CargoBin, "Cargo Binary (~/.cargo/bin)"),
+        (PackageType::Unknown, "Standalone Binary"),
+    ];
+    for (ty, text) in cases {
+        assert_eq!(ty.to_string(), text);
+    }
+}
+
+#[test]
+fn detect_package_type_table() {
+    let none = |_: &str| false;
+    let only = |marker: &'static str| move |p: &str| p == marker;
+    // Homebrew wins over everything, including system paths.
+    for exe in [
+        "/opt/homebrew/bin/prod-code",
+        "/usr/local/Cellar/prod-code/1/bin/prod-code",
+        "/home/u/Cellar/prod-code",
+    ] {
+        assert_eq!(
+            detect_package_type_with_fs(Path::new(exe), only("/etc/debian_version")),
+            PackageType::Homebrew,
+            "{exe}"
+        );
+    }
+    // Distribution markers for both system install locations.
+    for exe in ["/usr/bin/prod-code", "/usr/local/bin/prod-code"] {
+        if cfg!(target_os = "macos") && exe == "/usr/local/bin/prod-code" {
+            assert_eq!(
+                detect_package_type_with_fs(Path::new(exe), none),
+                PackageType::MacosPkg
+            );
+            continue;
+        }
+        for (marker, want) in [
+            ("/etc/debian_version", PackageType::Debian),
+            ("/etc/debian-release", PackageType::Debian),
+            ("/etc/redhat-release", PackageType::Rpm),
+            ("/etc/fedora-release", PackageType::Rpm),
+            ("/etc/almalinux-release", PackageType::Rpm),
+            ("/etc/rocky-release", PackageType::Rpm),
+            ("/etc/centos-release", PackageType::Rpm),
+            ("/etc/arch-release", PackageType::ArchLinux),
+        ] {
+            assert_eq!(
+                detect_package_type_with_fs(Path::new(exe), only(marker)),
+                want,
+                "{exe} with {marker}"
+            );
+        }
+        // System path without any distribution marker is a standalone binary.
+        assert_eq!(
+            detect_package_type_with_fs(Path::new(exe), none),
+            PackageType::Unknown
+        );
+    }
+    // Debian is checked before RPM when both markers exist.
+    assert_eq!(
+        detect_package_type_with_fs(Path::new("/usr/bin/prod-code"), |_| true),
+        PackageType::Debian
+    );
+    // Distribution markers do not matter outside the system paths.
+    assert_eq!(
+        detect_package_type_with_fs(Path::new("/tmp/prod-code"), |_| true),
+        PackageType::Unknown
+    );
+    assert_eq!(
+        detect_package_type_with_fs(Path::new("/home/u/.local/bin/prod-code"), none),
+        PackageType::LocalUserBinary
+    );
+    assert_eq!(
+        detect_package_type_with_fs(Path::new("/home/u/.cargo/bin/prod-code"), none),
+        PackageType::CargoBin
+    );
+}
+
+#[derive(Parser)]
+struct PackageCli {
+    #[command(subcommand)]
+    cmd: PackageSubcommands,
+}
+
+#[test]
+fn package_subcommands_parse_flags() {
+    let parse = |args: &[&str]| {
+        let mut argv = vec!["pkg"];
+        argv.extend_from_slice(args);
+        PackageCli::try_parse_from(argv).map(|c| c.cmd)
+    };
+    assert!(matches!(
+        parse(&["status", "--json"]).unwrap(),
+        PackageSubcommands::Status { json: true }
+    ));
+    assert!(matches!(
+        parse(&["status"]).unwrap(),
+        PackageSubcommands::Status { json: false }
+    ));
+    match parse(&["install", "--force", "--tag", "v0.3.19", "--system"]).unwrap() {
+        PackageSubcommands::Install { force, tag, system } => {
+            assert!(force && system);
+            assert_eq!(tag.as_deref(), Some("v0.3.19"));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(matches!(
+        parse(&["verify"]).unwrap(),
+        PackageSubcommands::Verify
+    ));
+    match parse(&["sync", "--node", "127.0.0.1:9400"]).unwrap() {
+        PackageSubcommands::Sync { node } => {
+            assert_eq!(node, Some("127.0.0.1:9400".parse().unwrap()));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(parse(&["sync", "--node", "not-an-addr"]).is_err());
+    assert!(parse(&["bogus"]).is_err());
+}
+
+#[test]
+fn package_type_serializes_as_variant_name() {
+    assert_eq!(
+        serde_json::to_string(&PackageType::ArchLinux).unwrap(),
+        "\"ArchLinux\""
+    );
 }

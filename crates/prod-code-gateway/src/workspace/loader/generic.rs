@@ -101,3 +101,6 @@ pub(crate) async fn load_generic(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

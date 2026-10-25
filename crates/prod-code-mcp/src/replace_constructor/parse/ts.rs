@@ -12,6 +12,9 @@ use super::super::types::{FieldDecl, StructDecl};
 use super::{is_ident, is_ident_str, split_balanced_commas};
 use anyhow::Result;
 
+#[cfg(test)]
+mod tests;
+
 /// Parses TypeScript / JavaScript class/interface fields.
 pub fn parse_ts_fields(inner: &str) -> Vec<FieldDecl> {
     let mut fields = Vec::new();

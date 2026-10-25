@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 
 use super::helpers::extract_maven_artifact_id;
 
+#[cfg(test)]
+mod tests;
+
 pub fn collect_maven_dependencies(
     workspace_root: &Path,
     adj: &mut BTreeMap<String, (PathBuf, BTreeSet<String>)>,

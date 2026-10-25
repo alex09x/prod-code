@@ -26,6 +26,8 @@ mod preamble;
 mod test_crate;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_report;
 mod types;
 
 pub(crate) use budget::document_symbols;

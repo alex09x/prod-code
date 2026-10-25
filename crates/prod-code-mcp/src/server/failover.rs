@@ -11,6 +11,10 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "failover_tests.rs"]
+mod tests;
+
 /// Whether an error is an initial transport connection failure that can be safely retried.
 ///
 /// Mutating tools (`code_exec`) must NEVER be automatically retried: if the gateway received
@@ -60,21 +64,44 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
 /// 3. Among those (or all candidates if none has it), pick the one with the most available memory
 ///    and the lowest load.
 pub async fn rediscover_node(old: SocketAddr, workspace_root: &Path) -> Option<SocketAddr> {
+    rediscover_node_with(
+        old,
+        workspace_root,
+        crate::cluster::known_cluster_nodes(),
+        |seeds| async move {
+            tokio::task::spawn_blocking(move || prod_code_protocol::discovery::discover(&seeds))
+                .await
+                .ok()
+                .unwrap_or_default()
+        },
+        crate::cluster::node_status,
+    )
+    .await
+}
+
+/// [`rediscover_node`] with the known nodes, the UDP discovery and the TCP status query given.
+pub(crate) async fn rediscover_node_with<D, DF, S, SF>(
+    old: SocketAddr,
+    workspace_root: &Path,
+    known: Option<Vec<SocketAddr>>,
+    discover: D,
+    node_status: S,
+) -> Option<SocketAddr>
+where
+    D: FnOnce(Vec<SocketAddr>) -> DF,
+    DF: std::future::Future<Output = Vec<prod_code_protocol::discovery::DiscoveredNode>>,
+    S: Fn(SocketAddr) -> SF,
+    SF: std::future::Future<Output = anyhow::Result<prod_code_protocol::StatusResponse>>,
+{
     let mut seeds = vec![old];
-    if let Some(known) = crate::cluster::known_cluster_nodes() {
+    if let Some(known) = known {
         for n in known {
             if !seeds.contains(&n) {
                 seeds.push(n);
             }
         }
     }
-    let nodes = {
-        let seeds_clone = seeds.clone();
-        tokio::task::spawn_blocking(move || prod_code_protocol::discovery::discover(&seeds_clone))
-            .await
-            .ok()
-            .unwrap_or_default()
-    };
+    let nodes = discover(seeds.clone()).await;
 
     // Detect required engine and OS for this workspace.
     let (subproject, detected_engine) = crate::sync::engine_project(workspace_root, workspace_root);
@@ -97,7 +124,7 @@ pub async fn rediscover_node(old: SocketAddr, workspace_root: &Path) -> Option<S
             if seed == old {
                 continue;
             }
-            if let Ok(st) = crate::cluster::node_status(seed).await {
+            if let Ok(st) = node_status(seed).await {
                 if needs_macos && !crate::cluster::runs_os(&st, "macos") {
                     continue;
                 }

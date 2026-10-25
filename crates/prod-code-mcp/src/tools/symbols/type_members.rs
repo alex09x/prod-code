@@ -23,6 +23,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use url::Url;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) const TYPE_MEMBERS_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 
 pub(crate) use super::source_members::find_source_members;

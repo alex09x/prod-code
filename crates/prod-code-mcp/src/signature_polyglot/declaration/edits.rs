@@ -9,6 +9,10 @@
  */
 
 use crate::parameter_object::Language;
+
+#[cfg(test)]
+#[path = "edits_tests.rs"]
+mod tests;
 use crate::signature::Modifiers;
 
 use crate::signature_polyglot::types::PolyglotDecl;

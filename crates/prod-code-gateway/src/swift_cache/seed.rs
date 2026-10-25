@@ -18,6 +18,9 @@ use super::workspace::{
     find_swift_packages, module_cache_size_in_build, relocate_swiftpm_workspace_state, tree_size,
 };
 
+#[cfg(test)]
+mod tests;
+
 /// Seeds SwiftPM package checkouts, bare repositories, binary artifacts, workspace state,
 /// and links `.build/ModuleCache` to the node's shared Swift module cache directory (Roadmap 3.7).
 ///

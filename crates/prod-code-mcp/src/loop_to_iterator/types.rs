@@ -10,6 +10,10 @@
 
 use std::path::PathBuf;
 
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;
+
 /// What the loop builds.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum Shape {

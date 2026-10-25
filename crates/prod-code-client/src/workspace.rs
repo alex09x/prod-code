@@ -11,6 +11,9 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 /// Dynamically detect the base repository name if current directory is a git worktree or repository.
 pub fn detect_workspace_name(dir: &Path) -> Option<String> {
     // Every git worktree gets its own isolated server workspace; see

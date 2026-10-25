@@ -13,6 +13,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use tokio::net::TcpStream;
 
+#[cfg(test)]
+mod tests;
+
 pub const AUTH_TOKEN_ENV: &str = "PROD_CODE_AUTH_TOKEN";
 pub const SOCKET_PATH_ENV: &str = "PROD_CODE_SOCKET";
 pub const AUTH_TOKEN_FILE_ENV: &str = "PROD_CODE_AUTH_TOKEN_FILE";

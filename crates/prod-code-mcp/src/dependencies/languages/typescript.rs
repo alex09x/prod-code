@@ -12,8 +12,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 fn extract_quoted_string(line: &str) -> Option<&str> {
-    let start = line.find('"')? + 1;
-    let end = line[start..].find('"')? + start;
+    let (open, quote) = line.char_indices().find(|(_, c)| matches!(c, '"' | '\''))?;
+    let start = open + 1;
+    let end = line[start..].find(quote)? + start;
     Some(&line[start..end])
 }
 
@@ -31,6 +32,9 @@ pub fn parse_ts_imports(
             // Only local relative imports: ./ or ../
             if path.starts_with('.') {
                 let base = path.split('/').next_back().unwrap_or(path);
+                if base.is_empty() {
+                    continue;
+                }
                 for m in known_modules.keys() {
                     if m.ends_with(base) {
                         deps.insert(m.clone());

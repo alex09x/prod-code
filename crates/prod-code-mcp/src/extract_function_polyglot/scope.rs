@@ -15,6 +15,9 @@ use super::lang::{Language, mentions};
 use super::tokenize::{is_builtin_or_global, is_keyword, tokenize_polyglot};
 use super::types::{ExtractedParam, PolyTokenKind};
 
+#[cfg(test)]
+mod tests;
+
 pub fn is_balanced(text: &str) -> bool {
     let mut stack = Vec::new();
     let mut in_str = None;
@@ -108,13 +111,13 @@ pub fn find_enclosing_scope(
                     break;
                 }
             }
-            if scope_start > 0 {
+            if enclosing_fn.is_some() {
                 let def_indent = method_indent.len();
                 let rest = &text[start..];
                 let mut cur = start;
-                for l in rest.lines() {
+                for l in rest.split_inclusive('\n') {
                     if l.trim().is_empty() || l.trim_start().starts_with('#') {
-                        cur += l.len() + 1;
+                        cur += l.len();
                         continue;
                     }
                     let cur_indent = l.chars().take_while(|c| *c == ' ' || *c == '\t').count();
@@ -122,7 +125,7 @@ pub fn find_enclosing_scope(
                         scope_end = cur;
                         break;
                     }
-                    cur += l.len() + 1;
+                    cur += l.len();
                 }
             }
         }

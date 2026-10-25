@@ -10,6 +10,9 @@
 
 use crate::parameter_object::Language;
 
+#[cfg(test)]
+mod tests;
+
 /// Identifies return type and async status of the innermost enclosing function.
 pub fn enclosing_polyglot_info(content: &str, at: usize, lang: Language) -> Option<(String, bool)> {
     if lang == Language::Python {

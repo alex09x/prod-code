@@ -16,6 +16,9 @@ use anyhow::{Context, Result};
 use crate::protocol::McpToolCallResult;
 use crate::tools::resolve_file_path;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) async fn handle_replace_constructor_with_factory(
     remote: SocketAddr,
     workspace_root: &Path,

@@ -12,6 +12,9 @@ use anyhow::Result;
 use std::net::SocketAddr;
 use std::path::Path;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn resolve_file_path(workspace_root: &Path, path_str: &str) -> std::path::PathBuf {
     let p = std::path::PathBuf::from(path_str);
     if p.is_absolute() {

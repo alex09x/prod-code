@@ -277,3 +277,6 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
         _ => unreachable!(),
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -249,3 +249,6 @@ fn merge_initialization_options(
         (editor, server) => *editor = server.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests;

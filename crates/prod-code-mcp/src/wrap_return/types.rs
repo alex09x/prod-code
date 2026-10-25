@@ -12,6 +12,9 @@ use super::utils::display;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod coverage_tests;
+
 /// Which wrapper the return type gets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wrapper {

@@ -11,6 +11,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Default)]
 pub(crate) struct VisitedDirs {
     #[cfg(unix)]

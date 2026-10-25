@@ -24,6 +24,10 @@ use crate::diagnostics::syntax::{
 use crate::diagnostics::types::DiagnosticsReport;
 use crate::session::LspSession;
 
+#[cfg(test)]
+#[path = "single_tests.rs"]
+mod tests;
+
 /// The diagnostics of `file` as it is on disk, and that text, or `None` for a file that does
 /// not exist yet.
 ///

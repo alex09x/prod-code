@@ -20,6 +20,9 @@ use super::{execute_lsp_query, resolve_file_path};
 use crate::protocol::McpToolCallResult;
 use crate::sync::{push_workspace_sync, workspace_identity};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) async fn handle_dependencies(
     workspace_root: &Path,
     args: &serde_json::Value,

@@ -150,3 +150,6 @@ pub async fn dispatch(cmd: Commands, cx: DispatchContext<'_>) -> Result<()> {
         | Commands::ExtractField { .. } => dispatch_refactor_members(cmd, &cx).await,
     }
 }
+
+#[cfg(test)]
+mod tests;

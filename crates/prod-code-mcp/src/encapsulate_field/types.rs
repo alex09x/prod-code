@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use super::case::{display, to_pascal_case, to_snake_case};
 
+#[cfg(test)]
+mod tests;
+
 pub const COPY: &[&str] = &[
     "bool", "char", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128",
     "isize", "f32", "f64",

@@ -12,6 +12,10 @@ use std::path::Path;
 
 use crate::parameter_object::Language;
 
+#[cfg(test)]
+#[path = "import_coverage_tests.rs"]
+mod coverage_tests;
+
 /// Proves whether `caller_path` genuinely imports or shares scope with `decl_file` for `fn_name`.
 /// Used when semantic references are empty to prevent cross-file text fallback from rewriting
 /// unrelated local aliases or same-named symbols in other files (#982).

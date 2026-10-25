@@ -14,6 +14,10 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+#[cfg(test)]
+#[path = "common_tests.rs"]
+mod coverage_tests;
+
 /// The position a command was given, when it was not given `--symbol`.
 pub fn position(
     file: Option<PathBuf>,

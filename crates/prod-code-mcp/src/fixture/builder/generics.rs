@@ -12,6 +12,9 @@ use anyhow::{Context, Result, bail};
 
 use super::lexer::{Kind, Source};
 
+#[cfg(test)]
+mod tests;
+
 /// Generic syntax copied to the builder declaration and adapted for its impl and type uses.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Generics {
