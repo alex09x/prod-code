@@ -102,6 +102,26 @@ where
 }
 
 #[tokio::test]
+async fn a_gateway_that_requires_tls_without_credentials_refuses_to_start() {
+    crate::test_cache_support::isolated!();
+    configure_environment(None);
+    unsafe {
+        std::env::set_var("PROD_CODE_TLS_MODE", "strict");
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut cli =
+        ServerCli::try_parse_from(["gateway", "--bind", "127.0.0.1:0", "--no-admission"]).unwrap();
+    cli.storage = temp.path().join("storage");
+    let error = run(cli).await.unwrap_err().to_string();
+    assert!(
+        error.contains("is required on server")
+            && error.contains("PROD_CODE_TLS_CERT")
+            && error.contains("PROD_CODE_TLS_KEY"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn a_running_gateway_serves_tcp_and_a_socket_then_stops_on_sigterm() {
     crate::test_cache_support::isolated!();
     configure_environment(None);

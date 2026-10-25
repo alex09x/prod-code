@@ -37,6 +37,11 @@ pub async fn run_driver(test: &str, mode: &str) {
         .env(INHERITED_CONTROL, SENTINEL)
         .stdin(Stdio::null())
         .kill_on_drop(true);
+    // Coverage runs set where the driver writes its profile; without it the driver's lines
+    // are lost and a `default_*.profraw` lands in the crate directory.
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
     if mode == "inherited" {
         for name in reserved_names() {
             command.env(name, SENTINEL);

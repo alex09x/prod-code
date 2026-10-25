@@ -17,6 +17,17 @@ use crate::cluster::pick::pick_node_with;
 use crate::cluster::placement::{Placement, load_placement, save_placement};
 
 #[tokio::test]
+async fn the_public_pick_refuses_an_empty_node_list_before_reading_any_placement() {
+    assert_eq!(
+        crate::cluster::pick::pick_node(&[], "sample", None, None)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "no gateway addresses given"
+    );
+}
+
+#[tokio::test]
 async fn coverage_w3_pick_lists_reachable_nodes_without_the_required_os() {
     let first = node_on(&["rust"], Some("linux x86_64")).await;
     let second = node_on(&["rust"], Some("linux x86_64")).await;
