@@ -10,38 +10,7 @@
 
 use crate::pull_push::types::{ClassDecl, MemberDecl};
 
-/// Strip `override` or `final` modifiers from member text when pulling up to base.
-pub fn strip_override_modifiers(text: &str, language: &str) -> String {
-    match language {
-        "typescript" | "javascript" | "swift" => {
-            let lines: Vec<&str> = text.split('\n').collect();
-            let mut out = Vec::with_capacity(lines.len());
-            for line in lines {
-                if let Some(pos) = line.find("override ") {
-                    let cleaned = format!("{}{}", &line[..pos], &line[pos + 9..]);
-                    out.push(cleaned);
-                } else if let Some(pos) = line.find("override\t") {
-                    let cleaned = format!("{}{}", &line[..pos], &line[pos + 9..]);
-                    out.push(cleaned);
-                } else {
-                    out.push(line.to_string());
-                }
-            }
-            out.join("\n")
-        }
-        "cpp" => {
-            let mut s = text.to_string();
-            if let Some(pos) = s.find(" override") {
-                s.replace_range(pos..pos + 9, "");
-            }
-            if let Some(pos) = s.find(" final") {
-                s.replace_range(pos..pos + 6, "");
-            }
-            s
-        }
-        _ => text.to_string(),
-    }
-}
+pub use super::modifiers::strip_override_modifiers;
 
 /// Adjust indentation of a multi-line member text to match `target_indent`.
 pub fn adjust_indentation(text: &str, target_indent: &str) -> String {
@@ -74,29 +43,52 @@ pub fn adjust_indentation(text: &str, target_indent: &str) -> String {
 }
 
 pub(crate) fn normalized_member_text(member: &MemberDecl, language: &str) -> String {
-    let text = strip_override_modifiers(&member.full_text, language).replace("\r\n", "\n");
-    let lines = text.lines().collect::<Vec<_>>();
-    let common_indent = lines
-        .iter()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.chars().take_while(|c| *c == ' ' || *c == '\t').count())
-        .min()
-        .unwrap_or(0);
-    lines
-        .iter()
-        .map(|line| {
-            let cut = if line.trim().is_empty() || common_indent == 0 {
-                0
-            } else {
-                line.char_indices()
-                    .take_while(|(_, c)| *c == ' ' || *c == '\t')
-                    .nth(common_indent - 1)
-                    .map_or(0, |(byte, c)| byte + c.len_utf8())
-            };
-            line[cut..].trim_end()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    // Only the indentation before the declaration is proven trivia here. Continuation
+    // indentation, trailing spaces and CRLF can all be literal data. Prefer retaining
+    // a differently formatted sibling over claiming its implementation is equivalent.
+    strip_override_modifiers(&member.full_text, language)
+        .trim_start_matches([' ', '\t'])
+        .to_owned()
+}
+
+/// Relocate indentation only where the language's lexical mask proves it is code.
+/// Brace languages without a suitable literal mask need no indentation rewrite.
+pub(crate) fn adjust_pulled_member(text: &str, target_indent: &str, language: &str) -> String {
+    use crate::parameter_object::Language;
+    let lang = match language {
+        "python" => Language::Python,
+        "typescript" => Language::TypeScript,
+        "javascript" => Language::JavaScript,
+        "swift" => Language::Swift,
+        _ => return text.to_owned(),
+    };
+    let first = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let source_indent = &first[..first.len() - first.trim_start_matches([' ', '\t']).len()];
+    if source_indent == target_indent {
+        return text.to_owned();
+    }
+    let code = crate::caller_migration::lexical_code_mask(text, lang);
+    let mut offset = 0;
+    let mut result = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        if code.get(offset) == Some(&true)
+            && line.starts_with(source_indent)
+            && code[offset..offset + source_indent.len()]
+                .iter()
+                .all(|b| *b)
+            && !line.trim().is_empty()
+        {
+            result.push_str(target_indent);
+            result.push_str(&line[source_indent.len()..]);
+        } else {
+            result.push_str(line);
+        }
+        offset += line.len();
+    }
+    result
 }
 
 pub(crate) fn replace_python_pass(text: &mut String, class: &ClassDecl, replacement: &str) -> bool {

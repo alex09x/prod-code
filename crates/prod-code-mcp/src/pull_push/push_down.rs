@@ -10,7 +10,7 @@
 
 use super::format::{adjust_indentation, cpp_member_access, replace_python_pass};
 use super::languages::parse_classes_in_text;
-use super::types::{ClassDecl, HierarchyRefactorResult};
+use super::types::{ClassDecl, HierarchyRefactorResult, MemberKind};
 use super::workspace::find_subclasses_in_workspace;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -53,6 +53,12 @@ pub async fn push_down_impl(
             .find(|m| m.name == *name)
             .cloned()
             .with_context(|| format!("member '{name}' not found in superclass '{class_name}'"))?;
+        // An opaque remainder can include following members. Neither force nor
+        // analyzer success can prove that relocating the entire span is safe.
+        anyhow::ensure!(
+            member.kind != MemberKind::Opaque,
+            "cannot safely identify C++ member boundary for `{name}`; nothing was written"
+        );
         members_to_move.push(member);
     }
 

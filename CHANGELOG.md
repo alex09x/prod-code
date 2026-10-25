@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Pull-Up Literal and Declaration Preservation** (`crates/prod-code-mcp`, #1327):
+  Sibling cleanup no longer treats literal whitespace or modifier-looking text as interchangeable. Moved-member modifier edits stay within parsed declarations, retaining decorators and ordinary constructor/destructor boundaries. Inheritance replacement refuses opaque base coverage and excludes Swift initializers from default method forwarding.
 - **Go Project Routing and Placement Evidence** (`crates/prod-code-mcp`, #1330):
   Nested Go requests retain their selected module's OS constraints, including imported local replacement dependencies within bounded inspection. Independent child modules stay separate. Plain workloads reconsider remembered Mac placements when a compatible unpressured non-Mac node returns, and OS-constrained failures retain the underlying probe error.
 - **Exec Writeback Preservation** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1324):

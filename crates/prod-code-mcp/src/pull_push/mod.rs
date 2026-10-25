@@ -21,8 +21,10 @@
 //! conflict detection, analyzer overlay verification, and transactional WorkspaceEdit application.
 
 mod braces;
+mod cpp_modifiers;
 mod format;
 pub mod languages;
+mod modifiers;
 mod pull_up;
 mod push_down;
 mod sibling;
@@ -35,6 +37,7 @@ mod tests;
 pub use braces::find_matching_brace;
 pub use format::{adjust_indentation, strip_override_modifiers};
 pub use languages::parse_classes_in_text;
+pub(crate) use modifiers::strip_class_member_modifiers;
 pub use pull_up::pull_up_impl;
 pub use push_down::push_down_impl;
 pub use types::{ClassDecl, HierarchyRefactorResult, MemberDecl, MemberKind};

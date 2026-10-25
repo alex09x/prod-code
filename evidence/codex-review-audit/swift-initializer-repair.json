@@ -1,0 +1,307 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1327",
+  "effective_base_sha": "e387455e605b8ba850a3607fa3ccb1ba1b007936",
+  "change": "Exclude parsed Swift init members from default forwarding only. Keep initializer parsing and declaration-local modifier removal; other language and opaque-base filters remain intact.",
+  "node_kind": "Linux x86_64 build node",
+  "command_sanitization": "Only the remote address is replaced with <build-node>. Fixture sources, results and hashes are exact.",
+  "checks": [
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 30 -- sh -c 'command -v swiftc; command -v swift; true'",
+      "exit": 0,
+      "result": "No Swift executable paths returned; Swift and swiftc unavailable on acceptance node."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation swift_default_forwarding -- --nocapture",
+      "phase": "initial test authoring",
+      "exit": 101,
+      "result": "0 passed, 2 failed, 29 filtered. Inherited initializer reproduced both expected refusals. Explicit-initializer control also failed a test assertion expecting return pet.speak(); actual existing output is return self.pet.speak(). Corrected only the assertion before production edits."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation swift_default_forwarding -- --nocapture",
+      "phase": "baseline before production edit",
+      "exit": 101,
+      "result": "1 passed, 1 failed, 29 filtered. Both omitted/empty inherited-initializer selections refuse with Swift base method has no `func` declaration; explicit initializer control passes both selections."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/replace_inheritance/execute.rs crates/prod-code-mcp/tests/pull_up_literal_preservation.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/swift_default_forwarding.rs",
+      "exit": 0,
+      "result": "One scoped formatting invocation after coherent production/test repair; formatted only the new test module."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --test pull_up_literal_preservation -- -D warnings",
+      "exit": 101,
+      "result": "could not compile `prod-code-mcp` (lib) due to 103 previous errors. All 49 diagnostic files exactly match retained29 evidence; none overlaps the changed files. No unrelated fixes or rerun."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 --env RUST_TEST_NOCAPTURE=1 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 0,
+      "result": "31 passed, 0 failed, 0 ignored, 0 filtered. One final acceptance target/compile gate. Environment exposes captured evidence without changing Cargo acceptance arguments."
+    }
+  ],
+  "baseline_outcomes": [
+    {
+      "explicit_empty": false,
+      "explicit_initializer": false,
+      "label": "swift_default_init_false_empty_false",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "error": "Swift base method has no `func` declaration",
+        "unchanged": true
+      }
+    },
+    {
+      "explicit_empty": true,
+      "explicit_initializer": false,
+      "label": "swift_default_init_false_empty_true",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "error": "Swift base method has no `func` declaration",
+        "unchanged": true
+      }
+    },
+    {
+      "explicit_empty": false,
+      "explicit_initializer": true,
+      "label": "swift_default_init_true_empty_false",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "applied": true,
+        "forwarded_methods": [
+          "speak"
+        ]
+      }
+    },
+    {
+      "explicit_empty": true,
+      "explicit_initializer": true,
+      "label": "swift_default_init_true_empty_true",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "applied": true,
+        "forwarded_methods": [
+          "speak"
+        ]
+      }
+    }
+  ],
+  "baseline_source_evidence": [
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "28c56d85f7fc473d2cc81788ea4946f66b9b360cd7dc7404c2d0c3c6e39e6f31",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "28c56d85f7fc473d2cc81788ea4946f66b9b360cd7dc7404c2d0c3c6e39e6f31",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n}\n",
+      "label": "swift_default_init_false_empty_false",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "28c56d85f7fc473d2cc81788ea4946f66b9b360cd7dc7404c2d0c3c6e39e6f31",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "28c56d85f7fc473d2cc81788ea4946f66b9b360cd7dc7404c2d0c3c6e39e6f31",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n}\n",
+      "label": "swift_default_init_false_empty_true",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "ca0ec49763fafd9bdbd537492134b861c1d9aaa74841c1a0874b7a190591a010",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog {\n    init() {\n        self.pet = Pet()\n        let value = \"override final init()\"\n    }\n\n    private let pet: Pet\n\n    func speak() -> String {\n        return self.pet.speak()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "a2856b4e82f1474f8a6b16266d61728b021b1742c4fae1110c72d66cf466a4b7",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n    override init() {\n        super.init()\n        let value = \"override final init()\"\n    }\n}\n",
+      "label": "swift_default_init_true_empty_false",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "ca0ec49763fafd9bdbd537492134b861c1d9aaa74841c1a0874b7a190591a010",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog {\n    init() {\n        self.pet = Pet()\n        let value = \"override final init()\"\n    }\n\n    private let pet: Pet\n\n    func speak() -> String {\n        return self.pet.speak()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "a2856b4e82f1474f8a6b16266d61728b021b1742c4fae1110c72d66cf466a4b7",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n    override init() {\n        super.init()\n        let value = \"override final init()\"\n    }\n}\n",
+      "label": "swift_default_init_true_empty_true",
+      "language": "swift"
+    }
+  ],
+  "final_outcomes": [
+    {
+      "explicit_empty": false,
+      "explicit_initializer": true,
+      "label": "swift_default_init_true_empty_false",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "applied": true,
+        "forwarded_methods": [
+          "speak"
+        ]
+      }
+    },
+    {
+      "explicit_empty": false,
+      "explicit_initializer": false,
+      "label": "swift_default_init_false_empty_false",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "applied": true,
+        "forwarded_methods": [
+          "speak"
+        ]
+      }
+    },
+    {
+      "explicit_empty": true,
+      "explicit_initializer": true,
+      "label": "swift_default_init_true_empty_true",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "applied": true,
+        "forwarded_methods": [
+          "speak"
+        ]
+      }
+    },
+    {
+      "explicit_empty": true,
+      "explicit_initializer": false,
+      "label": "swift_default_init_false_empty_true",
+      "limitation": "Source assertions only; scripted analyzer diagnostics are not compiler/runtime proof",
+      "outcome": {
+        "applied": true,
+        "forwarded_methods": [
+          "speak"
+        ]
+      }
+    }
+  ],
+  "final_source_evidence": [
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "ca0ec49763fafd9bdbd537492134b861c1d9aaa74841c1a0874b7a190591a010",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog {\n    init() {\n        self.pet = Pet()\n        let value = \"override final init()\"\n    }\n\n    private let pet: Pet\n\n    func speak() -> String {\n        return self.pet.speak()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "a2856b4e82f1474f8a6b16266d61728b021b1742c4fae1110c72d66cf466a4b7",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n    override init() {\n        super.init()\n        let value = \"override final init()\"\n    }\n}\n",
+      "label": "swift_default_init_true_empty_false",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "82e9502d95f6c258b2b0a96095c3a42262488a8b7657345a1a82466eb0733749",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog {\n\n    private let pet: Pet\n\n    init() {\n        self.pet = Pet()\n    }\n\n    func speak() -> String {\n        return self.pet.speak()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "28c56d85f7fc473d2cc81788ea4946f66b9b360cd7dc7404c2d0c3c6e39e6f31",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n}\n",
+      "label": "swift_default_init_false_empty_false",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "ca0ec49763fafd9bdbd537492134b861c1d9aaa74841c1a0874b7a190591a010",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog {\n    init() {\n        self.pet = Pet()\n        let value = \"override final init()\"\n    }\n\n    private let pet: Pet\n\n    func speak() -> String {\n        return self.pet.speak()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "a2856b4e82f1474f8a6b16266d61728b021b1742c4fae1110c72d66cf466a4b7",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n    override init() {\n        super.init()\n        let value = \"override final init()\"\n    }\n}\n",
+      "label": "swift_default_init_true_empty_true",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "82e9502d95f6c258b2b0a96095c3a42262488a8b7657345a1a82466eb0733749",
+      "after_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog {\n\n    private let pet: Pet\n\n    init() {\n        self.pet = Pet()\n    }\n\n    func speak() -> String {\n        return self.pet.speak()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "28c56d85f7fc473d2cc81788ea4946f66b9b360cd7dc7404c2d0c3c6e39e6f31",
+      "before_source": "class Pet {\n    init() {}\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n}\n",
+      "label": "swift_default_init_false_empty_true",
+      "language": "swift"
+    }
+  ],
+  "preservation": {
+    "final_shared_consumer_records": 30,
+    "verified_source_pair_hashes": 60,
+    "non_swift_compiler_runtime_pairs": 25,
+    "non_swift_results": "All compiler/runtime exits zero and before/after stdout equal.",
+    "historical_artifact_sha256": {
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/boundary_review_evidence.json": "aa2b1acad44015cc4c67e26fc2fae1a4f0d116bd8db4c37c5a531305e7bffd50",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/evidence.json": "45316949cf0414c98bef0601c001e783a031dced66148f54a3b832698436adc2",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/opaque_base_review_evidence.json": "a956d6fc44f33a94a6487fe77ae623b7785cea6562dc0c0fbb74e47df9f03cc0",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/push_down_review_evidence.json": "f49771306da56f8afc377b36256daa252c75bbc12f3b72ca0000bdc5646138cd",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/review_evidence.json": "1c4973989c27e62855b5f3d3e1b12d3a909178b97e116d6e2fcb3c3d9beef5fe",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/review_followup_evidence.json": "d33f9e873ce1b4438f5fde24c8a61a1ca3dec28487ef3a65631bb6ee5ef65bb7",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/shared_consumer_evidence.json": "ddaa7e75aba5d87651b89a839d7fefd68c5794c9cc72134b63181119f5c65fa3",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/swift_review_evidence.json": "a9da6ed00c57a87ffcec2743d3670525f101a6cdab772f5eb6438608bc315d7c",
+      "evidence/codex-review-audit/compiler-proposal-after.txt": "06f2f7c3bcccfb605538a90afbeaf83016f973348ff800e64e5045c115c11dfc",
+      "evidence/codex-review-audit/compiler-proposal-before.txt": "96d847278a7640dc37e2f30f29f2aec6fcd9b14d0d88a0a81ce5ac7017532840",
+      "evidence/codex-review-audit/compiler-proposal-final-hashes.json": "88d7cb02587020f7f74bc824808076885275144b83161134885a4459f20da8f4",
+      "evidence/codex-review-audit/compiler-proposal-workspace-after.txt": "a11614836d65ff3de86d557e629f1f9583b6ea16b721b5b49e9355b431a30305",
+      "evidence/codex-review-audit/compiler-proposal-workspace-before.txt": "9dae1f8cf2b873107b26c263ac580fa600c02d8fe23731845fa1885e81bf97be",
+      "evidence/codex-review-audit/compiler-proposal-workspace-final-hashes.json": "76d32157c33360dd90bd9cbead81cd3fdcc5f2c8f889549ee78d74814c17156c",
+      "evidence/codex-review-audit/review-aggregate-4042.json": "8f989cc461b7642e45706731e4ab028652f675a7baf960d1b931016f7667e640"
+    },
+    "changed_source_sha256": {
+      "crates/prod-code-mcp/src/replace_inheritance/execute.rs": "b0950cbcebfb7e532d4c83f70de4f0f872596f71eecb939a5f321687feaffd06",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation.rs": "1f9d236b613281f60e841434aded734c4c7836186017e099da6c8ac56ab04fbe",
+      "crates/prod-code-mcp/tests/pull_up_literal_preservation/swift_default_forwarding.rs": "d491f56005b393dca665eaa97cfb526d21294757a9b6c0263ec5f8e2ad4d9118"
+    },
+    "parser_unchanged": true,
+    "lint_diagnostic_files_match_retained": true,
+    "lint_changed_file_overlap": []
+  },
+  "limits": [
+    "Swift source/declaration assertions only. No Swift compiler/runtime proof; no tool installation or infrastructure change. Scripted diagnostics provide analyzer transport, not semantic validation.",
+    "Both omitted and explicitly empty selections forward only speak, generate or preserve exactly one initializer, retain its literal body bytes, and leave base members unchanged.",
+    "Existing same-name methods, C++ destructor exclusion, TypeScript decorators, literal identity, shared consumers and opaque-base controls pass in the unchanged original29 tests.",
+    "Scoped lint remains failed on 103 pre-existing diagnostics. No broader tests, dependencies, publications, messages, delegation, other worktrees, or commits; parent owns review and integration."
+  ],
+  "discovery_failures": [
+    {
+      "command": "rg --files evidence crates | rg 'review-aggregate-4042|retained|pull_up|delegat|hierarchy|class_parser'",
+      "error": "Command blocked by PreToolUse hook: Grep for text pattern `evidence` over source files is blocked.",
+      "fallback": "git ls-files for filenames; prod-code CLI semantic navigation and bounded named-file reads."
+    },
+    {
+      "command": "code_outline({\"path\":\"crates/prod-code-mcp/src/replace_inheritance/execute.rs\"})",
+      "error": "MCP tool call requires approval, but approval policy is never",
+      "fallback": "prod-code outline CLI succeeded."
+    },
+    {
+      "command": "code_outline({\"path\":\"crates/prod-code-mcp/src/pull_push/languages/swift.rs\"})",
+      "error": "MCP tool call requires approval, but approval policy is never",
+      "fallback": "prod-code outline CLI succeeded; prod-code def --symbol parse_swift_members confirmed initializer parsing. No publication allowed by task scope."
+    }
+  ]
+}

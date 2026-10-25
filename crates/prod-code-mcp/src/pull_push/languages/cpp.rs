@@ -9,6 +9,7 @@
  */
 
 use crate::pull_push::braces::find_matching_brace;
+use crate::pull_push::cpp_modifiers::cpp_member_delimiter;
 use crate::pull_push::types::{ClassDecl, MemberDecl, MemberKind};
 use std::path::Path;
 
@@ -144,10 +145,16 @@ fn parse_cpp_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
         if let Some(open_paren) = trimmed.find('(') {
             let before_paren = trimmed[..open_paren].trim();
             let ident = before_paren.split_whitespace().last().unwrap_or("");
-            if !ident.is_empty() && ident.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            let name = ident.strip_prefix('~').unwrap_or(ident);
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                 let member_start = line_offsets[i];
-                if let Some(open_brace_rel) = body[line_offsets[i] - body_offset..].find('{') {
-                    let global_open = line_offsets[i] + open_brace_rel;
+                let rest = &body[member_start - body_offset..];
+                let paren_offset = line.len() - line.trim_start().len() + open_paren;
+                let parameters_end = crate::parameter_object::matching_bracket(rest, paren_offset);
+                let delimiter = parameters_end.and_then(|end| cpp_member_delimiter(rest, end + 1));
+                let body_open = delimiter.filter(|&offset| rest.as_bytes()[offset] == b'{');
+                if let Some(open_brace_rel) = body_open {
+                    let global_open = member_start + open_brace_rel;
                     if let Some(global_close) = find_matching_brace(body, global_open - body_offset)
                     {
                         let member_end = body_offset + global_close + 1;
@@ -166,9 +173,11 @@ fn parse_cpp_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                         }
                         continue;
                     }
-                } else if trimmed.ends_with(';') {
+                } else if let Some(end) =
+                    delimiter.filter(|&offset| rest.as_bytes()[offset] == b';')
+                {
                     // Method declaration
-                    let member_end = line_offsets[i] + line.len();
+                    let member_end = member_start + end + 1;
                     let full_text =
                         body[member_start - body_offset..member_end - body_offset].to_string();
                     members.push(MemberDecl {
@@ -179,7 +188,24 @@ fn parse_cpp_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                         end_offset: member_end,
                         full_text,
                     });
+                    while i < lines.len() && line_offsets[i] < member_end {
+                        i += 1;
+                    }
+                    continue;
                 }
+
+                // An unrecognized boundary is not an absent member. Retain the
+                // opaque remainder so relocation/modifier editing can refuse it,
+                // and do not interpret lines inside it as sibling declarations.
+                members.push(MemberDecl {
+                    name: ident.to_string(),
+                    kind: MemberKind::Opaque,
+                    is_override,
+                    start_offset: member_start,
+                    end_offset: body_offset + body.len(),
+                    full_text: rest.to_string(),
+                });
+                break;
             }
         } else if let Some(before_semi_raw) = trimmed.strip_suffix(';') {
             // Field

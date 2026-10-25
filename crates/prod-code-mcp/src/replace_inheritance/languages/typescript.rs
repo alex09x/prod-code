@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::pull_push::{ClassDecl, parse_classes_in_text, strip_override_modifiers};
+use crate::pull_push::{ClassDecl, parse_classes_in_text, strip_class_member_modifiers};
 
 pub fn transform_typescript(
     text: &str,
@@ -105,8 +105,7 @@ pub fn transform_typescript(
     // 5. Strip `override` from remaining subclass methods
     let classes_final = parse_classes_in_text(&out, &sub.language, &sub.file_path);
     if let Some(sub_after) = classes_final.into_iter().find(|c| c.name == sub.name) {
-        let body_slice = &out[sub_after.body_start..sub_after.body_end];
-        let stripped_body = strip_override_modifiers(body_slice, "typescript");
+        let stripped_body = strip_class_member_modifiers(&out, &sub_after)?;
         let rewritten_body = stripped_body.replace("super.", &format!("this.{field_name}."));
         out.replace_range(sub_after.body_start..sub_after.body_end, &rewritten_body);
     }

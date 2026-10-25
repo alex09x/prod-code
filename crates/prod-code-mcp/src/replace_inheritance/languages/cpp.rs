@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::pull_push::{ClassDecl, parse_classes_in_text, strip_override_modifiers};
+use crate::pull_push::{ClassDecl, parse_classes_in_text, strip_class_member_modifiers};
 
 pub fn transform_cpp(
     text: &str,
@@ -142,8 +142,7 @@ pub fn transform_cpp(
     // 4. Strip `override` and `final` from remaining subclass methods
     let classes_final = parse_classes_in_text(&out, "cpp", &sub.file_path);
     if let Some(sub_after) = classes_final.into_iter().find(|c| c.name == sub.name) {
-        let body_slice = &out[sub_after.body_start..sub_after.body_end];
-        let stripped_body = strip_override_modifiers(body_slice, "cpp");
+        let stripped_body = strip_class_member_modifiers(&out, &sub_after)?;
         let rewritten_body =
             stripped_body.replace(&format!("{base_name}::"), &format!("{field_name}."));
         out.replace_range(sub_after.body_start..sub_after.body_end, &rewritten_body);

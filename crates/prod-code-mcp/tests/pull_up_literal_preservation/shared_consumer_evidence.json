@@ -1,0 +1,447 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1327",
+  "pinned_base_sha": "3c1c299ef8ad765694288ee5fe1acb6cf11494bb",
+  "node_kind": "Linux x86_64 build node",
+  "controls": {
+    "cpp": "c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0; -std=c++17",
+    "typescript": "tsc Version 7.0.2; --target es2022 --experimentalDecorators --pretty false",
+    "javascript": "Node v22.23.2",
+    "swift": "command -v swift and command -v swiftc: unavailable; no installation attempted"
+  },
+  "retained_evidence_sha256": {
+    "evidence.json": "45316949cf0414c98bef0601c001e783a031dced66148f54a3b832698436adc2",
+    "review_evidence.json": "1c4973989c27e62855b5f3d3e1b12d3a909178b97e116d6e2fcb3c3d9beef5fe",
+    "swift_review_evidence.json": "a9da6ed00c57a87ffcec2743d3670525f101a6cdab772f5eb6438608bc315d7c"
+  },
+  "checks": [
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation shared_consumers::",
+      "exit": 101,
+      "result": "Before production edits: 0 passed, 6 failed; 12 original tests filtered out. All three findings reproduced through public transform_cpp/transform_typescript/transform_swift or pull_up_impl. Original C++/TypeScript compiler and runtime controls passed; transformed C++ destructor failed with override/final diagnostics, TypeScript same-name and decorated methods failed TS4112, Swift source retained override. Decorator token check also failed. Source/hash/control records captured below."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/pull_push/cpp_modifiers.rs crates/prod-code-mcp/src/pull_push/languages/cpp.rs crates/prod-code-mcp/src/pull_push/languages/typescript.rs crates/prod-code-mcp/src/pull_push/modifiers.rs crates/prod-code-mcp/tests/pull_up_literal_preservation.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/support.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/consumer_evidence.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/shared_consumers.rs",
+      "exit": 0,
+      "result": "One scoped formatting invocation; five files changed by rustfmt."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --test pull_up_literal_preservation -- -D warnings",
+      "exit": 101,
+      "result": "Library compilation failed with 103 diagnostics, matching retained historical count. All diagnostic locations are in 49 untouched files; no location overlaps this repair. Test-target lint was blocked by library failure. No unrelated fixes or extra lint runs."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 0,
+      "result": "19 passed, 0 failed, including all 12 retained tests and 7 new tests. One final focused compilation/test gate. Nine new before/after C++/TypeScript program pairs compile and run with identical stdout; one new Swift pair has source assertions only. All captured source SHA-256 values rechecked."
+    }
+  ],
+  "limits": [
+    "Swift compiler/runtime unavailable on the acceptance node. Swift evidence is exact source/declaration assertions only; no Swift semantic verification is claimed.",
+    "The scripted gateway in pull_up_impl cases supplies empty transport diagnostics and is not analyzer/semantic proof. Actual C++/TypeScript/Node controls independently compile and run the original and transformed programs.",
+    "TypeScript declaration merging supplies the root Pet method signature for the original valid override in root pull-up controls. Decorators are inert legacy method decorators, checked with experimentalDecorators.",
+    "No generic parser corpus or universal syntax support claim. Existing unsupported C++ declarator refusal remains covered by the retained focused target.",
+    "The analyzer no-write implementation, sibling comparator, Python pass handling and C++ access selection are unchanged. Their historical evidence is retained byte-for-byte; all original focused checks reran successfully. Broader integration suites were not rerun.",
+    "No dependencies, installs, other-worktree edits, publication, messages, delegation, background providers, or infrastructure actions. No commit created; task result commit is owned by the caller."
+  ],
+  "discovery_failures": [
+    {
+      "command": "pwd && git status --short && git rev-parse HEAD && command -v prod-code && command -v prod && command -v clang++ && command -v node && command -v tsc && command -v swift",
+      "exit": 1,
+      "error": "No error text. The workstation command -v tsc returned no path and exit 1, so the chained swift lookup did not run.",
+      "fallback": "A foreground prod-code exec tool lookup on the acceptance node found c++, node and tsc; subsequent version/availability lookup confirmed no swift/swiftc."
+    }
+  ],
+  "baseline_source_evidence": [
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "94c77b858948d16e05de662b8c28d2674f222ddd68215dd8954b9b39af114fa1",
+      "after_source": "class Pet {\n    func Dog() -> String { return \"base\" }\n}\nclass Dog {\n    override func Dog() -> String { return \"override final\" }\n\n    private let pet: Pet\n\n    init() {\n        self.pet = Pet()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "57ee56b1743333cc9c00409a8ca1f162204c06f196d16e36d151db61be3070c8",
+      "before_source": "class Pet {\n    func Dog() -> String { return \"base\" }\n}\nclass Dog: Pet {\n    override func Dog() -> String { return \"override final\" }\n}\n",
+      "label": "swift_same_name",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 1,
+        "compiler_stderr": "pets.cpp:13:5: error: ‘Dog::~Dog()’ marked ‘override’, but does not override\n   13 |     ~Dog() override final { const char* s = \"override final\"; (void)s; }\n      |     ^\npets.cpp:13:5: error: ‘Dog::~Dog()’ marked ‘final’, but is not virtual\n",
+        "compiler_stdout": ""
+      },
+      "after_sha256": "5352a68d942dd55cfa75a063197201c0f0e8911f0aa347e6e4576fa2c467dcd4",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n    ~Dog() override final { const char* s = \"override final\"; (void)s; }\n    std::string speak() { return \"override final\"; }\n\n\n};\nint main() { std::cout << Dog().speak(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final"
+      },
+      "before_sha256": "6c49a24d0271b057b905a1fbcd95e4189554a3b18c136da2bb78cccdda47d992",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n    ~Dog() override final { const char* s = \"override final\"; (void)s; }\n    std::string speak() { return \"override final\"; }\n};\nint main() { std::cout << Dog().speak(); }\n",
+      "label": "cpp_destructor",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 2,
+        "compiler_stderr": "",
+        "compiler_stdout": "pets.ts(8,16): error TS4112: This member cannot have an 'override' modifier because its containing class 'Dog' does not extend another class.\n"
+      },
+      "after_sha256": "01442034655852e630b02d040685e1c6de40448e38332b712e86e51bc0a9ecd0",
+      "after_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n@memo override speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final \\n        tail\",\"override final\"]\n"
+      },
+      "before_sha256": "593331df6d470170d142b91fea591894fdbb88df691a64573204311019835fab",
+      "before_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n@memo override speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_decorator_replacement",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 2,
+        "compiler_stderr": "",
+        "compiler_stdout": "pets.ts(6,14): error TS4112: This member cannot have an 'override' modifier because its containing class 'Dog' does not extend another class.\n"
+      },
+      "after_sha256": "6863adf07ae903dfbc0e04c0eab4cf2d1b00a599d704c7ef7c70bfb2212b7029",
+      "after_source": "class Pet {\n    Dog() { return \"base\"; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n    override Dog() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(new Dog().Dog());\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final\n"
+      },
+      "before_sha256": "358bb97f49af4ac1827ea2c084612610fc800e45455b6151b25d0df5a978c000",
+      "before_source": "class Pet {\n    Dog() { return \"base\"; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n    override Dog() { return \"override final\"; }\n}\nconsole.log(new Dog().Dog());\n",
+      "label": "typescript_same_name",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 2,
+        "compiler_stderr": "",
+        "compiler_stdout": "pets.ts(5,20): error TS4112: This member cannot have an 'override' modifier because its containing class 'Pet' does not extend another class.\n"
+      },
+      "after_sha256": "eaffb3ca02d22ab6eacbc0907bc76a238561879721ad25e24c08a74de1eecf2f",
+      "after_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\ninterface Pet { speak(): string; }\nclass Pet {\n    @memo override speak() { return \"override final\"; }\n}\nclass Dog extends Pet {\n}\nclass Copy extends Pet {\n}\nclass Cat extends Pet {\n    @memo override speak() { return \"final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"override final\",\"final\"]\n"
+      },
+      "before_sha256": "f24a13f3a2a2e0b28d630c1c04887de9428dd8ffd56121140b8b1b6e7d635e9e",
+      "before_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\ninterface Pet { speak(): string; }\nclass Pet {}\nclass Dog extends Pet {\n    @memo override speak() { return \"override final\"; }\n}\nclass Copy extends Pet {\n    @memo override speak() { return \"override final\"; }\n}\nclass Cat extends Pet {\n    @memo override speak() { return \"final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "label": "typescript_decorator_pull",
+      "language": "typescript"
+    }
+  ],
+  "final_source_evidence": [
+    {
+      "after_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "after_sha256": "60c451aad3f09cc7b5b1864903a8dd108e7f462c3af38007e55c3d61a43dcaf5",
+      "after_source": "class Pet {\n    func Dog() -> String { return \"base\" }\n}\nclass Dog {\n    func Dog() -> String { return \"override final\" }\n\n    private let pet: Pet\n\n    init() {\n        self.pet = Pet()\n    }\n}\n",
+      "before_control": {
+        "limitation": "Swift compiler/runtime unavailable on acceptance node"
+      },
+      "before_sha256": "57ee56b1743333cc9c00409a8ca1f162204c06f196d16e36d151db61be3070c8",
+      "before_source": "class Pet {\n    func Dog() -> String { return \"base\" }\n}\nclass Dog: Pet {\n    override func Dog() -> String { return \"override final\" }\n}\n",
+      "label": "swift_same_name",
+      "language": "swift"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final"
+      },
+      "after_sha256": "ea09f0443e528374d680e64241e4a249f91301c89023be3f5b86244dbee50625",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n    ~Dog();\nstd::string speak() { return \"override final\"; }\n\n\n};\nDog::~Dog() {}\nint main() { std::cout << Dog().speak(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final"
+      },
+      "before_sha256": "44ef09f14fa417fbbca8d6fdcff94cadf575d144d7c8d96bb0afebc631edf5a6",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n    ~Dog() override final;\nstd::string speak() { return \"override final\"; }\n};\nDog::~Dog() {}\nint main() { std::cout << Dog().speak(); }\n",
+      "label": "cpp_destructor_declaration",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final"
+      },
+      "after_sha256": "effd2bd63f5e707dcda974a05eb792d79ab709bfa3b8d7ae3a1b1d4f5623b525",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n    ~Dog() { const char* s = \"override final\"; (void)s; }\n    std::string speak() { return \"override final\"; }\n\n\n};\nint main() { std::cout << Dog().speak(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final"
+      },
+      "before_sha256": "6c49a24d0271b057b905a1fbcd95e4189554a3b18c136da2bb78cccdda47d992",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n    ~Dog() override final { const char* s = \"override final\"; (void)s; }\n    std::string speak() { return \"override final\"; }\n};\nint main() { std::cout << Dog().speak(); }\n",
+      "label": "cpp_destructor",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final\n"
+      },
+      "after_sha256": "8428a6a50ce75658023cacd4dde9fb4acb709b1f2890c89b5e04e91f2fedc3e1",
+      "after_source": "class Pet {\n    Dog() { return \"base\"; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n    Dog() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(new Dog().Dog());\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final\n"
+      },
+      "before_sha256": "358bb97f49af4ac1827ea2c084612610fc800e45455b6151b25d0df5a978c000",
+      "before_source": "class Pet {\n    Dog() { return \"base\"; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n    override Dog() { return \"override final\"; }\n}\nconsole.log(new Dog().Dog());\n",
+      "label": "typescript_same_name",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final \\n        tail\",\"override final\"]\n"
+      },
+      "after_sha256": "7c9014b44726e64b248021900c68a9ff31aa174e46158d5de5f351938e100886",
+      "after_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n@memo speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final \\n        tail\",\"override final\"]\n"
+      },
+      "before_sha256": "593331df6d470170d142b91fea591894fdbb88df691a64573204311019835fab",
+      "before_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n@memo override speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_decorator_replacement",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"override final\",\"final\"]\n"
+      },
+      "after_sha256": "8df8ac860d8ba28e521f9f441add717e889abe879dcf2c7296efadcb2d0b6ec2",
+      "after_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\ninterface Pet { speak(): string; }\nclass Pet {\n    @memo speak() { return \"override final\"; }\n}\nclass Dog extends Pet {\n}\nclass Copy extends Pet {\n}\nclass Cat extends Pet {\n    @memo override speak() { return \"final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"override final\",\"final\"]\n"
+      },
+      "before_sha256": "f24a13f3a2a2e0b28d630c1c04887de9428dd8ffd56121140b8b1b6e7d635e9e",
+      "before_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\ninterface Pet { speak(): string; }\nclass Pet {}\nclass Dog extends Pet {\n    @memo override speak() { return \"override final\"; }\n}\nclass Copy extends Pet {\n    @memo override speak() { return \"override final\"; }\n}\nclass Cat extends Pet {\n    @memo override speak() { return \"final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "label": "typescript_decorator_pull",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final"
+      },
+      "after_sha256": "2804973850f51f7ff3c0e0eece6f9462651e97847b82a40a4ed9b2b8ec11caf8",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n    ~Dog() = default;\nstd::string speak() { return \"override final\"; }\n\n\n};\nint main() { std::cout << Dog().speak(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final"
+      },
+      "before_sha256": "1447fa8580d2c022534b8e6ba5e2e7b877b44630d6cb681beb4f83c2a924ef37",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n    ~Dog() override final = default;\nstd::string speak() { return \"override final\"; }\n};\nint main() { std::cout << Dog().speak(); }\n",
+      "label": "cpp_destructor_declaration",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final \\n        tail\",\"override final\"]\n"
+      },
+      "after_sha256": "5a60aa7b7f9d6adb8ee3b561dd727c11255ad54e0048faacfe7410a2e4fc2fa2",
+      "after_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n@tag({ override: \"override ) final\", nested: [(\"override\")] }) @memo speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final \\n        tail\",\"override final\"]\n"
+      },
+      "before_sha256": "0ff0e460ee2500d07e00cc8f2b7648ca6ae3c73e689a7ac9b536069e9b9b5f1a",
+      "before_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n@tag({ override: \"override ) final\", nested: [(\"override\")] }) @memo override speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_decorator_replacement",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"override final\",\"final\"]\n"
+      },
+      "after_sha256": "44582acd87e94d77a18ed20b7ebe617aa79912920e09f8fe6001fcd7dd9a531c",
+      "after_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\ninterface Pet { speak(): string; }\nclass Pet {\n    @tag({ override: \"override ) final\", nested: [(\"override\")] })\n    @memo speak() { return \"override final\"; }\n}\nclass Dog extends Pet {\n}\nclass Copy extends Pet {\n}\nclass Cat extends Pet {\n    @tag({ override: \"override ) final\", nested: [(\"override\")] })\n    @memo override speak() { return \"final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"override final\",\"final\"]\n"
+      },
+      "before_sha256": "1d04b9e4eb19f2b0d6271d4e34ba1bee2aba24b8718eca67b0a92127fa2be43b",
+      "before_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\ninterface Pet { speak(): string; }\nclass Pet {}\nclass Dog extends Pet {\n    @tag({ override: \"override ) final\", nested: [(\"override\")] })\n    @memo override speak() { return \"override final\"; }\n}\nclass Copy extends Pet {\n    @tag({ override: \"override ) final\", nested: [(\"override\")] })\n    @memo override speak() { return \"override final\"; }\n}\nclass Cat extends Pet {\n    @tag({ override: \"override ) final\", nested: [(\"override\")] })\n    @memo override speak() { return \"final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "label": "typescript_decorator_pull",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final \\n        tail\",\"override final\"]\n"
+      },
+      "after_sha256": "a35adf5cb9f8929538586f39634bd783d98f84950abeb2514fe91d536357850f",
+      "after_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n@tag(\n        { override: \"override ) final\", nested: [(\"override\")] }\n    )\n    @memo speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final \\n        tail\",\"override final\"]\n"
+      },
+      "before_sha256": "83172ebc701881a71dfdb58f6856e53f1d7a06a42d2f6a9851ff4605c611ac30",
+      "before_source": "function memo(_target: any, _key: string, _descriptor: PropertyDescriptor) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    speak() { return \"base\"; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n@tag(\n        { override: \"override ) final\", nested: [(\"override\")] }\n    )\n    @memo override speak() { return `override final \n        tail`; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_decorator_replacement",
+      "language": "typescript"
+    }
+  ],
+  "lint_diagnostic_files": [
+    "crates/prod-code-mcp/src/config/mod.rs",
+    "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+    "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+    "crates/prod-code-mcp/src/dossier/assertions/cpp.rs",
+    "crates/prod-code-mcp/src/dossier/assertions/go.rs",
+    "crates/prod-code-mcp/src/dossier/assertions/python.rs",
+    "crates/prod-code-mcp/src/dossier/locations.rs",
+    "crates/prod-code-mcp/src/encapsulate_field/polyglot/lsp.rs",
+    "crates/prod-code-mcp/src/encapsulate_field/polyglot/mod.rs",
+    "crates/prod-code-mcp/src/extract_delegate/polyglot/execute.rs",
+    "crates/prod-code-mcp/src/extract_function/binding.rs",
+    "crates/prod-code-mcp/src/extract_function/duplicates/search.rs",
+    "crates/prod-code-mcp/src/fixture/builder/lexer.rs",
+    "crates/prod-code-mcp/src/fixture/polyglot/parsers_go_ts.rs",
+    "crates/prod-code-mcp/src/generify/polyglot.rs",
+    "crates/prod-code-mcp/src/impact/signatures.rs",
+    "crates/prod-code-mcp/src/impact/test_cmd.rs",
+    "crates/prod-code-mcp/src/move_item/item.rs",
+    "crates/prod-code-mcp/src/parameter_object/binding.rs",
+    "crates/prod-code-mcp/src/parameter_object/polyglot_callers.rs",
+    "crates/prod-code-mcp/src/prune/execute.rs",
+    "crates/prod-code-mcp/src/remote_fs/mod.rs",
+    "crates/prod-code-mcp/src/replace_constructor/sites/helpers.rs",
+    "crates/prod-code-mcp/src/replace_inheritance/languages/cpp.rs",
+    "crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs",
+    "crates/prod-code-mcp/src/server/failover.rs",
+    "crates/prod-code-mcp/src/session/pool.rs",
+    "crates/prod-code-mcp/src/signature/call_sites.rs",
+    "crates/prod-code-mcp/src/signature/modifiers.rs",
+    "crates/prod-code-mcp/src/signature_go/reorder_verify.rs",
+    "crates/prod-code-mcp/src/supertypes/rust.rs",
+    "crates/prod-code-mcp/src/sync/cache.rs",
+    "crates/prod-code-mcp/src/sync/read.rs",
+    "crates/prod-code-mcp/src/sync/scan.rs",
+    "crates/prod-code-mcp/src/to_method/helpers.rs",
+    "crates/prod-code-mcp/src/tools/execution.rs",
+    "crates/prod-code-mcp/src/tools/symbols/alias.rs",
+    "crates/prod-code-mcp/src/tools/symbols/resolve.rs",
+    "crates/prod-code-mcp/src/tools/symbols/type_members.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/import.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/restructure.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs",
+    "crates/prod-code-mcp/src/wrap_return/utils.rs",
+    "crates/prod-code-mcp/src/xml_svg/lexer.rs"
+  ],
+  "verified_rust_source_sha256": {
+    "crates/prod-code-mcp/src/pull_push/cpp_modifiers.rs": "7b83d7f9283c001bae600ed7d81e41b62d93262a6a68e7e9de3fcbdbcb043868",
+    "crates/prod-code-mcp/src/pull_push/languages/cpp.rs": "220fa529f7a73d1f9f03f38f0b7330600f25c4f22f6668b99a4309e6af7faea7",
+    "crates/prod-code-mcp/src/pull_push/languages/typescript.rs": "20d9573f6cf47060f080c7d2cc59fe9eb36ea0e5f9f2de2a36f299529b4813a4",
+    "crates/prod-code-mcp/src/pull_push/modifiers.rs": "bcce185ef179903390d302ea52ac008504fa4df59d83b76bf0ab9b28c94db137",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation.rs": "c3a41cd4a4439869f10989f0c29d7c9d7b0ed5c8c797f9ec63db1802a6c69f04",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/support.rs": "92ee78164222a36febf9d143829eb32efddde8a718f7cc6e2a31d44630ccc737",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/consumer_evidence.rs": "cc420035324ba9a5140a681c15cd248d9f9e5532c7aa6f2cd357ae4d5fd5aead",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/shared_consumers.rs": "dca1cb1c56414767076ef3e41ab7ed672f5d0e8b63967429bd30e3039ab889e7"
+  }
+}
