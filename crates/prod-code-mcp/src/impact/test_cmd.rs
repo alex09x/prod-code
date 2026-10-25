@@ -285,7 +285,18 @@ pub fn test_command(
             tools,
             "cpp",
             crate::verify::VerifyKind::Test,
-            Some(&format!("^({})$", names.join("|"))),
+            Some(&format!(
+                "^({})$",
+                names
+                    .iter()
+                    .map(|name| if tools.cpp == crate::verify::CppBuild::CMake {
+                        regex::escape(name)
+                    } else {
+                        (*name).to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
+            )),
         )
         .ok()?,
         _ => return None,
