@@ -2,7 +2,51 @@
 
 ## [Unreleased]
 
+### Tests
+- **Coverage Campaign, Wave 1** (all crates):
+  Region coverage of the workspace rose from 81.65% to 90.30%. The number of files under the 80% per-file gate fell from 276 to 32. The new tests are tables of cases that assert exact results: rendered text, edits, refusals and error messages. They cover the MCP tool handlers, the dependency readers for Cargo, Gradle, Maven, .NET, Python and TypeScript, polyglot extract, move, wrap-return, encapsulate and the other refactorings, the fixture generator, the client commands, packaging and update, the gateway runners and caches, the protocol messages and the language engines. Three existing tests stopped depending on parallel tests:
+  - the RAM cache sweep test no longer shares a name prefix with workspaces where exec tests run;
+  - the metrics HTTP test serves on the listener it bound;
+  - the Unix socket test no longer probes a listener that a forked child may still hold (#1195).
+
 ### Fixed
+- **Bugs Found by the Coverage Campaign** (`crates/prod-code-mcp`, `crates/prod-code-client`, `crates/prod-code-gateway`, #1195):
+  - Polyglot move:
+    - a TypeScript caller import was corrupted when the symbol's name contained the source module's basename;
+    - Python callers were matched by module substring (`pkg.ab` was rewritten when `pkg.a` moved);
+    - a symbol was merged into an import from a longer module path;
+    - a merged TypeScript import lost its spacing.
+  - Polyglot extract function:
+    - a Go parameter of a predeclared type such as `string`, `bool` or `error` took the type of the next parameter;
+    - a Python `def` at the start of the file got the wrong scope end;
+    - offsets drifted on CRLF text.
+  - Dependency graph:
+    - a renamed Cargo path dependency was lost depending on hash order;
+    - Gradle `include` statements that continued past blank or comment lines, or across an open parenthesis, were cut short;
+    - Python `from a.b import` and `from . import` were matched incorrectly;
+    - Rust `pub use` and `pub mod` did not count as imports;
+    - TypeScript imports in single quotes were missed.
+  - Fixture generator:
+    - Python return annotations containing brackets or followed by a one-line body were misread;
+    - a `}` before the opening `{` was taken as the closing brace;
+    - Java field modifiers were taken into the type;
+    - a trailing `//` comment swallowed the next field;
+    - Go `<-` channel parameters were split as generics;
+    - Java constructor arguments were laid out one per line;
+    - the sample values for Go `byte`, `rune` and `error`, TypeScript `void`, `any`, `unknown` and `Array<T>`, Python containers and `None`, Swift optionals and Java `byte`, `short` and `float` were wrong.
+  - Other refactorings:
+    - make-static picked the earlier of two short methods on adjacent lines;
+    - change-signature accepted a lone quote as a string argument and misread names followed by `<`;
+    - impact checked only the first occurrence of a name on a line;
+    - extract-function stripped unbalanced outer parentheses;
+    - replace-inheritance for Python broke the indentation of a replaced `pass` block, inserted after the trailing newline, and could panic when cutting a diff inside a multibyte character;
+    - extract-delegate misread TypeScript parameters with defaults or `?`;
+    - replace-conditional offsets drifted on CRLF;
+    - loop-to-iterator refused the Go form `acc = append(acc, x)`;
+    - lexical references missed `}from'…'` imports without a space.
+  - Client and gateway:
+    - the divergent bench reported a gateway hover error as `hover returned null`;
+    - a HEAD request for an unknown metrics path received a body.
 - **Rust Import Diagnostics Respect Module Boundaries and Aliases** (`crates/prod-code-engine-rust`):
   Imports in a parent module no longer suppress unresolved-name errors in a child module, and aliased imports suppress duplicate diagnostics only for the name they actually bind. Syntax-based import scanning now also reports unused imports after another statement or an attribute, including multiple `use` items on one line (#1248).
 - **Implicit Rust SSR Context Includes Receiver Methods and Item Scopes** (`crates/prod-code-engine-rust`):
