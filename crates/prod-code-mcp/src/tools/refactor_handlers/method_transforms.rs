@@ -145,6 +145,10 @@ pub(crate) async fn handle_convert_to_method(
     let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_rust = ext == "rs";
 
+    anyhow::ensure!(
+        !verify || is_rust,
+        "verify: compile is only supported for Rust convert_to_method; no files were written"
+    );
     let mut done = if is_rust {
         let l = line.context("Missing 'line' argument for Rust convert_to_method")?;
         let c = character.unwrap_or(1);

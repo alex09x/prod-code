@@ -20,6 +20,75 @@ use serde_json::{Value, json};
 const UTIL_STATIC: &str = "export class Util {\n    factor: number = 2;\n\n    static helper(u: Util, x: number): number {\n        return u.factor * x;\n    }\n}\n\nexport function test() {\n    const u = new Util();\n    return Util.helper(u, 21);\n}\n";
 const UTIL_METHOD: &str = "export class Util {\n    helper(x: number): number {\n        return x * 2;\n    }\n}\n\nexport function test() {\n    const u = new Util();\n    return u.helper(21);\n}\n";
 
+#[tokio::test]
+async fn convert_method_compile_guard_rejects_non_rust_before_planning_or_writes() {
+    let mut failures = Vec::new();
+    for apply in [true, false] {
+        for force in [false, true] {
+            let ws = Workspace::new(&[
+                ("util.ts", UTIL_STATIC),
+                (
+                    "Cargo.toml",
+                    "[package]\nname = \"unrelated\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                ),
+                ("src/lib.rs", "pub fn unrelated() {}\n"),
+            ]);
+            let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = commands.clone();
+            let gw = ScriptedGateway::start(move |method, params| match method {
+                "textDocument/diagnostic" => answers::no_diagnostics(),
+                "textDocument/references" => json!([]),
+                "prod-code/shadow-run" => {
+                    recorded.lock().unwrap().push(params["command"].clone());
+                    json!({"exit_code": 0})
+                }
+                _ => Value::Null,
+            })
+            .await;
+            let result = handle_convert_to_method(
+                gw.addr(),
+                &ws.root(),
+                &json!({
+                    "path": "util.ts", "class_name": "Util", "method": "helper",
+                    "verify": "compile", "apply": apply, "force": force
+                }),
+            )
+            .await;
+            let refusal = result.err().map(|e| format!("{e:#}")).unwrap_or_default();
+            let commands = commands.lock().unwrap().clone();
+            if !refusal.contains("only supported for Rust")
+                || !commands.is_empty()
+                || ws.read("util.ts") != UTIL_STATIC
+                || gw.calls() != 0
+            {
+                failures.push(format!(
+                    "apply={apply} force={force}: refusal={refusal:?}, commands={commands:?}, source_changed={}, analyzer_calls={}",
+                    ws.read("util.ts") != UTIL_STATIC, gw.calls()
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+async fn convert_method_compile_guard_keeps_conversion_without_compile_option() {
+    let ws = Workspace::new(&[("util.ts", UTIL_STATIC)]);
+    let gw = gateway(json!([])).await;
+    let result = handle_convert_to_method(
+        gw.addr(),
+        &ws.root(),
+        &json!({
+            "path": "util.ts", "class_name": "Util", "method": "helper", "apply": true
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(!result.is_error, "{}", text(&result));
+    assert_ne!(ws.read("util.ts"), UTIL_STATIC);
+    assert!(!ws.read("util.ts").contains("static helper"));
+}
+
 fn text(result: &McpToolCallResult) -> String {
     result
         .content
