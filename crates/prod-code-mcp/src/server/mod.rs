@@ -12,10 +12,19 @@ pub mod dispatch;
 pub mod failover;
 pub mod rebalance;
 mod reload;
+mod stdin;
+#[cfg(unix)]
+mod stdin_unix;
 pub mod transport;
 
 #[cfg(test)]
 mod dispatch_tests;
+#[cfg(test)]
+mod reload_pending_tests;
+#[cfg(all(test, unix))]
+mod reload_process_tests;
+#[cfg(all(test, unix))]
+mod reload_shared_stdio_tests;
 #[cfg(test)]
 mod reload_tests;
 #[cfg(test)]

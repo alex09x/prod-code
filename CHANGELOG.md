@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **MCP Stdin Reload Ownership** (`crates/prod-code-mcp`, #1325):
+  Hot reload waits for outstanding worker reads before replacing the process. Eligible Unix pipes and sockets use cancellation-safe readiness reads; shared socket output flags remain unchanged, while uncertain shared inputs retain conservative read ownership.
 - **Report Privacy and Labels** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1323):
   Public reports scrub IPv6 endpoints, including zones and compact error suffixes, before drafting or filing. Reports reject multiple distinct type labels, retain normalized duplicates and optional `roadmap`, and expose that marker in CLI and MCP guidance.
 - **Complete Compiler Proposals** (`crates/prod-code-mcp`, #1256):

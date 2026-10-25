@@ -33,18 +33,20 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
 
     // Watch the installed executable for reloads between requests.
     let exe = std::env::current_exe().ok();
-    serve_mcp_requests(
+    let (stdin, reload) = super::stdin::open(exe).context("Failed opening stdin")?;
+    serve_with_reload(
         remote,
         workspace_root,
-        exe,
         resumed,
-        BufReader::new(tokio::io::stdin()),
+        BufReader::new(stdin),
         tokio::io::stdout(),
+        reload,
     )
     .await
 }
 
 /// Serve MCP requests over a testable transport. `exe: None` disables hot reload.
+/// Arbitrary AsyncRead inputs may own bytes after Pending; reload waits for their result.
 pub async fn serve_mcp_requests<R, W>(
     remote: SocketAddr,
     workspace_root: PathBuf,
@@ -89,6 +91,7 @@ where
 
     let mut pending: Vec<u8> = Vec::new();
     let mut eof = false;
+    let mut read_pending = false;
     let mut in_flight = ToolCalls::new();
     let mut active_aborts = ActiveCalls::new();
     let mut reload_deadline = None;
@@ -113,7 +116,10 @@ where
             .await?;
             // Bytes already read from stdin cannot be recovered by exec. Finish the input
             // frame before swapping, without granting newly dispatched calls another budget.
-            if pending.is_empty() && reader.buffer().is_empty() {
+            if pending.is_empty()
+                && reader.buffer().is_empty()
+                && (!read_pending || reload.cancel_safe_input)
+            {
                 writer
                     .write_all(hot_reload::tools_list_changed().as_bytes())
                     .await?;
@@ -132,15 +138,10 @@ where
             break;
         }
         let consumed = tokio::select! {
-            filled = reader.fill_buf(), if !eof => {
-                let buf = filled.context("Failed reading from stdin")?;
-                if buf.is_empty() {
-                    eof = true;
-                    0
-                } else {
-                    pending.extend_from_slice(buf);
-                    buf.len()
-                }
+            filled = super::stdin::fill(&mut reader, &mut pending, &mut read_pending), if !eof => {
+                let count = filled.context("Failed reading from stdin")?;
+                eof = count == 0;
+                count
             }
             Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => {
                 deliver_response(joined, &mut active_aborts, &mut remote, &mut writer).await?;

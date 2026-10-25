@@ -33,6 +33,7 @@ async fn exercise_reload(finish: bool, partial_input: bool) {
     let (read, write) = tokio::io::split(server);
     let root = tempfile::tempdir().unwrap();
     let mut reload = Reload::new(None);
+    reload.cancel_safe_input = true; // DuplexStream has no uncancellable read worker.
     reload.exe = Some("unused-test-executable".into());
     reload.timeout = Duration::from_millis(50);
     let requested = reload.requested.clone();

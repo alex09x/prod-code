@@ -31,6 +31,9 @@ pub(super) struct Reload {
     pub timeout: Duration,
     /// How often the loop asks whether the cluster has a better node for this workspace.
     pub rebalance_every: Duration,
+    /// True only for inputs whose Pending read leaves all bytes in the OS/reader buffer.
+    /// Blocking-worker inputs must finish the outstanding read before process replacement.
+    pub cancel_safe_input: bool,
     pub reexec: Box<dyn FnMut(&Path) -> std::io::Error + Send>,
 }
 
@@ -119,6 +122,7 @@ impl Reload {
             notify,
             timeout: Duration::from_secs(30),
             rebalance_every: Duration::from_secs(30),
+            cancel_safe_input: false,
             reexec: Box::new(hot_reload::reexec),
         }
     }
