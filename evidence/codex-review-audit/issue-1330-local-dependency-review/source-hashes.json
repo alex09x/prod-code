@@ -1,0 +1,29 @@
+{
+  "pinned_base": "f6063f7399342f220c93a2013e8e99be82749633",
+  "repair_input": "801a0af13d726fdce784eb906823d1f6ce21bfaf",
+  "red_run_sha256": {
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "aa015530470bbaf7d0538d80ecf0d0c75e4adbaf3a581d4f729472ea0ca7aecd",
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "bf86e457ed2bc2c1a1ccdf6ace8481eaed908eea3a3219020ee789f77807a55a",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs": "09d3fd0b1444a199fc0169d5ce2961414b5f50ee71dde61ddbdbbfba0ea32c3d",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "ef57346fa74c72598364d1d1a6bec5ddb21c169a8949e36cf9a5a4b26cf1d5a8"
+  },
+  "log_sha256": {
+    "before.txt": "740bd8f5a81b161402b65f94eee2d45630ad93d04c012c8c4aebbb738bfcef6a",
+    "format.txt": "d611cf97d27f6a8ab23b3689741568f3cbee194e93237bfba8ee3c1d8c5c46e7",
+    "after.txt": "90e77b11c683b0d44a726d52467796eabf759bbdad37fb993678ac8b1c7cae4a",
+    "lint.txt": "5cd08bb6aa19f3bc2b32a314175bfdbad6e9dcb0e857714aafa990c7608dcdf9",
+    "lint-baseline-files.json": "cf800125060cb8d2553bbe0fb4da27487484b57a2ab66383e7f60fc93c2726bb",
+    "README.md": "ad3706f061fd0126314513f883e59f8db7a2837855041709a09207feef4bbdf2",
+    "tool-failures.txt": "c32a00d9cd57b10d1b49894225a5aaded536006e7b1f2db6f26543bf28a55687"
+  },
+  "final_sha256": {
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "a994b2f9a6be08b98dde99049b7d70bb80b8175e0a8637766d5dbffa3f05a534",
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "298b7311e41408b3af8c6ae0a1d75b8843b09e784fe6c5c1d645bd93109a3cff",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs": "09d3fd0b1444a199fc0169d5ce2961414b5f50ee71dde61ddbdbbfba0ea32c3d",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "19a17f4b222ec7db88913d2cce8719d27884ffb8c1685abaa76ac57723dd0eae"
+  },
+  "red_production_matches_repair_input": {
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": true,
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": true
+  }
+}

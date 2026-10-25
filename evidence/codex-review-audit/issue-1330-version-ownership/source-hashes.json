@@ -1,0 +1,27 @@
+{
+  "pinned_acceptance_base": "f6063f7399342f220c93a2013e8e99be82749633",
+  "repair_input": "3f4b719cc7e28a76173da8b8d93a672c450410b0",
+  "before_production": {
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "a994b2f9a6be08b98dde99049b7d70bb80b8175e0a8637766d5dbffa3f05a534",
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "298b7311e41408b3af8c6ae0a1d75b8843b09e784fe6c5c1d645bd93109a3cff"
+  },
+  "before_fixture": {
+    "path": "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs",
+    "sha256": "ca1897ea14dc9b67d413dcdf8ab233f9cfdc51440f143ce437019f331f18ae66",
+    "note": "Red-run fixture; expanded before final validation, not byte-identical to final fixture."
+  },
+  "final_source": {
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "9c7ca2574c4dac67a20419b2cf13351b00b098c07570ae26b7ad9be939bf8dd0",
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "1cc45ce19dabe77cbb4b28f5dfd58b13b053ffcbd71494356307548ccb3cc515",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "dc00f50a2fccc9edbf6390e32269907620171c51363b9a7874cdc56fc1dfb7b2"
+  },
+  "evidence": {
+    "README.md": "3a2f36ac42cfd2b3510eb980c7dbe11014f0f4a94bfd554ed431d42e1dc4ac49",
+    "after.txt": "6ea2936385cf30ad42e0aaccd93d4b54f02592eb2b0ee40c9d0bb002e57661cc",
+    "before.txt": "5e01c64e725d5e35b518beb2324d885d8be460c94c189375ef467cebdbb517ad",
+    "format.txt": "db42612f43bc71aec6896c81ca20c68540a01f8c1f4142895955814e54db0819",
+    "lint-baseline-files.json": "e0f48aa9c864b96403f100bda4547b626cd0541e8f896650f160579b03a322ca",
+    "lint.txt": "ca5b5c47a54309d40615052ddf0f09da9be0b9b30e8acc2e0369b0c97fccece8",
+    "tool-failures.txt": "6d16327206b2302853cfb026806a5b10f7d52a664d73ae2cce6b5b8c3e4b517a"
+  }
+}

@@ -1,0 +1,5 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/sync/engine/cgo.rs crates/prod-code-mcp/src/sync/engine/local_go.rs crates/prod-code-mcp/src/sync/engine/mod.rs crates/prod-code-mcp/src/cluster/tests/route_regressions.rs crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs
+Observed terminal exit: 0
+
+[prod-code exec] 3 file(s) changed by the command written back: crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs, crates/prod-code-mcp/src/sync/engine/cgo.rs, crates/prod-code-mcp/src/sync/engine/local_go.rs
+[prod-code exec] exit 0 in 0.4s (server 0.1s, cpu 0.0s user 0.0s sys, peak 39 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)

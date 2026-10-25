@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use super::discover::node_status;
 use super::pick::pick_node_with;
 use super::placement::placement_path;
-use super::selection::supports_engine;
+use super::selection::{node_fits, supports_engine};
 
 #[cfg(test)]
 #[path = "routing_tests.rs"]
@@ -119,15 +119,30 @@ pub async fn route_in(
     path: &str,
     placement_file: Option<&Path>,
 ) -> Result<SocketAddr> {
-    let engine = nested_engine(root, path).or_else(|| engine_for_path(root, path));
+    let hint = root.join(path);
+    let (project, _) = crate::sync::engine_project(root, &hint);
+    let engine = engine_for_path(root, path);
     let Some(engine) = engine else {
         return Ok(default);
     };
-    if default_serves(default, engine).await {
+    // Only the selected Go project contributes cgo requirements. A Rust root may
+    // contain unrelated Go utilities which must not constrain Rust requests.
+    let os = if engine == "go" {
+        let project_root = hint
+            .ancestors()
+            .take_while(|dir| dir.starts_with(root))
+            .find(|dir| dir.join("go.mod").is_file())
+            .map(Path::to_path_buf)
+            .or_else(|| project.map(|project| root.join(project)));
+        crate::sync::macos_only_cgo(project_root.as_deref().unwrap_or(root)).map(|_| "macos")
+    } else {
+        None
+    };
+    if node_fits(default, Some(engine), os).await {
         return Ok(default);
     }
     let key = format!("{workspace}#{engine}");
-    pick_node_with(nodes, &key, Some(engine), None, placement_file)
+    pick_node_with(nodes, &key, Some(engine), os, placement_file)
         .await
         .with_context(|| format!("`{path}` is in a {engine} project"))
 }

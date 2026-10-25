@@ -1,0 +1,39 @@
+{
+  "pinned_base": "65c6e5a62e69fafae17820ae9548925b74711187",
+  "inherited_head": "f4189674997d5709551305f86872859e59941be3",
+  "hash_algorithm": "sha256",
+  "before": {
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "48efe6b48f7eb602cc8de2b73f85f3a4adb460ad3c9921c92ef4436aacaa9d5c",
+    "crates/prod-code-mcp/src/cluster/routing.rs": "1613d49bc834ed78e6039542c2526879d5888cba77f27a7e90a311221b5a9d76",
+    "crates/prod-code-mcp/src/cluster/pick.rs": "44364db7d40b20e768bfb90a949b8aa1251cd80f0d6cc20d2640ced91e9e8c5d",
+    "crates/prod-code-mcp/src/cluster/selection.rs": "4460bb33fe357570195046e3bbab62016a495fddd36d5fcd69288388769d6e83",
+    "crates/prod-code-mcp/src/cluster/tests/route_regressions.rs": "fdcbcae5a2daf280912649f63343eec4cc2375c0c35b1e8309b8a2336c33169d",
+    "crates/prod-code-mcp/src/cluster/tests/route_go_roots.rs": "5e1873ba2500ac9915a0bdcad145412682d22ba3a50ece16dc603da51b2df32e"
+  },
+  "base": {
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "de79456e558ec3fc679308922f70f1f7f4270e39f912e0ded94e24a5c880299b",
+    "crates/prod-code-mcp/src/cluster/routing.rs": "1c0694d6de5f3025592ba5fa655d9060dfa481db64b67fbf016885e1b9ab331e",
+    "crates/prod-code-mcp/src/cluster/pick.rs": "9611e866e49798a4ecaa3bd01336acc674e659ff4f61d316d0aa4df90d78df49",
+    "crates/prod-code-mcp/src/cluster/selection.rs": "5faf0754572dafe0f8e4357afacc8605926d5e7af2cb2ffde41d6554d6e7de08"
+  },
+  "final": {
+    "crates/prod-code-mcp/src/cluster/pick.rs": "44364db7d40b20e768bfb90a949b8aa1251cd80f0d6cc20d2640ced91e9e8c5d",
+    "crates/prod-code-mcp/src/cluster/routing.rs": "1613d49bc834ed78e6039542c2526879d5888cba77f27a7e90a311221b5a9d76",
+    "crates/prod-code-mcp/src/cluster/selection.rs": "4460bb33fe357570195046e3bbab62016a495fddd36d5fcd69288388769d6e83",
+    "crates/prod-code-mcp/src/cluster/tests/mod.rs": "398e273c674371bbfbeb17292df2a023dd60d5233af49974fd391d61ac06a9c1",
+    "crates/prod-code-mcp/src/cluster/tests/route_go_roots.rs": "2338714e091fedaa73d63a221805df920540fd988a570d7506984437aa0dda39",
+    "crates/prod-code-mcp/src/cluster/tests/route_placement_regressions.rs": "8a97fde6cf516679f1f3c65e4225b384334d3e0bea3ae4f1745357465068e97a",
+    "crates/prod-code-mcp/src/cluster/tests/route_regressions.rs": "fdcbcae5a2daf280912649f63343eec4cc2375c0c35b1e8309b8a2336c33169d",
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "254730dd99d0e8bde9cb1414ec72bee7e334040b682c8ea2d10dc58e45e77dbf"
+  },
+  "source_lines": {
+    "crates/prod-code-mcp/src/cluster/pick.rs": 299,
+    "crates/prod-code-mcp/src/cluster/routing.rs": 222,
+    "crates/prod-code-mcp/src/cluster/selection.rs": 139,
+    "crates/prod-code-mcp/src/cluster/tests/mod.rs": 15,
+    "crates/prod-code-mcp/src/cluster/tests/route_go_roots.rs": 156,
+    "crates/prod-code-mcp/src/cluster/tests/route_placement_regressions.rs": 113,
+    "crates/prod-code-mcp/src/cluster/tests/route_regressions.rs": 306,
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": 254
+  }
+}

@@ -1,0 +1,26 @@
+1. Initial discovery call rejected by PreToolUse before execution.
+Exact attempted exec_command cmd (newlines preserved):
+git diff --stat f6063f7399342f220c93a2013e8e99be82749633 HEAD
+rg --files evidence/codex-review-audit
+prod-code outline crates/prod-code-mcp/src/sync/engine/go_tokens.rs
+prod-code outline crates/prod-code-mcp/src/sync/engine/local_go.rs
+
+Error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+
+Bounded fallback: reran the same call with ls evidence/codex-review-audit instead
+of rg --files; both prod-code outlines completed, terminal exit 0.
+
+2. Navigation ambiguity (CLI printed guidance; enclosing command exited 0).
+Exact command:
+prod-code def --path crates/prod-code-mcp/src/sync/engine/go_tokens.rs --symbol tokens
+Output:
+`tokens` is ambiguous (2 candidates); qualify it (Type::name) or pass `path`:
+  1. [Function] fn(source: &str) -> Vec<(Cow<'_, str>, bool)>::tokens — crates/prod-code-mcp/src/sync/engine/go_tokens.rs:17:15 — `pub(super) fn tokens(source: &str) -> Vec<(Cow<'_, str>, bool)> {`
+  2. [Variable] tokens::tokens — crates/prod-code-mcp/src/sync/engine/go_tokens.rs:19:13 — `let mut tokens = Vec::new();`
+
+Bounded fallback: sed -n '1,65p' on the exact named source file confirmed by
+the outline. No location was invented and no recursive source scan was used.
+
+The expected pre-repair test failures and baseline lint failure have exact
+sanitized commands and results in before.txt and lint.txt respectively.

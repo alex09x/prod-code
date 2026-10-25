@@ -61,6 +61,30 @@ pub(crate) fn status_fits(status: &StatusResponse, engine: Option<&str>, os: Opt
         && os.is_none_or(|os| runs_os(status, os))
 }
 
+/// Plain work leaves a developer's Mac once a compatible, unpressured non-Mac
+/// answers again. Probe directly rather than trusting a stale gossip placement.
+pub(crate) async fn prefer_non_mac(
+    nodes: &[SocketAddr],
+    current: SocketAddr,
+    status: &StatusResponse,
+    engine: Option<&str>,
+    os: Option<&str>,
+) -> bool {
+    if os.is_some() || !runs_os(status, "macos") {
+        return false;
+    }
+    for candidate in nodes.iter().copied().filter(|node| *node != current) {
+        if let Ok(other) = node_status(candidate).await
+            && status_fits(&other, engine, os)
+            && !runs_os(&other, "macos")
+            && other.host.pressure().is_none()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether a gateway runs `os` (`macos`, `linux`). One too old to report its platform does not.
 pub fn runs_os(status: &StatusResponse, os: &str) -> bool {
     status

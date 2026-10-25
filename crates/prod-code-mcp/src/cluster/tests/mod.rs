@@ -11,4 +11,5 @@
 mod discovery;
 mod helpers;
 mod placement;
+mod route_regressions;
 mod routing;

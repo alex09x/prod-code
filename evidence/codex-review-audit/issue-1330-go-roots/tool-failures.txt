@@ -1,0 +1,13 @@
+Command:
+prod-code def --remote <linux-build-node> --symbol engine_project --symbol engine_for_path --symbol checkout_engine_os
+
+The process exited 0. The first two symbol definitions were returned, but the
+third guessed symbol lookup printed:
+Error: no symbol named `checkout_engine_os` in the workspace index (try code_symbols with a shorter name)
+
+No symbol with that guessed name was required. Bounded fallback: the same shell
+invocation read the explicit routing source window with:
+sed -n '1,160p' crates/prod-code-mcp/src/cluster/routing.rs
+That showed checkout_node_in and its engine-gated cgo call. No publication was
+made. The expected red regression and strict-lint failures are recorded in
+before.txt and lint.txt respectively; no failed check is represented as passed.

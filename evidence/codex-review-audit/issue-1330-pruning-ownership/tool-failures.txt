@@ -1,0 +1,19 @@
+Discovery attempt (not a test):
+git diff --stat f6063f7399342f220c93a2013e8e99be82749633 && rg --files evidence/codex-review-audit crates/prod-code-mcp/src | rg '(local_go|cgo|module|checkout|boundary)'
+
+Exact tool error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.. Command: git diff --stat f6063f7399342f220c93a2013e8e99be82749633 && rg --files evidence/codex-review-audit crates/prod-code-mcp/src | rg '(local_go|cgo|module|checkout|boundary)'
+
+Bounded fallback, terminal exit 0:
+git diff --stat f6063f7399342f220c93a2013e8e99be82749633 && ls evidence/codex-review-audit && prod-code outline crates/prod-code-mcp/src/sync/engine --max-bytes 18000 && prod-code outline crates/prod-code-mcp/src/cluster/tests --max-bytes 14000
+
+The fallback returned the engine and cluster test outlines, including local_go.rs,
+cgo.rs, route_local_deps.rs and route_local_deps_review.rs, with confirmed lines.
+No guessed paths were used after the rejection. No issue was published under the
+bounded worker's explicit no-publication contract.
+
+Expected red regression run: before.txt records its exact command/output and
+terminal exit 101 (0 passed, 3 failed); the passing final gate is after.txt.
+Strict lint failure: lint.txt records its exact sanitized command, CLI exit 1,
+compiler exit 101 and complete diagnostic set; unchanged baseline verified in
+lint-baseline-files.json. Neither failed check is reported as passed.

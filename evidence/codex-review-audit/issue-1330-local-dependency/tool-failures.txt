@@ -1,0 +1,22 @@
+1. Exact attempted discovery call (no command executed):
+prod-code def --help
+prod-code outline crates/prod-code-mcp/src/sync/engine/cgo.rs
+rg --files evidence/codex-review-audit crates/prod-code-mcp/src/cluster crates/prod-code-mcp/src/sync/engine | head -90
+
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+
+Bounded fallback: prod-code outline crates/prod-code-mcp/src/sync/engine/cgo.rs; prod-code outline crates/prod-code-mcp/src/cluster; ls evidence/codex-review-audit. Observed terminal exit 0.
+
+2. Exact failed search:
+prod-code grep 'replace|go.mod|imports' crates/prod-code-core/src
+Error: search path does not exist: <assigned-worktree>/crates/prod-code-core/src
+
+Bounded fallback: prod-code grep 'replace|parse_import|go.mod' crates/prod-code-mcp/src/sync and prod-code grep 'parse_go|local_replace|GoModule' crates. Observed terminal exit 0.
+
+3. Exact failed search:
+prod-code grep 'go|comment|mask' crates/prod-code-mcp/src/source.rs
+Error: search path does not exist: <assigned-worktree>/crates/prod-code-mcp/src/source.rs (did you mean crates/prod-code-mcp/src/search.rs?)
+
+Bounded fallback: prod-code grep 'pub.*(tokens|lex)|pub.*mask' crates/prod-code-mcp/src --max-results 35, then prod-code outline crates/prod-code-mcp/src/safe_delete_go/lex.rs and the explicit source window for opaque_end. Observed terminal exit 0. Reused that existing lexer.
+
+Expected red test failure and strict lint failure are retained separately in before.txt and lint.txt. No issue publication or messages were performed under the task's explicit prohibition.

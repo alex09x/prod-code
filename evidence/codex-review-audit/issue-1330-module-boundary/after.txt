@@ -1,0 +1,60 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --lib cluster::
+Observed terminal exit: 0
+
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.74s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 46 tests
+test cluster::tests::discovery::choose_best_node_picks_lowest_congestion_score ... ok
+test cluster::parse::tests::runtime_paths_2_parse_numeric_remotes_and_errors ... ok
+test cluster::parse::tests::runtime_paths_2_discovery_seed_inputs_deduplicate_and_ignore_modes ... ok
+test cluster::tests::discovery::default_loopback_remote_falls_back_to_remembered_placement_when_dead ... ok
+test cluster::tests::placement::the_public_pick_refuses_an_empty_node_list_before_reading_any_placement ... ok
+test cluster::tests::routing::engine_support_matches_labelled_entries ... ok
+test cluster::rebalance::tests::runtime_paths_2_rebalance_view_filters_and_formats_migration ... ok
+test cluster::tests::routing::parses_lists_and_dedups ... ok
+test cluster::tests::placement::coverage_w3_pick_lists_reachable_nodes_without_the_required_os ... ok
+test cluster::tests::routing::parses_omitted_port_with_default ... ok
+test cluster::tests::routing::quietest_prefers_low_load_then_rendezvous_order ... ok
+test cluster::tests::routing::rendezvous_is_stable_and_spreads ... ok
+test cluster::rebalance::tests::runtime_paths_2_rebalance_hysteresis_empty_and_pressure_pools ... ok
+test cluster::placement::tests::runtime_paths_2_placement_updates_preserve_other_workspaces ... ok
+test cluster::tests::placement::retains_remembered_placement_when_single_seed_unsupported_or_down ... ok
+test cluster::tests::discovery::pick_node_with_rebalances_when_remembered_node_is_congested ... ok
+test cluster::tests::routing::test_single_node_refuses_when_it_does_not_serve_requested_engine ... ok
+test cluster::tests::placement::coverage_w2_pick_refuses_missing_engines_and_replaces_absent_placement ... ok
+test cluster::tests::placement::a_node_short_of_disk_is_passed_over_without_a_cluster_view ... ok
+test cluster::rebalance::tests::runtime_paths_2_pick_rebalances_remembered_congested_node_and_saves_choice ... ok
+test cluster::tests::routing::another_checkout_is_routed_to_its_own_node ... ok
+test cluster::tests::routing::a_path_in_a_nested_project_names_its_engine ... ok
+test cluster::tests::route_regressions::placement::issue_1330_remembered_mac_moves_when_linux_returns ... ok
+test cluster::tests::route_regressions::placement::issue_1330_recommendation_respects_preference_and_pressure ... ok
+test cluster::tests::placement::a_checkout_that_needs_macos_is_placed_on_a_macos_node ... ok
+test cluster::tests::routing::test_route_in_routes_root_swift_project_away_from_incompatible_default_node ... ok
+test cluster::tests::routing::test_route_in_routes_swift_test_directory_to_swift_node ... ok
+test cluster::tests::route_regressions::issue_1330_nested_cgo_fallback ... ok
+test cluster::tests::routing::a_swift_path_is_routed_to_the_node_that_serves_swift ... ok
+test cluster::tests::route_regressions::issue_1330_nested_cgo_default ... ok
+test cluster::tests::routing::test_nested_engine_does_not_misclassify_rust_dirs_with_workspace_as_starlark ... ok
+test cluster::tests::route_regressions::issue_1330_ordinary_go_and_selected_nested_module ... ok
+test cluster::routing::tests::runtime_paths_2_routing_unknown_projects_and_directory_engine_selection ... ok
+test cluster::tests::route_regressions::issue_1330_portable_parent_excludes_independent_child_module ... ok
+test cluster::tests::placement::plain_work_keeps_off_a_macos_node_while_another_node_serves_it ... ok
+test cluster::tests::route_regressions::issue_1330_os_probe_error_single ... ok
+test cluster::tests::discovery::unreachable_node_failover_avoids_macos_when_linux_peer_available ... ok
+test cluster::tests::routing::parses_auto_discovery_seeds ... ok
+test cluster::rebalance::tests::runtime_paths_2_rebalance_direct_probe_and_unreachable_current ... ok
+test cluster::tests::placement::no_node_reachable_names_why_the_first_did_not_answer ... ok
+test cluster::tests::placement::an_os_requirement_with_no_node_answering_names_every_node ... ok
+test cluster::tests::route_regressions::issue_1330_os_probe_error_multiple ... ok
+test cluster::tests::discovery::discover_nodes_preserves_remembered_placement_when_seed_view_omits_it ... ok
+test cluster::tests::discovery::explicit_remote_does_not_fall_back_to_remembered_placement ... ok
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+test cluster::tests::placement::picks_alive_node_and_remembers_it ... ok
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+test cluster::tests::placement::a_remembered_node_that_restarts_keeps_the_workspace ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 1363 filtered out; finished in 14.94s
+
+[prod-code exec] exit 0 in 23.1s (server 22.8s, cpu 12.5s user 2.4s sys, peak 1817 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)

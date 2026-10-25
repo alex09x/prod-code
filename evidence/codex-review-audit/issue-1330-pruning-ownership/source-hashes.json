@@ -1,0 +1,27 @@
+{
+  "repair_input": "e2578113ec9038ff22a5fff5d51563a9b9ab1ecc",
+  "before": {
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "1cc45ce19dabe77cbb4b28f5dfd58b13b053ffcbd71494356307548ccb3cc515",
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "9c7ca2574c4dac67a20419b2cf13351b00b098c07570ae26b7ad9be939bf8dd0",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_pruning.rs": "de052eafff380b298be431b9bc6c463c2087f382aea5ef2bfd4c824c9c53bb73"
+  },
+  "before_production_matches_repair_input": {
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": true,
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": true
+  },
+  "final_sources": {
+    "crates/prod-code-mcp/src/sync/engine/local_go.rs": "9ff5eca9a45ec467b440e0a7bc0f593ece66e479c8bbba09a128301f831e8f1c",
+    "crates/prod-code-mcp/src/sync/engine/cgo.rs": "7fc302fc53aa43a5fb5834c16c457633f8d9a34a8ec4cb88a4f2eac3884dc787",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_review.rs": "1fc53a44d4b4d18b1398c251e517dc5854a3e680363f4ec14acd19d6abe65e4b",
+    "crates/prod-code-mcp/src/cluster/tests/route_local_deps_pruning.rs": "ab9cfd80b2dd2b378b9071a532054b2da397de5816fcdc33da9966b83f57ac22"
+  },
+  "evidence": {
+    "evidence/codex-review-audit/issue-1330-pruning-ownership/README.md": "f8eefc1c2d4b8a241197aa8101cac9e24fdb999e9734ad1ca64f030fc6feb755",
+    "evidence/codex-review-audit/issue-1330-pruning-ownership/after.txt": "9dbf033c93746876ab0b7e29f326727fd0bbd1ee50d2bce96a525deae4cfa2f2",
+    "evidence/codex-review-audit/issue-1330-pruning-ownership/before.txt": "618d5507bbd169eef79cd559f307767ab97d3de6dfebfa8e1438ab9d5092cd90",
+    "evidence/codex-review-audit/issue-1330-pruning-ownership/format.txt": "69048ecf7ebbe88c60c890c289f6ce7075afde5b488dd506e8fbc9af38b8a1c4",
+    "evidence/codex-review-audit/issue-1330-pruning-ownership/lint-baseline-files.json": "cb1039fba4970c47d396f8d12b325fe29945122433fa99c4fd5327f91c062738",
+    "evidence/codex-review-audit/issue-1330-pruning-ownership/lint.txt": "84e0cbdc4cfc17d8a69c6c8cf0aaf36252c1c79a705825dafbd57418a1eb0e74",
+    "evidence/codex-review-audit/issue-1330-pruning-ownership/tool-failures.txt": "6a46b9a61215f9c58ce94de03948999eb9bee5cfd23cf4d508fe5b033f3a8a1e"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "base_sha": "f6063f7399342f220c93a2013e8e99be82749633",
+  "head_at_verification": "f6063f7399342f220c93a2013e8e99be82749633",
+  "before_production_state": "Pinned base; new reproduction tests only. The final tests include additional cases not present in the red run.",
+  "sources": [
+    {
+      "path": "crates/prod-code-mcp/src/sync/engine/cgo.rs",
+      "base_sha256": "254730dd99d0e8bde9cb1414ec72bee7e334040b682c8ea2d10dc58e45e77dbf",
+      "final_sha256": "aa015530470bbaf7d0538d80ecf0d0c75e4adbaf3a581d4f729472ea0ca7aecd",
+      "lines": 278
+    },
+    {
+      "path": "crates/prod-code-mcp/src/sync/engine/local_go.rs",
+      "base_sha256": null,
+      "final_sha256": "bf86e457ed2bc2c1a1ccdf6ace8481eaed908eea3a3219020ee789f77807a55a",
+      "lines": 240
+    },
+    {
+      "path": "crates/prod-code-mcp/src/sync/engine/mod.rs",
+      "base_sha256": "8e01d8820f70130cbc0c3a88d5b910ae78bacd7652c09f5946305c08ebcdd544",
+      "final_sha256": "8765a5d1ea53adae9b54e122db811b955c4958b42356d4a98419e9cdae173495",
+      "lines": 20
+    },
+    {
+      "path": "crates/prod-code-mcp/src/cluster/tests/route_regressions.rs",
+      "base_sha256": "fdcbcae5a2daf280912649f63343eec4cc2375c0c35b1e8309b8a2336c33169d",
+      "final_sha256": "d624c9707a1915e7c903c96f9766ff2292105fc6f1ceeef958834f4f5ba4417c",
+      "lines": 309
+    },
+    {
+      "path": "crates/prod-code-mcp/src/cluster/tests/route_local_deps.rs",
+      "base_sha256": null,
+      "final_sha256": "5605aa7b57c504f27e3d6880c4be98627b0c57c20ec91bf5b6e9ff9a7715e6c4",
+      "lines": 212
+    }
+  ],
+  "evidence_sha256": {
+    "README.md": "f6dbcf4be66c326de6cf55130b47122a28886f274bbe755250ee65d09791d0e6",
+    "after.txt": "0c4ecf370d7d5e0aff3f8f0f35a596c826c852907764c40d942213b04bed9f29",
+    "before.txt": "519d7ce6e29bb725d54eb6c6916a45ab076793bbdefd9b19041472a98b8d61ae",
+    "format.txt": "c0b338d2ae0e96c1ad20a37204bc8638f07f1e73fdac945502bd9d8d491d6ac0",
+    "lint-baseline-files.json": "7aed7c8aba50d143bf0954ec4340df0ae50922d731367105ce3499b8ba35f47e",
+    "lint.txt": "0bb89a44d3bfde42d163da10a47e7ae687e711e2866bc03cbb87a54f2f22e64e",
+    "tool-failures.txt": "84d90a61c9e6eeca33642424cdf805a538d802f48f079ed7b9720128cec05d2a"
+  }
+}

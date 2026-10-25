@@ -1,0 +1,11 @@
+Command:
+prod-code outline crates/prod-code-mcp/src/cluster/routing.rs && git diff 65c6e5a --stat && rg --files evidence/codex-review-audit crates/prod-code-mcp/src/cluster | sort
+
+Result: rejected before process execution by the PreToolUse hook.
+Exact error:
+Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+
+Bounded fallback, observed exit 0:
+prod-code outline crates/prod-code-mcp/src/cluster/routing.rs && git diff 65c6e5a --stat && git ls-files evidence/codex-review-audit crates/prod-code-mcp/src/cluster
+
+Other nonzero commands are preserved with their exact sanitized output in before.txt (expected regression reproduction, exit 101) and lint.txt (strict crate lint, CLI exit 1 / compiler exit 101).
