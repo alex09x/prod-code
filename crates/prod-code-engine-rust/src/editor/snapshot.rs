@@ -326,6 +326,8 @@ impl RustEngineSnapshot {
     /// does not answer.
     pub fn editor_request(&self, method: &str, params: &Value) -> Option<Result<Value>> {
         Some(match method {
+            "rust-analyzer/viewSyntaxTree" => self.view_syntax_tree(params),
+            "rust-analyzer/expandMacro" => self.expand_macro(params),
             "textDocument/completion" => self.completion(params),
             "completionItem/resolve" => self.resolve_completion(params),
             "textDocument/signatureHelp" => self.signature_help(params),
@@ -341,6 +343,8 @@ impl RustEngineSnapshot {
 
 /// The LSP methods [`RustEngineSnapshot::editor_request`] answers.
 pub const EDITOR_METHODS: &[&str] = &[
+    "rust-analyzer/viewSyntaxTree",
+    "rust-analyzer/expandMacro",
     "textDocument/completion",
     "completionItem/resolve",
     "textDocument/signatureHelp",

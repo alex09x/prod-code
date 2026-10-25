@@ -1,0 +1,35 @@
+   Compiling prod-code-gateway v0.3.41 (<build-checkout>/crates/prod-code-gateway)
+warning: field `temp` is never read
+  --> crates/prod-code-gateway/tests/common/native_rust.rs:31:9
+   |
+30 | pub struct Fixture {
+   |            ------- field in this struct
+31 |     pub temp: tempfile::TempDir,
+   |         ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prod-code-gateway` (test "native_rust_extensions") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.51s
+     Running tests/native_rust_extensions.rs (target/debug/deps/native_rust_extensions-bb44ec34bd97ef63)
+
+running 1 test
+REQUEST session=1 {"id":"syntax-baseline","jsonrpc":"2.0","method":"rust-analyzer/viewSyntaxTree","params":{"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 {"error":{"code":-32601,"message":"rust-analyzer/viewSyntaxTree is not supported by prod-code for Rust"},"id":"syntax-baseline","jsonrpc":"2.0"}
+REQUEST session=1 {"id":1352,"jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":24,"line":1},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 {"error":{"code":-32601,"message":"rust-analyzer/expandMacro is not supported by prod-code for Rust"},"id":1352,"jsonrpc":"2.0"}
+
+thread 'native_extensions_answer_through_gateway_dispatch' (1349139) panicked at crates/prod-code-gateway/tests/native_rust_extensions.rs:37:9:
+{"error":{"code":-32601,"message":"rust-analyzer/viewSyntaxTree is not supported by prod-code for Rust"},"id":"syntax-baseline","jsonrpc":"2.0"}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test native_extensions_answer_through_gateway_dispatch ... FAILED
+
+failures:
+
+failures:
+    native_extensions_answer_through_gateway_dispatch
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 2.06s
+
+error: test failed, to rerun pass `-p prod-code-gateway --test native_rust_extensions`
+[prod-code exec] exit 101 in 5.1s (server 4.7s, cpu 3.5s user 1.9s sys, peak 1503 MB) on node <Linux-build-node>, copy <build-path> (linux x86_64)

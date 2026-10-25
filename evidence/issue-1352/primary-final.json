@@ -1,0 +1,176 @@
+{
+  "candidate": "9d700b42d6ae8372ae9b189bd2c915717ec63539",
+  "endpoint_candidate": "5173c99935aa6fd9833cf71898778d3cc491a7db",
+  "delivery_base": "0807c8d52166ee88f6175d8bf499012e935f07fa",
+  "unchanged_candidate_files": [
+    {
+      "path": "crates/prod-code-engine-rust/src/editor/extensions.rs",
+      "sha256": "7631f480908bdd92f36787c3b1da9a29a8530d6b86a9fd552f40cb568b331baf"
+    },
+    {
+      "path": "crates/prod-code-engine-rust/src/editor/mod.rs",
+      "sha256": "03d26e1ac08bf0857d186e87ac880797a511883ff4cb813a650e0c0293b1eb2a"
+    },
+    {
+      "path": "crates/prod-code-engine-rust/src/editor/snapshot.rs",
+      "sha256": "dc020a4fadf6fa0353ddf30cb9ada6b58f33832dd19a8d953452e1ba9bd9418c"
+    },
+    {
+      "path": "crates/prod-code-gateway/src/lsp_handlers/editor.rs",
+      "sha256": "d10dc07eca8afc58226dac01505949bb4dc7e2e0f74f72bfff793ce87f3780a3"
+    },
+    {
+      "path": "crates/prod-code-gateway/src/lsp_handlers/mod.rs",
+      "sha256": "82577472c6e93fd12cdb02940220197641066aa52fe816e71fefe9434cbc2a6f"
+    },
+    {
+      "path": "crates/prod-code-gateway/src/lsp_handlers/native_extensions.rs",
+      "sha256": "e25aa3900c64716754b78b4e7196ecd03bb56dc9e5ce970aa02f5ceb8c200aca"
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/common/native_rust.rs",
+      "sha256": "6946488ad245fab3cd8dcb7f9363f0914c553054e4895380e022875334e36173"
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/common/native_rust/bridge.rs",
+      "sha256": "6bd9dc876c31941cae66f03dec42df74425909a5eeb5144d7ad30c59172d6973"
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/native_rust_extensions.rs",
+      "sha256": "412064ab7a50335b5c4bfaa265d235d515614200d8e5ce614f40131f7d80ff39"
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/native_rust_extensions/consumer.rs",
+      "sha256": "0d338ca8aa9347741cd0d403320059369b75380bec4adf4d4c8041f933d02895"
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/native_rust_extensions/views.rs",
+      "sha256": "76f1f77fdeb568d4a3a4553f60c2e554a1db0544cc69401011a81fd9d89eef6a"
+    },
+    {
+      "path": "evidence/issue-1352/README.md",
+      "sha256": "0a4a5721a0e2e6531501d94cf3a25dbff0fad17a7cd9c996df28df712576983a"
+    },
+    {
+      "path": "evidence/issue-1352/acceptance.txt",
+      "sha256": "71bf3c62adda7a50133b696b34e3493dc102332521397f27ea79aa8c513fa66a"
+    },
+    {
+      "path": "evidence/issue-1352/baseline.txt",
+      "sha256": "3c93266c6ec6084b4842a5de42173ea6190bf22eb5bff799c1114b1927dc3831"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/README.md",
+      "sha256": "287abcb9ed209cc5bebd631470ca4ab30b5da7b942e2e4d3e91a410ce59994ba"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/acceptance.txt",
+      "sha256": "377c5df94e71aea1bf857b8f35e5b7adb78b3ccb5ee4babd32d12783004be4a5"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/development.txt",
+      "sha256": "4bdcd1dcd8206b9feb1bf9f4c58f58c076ca2ec21c6017dd81f66ab1ad9e8b1e"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/format.txt",
+      "sha256": "ef085dd794fbbd87fbe49a6a2001ec7b6801e4244415db36301d3293f76d745c"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/lint.txt",
+      "sha256": "1c692798c9fb8acb9e00d355da5a47b07080d2c83c20f099bd8171d59da73818"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/original-compiler.txt",
+      "sha256": "7804af5d3ef1dfb127e9c9e40843329ba9702087a9171e536c57d2c30be4f628"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/original-runtime.txt",
+      "sha256": "eba31d915d7471098cc8e1871d33ed8be0ef6f1c7add957511b2dbf2bbe8d5c5"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/original.rs",
+      "sha256": "b43c8d036962348e4a70aa3b600c2a550a179840bf7798d5a53f6680564421ec"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/returned-compiler.txt",
+      "sha256": "2d4b8dc3818c69f2704c9029f932896f7592bfd0a02275284161c18f98b0c628"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/returned-runtime.txt",
+      "sha256": "eba31d915d7471098cc8e1871d33ed8be0ef6f1c7add957511b2dbf2bbe8d5c5"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/returned.rs",
+      "sha256": "ea06890c9d0f2a747c5cfad1bed67fb62641b22042b1adc7b441ea993834e756"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/source-hashes.json",
+      "sha256": "ce92f909dd45a9abf20d7c55b9539dbfe14ebb224c145e87b67ac1c4b3e2f06e"
+    },
+    {
+      "path": "evidence/issue-1352/consumer/tool-errors.txt",
+      "sha256": "f82251877c231151f30d38833a404ee13336058bb8b96002cd5736723c9dc851"
+    },
+    {
+      "path": "evidence/issue-1352/development.txt",
+      "sha256": "c57a6703b498c84dabab8733343a8ff48ab9e27496b1f551bb6bf36de1a3bd13"
+    },
+    {
+      "path": "evidence/issue-1352/edition.txt",
+      "sha256": "e4fd173619f1959c5b22e02b1896bea6e4860b910fba57703eaa6e3eb9dc0db5"
+    },
+    {
+      "path": "evidence/issue-1352/format.txt",
+      "sha256": "6bac19dee47b80786c908136a2559def9a87aea212f0d67a362b943d76549977"
+    },
+    {
+      "path": "evidence/issue-1352/initial-test-compile.txt",
+      "sha256": "52e56f7ab9db78740e1d56e635758d34d33aa0215062db5b22cd7ce757616ac6"
+    },
+    {
+      "path": "evidence/issue-1352/lint.txt",
+      "sha256": "c45a2877318724630a430f81d79a296cb7224a98b4dc17599f656698c018c2d1"
+    },
+    {
+      "path": "evidence/issue-1352/native-timing.txt",
+      "sha256": "448e824d99f202649dc84eec8ba808682780132792f2ccd0add92d6ce8e861f2"
+    },
+    {
+      "path": "evidence/issue-1352/short-deadline.txt",
+      "sha256": "1fc0af10ccf4cd3b935f0549732293b6b25980c7bc56fbcf056c6a7db5f8ed6d"
+    },
+    {
+      "path": "evidence/issue-1352/source-hashes.json",
+      "sha256": "b7b25837ecf2ff9849f86c5ad76ba558bf6be3e646661408fa3883d58bbd6a23"
+    },
+    {
+      "path": "evidence/issue-1352/tool-errors.txt",
+      "sha256": "714f44fae47d32fcee3afcf9e3870895f7e2b5129fcda41eb7cda40998007775"
+    }
+  ],
+  "independent_review": {
+    "task": 4240,
+    "commit": "54e9bd28f8a43b49317dbb01e4b2e019f7a9b5ae",
+    "decision": "approve",
+    "findings": 0
+  },
+  "primary_review": "All production endpoint changes, registration and bounded snapshot path inspected; protocol and consumer source/evidence hashes verified.",
+  "reused_checks": "Exact-source scoped formatting and non-deny lint from endpoint/consumer stages; engine1 and gateway56 existing warnings, not warnings-clean.",
+  "final_check": {
+    "command": "prod-code exec --timeout-secs 900 -- cargo test -p prod-code-gateway --test native_rust_extensions",
+    "exit": 0,
+    "passed": 6,
+    "failed": 0,
+    "test_seconds": 209.18,
+    "wall_seconds": 261.0,
+    "node_kind": "Linux x86_64",
+    "log_sha256": "94bf213cb447951a5ccc485f8180d03d5f85778b0e4a133912453d761fd1f812"
+  },
+  "limits": [
+    "Original baseline is -32601, not initial silent-timeout hypothesis.",
+    "Native compiler/dispatch proof uses declarative macros with build scripts/proc macro workers disabled.",
+    "Consumer TCP bridge uses same fixture disk on both ends and real semantic dispatch; it does not prove remote filesystem sync or production handshake.",
+    "Public consumer runtime equivalence covers inputs0,7,100 in edition2021 overflow-checking mode. Prior algorithmic evidence remains separate; no universal language certification.",
+    "No deployment or installed-client version change."
+  ]
+}

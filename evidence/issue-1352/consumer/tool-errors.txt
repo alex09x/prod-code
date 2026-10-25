@@ -1,0 +1,16 @@
+Read-only source-discovery failures (no compilation or mutation):
+
+1. Exact command:
+rg --files crates/gateway/tests crates/mcp/src evidence | rg 'native_rust|introduce|4203|extension' && prod-code exec --help
+PreToolUse hook rejected the command: Grep for text pattern `crates/gateway/tests` over source files is blocked. Use prod-code literal/regex text search instead.
+Fallback: git ls-files with path globs located the actual crate paths.
+
+2. Exact command:
+sed -n '1,140p' crates/prod-code-gateway/tests/native_rust_extensions/views.rs && sed -n '1,135p' crates/prod-code-mcp/src/introduce_variable/syntax.rs && sed -n '1,120p' crates/prod-code-mcp/src/diagnostics/validation.rs && sed -n '195,260p' crates/prod-code-mcp/src/session/connection.rs && git ls-files 'crates/prod-code-protocol/src/*sync*' 'crates/prod-code-gateway/src/state*'
+Exit 1: sed: crates/prod-code-mcp/src/diagnostics/validation.rs: No such file or directory
+Fallback: git ls-files 'crates/prod-code-mcp/src/diagnostics*' found validate/engine.rs and validate/single.rs.
+
+3. Exact command:
+sed -n '175,320p' crates/prod-code-protocol/src/messages/sync.rs && sed -n '145,235p' crates/prod-code-mcp/src/introduce_variable/purity.rs && sed -n '1,110p' crates/prod-code-gateway/Cargo.toml && sed -n '1,75p' crates/prod-code-gateway/tests/common/mod.rs
+Exit 1: sed: crates/prod-code-gateway/tests/common/mod.rs: No such file or directory
+Fallback: used the already-confirmed common/native_rust.rs helper directly.

@@ -1,0 +1,34 @@
+   Compiling prod-code-engine-rust v0.3.41 (<build-checkout>/crates/prod-code-engine-rust)
+   Compiling prod-code-gateway v0.3.41 (<build-checkout>/crates/prod-code-gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.67s
+     Running tests/native_rust_extensions.rs (target/debug/deps/native_rust_extensions-bb44ec34bd97ef63)
+
+running 5 tests
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+test native_extensions_answer_through_gateway_dispatch ... ok
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (40s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (50s elapsed)
+test native_trees_and_macros_use_private_session_overlays ... ok
+[prod-code exec] waiting for command output or exit; checking gateway connection (60s elapsed)
+test native_extensions_bound_invalid_inputs_and_unavailable_expansions has been running for over 60 seconds
+test views::native_extensions_respect_worktree_and_validation_views has been running for over 60 seconds
+test views::native_extensions_use_the_consumers_edition has been running for over 60 seconds
+[prod-code exec] waiting for command output or exit; checking gateway connection (70s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (80s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (90s elapsed)
+test views::native_extensions_respect_worktree_and_validation_views ... ok
+[prod-code exec] waiting for command output or exit; checking gateway connection (100s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (110s elapsed)
+test native_extensions_bound_invalid_inputs_and_unavailable_expansions ... ok
+[prod-code exec] waiting for command output or exit; checking gateway connection (120s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (130s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (140s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (150s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (160s elapsed)
+test views::native_extensions_use_the_consumers_edition ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 155.31s
+
+[prod-code exec] exit 0 in 160.7s (server 160.2s, cpu 161.1s user 6.5s sys, peak 1562 MB) on node <Linux-build-node>, copy <build-path> (linux x86_64)
