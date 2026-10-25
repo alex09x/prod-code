@@ -1,0 +1,13 @@
+Read/navigation failures in this repair attempt:
+
+Command: git diff --stat e74b152a0cc216daaf7f1c51fcaea89761f84b11 HEAD && rg --files evidence/codex-review-audit crates/prod-code-mcp/tests/exec_writeback_preservation* crates/prod-code-mcp/src/exec
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+Fallback: git diff --stat and git ls-files with the same named paths, plus prod-code outline.
+
+Command: gh api repos/alex09x/prod-code/issues/comments/4089582668 --jq .body
+Exit status: 1
+Output: {"message":"Not Found","documentation_url":"https://docs.github.com/rest/issues/comments#get-an-issue-comment","status":"404"}gh: Not Found (HTTP 404)
+Fallback: gh api repos/alex09x/prod-code/pulls/comments/4089582668 --jq .body succeeded.
+All five supplied IDs were successfully read using the pull-review-comment API.
+
+No new public issue or message was sent, as required by the task's bounded operating contract.

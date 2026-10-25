@@ -1,0 +1,13 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- target/debug/deps/exec_writeback_preservation-dbd9b2b2a3d73a22 ignored_outputs --nocapture
+Exit status: 0
+Purpose: capture new fixture stdout from the exact already-built acceptance binary; no compilation.
+Node kind: Linux build node; gateway OS metadata is simulated.
+
+running 1 test
+ignored poly=false: report="regenerated report" nested="regenerated nested report" deleted_exists=false renamed_exists=false removed_exists=false destination="rename bytes" new="new report" unchanged=true kept=["deleted.txt", "renamed.txt"] pulled=["report.txt", "remove.txt", "generated/nested.txt", "new.txt"]
+ignored poly=true: report="regenerated report" nested="regenerated nested report" deleted_exists=false renamed_exists=false removed_exists=false destination="rename bytes" new="new report" unchanged=true kept=["deleted.txt", "renamed.txt"] pulled=["report.txt", "remove.txt", "generated/nested.txt", "new.txt"]
+test ignored::ignored_outputs_update_and_preserve_local_mutations_in_both_runners ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.03s
+
+[prod-code exec] exit 0 in 0.4s (server 0.1s, cpu 0.0s user 0.0s sys, peak 27 MB) on node <linux-build-node>, copy <remote-workspace> (linux x86_64)

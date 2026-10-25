@@ -261,7 +261,7 @@ pub async fn run_exec(
         },
     )
     .await?;
-    let changed_code = outcome.changed_code();
+    let warning = outcome.platform_warning(&root);
     let exit = outcome.exit;
     if let Some(err) = &exit.error {
         anyhow::bail!("remote exec failed: {err}");
@@ -276,14 +276,12 @@ pub async fn run_exec(
     }
     if !outcome.kept_files.is_empty() {
         eprintln!(
-            "[prod-code exec] {} file(s) changed here while the command ran were kept, and the node's version was not written: {}",
+            "[prod-code exec] {} file(s) with changed or unverified local state were kept as they are; the node's version was not written: {}",
             outcome.kept_files.len(),
             outcome.kept_files.join(", ")
         );
     }
-    if let Some(warning) =
-        prod_code_mcp::exec::platform_warning(&root, exit.platform.as_deref(), &changed_code)
-    {
+    if let Some(warning) = warning {
         eprintln!("[prod-code exec] {warning}");
     }
     eprintln!(

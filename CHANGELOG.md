@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Exec Writeback Preservation** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1324):
+  Returned files preserve concurrent local deletions and renames, including ignored outputs and file-to-directory replacements. Unverified optional outputs stay untouched without blocking execution. Cross-platform warnings retain pre-write evidence and nested `cfg` predicates; only confirmed Rust formatter whitespace changes are exempted.
 - **MCP Stdin Reload Ownership** (`crates/prod-code-mcp`, #1325):
   Hot reload waits for outstanding worker reads before replacing the process. Eligible Unix pipes and sockets use cancellation-safe readiness reads; shared socket output flags remain unchanged, while uncertain shared inputs retain conservative read ownership.
 - **Report Privacy and Labels** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1323):

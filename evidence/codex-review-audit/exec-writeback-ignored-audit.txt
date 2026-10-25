@@ -1,0 +1,46 @@
+Issue #1324 follow-up: snapshot existing ignored exec outputs
+
+Starting worktree commit: 96c442494b6ab9dd43e59c244a4651341175e0dc.
+Acceptance/diff base: e74b152a0cc216daaf7f1c51fcaea89761f84b11.
+The five original fixes and their before/after logs remain in the starting commit.
+Original review comments were reread through the pull-review-comment API.
+This follow-up repairs the complete blocking review finding supplied with the task.
+
+Observed before production edits:
+- The new public-runner test fails on both run_remote and run_polyglot_remote.
+- Untouched ignored report.txt and generated/nested.txt remain stale.
+- Concurrent local deletion and rename are resurrected; a remote deletion is rejected.
+- Absent-at-start creation and unchanged-byte/mtime controls already pass.
+- Exact sanitized stdout and source hashes: exec-writeback-ignored-before.txt and
+  exec-writeback-ignored-before-hashes.json. Exit status 101 is intentional evidence.
+
+Cause and repair:
+- Writeback::capture supplemented only loose workspaces and used ignore defaults.
+- Snapshot eligible existing outputs in Git workspaces too; disable standard ignore
+  filters for this guard while retaining path exclusions and per-file size limits.
+- Bound supplementary output count/bytes independently of the Git source snapshot.
+- Transport, upload selection and watermark behavior are unchanged.
+- Production: crates/prod-code-mcp/src/exec/writeback.rs:81.
+- Deterministic request/response barriers and positive controls:
+  crates/prod-code-mcp/tests/exec_writeback_preservation/ignored.rs:15.
+
+Final evidence (Linux build node):
+- Scoped rustfmt: exit 0, exec-writeback-ignored-format.txt.
+- Strict scoped Clippy: exit 101, 103 diagnostics in 49 files unchanged against the
+  acceptance base. No diagnostic points at a changed file. Compilation stops in
+  the library before all selected test lint checks can complete. Strict lint is
+  not clean; baseline cleanup is outside this task. Full diagnostics retained in
+  exec-writeback-ignored-lint.txt.
+- Exact required acceptance argv: exit 0, 9 tests passed, exec-writeback-ignored-final.txt.
+  Local RUST_TEST_NOCAPTURE was not forwarded to the remote command. To retain actual
+  after-fixture stdout, the already-built acceptance binary ran only the new test
+  with --nocapture, exit 0; exec-writeback-ignored-after-fixture.txt. No extra build.
+- Both runners update untouched ignored outputs, preserve deletion/rename, apply
+  ordinary remote deletion/creation, and retain unchanged bytes/mtime.
+- Source hashes for the final complete source diff: exec-writeback-ignored-final-hashes.json.
+- Existing source-built CLI warning evidence is preserved in exec-writeback-cli-final.txt;
+  its consumer source was not changed in this follow-up. MCP rendering ran in acceptance.
+
+Opposite-OS gateway strings are simulated metadata, not actual cross-OS deployment.
+No dependencies, installs, publications, messages, delegated workers, infrastructure
+changes, other-worktree edits, broad tests or changes to prior evidence logs.

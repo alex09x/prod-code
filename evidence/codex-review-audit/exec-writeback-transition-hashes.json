@@ -1,0 +1,53 @@
+{
+  "base_sha": "0bef0e58de96e83ef03783d127c5bc75eeb7975a",
+  "pre_fix_tracked_source_sha256": {
+    "crates/prod-code-mcp/src/exec/writeback.rs": "887fb9c8969b8db106895374fa0bd137b550cfa3cb5f5ca351b03d4462183f3a",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "d509ac9735ebfb983b7b08c20bb17156ff68ce7ed67013cb5eb4613ab8fd45f0",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/support.rs": "ee7c919875145b585ab6efb8b1cef724f525c391e448dc60809b4ab29152544d"
+  },
+  "pre_fix_limits": "Before command used base production/support and only the initial new regression plus its module registration; its source was subsequently formatted and extended with three more tests.",
+  "final_source_sha256": {
+    "crates/prod-code-mcp/src/exec/writeback.rs": "3e83b2a78551be1c16776ed39d7f6fc943545deb2ea12a6c7040115fb974ef1d",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "bdef1845f0825bef3cc5616f9a64cc20ac57a3e11dbd1c045de5dc0f7f731a47",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/support.rs": "6e5c31083b95e46a8c48e8cd70993dd8f4edac4e7fde35d9e404d3ffe6bf3e14",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/transitions.rs": "d6d5c2c4afbe84355d8f569754ab7d129f6a23354624eed6ffc33ce58e96997b"
+  },
+  "fixture_bytes": {
+    "old report\n": {
+      "utf8": "old report\n",
+      "hex": "6f6c64207265706f72740a",
+      "sha256": "1eb61b4513b285380c48fe89d63c387b3d0230d122e0a5c646bb7fa359b39e9f"
+    },
+    "new child\n": {
+      "utf8": "new child\n",
+      "hex": "6e6577206368696c640a",
+      "sha256": "1c36491ee901de33662e643cd1a78eb8132dbef1b04ebd62658a8942f47f9d72"
+    },
+    "later child\n": {
+      "utf8": "later child\n",
+      "hex": "6c61746572206368696c640a",
+      "sha256": "53f9699004e815b5809a7f885cf28e48b0d3fb5637b37842843b4d437684ad45"
+    },
+    "later new\n": {
+      "utf8": "later new\n",
+      "hex": "6c61746572206e65770a",
+      "sha256": "54404c5d23194ba515973092621cac2ce462e2ab03bc01ebb05918bc58779759"
+    },
+    "local report\n": {
+      "utf8": "local report\n",
+      "hex": "6c6f63616c207265706f72740a",
+      "sha256": "e412fd4df720b76d64d5147785ec5f6644f804b05f59f25639fbed94436c1bde"
+    },
+    "sentinel\n": {
+      "utf8": "sentinel\n",
+      "hex": "73656e74696e656c0a",
+      "sha256": "b5f7e7d285029324d9b3acae19cc05099271454ac98bfc059a92b0581625cd51"
+    }
+  },
+  "new_log_sha256": {
+    "evidence/codex-review-audit/exec-writeback-transition-before.txt": "9ee2d8556281584dc155dd24deea0f91c8654459a9fb7f102cfbfa6e301d07d4",
+    "evidence/codex-review-audit/exec-writeback-transition-format.txt": "3c77823d4b51776aef6935e05382b178d6afa99a59dbc1bf88a77d85bf101a53",
+    "evidence/codex-review-audit/exec-writeback-transition-lint.txt": "63a16d2390989425d790b361a6544b0b93cd917bf83e3f8eb9622d173a000bc0",
+    "evidence/codex-review-audit/exec-writeback-transition-final.txt": "7be99485b92219f8064ad165794ce8926e0dbff31af99c2eb9a2787af8a174c5"
+  }
+}

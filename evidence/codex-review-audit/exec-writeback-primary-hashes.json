@@ -1,0 +1,68 @@
+{
+  "base": "b131b3b7655089defb73180a19e13328d25cd867",
+  "candidate": "0f496f920829d768d4f35be64d045cf74ee06951",
+  "source_sha256": {
+    "crates/prod-code-client/src/commands/exec.rs": "1c8a6125df1a9d4833e101dd578913527dd33987b569d55bffbcf3cdde01a493",
+    "crates/prod-code-mcp/src/exec/mod.rs": "428a95c303dca79b4a6d4456b4c42e8694c081250f70f75042df84e9f9bd5f3b",
+    "crates/prod-code-mcp/src/exec/platform.rs": "f11de08c5b6c12e904f9e900118b95d7e1e74cd7e63622687773e5cf63966e13",
+    "crates/prod-code-mcp/src/exec/runner.rs": "ff22b9de209f7100cd160509c2657716b0a03496bfa0be6815c06f282b613652",
+    "crates/prod-code-mcp/src/exec/runner_tests.rs": "2363fd2cdff5a9e5fac9f3237880a52628e9a5b09423af3e52e47ff6f74b36c0",
+    "crates/prod-code-mcp/src/exec/tests.rs": "7faa10806e847553697430e1859cca62ebe908d9b10618a6d2e20c9a98449894",
+    "crates/prod-code-mcp/src/exec/types.rs": "a8e3b1da1d7b1244274fb8a883cbd436b83c1efccf6bb739e4b62a6b438dccf4",
+    "crates/prod-code-mcp/src/tools/exec_handler.rs": "9e85e20718cea4be50b45aa03d4b3e5a41322e7e53d0bd48b2dc94971c0427c2",
+    "crates/prod-code-client/tests/exec_writeback_warning.rs": "b73ffe54b84faaacecc3edeffe6e72c27c4652ebbecf01c1a306934622c12155",
+    "crates/prod-code-mcp/src/exec/layout.rs": "f778e8c81d043df57b035664e9db113d4ad6b3764e08155b15b5ee96f5217fcb",
+    "crates/prod-code-mcp/src/exec/runner_tests/assertions.rs": "f881313eb8b8e08ecd8851c0c4b05fd55bfcec7677cf43119a3ef3d9b12c99d7",
+    "crates/prod-code-mcp/src/exec/writeback.rs": "3c7d3e9cace01866e8b5e833a8c96d6d90805cca275f3f218116a0c66c9f5c9f",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "72713bf26ea464281a26c1f5ab00d553034471c736554eecc96a4b7ffb94dd36",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/controls.rs": "bbc979d73bfc23d9d1eb4fd959f8070e3b2bbd3bd66f46a5bbb2b80a2ed911cd",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs": "5c07a9e8187759f7e29330286d9ee88fa84238bcab5ecf99e7a7dbe9f17dbd30",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/ignored.rs": "7feedec373ba1d2290951298508a4bed8a0e4c836974c4be73d80267b5ddf566",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/platform.rs": "dff331862af313b73d55f0ccdc58f4f24a35a0c8d3a210f05ee2ac5a9ee5eca0",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/preflight.rs": "b0b0d060a106c4caccda86cf0e371068006bcdac2262ca15c137eca990ba3ca3",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/preservation.rs": "76587d5efebc2ed99f9b56411d39c87f2319737fb985761cb8ee34b662f51d7e",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/rendering.rs": "adc27cd2575beed71d972d36682b0c97481f6fda3e17b6bebdc0a577d4e7eacc",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/roots.rs": "eff5b3240dd4cae5ec15a5c3def80015efa8299cf4ee0025dff62379b06f8a21",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/support.rs": "6e5c31083b95e46a8c48e8cd70993dd8f4edac4e7fde35d9e404d3ffe6bf3e14",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/transitions.rs": "d6d5c2c4afbe84355d8f569754ab7d129f6a23354624eed6ffc33ce58e96997b"
+  },
+  "unchanged_candidate_source": [
+    "crates/prod-code-mcp/src/exec/mod.rs",
+    "crates/prod-code-mcp/src/exec/platform.rs",
+    "crates/prod-code-mcp/src/exec/runner.rs",
+    "crates/prod-code-mcp/src/exec/runner_tests.rs",
+    "crates/prod-code-mcp/src/exec/tests.rs",
+    "crates/prod-code-client/tests/exec_writeback_warning.rs",
+    "crates/prod-code-mcp/src/exec/layout.rs",
+    "crates/prod-code-mcp/src/exec/runner_tests/assertions.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/controls.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/ignored.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/platform.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/preservation.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/rendering.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/roots.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/support.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/transitions.rs"
+  ],
+  "primary_changes": [
+    "crates/prod-code-client/src/commands/exec.rs",
+    "crates/prod-code-mcp/src/exec/types.rs",
+    "crates/prod-code-mcp/src/tools/exec_handler.rs",
+    "crates/prod-code-mcp/src/exec/writeback.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/preflight.rs"
+  ],
+  "final_results": [
+    "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 0.00s",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
+    "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1405 filtered out; finished in 11.06s",
+    "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s"
+  ],
+  "limits": [
+    "Loopback wire fixtures with real local files, not live cross-OS node execution",
+    "Supplementary snapshot data bounded; unverified paths are retained and reported, not assumed absent",
+    "Ordinary Rust formatter whitespace proven only; import/optional punctuation changes remain conservative warnings",
+    "No strict warning-clean status:103MCP+4client-library+22client-binary baseline warnings; two warnings in unchanged lines65/108 of changed commands/exec.rs"
+  ]
+}

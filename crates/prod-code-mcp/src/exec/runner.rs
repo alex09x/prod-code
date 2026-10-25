@@ -15,10 +15,11 @@ use anyhow::Result;
 use futures_util::SinkExt;
 use prod_code_protocol::{ExecRequest, RemoteExecRequest, RemoteExecStream, WireMessage};
 
-use super::platform::{edited_since, layout_only};
+use super::layout::rust_formatter;
 use super::progress::{ExecMonitor, prepare};
 use super::types::{PolyglotRemoteOutcome, RemoteOutcome};
-use crate::sync::{WorkspaceIdentity, apply_pulled_files_for, workspace_identity};
+use super::writeback::Writeback;
+use crate::sync::{WorkspaceIdentity, workspace_identity};
 
 /// Runs `command` in the server copy of `root`, calling `on_output(is_stderr, bytes)` for
 /// every chunk as it arrives. With `pull_changes`, files the command created, changed or
@@ -36,9 +37,7 @@ pub async fn run_remote(
 ) -> Result<RemoteOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
-    // Taken before the pre-flight sync: a file modified after this may not be what the node
-    // ran on, so the node's version must not replace it.
-    let started = std::time::SystemTime::now();
+    let mut writeback = Writeback::capture(root, pull_changes, rust_formatter(&command))?;
     let mut framed = prepare(remote, root, &identity, &mut on_output).await?;
     let mut monitor = ExecMonitor::new(timeout_secs);
     monitor
@@ -58,9 +57,6 @@ pub async fn run_remote(
         )
         .await?;
 
-    let mut pulled_files = Vec::new();
-    let mut relaid_files = Vec::new();
-    let mut kept_files = Vec::new();
     loop {
         match monitor.next(&mut framed, &mut on_output).await? {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
@@ -69,27 +65,9 @@ pub async fn run_remote(
                 }
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
-                let mut written = Vec::new();
-                for delta in changes.files {
-                    let local = root.join(&delta.relative_path);
-                    let current = std::fs::read(&local).ok();
-                    // Already the text here: a sync from this machine reached the node during
-                    // the run, and the command did not make it (#254).
-                    if current.as_deref() == delta.content.as_deref() {
-                        continue;
-                    }
-                    if edited_since(&local, started) {
-                        kept_files.push(delta.relative_path);
-                        continue;
-                    }
-                    if let (Some(old), Some(new)) = (&current, delta.content.as_deref())
-                        && layout_only(old, new)
-                    {
-                        relaid_files.push(delta.relative_path.clone());
-                    }
-                    written.push(delta);
+                if pull_changes {
+                    writeback.apply(root, &remote.to_string(), changes.files)?;
                 }
-                pulled_files.extend(apply_pulled_files_for(root, &remote.to_string(), &written)?);
             }
             Some(Ok(WireMessage::ExecExit(exit))) => {
                 let ws_name = identity.base.as_deref().unwrap_or(&identity.name);
@@ -101,9 +79,10 @@ pub async fn run_remote(
                     .await;
                 return Ok(RemoteOutcome {
                     exit,
-                    pulled_files,
-                    relaid_files,
-                    kept_files,
+                    pulled_files: writeback.pulled,
+                    relaid_files: writeback.relaid,
+                    kept_files: writeback.kept,
+                    platform_files: writeback.platform_files,
                 });
             }
             Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
@@ -111,10 +90,10 @@ pub async fn run_remote(
             // A reset from a keepalive probe lands here too: the node went away without a
             // close, and whether the command finished there cannot be known (#256).
             Some(Err(e)) => {
-                if !pulled_files.is_empty() {
+                if !writeback.pulled.is_empty() {
                     anyhow::bail!(
                         "lost the connection to the gateway after receiving and applying {} changed file(s) ({e}); the command's exit code is unknown",
-                        pulled_files.len()
+                        writeback.pulled.len()
                     );
                 } else {
                     anyhow::bail!(
@@ -123,10 +102,10 @@ pub async fn run_remote(
                 }
             }
             None => {
-                if !pulled_files.is_empty() {
+                if !writeback.pulled.is_empty() {
                     anyhow::bail!(
                         "gateway closed the connection after sending {} changed file(s); the command's exit code is unknown",
-                        pulled_files.len()
+                        writeback.pulled.len()
                     );
                 } else {
                     anyhow::bail!(
@@ -145,7 +124,9 @@ pub async fn run_polyglot_remote(
     mut on_stream: impl FnMut(RemoteExecStream),
 ) -> Result<PolyglotRemoteOutcome> {
     let identity: WorkspaceIdentity = workspace_identity(root);
-    let started = std::time::SystemTime::now();
+    let pull_changes = req.pull_changes;
+    // Structured check/test/lint actions are not evidence of a formatter-only command.
+    let mut writeback = Writeback::capture(root, pull_changes, false)?;
     let mut progress = |stderr, data: &[u8]| {
         on_stream(RemoteExecStream::Chunk(prod_code_protocol::ExecChunk {
             stderr,
@@ -158,9 +139,6 @@ pub async fn run_polyglot_remote(
         .send(&mut framed, WireMessage::RemoteExecRequest(req))
         .await?;
 
-    let mut pulled_files = Vec::new();
-    let mut relaid_files = Vec::new();
-    let mut kept_files = Vec::new();
     loop {
         let mut progress = |stderr, data: &[u8]| {
             on_stream(RemoteExecStream::Chunk(prod_code_protocol::ExecChunk {
@@ -173,25 +151,9 @@ pub async fn run_polyglot_remote(
                 on_stream(stream_ev);
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
-                let mut written = Vec::new();
-                for delta in changes.files {
-                    let local = root.join(&delta.relative_path);
-                    let current = std::fs::read(&local).ok();
-                    if current.as_deref() == delta.content.as_deref() {
-                        continue;
-                    }
-                    if edited_since(&local, started) {
-                        kept_files.push(delta.relative_path);
-                        continue;
-                    }
-                    if let (Some(old), Some(new)) = (&current, delta.content.as_deref())
-                        && layout_only(old, new)
-                    {
-                        relaid_files.push(delta.relative_path.clone());
-                    }
-                    written.push(delta);
+                if pull_changes {
+                    writeback.apply(root, &remote.to_string(), changes.files)?;
                 }
-                pulled_files.extend(apply_pulled_files_for(root, &remote.to_string(), &written)?);
             }
             Some(Ok(WireMessage::RemoteExecResult(result))) => {
                 let _ = framed
@@ -201,18 +163,19 @@ pub async fn run_polyglot_remote(
                     .await;
                 return Ok(PolyglotRemoteOutcome {
                     result,
-                    pulled_files,
-                    relaid_files,
-                    kept_files,
+                    pulled_files: writeback.pulled,
+                    relaid_files: writeback.relaid,
+                    kept_files: writeback.kept,
+                    platform_files: writeback.platform_files,
                 });
             }
             Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
             Some(Ok(other)) => anyhow::bail!("unexpected message during remote exec: {other:?}"),
             Some(Err(e)) => {
-                if !pulled_files.is_empty() {
+                if !writeback.pulled.is_empty() {
                     anyhow::bail!(
                         "lost the connection to the gateway after receiving and applying {} changed file(s) ({e}); the command's exit code is unknown",
-                        pulled_files.len()
+                        writeback.pulled.len()
                     );
                 } else {
                     anyhow::bail!(
@@ -221,10 +184,10 @@ pub async fn run_polyglot_remote(
                 }
             }
             None => {
-                if !pulled_files.is_empty() {
+                if !writeback.pulled.is_empty() {
                     anyhow::bail!(
                         "gateway closed the connection after sending {} changed file(s); the command's exit code is unknown",
-                        pulled_files.len()
+                        writeback.pulled.len()
                     );
                 } else {
                     anyhow::bail!(

@@ -1,0 +1,5 @@
+Command (endpoint sanitized): prod-code exec --remote <configured Linux gateway> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/exec/writeback.rs crates/prod-code-mcp/tests/exec_writeback_preservation.rs crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs
+[prod-code exec] 2 file(s) changed by the command written back: crates/prod-code-mcp/src/exec/writeback.rs, crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs
+[prod-code exec] exit 0 in 0.4s (server 0.1s, cpu 0.0s user 0.0s sys, peak 38 MB) on node <configured Linux gateway>, copy <remote workspace> (linux x86_64)
+
+Exit status: 0

@@ -1,0 +1,5 @@
+{
+  "crates/prod-code-mcp/src/exec/writeback.rs": "6a71e1ddcd63f985fa2628721b62ae54a67fbebd323aee1341a2feff550a7a21",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation/ignored.rs": "3118fb8de690421808cd1025ccd8caecf922da553eb3c252938ee25849ead578",
+  "crates/prod-code-gateway/src/seed_cache/build_cache.rs": "6b71c592fc7ef86c9613d2d5679e849b2ed1edd44fb17ec1dbff00bafd16d7fa"
+}

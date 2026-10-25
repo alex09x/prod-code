@@ -123,7 +123,7 @@ pub(crate) async fn handle_exec(
         |_, data| tail.push(data),
     )
     .await?;
-    let changed_code = outcome.changed_code();
+    let warning = outcome.platform_warning(workspace_root);
     let exit = outcome.exit;
     if exit.error.is_none() {
         crate::exec::remember_exec_node(workspace_root, remote);
@@ -162,14 +162,12 @@ pub(crate) async fn handle_exec(
     }
     if !outcome.kept_files.is_empty() {
         text.push_str(&format!(
-            "[{} file(s) changed here while the command ran were kept, and the node's version was not written: {}]\n",
+            "[{} file(s) with changed or unverified local state were kept as they are; the node's version was not written: {}]\n",
             outcome.kept_files.len(),
             outcome.kept_files.join(", ")
         ));
     }
-    if let Some(warning) =
-        crate::exec::platform_warning(workspace_root, exit.platform.as_deref(), &changed_code)
-    {
+    if let Some(warning) = warning {
         text.push_str(&format!("[{warning}]\n"));
     }
     text.push_str(&tail.text());

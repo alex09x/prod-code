@@ -1,0 +1,20 @@
+Read-only discovery failures; no test or implementation failures are omitted.
+
+1. Command rejected before execution:
+prod-code outline crates/prod-code-mcp/src/exec/writeback.rs && git log -3 --oneline && rg --files evidence/codex-review-audit crates/prod-code-mcp/tests/exec_writeback_preservation* && sed -n '1,90p' crates/prod-code-mcp/src/exec/writeback.rs
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes
+through prod-code: grep, rg, find and recursive scans over source are blocked.
+Fallback: ran the same outline and explicitly named slice, using git ls-files for
+the tracked file inventory. That foreground command exited 0.
+
+2. Command:
+prod-code outline crates/prod-code-gateway/src/seed_cache.rs
+Error: cannot outline: file does not exist:
+crates/prod-code-gateway/src/seed_cache.rs (did you mean
+`crates/prod-code-gateway/src/seed_cache/mod.rs`?)
+The enclosing sequential command stopped with exit 1. Fallback: outlined the exact
+mod.rs path supplied by the error, then inspected the already documented explicit
+build_cache.rs window. No guessed replacement path or retry loop was used.
+
+Public issue publication is excluded by this task's operating scope. These are
+recorded discovery errors, not new product failures requiring infrastructure work.

@@ -1,0 +1,63 @@
+Issue: #1324; bounded repair on base 1b75edaae05724bd9e6f0f1746060469a8744109.
+
+Observed before production edits
+The deterministic request/response barrier places local deletion/rename after initial
+capture and before the fake endpoint returns deltas. Both public runners, independently
+for ignored artifacts/ and results/, kept ordinary remote updates and deletions while
+resurrecting locally removed/renamed files. Genuine new outputs were already accepted.
+Exact observed byte arrays and all four cases are in
+exec-writeback-directories-before.txt:160-163; the target exited 101 at line 180.
+Initial fixture strings are retained in directories.rs:21-25 and returned bytes at 35-41.
+
+Demonstrated cause and boundary inspection
+The supplementary walk used is_synced_git_path, an upload-policy predicate excluding
+these directories. Removing that predicate is the causal change for the observed gap.
+Gateway seed_cache/build_cache.rs:204-233 walks outputs independently of upload policy,
+pruning node caches. Gateway runner/snapshot.rs:288-294 bounds returned content to 5 MiB;
+its deletion loop at 312-319 has no size bound. A large initial file may also shrink.
+Therefore neither upload eligibility nor the 10 MiB upload-size limit bounds identity.
+
+Repair
+writeback.rs:113-118 retains cache pruning without the upload predicate or size filter.
+Its supplementary snapshot still has a 10,000-path and 256 MiB total-content budget;
+read_limited at 34-64 checks metadata before allocation and caps reads if a file grows.
+Exceeding the budget fails preflight, without beginning execution. Unsupported links
+and paths disappearing during capture are explicitly unknown (138-157), not new paths.
+Unknown paths and descendants are retained conservatively during apply (186-190).
+Regular eligible outputs, including ignored artifacts/results, still receive writeback.
+No sync upload code, dependencies, gateway code, formatter proof, platform detection,
+warning rendering, or runner call sites changed. Expected-state refresh after a returned
+batch remains unchanged. Source deletion/rename identity and platform metadata remain.
+
+Verification
+Scoped remote rustfmt completed with exit 0 (exec-writeback-directories-format.txt).
+Scoped cargo clippy --no-deps completed with exit 0; it emitted 103 existing library
+warnings, with no diagnostic in changed sources (exec-writeback-directories-lint.txt).
+This is warning-level lint, not a claim that -D warnings passed; prior strict-lint
+evidence is unchanged. No broad workspace gates or unrelated tests were run.
+The final remote command ran the requested cargo test target, enabling only
+RUST_TEST_NOCAPTURE through the remote command environment to retain exact fixture bytes.
+exec-writeback-directories-final.txt:80 records 14 passed, 0 failed; line 84 records exit 0.
+It retains prior deletion/rename/edit, ignored generated-directory, cache-pruning,
+platform-warning, nested-cfg and formatter controls. New cases cover both ignored
+directories in both runners, old files of 5 MiB+1 and 10 MiB+1 shrinking or deleted,
+unknown file/directory links versus genuine new paths, and a 256 MiB+1 preflight failure.
+Expected caught unwrap panics in the oversize fixture represent asserted preflight
+errors, not failed tests. Every fake endpoint task is joined or aborted and joined.
+
+Execution scope
+The test binary and compiler actually executed on a Linux x86_64 build node. Fixtures
+use loopback fake protocol endpoints and reported macOS platform strings; no command
+was executed on macOS by those endpoints, and this is not a real gateway integration
+or infrastructure deployment test. The two runners under test are the public
+run_remote and run_polyglot_remote APIs used by support.rs. Remote endpoint addresses
+and workspace/home paths in new logs are sanitized; commands otherwise retain argv.
+
+Integrity
+Before/final SHA-256 manifests cover changed sources and the inspected gateway files.
+All pre-existing evidence logs are unchanged. New evidence uses only the
+exec-writeback-directories-* prefix. No commits, publication, messages, dependencies,
+installations, infrastructure actions, delegation, or other worktree changes were made.
+The final source files remain below 400 lines and retain the standard attribution.
+Tool-call failures and bounded fallbacks are recorded separately in
+exec-writeback-directories-tool-failures.txt.

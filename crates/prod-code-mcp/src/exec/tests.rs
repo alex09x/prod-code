@@ -55,13 +55,23 @@ fn a_formatter_s_rewrite_is_layout_and_an_edit_is_not() {
     let old = b"use b::B;\nuse a::A;\nfn f(x: u8,y: u8) { g(&mut win) }\n";
     let formatted = b"use a::A;\nuse b::B;\nfn f(x: u8, y: u8) {\n    g(&mut win,)\n}\n";
     let edited = b"use b::B;\nuse a::A;\nfn f(x: u8,y: u8) { g(&win) }\n";
-    assert!(layout_only(old, formatted));
+    assert!(
+        !layout_only(old, formatted),
+        "commas and import sorting require syntax proof"
+    );
+    assert!(layout_only(
+        b"fn f() { libc::open(); }",
+        b"fn f() {\n    libc::open();\n}\n"
+    ));
     assert!(!layout_only(old, edited));
     assert!(!layout_only(old, old), "the same text is not a rewrite");
     // rustfmt drops a closure's braces when its body is one expression (#244).
     let braced = b"x.is_some_and(|p| {\n    f(p)\n})\n";
     let unbraced = b"x.is_some_and(|p| f(p))\n";
-    assert!(layout_only(braced, unbraced));
+    assert!(
+        !layout_only(braced, unbraced),
+        "uncertain closure changes still warn"
+    );
     let outcome = RemoteOutcome {
         exit: ExecExit {
             exit_code: Some(0),
@@ -75,6 +85,7 @@ fn a_formatter_s_rewrite_is_layout_and_an_edit_is_not() {
         pulled_files: vec!["a.rs".into(), "b.rs".into()],
         relaid_files: vec!["a.rs".into()],
         kept_files: Vec::new(),
+        platform_files: Vec::new(),
     };
     assert_eq!(outcome.changed_code(), vec!["b.rs".to_string()]);
 }
