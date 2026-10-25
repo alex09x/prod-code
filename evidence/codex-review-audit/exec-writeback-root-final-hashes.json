@@ -1,0 +1,8 @@
+{
+  "crates/prod-code-mcp/src/exec/writeback.rs": "887fb9c8969b8db106895374fa0bd137b550cfa3cb5f5ca351b03d4462183f3a",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "d509ac9735ebfb983b7b08c20bb17156ff68ce7ed67013cb5eb4613ab8fd45f0",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs": "8d917440f4d3e9286b666d1ca6f9fda56248fe920ddc0d48d22fc25c4becdd3c",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation/roots.rs": "eff5b3240dd4cae5ec15a5c3def80015efa8299cf4ee0025dff62379b06f8a21",
+  "crates/prod-code-gateway/src/seed_cache/build_cache.rs": "6b71c592fc7ef86c9613d2d5679e849b2ed1edd44fb17ec1dbff00bafd16d7fa",
+  "crates/prod-code-gateway/src/runner/snapshot.rs": "bdca91cc699e2a06537489d31330158003f5a1bad62ef64e9e2226e7bf083fb3"
+}

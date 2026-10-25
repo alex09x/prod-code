@@ -1,0 +1,12 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- target/debug/deps/exec_writeback_preservation-dbd9b2b2a3d73a22 excluded_node_caches_do_not_exhaust_writeback_snapshot --nocapture
+Exit status: 0
+Purpose: export new fixture stdout from the already-built acceptance binary; no compilation.
+
+running 1 test
+cache poly=false: reached_gateway=true cache_unchanged=true report="regenerated report" deleted_exists=false kept=["generated/deleted.txt"] pulled=["generated/report.txt"]
+cache poly=true: reached_gateway=true cache_unchanged=true report="regenerated report" deleted_exists=false kept=["generated/deleted.txt"] pulled=["generated/report.txt"]
+test ignored::excluded_node_caches_do_not_exhaust_writeback_snapshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.35s
+
+[prod-code exec] exit 0 in 0.8s (server 0.4s, cpu 0.0s user 0.3s sys, peak 26 MB) on node <linux-build-node>, copy <remote-workspace> (linux x86_64)

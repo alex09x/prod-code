@@ -10,30 +10,12 @@
 
 use std::path::Path;
 
-/// Whether `new` has the same characters as `old` apart from whitespace, commas and braces, in
-/// any order, and is not the same text: what a formatter makes of a file. rustfmt re-wraps
-/// lines, adds trailing commas, sorts imports and drops the braces around a closure whose body
-/// is one expression (#244). A real edit, such as `&mut win` to `&win`, adds or removes other
-/// characters.
-pub fn layout_only(old: &[u8], new: &[u8]) -> bool {
-    let counts = |text: &[u8]| {
-        let mut counts = [0usize; 256];
-        for &b in text {
-            if !b.is_ascii_whitespace() && !matches!(b, b',' | b'{' | b'}') {
-                counts[b as usize] += 1;
-            }
-        }
-        counts
-    };
-    old != new && counts(old) == counts(new)
-}
+// Retain the original public module path as well as the crate-level export.
+pub use super::layout::layout_only;
 
 /// What in a file makes its meaning depend on the platform: conditional compilation on the
 /// target, and the C library, whose signatures differ between Linux and Apple (#140).
 const PLATFORM_MARKS: &[&str] = &[
-    "cfg(target_",
-    "cfg(unix)",
-    "cfg(windows)",
     "libc::",
     "#ifdef __APPLE__",
     "#if defined(__APPLE__)",
@@ -42,11 +24,34 @@ const PLATFORM_MARKS: &[&str] = &[
     "//go:build ",
 ];
 
+pub(super) fn platform_dependent(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    if PLATFORM_MARKS.iter().any(|mark| text.contains(mark)) {
+        return true;
+    }
+    // Conservatively recognize cfg/cfg_attr attributes and cfg! expressions, including
+    // nested not/any/all predicates. False positives warn; missing evidence would be silent.
+    static CFG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\bcfg(?:_attr)?\s*!?\s*\(").expect("constant cfg regex")
+    });
+    CFG.is_match(&text)
+        && (text.contains("target_") || text.contains("unix") || text.contains("windows"))
+}
+
 /// A warning for files a command rewrote on a node of another OS than this machine's, when
 /// they hold code whose meaning depends on the platform, or the checkout is an Apple project: a
 /// lint or a fix computed there can be wrong here, and it was written back as a success.
 /// `None` when the platforms match, nothing was written, or nothing looks platform-specific.
 pub fn platform_warning(root: &Path, node: Option<&str>, pulled: &[String]) -> Option<String> {
+    platform_warning_with_evidence(root, node, pulled, &[])
+}
+
+pub(super) fn platform_warning_with_evidence(
+    root: &Path,
+    node: Option<&str>,
+    pulled: &[String],
+    before: &[String],
+) -> Option<String> {
     let node = node?;
     let here = prod_code_protocol::platform();
     let os = |p: &str| p.split(' ').next().unwrap_or("").to_string();
@@ -56,8 +61,8 @@ pub fn platform_warning(root: &Path, node: Option<&str>, pulled: &[String]) -> O
     let marked: Vec<&String> = pulled
         .iter()
         .filter(|rel| {
-            std::fs::read_to_string(root.join(rel))
-                .is_ok_and(|text| PLATFORM_MARKS.iter().any(|m| text.contains(m)))
+            before.contains(rel)
+                || std::fs::read(root.join(rel)).is_ok_and(|text| platform_dependent(&text))
         })
         .collect();
     let apple = root.join("Package.swift").is_file()
@@ -101,12 +106,4 @@ pub fn subdir_of(root: &Path, dir: &Path) -> Option<String> {
         .collect::<Vec<_>>()
         .join("/");
     (!rel.is_empty()).then_some(rel)
-}
-
-/// Whether `path` was modified after `since`, on this machine's clock. A file that does not
-/// exist was not.
-pub(crate) fn edited_since(path: &Path, since: std::time::SystemTime) -> bool {
-    std::fs::symlink_metadata(path)
-        .and_then(|m| m.modified())
-        .is_ok_and(|modified| modified > since)
 }

@@ -1,0 +1,20 @@
+Failed discovery invocation (blocked before execution)
+Command:
+prod-code outline crates/prod-code-mcp/src/exec/writeback.rs; prod-code outline crates/prod-code-mcp/tests/exec_writeback_preservation.rs; rg --files crates/prod-code-mcp/tests/exec_writeback_preservation evidence/codex-review-audit
+Exact error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed..
+Bounded fallback: ran each prod-code outline command serially to terminal exit 0,
+then read explicit named files. No rg scan was executed.
+
+Mistyped directory listing subcommand
+Command: ls crates/prod-code-mcp/tests/exec_writeback
+Exact error: ls: crates/prod-code-mcp/tests/exec_writeback: No such file or directory
+The containing inspection invocation exited 0 because its last ls succeeded.
+Bounded fallback: used the exact child paths declared in the successfully read
+exec_writeback_preservation.rs module file; did not infer any file contents.
+
+Expected failing reproduction
+The remote directories::ignored_directories_have_initial_identity_in_both_runners
+test exited 101 before production edits; its full sanitized command/output and exact
+post-writeback bytes are preserved in exec-writeback-directories-before.txt.
+The completed target later exited 0 in exec-writeback-directories-final.txt.

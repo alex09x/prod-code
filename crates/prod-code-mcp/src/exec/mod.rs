@@ -12,10 +12,12 @@
 //! stream the output back. Shared by the CLI (`prod-code exec`) and the MCP tool `code_exec`.
 
 mod destination;
+mod layout;
 pub mod platform;
 mod progress;
 pub mod runner;
 pub mod types;
+mod writeback;
 
 #[cfg(test)]
 mod progress_tests;
@@ -25,6 +27,7 @@ mod runner_tests;
 mod tests;
 
 pub use destination::{last_exec_node, remember_exec_node};
-pub use platform::{layout_only, platform_warning, subdir_of};
+pub use layout::layout_only;
+pub use platform::{platform_warning, subdir_of};
 pub use runner::{run_polyglot_remote, run_remote};
 pub use types::{PolyglotRemoteOutcome, RemoteOutcome, TailBuffer};

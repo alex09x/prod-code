@@ -1,0 +1,25 @@
+{
+  "base": "e74b152a0cc216daaf7f1c51fcaea89761f84b11",
+  "algorithm": "SHA-256",
+  "sources": {
+    "crates/prod-code-client/src/commands/exec.rs": "25c87ee7abfc7d7b3dcd080d9f46d3c1fbcd6d2bd09ae040a57cf26d52c9684f",
+    "crates/prod-code-client/tests/exec_writeback_warning.rs": "b73ffe54b84faaacecc3edeffe6e72c27c4652ebbecf01c1a306934622c12155",
+    "crates/prod-code-mcp/src/exec/layout.rs": "f778e8c81d043df57b035664e9db113d4ad6b3764e08155b15b5ee96f5217fcb",
+    "crates/prod-code-mcp/src/exec/mod.rs": "428a95c303dca79b4a6d4456b4c42e8694c081250f70f75042df84e9f9bd5f3b",
+    "crates/prod-code-mcp/src/exec/platform.rs": "f11de08c5b6c12e904f9e900118b95d7e1e74cd7e63622687773e5cf63966e13",
+    "crates/prod-code-mcp/src/exec/runner.rs": "ff22b9de209f7100cd160509c2657716b0a03496bfa0be6815c06f282b613652",
+    "crates/prod-code-mcp/src/exec/runner_tests.rs": "2363fd2cdff5a9e5fac9f3237880a52628e9a5b09423af3e52e47ff6f74b36c0",
+    "crates/prod-code-mcp/src/exec/runner_tests/assertions.rs": "f881313eb8b8e08ecd8851c0c4b05fd55bfcec7677cf43119a3ef3d9b12c99d7",
+    "crates/prod-code-mcp/src/exec/tests.rs": "7faa10806e847553697430e1859cca62ebe908d9b10618a6d2e20c9a98449894",
+    "crates/prod-code-mcp/src/exec/types.rs": "0cf8cb04fe2dfac7726bdd40c8a51a8c50b18b877f3382ec13882877bc1447ee",
+    "crates/prod-code-mcp/src/exec/writeback.rs": "c4992ebbcfe26848f2d5988c059dbc09507ef69c6fb642e8b56b88be43bd7612",
+    "crates/prod-code-mcp/src/tools/exec_handler.rs": "544493775b29b2d9c10dadba876cfeba1df053bc846986f2065aa6c218f0a50c",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "c27f66cf55206bfc8a9cd5c0614ee33566e0cd1ea0277bca815bdabc2ca0e6b2",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/controls.rs": "bbc979d73bfc23d9d1eb4fd959f8070e3b2bbd3bd66f46a5bbb2b80a2ed911cd",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/ignored.rs": "7feedec373ba1d2290951298508a4bed8a0e4c836974c4be73d80267b5ddf566",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/platform.rs": "dff331862af313b73d55f0ccdc58f4f24a35a0c8d3a210f05ee2ac5a9ee5eca0",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/preservation.rs": "76587d5efebc2ed99f9b56411d39c87f2319737fb985761cb8ee34b662f51d7e",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/rendering.rs": "adc27cd2575beed71d972d36682b0c97481f6fda3e17b6bebdc0a577d4e7eacc",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/support.rs": "ee7c919875145b585ab6efb8b1cef724f525c391e448dc60809b4ab29152544d"
+  }
+}

@@ -1,0 +1,21 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-client --test exec_writeback_warning -- --nocapture
+Exit status: 0
+Node kind: Linux build node. Opposite-OS platform strings are simulated metadata, not a cross-OS deployment.
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>)
+   Compiling prod-code-client v0.3.41 (<remote-workspace>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.81s
+     Running tests/exec_writeback_warning.rs (target/debug/deps/exec_writeback_warning-fb9dfb11f8ffee1e)
+
+running 1 test
+CLI delete: warning=Some("[prod-code exec] warning: the command ran on macos aarch64 and this machine is linux x86_64; 1 of them hold code that depends on the platform (file.rs). A fix or a lint computed there can be wrong here (a `cfg` it never compiled, a libc signature that differs), so build the checkout here before trusting it.")
+CLI erase: warning=Some("[prod-code exec] warning: the command ran on macos aarch64 and this machine is linux x86_64; 1 of them hold code that depends on the platform (file.rs). A fix or a lint computed there can be wrong here (a `cfg` it never compiled, a libc signature that differs), so build the checkout here before trusting it.")
+CLI cfg: warning=Some("[prod-code exec] warning: the command ran on macos aarch64 and this machine is linux x86_64; 1 of them hold code that depends on the platform (file.rs). A fix or a lint computed there can be wrong here (a `cfg` it never compiled, a libc signature that differs), so build the checkout here before trusting it.")
+CLI reorder: warning=Some("[prod-code exec] warning: the command ran on macos aarch64 and this machine is linux x86_64; 1 of them hold code that depends on the platform (file.rs). A fix or a lint computed there can be wrong here (a `cfg` it never compiled, a libc signature that differs), so build the checkout here before trusting it.")
+CLI tuple: warning=Some("[prod-code exec] warning: the command ran on macos aarch64 and this machine is linux x86_64; 1 of them hold code that depends on the platform (file.rs). A fix or a lint computed there can be wrong here (a `cfg` it never compiled, a libc signature that differs), so build the checkout here before trusting it.")
+CLI braces: warning=Some("[prod-code exec] warning: the command ran on macos aarch64 and this machine is linux x86_64; 1 of them hold code that depends on the platform (file.c). A fix or a lint computed there can be wrong here (a `cfg` it never compiled, a libc signature that differs), so build the checkout here before trusting it.")
+CLI fmt: warning=None
+test cli_renders_deleted_and_rewritten_platform_warnings ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+[prod-code exec] exit 0 in 8.4s (server 8.1s, cpu 13.6s user 3.3s sys, peak 1467 MB) on node <linux-build-node>, copy <remote-workspace> (linux x86_64)

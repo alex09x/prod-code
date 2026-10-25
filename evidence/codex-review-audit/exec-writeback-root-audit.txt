@@ -1,0 +1,70 @@
+Issue #1324: remaining unknown_root_prefix review finding.
+
+Assigned checkout began at adf9ca90e12aaf0278fd20ebd76a801176754e2d;
+acceptance/diff base remains 1b75edaae05724bd9e6f0f1746060469a8744109.
+The starting commit already repairs ignored artifacts/results identity coverage.
+All earlier evidence files, including the original three failing ignored-output
+behaviors and five original repairs, are unchanged. Its directories regression
+and size/cache/unknown-path controls remain in the final target.
+
+Observed failure and expected behavior
+The new regression passes an actual directory symlink as the root directly to
+both public run_remote and run_polyglot_remote APIs. It does not canonicalize the
+alias through Workspace::root(). A deterministic request/response barrier orders
+local deletion/rename after capture and before returned changes.
+Before production edits both runners kept all 15 returned paths. Untouched source,
+ignored artifacts, and ignored results remained stale; remote deletion and genuine
+new output creation were blocked. Exact initial/final bytes are recorded in
+exec-writeback-root-before.txt:160-171, with exit 101 at line 188. The expected
+behavior is to apply those untouched updates/deletions/creations while preserving
+the concurrent local deletions and renames. The new source fixture and production
+hashes at reproduction time are in exec-writeback-root-before-hashes.json.
+
+Cause and repair
+A traversal-root directory symlink is emitted with symlink type and empty relative
+path. Recording that path as unknown makes every returned path match starts_with.
+This predicts the observed universal keep behavior. Skipping depth zero before
+tracking outputs is the only production change in this follow-up:
+crates/prod-code-mcp/src/exec/writeback.rs:123-126.
+The regression is roots.rs:15; root alias at 32-35, barrier at 64-79, byte and
+kept/pulled assertions at 80-104. Child directory/file symlinks remain conservative
+unknown paths; their existing regression passes in the final target.
+
+Boundary review
+Reinspected gateway seed_cache/build_cache.rs:204-233 and runner/snapshot.rs:284-322.
+The gateway walks artifacts/results independently of upload selection, prunes node
+caches, caps returned content at 5 MiB, and imposes no corresponding deletion-size
+limit. Existing large files may shrink. The prior fix keeps its separate bounded
+snapshot, cache pruning, and explicit unknown identities. This follow-up changes
+neither upload policy nor those protections. No server/sync redesign is included.
+
+Final validation
+One scoped remote rustfmt invocation completed with exit 0, retained in
+exec-writeback-root-format.txt:5. Scoped cargo clippy --no-deps exited 0, retained in
+exec-writeback-root-lint.txt:2000. All 103 warning message/location pairs exactly
+match exec-writeback-directories-lint.txt. No warning identifies a changed file;
+this is warning-level lint, not a strict -D warnings pass.
+The requested final cargo test -p prod-code-mcp --test exec_writeback_preservation
+ran through prod-code exec on the configured Linux node. The sole extra environment
+option RUST_TEST_NOCAPTURE=1 exposes exact fixture bytes without changing test scope.
+exec-writeback-root-final.txt:93 records 15 passed, 0 failed; line 97 records exit 0.
+The symlink-root case now applies nine eligible paths and preserves the six local
+deletion/rename paths across src, artifacts and results in each runner. The final
+byte arrays are at lines 35-37 and 54-56. Existing batches, metadata, nested-cfg,
+formatter, ordinary sources, ignored outputs, cache pruning, large-output shrink
+and deletion, and preflight budget controls pass in the same command.
+Expected caught panics in the oversize fixture assert preflight rejection and
+are not failed tests. Every fake endpoint task is joined or aborted and joined.
+
+Execution and integrity
+Compiler and tests actually executed on a Linux x86_64 build node. Loopback fake
+protocol endpoints merely report macOS platform strings; they do not run commands
+on macOS or validate a real gateway deployment. New logs sanitize endpoints and
+workspace/home paths. Exact argv otherwise appears at the top of each log.
+No other projects, infrastructure actions, installs, dependencies, publication,
+messages, delegated agents, or detached providers were used. No command remains
+running. Discovery failures and bounded fallbacks are preserved separately in
+exec-writeback-root-tool-failures.txt. Source hashes are in
+exec-writeback-root-final-hashes.json. Changed source files retain attribution and
+are 275, 27, 227, and 105 lines respectively (writeback, target, directories, roots).
+The server owns result commit creation; this worker did not commit, push, or merge.

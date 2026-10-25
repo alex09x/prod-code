@@ -1,0 +1,17 @@
+{
+  "base_sha": "1b75edaae05724bd9e6f0f1746060469a8744109",
+  "final_sha256": {
+    "crates/prod-code-mcp/src/exec/writeback.rs": "f366d092a3fffbc559688fbc02a5b0187657a3dc799ab372bcaf2213fdbf9471",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "05363c7d488ef40fb137496d3e50eb612b481e9ded8754e7026ba1be2e14e2b6",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs": "8d917440f4d3e9286b666d1ca6f9fda56248fe920ddc0d48d22fc25c4becdd3c",
+    "crates/prod-code-gateway/src/seed_cache/build_cache.rs": "6b71c592fc7ef86c9613d2d5679e849b2ed1edd44fb17ec1dbff00bafd16d7fa",
+    "crates/prod-code-gateway/src/runner/snapshot.rs": "bdca91cc699e2a06537489d31330158003f5a1bad62ef64e9e2226e7bf083fb3"
+  },
+  "base_sha256": {
+    "crates/prod-code-mcp/src/exec/writeback.rs": "c4992ebbcfe26848f2d5988c059dbc09507ef69c6fb642e8b56b88be43bd7612",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "c27f66cf55206bfc8a9cd5c0614ee33566e0cd1ea0277bca815bdabc2ca0e6b2",
+    "crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs": null,
+    "crates/prod-code-gateway/src/seed_cache/build_cache.rs": "6b71c592fc7ef86c9613d2d5679e849b2ed1edd44fb17ec1dbff00bafd16d7fa",
+    "crates/prod-code-gateway/src/runner/snapshot.rs": "bdca91cc699e2a06537489d31330158003f5a1bad62ef64e9e2226e7bf083fb3"
+  }
+}

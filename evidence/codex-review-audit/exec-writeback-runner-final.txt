@@ -1,0 +1,17 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --lib exec::runner_tests
+Exit status: 0
+Node kind: Linux build node.
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.87s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 5 tests
+test exec::runner_tests::run_remote_refuses_an_empty_command ... ok
+test exec::runner_tests::run_polyglot_remote_forwards_the_stream_and_writes_back_changed_files ... ok
+test exec::runner_tests::run_remote_streams_output_and_writes_back_changed_files ... ok
+test exec::runner_tests::run_polyglot_remote_names_what_is_unknown_when_the_stream_breaks ... ok
+test exec::runner_tests::run_remote_names_what_is_unknown_when_the_stream_breaks ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1396 filtered out; finished in 0.03s
+
+[prod-code exec] exit 0 in 9.3s (server 9.0s, cpu 14.9s user 2.7s sys, peak 1966 MB) on node <linux-build-node>, copy <remote-workspace> (linux x86_64)

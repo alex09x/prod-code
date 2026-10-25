@@ -1,0 +1,49 @@
+Read/navigation failures and bounded fallbacks (no public reports or messages sent):
+
+Command: gh api repos/alex09x/prod-code/issues/comments/4089582668 --jq '.body'
+Error: gh: Not Found (HTTP 404).
+Fallback: same comment ID retrieved successfully via repos/alex09x/prod-code/pulls/comments/<ID>.
+
+Command: gh api repos/alex09x/prod-code/issues/comments/4089582675 --jq '.body'
+Error: gh: Not Found (HTTP 404).
+Fallback: same comment ID retrieved successfully via repos/alex09x/prod-code/pulls/comments/<ID>.
+
+Command: gh api repos/alex09x/prod-code/issues/comments/4090292887 --jq '.body'
+Error: gh: Not Found (HTTP 404).
+Fallback: same comment ID retrieved successfully via repos/alex09x/prod-code/pulls/comments/<ID>.
+
+Command: gh api repos/alex09x/prod-code/issues/comments/4090678470 --jq '.body'
+Error: gh: Not Found (HTTP 404).
+Fallback: same comment ID retrieved successfully via repos/alex09x/prod-code/pulls/comments/<ID>.
+
+Command: gh api repos/alex09x/prod-code/issues/comments/4096573434 --jq '.body'
+Error: gh: Not Found (HTTP 404).
+Fallback: same comment ID retrieved successfully via repos/alex09x/prod-code/pulls/comments/<ID>.
+
+Command: prod-code grep 'pub.*(token|lex)' crates/prod-code-mcp/src --max-matches 30
+Error: unexpected argument '--max-matches' found; use --max-results.
+Command: prod-code grep 'lex|tokens' crates/prod-code-mcp/src/refactor/rust --max-matches 15
+Error: unexpected argument '--max-matches' found; use --max-results.
+Fallback: prod-code grep 'pub.*(token|lex)' crates/prod-code-mcp/src --max-results 15 succeeded.
+
+Command: sed -n '1,65p' crates/prod-code-mcp/src/tools/mod.rs
+Error: No such file or directory.
+Fallback: prod-code outline crates/prod-code-mcp/src/tools.rs and direct narrow read of that path succeeded.
+
+Command: prod-code outline crates/prod-code-mcp/src/syntax.rs
+Error: cannot outline: file does not exist.
+Fallback: prod-code grep for tokenizer declarations, then prod-code def --symbol opaque_at succeeded.
+
+Command: prod-code outline crates/prod-code-mcp/src/extract_function/tokenize.rs
+Error: cannot outline: file does not exist (suggested extract_function/tokens.rs).
+Fallback: prod-code outline crates/prod-code-mcp/src/extract_function/tokens.rs succeeded.
+
+Command: git diff --check
+Initial error: crates/prod-code-mcp/src/exec/platform.rs:107: new blank line at EOF.
+Fallback: the single final scoped rustfmt run removed it; final git diff --check passed.
+
+Blocked tool invocation (no shell commands executed): prod-code def --symbol apply_pulled_files_for --symbol collect_files --symbol RemoteExecResult; prod-code grep 'ra_ap_syntax|walkdir|syn =' --path crates/prod-code-mcp/Cargo.toml; sed -n '1,120p' crates/prod-code-mcp/Cargo.toml; sed -n '319,377p' crates/prod-code-mcp/src/exec/runner_tests.rs; sed -n '1,85p' crates/prod-code-mcp/tests/plumbing.rs; sed -n '1,95p' crates/prod-code-mcp/src/tools/exec_handler.rs; rg --files evidence/codex-review-audit | head -35
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code; grep, rg, find and recursive scans over source are blocked.
+Fallback: used the named-file reads and prod-code navigation with ls for the evidence directory.
+
+Test failures are retained separately: exec-writeback-before.txt (five reproduced baseline failures), exec-writeback-existing-first.txt (two loose-workspace deletion failures), exec-writeback-lint.txt (103 unchanged baseline diagnostics). Final acceptance and runner/CLI evidence record subsequent terminal zero exits.

@@ -1,0 +1,50 @@
+Issue #1324: supplementary writeback snapshot cache exclusions
+
+Starting commit: e4ac7c1f (prior five-defect repairs and ignored-output follow-up).
+Acceptance/diff base: e74b152a0cc216daaf7f1c51fcaea89761f84b11.
+All previous evidence logs are preserved without modification.
+All five supplied original comments were reread through the pull-review-comment API.
+
+Observed failure before production edits:
+- A Git workspace with 10,001 ignored .cache files fails before gateway connection.
+- Both run_remote and run_polyglot_remote report the supplementary safety-limit error.
+- Exact sanitized fixture output: exec-writeback-cache-before.txt (exit 101).
+- Production and reproducer source identities: exec-writeback-cache-before-hashes.json.
+
+Cause and repair:
+- Disabling standard ignore filters exposed node caches to the supplementary guard.
+- The gateway excludes those caches from writeback, so snapshotting them cannot
+  protect a returned delta but can exhaust the file/byte budget.
+- Prune every name excluded by gateway seed_cache::is_node_cache before reading or
+  counting entries. Keep the workspace root even when its own name matches a cache.
+- Retain the supplementary snapshot for eligible ignored outputs. The new public
+  runner fixture verifies ordinary ignored-output updates, concurrent local deletion,
+  exact kept_files/pulled_files evidence, and unchanged cache bytes in both runners.
+- No sync transport, watermark, dependencies or warning-consumer changes in this repair.
+
+Final evidence on a Linux build node:
+- Scoped rustfmt on the two changed Rust files: exit 0, exec-writeback-cache-format.txt.
+- Strict scoped Clippy: exit 101, 103 errors. Its 107 diagnostic locations cover 49
+  files, all byte-identical to the acceptance base; no changed source is implicated.
+  It stops in the library before selected integration-test lint completes. Strict
+  lint remains blocked by baseline diagnostics; no clean lint claim is made.
+  Exact output: exec-writeback-cache-lint.txt; comparison: exec-writeback-cache-lint-baseline.json.
+- Exact required acceptance command: exit 0, all 10 tests pass, exec-writeback-cache-final.txt.
+  This includes the five original scenario groups, positive controls and MCP rendering.
+- Exported new cache fixture stdout from the already-built acceptance binary: exit 0,
+  exec-writeback-cache-after-fixture.txt. No second compilation gate was run.
+- Final complete changed-source hashes: exec-writeback-cache-final-hashes.json.
+- git diff --check: exit 0 after formatting and evidence creation.
+
+Existing original-defect before/after fixture logs, source hashes and source-built
+CLI rendering evidence remain in exec-writeback-audit.txt and its referenced logs.
+The warning consumers and warning classification sources are unchanged in this repair;
+their prior focused evidence is reused. The MCP warning rendering also ran in final acceptance.
+Opposite-OS strings in fixtures are simulated platform metadata, not cross-OS deployment.
+The duplicate cache-name boundary must stay aligned with the gateway until a separately
+scoped shared protocol boundary is introduced; no gateway refactor is needed here.
+
+Read-tool failures and exact bounded fallbacks are retained in
+exec-writeback-cache-tool-failures.txt. No publications, messages, delegation,
+installations, infrastructure changes, other-worktree edits or broad tests were run.
+The result is left uncommitted for the task server's result-commit workflow.

@@ -1,0 +1,9 @@
+{
+  "crates/prod-code-mcp/src/exec/runner.rs": "cd503a2aae5b8499732397fc11f4de0d8d3333620a07344f5f234fcec989e70c",
+  "crates/prod-code-mcp/src/exec/platform.rs": "c1f83aa4dcc394a81fb5ea90d9a88bc6bb7a8a0b83ecc2d1121361745d2afd19",
+  "crates/prod-code-mcp/src/exec/types.rs": "74541721b2165280eb77282947d11f7d3f5a97e5913c3d4621a5ce8746b4954e",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation.rs": "5cec61dbf5fd899ef98beba4ff4c861349eca2d8c4f69243c6c39a125fc95310",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation/preservation.rs": "58c9162e3e2deaf91b1609651a34c59481eb65a314e9eb50badb9db4674c2284",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation/support.rs": "7416c45c6915febaf6773e7eeee38a0cd6fbf32a45e69d7cb16a03e81afa93e6",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation/platform.rs": "8ca2ee20a93b8aa48bb73b76660fff238a4086f3d98658ceb439f9ca4464181b"
+}

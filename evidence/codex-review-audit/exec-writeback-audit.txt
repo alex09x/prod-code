@@ -1,0 +1,50 @@
+Exec writeback repair — issue #1324
+Pinned and observed HEAD: e74b152a0cc216daaf7f1c51fcaea89761f84b11
+
+Observed before: all five public-runner regression groups failed, on both runners.
+See exec-writeback-before.txt and exec-writeback-before-hashes.json.
+The issue comment IDs were retrieved through the GitHub pull-review-comment API:
+4089582668, 4089582675, 4090292887, 4090678470, 4096573434.
+
+Repairs:
+- Initial existence/content/metadata identity guards both runners; local deletion,
+  rename and same-mtime edits remain local conflicts. Equal returned bytes remain no-ops.
+- Ordinary unmodified remote updates/deletions and absent-at-start creations apply.
+  Loose-workspace non-source outputs retain initial identity too.
+- Platform marker evidence survives remote deletion and marker removal.
+- cfg! and nested not/any/all platform predicates receive warnings.
+- Ordered Rust token/opaque-literal evidence replaces byte histograms. The exemption
+  additionally requires a known Rust formatter and a .rs file. Uncertain import,
+  comma or closure transformations warn; no punctuation is globally discarded.
+- The CLI and MCP use retained outcome evidence, and their real rendering is tested.
+
+Confirmed final source locations:
+crates/prod-code-mcp/src/exec/writeback.rs:62 — initial snapshot
+crates/prod-code-mcp/src/exec/writeback.rs:152 — local mutation guard
+crates/prod-code-mcp/src/exec/writeback.rs:162 — pre/post platform evidence
+crates/prod-code-mcp/src/exec/platform.rs:27 — composed cfg detection
+crates/prod-code-mcp/src/exec/layout.rs:17 — conservative ordered equivalence
+crates/prod-code-mcp/src/tools/exec_handler.rs:126 — MCP warning consumer
+crates/prod-code-client/src/commands/exec.rs:264 — CLI warning consumer
+
+Final verification on a Linux build node:
+- Required exec_writeback_preservation target: 8 passed, exit 0.
+- Source-built CLI rendering target: 1 passed (7 cases), exit 0.
+- Existing runner tests after fixture extraction: 5 passed, exit 0.
+- Scoped rustfmt on all 18 changed Rust files: exit 0.
+- git diff --check: exit 0.
+- Strict scoped Clippy: exit 101, 103 diagnostics across unchanged baseline code.
+  All 49 diagnostic paths are unchanged against pinned HEAD. It stopped before
+  all selected client/test lint targets were checked. No clean strict lint claim.
+
+Evidence stages are explicit: exec-writeback-after-fixtures.txt is the exact first
+repaired-run fixture output, before subsequent conservative lexer hardening,
+loose-workspace compatibility repair and formatting. Final acceptance and CLI/
+runner logs correspond to the final sources in exec-writeback-final-hashes.json.
+Cross-OS strings in the fake gateway are simulated metadata. These tests do not
+claim deployment or execution on a second operating system.
+
+Compatibility: runner and standalone warning function signatures are preserved;
+outcome structs gain platform_files metadata. Uncertain formatting intentionally
+produces more warnings. No dependencies, sync transport or watermark changes.
+Existing logs were preserved. No child workers, installs, publications or merges.

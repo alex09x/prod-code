@@ -11,8 +11,11 @@
 //! `run_remote` and `run_polyglot_remote` against a scripted gateway on loopback: the
 //! pre-flight sync is answered, then the script plays what a node sends after the command.
 
+mod assertions;
+
 use super::runner::{run_polyglot_remote, run_remote};
 use super::types::PolyglotRemoteOutcome;
+use crate::exec::runner_tests::assertions::assert_pulled;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     ExecChanges, ExecChunk, ExecExit, FileDelta, ProdCodeCodec, RemoteExecCommand,
@@ -185,29 +188,6 @@ fn deltas() -> Vec<FileDelta> {
     ]
 }
 
-fn assert_pulled(root: &Path, pulled: &[String], relaid: &[String], kept: &[String]) {
-    let mut pulled = pulled.to_vec();
-    pulled.sort();
-    assert_eq!(pulled, ["fmt.rs", "gone.txt", "new/created.txt"]);
-    assert_eq!(relaid, ["fmt.rs"]);
-    assert_eq!(kept, ["edit.rs"]);
-    let read = |name: &str| std::fs::read_to_string(root.join(name)).ok();
-    assert_eq!(read("same.txt").as_deref(), Some("same\n"));
-    assert_eq!(read("fmt.rs").as_deref(), Some("use a::A;\nuse b::B;\n"));
-    assert_eq!(
-        read("edit.rs").as_deref(),
-        Some("local edit\n"),
-        "a local edit is kept"
-    );
-    assert_eq!(read("gone.txt"), None, "a deletion is applied");
-    assert_eq!(read("new/created.txt").as_deref(), Some("created\n"));
-    let outside = root.parent().unwrap().join("runner-escape-probe.txt");
-    assert!(
-        !outside.exists(),
-        "the node never writes outside the checkout"
-    );
-}
-
 #[tokio::test]
 async fn run_remote_streams_output_and_writes_back_changed_files() {
     let root = tempfile::tempdir().unwrap();
@@ -249,7 +229,7 @@ async fn run_remote_streams_output_and_writes_back_changed_files() {
     );
     let mut code = outcome.changed_code();
     code.sort();
-    assert_eq!(code, ["gone.txt", "new/created.txt"]);
+    assert_eq!(code, ["fmt.rs", "gone.txt", "new/created.txt"]);
     let WireMessage::ExecRequest(req) = server.await.unwrap() else {
         panic!("not an exec request");
     };
@@ -366,7 +346,7 @@ async fn run_polyglot_remote_forwards_the_stream_and_writes_back_changed_files()
     );
     let mut code = outcome.changed_code();
     code.sort();
-    assert_eq!(code, ["gone.txt", "new/created.txt"]);
+    assert_eq!(code, ["fmt.rs", "gone.txt", "new/created.txt"]);
     let WireMessage::RemoteExecRequest(req) = server.await.unwrap() else {
         panic!("not a remote exec request");
     };

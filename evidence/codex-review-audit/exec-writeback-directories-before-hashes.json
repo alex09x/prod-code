@@ -1,0 +1,6 @@
+{
+  "crates/prod-code-mcp/src/exec/writeback.rs": "c4992ebbcfe26848f2d5988c059dbc09507ef69c6fb642e8b56b88be43bd7612",
+  "crates/prod-code-gateway/src/seed_cache/build_cache.rs": "6b71c592fc7ef86c9613d2d5679e849b2ed1edd44fb17ec1dbff00bafd16d7fa",
+  "crates/prod-code-gateway/src/runner/snapshot.rs": "bdca91cc699e2a06537489d31330158003f5a1bad62ef64e9e2226e7bf083fb3",
+  "crates/prod-code-mcp/tests/exec_writeback_preservation/directories.rs": "1946b87d7099d2af666d32b57db117f6b3c9c46dab769b460c5325248455f9c2"
+}

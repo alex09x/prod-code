@@ -1,0 +1,88 @@
+Issue #1324: file-to-directory batch writeback repair
+
+Scope and observation
+Base: 0bef0e58de96e83ef03783d127c5bc75eeb7975a. The worktree started clean.
+The earlier review-exec-writeback-4028.json and every earlier evidence file remain
+unchanged. The new pre-fix regression ran before production or support edits.
+Both public runners returned exit 0 but deleted artifacts/report.txt and rejected
+artifacts/report.txt/part.txt. No local mutation occurred in that regression.
+The parent was initially exactly UTF-8 "old report\n"; the returned child was
+exactly UTF-8 "new child\n". The pre-fix parent and child were both absent afterward.
+The complete sanitized failing command/output is exec-writeback-transition-before.txt.
+
+Cause and repair
+The predicted cause required the parent to remain a regular file while validating
+the child, despite having accepted its pending deletion. The public-runner fixture
+contradicted neither that premise nor the predicted lost child: both runners showed
+the same failure. A successful pre-fix child would have contradicted the finding.
+The response oneshot releases only after preflight and a parent-byte assertion;
+there are no sleeps. The real gateway sorts parent deletion before child creation
+in crates/prod-code-gateway/src/runner/snapshot.rs:321 (inspected, unchanged).
+
+Writeback::apply now records accepted deletions at
+crates/prod-code-mcp/src/exec/writeback.rs:224. read_in_batch at line 250 consults
+captured ancestor identities: only a previously validated ordinary-file deletion
+in this batch makes its children absent in the pending filesystem. It does not
+turn arbitrary ENOTDIR into absence. A captured ancestor without an accepted
+deletion blocks its children even if that ancestor was locally deleted or replaced
+with an empty directory. Unknown/cache prefix guards and leaf identity comparison
+remain in their original control flow. Symlink ancestors do not receive the exemption.
+At line 233, applied deletions remove the old file identity directly, avoiding a
+regular-file read of the newly created replacement directory. Applied child writes
+still refresh their own identities for later batches. No runner, gateway, writer,
+platform, lexer, cache, snapshot-limit, or dependency behavior was otherwise edited.
+
+New focused coverage
+crates/prod-code-mcp/tests/exec_writeback_preservation/transitions.rs:15 reproduces
+the initial unchanged-parent transaction through run_remote and run_polyglot_remote.
+Line 61 exercises source, ignored artifacts, and ignored results parents with
+nested children, followed by another ExecChanges batch updating, deleting, and
+creating children. Line 112 holds the response while making same-mtime local byte
+edits, deleting parents, or replacing them with empty directories; a control omits
+the parent deletion entirely. Legitimate independent new output is still pulled.
+Line 179 checks concurrent file/directory symlink replacement and an initially
+unknown directory symlink removed during exec. The external sentinel stays exact
+UTF-8 "sentinel\n" and no child is written outside the fixture root.
+The shared fake gateway now accepts multiple batches; its existing single-batch
+API delegates without changing prior tests. All fixture server tasks are joined.
+
+Observed final bytes and verification
+Both runners now create the replacement directory, write exact child bytes
+[110,101,119,32,99,104,105,108,100,10], report both paths pulled and no paths kept.
+The later-batch case leaves exact UTF-8 "later child\n" and "later new\n" with the
+temporary child absent, for all three prefixes in both runners (18 pulled each).
+Scoped remote rustfmt exited 0 and only formatted the new transitions source.
+Scoped cargo clippy --no-deps exited 0. All 103 warning/location pairs exactly
+match exec-writeback-root-lint.txt; no strict -D warnings pass is claimed.
+One final cargo test -p prod-code-mcp --test exec_writeback_preservation exited 0:
+19 passed, 0 failed. Its sole environment option RUST_TEST_NOCAPTURE=1 exposes bytes
+without widening the target. Existing guard, warning, formatter, source, ignored
+output, cache, large-output, bound, and symlink-root regression groups all pass.
+The expected caught preflight panics in the oversize test are not failed tests.
+Exact sanitized commands and output are in the new before/format/lint/final logs;
+source, fixture-byte and log SHA-256 values are in the new hashes JSON.
+
+Execution limits
+Compilation and tests actually ran on a Linux x86_64 build node. Each test drives
+the real public runner against a fake loopback wire peer and real local files.
+The peer supplies gateway-shaped deltas and simulated platform metadata; it does
+not execute the modeled file replacement command or run a macOS process. Actual
+gateway batch ordering was checked from unchanged source, not from a deployment.
+No infrastructure changes, installations, dependencies, other worktrees,
+publication, messages, delegation, detached providers, or commits were performed.
+The result is left in the assigned worktree for the task server to commit.
+
+Tool failures and bounded fallbacks
+Exact command: rg --files | rg '(exec.*(writeback|preservation)|writeback|review-exec-writeback-4028|exec_helpers)'
+Exact error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed..
+Fallback: prod-code def --symbol Writeback::apply and prod-code outline crates/prod-code-mcp/tests/exec_writeback_preservation both completed with exit 0.
+
+Exact command: sed -n '1,80p' crates/prod-code-mcp/tests/common/mod.rs && sed -n '1,110p' crates/prod-code-mcp/tests/exec_writeback_preservation/roots.rs && sed -n '175,195p' crates/prod-code-mcp/tests/exec_writeback_preservation/support.rs
+Exact error: sed: crates/prod-code-mcp/tests/common/mod.rs: No such file or directory
+Exit status: 1. Fallback: read the already-known roots.rs, support.rs and
+preservation.rs slices, which identify prod_code_testkit::Workspace directly;
+that read completed with exit 0. No guessed alternative location was used.
+
+The initial targeted regression exited 101 as expected and is preserved as failed
+before evidence, not a passed test. Subsequent final target status is independently
+recorded. Every started command reached terminal completion before another query.

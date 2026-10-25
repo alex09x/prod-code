@@ -1,0 +1,21 @@
+Command: prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test exec_writeback_preservation
+Exit status: 0
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.14s
+     Running tests/exec_writeback_preservation.rs (target/debug/deps/exec_writeback_preservation-dbd9b2b2a3d73a22)
+
+running 10 tests
+test controls::uncertain_tokens_literals_and_non_rust_changes_are_not_proven_layout ... ok
+test platform::c_control_flow_brace_removal_is_semantic ... ok
+test preservation::local_deletion_rename_and_same_mtime_edit_survive_both_runners ... ok
+test ignored::ignored_outputs_update_and_preserve_local_mutations_in_both_runners ... ok
+test platform::deleted_or_rewritten_away_platform_evidence_warns ... ok
+test platform::argument_reordering_and_tuple_comma_are_semantic ... ok
+test platform::cfg_macro_and_nested_predicates_warn ... ok
+test controls::formatter_and_same_os_no_change_controls ... ok
+test rendering::mcp_renders_pre_write_and_nested_cfg_warnings ... ok
+test ignored::excluded_node_caches_do_not_exhaust_writeback_snapshot ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+[prod-code exec] exit 0 in 7.0s (server 6.6s, cpu 8.6s user 2.9s sys, peak 1309 MB) on node <linux-build-node>, copy <remote-workspace> (linux x86_64)
