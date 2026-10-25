@@ -1,0 +1,10 @@
+pub fn ordinary_library() {}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn chosen() {
+        fn consume(_: &str) {}
+        let test_value = String::from("test");
+        consume(test_value);
+    }
+}

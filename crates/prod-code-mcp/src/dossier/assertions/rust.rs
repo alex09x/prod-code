@@ -64,16 +64,15 @@ fn rust_operands(
             content
         }
     };
-    // A custom message may hold "  left: " lines of its own: the operands start at the last
-    // one. Two " right: " lines after it leave the split between the operands unknown.
-    let (left_at, right_at) = (header + 1..end)
-        .rev()
-        .filter(|&j| stripped[j].starts_with("  left: "))
-        .find_map(|j| {
-            let mut rights = (j + 1..end).filter(|&k| stripped[k].starts_with(" right: "));
-            let first = rights.next()?;
-            Some(rights.next().is_none().then_some((j, first)))
-        })??;
+    // Either a custom message or a Debug continuation can contain these markers.
+    // With duplicates their origin cannot be proven; choosing either end silently
+    // truncates a possible operand. Require exactly one ordered pair in the block.
+    let mut lefts = (header + 1..end).filter(|&i| stripped[i].starts_with("  left: "));
+    let mut rights = (header + 1..end).filter(|&i| stripped[i].starts_with(" right: "));
+    let (left_at, right_at) = (lefts.next()?, rights.next()?);
+    if lefts.next().is_some() || rights.next().is_some() || left_at >= right_at {
+        return None;
+    }
     let operand = |first: &str, rest: &[String]| {
         std::iter::once(first)
             .chain(rest.iter().map(String::as_str))

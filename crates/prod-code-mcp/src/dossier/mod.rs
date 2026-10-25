@@ -18,6 +18,7 @@ pub mod locations;
 #[cfg(test)]
 mod tests;
 pub mod types;
+mod verification;
 
 pub use assertions::{parse_assertion_evidence, strip_ansi};
 pub use diagnose::diagnose;
