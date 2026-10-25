@@ -55,8 +55,9 @@ pub fn with_lifetime(ty: &str) -> String {
         let after = &rest[at + 1..];
         let trimmed = after.trim_start();
         if trimmed.starts_with('\'') {
-            out.push_str(after);
-            return out;
+            // Preserve this lifetime, but still visit later borrows in the same type.
+            rest = after;
+            continue;
         }
         out.push_str("'a ");
         rest = trimmed;

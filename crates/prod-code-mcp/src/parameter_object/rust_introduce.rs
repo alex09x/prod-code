@@ -20,8 +20,10 @@ use super::drop::{
     declared_async, drop_glue, drop_order, dropped_differently, name_in, rust_edition, spelled,
 };
 use super::effects::{reordered, reordered_arguments};
-use super::rewrite::rewritten_args;
+use super::rust_edits::{self, Edit};
+use super::rust_scope;
 use super::rust_types::{parameter_text, struct_text, type_of};
+use super::rust_uses;
 use super::syntax::{matching_bracket, split_args};
 use super::types::{Language, ParameterObject, Spelled};
 
@@ -132,7 +134,7 @@ pub(crate) async fn introduce_rust(
     // Where the qualifiers cannot be read, the function is taken to be `async`: that only
     // refuses more.
     let is_async = declared_async(&text, offset).unwrap_or(true);
-    let item_line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let scope = rust_scope::scope(&text, offset);
     let quoted = |list: &[usize]| -> String {
         list.iter()
             .map(|i| format!("`{}`", declared[*i].name))
@@ -206,11 +208,14 @@ pub(crate) async fn introduce_rust(
 
     // Every edit is computed against the file as it is now and applied from the last offset
     // backwards, so no edit has to know what the ones before it did to the offsets.
-    let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
+    let mut edits: BTreeMap<PathBuf, Vec<Edit>> = BTreeMap::new();
     let mut unmatched = Vec::new();
     let mut imports = Vec::new();
     let mut call_sites = 0usize;
-    let home = crate::move_item::module_of(file).ok().map(|(_, m)| m);
+    let home = crate::move_item::module_of(file).ok().map(|(_, mut m)| {
+        m.segments.extend(scope.modules.iter().cloned());
+        m
+    });
 
     // How the new type is named in a given file: bare where the file is a module that can
     // import it, the full path where it is not — a file under `tests/` is a crate of its own
@@ -277,45 +282,35 @@ pub(crate) async fn introduce_rust(
             let place = format!("{}:{rl}:{rc}", display(root, &path));
             return Err(reordered(&callee, &place, moved, passed, language));
         }
-        let (spelling, _) = spelling_in(&path);
-        edits.entry(path).or_default().push((
+        let (mut spelling, _) = spelling_in(&path);
+        if path == file {
+            spelling =
+                rust_scope::spelling(&scope.modules, &rust_scope::scope(&body, at).modules, name);
+        }
+        edits.entry(path).or_default().push(Edit::arguments(
             args_start,
             args_end - args_start,
-            rewritten_args(&args, &bundled, &spelling, &fields),
+            spelling,
         ));
         call_sites += 1;
     }
 
     // The body reaches the bundled parameters through one name now. The analyzer says where
     // each of them is used; a text search would also find them in a string and in a comment.
-    let mut body_uses = 0usize;
-    for i in &bundled {
-        let d = &declared[*i];
-        let Some(at) = text[open..close].find(&d.raw).map(|o| open + o) else {
-            continue;
-        };
-        let (l, c) = crate::signature::position_at(&text, at)?;
-        let refs = crate::signature::references(remote, root, file, l, c)
-            .await
-            .with_context(|| unlisted(&d.name, root, file, l, c))?;
-        for (path, rl, rc) in refs {
-            if path != file || rl == l {
-                continue;
-            }
-            let Some(o) = crate::signature::offset_of(&text, rl, rc) else {
-                continue;
-            };
-            if !text[o..].starts_with(&d.name) {
-                continue;
-            }
-            edits.entry(file.to_path_buf()).or_default().push((
-                o,
-                d.name.len(),
-                format!("{binding}.{}", d.name),
-            ));
-            body_uses += 1;
-        }
-    }
+    let (uses, missing) = rust_uses::collect(
+        remote,
+        root,
+        file,
+        &text,
+        open..close,
+        &declared,
+        &bundled,
+        binding,
+    )
+    .await?;
+    let body_uses = uses.len();
+    edits.entry(file.to_path_buf()).or_default().extend(uses);
+    unmatched.extend(missing);
 
     // The declaration itself, and the type above it.
     let now = {
@@ -334,20 +329,12 @@ pub(crate) async fn introduce_rust(
         out.join(", ")
     };
     let declaring = edits.entry(file.to_path_buf()).or_default();
-    declaring.push((open, close - open, now.clone()));
-    let item_start = text[..item_line_start]
-        .rfind("\n\n")
-        .map(|i| i + 2)
-        .unwrap_or(item_line_start);
-    declaring.push((item_start, 0, format!("{struct_text}\n")));
+    declaring.push(Edit::text(open, close - open, now.clone()));
+    declaring.push(Edit::text(scope.insertion, 0, format!("\n{struct_text}\n")));
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {
-        let mut body = texts(&path)?;
-        file_edits.sort_by_key(|(at, _, _)| *at);
-        for (at, len, replacement) in file_edits.into_iter().rev() {
-            body.replace_range(at..at + len, &replacement);
-        }
+        let body = rust_edits::rewrite(&texts(&path)?, &mut file_edits, &bundled, &fields)?;
         rewritten.insert(path, body);
     }
 
