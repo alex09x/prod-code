@@ -300,6 +300,7 @@ pub async fn change_with(
         }
     }
     let mut visibility_change = None;
+    let mut declaration_open = open;
     if let Some(visibility) = &modifiers.visibility {
         let name_at = decl_text[..open]
             .rfind(&format!("fn {name}"))
@@ -309,11 +310,13 @@ pub async fn change_with(
             .context("the declaration's visibility could not be read")?;
         if was != visibility.trim() {
             visibility_change = Some((was, visibility.trim().to_string()));
+            // Visibility changes shift the parameter list, unlike return-type edits.
+            declaration_open = open + out.len() - decl_text.len();
             decl_text = out;
         }
     }
     if let Some((_, want)) = asyncness_change {
-        let fn_at = decl_text[..open]
+        let fn_at = decl_text[..declaration_open]
             .rfind(&format!("fn {name}"))
             .context("the declaration's `fn` keyword is not where the parameter list says")?;
         decl_text = with_async(&decl_text, fn_at, want);
