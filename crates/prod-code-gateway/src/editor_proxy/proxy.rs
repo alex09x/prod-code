@@ -10,7 +10,6 @@
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use prod_code_protocol::transport::ScrubSecrets;
 use prod_code_protocol::{
     AnyStream, PathTranslator, ProdCodeCodec, WireMessage, readiness::Readiness,
 };
@@ -18,12 +17,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{Instant, timeout_at};
 use tokio_util::codec::Framed;
 
 use super::child::{
-    OwnedChild, TaskAbortGuard, finish_task, write_editor_messages, write_server_frames,
+    OwnedChild, TaskAbortGuard, finish_task, spawn_stderr_reader, write_editor_messages,
+    write_server_frames,
 };
 use super::command::{ServerCommand, to_server_with_options};
 use super::probe::{
@@ -111,24 +110,7 @@ where
     new_parts.write_buf = parts.write_buf;
     let framed = Framed::from_parts(new_parts);
 
-    let mut process = tokio::process::Command::new(&command.program);
-    process
-        .args(&command.args)
-        .envs(command.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .current_dir(root)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    process.scrub_cluster_secrets();
-    #[cfg(unix)]
-    {
-        process.process_group(0);
-    }
-    let child = process
-        .spawn()
-        .with_context(|| format!("starting {} for an editor", command.program))?;
-    let mut child = OwnedChild::new(child);
+    let mut child = OwnedChild::spawn(&command, root)?;
     let stdin = child
         .child
         .stdin
@@ -146,17 +128,7 @@ where
         .context("the server has no stderr")?;
     tracing::info!(session_id, program = %command.program, root = %root.display(), "✏️ [EDITOR] language server started");
 
-    let mut stderr_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Some(line) = lines
-            .next_line()
-            .await
-            .context("reading editor server stderr")?
-        {
-            tracing::debug!(session_id, "editor server: {line}");
-        }
-        Ok(())
-    });
+    let mut stderr_task = spawn_stderr_reader(stderr, session_id);
     let _stderr_guard = TaskAbortGuard::new(&stderr_task);
 
     let (to_server_tx, to_server_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
@@ -233,9 +205,21 @@ where
     let mut writer_finished = false;
     let mut socket_writer_finished = false;
     let mut stderr_finished = false;
+    // Keep the send future itself across select turns: cancellation must neither lose
+    // the frame nor restart its budget. Other lifecycle branches stay responsive.
+    let mut pending_input: Option<(Instant, rapidfire::Send<'_, PendingServerFrame>)> = None;
     loop {
         tokio::select! {
-            message = socket_rx.next() => match message {
+            result = async {
+                let (deadline, send) = pending_input.as_mut().expect("pending input send");
+                timeout_at(*deadline, send).await
+            }, if pending_input.is_some() => {
+                if !matches!(result, Ok(Ok(()))) {
+                    break;
+                }
+                pending_input = None;
+            },
+            message = socket_rx.next(), if pending_input.is_none() => match message {
                 Some(Ok(WireMessage::LspPayload(raw))) => {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
                         if val.get("method").and_then(|m| m.as_str()) == Some("initialize")
@@ -271,16 +255,14 @@ where
                     }
                     record_liveness(&ordinary_epoch, &last_activity, &probe_state);
                     let deadline = Instant::now() + options.write_budget;
-                    if to_server_tx.try_send(PendingServerFrame {
+                    pending_input = Some((deadline, to_server_tx.send(PendingServerFrame {
                         body: to_server_with_options(
                             &translator,
                             &raw,
                             command.initialization_options.as_ref(),
                         ),
                         deadline,
-                    }).is_err() {
-                        break;
-                    }
+                    })));
                 }
                 Some(Ok(WireMessage::Ping)) => {
                     let deadline = Instant::now() + options.write_budget;
@@ -351,6 +333,7 @@ where
             }
         }
     }
+    drop(pending_input);
     drop(registration);
     drop(to_server_tx);
     let cleanup_deadline = Instant::now() + options.teardown_budget;

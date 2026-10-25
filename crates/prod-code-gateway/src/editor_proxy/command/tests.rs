@@ -68,13 +68,17 @@ fn a_program_runs_when_its_version_flag_exits_successfully() {
 }
 
 #[test]
-fn only_python_keeps_its_initialization_options() {
+fn editor_proxy_issue_1289_python_keeps_options_and_unrelated_languages_drop_defaults() {
     let options = Some(serde_json::json!({"python": {"analysis": {}}}));
     assert_eq!(
         server_initialization_options("python", options.clone()),
         options
     );
     assert_eq!(server_initialization_options("python", None), None);
+    assert_eq!(
+        server_initialization_options("typescript", options.clone()),
+        None
+    );
     assert_eq!(server_initialization_options("go", options), None);
 }
 

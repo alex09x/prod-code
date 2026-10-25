@@ -10,14 +10,16 @@
 
 use anyhow::{Context, Result};
 use futures_util::SinkExt;
+use prod_code_protocol::transport::ScrubSecrets;
 use prod_code_protocol::{AnyStream, ProdCodeCodec, WireMessage};
+use std::path::Path;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::{Instant, timeout_at};
 use tokio_util::codec::Framed;
 
-use super::command::frame;
+use super::command::{ServerCommand, frame};
 use super::registry::{PendingEditorMessage, PendingServerFrame};
 
 pub(crate) struct TaskAbortGuard(AbortHandle);
@@ -42,6 +44,25 @@ pub(crate) struct OwnedChild {
 }
 
 impl OwnedChild {
+    pub(crate) fn spawn(command: &ServerCommand, root: &Path) -> Result<Self> {
+        let mut process = tokio::process::Command::new(&command.program);
+        process
+            .args(&command.args)
+            .envs(command.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .current_dir(root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        process.scrub_cluster_secrets();
+        #[cfg(unix)]
+        process.process_group(0);
+        let child = process
+            .spawn()
+            .with_context(|| format!("starting {} for an editor", command.program))?;
+        Ok(Self::new(child))
+    }
+
     pub(crate) fn new(child: tokio::process::Child) -> Self {
         #[cfg(unix)]
         let process_group = child.id().and_then(|pid| i32::try_from(pid).ok());
@@ -111,6 +132,23 @@ impl Drop for OwnedChild {
             }
         }
     }
+}
+
+pub(crate) fn spawn_stderr_reader(
+    stderr: tokio::process::ChildStderr,
+    session_id: u64,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .context("reading editor server stderr")?
+        {
+            tracing::debug!(session_id, "editor server: {line}");
+        }
+        Ok(())
+    })
 }
 
 pub(crate) async fn write_server_frames(
