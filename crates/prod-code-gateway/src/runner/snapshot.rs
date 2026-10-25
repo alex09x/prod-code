@@ -209,15 +209,26 @@ pub async fn restore_after_lost_client(
     before: Arc<TreeSnapshot>,
     started: Instant,
 ) -> usize {
+    let sync_guard =
+        crate::sync::lock_workspace_sync(workspace, "restore", crate::sync::SYNC_LOCK_REPORT_EVERY)
+            .await;
     let root = workspace.to_path_buf();
-    let restored = tokio::task::spawn_blocking(move || {
+    let restored = match tokio::task::spawn_blocking(move || {
+        let _sync_guard = sync_guard;
+        #[cfg(test)]
+        crate::sync::test_hooks::restore_disk(&root);
         let synced = workspace::synced_since(&root, started);
         let restored = restore_tree(&root, &before, &synced);
         workspace::record_stale_paths(&root, &restored.stale);
+        // The blocking worker owns the guard through disk and metadata commit, even if its
+        // caller is cancelled. Engine locks must never extend this transaction.
         restored
     })
     .await
-    .unwrap_or_default();
+    {
+        Ok(restored) => restored,
+        Err(_) => return 0,
+    };
     let unkept = restored
         .files
         .iter()
@@ -230,12 +241,42 @@ pub async fn restore_after_lost_client(
             "🛠️ [EXEC] files a command changed were too large to keep; removed until the client sends them"
         );
     }
-    refresh_engines(workspace_manager, workspace, &restored.files).await;
+    refresh_restored_engines(workspace_manager, workspace, &restored.files).await;
     restored
         .files
         .iter()
         .filter(|f| f.content.is_some())
         .count()
+}
+
+/// A restore can race a subsequent sync once its disk transaction finishes. Deferred engine
+/// updates must therefore read the current disk under the engine lock, never replay snapshot
+/// bytes captured by the restore. Invalidate manifests before waiting on any busy engine.
+async fn refresh_restored_engines(
+    manager: &WorkspaceManager,
+    workspace: &Path,
+    files: &[FileDelta],
+) {
+    let engines = manager
+        .get_loaded(workspace)
+        .await
+        .map(|ws| ws.mirrored_rust_engines())
+        .unwrap_or_default();
+    if files
+        .iter()
+        .any(|file| is_project_config_file(&file.relative_path))
+    {
+        manager.unload_under(workspace).await;
+    }
+    crate::sync::base_updates::push_base_updates(
+        engines,
+        files
+            .iter()
+            .map(|file| workspace.join(&file.relative_path))
+            .collect(),
+        crate::sync::base_updates::BASE_UPDATE_WAIT,
+    )
+    .await;
 }
 
 /// Files that differ between `before` and the tree now: new/changed ones with content,

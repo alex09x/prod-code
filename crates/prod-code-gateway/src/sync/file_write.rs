@@ -17,15 +17,19 @@ pub async fn write_synced_file(
     content: &[u8],
     executable: bool,
 ) -> std::io::Result<()> {
-    write_synced_file_impl(None, target, content, executable).await
+    write_synced_file_impl(None, target, content, executable)
+        .await
+        .map(|_| ())
 }
 
+/// Returns the hash of the exact successfully committed representation, including config
+/// coordination. An error never acknowledges a write to the sync transaction.
 pub(crate) async fn write_synced_file_for_workspace(
     workspace_root: &std::path::Path,
     target: &std::path::Path,
     content: &[u8],
     executable: bool,
-) -> std::io::Result<()> {
+) -> std::io::Result<u64> {
     write_synced_file_impl(Some(workspace_root), target, content, executable).await
 }
 
@@ -34,7 +38,7 @@ async fn write_synced_file_impl(
     target: &std::path::Path,
     content: &[u8],
     executable: bool,
-) -> std::io::Result<()> {
+) -> std::io::Result<u64> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -57,6 +61,9 @@ async fn write_synced_file_impl(
     } else {
         content.to_vec()
     };
+    // Hash the exact representation being committed, before rename. A post-write read could
+    // observe a command's later edit instead of the bytes this sync successfully delivered.
+    let committed_hash = content_hash(&coordinated_content);
     let written = async {
         tokio::fs::write(&temp, &coordinated_content).await?;
         #[cfg(unix)]
@@ -87,7 +94,7 @@ async fn write_synced_file_impl(
                 content.len() as u64,
                 content_hash(content),
                 coordinated_content.len() as u64,
-                content_hash(&coordinated_content),
+                committed_hash,
             )
             .await
         };
@@ -99,7 +106,7 @@ async fn write_synced_file_impl(
             );
         }
     }
-    Ok(())
+    Ok(committed_hash)
 }
 
 #[cfg(test)]

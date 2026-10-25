@@ -16,6 +16,8 @@ pub(crate) mod config_meta;
 pub mod file_write;
 pub mod source_pull;
 pub mod sync_fs;
+#[cfg(test)]
+pub(crate) mod test_hooks;
 
 pub use apply::*;
 pub use source_pull::*;

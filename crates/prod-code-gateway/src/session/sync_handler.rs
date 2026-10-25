@@ -19,71 +19,137 @@ pub async fn handle_session_sync(
     out_tx: &SharedOutputSender,
 ) {
     let start = Instant::now();
-    let mut files_updated = 0;
-    let mut files_deleted = 0;
-    let mut bytes_transferred = 0;
-    let mut watched = Vec::new();
-    let mut failed: Vec<String> = Vec::new();
-    let mut safe_paths = Vec::with_capacity(req.files.len());
-    let mut base_paths = Vec::new();
+    let sync_guard = crate::sync::lock_workspace_sync(
+        &view.workspace.root,
+        "sync",
+        crate::sync::SYNC_LOCK_REPORT_EVERY,
+    )
+    .await;
+    let workspace_root = view.workspace.root.clone();
+    let (
+        _sync_guard,
+        files_updated,
+        files_deleted,
+        bytes_transferred,
+        watched,
+        safe_paths,
+        base_paths,
+        stale_paths,
+    ) = tokio::spawn(async move {
+        let sync_guard = sync_guard;
+        let mut files_updated = 0;
+        let mut files_deleted = 0;
+        let mut bytes_transferred = 0;
+        let mut watched = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        let mut synced: Vec<(String, Option<u64>)> = Vec::with_capacity(req.files.len());
+        let mut safe_paths = Vec::with_capacity(req.files.len());
+        let mut base_paths = Vec::new();
+        let arrived: Vec<String> = req.files.iter().map(|f| f.relative_path.clone()).collect();
 
-    for delta in &req.files {
-        let target_path = match safe_sync_target(&view.workspace.root, &delta.relative_path).await {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    file = %delta.relative_path,
-                    "session sync rejected unsafe path"
-                );
-                failed.push(delta.relative_path.clone());
-                continue;
-            }
-        };
-        safe_paths.push(target_path.clone());
-        match &delta.content {
-            Some(content_bytes) => {
-                bytes_transferred += content_bytes.len();
-                let kind = if target_path.exists() {
-                    workspace::WatchedChange::Changed
-                } else {
-                    workspace::WatchedChange::Created
-                };
-                if let Err(e) = write_synced_file_for_workspace(
-                    &view.workspace.root,
-                    &target_path,
-                    content_bytes,
-                    delta.is_executable,
-                )
-                .await
-                {
+        for delta in req.files {
+            let target_path = match safe_sync_target(&workspace_root, &delta.relative_path).await {
+                Ok(path) => path,
+                Err(error) => {
                     tracing::warn!(
-                        error = %e,
-                        file = %target_path.display(),
-                        "sync write failed; the client sends it again"
+                        error = %error,
+                        file = %delta.relative_path,
+                        "session sync rejected unsafe path"
                     );
-                    failed.push(delta.relative_path.clone());
+                    failed.push(delta.relative_path);
                     continue;
                 }
-                files_updated += 1;
-                watched.push((target_path.clone(), kind));
-                // The workspace is this worktree's own: synced files are its
-                // new base, visible to every session except one that still
-                // holds an unsaved buffer for the same path.
-                base_paths.push(target_path);
-            }
-            None => {
-                if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
-                    let _ =
-                        crate::sync::config_meta::forget(&view.workspace.root, &target_path).await;
-                    files_deleted += 1;
-                    watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
-                    prune_empty_parents(&view.workspace.root, target_path.parent());
+            };
+            safe_paths.push(target_path.clone());
+            match delta.content {
+                Some(content_bytes) => {
+                    bytes_transferred += content_bytes.len();
+                    let kind = if target_path.exists() {
+                        workspace::WatchedChange::Changed
+                    } else {
+                        workspace::WatchedChange::Created
+                    };
+                    let committed_digest = match write_synced_file_for_workspace(
+                        &workspace_root,
+                        &target_path,
+                        &content_bytes,
+                        delta.is_executable,
+                    )
+                    .await
+                    {
+                        Ok(digest) => digest,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                file = %target_path.display(),
+                                "sync write failed; the client sends it again"
+                            );
+                            failed.push(delta.relative_path);
+                            continue;
+                        }
+                    };
+                    files_updated += 1;
+                    synced.push((delta.relative_path, Some(committed_digest)));
+                    watched.push((target_path.clone(), kind));
+                    // The workspace is this worktree's own: synced files are its
+                    // new base, visible to every session except one that still
+                    // holds an unsaved buffer for the same path.
+                    base_paths.push(target_path);
                 }
-                base_paths.push(target_path);
+                None => {
+                    if target_path.exists() {
+                        match tokio::fs::remove_file(&target_path).await {
+                            Ok(()) => {
+                                let _ =
+                                    crate::sync::config_meta::forget(&workspace_root, &target_path)
+                                        .await;
+                                files_deleted += 1;
+                                watched
+                                    .push((target_path.clone(), workspace::WatchedChange::Deleted));
+                                prune_empty_parents(&workspace_root, target_path.parent());
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    file = %target_path.display(),
+                                    "sync delete failed; the client sends it again"
+                                );
+                                failed.push(delta.relative_path);
+                                continue;
+                            }
+                        }
+                    }
+                    synced.push((delta.relative_path, None));
+                    base_paths.push(target_path);
+                }
             }
         }
-    }
+        #[cfg(test)]
+        crate::sync::test_hooks::post_write(&workspace_root).await;
+        workspace::record_synced(&workspace_root, &synced);
+        let mut stale_paths =
+            workspace::clear_stale_paths(&workspace_root, arrived.iter().map(String::as_str));
+        workspace::record_stale_paths(&workspace_root, &failed);
+        for path in failed {
+            if !stale_paths.contains(&path) {
+                stale_paths.push(path);
+            }
+        }
+        (
+            sync_guard,
+            files_updated,
+            files_deleted,
+            bytes_transferred,
+            watched,
+            safe_paths,
+            base_paths,
+            stale_paths,
+        )
+    })
+    .await
+    .expect("session sync disk commit task must not panic");
+
     // A stuck query can keep the engine locked; the answer must not wait for it (#1143).
     crate::sync::base_updates::push_base_updates(
         view.workspace.mirrored_rust_engines(),
@@ -126,16 +192,6 @@ pub async fn handle_session_sync(
         }
     }
 
-    let mut stale_paths = workspace::clear_stale_paths(
-        &view.workspace.root,
-        req.files.iter().map(|delta| delta.relative_path.as_str()),
-    );
-    workspace::record_stale_paths(&view.workspace.root, &failed);
-    for path in failed {
-        if !stale_paths.contains(&path) {
-            stale_paths.push(path);
-        }
-    }
     view.workspace.notify_watched_files(&watched).await;
     let duration_ms = start.elapsed().as_millis() as u64;
     let _ = out_tx
