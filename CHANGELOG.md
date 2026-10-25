@@ -5,6 +5,8 @@
 ### Fixed
 - **Rust Import Diagnostics Respect Module Boundaries and Aliases** (`crates/prod-code-engine-rust`):
   Imports in a parent module no longer suppress unresolved-name errors in a child module, and aliased imports suppress duplicate diagnostics only for the name they actually bind. Syntax-based import scanning now also reports unused imports after another statement or an attribute, including multiple `use` items on one line (#1248).
+- **Implicit Rust SSR Context Includes Receiver Methods and Item Scopes** (`crates/prod-code-engine-rust`):
+  Structural replacement without an explicit position now selects a method or item scope when the context file has no free functions. Patterns can resolve receiver expressions, method-body imports, and names in nested item-only modules. Explicit caller positions and file-scoped search remain unchanged (#1254).
 - **Invalid Token Files Fail Closed** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-client`):
   A configured token file that is missing, unreadable, invalid UTF-8, or has a blank first line now stops gateway startup before storage or listener initialization and makes default client connections return an error. A nonblank direct token retains precedence. The checked `try_auth_token` API distinguishes absent configuration from failure; the legacy `auth_token` API panics on invalid selected configuration instead of silently disabling authentication (#1246).
 - **Acknowledged Syncs Survive Lost-Client Restore and Failed Deletions Stay Stale** (`crates/prod-code-gateway`):

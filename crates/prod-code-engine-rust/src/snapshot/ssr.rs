@@ -43,13 +43,14 @@ impl RustEngineSnapshot {
         // The pattern's paths are resolved as if they appeared at this position, so it has to
         // be inside an item: at offset 0 a file has no scope and nothing resolves, which looks
         // exactly like "no matches". When the caller has no position of its own, use the body
-        // of the file's first function.
+        // of the file's first function, receiver method, or other scoped item.
         let requested_offset = line_col_to_offset(&text, line, col)
             .with_context(|| format!("Invalid position {line}:{col} in {}", context.display()))?;
         let offset = if line > 1 || col > 1 {
             requested_offset
         } else {
-            self.first_body_offset(file_id).unwrap_or(TextSize::from(0))
+            self.first_body_offset(file_id, &text)
+                .unwrap_or(TextSize::from(0))
         };
         let position = FilePosition { file_id, offset };
         // Without a scope the search covers the workspace and every crate it depends on,
@@ -96,8 +97,12 @@ impl RustEngineSnapshot {
         Ok(Ok(outcome))
     }
 
-    /// An offset inside the first function of `file_id`, for resolving a pattern's paths.
-    fn first_body_offset(&self, file_id: FileId) -> Option<TextSize> {
+    /// An offset inside the first function, receiver method, or scoped item of `file_id`,
+    /// for resolving a pattern's paths when the caller did not specify a position.
+    fn first_body_offset(&self, file_id: FileId, text: &str) -> Option<TextSize> {
+        use ra_ap_ide::SymbolKind;
+        use ra_ap_syntax::{AstNode, ast};
+
         let structure = self
             .analysis()
             .ok()?
@@ -108,13 +113,86 @@ impl RustEngineSnapshot {
                 file_id,
             )
             .ok()?;
-        let node = structure.iter().find(|n| {
-            matches!(
-                n.kind,
-                StructureNodeKind::SymbolKind(ra_ap_ide::SymbolKind::Function)
-            )
-        })?;
-        // Just inside the item: past its name, where its body scope is in effect.
-        Some(node.node_range.start() + TextSize::from(1))
+        let ends_with_brace = |range: TextRange| {
+            text.get(usize::from(range.start())..usize::from(range.end()))
+                .is_some_and(|slice| slice.trim_end().ends_with('}'))
+        };
+        let node = structure
+            .iter()
+            .find(|n| {
+                matches!(
+                    n.kind,
+                    StructureNodeKind::SymbolKind(SymbolKind::Function | SymbolKind::Method)
+                ) && ends_with_brace(n.node_range)
+            })
+            .or_else(|| {
+                structure.iter().find(|n| {
+                    matches!(
+                        n.kind,
+                        StructureNodeKind::SymbolKind(SymbolKind::Function | SymbolKind::Method)
+                    )
+                })
+            })
+            .or_else(|| {
+                structure.iter().find(|n| {
+                    matches!(
+                        n.kind,
+                        StructureNodeKind::SymbolKind(SymbolKind::Const | SymbolKind::Static)
+                    )
+                })
+            })
+            .or_else(|| {
+                structure.iter().find(|n| {
+                    matches!(
+                        n.kind,
+                        StructureNodeKind::SymbolKind(
+                            SymbolKind::Impl
+                                | SymbolKind::Trait
+                                | SymbolKind::Struct
+                                | SymbolKind::Enum
+                                | SymbolKind::Union
+                                | SymbolKind::TypeAlias
+                        )
+                    )
+                })
+            })
+            .or_else(|| {
+                structure.iter().find(|n| {
+                    matches!(n.kind, StructureNodeKind::SymbolKind(SymbolKind::Module))
+                        && ends_with_brace(n.node_range)
+                })
+            })?;
+        if matches!(
+            node.kind,
+            StructureNodeKind::SymbolKind(SymbolKind::Const | SymbolKind::Static)
+        ) {
+            let file = self.analysis().ok()?.parse(file_id).ok()?;
+            let initializer = file.syntax().descendants().find_map(|syntax| {
+                if syntax.text_range() != node.node_range {
+                    return None;
+                }
+                ast::Const::cast(syntax.clone())
+                    .and_then(|item| item.body())
+                    .or_else(|| ast::Static::cast(syntax).and_then(|item| item.body()))
+            });
+            if let Some(initializer) = initializer {
+                // Trivia before the item's semicolon belongs to the item, outside a block
+                // initializer's local import scope. Select the expression's last token.
+                return Some(initializer.syntax().text_range().end());
+            }
+        }
+        // `ide_ssr::ResolutionScope::new` resolves `token_at_offset(offset).left_biased().parent()`.
+        // For brace-delimited items (`fn`, `impl`, `trait`, `mod`, braced ADTs), `node_range.end()`
+        // selects the closing `}` whose parent is the inner `StmtList`/`AssocItemList`/`ItemList`
+        // (entering `DefWithBodyId`/`BlockScope` and keeping `current_function()` on `SyntaxKind::FN`).
+        // Initializers were handled above. For remaining semicolon-terminated declarations,
+        // use the token before the final semicolon.
+        if ends_with_brace(node.node_range) {
+            Some(node.node_range.end())
+        } else if node.node_range.len() > TextSize::from(1) {
+            Some(node.node_range.end() - TextSize::from(1))
+        } else {
+            Some(node.node_range.start())
+        }
     }
 }
