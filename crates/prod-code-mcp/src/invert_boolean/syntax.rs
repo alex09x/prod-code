@@ -225,10 +225,19 @@ pub fn return_value_end(inner: &str, at: usize) -> usize {
 /// The body of the inverted function, from the body of the original (the text between its braces).
 pub fn negated_body(inner: &str) -> String {
     let mut body = inner.to_string();
-    for at in own_returns(inner).into_iter().rev() {
-        let end = return_value_end(inner, at);
-        let value = inner[at + "return".len()..end].trim();
-        body.replace_range(at..end, &format!("return !({value})"));
+    let mut insertions = Vec::new();
+    for (at, end) in super::rust_syntax::returns(inner) {
+        let start = at + "return".len();
+        let value_start = start + inner[start..end].len() - inner[start..end].trim_start().len();
+        insertions.push((value_start, "!("));
+        // Keep trailing newlines: a line comment must not swallow the closing parenthesis.
+        insertions.push((end, ")"));
+    }
+    // Nested return expressions can overlap. Insert delimiters instead of replacing ranges,
+    // so rewriting an outer return never discards a rewritten inner return or literal bytes.
+    insertions.sort_by_key(|(at, _)| *at);
+    for (at, text) in insertions.into_iter().rev() {
+        body.insert_str(at, text);
     }
     let trimmed = body.trim();
     // A body that is one expression reads best negated in place; anything with statements is
@@ -236,19 +245,9 @@ pub fn negated_body(inner: &str) -> String {
     if !trimmed.contains(';') && !trimmed.contains("return") && !trimmed.is_empty() {
         return format!("\n    !({trimmed})\n");
     }
-    let indented: String = body
-        .trim_matches('\n')
-        .lines()
-        .map(|l| {
-            if l.trim().is_empty() {
-                String::new()
-            } else {
-                format!("    {l}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("\n    !{{\n{indented}\n    }}\n")
+    // Reindentation changes multiline literal contents. Keep the original bytes inside
+    // the negating block; only owned return expressions above may be rewritten.
+    format!("\n    !{{{body}\n    }}\n")
 }
 
 /// Where a call whose callee name starts at `at` begins: the start of its receiver chain for a

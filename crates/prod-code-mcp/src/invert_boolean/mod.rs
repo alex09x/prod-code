@@ -20,6 +20,7 @@ pub mod decl;
 pub mod negate;
 pub mod polyglot;
 pub mod rust;
+mod rust_syntax;
 pub mod syntax;
 pub mod types;
 
