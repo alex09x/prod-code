@@ -1,0 +1,74 @@
+Cargo workspace ownership review repair for issue 1256
+Acceptance base: a03cc570876544fb9a6b6e58e7f3f56d9fff30dd
+Input implementation: 8bf4d1189bc1444e52c8d277d2345c912fa57184
+Node kind: Linux x86_64. Remote endpoint and absolute checkout paths sanitized.
+
+Observed failure and repair:
+The additional-root scan incorrectly classified a Cargo workspace member as an
+independent root even after the workspace command succeeded. The new regression
+reproduced this before the production edit; see compiler-proposal-workspace-before.txt.
+compiler_proposal.rs now reuses excluded_from_root_workspace for each selected Rust
+command root. Explicit, glob and implicit path-dependency members are covered by that
+workspace command. Excluded crates remain independent. Companion Makefiles in member
+directories remain explicitly unverified/incomplete. No graph-proof requirement,
+manifest language, configured command selection or shadow wire format was added.
+
+Final formatting command (once, changed source files only):
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/tools/compiler_proposal.rs crates/prod-code-mcp/tests/validate_diff_proposal.rs crates/prod-code-mcp/tests/validate_diff_proposal/workspace.rs
+Observed terminal exit 0; only workspace.rs needed formatting. No unrelated diff.
+
+Final lint command (once):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --test validate_diff_proposal --message-format=short
+Observed terminal exit 0. Finished dev profile in 17.12s; remote command 17.5s.
+103 existing library warnings, matching the prior attempt's recorded warning count.
+No new fixture warnings. Strict -D warnings cleanliness is not claimed.
+
+Final acceptance command (one final compile/test gate):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test validate_diff_proposal
+Observed terminal exit 0. Finished test profile in 6.12s; remote command 7.3s.
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s.
+
+New actual compiler fixtures, all passed:
+- cargo_workspace_member_uses_root_command_for_complete_proposals: text-only
+  code_validate_edit, mixed declaration replacement/module deletion, borrow_check
+  unused-file deletion and compile required-module deletion. Actual Cargo reports
+  E0583 for the required module. Successful cases have no false incomplete status.
+- glob_and_implicit_cargo_members_reuse_workspace_ownership: actual Cargo checks
+  both existing ownership forms at the workspace root.
+- excluded_cargo_root_still_receives_complete_proposal: actual Cargo runs at both
+  the workspace root and independent excluded root; the latter's compile_error!
+  remains a failure. Both serialized requests carry identical complete deltas.
+- cargo_member_ownership_does_not_cover_companion_make_root: actual root Cargo
+  succeeds, and the companion Make root remains explicitly incomplete/unverified.
+  No execution or success of that companion is claimed.
+All assert unchanged tracked checkout bytes, clean git status and absence of
+target/Cargo.lock artifacts in the real fixture checkout. Captured serialized
+ShadowRunRequest deltas assert exact bytes and None deletions.
+
+Retained fixtures also passed in the final 30-test command:
+- Real Cargo on staged serialized requests: mixed/deletion-only required-module
+  E0583; removed declaration and unused deletion success; text-only compatibility;
+  independent command roots with identical complete deltas; additions/replacements
+  including empty text, UTF-8, no-final-newline and header-looking hunk content;
+  leaf-symlink deletion without following its external target.
+- Real configured Make/C++ and variable-based CMake/C++ commands on the complete
+  delta. No default-target parser or mandatory CMake/Meson/Make graph certificate.
+- Scripted protocol outcomes: nonzero/unparseable output, absent exit, launch error,
+  timeout, missing result and parsed diagnostic despite zero exit remain failures.
+- Unsupported whole proposals, conflicts, path escapes and WorkspaceEdit resources
+  are refused before analyzer/shadow activity. Analyzer-only limitations are explicit.
+All language-server replies are scripted clean; actual analyzer behavior is not proved.
+
+Exact limits:
+- Configured-command outcomes establish neither all targets/features/platforms nor
+  companion/build-graph coverage. Each request keeps the entire operation ledger.
+- The existing recorded CMake runtime is 3.21.2; its version was not remeasured in
+  this continuation. No CMake 4.2 runtime claim is made.
+- Only validate_diff_proposal ran; no broad suites or production gateway mounts.
+- Existing legacy assertions outside this target were not swept. Parent owns
+  integration on newest main and any necessary focused assertion updates.
+- No installs, infrastructure operations, publication, commits, pushes, merges,
+  delegation or detached providers were performed. Every started command finished.
+- Navigation failures and bounded fallback are preserved in the new before log.
+- All original evidence artifacts remain unchanged. Final hashes are recorded in
+  compiler-proposal-workspace-final-hashes.json, excluding that file's own hash.

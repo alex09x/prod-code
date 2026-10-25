@@ -1,0 +1,58 @@
+{
+  "acceptance_base_sha": "a03cc570876544fb9a6b6e58e7f3f56d9fff30dd",
+  "input_implementation_sha": "8bf4d1189bc1444e52c8d277d2345c912fa57184",
+  "hash_algorithm": "SHA-256",
+  "files": {
+    "crates/prod-code-mcp/src/patch.rs": "decfa60c743b7d32869955424245a2bde95ac950e3abeadcc71ab39fc2600998",
+    "crates/prod-code-mcp/src/shadow/diff.rs": "3061e8624cdb2f7cefecfa7c6d715449027f21a657745e64b089100d635ee44c",
+    "crates/prod-code-mcp/src/shadow/spec.rs": "fa9b0a2b7b0450a7c9e7a29eb967b9b617f345146ae6494575c96c6eae40fba9",
+    "crates/prod-code-mcp/src/tools.rs": "92c3a5bd8c14cd12b6103284a0b7306eefb64cf7dbd0c718b17536eae95f7f40",
+    "crates/prod-code-mcp/src/tools/analysis_handlers.rs": "2a724796ade1d3f8e456e330f5419937bec7331d2b18477006930728e38e9816",
+    "crates/prod-code-mcp/src/tools/compiler_proposal.rs": "d1176cc81e3fd74108c54ed0169eabf9c9f92d93236657f42cd04bd006e683c4",
+    "crates/prod-code-mcp/src/tools/diagnostics_handler.rs": "e0caad88b3202ba187430e0275c6a853048f0307fbe9171816a43d5083e61ef7",
+    "crates/prod-code-mcp/src/tools/schemas/analysis.rs": "e740394f72ad0a13f4fdb83015128983382e993900498a2c9e983ecceee6b3dd",
+    "crates/prod-code-mcp/src/tools/validation_diff.rs": "8073d8cbbdfe85977feaa886d6cf1cb8dca76427567820ed10229c5013781887",
+    "crates/prod-code-mcp/src/tools/validation_proposal.rs": "ff941ff9e08dcbde5b699d3d596971835919a80cf133f4bde7d58256818b6838",
+    "crates/prod-code-mcp/tests/validate_diff_proposal.rs": "e321287c95aafb9810a4bfdc130677df3482d787d425a7c3e33f9bdf3ff173ef",
+    "crates/prod-code-mcp/tests/validate_diff_proposal/configured.rs": "69fb931f47a52e61df1c55cbd369107edba5a6b567a80c896b4ad4a293f02d6e",
+    "crates/prod-code-mcp/tests/validate_diff_proposal/confinement.rs": "b7c4a17e9b3e2a6b709f1f8dd75413ed3c09aab9eace42d7f93a581e10b3d2a6",
+    "crates/prod-code-mcp/tests/validate_diff_proposal/gateway.rs": "ae8d75afdd1b7d41b0fa20e99cc487cd900d7b8307b20aa98c95fd467c8cb72d",
+    "crates/prod-code-mcp/tests/validate_diff_proposal/outcomes.rs": "ba2818fea400a7db8f06775d092d3ebe5e6f98fe9f4f239e09ecc859490b485d",
+    "crates/prod-code-mcp/tests/validate_diff_proposal/refusal.rs": "bb2350d413d636d3410e598e7a176fac758dfa6c895a6d3bb144ef4eb5e27ddc",
+    "crates/prod-code-mcp/tests/validate_diff_proposal/workspace.rs": "d384a0bc9900aaa96abfbd27a57ae6f3a24d221af277274b210d51d055e54243",
+    "evidence/codex-review-audit/compiler-proposal-after.txt": "06f2f7c3bcccfb605538a90afbeaf83016f973348ff800e64e5045c115c11dfc",
+    "evidence/codex-review-audit/compiler-proposal-before.txt": "96d847278a7640dc37e2f30f29f2aec6fcd9b14d0d88a0a81ce5ac7017532840",
+    "evidence/codex-review-audit/compiler-proposal-final-hashes.json": "88d7cb02587020f7f74bc824808076885275144b83161134885a4459f20da8f4",
+    "evidence/codex-review-audit/compiler-proposal-workspace-after.txt": "a11614836d65ff3de86d557e629f1f9583b6ea16b721b5b49e9355b431a30305",
+    "evidence/codex-review-audit/compiler-proposal-workspace-before.txt": "9dae1f8cf2b873107b26c263ac580fa600c02d8fe23731845fa1885e81bf97be"
+  },
+  "historical_evidence_unchanged": {
+    "evidence/codex-review-audit/compiler-proposal-scope-assessment.json": "db0db33e11a55e4463d8bdbc4e274ce2a230dde820cc63ebd2a86bbc242c41d3",
+    "evidence/codex-review-audit/compiler-proposal-reference.json": "4c769c9811116c3e50fdf6c4cb5c685f94857a4ae53c16b0b562316ee3e327e4",
+    "evidence/codex-review-audit/compiler-proposal-before.txt": "96d847278a7640dc37e2f30f29f2aec6fcd9b14d0d88a0a81ce5ac7017532840",
+    "evidence/codex-review-audit/compiler-proposal-after.txt": "06f2f7c3bcccfb605538a90afbeaf83016f973348ff800e64e5045c115c11dfc",
+    "evidence/codex-review-audit/compiler-proposal-final-hashes.json": "88d7cb02587020f7f74bc824808076885275144b83161134885a4459f20da8f4"
+  },
+  "self_hash_excluded": "evidence/codex-review-audit/compiler-proposal-workspace-final-hashes.json",
+  "acceptance": {
+    "argv": [
+      "cargo",
+      "test",
+      "-p",
+      "prod-code-mcp",
+      "--test",
+      "validate_diff_proposal"
+    ],
+    "exit_code": 0,
+    "passed": 30,
+    "failed": 0,
+    "node_kind": "Linux x86_64"
+  },
+  "limits": [
+    "Configured-command scope only; no graph or all-target/feature/platform/companion certificate",
+    "Real Cargo, Make and CMake in private serialized-delta fixtures; analyzer replies and failure protocol outcomes scripted",
+    "No CMake 4.2 runtime proof; prior runtime version 3.21.2 not remeasured",
+    "Scoped Clippy exited 0 with 103 existing library warnings; no strict warning-clean claim",
+    "No broad suite, production gateway mounts, publication or integration"
+  ]
+}

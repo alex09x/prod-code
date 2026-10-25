@@ -18,8 +18,17 @@ pub fn unified_diff(root: &Path, spec: &HypothesisSpec) -> (String, usize) {
     let mut changed = 0;
     for edit in &spec.edits {
         let path = root.join(&edit.relative_path);
-        let exists = path.exists();
-        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        let metadata = std::fs::symlink_metadata(&path).ok();
+        let exists = metadata.is_some();
+        // A deletion removes the leaf link. Rendering its proposal must not read
+        // a target outside the workspace (or treat a dangling link as absent).
+        let old = if metadata.is_some_and(|m| m.is_symlink()) {
+            std::fs::read_link(&path)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            std::fs::read_to_string(&path).unwrap_or_default()
+        };
         let new = edit.text.clone().unwrap_or_default();
         if old == new && exists == edit.text.is_some() {
             continue;

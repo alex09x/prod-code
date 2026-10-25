@@ -82,7 +82,7 @@ pub fn analysis_tools() -> Vec<McpTool> {
                         "description": "Streamed code chunks to validate incrementally during agent generation, intercepting hallucinations at delimiter checkpoints before turn completion (Roadmap 7.7)"
                     },
                     "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION },
-                    "borrow_check": { "type": "boolean", "description": "Enforce borrow checker and full compiler verification in a shadow workspace (Roadmap 7.7)" }
+                    "borrow_check": { "type": "boolean", "description": "Run the configured compiler check on the complete supported proposal in a shadow; coverage is limited to the reported command" }
                 },
                 "required": ["path"]
             }),
@@ -114,7 +114,7 @@ pub fn analysis_tools() -> Vec<McpTool> {
                         "description": "Unchanged files to diagnose against the proposed edits (optional)"
                     },
                     "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION },
-                    "borrow_check": { "type": "boolean", "description": "Enforce borrow checker and full compiler verification in a shadow workspace (Roadmap 7.7)" }
+                    "borrow_check": { "type": "boolean", "description": "Run the configured compiler check on the complete supported proposal in a shadow; coverage is limited to the reported command" }
                 },
                 "anyOf": [
                     { "required": ["edits"] },

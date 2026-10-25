@@ -108,18 +108,27 @@ fn parse(diff: &str) -> Result<Vec<FilePatch>> {
                 lines: Vec::new(),
                 new_ends_without_newline: false,
             };
+            let counts = hunk_counts(line);
+            let (mut old_lines, mut new_lines) = (0, 0);
             while let Some(next) = lines.peek() {
+                if counts == Some((old_lines, new_lines)) && !next.starts_with('\\') {
+                    break;
+                }
                 if next.is_empty() {
                     // An empty context line whose leading space an editor stripped, or a blank
                     // line after the diff; the header's counts tell them apart below.
                     hunk.lines.push((' ', String::new()));
+                    old_lines += 1;
+                    new_lines += 1;
                     lines.next();
                     continue;
                 }
                 let tag = next.chars().next().unwrap_or(' ');
                 match tag {
-                    ' ' | '-' | '+' if !next.starts_with("--- ") && !next.starts_with("+++ ") => {
+                    ' ' | '-' | '+' => {
                         hunk.lines.push((tag, next[tag.len_utf8()..].to_string()));
+                        old_lines += usize::from(tag != '+');
+                        new_lines += usize::from(tag != '-');
                         lines.next();
                     }
                     '\\' => {
@@ -130,22 +139,6 @@ fn parse(diff: &str) -> Result<Vec<FilePatch>> {
                         lines.next();
                     }
                     _ => break,
-                }
-            }
-            // Blank lines past what the header counts are not the hunk's (#322). Counts that
-            // are off otherwise, as a hand-written hunk's often are, are forgiven.
-            if let Some((old_count, new_count)) = hunk_counts(line) {
-                while hunk
-                    .lines
-                    .last()
-                    .is_some_and(|(tag, text)| *tag == ' ' && text.is_empty())
-                {
-                    let old = hunk.lines.iter().filter(|(tag, _)| *tag != '+').count();
-                    let new = hunk.lines.iter().filter(|(tag, _)| *tag != '-').count();
-                    if old <= old_count && new <= new_count {
-                        break;
-                    }
-                    hunk.lines.pop();
                 }
             }
             file.hunks.push(hunk);

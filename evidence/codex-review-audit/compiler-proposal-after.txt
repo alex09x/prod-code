@@ -1,0 +1,54 @@
+Issue 1256 configured-command proposal repair
+Base: a03cc570876544fb9a6b6e58e7f3f56d9fff30dd
+Environment: Linux x86_64 build node. Network addresses and absolute checkout paths are redacted. In commands, <build-node> replaces only the configured remote endpoint; repository command argv are otherwise literal.
+
+Final acceptance command:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test validate_diff_proposal
+Observed terminal exit: 0
+Finished test profile in 7.19s. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out. Test execution 0.54s; remote command 8.1s.
+
+Before production edits, the directly affected rejects_missing_module filter failed twice: deletion-only returned before any compiler request, and mixed text/deletion incorrectly passed actual Cargo. See compiler-proposal-before.txt.
+The first complete new-target run after implementation exited 101: 20 passed, 3 failed. Those were corrected fixture assumptions: direct Err versus returned error, +2 meaning start line 2 rather than count 2, and existing Cargo selection correctly executing an additional root instead of reporting it unverified. No passing result from that run was represented as final acceptance.
+
+Actual compiler fixtures:
+- Required-module deletion, both mixed and deletion-only: real Cargo on received serialized FileDelta content produces E0583.
+- Removing the module declaration in the same proposal, deleting an unused file, text-only calls, unchanged-baseline calls, empty WorkspaceEdit text addition, ordinary Git hunks and exact UTF-8/no-final-newline additions: real Cargo on the private staged copy.
+- Independent Cargo roots: two real configured Cargo invocations, each with the identical complete workspace-relative delta. Nested failing Cargo compilation is reported as failure despite the first root succeeding.
+- Variable-based Makefile and dynamic CMake variables: actual Make/C++ and CMake/C++ configured commands execute with replacement plus deletion. An unselected nested Make root is explicitly incomplete despite root-command success.
+- Leaf-symlink deletion: real Cargo on the received None operation; original link and external target stay unchanged. The reporting path uses read_link rather than reading the target.
+- All analyzer LSP replies are scripted clean. These tests do not establish actual language-server diagnostics.
+
+Scripted protocol fixtures (no actual compiler):
+- Nonzero unparseable output; absent exit; launch error; timeout; missing hypothesis result; compiler diagnostic with zero exit. Each is an unsuccessful result with exact argv, relative cwd, timeout and outcome fields, without a configured-check success message.
+- Unsupported Git rename/copy/binary/mode/resource sections in either order and WorkspaceEdit resources are refused before analyzer/shadow requests. Conflict, ancestor and symlink confinement refusal fixtures also assert zero such requests.
+
+Isolation assertions:
+- Captured actual serialized ShadowRunRequest deltas assert replacements/additions as exact bytes and deletions as content=None.
+- Received deltas alone stage the private compiler copy; no text/deletion operation is filtered by cwd.
+- Fixture git status remains clean, original tracked bytes and links remain present, new paths remain absent, and Cargo.lock/target/build/object outputs never appear in the real fixture checkout.
+- Newly created and substantively changed modules retain attribution headers; source modules remain <=400 lines.
+
+Formatting and lint evidence:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo fmt --all
+Terminal exit 0. This also formatted 23 unrelated preexisting files. All 23 formatter-only diffs were reverted, preserving the repair's source scope. No unrelated source changes remain.
+Final changed-file formatting check: rustfmt --check --edition 2024 --config skip_children=true on compiler_proposal.rs, validation_diff.rs, validation_proposal.rs and the changed validate_diff_proposal fixture files (all repository paths under crates/prod-code-mcp). Terminal exit 0. Previously successful scoped formatting evidence for unchanged affected files was reused; no workspace-wide formatting cleanliness is claimed.
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --test validate_diff_proposal -- -D warnings
+Terminal exit 101: 104 diagnostics, including one new stale import. Removed the import. The other 103 warnings span existing code outside this repair; no cleanup sweep was performed.
+Final lint command:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --test validate_diff_proposal --message-format=short
+Terminal exit 0. Existing library warnings: 103. No new fixture warning reported. Strict -D warnings cleanliness is not claimed.
+
+Tool limitations and bounded recovery:
+- Semantic MCP navigation was refused by approval policy; default-endpoint CLI definition produced no output and was interrupted with terminal exit 130. Explicit configured-node CLI definitions, outline and grep subsequently succeeded. See before log for the original command/error.
+- git restore -- <the 23 formatter-only changed paths> failed with terminal 128: unable to create the worktree index.lock, Operation not permitted. No git metadata was altered. Applied the exact reverse diffs through apply_patch instead. An initial reverse-patch conversion failed on path undefined (No such file or directory); corrected its reversed Git header interpretation and applied it successfully.
+- prod-code grep --remote <build-node> 'full compiler|proof verified clean' crates/prod-code-mcp/tests/diagnostics_error_preservation crates/prod-code-mcp/src/tools/compile_gate
+  Terminal exit 2: unexpected argument 'crates/prod-code-mcp/src/tools/compile_gate' found. Retried the single supported PATH form for diagnostics_error_preservation: terminal exit 0, no matches. No failure was treated as a successful lookup.
+- No public issue/comment was posted for tool limitations because this worker contract forbids publication.
+
+Exact limits:
+- CMake version command exited 0 and reported 3.21.2. There is no CMake 4.2 runtime evidence.
+- This establishes complete supported filesystem staging and the displayed configured command outcomes. It does not certify all targets, features, platforms, companions, graphs, real analyzer behavior or production gateway mount behavior.
+- Known additional unselected command roots are incomplete, and changed recognized build definitions leave route selection unestablished. No mandatory graph/parser certification was added.
+- Unsupported manifest analyzer refusal remains visible. Ordered WorkspaceEdit resource operations are refused as a whole, including analyzer-only calls, rather than validating a remainder.
+- Only the new validate_diff_proposal target ran; no broad suite, installation, infrastructure operation, publication, commit, push or merge was performed. Parent owns integration and any directly affected legacy assertion follow-up.
+- Historical scope assessment and reference JSON remain byte-for-byte unchanged. Final file SHA-256 values are recorded separately in compiler-proposal-final-hashes.json.
