@@ -1316,6 +1316,15 @@ async fn read_file_request_in_active_session_pulls_large_artifact() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn editor_session_receives_rebalance_redirect() {
+    check_editor_rebalance_redirect(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn editor_session_subscribes_before_handshake_response() {
+    check_editor_rebalance_redirect(false).await;
+}
+
+async fn check_editor_rebalance_redirect(wait_for_subscription: bool) {
     let storage = tempfile::tempdir().unwrap();
     let client_dir = tempfile::tempdir().unwrap();
     let client_root = std::fs::canonicalize(client_dir.path()).unwrap();
@@ -1377,14 +1386,24 @@ async fn editor_session_receives_rebalance_redirect() {
 
     // Trigger workspace rebalance redirect while the editor session is active
     let ws_name = server_root.file_name().unwrap().to_string_lossy();
-    let notified = state
-        .workspace_manager
-        .trigger_rebalance_by_name(
-            &ws_name,
-            "192.0.2.168:9400".to_string(),
-            Some("test".to_string()),
-        )
-        .await;
+    let notified = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let notified = state
+                .workspace_manager
+                .trigger_rebalance_by_name(
+                    &ws_name,
+                    "192.0.2.168:9400".to_string(),
+                    Some("test".to_string()),
+                )
+                .await;
+            if notified == 1 || !wait_for_subscription {
+                break notified;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("editor session never registered its rebalance subscription");
     assert_eq!(notified, 1, "trigger_rebalance sent to broadcast channel");
 
     let redirect = tokio::time::timeout(Duration::from_secs(5), client.next())

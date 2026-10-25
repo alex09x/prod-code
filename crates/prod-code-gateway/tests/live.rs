@@ -1843,10 +1843,13 @@ async fn two_gateways_find_each_other_and_place_work() {
     // Gossip runs every few seconds; wait for the Rust node to hear about the Go one.
     let deadline = Instant::now() + Duration::from_secs(40);
     let mut nodes = 0usize;
+    let mut listening = false;
     while Instant::now() < deadline {
-        let stream = tokio::net::TcpStream::connect(rust_port)
-            .await
-            .expect("connect");
+        let Ok(stream) = tokio::net::TcpStream::connect(rust_port).await else {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
+        listening = true;
         let mut framed = Framed::new(stream, ProdCodeCodec::new());
         framed
             .send(WireMessage::ClusterRequest)
@@ -1867,6 +1870,10 @@ async fn two_gateways_find_each_other_and_place_work() {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    assert!(
+        listening,
+        "the Rust gateway never started listening before the gossip deadline"
+    );
     assert!(
         nodes >= 2,
         "the two gateways never found each other (saw {nodes} node(s))"

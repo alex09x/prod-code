@@ -193,6 +193,9 @@ pub async fn handle_handshake(
         session_view.is_single_owner()
     );
 
+    // A successful handshake makes the session eligible for rebalance immediately. Keep
+    // redirects queued even if the client acts before the session loop gets scheduled.
+    let rebalance_rx = session_view.accounted.subscribe_rebalance();
     framed
         .send(WireMessage::HandshakeResponse(HandshakeResponse {
             protocol_version,
@@ -231,7 +234,8 @@ pub async fn handle_handshake(
         edits: Arc::default(),
     });
 
-    let session_res = run_session_loop(framed, &translator, &session_view, meta).await;
+    let session_res =
+        run_session_loop(framed, &translator, &session_view, meta, rebalance_rx).await;
 
     state
         .workspace_manager
