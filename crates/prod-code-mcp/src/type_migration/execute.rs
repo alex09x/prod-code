@@ -111,17 +111,18 @@ pub async fn migrate_ext(
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), new_text);
 
-    let mut also: Vec<PathBuf> = if let (Some(l), Some(c)) = (line, col) {
-        crate::signature::references(remote, root, file, l, c)
+    // Symbol addressing resolves to the same position and requires the same reference
+    // evidence as explicit coordinates. Force can override known errors, not missing uses.
+    let (reference_line, reference_col) = crate::signature::position_at(&text, offset)
+        .context("the declaration has no reference-query position")?;
+    let mut also: Vec<PathBuf> =
+        crate::signature::references(remote, root, file, reference_line, reference_col)
             .await
-            .unwrap_or_default()
+            .context("cannot plan type migration: reference lookup failed")?
             .into_iter()
             .map(|(path, _, _)| path)
             .filter(|path| path != file)
-            .collect()
-    } else {
-        Vec::new()
-    };
+            .collect();
     also.sort();
     also.dedup();
 
