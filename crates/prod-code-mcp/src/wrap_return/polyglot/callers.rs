@@ -12,6 +12,10 @@ use anyhow::Result;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod identity;
+mod promise;
+mod syntax;
+
 #[cfg(test)]
 mod tests;
 
@@ -21,9 +25,7 @@ mod coverage_w2;
 
 use super::enclosing::enclosing_polyglot_info;
 use super::find::find_polyglot_decl;
-use super::import::{
-    find_dotted_receiver_span, imported_caller_symbols, is_proven_namespace_import,
-};
+use super::import::imported_caller_symbols;
 use super::restructure::restructure_declaring_file;
 use super::shadow::is_locally_shadowed;
 use crate::parameter_object::Language;
@@ -66,6 +68,9 @@ pub(crate) fn collect_and_rewrite_callers(
         let is_decl_file =
             std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) == canonical_file;
         let rel_path = display(root, path);
+        // Keep byte offsets while ignoring trivia in JS callee/await/postfix syntax.
+        let syntax = syntax::SyntaxView::new(&other_content, lang);
+        let code = &syntax.code;
 
         let symbols_to_search: Vec<String> = if is_decl_file || has_semantic_references {
             if !other_content.contains(name.as_str()) {
@@ -97,39 +102,30 @@ pub(crate) fn collect_and_rewrite_callers(
                 if after.starts_with(is_ident) {
                     continue;
                 }
-                if crate::inline_parameter::is_in_comment(&other_content, at, lang)
-                    || crate::inline_parameter::is_in_string(&other_content, at, lang)
+                let js = matches!(lang, Language::TypeScript | Language::JavaScript);
+                if (js && !syntax.is_code(at) && !syntax.is_uncertain(at))
+                    || (!js
+                        && (crate::inline_parameter::is_in_comment(&other_content, at, lang)
+                            || crate::inline_parameter::is_in_string(&other_content, at, lang)))
                 {
                     continue;
                 }
 
-                let before_text = other_content[..at].trim_end();
-                let is_member_access = before_text.ends_with('.')
-                    || before_text.ends_with("?.")
-                    || before_text.ends_with("->");
-                let mut call_start = at;
-                if is_member_access {
-                    let before_dot = if let Some(b) = before_text.strip_suffix("?.") {
-                        b
-                    } else if let Some(b) = before_text.strip_suffix("->") {
-                        b
-                    } else if let Some(b) = before_text.strip_suffix('.') {
-                        b
-                    } else {
-                        before_text
-                    }
-                    .trim_end();
-                    let (rel_start, receiver) = find_dotted_receiver_span(before_dot);
-                    let is_namespace =
-                        is_proven_namespace_import(&other_content, receiver, path, file, lang);
-                    if !is_namespace && !is_decl_file && !has_semantic_references {
-                        continue;
-                    }
-                    let receiver_abs_start = (before_dot.as_ptr() as usize
-                        - other_content.as_ptr() as usize)
-                        + rel_start;
-                    call_start = receiver_abs_start;
-                }
+                use identity::Receiver;
+                let (call_start, is_member_access, unproven_receiver) = match identity::receiver(
+                    &other_content,
+                    code,
+                    at,
+                    lang,
+                    (path, file),
+                    is_decl_file,
+                    has_semantic_references,
+                ) {
+                    Receiver::Bare => (at, false, false),
+                    Receiver::Selected(start) => (start, true, false),
+                    Receiver::Ambiguous(start) => (start, true, true),
+                    Receiver::Unrelated => continue,
+                };
 
                 let source_path =
                     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -182,45 +178,56 @@ pub(crate) fn collect_and_rewrite_callers(
                     continue;
                 }
                 if !has_semantic_references
-                    && is_locally_shadowed(&other_content, at, search_symbol, lang)
+                    && (!js || !is_member_access)
+                    && is_locally_shadowed(
+                        if js { code } else { &other_content },
+                        at,
+                        search_symbol,
+                        lang,
+                    )
                 {
                     continue;
                 }
+                if unproven_receiver {
+                    unmatched.push(format!(
+                        "{site} receiver identity for `{search_symbol}` cannot be established"
+                    ));
+                    continue;
+                }
+                if syntax.is_uncertain(at) {
+                    unmatched.push(format!(
+                        "{site} ambiguous regex/division syntax around `{search_symbol}`"
+                    ));
+                    continue;
+                }
 
-                let Some((_args_start, args_end)) = crate::parameter_object::call_args_span(
-                    &other_content,
-                    at + search_symbol.len(),
-                ) else {
+                let Some((_args_start, args_end)) =
+                    crate::parameter_object::call_args_span(code, at + search_symbol.len())
+                else {
                     unmatched.push(format!("{site} `{search_symbol}` used as a value"));
                     continue;
                 };
 
                 // Call site found!
-                let caller_info = enclosing_polyglot_info(&other_content, at, lang);
+                let caller_text = if js && matches!(wrapper, Wrapper::Promise) {
+                    code.as_ref()
+                } else {
+                    &other_content
+                };
+                let caller_info = enclosing_polyglot_info(caller_text, at, lang);
                 let (caller_ret, caller_is_async) =
                     caller_info.unwrap_or_else(|| (String::new(), false));
 
                 match wrapper {
                     Wrapper::Promise => {
                         if caller_is_async {
-                            let before_call = other_content[..call_start].trim_end();
-                            if before_call.ends_with("await") {
-                                *propagated += 1;
-                            } else {
-                                let after_call = other_content[args_end + 1..].trim_start();
-                                let has_postfix = after_call.starts_with('.')
-                                    || after_call.starts_with("?.")
-                                    || after_call.starts_with('[')
-                                    || after_call.starts_with('(')
-                                    || after_call.starts_with('!');
-                                if has_postfix {
-                                    file_edits.push((call_start, 0, "(await ".to_string()));
-                                    file_edits.push((args_end + 1, 0, ")".to_string()));
-                                } else {
-                                    file_edits.push((call_start, 0, "await ".to_string()));
-                                }
-                                *propagated += 1;
+                            if let Err(reason) =
+                                promise::await_call(code, call_start, at, args_end, &mut file_edits)
+                            {
+                                unmatched.push(format!("{site} {reason}"));
+                                continue;
                             }
+                            *propagated += 1;
                         } else {
                             let line_text = other_content
                                 [other_content[..call_start].rfind('\n').map_or(0, |i| i + 1)..]
