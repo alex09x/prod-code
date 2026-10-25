@@ -339,6 +339,16 @@ pub(crate) async fn run_announcing(
                                     let mut s = socket;
                                     let _ = s.write_all(b"HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nUpgrade to TLS/SSL required: port 9400 enforces encrypted transport.\r\n").await;
                                     let _ = s.flush().await;
+                                    // Close our side, then drain what the client already sent:
+                                    // closing with unread input makes the kernel reset the
+                                    // connection, and the client never sees the 426.
+                                    let _ = s.shutdown().await;
+                                    let mut sink = [0u8; 1024];
+                                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                                        use tokio::io::AsyncReadExt;
+                                        while matches!(s.read(&mut sink).await, Ok(n) if n > 0) {}
+                                    })
+                                    .await;
                                     return;
                                 }
                                 AnyStream::Tcp(socket)

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Tests
+- **Coverage Campaign, Wave 3** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, `tests/support`):
+  Every file now meets the 80% per-file region gate. New gateway tests cover:
+  - a real server over TCP and a Unix socket, with a token and with SIGTERM/SIGINT;
+  - strict TLS;
+  - Prometheus scrape and push;
+  - the shadow runner, janitor sweeps and managed-backend sessions.
+
+  Two measurement gaps are closed:
+  - The LSP secret-spawn driver runs with a cleared environment and lost `LLVM_PROFILE_FILE`. Its coverage was dropped and a stray `default_*.profraw` was written into the crate directory. The fixture now passes the variable on.
+  - The janitor loop was generic over its host probe, so the production copy never ran under the tests. It now takes a boxed probe and is compiled once (#1195).
+
 ### Fixed
 - **Editor Backpressure and TypeScript Initialization** (`crates/prod-code-gateway`, #1289):
   Editor input waits for queue capacity within one write deadline instead of disconnecting on transient saturation, while retirement and child-exit handling remain responsive. TypeScript fallback SDK paths reach initialization without replacing explicit editor selections or preferences.
@@ -15,6 +27,10 @@
   Impact-generated CTest filters escape registered test names before joining them, so regex punctuation in a name neither selects unrelated tests nor hides the intended one.
 - **clang-tidy Filename Boundaries** (`crates/prod-code-mcp`, #1282):
   CMake and Meson lint/fix plans pass source paths through NUL-delimited `find` and `xargs`, preserving spaces, quotes and backslashes as filename characters.
+- **Plaintext Clients of a Strict-TLS Gateway Receive the 426** (`crates/prod-code-gateway`):
+  The gateway wrote `426 Upgrade Required` and closed the socket while the client's request was still unread. The kernel then reset the connection, so the client usually saw `Connection reset by peer` instead of the answer. The gateway now shuts down its side and drains the request (for at most a second) before closing.
+- **A Gateway Bound to Port 0 Advertises the Port It Took** (`crates/prod-code-gateway`):
+  Without `--advertise`, a gateway started with `--bind …:0` advertised `<host>:0` to the cluster. It now advertises the address its listener actually bound.
 - **F# and NASM Sources in Non-Git Workspaces** (`crates/prod-code-mcp`, #1275):
   Filesystem scanning and sync planning now include `.fs`, `.fsi`, `.fsx`, and `.nasm` sources, including uppercase suffixes, alongside their project manifests. The relevance watermark version is advanced so older sync state cannot retain the omissions. Unchanged warm plans and existing artifact/data exclusions are preserved.
 - **A Rebalance Redirect Right After the Handshake Is No Longer Lost** (`crates/prod-code-gateway`):

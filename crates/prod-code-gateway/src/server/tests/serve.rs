@@ -146,24 +146,55 @@ async fn metrics_push_runs_and_an_occupied_scrape_port_leaves_the_gateway_servin
     drop(occupied);
 }
 
+/// With TLS required and credentials configured, a plaintext connection gets an HTTP 426 and
+/// is closed instead of reaching a session.
 #[tokio::test]
-async fn a_gateway_that_requires_tls_without_credentials_refuses_to_start() {
+async fn a_strict_tls_gateway_turns_plaintext_connections_away() {
     crate::test_cache_support::isolated!();
     configure_environment(None);
+    use prod_code_protocol::tls::pki;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let temp = tempfile::tempdir().unwrap();
+    let (ca_cert, ca_key) = pki::generate_ca("sample-ca").unwrap();
+    let (node_cert, node_key) = pki::generate_node_cert(
+        &ca_cert,
+        &ca_key,
+        &["localhost".to_string()],
+        &["127.0.0.1".parse().unwrap()],
+    )
+    .unwrap();
+    let pki_dir = temp.path().join("pki");
+    let (ca_path, _) = pki::write_cert_and_key(&pki_dir, "ca", &ca_cert, &ca_key).unwrap();
+    let (cert_path, key_path) =
+        pki::write_cert_and_key(&pki_dir, "node", &node_cert, &node_key).unwrap();
     unsafe {
         std::env::set_var("PROD_CODE_TLS_MODE", "strict");
+        std::env::set_var("PROD_CODE_TLS_CERT", &cert_path);
+        std::env::set_var("PROD_CODE_TLS_KEY", &key_path);
+        std::env::set_var("PROD_CODE_TLS_CA", &ca_path);
     }
-    let temp = tempfile::tempdir().unwrap();
     let mut cli =
         ServerCli::try_parse_from(["gateway", "--bind", "127.0.0.1:0", "--no-admission"]).unwrap();
     cli.storage = temp.path().join("storage");
-    let error = run(cli).await.unwrap_err().to_string();
-    assert!(
-        error.contains("is required on server")
-            && error.contains("PROD_CODE_TLS_CERT")
-            && error.contains("PROD_CODE_TLS_KEY"),
-        "{error}"
-    );
+
+    let result = serve_then_stop(cli, libc::SIGTERM, |addr| async move {
+        let mut stream = tcp_stream(addr).await;
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: sample\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = String::new();
+        tokio::time::timeout(Duration::from_secs(10), stream.read_to_string(&mut answer))
+            .await
+            .expect("the gateway answers and closes")
+            .unwrap();
+        assert!(
+            answer.starts_with("HTTP/1.1 426 Upgrade Required\r\n"),
+            "{answer}"
+        );
+    })
+    .await;
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[tokio::test]
