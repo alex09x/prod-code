@@ -11,6 +11,49 @@
 use super::*;
 
 #[test]
+fn coverage_w2_engine_create_overwrite_and_text_creation_roll_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("existing"), "original").unwrap();
+    let mut run = MultiRun::default();
+    run.apply(&[MultiOp::Create {
+        root: root.clone(),
+        rel: "existing".into(),
+        overwrite: true,
+        ignore_if_exists: false,
+    }])
+    .unwrap();
+    let insertion = serde_json::json!({"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"new contents"});
+    run.apply(&[MultiOp::Text {
+        root: root.clone(),
+        rel: "nested/new.rs".into(),
+        edits: vec![insertion],
+    }])
+    .unwrap();
+    assert_eq!(std::fs::read(root.join("existing")).unwrap(), b"");
+    assert_eq!(
+        std::fs::read(root.join("nested/new.rs")).unwrap(),
+        b"new contents"
+    );
+    assert_eq!(
+        run.originals,
+        [
+            (root.join("existing"), Some(b"original".to_vec())),
+            (root.join("nested/new.rs"), None)
+        ]
+    );
+    assert_eq!(
+        run.touched,
+        [root.join("existing"), root.join("nested/new.rs")]
+    );
+    assert_eq!(run.also_forget, [(root.clone(), "existing".into())]);
+    let (_, errors) = run.journal.roll_back();
+    assert!(errors.is_empty());
+    assert_eq!(std::fs::read(root.join("existing")).unwrap(), b"original");
+    assert!(!root.join("nested").exists());
+}
+
+#[test]
 fn coverage_b2_engine_ordering_and_rollback() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();

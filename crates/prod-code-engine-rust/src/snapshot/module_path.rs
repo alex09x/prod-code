@@ -13,6 +13,10 @@ use anyhow::Result;
 use ra_ap_ide::{FilePosition, FileStructureConfig, MonikerResult};
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "module_path_tests.rs"]
+mod tests;
+
 impl RustEngineSnapshot {
     /// Semantic containing module, including the crate name. Filenames cannot establish it:
     /// `#[path]` declarations and inline modules need not follow the directory layout.

@@ -13,6 +13,10 @@ use super::types::Site;
 use crate::parameter_object::Language;
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "spans_tests.rs"]
+mod tests;
+
 /// The span of the type in a declaration, given the offset of the declared name.
 ///
 /// Four shapes cover what can be migrated: a field or a parameter or an annotated `let`, which
@@ -330,7 +334,14 @@ pub fn find_symbol_decl_offset(
                 if let Some(pos) = line_str.find(clean_name) {
                     let line_start = text.lines().take(i).map(|l| l.len() + 1).sum::<usize>();
                     let abs_offset = line_start + pos;
-                    if declared_type_span_polyglot(text, abs_offset, lang).is_some() {
+                    let end = abs_offset + clean_name.len();
+                    let ident = |c: char| c.is_alphanumeric() || c == '_';
+                    if !text[..abs_offset].ends_with(ident)
+                        && !text[end..].starts_with(ident)
+                        && !crate::inline_parameter::is_in_comment(text, abs_offset, lang)
+                        && !is_import_line(text, abs_offset, lang)
+                        && declared_type_span_polyglot(text, abs_offset, lang).is_some()
+                    {
                         return Some(abs_offset);
                     }
                 }

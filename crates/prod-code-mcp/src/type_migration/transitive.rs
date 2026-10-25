@@ -17,6 +17,10 @@ use crate::type_migration::matching::returns::find_matching_return;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "transitive_tests.rs"]
+mod tests;
+
 /// Transitively propagate type changes along data-flow edges (variables, return signatures, parameters, fields).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn propagate_transitive(

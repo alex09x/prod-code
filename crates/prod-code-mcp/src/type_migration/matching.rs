@@ -15,6 +15,10 @@ use crate::parameter_object::Language;
 
 pub(crate) mod returns;
 
+#[cfg(test)]
+#[path = "matching_tests.rs"]
+mod tests;
+
 pub(crate) fn contains_ident(haystack: &str, ident: &str) -> bool {
     for (idx, _) in haystack.match_indices(ident) {
         let before_ok =
