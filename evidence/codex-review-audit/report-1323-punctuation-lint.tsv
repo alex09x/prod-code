@@ -1,0 +1,104 @@
+location	diagnostic	unchanged_from_acceptance_base
+crates/prod-code-mcp/src/config/mod.rs:52:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/config/mod.rs:53:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/config/mod.rs:63:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/config/mod.rs:64:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/feed.rs:31:5	this function has too many arguments (9/7)	true
+crates/prod-code-mcp/src/diagnostics/stream/feed.rs:110:25	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/feed.rs:111:29	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/feed.rs:139:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/manager.rs:69:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/manager.rs:123:17	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/manager.rs:124:21	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/manager.rs:125:25	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/diagnostics/stream/manager.rs:126:29	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/dossier/assertions/cpp.rs:29:18	the loop variable `i` is used to index `stripped`	true
+crates/prod-code-mcp/src/dossier/assertions/cpp.rs:60:18	the loop variable `i` is used to index `stripped`	true
+crates/prod-code-mcp/src/dossier/assertions/cpp.rs:94:20	this block may be rewritten with the `?` operator	true
+crates/prod-code-mcp/src/dossier/assertions/go.rs:29:14	the loop variable `i` is used to index `stripped`	true
+crates/prod-code-mcp/src/dossier/assertions/python.rs:39:16	this block may be rewritten with the `?` operator	true
+crates/prod-code-mcp/src/dossier/assertions/python.rs:53:14	the loop variable `i` is used to index `stripped`	true
+crates/prod-code-mcp/src/dossier/assertions/python.rs:130:14	the loop variable `i` is used to index `stripped`	true
+crates/prod-code-mcp/src/dossier/locations.rs:98:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/dossier/locations.rs:126:5	call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes	true
+crates/prod-code-mcp/src/encapsulate_field/polyglot/lsp.rs:44:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/encapsulate_field/polyglot/mod.rs:287:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/extract_delegate/polyglot/execute.rs:199:17	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/extract_function/binding.rs:103:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/extract_function/binding.rs:137:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/extract_function/duplicates/search.rs:96:1	this function has too many arguments (9/7)	true
+crates/prod-code-mcp/src/fixture/builder/lexer.rs:240:24	match expression looks like `matches!` macro	true
+crates/prod-code-mcp/src/fixture/polyglot/parsers_go_ts.rs:113:29	draining all elements of a collection into a new collection of the same type	true
+crates/prod-code-mcp/src/generify/polyglot.rs:125:26	the loop variable `index` is used to index `params`	true
+crates/prod-code-mcp/src/impact/signatures.rs:361:1	this function has too many arguments (9/7)	true
+crates/prod-code-mcp/src/impact/test_cmd.rs:339:16	derefed type is same as origin	true
+crates/prod-code-mcp/src/impact/test_cmd.rs:339:39	derefed type is same as origin	true
+crates/prod-code-mcp/src/impact/test_cmd.rs:340:29	derefed type is same as origin	true
+crates/prod-code-mcp/src/move_item/item.rs:189:1	this function has too many arguments (8/7)	true
+crates/prod-code-mcp/src/parameter_object/binding.rs:243:30	the following explicit lifetimes could be elided: 'a	true
+crates/prod-code-mcp/src/parameter_object/polyglot_callers.rs:35:1	this function has too many arguments (12/7)	true
+crates/prod-code-mcp/src/prune/execute.rs:216:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/remote_fs/mod.rs:267:21	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/remote_fs/mod.rs:268:25	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/replace_constructor/sites/helpers.rs:37:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/replace_inheritance/languages/cpp.rs:175:16	called `Iterator::last` on a `DoubleEndedIterator`; this will needlessly iterate the entire iterator	true
+crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs:196:35	found call to `str::trim` before `str::split_whitespace`	true
+crates/prod-code-mcp/src/server/failover.rs:131:17	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/session/pool.rs:178:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/signature/call_sites.rs:111:1	this returns a `Result<_, ()>`	true
+crates/prod-code-mcp/src/signature/modifiers.rs:110:1	this function has too many arguments (9/7)	true
+crates/prod-code-mcp/src/signature_go/reorder_verify.rs:27:1	this function has too many arguments (12/7)	true
+crates/prod-code-mcp/src/supertypes/rust.rs:25:1	this function has too many arguments (10/7)	true
+crates/prod-code-mcp/src/supertypes/rust.rs:28:5	parameter is only used in recursion	true
+crates/prod-code-mcp/src/sync/cache.rs:133:20	very complex type used. Consider factoring parts into `type` definitions	true
+crates/prod-code-mcp/src/sync/read.rs:128:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/sync/read.rs:129:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/sync/scan.rs:65:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/to_method/helpers.rs:186:33	the following explicit lifetimes could be elided: 'a	true
+crates/prod-code-mcp/src/tools/execution.rs:141:20	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/tools/execution.rs:173:9	redundant redefinition of a binding `args`	true
+crates/prod-code-mcp/src/tools/symbols/alias.rs:56:31	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/tools/symbols/alias.rs:74:31	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/tools/symbols/resolve.rs:354:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/tools/symbols/type_members.rs:234:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/tools/symbols/type_members.rs:240:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs:64:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs:65:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs:143:13	this loop could be written as a `for` loop	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs:266:16	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs:191:16	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs:219:20	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs:38:25	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs:67:33	this manual char comparison can be written more succinctly	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs:78:25	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs:142:25	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs:171:33	this manual char comparison can be written more succinctly	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs:176:21	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:108:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:149:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:214:31	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:216:32	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:242:13	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:248:24	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:306:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:311:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs:324:25	this `if` can be collapsed into the outer `match`	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import.rs:108:41	the following explicit lifetimes could be elided: 'a	true
+crates/prod-code-mcp/src/wrap_return/polyglot/import.rs:128:55	this `if` has identical blocks	true
+crates/prod-code-mcp/src/wrap_return/polyglot/restructure.rs:47:21	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:27:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:28:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:31:17	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:77:17	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:177:16	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:196:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:197:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:232:17	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:259:21	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:290:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs:291:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs:28:5	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs:45:9	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs:46:13	this `if` statement can be collapsed	true
+crates/prod-code-mcp/src/wrap_return/utils.rs:68:25	this `map_or` can be simplified	true
+crates/prod-code-mcp/src/xml_svg/lexer.rs:113:9	this `if` statement can be collapsed	true

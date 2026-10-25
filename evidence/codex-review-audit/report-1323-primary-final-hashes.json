@@ -1,0 +1,39 @@
+{
+  "base": "65c6e5a62e69fafae17820ae9548925b74711187",
+  "candidate": "8dea09616798143ecc363a923265310f2e4a80ae",
+  "files": {
+    "crates/prod-code-client/src/cli/commands.rs": "3884223977d2d1ec163e983feb12c57ad4ff969276bfe9417040dcd854cefb3b",
+    "crates/prod-code-client/src/commands/ops/report.rs": "ce1666eba9a03392dad72b70a10ea244fe84da9f4d27238721ef97f3bdda98f2",
+    "crates/prod-code-client/src/commands/ops/report_tests.rs": "e2b87323f73f44ec42b8f03faeab9b38fd7645ba29fa8dde8f8e83d4b133ff30",
+    "crates/prod-code-mcp/src/protocol.rs": "787d4bdf0ad7b6f64fa22cfbde255dd6bf5fd85fe6a8ef40671744ed7fe21da2",
+    "crates/prod-code-mcp/src/report/ipv6.rs": "4b8c1e372ec71df57f8189193d133148e9d09e3e3a47664f1fedbae54f7b170d",
+    "crates/prod-code-mcp/src/report/mod.rs": "6b75eba31898ec4b76fd03bd7283dae47d9f97715e94cf24143de82595d4c97d",
+    "crates/prod-code-mcp/src/report/regression_tests.rs": "1cb79b209e6786de162fedebe658cc9c184bc6efaa97788bf1302770dfacb64d",
+    "crates/prod-code-mcp/src/report/scrub.rs": "3e2acb7826880db7ea7057cfc9101b5b5614a17cd76f4aea5d098f2616b84e39",
+    "crates/prod-code-mcp/src/report/tests.rs": "e529d2a43ac485c8aa839065507e6fd6479855d20e77f2015ffe7b43df11c670",
+    "crates/prod-code-mcp/src/report/types.rs": "362765789551649b3a2001df9198629e16edf0cf9f55d0c5ef6bb8205ab4354c",
+    "crates/prod-code-mcp/src/tools/schemas/utility.rs": "1875d7fbcdaa5a2afaedec9beb681a52dc2095df143e0e226838f27e07c408e3"
+  },
+  "candidate_source_unchanged": [
+    "crates/prod-code-client/src/cli/commands.rs",
+    "crates/prod-code-client/src/commands/ops/report.rs",
+    "crates/prod-code-client/src/commands/ops/report_tests.rs",
+    "crates/prod-code-mcp/src/protocol.rs",
+    "crates/prod-code-mcp/src/report/mod.rs",
+    "crates/prod-code-mcp/src/report/scrub.rs",
+    "crates/prod-code-mcp/src/report/tests.rs",
+    "crates/prod-code-mcp/src/report/types.rs",
+    "crates/prod-code-mcp/src/tools/schemas/utility.rs"
+  ],
+  "primary_changed": [
+    "crates/prod-code-mcp/src/report/ipv6.rs",
+    "crates/prod-code-mcp/src/report/regression_tests.rs"
+  ],
+  "checks": {
+    "before": "new compact suffix regression: exit101,0passed1failed; direct scrub retained synthetic private-range address",
+    "focused_after": "exit0,1passed,1409filtered",
+    "final": "exit0,24MCP+4CLI passed;1386MCP+110CLI filtered; unrelated benchmark-library50tests all filtered",
+    "lint": "exit0 with103MCP+4client-library+22client-binary baseline warnings; none in changed files",
+    "format": "changed2 source files rustfmt exit0, other candidate source hashes retained"
+  }
+}

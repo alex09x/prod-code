@@ -116,7 +116,7 @@ fn a_draft_needs_a_searchable_title_and_a_body_and_gets_an_environment() {
 
 /// A stand-in `gh` that records its arguments and answers like the real one: `list` prints
 /// the JSON given in `similar`, `create` prints an issue URL.
-fn fake_gh(dir: &Path, similar: &str) -> std::path::PathBuf {
+pub(super) fn fake_gh(dir: &Path, similar: &str) -> std::path::PathBuf {
     let script = dir.join("gh");
     let log = dir.join("calls.log");
     let text = format!(

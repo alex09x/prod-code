@@ -12,12 +12,15 @@
 
 mod declarations;
 pub mod gh;
+mod ipv6;
 mod private_names;
 pub mod scrub;
 pub mod types;
 
 #[cfg(test)]
 mod privacy_tests;
+#[cfg(test)]
+mod regression_tests;
 #[cfg(test)]
 mod tests;
 
