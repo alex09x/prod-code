@@ -1,0 +1,63 @@
+{
+  "base_main": "0b0d2a3254f9f15efd287c6a4d134d569b2c1990",
+  "worker_candidate": "cc0d8fa040bba20c3ed8a4b80cae8e83c37fc323",
+  "parent_changes": [
+    "Removed unconditional blocking watcher-settle sleeps.",
+    "Initial file is written before registering the watcher in the generation test.",
+    "After a real write, the test permits resync only when a new generation arrived.",
+    "Retained test-only error diagnostics for watcher initialization/registration; no new production logging or waits."
+  ],
+  "source_hashes": {
+    "crates/prod-code-mcp/src/session/lifecycle.rs": "88a22e6858188519eb22f80a2c2d8c4fa9ca28bfce385cf501436e50c18ad859",
+    "crates/prod-code-mcp/src/session/mod.rs": "0db55209bd97dd37bcb729ab42fd47c779c5e445f34d024974ba75c0324c19d2",
+    "crates/prod-code-mcp/src/session/pool.rs": "300ae26a62e16cb42671609384ac812bf0e0108d92cd8f2124af4bd9f1e505e3",
+    "crates/prod-code-mcp/src/session/tests/lifecycle.rs": "e8b99c5a07115553b95d6c08bcfedbf2b7db473694b94cb9d2ec8c4872d19fc6",
+    "crates/prod-code-mcp/src/session/tests/mod.rs": "cd7fa4a7de31da76ce0a9097ce9ec31959b623ee62ca5c53734c7a25c4339072",
+    "crates/prod-code-mcp/src/watch.rs": "95f5b574614ebce14ebaf2cb3fe5cb880caa08881f0d1f3d16fcc133b8e83d6e",
+    "crates/prod-code-mcp/src/watch/lifecycle.rs": "524302bc42d23840a57ff3179eddb6c84acf5f2a0d8cf34737b878c96b06535c",
+    "crates/prod-code-mcp/src/watch/tests/lifecycle.rs": "32c4bbddaa1b176ff8638a671ad25b9b22f4fbdf634cd4065d1c07c551566416",
+    "evidence/issue-1356/run-final.py": "d1d26ee5d5b1180a930280a739d6156fcdd51a41a239259b2857c213c19cafe1"
+  },
+  "final_gate": {
+    "command": "python3 evidence/issue-1356/run-final.py",
+    "node_kind": "Linux x86_64 build node",
+    "exit": 0,
+    "session_passed": 16,
+    "watch_passed": 8,
+    "failed": 0,
+    "rlimit_nofile": [
+      1024,
+      1000000
+    ],
+    "retired_client_socket_descriptors_open": "0/20",
+    "default_concurrency": true
+  },
+  "format_exit": 0,
+  "lint_exit": 0,
+  "existing_library_clippy_warnings": 103,
+  "prior_failures": [
+    "The first parent combined gate passed sessions16 and failed one watcher assertion because initial file creation occurred after watcher registration.",
+    "After fixing setup, an intermediate watcher run had four failures with unavailable native watchers; its underlying notify error was not captured.",
+    "Diagnostic-only and final-current runs then passed8/8. The earlier availability failure is not erased or attributed to an unproven cause."
+  ],
+  "limits": [
+    "Only Linux runtime evidence; other-platform behavior source-reviewed.",
+    "Post-failure inotify probe succeeded, but that is not a measurement of resource availability at the failed instant.",
+    "The private resource incident remains open; no service restart, installation or limit change.",
+    "This is resource lifecycle acceptance, not the full constructor integration gate."
+  ],
+  "history": "Root issue-1356 artifacts preserve the earlier candidate; repair-4280 preserves subsequent worker outputs; parent-final is authoritative for current bytes.",
+  "raw_log_sha256": {
+    "watch-focused.txt": "8bcc6cc5bfe47657b6df7145d2b49fabfa61f37a1f4e1387b70bf033f1fd63aa",
+    "format-before.txt": "23f3521588940dc483168c8a71b6abd9a7f454d4b95d8be14c22fae52d3dc687",
+    "lint-before.txt": "d67241520f7b0f25a863a2ae0f221026182cb5f6047d3a213120723bf0a4a7b5",
+    "combined-before-test-fix.txt": "65b1d7c2bd71485e0a6d2974856d52fa0c463634a3a4ce98014a9fe3518827ee",
+    "watch-format.txt": "276deed2681f82e562557b06d6c762ca32479e55134c10b8ff57196ad3dc6d21",
+    "watch-unavailable.txt": "107223ff67146bc726c9f8a30eb3b514b5ceafb08345747d24b05b78135f5c85",
+    "watch-diagnostic.txt": "12f316e1dee05ca31a1b733e9aadfd83d4764491c32f730fcba255136ce800ce",
+    "format-final.txt": "4afca68cb07afe2a9e66d45979609a781bdfa8fec33e856467349c3e78a2433f",
+    "lint-final.txt": "956775064e2eefe144abf17aede70a83c294d48d5ae1378a4ea1ff914962bcae",
+    "acceptance.txt": "3c840b4a151ffbac050f2d74f77db33bac525c1a6b264c2394a4ac2777bb081d"
+  },
+  "normalization": "Only private path/endpoint redaction, CR removal, and trailing horizontal whitespace cleanup in public copies."
+}

@@ -1,0 +1,50 @@
+   Compiling prod-code-mcp v0.3.41 (<build-path>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.21s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 8 tests
+test watch::tests::build_directories_and_vcs_are_ignored ... ok
+test watch::tests::generation_advances_on_change_and_sync_is_due_once ... ok
+test watch::tests::lifecycle::missing_root_metadata_never_reuses_synced_state ... ok
+test watch::tests::lifecycle::pinned_watcher_keeps_ignore_and_config_generations ... FAILED
+test watch::tests::lifecycle::retired_watchers_release_their_real_owners ... FAILED
+test watch::tests::lifecycle::recreated_roots_reject_old_sync_even_with_a_live_old_lease ... FAILED
+test watch::tests::lifecycle::stale_observations_preserve_inserted_and_replaced_incarnations_until_over_budget ... ok
+test watch::tests::lifecycle::evicted_watch_tokens_cannot_acknowledge_a_new_incarnation ... FAILED
+
+failures:
+
+---- watch::tests::lifecycle::pinned_watcher_keeps_ignore_and_config_generations stdout ----
+
+thread 'watch::tests::lifecycle::pinned_watcher_keeps_ignore_and_config_generations' (3741872) panicked at crates/prod-code-mcp/src/watch/tests/lifecycle.rs:115:9:
+assertion failed: snapshot.is_ignored(&root.join("new.txt"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- watch::tests::lifecycle::retired_watchers_release_their_real_owners stdout ----
+
+thread 'watch::tests::lifecycle::retired_watchers_release_their_real_owners' (3741874) panicked at crates/prod-code-mcp/src/watch/tests/lifecycle.rs:31:9:
+assertion failed: lease.0._watcher.is_some()
+
+---- watch::tests::lifecycle::recreated_roots_reject_old_sync_even_with_a_live_old_lease stdout ----
+
+thread 'watch::tests::lifecycle::recreated_roots_reject_old_sync_even_with_a_live_old_lease' (3741873) panicked at crates/prod-code-mcp/src/watch/tests/lifecycle.rs:88:5:
+assertion `left == right` failed: old callbacks cannot mutate a replacement
+  left: 17
+ right: 15
+
+---- watch::tests::lifecycle::evicted_watch_tokens_cannot_acknowledge_a_new_incarnation stdout ----
+
+thread 'watch::tests::lifecycle::evicted_watch_tokens_cannot_acknowledge_a_new_incarnation' (3741870) panicked at crates/prod-code-mcp/src/watch/tests/lifecycle.rs:67:5:
+assertion failed: pinned.0._watcher.is_some()
+
+
+failures:
+    watch::tests::lifecycle::evicted_watch_tokens_cannot_acknowledge_a_new_incarnation
+    watch::tests::lifecycle::pinned_watcher_keeps_ignore_and_config_generations
+    watch::tests::lifecycle::recreated_roots_reject_old_sync_even_with_a_live_old_lease
+    watch::tests::lifecycle::retired_watchers_release_their_real_owners
+
+test result: FAILED. 4 passed; 4 failed; 0 ignored; 0 measured; 1475 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p prod-code-mcp --lib`
+[prod-code exec] exit 101 in 9.6s (server 9.5s, cpu 13.5s user 3.0s sys, peak 1890 MB) on node <build-node>, copy <build-path> (linux x86_64)

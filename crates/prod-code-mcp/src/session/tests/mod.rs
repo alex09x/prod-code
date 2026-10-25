@@ -9,4 +9,5 @@
  */
 
 mod integration;
+mod lifecycle;
 mod unit;

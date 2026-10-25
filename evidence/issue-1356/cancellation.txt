@@ -1,0 +1,11 @@
+   Compiling prod-code-mcp v0.3.41 (<build-path>)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.94s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 1 test
+test session::tests::lifecycle::cancelled_queries_retire_deleted_roots_without_a_later_query ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1481 filtered out; finished in 0.04s
+
+[prod-code exec] exit 0 in 10.4s (server 10.1s, cpu 18.4s user 2.8s sys, peak 2247 MB) on node <Linux build node>, copy <build-path> (linux x86_64)

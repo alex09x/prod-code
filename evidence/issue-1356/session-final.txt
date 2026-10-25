@@ -1,0 +1,27 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 16 tests
+test session::tests::unit::a_full_check_gets_more_time_than_an_interactive_query ... ok
+test session::tests::unit::rebalance_error_is_classified_as_connection_error ... ok
+test session::tests::unit::a_missing_result_is_an_actionable_method_error ... ok
+test session::tests::unit::an_error_envelope_remains_an_error ... ok
+test session::tests::unit::explicit_null_and_ordinary_results_are_preserved ... ok
+test session::tests::integration::an_incompatible_gateway_selection_is_refused_before_initialize ... ok
+test session::tests::lifecycle::a_reused_socket_revalidates_changed_text ... ok
+test session::tests::lifecycle::cancelled_queries_retire_deleted_roots_without_a_later_query ... ok
+test session::tests::integration::established_session_retries_on_mid_session_redirect ... ok
+test session::tests::integration::established_session_migrates_when_placement_is_rebalanced ... ok
+test session::tests::integration::a_queued_query_times_out_without_discarding_the_owner ... ok
+test session::tests::integration::opening_a_silent_gateway_has_a_deadline ... ok
+test session::tests::lifecycle::warm_roots_and_exact_path_identity_survive_retirement ... ok
+test session::tests::integration::a_timed_out_query_discards_its_connection_without_replaying_it ... ok
+retire cycles=20 retained=0 descriptors before=Some(90) after=Some(132); no cleanup/disconnect/limit changes
+retired client socket descriptors still open=0/20
+test session::tests::lifecycle::retired_roots_release_real_client_owners ... ok
+test session::tests::lifecycle::active_and_queued_queries_survive_idle_cache_pressure ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 1466 filtered out; finished in 0.80s
+
+
+exit_code=0

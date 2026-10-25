@@ -1,0 +1,58 @@
+Source hashes: {"crates/prod-code-mcp/src/session/lifecycle.rs": "88a22e6858188519eb22f80a2c2d8c4fa9ca28bfce385cf501436e50c18ad859", "crates/prod-code-mcp/src/session/mod.rs": "0db55209bd97dd37bcb729ab42fd47c779c5e445f34d024974ba75c0324c19d2", "crates/prod-code-mcp/src/session/pool.rs": "300ae26a62e16cb42671609384ac812bf0e0108d92cd8f2124af4bd9f1e505e3", "crates/prod-code-mcp/src/session/tests/lifecycle.rs": "e8b99c5a07115553b95d6c08bcfedbf2b7db473694b94cb9d2ec8c4872d19fc6", "crates/prod-code-mcp/src/session/tests/mod.rs": "cd7fa4a7de31da76ce0a9097ce9ec31959b623ee62ca5c53734c7a25c4339072", "crates/prod-code-mcp/src/watch.rs": "5cc5151689bc2bdc2e7cb969312a86b3b2aba66dc936ec30f4ef696d6289d7a5", "crates/prod-code-mcp/src/watch/lifecycle.rs": "524302bc42d23840a57ff3179eddb6c84acf5f2a0d8cf34737b878c96b06535c", "crates/prod-code-mcp/src/watch/tests/lifecycle.rs": "32c4bbddaa1b176ff8638a671ad25b9b22f4fbdf634cd4065d1c07c551566416", "evidence/issue-1356/run-final.py": "d1d26ee5d5b1180a930280a739d6156fcdd51a41a239259b2857c213c19cafe1"}
+Inherited RLIMIT_NOFILE=(1024, 1000000)
+No explicit cleanup/disconnect, limit changes, or test serialization
+$ cargo test -p prod-code-mcp --lib session::tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 16 tests
+test session::tests::unit::a_full_check_gets_more_time_than_an_interactive_query ... ok
+test session::tests::unit::rebalance_error_is_classified_as_connection_error ... ok
+test session::tests::unit::a_missing_result_is_an_actionable_method_error ... ok
+test session::tests::unit::an_error_envelope_remains_an_error ... ok
+test session::tests::unit::explicit_null_and_ordinary_results_are_preserved ... ok
+test session::tests::integration::an_incompatible_gateway_selection_is_refused_before_initialize ... ok
+test session::tests::lifecycle::a_reused_socket_revalidates_changed_text ... ok
+test session::tests::integration::established_session_retries_on_mid_session_redirect ... ok
+test session::tests::lifecycle::cancelled_queries_retire_deleted_roots_without_a_later_query ... ok
+test session::tests::integration::established_session_migrates_when_placement_is_rebalanced ... ok
+test session::tests::integration::a_queued_query_times_out_without_discarding_the_owner ... ok
+test session::tests::integration::opening_a_silent_gateway_has_a_deadline ... ok
+test session::tests::lifecycle::warm_roots_and_exact_path_identity_survive_retirement ... ok
+test session::tests::integration::a_timed_out_query_discards_its_connection_without_replaying_it ... ok
+retire cycles=20 retained=0 descriptors before=Some(64) after=Some(132); no cleanup/disconnect/limit changes
+retired client socket descriptors still open=0/20
+test session::tests::lifecycle::retired_roots_release_real_client_owners ... ok
+test session::tests::lifecycle::active_and_queued_queries_survive_idle_cache_pressure ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 1467 filtered out; finished in 0.80s
+
+exit_code=0
+$ cargo test -p prod-code-mcp --lib watch::tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 8 tests
+test watch::tests::build_directories_and_vcs_are_ignored ... ok
+
+thread 'watch::tests::generation_advances_on_change_and_sync_is_due_once' (3620537) panicked at crates/prod-code-mcp/src/watch.rs:171:9:
+unchanged tree must not sync again
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test watch::tests::generation_advances_on_change_and_sync_is_due_once ... FAILED
+test watch::tests::lifecycle::pinned_watcher_keeps_ignore_and_config_generations ... ok
+test watch::tests::lifecycle::recreated_roots_reject_old_sync_even_with_a_live_old_lease ... ok
+test watch::tests::lifecycle::missing_root_metadata_never_reuses_synced_state ... ok
+test watch::tests::lifecycle::stale_observations_preserve_inserted_and_replaced_incarnations_until_over_budget ... ok
+test watch::tests::lifecycle::retired_watchers_release_their_real_owners ... ok
+test watch::tests::lifecycle::evicted_watch_tokens_cannot_acknowledge_a_new_incarnation ... ok
+
+failures:
+
+failures:
+    watch::tests::generation_advances_on_change_and_sync_is_due_once
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 1475 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p prod-code-mcp --lib`
+exit_code=101
+[prod-code exec] exit 101 in 1.5s (server 1.3s, cpu 0.9s user 2.0s sys, peak 68 MB) on node <build-node>, copy <build-path> (linux x86_64)

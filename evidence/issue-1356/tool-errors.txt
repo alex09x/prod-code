@@ -1,0 +1,27 @@
+Source discovery failures, retained before using the suggested bounded paths:
+
+Command: rg --files src/session src/watch evidence/issue-1356; prod-code outline src/session.rs; prod-code outline src/watch.rs
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.
+Fallback: prod-code outline on the named modules.
+
+Command: prod-code outline src/session.rs && prod-code outline src/watch.rs
+Error: cannot outline: file does not exist: src/session.rs (did you mean `crates/prod-code-client/src/divergent_bench/session.rs`, `crates/prod-code-client/src/lsp_bridge/session.rs`, `crates/prod-code-gateway/src/workspace/session.rs`?)
+Fallback: prod-code outline crates/prod-code-mcp/src/session
+
+Command: prod-code outline crates/prod-code-mcp/src/session && prod-code outline crates/prod-code-mcp/src/watch
+Error: cannot outline: file does not exist: crates/prod-code-mcp/src/watch (did you mean `crates/prod-code-mcp/src/watch.rs`?)
+Fallback: read the suggested named file in bounded ranges.
+
+Command: prod-code outline crates/prod-code-mcp/src/testkit
+Error: cannot outline: file does not exist: crates/prod-code-mcp/src/testkit
+Fallback: prod-code outline crates/prod-code-testkit/src
+
+Command: prod-code grep 'ignore|watch]' crates/prod-code-mcp/src/config/tests
+Error: search path does not exist: crates/prod-code-mcp/src/config/tests
+Fallback: prod-code def --symbol IgnoreSnapshot::build
+
+Command: prod-code outline crates/prod-code-mcp/src/config.rs
+Error: cannot outline: file does not exist: crates/prod-code-mcp/src/config.rs (did you mean `crates/prod-code-mcp/src/config/mod.rs`?)
+Fallback: read the suggested named configuration module.
+
+These were incorrect discovery paths, not production failures. No publication or issue creation was performed.

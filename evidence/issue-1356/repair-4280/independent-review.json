@@ -1,0 +1,40 @@
+{
+  "decision": "reject",
+  "confidence": 0.8,
+  "summary": "One P3 finding. Read-only review of 8242a7ed..74c0964e (production/test diff = 1e1d7c19; parent 74c0964e touches only 4 evidence files). Session pool, query leases, cancellation, typed keys, replacement identity, process-unique watch tokens, lock-free destruction and no-watcher fallback are otherwise correct. The P3: watch lease() treats registry keys inserted after its unlocked identity snapshot as invalid, so it can evict a just-created unpinned watcher. That causes a watcher rebuild and redundant syncs, but synced state stays correct. Acceptance evidence is consistent with recorded outcomes; no checks were rerun by this review.",
+  "violations": [],
+  "findings": [
+    {
+      "priority": "P3",
+      "code": "watch-identity-snapshot-race",
+      "title": "lease() evicts watcher entries inserted after its identity snapshot",
+      "detail": "lease() snapshots registry keys and their root identities without the lock (watch/lifecycle.rs:96-110). It may then spend a long time in Tracked::new (line 121: ignore snapshot plus recursive notify watch) before relocking (line 122). In the idle sweep (lines 144-149), any idle entry whose key is missing from that snapshot gives identities.get(&key) == None. That is != Some(&entry.identity), so the entry is classified invalid and removed. Any entry replaced since the snapshot is treated the same way. Reachable for unpinned roots whose only lease is the temporary one inside current_generation (watch.rs:123-136). Examples: call_tree first contact (call_tree/walk.rs:241) or the client bridge loop (prod-code-client/src/lsp_bridge/sync.rs:49-58), running while another thread first-contacts a different root. The fresh Tracked is destroyed right after its token was returned. sync_due then sees no tracked entry and forces a push, mark_synced is a no-op, and the next poll rebuilds the recursive watcher with a new token and pushes again. Correctness is kept because tokens are unique, but the eviction is spurious and the watcher churn is avoidable. The session pool does not have this bug: retire_idle only retires keys found in its snapshot (session/lifecycle.rs:65-67,83).",
+      "path": "crates/prod-code-mcp/src/watch/lifecycle.rs",
+      "line": 146,
+      "evidence": "watch/lifecycle.rs:145-147: `entry.identity.is_none() || identities.get(&key) != Some(&entry.identity)`. identities is built only from keys read at lines 96-110, before the unlocked Tracked::new at line 121. Compare session/lifecycle.rs:65-67, where the invalid set only contains snapshotted keys.",
+      "suggested_fix": "Treat a key missing from the snapshot as unknown, not invalid. For example: `entry.identity.is_none() || identities.get(&key).is_some_and(|id| id != &entry.identity)`. Optionally also compare Arc identity against the snapshot, so replaced entries are not judged against stale identities."
+    }
+  ],
+  "deviations": [
+    "Formatting was recorded as rustfmt write mode on the 8 changed files, not `cargo fmt --all -- --check` (results.json format_and_lint; format-lint.txt:1991 shows the files were rewritten). Clippy exit 0 with 103 crate warnings; the only changed-file hit (session/pool.rs:174 collapsible_if, format-lint.txt:924) is on unchanged pre-existing lines.",
+    "The original pool doc comment ('Long-lived sessions of this process...') was removed when pool()/SessionSlot moved to session/lifecycle.rs. Its replacement comment is shorter."
+  ],
+  "verified": [
+    "Active and queued owners: QueryLease holds the slot Arc for the whole query (session/pool.rs:128). retire_idle only removes slots with strong_count == 1, checked under the pool lock (session/lifecycle.rs:68-87). Test active_and_queued_queries_survive_idle_cache_pressure waits for strong_count >= 3 (pool, active, queued) before applying 24-root pressure, and asserts the owner survives (session/tests/lifecycle.rs:126-148).",
+    "Completion and cancellation: QueryLease::drop drops its Arc before retire_idle(MAX_IDLE), so the last concurrent finisher sees count 1 (session/lifecycle.rs:130-137). On abort, the guard is dropped before the lease. Test cancelled_queries_retire_deleted_roots_without_a_later_query asserts the slot and watcher owners are released (tests/lifecycle.rs:223-230).",
+    "Locks: all removed sessions and watcher entries are collected into vectors and dropped after the registry/pool guard is released (session/lifecycle.rs:88-90; watch/lifecycle.rs:88-89,152-154). Candidate losers are dropped after unlock (session/lifecycle.rs:110; watch/lifecycle.rs:154). The pool is a std Mutex and is never held across an await. LspSession has no Drop impl.",
+    "Typed PoolKey replaces the '|'-joined string key (session/lifecycle.rs:26-33; pool.rs:51-57). Tests use a 'p|雪' root and an equal-key symlink alias (tests/lifecycle.rs:43-56).",
+    "Replacement and eviction: RootIdentity (dev, ino, created) is part of PoolKey and Entry. Tokens come from a global counter (watch.rs:44-47,62). mark_synced only records when the live incarnation's generation equals the token (watch/lifecycle.rs:178-186). The per-slot generation forces a refresh across incarnations (pool.rs:188-201). Watch tests evicted_watch_tokens_* and recreated_roots_* assert this.",
+    "No-watcher fallback: current_generation still advances on every call when _watcher is None (watch.rs:126-127). A missing identity yields tracked() None, so sync_due is true (watch/lifecycle.rs:158-176).",
+    "Bounds: idle sessions are limited to 16 plus a 300s age, checked on access or query drop. Idle watchers are limited to 15/16 plus 300s. Pinned owners do not count toward these limits.",
+    "Evidence: sha256 of the 8 Rust sources equals source-hashes.json. Its runner hash c2105e1f equals `git show 1e1d7c19:evidence/issue-1356/run-final.py`. The current runner d1d26ee5 matches primary-recovery.json. Base hashes match 8242a7ed for pool.rs and watch.rs. before.txt: exit 101, retained=20, fd 11->116. after.txt: retained=0, 0/20 retired sockets open, fd 11->16. final.txt (worker run): RLIMIT (1024, 1000000), 16 session and 7 watch passes, both exit_code=0, cargo argv has no --test-threads. Post-acceptance session-final.txt and watch-final.txt: 16 and 7 passes, exit_code=0, retired sockets 0/20. No setrlimit or serial annotations in crates/prod-code-mcp/src.",
+    "The socket assertion is real: it records readlink('/proc/self/fd/N') socket inodes taken from each retired session's own stream and asserts none remain open (tests/lifecycle.rs:259-317, Linux only). The process-wide descriptor sample (89->127 in the worker run, 90->132 post-acceptance) is printed, not asserted, and includes concurrent fixtures; results.json and primary-recovery.json say so."
+  ],
+  "evidence_limits": [
+    "This review did not build, run tests, or run lint. All pass/fail statements come from committed logs.",
+    "final.txt (worker run) and the current session-final.txt/watch-final.txt (post-acceptance run) come from different executions; descriptor samples differ. The per-module post-acceptance logs have no source-hash header, so binding them to the sources depends on primary-recovery.json and the unchanged source-hashes.json.",
+    "The warm-root test pins the slot (tests/lifecycle.rs:47-49), so it proves pinned retention and alias reuse, not LRU retention of an unpinned warm root under the global pool. No test exercises the 300s idle-age paths.",
+    "Runtime evidence is Linux only. The socket-inode assertion is cfg(target_os = linux). macOS and other platforms are covered only by source reading.",
+    "This is resource-lifecycle evidence only, not proof of the constructor combined gate."
+  ]
+}

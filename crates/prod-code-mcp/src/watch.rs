@@ -22,6 +22,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
+mod lifecycle;
+pub(crate) use lifecycle::{Lease, RootIdentity, lease, root_identity};
+
 /// Force a sync at least this often even without observed changes.
 pub const MAX_SYNC_AGE: Duration = Duration::from_secs(60);
 
@@ -34,14 +37,39 @@ struct WatchState {
 
 struct Tracked {
     state: Arc<WatchState>,
-    synced_generation: u64,
-    last_sync: Option<Instant>,
+    synced: Mutex<(u64, Option<Instant>)>,
     _watcher: Option<RecommendedWatcher>,
 }
 
-fn registry() -> &'static Mutex<HashMap<PathBuf, Tracked>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Tracked>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+fn next_generation() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+impl WatchState {
+    fn changed(&self) {
+        // fetch_max prevents concurrent callbacks from publishing tokens out of order.
+        self.generation
+            .fetch_max(next_generation(), Ordering::Relaxed);
+    }
+}
+
+impl Tracked {
+    fn new(root: &Path) -> Self {
+        let config = load_config(root);
+        let state = Arc::new(WatchState {
+            root: root.to_path_buf(),
+            generation: Arc::new(AtomicU64::new(next_generation())),
+            filter_dirty: Arc::new(AtomicBool::new(false)),
+            snapshot: RwLock::new(Arc::new(IgnoreSnapshot::build(root, &config.watch))),
+        });
+        let watcher = start_watcher(Arc::clone(&state));
+        Self {
+            state,
+            synced: Mutex::new((0, None)),
+            _watcher: watcher,
+        }
+    }
 }
 
 fn start_watcher(state: Arc<WatchState>) -> Option<RecommendedWatcher> {
@@ -51,7 +79,7 @@ fn start_watcher(state: Arc<WatchState>) -> Option<RecommendedWatcher> {
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
             Ok(event) => {
                 if event.paths.is_empty() {
-                    state_for_watcher.generation.fetch_add(1, Ordering::Relaxed);
+                    state_for_watcher.changed();
                     return;
                 }
                 let snapshot = {
@@ -78,48 +106,42 @@ fn start_watcher(state: Arc<WatchState>) -> Option<RecommendedWatcher> {
                     }
                 }
                 if should_bump {
-                    state_for_watcher.generation.fetch_add(1, Ordering::Relaxed);
+                    state_for_watcher.changed();
                 }
             }
             Err(_) => {
-                state_for_watcher.generation.fetch_add(1, Ordering::Relaxed);
+                state_for_watcher.changed();
             }
         })
+        .inspect_err(|_error| {
+            #[cfg(test)]
+            eprintln!(
+                "watcher init failed: {_error}; self_fds={:?}; self_threads={:?}",
+                std::fs::read_dir("/proc/self/fd").map(|entries| entries.count()),
+                std::fs::read_dir("/proc/self/task").map(|entries| entries.count())
+            );
+        })
         .ok()?;
-    watcher.watch(&state.root, RecursiveMode::Recursive).ok()?;
+    watcher
+        .watch(&state.root, RecursiveMode::Recursive)
+        .inspect_err(|_error| {
+            #[cfg(test)]
+            eprintln!("watcher registration failed: {_error}");
+        })
+        .ok()?;
     Some(watcher)
 }
 
 /// The tree's current change generation; also starts watching `root` on first use.
 /// Without a working watcher the generation advances on every call, i.e. every query syncs.
 pub fn current_generation(root: &Path) -> u64 {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-    let tracked = registry.entry(root.clone()).or_insert_with(|| {
-        let generation = Arc::new(AtomicU64::new(1));
-        let filter_dirty = Arc::new(AtomicBool::new(false));
-        let config = load_config(&root);
-        let snapshot = RwLock::new(Arc::new(IgnoreSnapshot::build(&root, &config.watch)));
-        let state = Arc::new(WatchState {
-            root: root.clone(),
-            generation,
-            filter_dirty,
-            snapshot,
-        });
-        let watcher = start_watcher(Arc::clone(&state));
-        Tracked {
-            state,
-            synced_generation: 0,
-            last_sync: None,
-            _watcher: watcher,
-        }
-    });
-
+    let lease = lease(root);
+    let tracked = &lease.0;
     if tracked._watcher.is_none() {
-        tracked.state.generation.fetch_add(1, Ordering::Relaxed);
+        tracked.state.changed();
     } else if tracked.state.filter_dirty.swap(false, Ordering::AcqRel) {
-        let config = load_config(&root);
-        let new_snapshot = Arc::new(IgnoreSnapshot::build(&root, &config.watch));
+        let config = load_config(&tracked.state.root);
+        let new_snapshot = Arc::new(IgnoreSnapshot::build(&tracked.state.root, &config.watch));
         if let Ok(mut w) = tracked.state.snapshot.write() {
             *w = new_snapshot;
         }
@@ -130,29 +152,23 @@ pub fn current_generation(root: &Path) -> u64 {
 /// Whether a pre-flight sync is due for `root` at `generation` (as returned by
 /// [`current_generation`] just before deciding).
 pub fn sync_due(root: &Path, generation: u64) -> bool {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-    match registry.get(&root) {
-        Some(t) => {
-            t.synced_generation != generation
-                || t.last_sync.is_none_or(|at| at.elapsed() >= MAX_SYNC_AGE)
-        }
-        None => true,
-    }
+    lifecycle::sync_due(root, generation)
 }
 
 /// Records that the tree at `generation` was synced successfully.
 pub fn mark_synced(root: &Path, generation: u64) {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(t) = registry.get_mut(&root) {
-        t.synced_generation = generation;
-        t.last_sync = Some(Instant::now());
-    }
+    lifecycle::mark_synced(root, generation);
+}
+
+#[cfg(test)]
+pub(crate) fn test_owner(root: &Path) -> impl Fn() -> bool + use<> {
+    let owner = Arc::downgrade(&lease(root).0);
+    move || owner.upgrade().is_some()
 }
 
 #[cfg(test)]
 mod tests {
+    mod lifecycle;
     use super::*;
     use crate::config::WatchConfig;
 
@@ -161,6 +177,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         std::fs::write(root.join("a.rs"), "a").unwrap();
+        let _lease = lease(root);
 
         let g1 = current_generation(root);
         assert!(sync_due(root, g1), "first contact must sync");
@@ -178,7 +195,10 @@ mod tests {
         assert!(g2 > g1, "a write inside the tree must bump the generation");
         assert!(sync_due(root, g2));
         mark_synced(root, g2);
-        assert!(!sync_due(root, g2));
+        let due = sync_due(root, g2);
+        // One filesystem write can produce several asynchronous notifications.
+        // A later token must invalidate the sync; an unchanged token must not.
+        assert!(!due || current_generation(root) != g2);
     }
 
     #[test]
