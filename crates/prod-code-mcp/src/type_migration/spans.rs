@@ -43,6 +43,14 @@ pub fn declared_type_span_polyglot(
         i += 1;
     }
 
+    if lang == Language::Rust {
+        let code = crate::extract_trait::lex::lexical_code(text);
+        let next = crate::extract_trait::lex::next_code(text, &code, after_name)?;
+        if matches!(bytes[next], b'(' | b'<') {
+            return super::rust_return::return_span(text, &code, next);
+        }
+    }
+
     // Function return type
     if bytes.get(i) == Some(&b'(') {
         let close = matching(text, i)?;

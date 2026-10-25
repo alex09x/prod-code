@@ -24,7 +24,7 @@ pub(crate) fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
-/// The errors of `reports` as sites, collapsed and with the ones on attributes counted apart.
+/// All new errors remain authoritative sites; attribute errors are also counted for display.
 pub(crate) fn collect_sites(
     root: &Path,
     rewritten: &BTreeMap<PathBuf, String>,
@@ -74,14 +74,19 @@ pub(crate) fn collect_sites(
     sites.dedup_by(|a, b| {
         a.file == b.file && a.line == b.line && a.col == b.col && a.message == b.message
     });
-    let before = sites.len();
-    sites.retain(|s| !s.source.trim_start().starts_with("#["));
-    let in_attributes = before - sites.len();
+    let in_attributes = sites
+        .iter()
+        .filter(|s| s.source.trim_start().starts_with("#["))
+        .count();
     (sites, in_attributes)
 }
 
 /// Whether a language-idiomatic conversion can go on this site's expression.
 pub(crate) fn is_candidate(site: &Site, was: &str, now: &str) -> bool {
+    // Attribute diagnostics are errors, but their ranges are not expressions to convert.
+    if site.source.trim_start().starts_with("#[") {
+        return false;
+    }
     if site.file.ends_with(".rs") {
         if site.code.as_deref() != Some("E0308") {
             return false;
@@ -190,6 +195,7 @@ pub(crate) async fn convert_sites(
             .flat_map(|r| {
                 r.items
                     .iter()
+                    .chain(&r.in_derive)
                     .filter(|d| d.severity == "error")
                     .map(move |d| (r.file.clone(), d.line))
             })
@@ -214,6 +220,7 @@ pub(crate) async fn convert_sites(
             .flat_map(|r| {
                 r.items
                     .iter()
+                    .chain(&r.in_derive)
                     .filter(|d| d.severity == "error")
                     .map(move |d| (r.file.clone(), d.line, d.message.clone()))
             })

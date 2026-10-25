@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Type-Migration Error and Syntax Preservation** (`crates/prod-code-mcp`, #1310):
+  Attribute diagnostics remain blocking during migration and conversion, and missing reference evidence refuses planning even with force. Rust return-type edits preserve generic headers, `where` constraints, trait-item boundaries, macro delimiters and Unicode identifier tokens.
 - **Diagnostic Error Authority** (`crates/prod-code-mcp`, #1286):
   Genuine derive-inference and auto-trait errors remain blocking with explanatory notes. Baseline subtraction requires unambiguous occurrence, range and owner correspondence; changed literal/header identities and uncertain matches retain their errors.
 - **Promise Caller Preservation** (`crates/prod-code-mcp`, #1280):

@@ -24,6 +24,7 @@ mod call_matching;
 mod conversion;
 mod execute;
 mod matching;
+mod rust_return;
 mod sites;
 mod spans;
 mod transitive;
