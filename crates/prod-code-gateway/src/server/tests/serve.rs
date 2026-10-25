@@ -101,6 +101,51 @@ where
     result
 }
 
+/// A scrape port already taken does not stop the gateway, and the Pushgateway client posts
+/// the metrics under the configured job and instance.
+#[tokio::test]
+async fn metrics_push_runs_and_an_occupied_scrape_port_leaves_the_gateway_serving() {
+    crate::test_cache_support::isolated!();
+    configure_environment(None);
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let temp = tempfile::tempdir().unwrap();
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let pushgateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut cli =
+        ServerCli::try_parse_from(["gateway", "--bind", "127.0.0.1:0", "--no-admission"]).unwrap();
+    cli.storage = temp.path().join("storage");
+    cli.prometheus_listen = Some(occupied.local_addr().unwrap());
+    cli.prometheus_push_url = Some(format!("http://{}", pushgateway.local_addr().unwrap()));
+    cli.prometheus_job = "sample-job".into();
+    cli.prometheus_instance = Some("sample-instance".into());
+    cli.prometheus_push_interval_secs = 1;
+
+    let result = serve_then_stop(cli, libc::SIGTERM, |addr| async move {
+        let (status, _) = http_get(tcp_stream(addr).await, "/health").await;
+        assert_eq!(status, 200);
+        let (mut push, _) = tokio::time::timeout(Duration::from_secs(10), pushgateway.accept())
+            .await
+            .expect("the metrics are pushed")
+            .unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && push.read(&mut byte).await.unwrap() == 1 {
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        assert!(
+            head.starts_with("POST /metrics/job/sample-job/instance/sample-instance HTTP/1.1\r\n"),
+            "{head}"
+        );
+        push.write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+    })
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    drop(occupied);
+}
+
 #[tokio::test]
 async fn a_gateway_that_requires_tls_without_credentials_refuses_to_start() {
     crate::test_cache_support::isolated!();

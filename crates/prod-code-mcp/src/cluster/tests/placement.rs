@@ -27,6 +27,24 @@ async fn the_public_pick_refuses_an_empty_node_list_before_reading_any_placement
     );
 }
 
+/// With an operating system required and no node answering at all, the error says that none
+/// of them answered rather than listing reachable nodes that lack it.
+#[tokio::test]
+async fn an_os_requirement_with_no_node_answering_names_every_node() {
+    // Ports nothing listens on: both connections are refused.
+    let nodes: [SocketAddr; 2] = [
+        "127.0.0.1:1".parse().unwrap(),
+        "127.0.0.1:2".parse().unwrap(),
+    ];
+    assert_eq!(
+        pick_node_with(&nodes, "unanswered", None, Some("macos"), None)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "no reachable gateway runs macOS (none of 127.0.0.1:1, 127.0.0.1:2 answered)"
+    );
+}
+
 #[tokio::test]
 async fn coverage_w3_pick_lists_reachable_nodes_without_the_required_os() {
     let first = node_on(&["rust"], Some("linux x86_64")).await;
