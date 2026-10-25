@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Ordered Workspace Edits and File Move History** (`crates/prod-code-mcp`, #1288):
+  Preflight defers state checks affected by earlier operations to transactional execution, so a binary file or moved directory can be replaced with a new text file in the same edit. Single-file moves carry their original text for reports through overwrites and sequential renames, including moves between repository roots. Failed later steps still restore the original paths, bytes and permissions.
 - **Literal CTest Selection** (`crates/prod-code-mcp`, #1284):
   Impact-generated CTest filters escape registered test names before joining them, so regex punctuation in a name neither selects unrelated tests nor hides the intended one.
 - **clang-tidy Filename Boundaries** (`crates/prod-code-mcp`, #1282):

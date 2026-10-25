@@ -175,6 +175,17 @@ impl MultiRun {
                             }
                         }
                     }
+                    if !to_abs.is_dir() {
+                        // A moved file carries its original text, even if the destination
+                        // already had a record (an overwrite or an earlier move). Disk undo
+                        // uses the journal, independently of these report-only originals.
+                        self.originals.retain(|(path, _)| path != &to_abs);
+                        for (path, _) in &mut self.originals {
+                            if *path == from_abs {
+                                *path = to_abs.clone();
+                            }
+                        }
+                    }
                     self.vacated.push(from_abs);
                 }
                 MultiOp::Delete {

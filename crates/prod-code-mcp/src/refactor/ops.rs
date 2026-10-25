@@ -129,11 +129,35 @@ pub fn multi_operations(
     Ok(ops)
 }
 
-/// What can be told wrong about an edit before any mutation occurs: a file to edit that is not
-/// readable text, or a directory to delete that is not empty without `recursive`. Found here,
-/// nothing has been written yet.
+/// Check readability and deletion safety where earlier operations cannot change the answer.
+/// Overlapping paths must instead be checked by `MultiRun` against their ordered state, before
+/// that step mutates anything. Its journal undoes earlier steps if a deferred check fails.
 pub fn check_multi_ops(ops: &[MultiOp]) -> Result<()> {
+    let mut changed: Vec<PathBuf> = Vec::new();
     for op in ops {
+        let paths = match op {
+            MultiOp::Text { root, rel, .. }
+            | MultiOp::Create { root, rel, .. }
+            | MultiOp::Delete { root, rel, .. } => vec![root.join(rel)],
+            MultiOp::Rename {
+                from_root,
+                from_rel,
+                to_root,
+                to_rel,
+                ..
+            } => vec![from_root.join(from_rel), to_root.join(to_rel)],
+        };
+        // Include ancestors too: creating or removing a child changes deletion safety, and
+        // replacing a file with a directory changes whether descendant text can be read.
+        let affected = paths.iter().any(|abs| {
+            changed
+                .iter()
+                .any(|prior| abs.starts_with(prior) || prior.starts_with(abs))
+        });
+        if affected {
+            changed.extend(paths);
+            continue;
+        }
         match op {
             MultiOp::Text { root, rel, .. } => {
                 text_for_edit(&root.join(rel))?;
@@ -155,6 +179,7 @@ pub fn check_multi_ops(ops: &[MultiOp]) -> Result<()> {
             }
             _ => {}
         }
+        changed.extend(paths);
     }
     Ok(())
 }
