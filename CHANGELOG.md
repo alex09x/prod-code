@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Literal CTest Selection** (`crates/prod-code-mcp`, #1284):
+  Impact-generated CTest filters escape registered test names before joining them, so regex punctuation in a name neither selects unrelated tests nor hides the intended one.
 - **clang-tidy Filename Boundaries** (`crates/prod-code-mcp`, #1282):
   CMake and Meson lint/fix plans pass source paths through NUL-delimited `find` and `xargs`, preserving spaces, quotes and backslashes as filename characters.
 - **F# and NASM Sources in Non-Git Workspaces** (`crates/prod-code-mcp`, #1275):

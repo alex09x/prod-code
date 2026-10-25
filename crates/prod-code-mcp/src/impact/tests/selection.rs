@@ -175,7 +175,7 @@ fn test_commands_select_tests() {
         .unwrap()
         .join(" ");
     assert!(
-        cpp.contains("ctest") && cpp.contains("-R '^(Price.Doubles|adds up)$'"),
+        cpp.contains("ctest") && cpp.contains("-R '^(Price\\.Doubles|adds up)$'"),
         "{cpp}"
     );
     let ts = test_command("typescript", &tools, &[t("tests/a.test.ts"), t("adds")]).unwrap();
