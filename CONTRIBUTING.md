@@ -68,8 +68,9 @@ Check refusal cases as well as successful edits, and verify that a failed write 
 original paths and contents.
 
 Record the exact command, revision, exit status, test counts (including ignored tests), and
-relevant output. Preserve the status of the checked command when filtering its output; the
-success of `tail`, `grep`, or a logging step does not mean the test passed. Compare performance
+relevant output, sanitized before public posting as described below. Preserve the status of
+the checked command when filtering its output; the success of `tail`, `grep`, or a logging
+step does not mean the test passed. Compare performance
 on the same build profile, workload, cache state, and node class. Report cold and warm runs
 separately, including errors and timeouts rather than percentiles of successes alone.
 
@@ -114,6 +115,12 @@ type is given; by hand it is `gh issue create --label bug --label gateway` and
 `gh pr create --label ...`.
 
 ## Reproduction commands that belong in issues and PRs
+
+Before posting output from these commands, explicitly sanitize and redact private data,
+including in `prod-code cluster`, `prod-code status` and gateway logs. Replace private addresses,
+host names and paths with neutral placeholders such as `<node-address>`, `<linux-node>` and
+`<workspace-path>`; redact credentials as `<redacted>`. Review nested command arguments, errors
+and log fields as well as headings. Preserve the command's meaning, exit status and measurements.
 
 ```sh
 # Per-phase timing of one query
@@ -161,13 +168,26 @@ like everything else; the result belongs to the revision it measured:
 prod-code exec --timeout-secs 1800 --no-pull -- python3 scripts/coverage.py --min 80
 ```
 
-It names each file under the bar and how many regions it is short. There are no exemptions;
-if a new file cannot reach the bar, that is worth a sentence in the pull request rather than an
-entry in `EXEMPT`.
+It names each measured file under the bar and how many regions it is short. There are no
+threshold exemptions (`EXEMPT` is empty); if a new file cannot reach the bar, that is worth a
+sentence in the pull request rather than an entry in `EXEMPT`.
 
 Coverage is evidence only for files actually measured in the report. Missing or malformed
-measurements must fail the gate; an existing source file absent from the report is not a file
-with no executable code. A zero-region result must be explicitly present in the report. Run
+required measurements remain acceptance failures; absence alone never proves a file has no
+executable code. A claim of zero regions requires an explicit zero-region entry in the report.
+
+The current gate rejects malformed report entries. With no path arguments, it enumerates Rust
+sources in workspace package directories, skipping hidden, build-output (`target`), test, bench
+and example directories and workspace exclusions. Enumerated files absent from the report fail
+unless `omitted_by_llvm_cov` filters them: test/example/bench paths, build scripts, modules
+declared with `cfg(not(unix))` or `cfg(windows)` in a parent, and files without a recognized
+`fn` item. These omission heuristics do not require explicit zero-region entries. With path
+arguments, the gate matches report rows or explicit zero-region entries for each requested
+path; a directory match does not enumerate all missing files beneath it.
+
+These are implementation limits, not coverage evidence or exceptions to the required 80% floor.
+Account for relevant unmeasured files in the pull request rather than declaring them covered
+because the gate passed. Run
 `python3 -m unittest discover -s scripts -p test_coverage.py` through remote execution when
 changing the coverage gate. Coverage percentages supplement the behavioral and real-server
 checks above; they do not replace them.
