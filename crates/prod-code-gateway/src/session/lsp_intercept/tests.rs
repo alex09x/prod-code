@@ -11,6 +11,7 @@
 use super::*;
 use serde_json::{Value, json};
 
+mod backend_session;
 mod managed;
 
 /// A session over a workspace with no engine at all, and its output queue.

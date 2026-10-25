@@ -15,6 +15,15 @@ mod tests;
 
 /// Runs the gateway: bind, serve, and return when a signal says to stop.
 pub async fn run(cli: ServerCli) -> Result<()> {
+    run_announcing(cli, None).await
+}
+
+/// [`run`], telling `bound` the address the TCP listener took once every listener is accepting
+/// and the stop signals are handled.
+pub(crate) async fn run_announcing(
+    cli: ServerCli,
+    bound_tx: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+) -> Result<()> {
     let auth_token = prod_code_protocol::transport::try_auth_token()?;
     ensure_blocking_stdio();
     prefer_rustup_toolchain();
@@ -149,7 +158,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     let advertise = cli
         .advertise
         .clone()
-        .unwrap_or_else(|| detect_advertise_addr(cli.bind, peers.first().map(String::as_str)));
+        .unwrap_or_else(|| detect_advertise_addr(bound, peers.first().map(String::as_str)));
     *state.advertise.write().await = advertise.clone();
     state.metrics.set_node(&advertise);
     {
@@ -272,6 +281,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 
     let handshake_limiter = Arc::new(tokio::sync::Semaphore::new(128));
     let tls_acceptor = tls_acceptor.map(Arc::new);
+    if let Some(tx) = bound_tx {
+        let _ = tx.send(bound);
+    }
 
     loop {
         tokio::select! {

@@ -10,6 +10,8 @@
 
 use super::*;
 
+mod serve;
+
 #[tokio::test]
 async fn startup_optional_metrics_tasks_preserve_an_existing_socket_path() {
     crate::test_cache_support::isolated!();

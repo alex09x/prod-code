@@ -12,6 +12,8 @@ use super::*;
 use prod_code_protocol::{ShadowHypothesis, ShadowRunResponse};
 use tokio::io::AsyncWriteExt;
 
+mod requests;
+
 fn request() -> ShadowRunRequest {
     ShadowRunRequest {
         client_workspace_root: "/client/shadow-fixture".into(),
