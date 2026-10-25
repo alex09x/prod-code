@@ -1,0 +1,77 @@
+{
+  "base": "da5545fb204c0bfc3225e66ff0d11ca31771349d",
+  "sources": [
+    {
+      "path": "crates/prod-code-mcp/src/fixit/apply.rs",
+      "after_sha256": "7397466641d6d72f950db38475af0cb8975e2ea3f66269890d2227b10fa59d8f",
+      "before_sha256": "7ff1af394a28a30bdf498aef289461778f25d353c7cbe226d449ef955bd638d4",
+      "source_pairs": [
+        {
+          "before": "27: ) -> Result<Fixed> {\n28:     let before = crate::verify::run_verify(remote, root, hint, kind, None, timeout_secs).await?;\n29:     if before.language != \"rust\" {\n30:         return tool_fix(remote, root, hint, kind, timeout_secs, before).await;\n31:     }\n32:     let (files, outcomes) = plan(root, &before.fixes);\n33:     if files.is_empty() {\n34:         return Ok(Fixed {\n35:             before,\n36:             outcomes,\n37:             after: None,\n38:             note: None,\n39:         });\n40:     }\n41:     crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files))?;\n42:     let after = crate::verify::run_verify(remote, root, hint, kind, None, timeout_secs).await?;\n43:     Ok(Fixed {",
+          "after": "27: ) -> Result<Fixed> {\n28:     let before = crate::verify::run_verify(remote, root, hint, kind, None, timeout_secs).await?;\n29:     if before.language != \"rust\" {\n30:         return tool_fix(remote, root, hint, kind, timeout_secs, before).await;\n31:     }\n32:     let (subdir, _) = crate::sync::engine_project(root, hint.unwrap_or(root));\n33:     let project = subdir.as_ref().map_or(root.to_path_buf(), |s| root.join(s));\n34:     let (files, outcomes) = plan_in(root, &project, &before.fixes);\n35:     if files.is_empty() {\n36:         return Ok(Fixed {\n37:             before,\n38:             outcomes,\n39:             after: None,\n40:             note: None,\n41:         });\n42:     }\n43:     crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files))?;\n44:     let after = crate::verify::run_verify(remote, root, hint, kind, None, timeout_secs).await?;"
+        },
+        {
+          "before": "81:         ));\n82:     };\n83:     let outcome = crate::exec::run_remote(\n84:         remote,\n85:         root,\n86:         subdir.as_deref(),\n87:         command.clone(),\n88:         vec![(\"NO_COLOR\".to_string(), \"1\".to_string())],\n89:         timeout_secs,\n90:         true,\n91:         |_, _| {},\n92:     )\n93:     .await?;\n94:     let outcomes: Vec<Outcome> = outcome\n95:         .pulled_files\n96:         .iter()\n97:         .map(|file| Outcome {\n98:             file: file.clone(),\n99:             line: 0,\n100:             message: format!(\"rewritten by `{}`\", command.join(\" \")),\n101:             skipped: None,\n102:         })\n103:         .collect();\n104:     let note = format!(\n105:         \"fixes: `{}` rewrote {} file(s)\",\n106:         command.join(\" \"),\n107:         outcomes.len()\n108:     );\n109:     let after = if outcomes.is_empty() {\n110:         None\n111:     } else {\n112:         Some(crate::verify::run_verify(remote, root, hint, kind, None, timeout_secs).await?)\n113:     };\n114:     Ok(Fixed {\n115:         before,\n116:         outcomes,\n117:         after,\n118:         note: Some(note),\n119:     })\n120: }",
+          "after": "85:     let mut tail = crate::exec::TailBuffer::new(8 * 1024);\n86:     let outcome = crate::exec::run_remote(\n87:         remote,\n88:         root,\n89:         subdir.as_deref(),\n90:         command.clone(),\n91:         vec![(\"NO_COLOR\".to_string(), \"1\".to_string())],\n92:         timeout_secs,\n93:         true,\n94:         |_, bytes| tail.push(bytes),\n95:     )\n96:     .await?;\n97:     let failure = if let Some(error) = &outcome.exit.error {\n98:         Some(format!(\"failed to start: {error}\"))\n99:     } else if outcome.exit.timed_out {\n100:         Some(\"timed out\".to_string())\n101:     } else if outcome.exit.exit_code != Some(0) {\n102:         Some(match outcome.exit.exit_code {\n103:             Some(code) => format!(\"failed with exit code {code}\"),\n104:             None => \"failed: exit code is unknown\".to_string(),\n105:         })\n106:     } else {\n107:         None\n108:     };\n109:     if let Some(failure) = failure {\n110:         anyhow::bail!(\n111:             \"fixes: `{}` {failure}; {} changed file(s) already pulled: {}\\n{}\",\n112:             command.join(\" \"),\n113:             outcome.pulled_files.len(),\n114:             outcome.pulled_files.join(\", \"),\n115:             tail.text()\n116:         );\n117:     }\n118:     let outcomes: Vec<Outcome> = outcome\n119:         .pulled_files\n120:         .iter()\n121:         .map(|file| Outcome {\n122:             file: file.clone(),\n123:             line: 0,\n124:             message: format!(\"rewritten by `{}`\", command.join(\" \")),\n125:             skipped: None,\n126:         })\n127:         .collect();\n128:     let note = format!(\n129:         \"fixes: `{}` rewrote {} file(s)\",\n130:         command.join(\" \"),\n131:         outcomes.len()\n132:     );\n133:     let after = if outcomes.is_empty() {\n134:         None\n135:     } else {\n136:         Some(crate::verify::run_verify(remote, root, hint, kind, None, timeout_secs).await?)\n137:     };\n138:     Ok(Fixed {\n139:         before,\n140:         outcomes,\n141:         after,\n142:         note: Some(note),\n143:     })"
+        }
+      ]
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/plan.rs",
+      "after_sha256": "72653e1ed47d9537c22a872f3331ceefc9eae5e61189e288efe555a9acc51d73",
+      "before_sha256": "d1c27cb89f16009b48639311662fa92dc9e059c16171831e75c47e91740c9f41",
+      "source_pairs": [
+        {
+          "before": "19: pub fn plan(root: &Path, fixes: &[Fix]) -> (BTreeMap<PathBuf, String>, Vec<Outcome>) {\n20:     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();\n21:     let mut taken: BTreeMap<PathBuf, Vec<(usize, usize)>> = BTreeMap::new();\n22:     let mut accepted: Vec<&Fix> = Vec::new();\n23:     let mut outcomes = Vec::new();\n24:     let mut seen = std::collections::BTreeSet::new();\n25:     for fix in fixes {\n26:         // The same suggestion is reported once per target that compiles the file.\n27:         if !seen.insert(format!(\"{:?}\", fix.edits)) {\n28:             continue;\n29:         }\n30:         let first = &fix.edits[0];\n31:         let outcome = |skipped: Option<String>| Outcome {\n32:             file: first.file.clone(),\n33:             line: first.line,\n34:             message: fix.message.clone(),\n35:             skipped,\n36:         };\n37:         let mut why = None;\n38:         for e in &fix.edits {\n39:             let path = root.join(&e.file);\n40:             if Path::new(&e.file).is_absolute() || e.file.starts_with(\"..\") || !path.is_file() {\n41:                 why = Some(format!(\"{} is not a file of this workspace\", e.file));\n42:                 break;\n43:             }\n44:             let text = texts",
+          "after": "19: pub fn plan(root: &Path, fixes: &[Fix]) -> (BTreeMap<PathBuf, String>, Vec<Outcome>) {\n20:     plan_in(root, root, fixes)\n21: }\n22: \n23: /// Rustc filenames are relative to the command directory, while the canonical outer\n24: /// checkout remains the boundary for every part of a suggestion.\n25: pub fn plan_in(\n26:     root: &Path,\n27:     project: &Path,\n28:     fixes: &[Fix],\n29: ) -> (BTreeMap<PathBuf, String>, Vec<Outcome>) {\n30:     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());\n31:     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();\n32:     let mut taken: BTreeMap<PathBuf, Vec<(usize, usize)>> = BTreeMap::new();\n33:     let mut accepted = Vec::new();\n34:     let mut outcomes = Vec::new();\n35:     let mut seen = std::collections::BTreeSet::new();\n36:     for fix in fixes {\n37:         // The same suggestion is reported once per target that compiles the file.\n38:         if !seen.insert(format!(\"{:?}\", fix.edits)) {\n39:             continue;\n40:         }\n41:         let first = &fix.edits[0];\n42:         let outcome = |skipped: Option<String>| Outcome {\n43:             file: workspace_file(&root, project, &first.file)\n44:                 .and_then(|path| path.strip_prefix(&root).ok().map(Path::to_path_buf))\n45:                 .map_or_else(\n46:                     || first.file.clone(),\n47:                     |path| path.to_string_lossy().replace('\\\\', \"/\"),\n48:                 ),\n49:             line: first.line,\n50:             message: fix.message.clone(),\n51:             skipped,\n52:         };\n53:         let mut why = None;\n54:         let mut parts: Vec<(PathBuf, &Edit)> = Vec::new();\n55:         for e in &fix.edits {\n56:             let Some(path) = workspace_file(&root, project, &e.file) else {\n57:                 why = Some(format!(\"{} is not a file of this workspace\", e.file));\n58:                 break;\n59:             };"
+        },
+        {
+          "before": "55:                 break;\n56:             }\n57:             let spans = taken.entry(path).or_default();\n58:             if spans\n59:                 .iter()\n60:                 .any(|(s, en)| e.start < *en && *s < e.end.max(e.start + 1))\n61:             {\n62:                 why = Some(\"it overlaps a fix already taken\".to_string());\n63:                 break;\n64:             }\n65:         }\n66:         if why.is_none() {\n67:             for e in &fix.edits {\n68:                 taken\n69:                     .entry(root.join(&e.file))\n70:                     .or_default()\n71:                     .push((e.start, e.end.max(e.start + 1)));\n72:             }\n73:             accepted.push(fix);\n74:         }\n75:         outcomes.push(outcome(why));\n76:     }\n77:     let mut out = BTreeMap::new();\n78:     let mut edits: BTreeMap<PathBuf, Vec<&Edit>> = BTreeMap::new();\n79:     for fix in accepted {\n80:         for e in &fix.edits {\n81:             edits.entry(root.join(&e.file)).or_default().push(e);\n82:         }\n83:     }\n84:     for (path, mut list) in edits {\n85:         let mut text = texts.get(&path).cloned().unwrap_or_default();\n86:         list.sort_by_key(|e| std::cmp::Reverse(e.start));\n87:         for e in list {\n88:             text.replace_range(e.start..e.end, &e.replacement);\n89:         }\n90:         out.insert(path, text);\n91:     }\n92:     (out, outcomes)",
+          "after": "64:             if e.end > text.len()\n65:                 || e.start > e.end\n66:                 || !text.is_char_boundary(e.start)\n67:                 || !text.is_char_boundary(e.end)\n68:                 || e.line_text.as_deref().is_some_and(|t| Some(t) != line_now)\n69:             {\n70:                 why = Some(\"the file changed since the compiler read it\".to_string());\n71:                 break;\n72:             }\n73:             let spans = taken.entry(path.clone()).or_default();\n74:             let overlaps = |s: usize, en: usize| e.start < en && s < e.end.max(e.start + 1);\n75:             if spans.iter().any(|(s, en)| overlaps(*s, *en))\n76:                 || parts.iter().any(|(p, part)| {\n77:                     p == &path && overlaps(part.start, part.end.max(part.start + 1))\n78:                 })\n79:             {\n80:                 why = Some(\"it overlaps a fix already taken\".to_string());\n81:                 break;\n82:             }\n83:             parts.push((path, e));\n84:         }\n85:         if why.is_none() {\n86:             for (path, e) in &parts {\n87:                 taken\n88:                     .entry(path.clone())\n89:                     .or_default()\n90:                     .push((e.start, e.end.max(e.start + 1)));\n91:             }\n92:             accepted.extend(parts);\n93:         }\n94:         outcomes.push(outcome(why));\n95:     }\n96:     let mut out = BTreeMap::new();\n97:     let mut edits: BTreeMap<PathBuf, Vec<&Edit>> = BTreeMap::new();\n98:     for (path, e) in accepted {\n99:         edits.entry(path).or_default().push(e);\n100:     }\n101:     for (path, mut list) in edits {\n102:         let mut text = texts.get(&path).cloned().unwrap_or_default();\n103:         list.sort_by_key(|e| std::cmp::Reverse(e.start));\n104:         for e in list {\n105:             text.replace_range(e.start..e.end, &e.replacement);\n106:         }\n107:         out.insert(path, text);\n108:     }\n109:     (out, outcomes)\n110: }\n111: \n112: fn workspace_file(root: &Path, project: &Path, file: &str) -> Option<PathBuf> {\n113:     if Path::new(file).is_absolute() {\n114:         return None;\n115:     }\n116:     // Resolve existing paths with filesystem semantics: this collapses parent components\n117:     // and symlink aliases without allowing a link (including link/..) to escape the root.\n118:     let path = std::fs::canonicalize(project.join(file)).ok()?;\n119:     (path.starts_with(root) && path.is_file()).then_some(path)"
+        }
+      ]
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests.rs",
+      "after_sha256": "094ab7eac0a568dc018f8550013453e2940bb1c1507b5c4545fccaed91ab9337",
+      "before_sha256": "4997d9ffd8910648353f9c6e4c94570e29ba8a1c17f80adab57773ac0b95896b",
+      "source_pairs": []
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349.rs",
+      "after_sha256": "5f033c6286d9ce5130f06213026a29b25cde0732a910ba685446eea4ee094093",
+      "before": "new test module",
+      "source_pairs": []
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349/boundary.rs",
+      "after_sha256": "b89f2f099c9d5381126ef432f1e4661e17a7119bcc93d8effc77e65ab11c08e9",
+      "before": "new test module",
+      "source_pairs": []
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349/gateway.rs",
+      "after_sha256": "8b57ed4ebd99e4b1c2894307d6e8229da37bf8c1c25697ba9d0dcbc6e77104d1",
+      "before": "new test module",
+      "source_pairs": []
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349/tools.rs",
+      "after_sha256": "45e6eab065878ff3d65bdba97d6039b444b76b2614c20f4bb8c4d046ee7625d6",
+      "before": "new test module",
+      "source_pairs": []
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/types.rs",
+      "before_sha256": "5f1776ecbb587c260aa93793eb9e4d7c4cbf7479d7c076399d808bfcf293c78f",
+      "after_sha256": "5f1776ecbb587c260aa93793eb9e4d7c4cbf7479d7c076399d808bfcf293c78f",
+      "source_pairs": [
+        {
+          "before": "134:     pub fn ok(&self) -> bool {\n135:         self.after.as_ref().unwrap_or(&self.before).ok()\n136:     }\n137: }",
+          "after": "134:     pub fn ok(&self) -> bool {\n135:         self.after.as_ref().unwrap_or(&self.before).ok()\n136:     }\n137: }"
+        }
+      ],
+      "note": "Unchanged success fallback; failed fixer now exits before constructing a Fixed report."
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "checked_main": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+  "issue": 1349,
+  "findings": [
+    {
+      "comment_id": 4082216658,
+      "pr": 160,
+      "url": "https://github.com/alex09x/prod-code/pull/160#discussion_r4082216658",
+      "path_at_review": "crates/prod-code-mcp/src/fixit.rs",
+      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Resolve fixes relative to the nested project**\n\nWhen `code_check` or `code_lint` receives a path inside an excluded/nested Rust project, `run_verify` executes Cargo in that project's subdirectory, so rustc reports paths such as `src/lib.rs` relative to that subdirectory. Passing the outer checkout root to `plan` makes these fixes resolve as `<checkout>/src/lib.rs`; they are therefore skipped, or can be applied to an unrelated outer file if one exists and passes the line check. Resolve edits relative to the project directory selected by `engine_project`, while retaining the outer root for the workspace-boundary check.\n\nUseful? React with 👍 / 👎.",
+      "created_at": "2026-09-23T12:06:27Z",
+      "priority": "P2",
+      "pr_state": "MERGED",
+      "merged_at": "2026-09-23T12:01:08Z",
+      "thread": {
+        "id": "PRRT_kwDOUg52Zc6lJBVI",
+        "resolved": false,
+        "outdated": false
+      },
+      "status": "outstanding",
+      "evidence": [
+        {
+          "kind": "primary_source_revalidation",
+          "checked_commit": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+          "locations": "fixit/apply.rs:33; verify/execute.rs:127-148; fixit/parse.rs:17",
+          "explanation": "Fixes retain compiler-relative filenames while only diagnostics get nested subdir prefix; plan still receives checkout root.",
+          "verification": "Source trace only; public reproduction assigned before edits. Semantic outline refused due capacity; bounded exact reads used.",
+          "at_utc": "2026-10-25T18:11:09.640497+00:00"
+        }
+      ],
+      "finding_id": "review-comment:4082216658",
+      "channel": "inline_review",
+      "checked_commit": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+      "fix_issue": 1349
+    },
+    {
+      "comment_id": 4082216670,
+      "pr": 160,
+      "url": "https://github.com/alex09x/prod-code/pull/160#discussion_r4082216670",
+      "path_at_review": "crates/prod-code-mcp/src/fixit.rs",
+      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Normalize paths before accepting workspace fixes**\n\nFor a module loaded with a path such as `#[path = \"../../outside.rs\"]`, rustc preserves a diagnostic filename like `src/../../outside.rs`. This check accepts it because it is neither absolute nor prefixed by `..`, and `root.join(...)` can point to an existing file outside the checkout; the later workspace-edit guard then rejects the URI and aborts the entire `--fix` call instead of recording this suggestion as skipped, preventing valid in-workspace fixes from being applied too. Canonicalize or component-normalize each path and verify it remains under the canonical workspace root here.\n\nUseful? React with 👍 / 👎.",
+      "created_at": "2026-09-23T12:06:27Z",
+      "priority": "P2",
+      "pr_state": "MERGED",
+      "merged_at": "2026-09-23T12:01:08Z",
+      "thread": {
+        "id": "PRRT_kwDOUg52Zc6lJBVS",
+        "resolved": false,
+        "outdated": false
+      },
+      "status": "outstanding",
+      "evidence": [
+        {
+          "kind": "primary_source_revalidation",
+          "checked_commit": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+          "locations": "fixit/plan.rs:39-42",
+          "explanation": "Raw prefix check accepts internal parent components and symlink escapes before later workspace guard aborts application.",
+          "verification": "Source trace only; public reproduction assigned before edits. Semantic outline refused due capacity; bounded exact reads used.",
+          "at_utc": "2026-10-25T18:11:09.640497+00:00"
+        }
+      ],
+      "finding_id": "review-comment:4082216670",
+      "channel": "inline_review",
+      "checked_commit": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+      "fix_issue": 1349
+    },
+    {
+      "comment_id": 4087827679,
+      "pr": 208,
+      "url": "https://github.com/alex09x/prod-code/pull/208#discussion_r4087827679",
+      "path_at_review": "crates/prod-code-mcp/src/fixit.rs",
+      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Propagate failures from the fixer command**\n\nWhen the initial lint succeeds but the fix-mode invocation fails to start, times out, or exits nonzero before rewriting a file, this code ignores `outcome.exit` and leaves `after` unset. `Fixed::ok()` then falls back to the successful `before` report, so `code_lint` returns success and says that zero files were rewritten even though the requested fix command failed; validate and report the fixer exit status before deriving success from `pulled_files`.\n\nUseful? React with 👍 / 👎.",
+      "created_at": "2026-09-23T22:12:28Z",
+      "priority": "P2",
+      "pr_state": "MERGED",
+      "merged_at": "2026-09-23T22:06:58Z",
+      "thread": {
+        "id": "PRRT_kwDOUg52Zc6lW4oy",
+        "resolved": false,
+        "outdated": false
+      },
+      "status": "outstanding",
+      "evidence": [
+        {
+          "kind": "primary_source_revalidation",
+          "checked_commit": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+          "locations": "fixit/apply.rs:86-128; fixit/types.rs:134",
+          "explanation": "Tool fixer outcome exit is ignored; no pulled files means no after report, and Fixed::ok inherits successful before.",
+          "verification": "Source trace only; public reproduction assigned before edits. Semantic outline refused due capacity; bounded exact reads used.",
+          "at_utc": "2026-10-25T18:11:09.640497+00:00"
+        }
+      ],
+      "finding_id": "review-comment:4087827679",
+      "channel": "inline_review",
+      "checked_commit": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+      "fix_issue": 1349
+    }
+  ],
+  "fixed": 0,
+  "outstanding": 3
+}

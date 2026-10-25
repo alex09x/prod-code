@@ -13,7 +13,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::plan::plan;
+use super::plan::plan_in;
 use super::types::{Fixed, Outcome};
 
 /// Runs `kind` (check or lint), applies every machine-applicable fix it reports to the
@@ -29,7 +29,9 @@ pub async fn check_and_fix(
     if before.language != "rust" {
         return tool_fix(remote, root, hint, kind, timeout_secs, before).await;
     }
-    let (files, outcomes) = plan(root, &before.fixes);
+    let (subdir, _) = crate::sync::engine_project(root, hint.unwrap_or(root));
+    let project = subdir.as_ref().map_or(root.to_path_buf(), |s| root.join(s));
+    let (files, outcomes) = plan_in(root, &project, &before.fixes);
     if files.is_empty() {
         return Ok(Fixed {
             before,
@@ -80,6 +82,7 @@ async fn tool_fix(
             format!("fixes: the {language} linter has no fix mode; nothing was changed"),
         ));
     };
+    let mut tail = crate::exec::TailBuffer::new(8 * 1024);
     let outcome = crate::exec::run_remote(
         remote,
         root,
@@ -88,9 +91,30 @@ async fn tool_fix(
         vec![("NO_COLOR".to_string(), "1".to_string())],
         timeout_secs,
         true,
-        |_, _| {},
+        |_, bytes| tail.push(bytes),
     )
     .await?;
+    let failure = if let Some(error) = &outcome.exit.error {
+        Some(format!("failed to start: {error}"))
+    } else if outcome.exit.timed_out {
+        Some("timed out".to_string())
+    } else if outcome.exit.exit_code != Some(0) {
+        Some(match outcome.exit.exit_code {
+            Some(code) => format!("failed with exit code {code}"),
+            None => "failed: exit code is unknown".to_string(),
+        })
+    } else {
+        None
+    };
+    if let Some(failure) = failure {
+        anyhow::bail!(
+            "fixes: `{}` {failure}; {} changed file(s) already pulled: {}\n{}",
+            command.join(" "),
+            outcome.pulled_files.len(),
+            outcome.pulled_files.join(", "),
+            tail.text()
+        );
+    }
     let outcomes: Vec<Outcome> = outcome
         .pulled_files
         .iter()
