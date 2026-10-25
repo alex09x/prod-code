@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Editor Backpressure and TypeScript Initialization** (`crates/prod-code-gateway`, #1289):
+  Editor input waits for queue capacity within one write deadline instead of disconnecting on transient saturation, while retirement and child-exit handling remain responsive. TypeScript fallback SDK paths reach initialization without replacing explicit editor selections or preferences.
 - **Rust Signature Syntax Preservation** (`crates/prod-code-mcp`, #1287):
   Added argument expressions retain their braces and literal bytes in structural rewrites. Return-type changes preserve newline-delimited `where` bounds, Unicode identifiers containing `where`, and macro token trees containing comparisons or shifts, and simultaneous visibility and async changes keep declaration offsets current while updating caller awaits.
 - **Ordered Workspace Edits and File Move History** (`crates/prod-code-mcp`, #1288):

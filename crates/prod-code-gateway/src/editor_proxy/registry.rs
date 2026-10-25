@@ -15,6 +15,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::time::Instant;
 
+#[cfg(all(test, unix))]
+#[path = "issue_1289/mod.rs"]
+mod issue_1289;
+
 /// The editors' language servers running on this node, with the roots they were started in,
 /// so that a sync can tell each which of its files changed on disk.
 #[derive(Default)]

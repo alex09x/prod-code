@@ -21,6 +21,28 @@ pub struct ServerCommand {
     pub ready: ReadySignal,
 }
 
+impl ServerCommand {
+    pub(super) fn from_generic(
+        engine: &str,
+        config: prod_code_engine_generic::GenericLspConfig,
+    ) -> Self {
+        // The native TypeScript LSP needs neither Node nor a tsserver SDK.
+        let native_typescript =
+            engine == "typescript" && config.args.iter().any(|arg| arg == "--lsp");
+        Self {
+            program: config.command,
+            args: config.args,
+            env: config.env.into_iter().collect(),
+            initialization_options: if native_typescript {
+                None
+            } else {
+                server_initialization_options(engine, config.initialization_options)
+            },
+            ready: config.ready,
+        }
+    }
+}
+
 impl PartialEq for ServerCommand {
     fn eq(&self, other: &Self) -> bool {
         self.program == other.program
@@ -62,16 +84,7 @@ pub fn server_command_for_workspace(engine: &str, workspace_root: &Path) -> Opti
 
 fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<ServerCommand> {
     use prod_code_engine_generic::GenericLspConfig;
-    let from = |config: GenericLspConfig| ServerCommand {
-        program: config.command,
-        args: config.args,
-        env: config.env.into_iter().collect(),
-        initialization_options: server_initialization_options(
-            engine,
-            config.initialization_options,
-        ),
-        ready: config.ready,
-    };
+    let from = |config: GenericLspConfig| ServerCommand::from_generic(engine, config);
     let command = match engine {
         "rust" => ServerCommand {
             program: "rust-analyzer".to_string(),
@@ -193,7 +206,27 @@ pub(super) fn server_initialization_options(
     engine: &str,
     options: Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
-    if engine == "python" { options } else { None }
+    if engine == "python" {
+        return options;
+    }
+    if engine != "typescript" {
+        return None;
+    }
+    let options = options?;
+    // Retain SDK discovery, not the shared analyzer's UI preferences or memory policy.
+    let mut defaults = serde_json::json!({});
+    for pointer in ["/tsserver/path", "/typescript/tsserver/path"] {
+        if let Some(path) = options.pointer(pointer).and_then(|v| v.as_str())
+            && !path.is_empty()
+        {
+            if pointer == "/tsserver/path" {
+                defaults["tsserver"] = serde_json::json!({"path": path});
+            } else {
+                defaults["typescript"] = serde_json::json!({"tsserver": {"path": path}});
+            }
+        }
+    }
+    (!defaults.as_object()?.is_empty()).then_some(defaults)
 }
 
 /// `body` as one LSP frame.
@@ -240,13 +273,32 @@ fn merge_initialization_options(
     match (editor_options, server_options) {
         (serde_json::Value::Object(editor), serde_json::Value::Object(server)) => {
             for (key, value) in server {
-                merge_initialization_options(
+                let entry = editor.entry(key.clone()).or_insert(serde_json::Value::Null);
+                if key == "tsserver" {
+                    // Explicit editor SDK paths are already paths on the server after
+                    // translation. Fill omissions without replacing that selection.
+                    merge_missing_options(entry, value);
+                } else {
+                    merge_initialization_options(entry, value);
+                }
+            }
+        }
+        (editor, server) => *editor = server.clone(),
+    }
+}
+
+fn merge_missing_options(editor: &mut serde_json::Value, defaults: &serde_json::Value) {
+    match (editor, defaults) {
+        (serde_json::Value::Object(editor), serde_json::Value::Object(defaults)) => {
+            for (key, value) in defaults {
+                merge_missing_options(
                     editor.entry(key.clone()).or_insert(serde_json::Value::Null),
                     value,
                 );
             }
         }
-        (editor, server) => *editor = server.clone(),
+        (editor @ serde_json::Value::Null, defaults) => *editor = defaults.clone(),
+        _ => {}
     }
 }
 

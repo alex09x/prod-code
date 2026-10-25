@@ -222,13 +222,17 @@ fn server_initialization_options_merge_with_editor_options() {
 }
 
 #[test]
-fn generic_server_defaults_do_not_override_typescript_or_java_editor_options() {
+fn editor_proxy_issue_1289_generic_defaults_keep_sdk_paths_without_editor_preferences() {
     let options = Some(serde_json::json!({
         "typescript": { "includeInlayParameterNameHints": "all" },
+        "tsserver": { "path": "/server/typescript/lib", "maxTsServerMemory": 4096 },
         "java": { "autobuild": { "enabled": false } }
     }));
 
-    assert!(server_initialization_options("typescript", options.clone()).is_none());
+    assert_eq!(
+        server_initialization_options("typescript", options.clone()),
+        Some(serde_json::json!({"tsserver":{"path":"/server/typescript/lib"}}))
+    );
     assert!(server_initialization_options("java", options.clone()).is_none());
     assert_eq!(
         server_initialization_options("python", options.clone()),
