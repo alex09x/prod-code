@@ -170,7 +170,7 @@ fn a_preexisting_error_is_removed_from_stream_interceptions() {
 }
 
 #[test]
-fn inference_failing_in_a_derive_expansion_is_not_counted_even_in_a_new_file() {
+fn inference_failing_in_a_derive_expansion_remains_counted_without_proof() {
     let text = "use serde::Deserialize;\n\n#[derive(Debug, Deserialize)]\npub struct P {\n    pub a: u32,\n}\nfn f() -> u8 { \"\" }\n";
     let mut report = report_of(vec![
         DocDiagnostic {
@@ -188,28 +188,28 @@ fn inference_failing_in_a_derive_expansion_is_not_counted_even_in_a_new_file() {
         },
     ]);
     set_aside_derive_expansions(&mut report, text);
-    assert_eq!(report.in_derive.len(), 1);
+    assert!(report.in_derive.is_empty());
     let lines: Vec<(u32, Option<&str>)> = report
         .items
         .iter()
         .map(|d| (d.line, d.code.as_deref()))
         .collect();
-    assert_eq!(lines, [(3, Some("E0277")), (7, Some("E0282"))]);
-    assert_eq!(report.errors, 2);
+    assert_eq!(
+        lines,
+        [(3, Some("E0282")), (3, Some("E0277")), (7, Some("E0282"))]
+    );
+    assert_eq!(report.errors, 3);
+    assert!(!report.ok());
     assert!(
-        report
-            .render()
-            .contains("1 \"type annotations needed\" on a #[derive(...)] line are not counted"),
+        report.render().contains("attribute is not proof"),
         "{}",
         report.render()
     );
 }
 
-/// An unproven `Send` bound in a Rust file is shown and not counted (#327): rust-analyzer
-/// does not prove it through a recursive `async fn`, where rustc does. Other E0277, and the
-/// same message in a file of another language, still count.
+/// An unproven auto-trait bound remains counted, with context about analyzer limitations.
 #[test]
-fn an_unproven_auto_trait_bound_is_shown_and_not_counted() {
+fn an_unproven_auto_trait_bound_remains_blocking() {
     let text = "fn a() {}\nfn b() {}\nfn c() {}\n";
     let mut report = report_of(vec![
         DocDiagnostic {
@@ -235,14 +235,13 @@ fn an_unproven_auto_trait_bound_is_shown_and_not_counted() {
     ]);
     report.file = "src/main.rs".into();
     set_aside_derive_expansions(&mut report, text);
-    assert_eq!(report.auto_trait.len(), 2);
-    assert_eq!(report.errors, 1);
+    assert!(report.auto_trait.is_empty());
+    assert_eq!(report.errors, 3);
+    assert!(!report.ok());
     let rendered = report.render();
     assert!(
-        rendered.contains("2 unproven bound(s) or analyzer limitation(s) are not counted")
-            && rendered.contains(
-                "unconfirmed: the trait bound `NonNull<()>: Send` is not satisfied (src/main.rs:1:"
-            ),
+        rendered.contains("message is not proof of an analyzer limitation")
+            && rendered.contains("error: the trait bound `NonNull<()>: Send` is not satisfied"),
         "{rendered}"
     );
     assert!(is_auto_trait_bound(

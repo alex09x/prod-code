@@ -12,11 +12,14 @@
 //! or of a proposed replacement text, without a build and without writing anything.
 
 pub mod annotate;
+mod correspondence;
 pub mod filter;
 pub mod ident;
 pub mod parse;
 pub mod platform;
 pub mod reexport;
+mod scope;
+mod scope_tokens;
 pub mod stream;
 pub mod syntax;
 pub mod types;

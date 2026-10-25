@@ -140,18 +140,16 @@ pub struct DiagnosticsReport {
     pub warnings: usize,
     pub items: Vec<DocDiagnostic>,
     /// Diagnostics the file already had on disk, before the edit under review: the same
-    /// severity, code and message on a line with the same text. They are not the edit's, so
+    /// severity, code, message and range at an unambiguously unchanged occurrence. They are not the edit's, so
     /// they are neither in `items` nor counted in `errors` and `warnings`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preexisting: Vec<DocDiagnostic>,
-    /// "type annotations needed" on a `#[derive(...)]` line: the analyzer failing to type its
-    /// own expansion of the derive (`serde::Deserialize` does it), which rustc does not report.
-    /// Not counted, even in a new file that has no text on disk to compare with (#159).
+    /// Legacy derive context, retained for API/serialization compatibility. Shape alone
+    /// never authorizes moving E0282 here: unverified errors stay in `items` (#1286).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub in_derive: Vec<DocDiagnostic>,
-    /// E0277 that a type is not `Send`, `Sync` or `Unpin`, in a Rust file: rust-analyzer does
-    /// not always prove an auto trait rustc proves (through a recursive `async fn`, #327). Shown,
-    /// not counted; `cargo check` (`verify: "compile"`) decides.
+    /// Analyzer limitation context (including the existing detached/test prelude policy).
+    /// Unverified Send/Sync/Unpin errors stay in `items`; wording is not proof (#1286).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_trait: Vec<DocDiagnostic>,
     /// Intercepted hallucinations (roadmap 7.7): invalid method invocations, parameter/argument
@@ -189,15 +187,15 @@ impl DiagnosticsReport {
         }
         if !self.in_derive.is_empty() {
             out.push_str(&format!(
-                "  ({} \"type annotations needed\" on a #[derive(...)] line are not counted: the \
-                 analyzer's own expansion of the derive, which rustc does not report)\n",
+                "  ({} legacy derive diagnostic(s) recorded separately; a derive attribute \
+                 alone is not proof of an analyzer limitation)\n",
                 self.in_derive.len()
             ));
         }
         if !self.auto_trait.is_empty() {
             out.push_str(&format!(
-                "  ({} unproven bound(s) or analyzer limitation(s) are not counted: rust-analyzer does not \
-                 always prove what rustc does; `cargo check` or `verify: \"compile\"` decides)\n",
+                "  ({} analyzer limitation(s) are not counted under the prelude-macro policy; \
+                 auto-trait wording alone does not justify suppressing an error)\n",
                 self.auto_trait.len()
             ));
             for d in &self.auto_trait {
