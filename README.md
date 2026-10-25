@@ -41,13 +41,21 @@ on the laptop:
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
 | `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
 | `cargo test --workspace` — 565 tests | 5 min |
-| the same without the suite that starts real gateways | 56 s |
+| `cargo test --workspace --exclude prod-code-gateway` | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
 These are recorded workloads; current test counts and timings are listed in each pull request.
 The live suite starts real gateways and drives their language servers. Unit and scripted-server
-tests complement those scenarios. The required coverage floor is 80% of regions per source file
-(`python3 scripts/coverage.py --min 80`); missing measurements fail the gate.
+tests complement those scenarios. The 56 s workload excludes the entire gateway crate.
+The required coverage floor is 80% of regions per Rust source file
+(`python3 scripts/coverage.py --min 80`). The default gate enumerates Rust sources in workspace
+package directories, skipping hidden, build-output, test, bench and example directories and
+workspace exclusions. It rejects missing measurements for enumerated files except those
+filtered by `omitted_by_llvm_cov`: test/example/bench paths, build scripts, modules declared
+only off Unix, and files without a recognized `fn` item. Those omissions need no zero-region
+report entry and are not coverage evidence. Malformed report entries fail; explicit zero-region
+entries are reported as having no code. These gate limits do not relax the required 80% floor;
+see [Coverage](CONTRIBUTING.md#coverage) for the evidence policy.
 
 ## Architecture
 
@@ -92,7 +100,7 @@ flowchart TD
         subgraph GatewayInternals["Gateway Architecture (per node)"]
             Router["Placement & Gossip Router"] --> Workspaces["Per-Worktree Mirrors\n(<repo>--wt-<hash>)"]
             Workspaces --> PrimarySalsa["Primary Salsa DB\n(rust-analyzer in-proc; child LSPs)"]
-            Workspaces --> ShadowValidation["Isolated Shadow Engines\n(RAM-disk validation without cache poison)"]
+            Workspaces --> ShadowValidation["Validation Engines\n(private or shared by engine)"]
             Workspaces --> RemoteExec["Remote Builds, Lints & Tests\n(cargo, go, pytest, swift, etc.)"]
             GatewayInternals --> Telemetry["Prometheus Scrape (:9401)\n& Pushgateway (:9091)"]
         end
@@ -107,7 +115,7 @@ flowchart TD
 
 1. **Mirroring over Mounting**: Workspaces synchronize fast Base64 diffs over 10 GbE LAN instead of network-mounting filesystems (NFS/SSHFS), keeping filesystem operations local and fast.
 2. **Worktree Isolation**: Rust worktree mirrors attach isolated overlays to a shared base compiler database (`SharedWorkspace::with_base`), while child language servers run isolated per-process, avoiding cross-session state corruption.
-3. **Dual-Engine Shadow Validation**: Code edits are verified on dedicated shadow engines in memory before writing to disk, ensuring speculative proposals cannot invalidate warm primary caches.
+3. **Validation Engines**: Proposed edits use private validation engines for generic LSP engines and normally for Rust. Rust can fall back to its main engine; Go and other non-generic, non-Rust views use the shared view. See the validation details below.
 4. **Polyglot Cluster Gossip**: Nodes discover each other via UDP gossip on `:9401`, evaluate load and memory pressure, and route requests to capable nodes (including automatic rerouting of Swift subprojects to macOS nodes).
 
 ## Requirements
@@ -191,9 +199,13 @@ For **Google Antigravity**, add the server definition to `~/.gemini/config/mcp_c
 
 ### Running the Gateway Daemon
 
-On a Linux or macOS build node:
+On the remote Linux or macOS worker host, install the separately packaged gateway from the
+repository root before invoking the server (the client source-install step installs only `prod-code`):
 
 ```sh
+# Install the gateway on this worker host
+cargo install --path crates/prod-code-gateway
+
 # Start gateway server directly
 prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces \
   --advertise 192.0.2.10:9400 --peers 192.0.2.11:9400,192.0.2.12:9400
@@ -273,7 +285,7 @@ and SVG vector graphics are validated directly through built-in syntax parsers.
 | `code_change_signature` | Rust signature changes; Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
 | `code_move` | a declaration moved to another module across languages, with imports it takes and leaves behind |
 | `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters; a whole module moved to another parent with all referencing paths |
-| `code_extract_function` | a selection extracted into a named function across languages, replacing identical duplicates across files |
+| `code_extract_function` | a selection extracted into a named function across languages; duplicate replacement defaults on within the file (`duplicates: true`); cross-file search requires `other_files: true`, and parameterized matching requires `parameterize: true` (both default false) |
 | `code_introduce_parameter_object` | parameters bundled into a struct, dataclass, or object across callers and body uses |
 | `code_extract_parameter` · `code_inline_parameter` | promote an expression to a parameter; inline a uniform constant parameter into the body |
 | `code_migrate_type` | change a declared type, listing all incompatible sites before execution, with automatic `.into()` insertion |
@@ -296,7 +308,7 @@ and SVG vector graphics are validated directly through built-in syntax parsers.
 | `code_replace_constructor_with_builder` | transform multi-parameter constructors into fluent builder patterns |
 | `code_replace_inheritance_with_delegation` | refactor class inheritance hierarchies into composition and delegation |
 | `code_replace_conditional_with_polymorphism` | replace `switch`/`match`/`if-else` conditionals with polymorphic dispatch |
-| `code_shadow_run` | test multiple hypotheses in isolated RAM-disk workspaces concurrently and return the winning diff |
+| `code_shadow_run` | compare hypotheses and return the winning diff; concurrent overlays where supported (RAM optional), otherwise serialized in-place execution on the worker mirror |
 
 **Run it**
 
@@ -359,8 +371,14 @@ $ prod-code slice crates/prod-code-gateway/src/shadow.rs --line 469 --depth 1
 slice of `run_shadow`: 10 item(s), 11474 bytes from 284105 bytes of source (96% smaller)
 ```
 
-**Try three fixes at once.** Each candidate runs in an overlay of the workspace mounted at
-the workspace's own path, so the warm `target/` stays valid and nothing touches your checkout.
+**Compare candidate fixes.** Where supported, candidates run concurrently in private overlays
+mounted at the worker workspace's own path, keeping the warm `target/` valid. Overlay storage
+can use RAM or disk. Without overlay support, candidates run in place on the worker mirror,
+serialized per workspace across requests. The fallback restores staged paths only while they
+still match what the hypothesis left; conflicting changes are preserved and restoration
+problems are reported. Command-created files outside those staged paths remain, so the fallback
+does not isolate all command output files. Returned stdout/stderr is a bounded tail (64 KiB by
+default, plus retained diagnostic excerpts), not a complete log.
 
 ```
 $ prod-code shadow-run spec.json -- cargo test
@@ -385,14 +403,17 @@ while preventing cross-session bleed. Child language servers run isolated per-pr
 stays resident until idle for thirty minutes (`--idle-evict-secs`), and worktree directories are
 pruned after seven days (`--prune-worktree-days` or `prune_worktree_secs = 604800`).
 
-**Proposals are checked on a second analyzer.** Validating an edit opens the proposed text in the
+**Validation isolation depends on the engine.** Validating an edit opens the proposed text in the
 analyzer and closes it again; in the analyzer every other query uses, a proposal that changes
 what a widely imported file declares made the next query re-infer the crate (21 s for a
-`references` after a dry run). Validation sessions run on a second engine for the same
-workspace, fed by every sync like the first, so a dry run never reaches anyone else's query. It
-costs the memory of one more database per workspace that has been validated.
+`references` after a dry run). Rust normally loads a second engine lazily, costing another
+database; worktrees use their base workspace's validation engine. If admission refuses it or
+loading fails, Rust validation falls back to the main engine. Generic LSP engines use a private
+validation server and fail validation if that server cannot start; they do not fall back to
+the main server. Go and other views with neither a generic nor a Rust engine return the shared
+workspace view. Isolation from primary analyzer caches is therefore not universal.
 
-![Dual-engine shadow validation: speculative edits tested without cache poisoning](docs/img/shadow-validation-pipeline.svg)
+![Private-engine validation path, subject to the engine and fallback rules above](docs/img/shadow-validation-pipeline.svg)
 
 **Builds and tests run on the node**, in the workspace's own `target/`, which stays warm
 between runs. Files a command changes are written back into your checkout.
