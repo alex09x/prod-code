@@ -29,6 +29,8 @@ fn an_expression_that_calls_or_awaits_is_not_one_value() {
 fn occurrences_are_whole_and_a_changed_name_is_seen() {
     let t = "let a = (w + 1) * 2; let b = (w + 1) + 3; let c = x(w + 1);";
     assert_eq!(occurrences(t, 0, t.len(), "(w + 1)").len(), 2);
+    let copies = "let a = (w + 1); let s = r#\"(w + 1)\"#; /* (w + 1) */ // (w + 1)\n";
+    assert_eq!(occurrences(copies, 0, copies.len(), "(w + 1)").len(), 1);
     let f = "fn outer(w: u32) -> u32 {\n    fn inner() {}\n    w + 1\n}\n";
     let (open, close) = enclosing_body(f, f.find("w + 1").unwrap()).unwrap();
     assert_eq!((&f[open..open + 1], &f[close..close + 1]), ("{", "}"));
@@ -67,12 +69,14 @@ fn the_binding_goes_before_the_statement_in_the_block_that_holds_them_all() {
 fn a_method_call_on_a_name_may_change_it() {
     assert!(changes("s.bump();", "s"));
     assert!(changes("s.inner.push(1);", "s"));
+    assert!(changes("s.bump::<u32>();", "s"));
     assert!(!changes("let y = s.x;", "s"));
 }
 
 #[test]
 fn a_guarded_division_is_not_surely_evaluated() {
     assert!(can_panic("a / b") && can_panic("v[i]") && can_panic("w + 1"));
+    assert!(can_panic("x >> n"));
     assert!(!can_panic("s.x") && !can_panic("flag"));
     let r = "fn r() {\n    let mut r = 0;\n    if b != 0 {\n        r += a / b;\n    }\n    r + a / b\n}";
     let found = occurrences(r, 0, r.len(), "a / b");

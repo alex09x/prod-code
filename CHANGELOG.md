@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Introduce-Variable Preservation** (`crates/prod-code-mcp`, #1300):
+  Extraction checks executable syntax, binding and primitive-operation identity before reusing a value, retaining strings, comments and pattern literals. Fresh-name checks use Rust's NFC identifier identity, and uncertain effects, macro captures and guarded panic placement refuse writes.
 - **Failure-Dossier Evidence Preservation** (`crates/prod-code-mcp`, #1306):
   Compiler suggestions retain the failing Rust test command's package and filter selection, and both verification passes share one timeout budget. Rust assertion output with duplicate operand markers is reported as ambiguous instead of truncating a value.
 - **Rust Parameter-Object Preservation** (`crates/prod-code-mcp`, #1293):

@@ -14,10 +14,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::analysis::{
-    can_panic, changes, enclosing_body, innermost_block, loops_after, occurrences, parenthesised,
-    reads_and_effects, statement_start, surely_evaluated,
-};
 use super::types::{Introduced, is_ident};
 
 /// Introduces `name` for the expression selected at `line`:`col` .. `end_line`:`end_col` of
@@ -34,7 +30,17 @@ pub async fn introduce_variable(
     force: bool,
 ) -> Result<Introduced> {
     anyhow::ensure!(
-        !name.is_empty() && name.chars().all(is_ident),
+        name.starts_with(|c: char| c == '_' || unicode_ident::is_xid_start(c))
+            && name.chars().all(is_ident)
+            && ![
+                "_", "self", "Self", "super", "crate", "let", "fn", "for", "in", "match", "if",
+                "else", "loop", "while", "return", "break", "continue", "as", "const", "static",
+                "mut", "ref", "move", "async", "await", "dyn", "impl", "trait", "type", "struct",
+                "enum", "union", "pub", "use", "mod", "where", "unsafe", "extern", "true", "false",
+                "try", "yield", "gen", "abstract", "become", "box", "do", "final", "macro",
+                "override", "priv", "typeof", "unsized", "virtual"
+            ]
+            .contains(&name),
         "`{name}` is not an identifier"
     );
     let text =
@@ -44,58 +50,12 @@ pub async fn introduce_variable(
     let end = crate::signature::offset_of(&text, end_line, end_col)
         .context("the end is not in the file")?;
     anyhow::ensure!(start < end, "the selection is empty");
-    let expr = text[start..end].trim().to_string();
-    anyhow::ensure!(!expr.contains(';'), "the selection is not one expression");
-    let (names, effect) = reads_and_effects(&expr);
-    if let Some(effect) = effect {
-        anyhow::bail!(
-            "`{expr}` cannot be evaluated once for every place it occurs: {effect}. Use \
-             `code_assist` with `extract_variable` for this one occurrence"
-        );
-    }
-
-    // The innermost function whose body holds the selection.
-    let (body_open, body_close) =
-        enclosing_body(&text, start).context("the selection is not inside a function")?;
-    let found = occurrences(&text, body_open, body_close, &expr);
-    let first = *found
-        .first()
-        .context("the selection is not in the function")?;
-    let last = *found.last().unwrap_or(&first);
-    let anchor = statement_start(&text, innermost_block(&text, body_open, first, last), first);
-    // A loop that starts after the binding and holds a later occurrence runs that occurrence
-    // again, after whatever the rest of its body changed.
-    let mut watched = vec![(anchor, last + expr.len())];
-    watched.extend(
-        loops_after(&text, anchor, last)
-            .into_iter()
-            .filter(|(open, close)| found.iter().any(|at| open < at && at < close)),
-    );
-    for n in &names {
-        anyhow::ensure!(
-            !watched
-                .iter()
-                .any(|(from, to)| changes(&text[*from..*to], n)),
-            "`{n}` changes between the first occurrence of `{expr}` and the last, so one value \
-             cannot stand for all of them"
-        );
-    }
-    // Binding it earlier evaluates it where the code may not have: a division under
-    // `if b != 0` would divide by zero. That is the same program only if one occurrence
-    // runs whenever the binding does.
-    if can_panic(&expr) {
-        let anywhere = found.iter().any(|at| {
-            let statement =
-                statement_start(&text, innermost_block(&text, body_open, *at, *at), *at);
-            surely_evaluated(&text, anchor, statement, *at)
-        });
-        anyhow::ensure!(
-            anywhere,
-            "`{expr}` can panic, and no occurrence of it runs every time the binding would \
-             (each is under a condition, or after a way out). Use `code_assist` with \
-             `extract_variable` for one occurrence"
-        );
-    }
+    let selected = &text[start..end];
+    let start = start + selected.len() - selected.trim_start().len();
+    let end = end - (selected.len() - selected.trim_end().len());
+    anyhow::ensure!(start < end, "the selection is empty");
+    let plan = super::planning::plan(remote, root, file, &text, start..end, name).await?;
+    let anchor = plan.anchor;
 
     // `let name = expr;` above the statement that holds the first occurrence, in the innermost
     // block that holds them all, at its indentation.
@@ -104,19 +64,21 @@ pub async fn introduce_variable(
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect();
-    let bare = expr
-        .strip_prefix('(')
-        .and_then(|e| e.strip_suffix(')'))
-        .filter(|inner| {
-            crate::parameter_object::matching_bracket(&expr, 0) == Some(expr.len() - 1)
-                && !inner.is_empty()
-        })
-        .unwrap_or(&expr);
+    let bare = &text[plan.initializer];
     let mut new_text = text.clone();
-    for at in found.iter().rev() {
-        new_text.replace_range(parenthesised(&text, *at, *at + expr.len()), name);
+    for range in plan.replacements.iter().rev() {
+        new_text.replace_range(range.clone(), name);
     }
-    new_text.insert_str(stmt_line_start, &format!("{indent}let {name} = {bare};\n"));
+    if text[stmt_line_start..anchor]
+        .chars()
+        .all(char::is_whitespace)
+    {
+        new_text.insert_str(stmt_line_start, &format!("{indent}let {name} = {bare};\n"));
+    } else {
+        // A statement can begin after another statement or an opening brace on the same
+        // line. Inserting at the line start would move it outside its lexical scope.
+        new_text.insert_str(anchor, &format!("let {name} = {bare}; "));
+    }
 
     let rewritten: BTreeMap<PathBuf, String> =
         std::iter::once((file.to_path_buf(), new_text.clone())).collect();
@@ -147,6 +109,10 @@ pub async fn introduce_variable(
     let mut applied = false;
     if apply {
         anyhow::ensure!(
+            std::fs::read_to_string(file)? == text,
+            "the source changed during planning; nothing was written"
+        );
+        anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written:\n  {}",
             diagnostics.len(),
@@ -167,7 +133,7 @@ pub async fn introduce_variable(
             .unwrap_or(file)
             .to_string_lossy()
             .into_owned(),
-        occurrences: found.len(),
+        occurrences: plan.replacements.len(),
         rewritten: rewritten
             .into_iter()
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))

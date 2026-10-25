@@ -28,6 +28,8 @@ toml = "0.9"
 glob = "0.3.3"
 # Rust identifiers use Unicode XID boundaries, including combining marks (#484).
 unicode-ident = "1.0.22"
+# Reuse the locked URL stack's normalizer for Rust's NFC identifier identity.
+icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 libc = "0.2"
 
 [dev-dependencies]

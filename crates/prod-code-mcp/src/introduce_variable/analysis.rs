@@ -60,6 +60,7 @@ pub fn reads_and_effects(expr: &str) -> (Vec<String>, Option<String>) {
 /// Every place `expr` occurs in `text[from..to]` as whole tokens, as byte offsets.
 pub fn occurrences(text: &str, from: usize, to: usize, expr: &str) -> Vec<usize> {
     let mut out = Vec::new();
+    let code = crate::extract_trait::lex::lexical_code(text);
     let region = &text[from..to];
     let mut at = 0;
     while let Some(i) = region[at..].find(expr) {
@@ -72,7 +73,7 @@ pub fn occurrences(text: &str, from: usize, to: usize, expr: &str) -> Vec<usize>
         // `x(w + 1)` is a call's argument list, not `(w + 1)`: a name there would glue to it.
         let clean_start = !((is_ident(first) || first == '(') && before.is_some_and(is_ident));
         let clean_end = !((is_ident(last) || last == ')') && after.is_some_and(is_ident));
-        if clean_start && clean_end {
+        if clean_start && clean_end && code[start..end].iter().all(|b| *b) {
             out.push(start);
         }
         at += i + expr.len().max(1);
@@ -106,7 +107,9 @@ pub fn changes(text: &str, name: &str) -> bool {
             segments += 1;
             after = rest[field..].trim_start();
         }
-        let called = segments > 0 && after.starts_with('(');
+        // A turbofish is still a possible method invocation. This compatibility helper
+        // conservatively marks it changed; the planner proves boundaries from METHOD_CALL_EXPR.
+        let called = segments > 0 && (after.starts_with('(') || after.starts_with("::"));
         let assigned = (after.starts_with('=') && !after.starts_with("=="))
             || ["+=", "-=", "*=", "/=", "%=", "|=", "&=", "^=", "<<=", ">>="]
                 .iter()
@@ -123,7 +126,7 @@ pub fn changes(text: &str, name: &str) -> bool {
 /// Whether evaluating `expr` can panic: a division or remainder, an index, or arithmetic that
 /// overflows in a debug build.
 pub fn can_panic(expr: &str) -> bool {
-    expr.contains(['/', '%', '[', '+', '-', '*']) || expr.contains("<<")
+    expr.contains(['/', '%', '[', '+', '-', '*']) || expr.contains("<<") || expr.contains(">>")
 }
 
 /// Whether the occurrence at `at` is evaluated whenever the statement at `anchor` runs: it sits
