@@ -1,0 +1,30 @@
+Command exited with code 1.
+
+Command output:
+Diff in <build-path>
+
+     // 2. Reconcile a manifest that omits `src/deleted.rs`.
+     let probe_resp = gw
+-        .probe(
+-            client_root,
+-            base_name,
+-            vec![stamp("src/keep.rs", keep_src)],
+-        )
++        .probe(client_root, base_name, vec![stamp("src/keep.rs", keep_src)])
+         .await;
+     assert!(!probe_resp.seeded);
+     assert_eq!(probe_resp.files_deleted, 1);
+Diff in <build-path>
+
+     // Clean up `src/unannounced.rs` via a probe that omits it.
+     let cleanup_probe = gw
+-        .probe(
+-            client_root,
+-            base_name,
+-            vec![stamp("src/keep.rs", keep_src)],
+-        )
++        .probe(client_root, base_name, vec![stamp("src/keep.rs", keep_src)])
+         .await;
+     assert_eq!(cleanup_probe.files_deleted, 1);
+
+[prod-code exec] exit 1 in 0.2s (server 0.1s, cpu 0.0s user 0.0s sys, peak 41 MB) on node <build-node>, copy <build-path> (linux x86_64)

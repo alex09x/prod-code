@@ -197,6 +197,11 @@ pub async fn handle_client(
             }
             WireMessage::SyncProbeRequest(req) => {
                 let start = std::time::Instant::now();
+                let workspace = workspace::server_workspace_path(
+                    &state.storage_root,
+                    &req.client_workspace_root,
+                    req.base_workspace_name.as_deref(),
+                );
                 // Seeding a new worktree's copy can take longer than the client waits (#1164).
                 let resp = super::heartbeat::with_heartbeat(
                     &mut framed,
@@ -204,6 +209,9 @@ pub async fn handle_client(
                     apply_sync_probe(&state.storage_root, &state.workspace_manager, req),
                 )
                 .await?;
+                if resp.files_deleted > 0 || resp.seeded {
+                    state.search_indexes.forget(&workspace);
+                }
                 let mut ev = metrics::Event::blank("sync");
                 ev.method = "sync_probe".to_string();
                 ev.duration_ms = start.elapsed().as_millis() as u64;
