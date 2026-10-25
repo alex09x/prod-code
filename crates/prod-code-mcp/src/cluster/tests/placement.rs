@@ -17,6 +17,25 @@ use crate::cluster::pick::pick_node_with;
 use crate::cluster::placement::{Placement, load_placement, save_placement};
 
 #[tokio::test]
+async fn coverage_w3_pick_lists_reachable_nodes_without_the_required_os() {
+    let first = node_on(&["rust"], Some("linux x86_64")).await;
+    let second = node_on(&["rust"], Some("linux x86_64")).await;
+    let nodes = [first, second];
+    let listed = super::super::selection::rendezvous_order(&nodes, "coverage-w3-os")
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_eq!(
+        pick_node_with(&nodes, "coverage-w3-os", Some("rust"), Some("macos"), None)
+            .await
+            .unwrap_err()
+            .to_string(),
+        format!("no reachable gateway runs macOS (reachable without it: {listed})")
+    );
+}
+
+#[tokio::test]
 async fn coverage_w2_pick_refuses_missing_engines_and_replaces_absent_placement() {
     assert_eq!(
         pick_node_with(&[], "sample", None, None, None)

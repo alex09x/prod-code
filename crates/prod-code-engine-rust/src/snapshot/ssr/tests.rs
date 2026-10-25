@@ -166,3 +166,38 @@ fn a_file_without_functions_still_resolves_its_own_paths() {
         "pub const ONE: u32 = 1;\npub const TWO: u32 = 5 + 1;\n"
     );
 }
+
+#[test]
+fn coverage_w3_first_body_offset_selects_scoped_tokens() {
+    for (source, selected) in [
+        (
+            "trait T { fn required(); }",
+            Some("trait T { fn required()"),
+        ),
+        (
+            "pub static VALUE: u32 = 7;",
+            Some("pub static VALUE: u32 = 7"),
+        ),
+        ("pub struct Unit;", Some("pub struct Unit")),
+        (
+            "mod nested { use core::mem; }",
+            Some("mod nested { use core::mem; }"),
+        ),
+        ("// no scoped items\n", None),
+        (
+            "trait T { fn required(); }\nfn actual() {}",
+            Some("trait T { fn required(); }\nfn actual() {}"),
+        ),
+    ] {
+        let f = fixture(source);
+        let snapshot = f.engine.snapshot();
+        let file = snapshot
+            .require_file_id(&f.root.join("src/lib.rs"))
+            .unwrap();
+        assert_eq!(
+            snapshot.first_body_offset(file, source).map(u32::from),
+            selected.map(|text| text.len() as u32),
+            "{source}"
+        );
+    }
+}
