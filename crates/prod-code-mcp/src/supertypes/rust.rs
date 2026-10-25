@@ -8,8 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::headers::implementation_header;
 use super::syntax::{
-    derives_above, header_from, impl_header_start, impl_trait, is_trait_decl, supertraits, word_at,
+    bound_trait, derives_above, header_from, impl_trait, is_trait_decl, supertraits, word_at,
 };
 use super::types::{Kind, Supertype, Supertypes};
 use super::validate::locations;
@@ -37,7 +38,7 @@ pub(crate) fn expand_rust_trait_supertraits<'a>(
         if level >= max_depth {
             return Vec::new();
         }
-        let bare = trait_name.split('<').next().unwrap_or(trait_name).trim();
+        let bare = bound_trait(trait_name);
         if bare.starts_with('\'') || bare.is_empty() {
             return Vec::new();
         }
@@ -83,7 +84,7 @@ pub(crate) fn expand_rust_trait_supertraits<'a>(
         let sub_names = supertraits(&header_from(&lines, def_line as usize));
         let mut children = Vec::with_capacity(sub_names.len());
         for name in sub_names {
-            let bare_sub = name.split('<').next().unwrap_or(&name).trim();
+            let bare_sub = bound_trait(&name);
             let mut sub_line = def_line + 1;
             let mut sub_col = def_col + 1;
             for (idx, line_str) in lines.iter().enumerate().skip(def_line as usize) {
@@ -169,7 +170,7 @@ pub(crate) async fn rust_supertypes(
         for name in raw_supertraits {
             let mut node = Supertype::new(name.clone(), false, None);
             if depth > 1 {
-                let bare_sub = name.split('<').next().unwrap_or(&name).trim();
+                let bare_sub = bound_trait(&name);
                 let mut sub_line = decl_line + 1;
                 let mut sub_col = decl_col + 1;
                 for (idx, line_str) in lines.iter().enumerate().skip(decl_idx) {
@@ -228,10 +229,10 @@ pub(crate) async fn rust_supertypes(
             continue;
         }
         // A derive, reported at its attribute or at the type's name, is already listed.
-        let Some(start) = impl_header_start(&lines, l as usize) else {
+        let Some(header) = implementation_header(&text, l, c) else {
             continue;
         };
-        if let Some(name) = impl_trait(&header_from(&lines, start))
+        if let Some(name) = impl_trait(&header)
             && !list.iter().any(|s| s.name == name)
         {
             list.push(Supertype::new(

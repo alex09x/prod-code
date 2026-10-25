@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Supertype Header Preservation** (`crates/prod-code-mcp`, #1305):
+  Restricted-visibility traits retain their supertraits, higher-ranked `Self` predicates retain their binders, and implementation lookup follows complete headers through nested const-argument items. Unrelated bodies and declarations are excluded, with one shared lexical mask per header search.
 - **Type-Migration Error and Syntax Preservation** (`crates/prod-code-mcp`, #1310):
   Attribute diagnostics remain blocking during migration and conversion, and missing reference evidence refuses planning even with force. Rust return-type edits preserve generic headers, `where` constraints, trait-item boundaries, macro delimiters and Unicode identifier tokens.
 - **Diagnostic Error Authority** (`crates/prod-code-mcp`, #1286):

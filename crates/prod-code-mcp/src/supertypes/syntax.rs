@@ -89,8 +89,25 @@ pub(crate) fn skip_generics(text: &str) -> &str {
 /// The trait an impl header implements: `Default` for `impl Default for Cache`, `Into<u8>` for
 /// `impl<T> Into<u8> for Wrapper<T>`; `None` for an inherent `impl Cache`.
 pub fn impl_trait(header: &str) -> Option<String> {
-    let at = header.find("impl")?;
-    let rest = skip_generics(&header[at + 4..]);
+    // The structural view has identical byte offsets to the source, but comments and
+    // literals cannot contribute delimiters. Return the source slice to retain const values.
+    let code = crate::extract_trait::lex::lexical_code(header);
+    let masked: Vec<u8> = header
+        .bytes()
+        .zip(code)
+        // Normalize line endings only after masking, retaining source byte offsets.
+        .map(|(b, is_code)| {
+            if is_code && !matches!(b, b'\n' | b'\r') {
+                b
+            } else {
+                b' '
+            }
+        })
+        .collect();
+    let masked = String::from_utf8(masked).ok()?;
+    let at = masked.find("impl")?;
+    let rest = skip_generics(&masked[at + 4..]);
+    let offset = masked.len() - rest.len();
     let rest = rest.split(" where ").next().unwrap_or(rest);
     let mut depth = 0i32;
     let chars: Vec<(usize, char)> = rest.char_indices().collect();
@@ -101,8 +118,8 @@ pub fn impl_trait(header: &str) -> Option<String> {
             _ => {}
         }
         if depth == 0 && rest[i..].starts_with(" for ") && n > 0 {
-            let name = rest[..i].trim();
-            return (!name.is_empty()).then(|| name.to_string());
+            let name = header[offset..offset + i].trim();
+            return (!name.is_empty()).then(|| name.replace(['\n', '\r'], " "));
         }
     }
     None
@@ -135,10 +152,16 @@ pub fn supertraits(header: &str) -> Vec<String> {
         .map(|b| split_top(b, '+'))
         .unwrap_or_default();
     for predicate in split_top(clause, ',') {
+        let (binder, predicate) = bound_binder(&predicate);
         if let Some(on_self) = predicate.strip_prefix("Self")
             && let Some(b) = on_self.trim_start().strip_prefix(':')
         {
             for bound in split_top(b, '+') {
+                let bound = if binder.is_empty() {
+                    bound
+                } else {
+                    format!("{binder} {bound}")
+                };
                 if !out.contains(&bound) {
                     out.push(bound);
                 }
@@ -146,6 +169,29 @@ pub fn supertraits(header: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Separate a higher-ranked binder while retaining its text for each required bound.
+fn bound_binder(text: &str) -> (&str, &str) {
+    let text = text.trim_start();
+    if let Some(rest) = text.strip_prefix("for")
+        && rest.trim_start().starts_with('<')
+    {
+        let after = skip_generics(rest).trim_start();
+        let end = text.len() - after.len();
+        return (text[..end].trim_end(), after);
+    }
+    ("", text)
+}
+
+/// The trait path to resolve, without a binder that belongs in the displayed requirement.
+pub(super) fn bound_trait(text: &str) -> &str {
+    bound_binder(text)
+        .1
+        .split('<')
+        .next()
+        .unwrap_or(text)
+        .trim()
 }
 
 /// The traits derived by the `#[derive(…)]` attributes directly above the declaration on line
@@ -203,19 +249,23 @@ pub(crate) fn derives_above(lines: &[&str], decl: usize) -> Vec<(String, u32, u3
     out
 }
 
-/// The line an impl header starts on, when the location on line `at` (0-based) is in one: at
-/// most three lines up, for a header broken over lines.
-pub(crate) fn impl_header_start(lines: &[&str], at: usize) -> Option<usize> {
-    (at.saturating_sub(3)..=at).rev().find(|i| {
-        let line = lines[*i].trim_start();
-        line.starts_with("impl") || line.starts_with("unsafe impl")
-    })
-}
-
 /// Is the declaration on this line a trait?
 pub(crate) fn is_trait_decl(line: &str) -> bool {
     let mut rest = line.trim_start();
-    for prefix in ["pub(crate) ", "pub(super) ", "pub ", "unsafe ", "auto "] {
+    if let Some(after) = rest.strip_prefix("pub") {
+        let after = after.trim_start();
+        rest = if after.starts_with('(') {
+            let Some(end) = after.find(')') else {
+                return false;
+            };
+            after[end + 1..].trim_start()
+        } else if rest[3..].starts_with(char::is_whitespace) {
+            after
+        } else {
+            rest
+        };
+    }
+    for prefix in ["unsafe ", "auto "] {
         rest = rest.strip_prefix(prefix).unwrap_or(rest);
     }
     rest.starts_with("trait ")
