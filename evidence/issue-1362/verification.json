@@ -1,0 +1,40 @@
+{
+  "base": "8242a7edf2f84fd6385a8a3f4759ec0502d3f847",
+  "issue": 1362,
+  "original_review_comment": 4067849647,
+  "node_kind": "Linux x86_64 build node",
+  "before": {
+    "command": "cargo test -p prod-code-testkit --test empty_workspace",
+    "exit": 101,
+    "passed": 0,
+    "failed": 1,
+    "cause": "empty fixture must have an initial HEAD",
+    "source": "base plus newly added regression, before assertion-only formatting"
+  },
+  "after": {
+    "command": "cargo test -p prod-code-testkit --test empty_workspace",
+    "exit": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  "format": {
+    "command": "rustfmt --edition 2024 --check crates/prod-code-testkit/src/workspace.rs crates/prod-code-testkit/tests/empty_workspace.rs",
+    "exit": 0
+  },
+  "lint": {
+    "command": "cargo clippy -p prod-code-testkit --test empty_workspace --no-deps",
+    "exit": 0,
+    "warnings": 0
+  },
+  "source_hashes": {
+    "crates/prod-code-testkit/src/workspace.rs": "a3c786f43ceb0b472b12f5f97874ff4114d583f0d6ddb1582a50e488a7e82ab3",
+    "crates/prod-code-testkit/tests/empty_workspace.rs": "409e2bbe398a0bbf58695b651343f6caf861738c9b9741c1c2b2386a30bd97ad"
+  },
+  "limits": [
+    "Focused regression covers both empty constructors and checks a real HEAD with empty committed tree.",
+    "No workspace-wide test or numerical coverage run; no language-server adapter changed.",
+    "No release or deployment performed."
+  ],
+  "primary_review": "Complete two-file diff and recorded final output reviewed; production change allows deliberate empty commits and asserts Git success."
+}
