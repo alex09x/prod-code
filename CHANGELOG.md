@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.40 — 2026-10-24
+
 ### Tests
 - **Coverage Campaign, Wave 1** (all crates):
   Region coverage of the workspace rose from 81.65% to 90.30%. The number of files under the 80% per-file gate fell from 276 to 32. The new tests are tables of cases that assert exact results: rendered text, edits, refusals and error messages. They cover the MCP tool handlers, the dependency readers for Cargo, Gradle, Maven, .NET, Python and TypeScript, polyglot extract, move, wrap-return, encapsulate and the other refactorings, the fixture generator, the client commands, packaging and update, the gateway runners and caches, the protocol messages and the language engines. Three existing tests stopped depending on parallel tests:
