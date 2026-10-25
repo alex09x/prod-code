@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Signature Syntax Preservation** (`crates/prod-code-mcp`, #1287):
+  Added argument expressions retain their braces and literal bytes in structural rewrites. Return-type changes preserve newline-delimited `where` bounds, Unicode identifiers containing `where`, and macro token trees containing comparisons or shifts, and simultaneous visibility and async changes keep declaration offsets current while updating caller awaits.
 - **Ordered Workspace Edits and File Move History** (`crates/prod-code-mcp`, #1288):
   Preflight defers state checks affected by earlier operations to transactional execution, so a binary file or moved directory can be replaced with a new text file in the same edit. Single-file moves carry their original text for reports through overwrites and sequential renames, including moves between repository roots. Failed later steps still restore the original paths, bytes and permissions.
 - **Occurrence-Based Dependency Slices** (`crates/prod-code-mcp`, #1290):

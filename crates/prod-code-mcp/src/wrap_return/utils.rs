@@ -81,14 +81,67 @@ pub(crate) fn has_require_call(s: &str) -> bool {
 /// The return type a function header declares between its parameter list's `)` at `close` and
 /// its body's `{`, or `None` for a function that returns `()` implicitly.
 pub fn declared_return(text: &str, close: usize) -> Option<(usize, usize)> {
-    let body = text[close..].find(['{', ';']).map(|i| close + i)?;
-    let header = &text[close + 1..body];
-    let arrow = header.find("->")?;
-    let start = close + 1 + arrow + 2;
-    let mut end = body;
-    if let Some(w) = text[start..body].find(" where") {
-        end = start + w;
+    use crate::signature::call_sites::opaque_at;
+    use unicode_ident::is_xid_continue;
+
+    let mut i = close + 1;
+    // The arrow must precede the type, rather than occur inside a bound or the body.
+    loop {
+        let ch = text.get(i..)?.chars().next()?;
+        if ch.is_whitespace() {
+            i += ch.len_utf8();
+        } else if let Some((end, true)) = opaque_at(text, i, close + 1).ok()? {
+            i = end;
+        } else {
+            break;
+        }
     }
+    text.get(i..)?.strip_prefix("->")?;
+    let start = i + 2;
+    i = start;
+    let mut depth: Vec<(char, bool)> = Vec::new();
+    let mut previous = None;
+    let mut macro_bang = false;
+    let end = loop {
+        let ch = text.get(i..)?.chars().next()?;
+        if let Some((end, _)) = opaque_at(text, i, start).ok()? {
+            i = end;
+            continue;
+        }
+        // A real top-level keyword ends the type regardless of its surrounding whitespace.
+        // Delimiters, comments and literals inside a type macro or const argument do not.
+        if depth.is_empty() {
+            let before = text[..i].chars().next_back();
+            let after = text[i..].strip_prefix("where");
+            let keyword = before.is_none_or(|c| !is_xid_continue(c) && c != '#')
+                && after.is_some_and(|s| s.chars().next().is_none_or(|c| !is_xid_continue(c)));
+            if keyword || ch == ';' || (ch == '{' && !macro_bang) {
+                break i;
+            }
+        }
+        // Macro arguments are token trees, not type syntax: `<` and `>` there can
+        // be comparisons or shifts. Nested groups inherit this mode until the
+        // macro's outer delimiter closes, then normal generic tracking resumes.
+        let token_tree = macro_bang || depth.last().is_some_and(|&(_, tree)| tree);
+        // A function pointer's `->` is not a closing generic delimiter.
+        let closes = depth.last().is_some_and(|&(close, _)| close == ch)
+            && (ch != '>' || !text[..i].ends_with('-'));
+        match ch {
+            '(' => depth.push((')', token_tree)),
+            '[' => depth.push((']', token_tree)),
+            '{' => depth.push(('}', token_tree)),
+            '<' if !token_tree => depth.push(('>', false)),
+            ')' | ']' | '}' | '>' if closes => {
+                depth.pop();
+            }
+            _ => {}
+        }
+        if !ch.is_whitespace() {
+            macro_bang = ch == '!' && previous.is_some_and(is_xid_continue);
+            previous = Some(ch);
+        }
+        i += ch.len_utf8();
+    };
     let lead = text[start..end].len() - text[start..end].trim_start().len();
     let trail = text[start..end].len() - text[start..end].trim_end().len();
     Some((start + lead, end - trail))

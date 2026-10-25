@@ -94,12 +94,12 @@ pub fn call_site_rule(
     args: &[Option<usize>],
     adds: &[&str],
 ) -> String {
-    let pattern_args: Vec<String> = (0..arity).map(|i| format!("${{a{i}}}")).collect();
+    let pattern_args: Vec<String> = (0..arity).map(|i| format!("$a{i}")).collect();
     let mut added = adds.iter();
     let replacement_args: Vec<String> = args
         .iter()
         .map(|a| match a {
-            Some(i) => format!("${{a{i}}}"),
+            Some(i) => format!("$a{i}"),
             None => added
                 .next()
                 .copied()
@@ -107,15 +107,8 @@ pub fn call_site_rule(
                 .to_string(),
         })
         .collect();
-    // rust-analyzer's placeholders are `$name`, without braces; the braces above only keep the
-    // numbering readable while the lists are built.
-    let clean = |v: Vec<String>| {
-        v.into_iter()
-            .map(|s| s.replace("${", "$").replace('}', ""))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let (pattern, replacement) = (clean(pattern_args), clean(replacement_args));
+    // Only generated placeholders use SSR syntax; added expressions retain their raw bytes.
+    let (pattern, replacement) = (pattern_args.join(", "), replacement_args.join(", "));
     if is_method {
         format!("$recv.{name}({pattern}) ==>> $recv.{name}({replacement})")
     } else {
