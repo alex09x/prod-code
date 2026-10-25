@@ -15,6 +15,8 @@
   The CMake configure probe and the Swift settings wait now take their program and time limit as parameters, so their outcomes can be tested (#1195).
 
 ### Fixed
+- **Nested Project Roots and Cargo Membership** (`crates/prod-code-mcp`, #1262):
+  A language inferred from a child no longer hides that child's project root. Independent crates below empty virtual workspaces retain their own roots. Cargo membership now reads the actual TOML workspace table, honors literal path-prefix exclusions, ignores package packaging exclusions, and matches interior member globs without absorbing unrelated or deeper child projects. Implicit in-tree path-dependency members continue to share their workspace's session.
 - **Bugs Found by the Coverage Campaign, Wave 2** (`crates/prod-code-mcp`, #1195):
   - Inline-parameter reported call sites one line too early.
   - It treated `export const a = f(1)` as a mere export of `f` rather than a call.

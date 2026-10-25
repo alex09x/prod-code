@@ -24,6 +24,8 @@ regex = "1"
 similar = "2"
 # Reads Cargo manifests for a crate's edition (#441).
 toml = "0.9"
+# Cargo workspace members use the same glob syntax as Cargo itself.
+glob = "0.3.3"
 # Rust identifiers use Unicode XID boundaries, including combining marks (#484).
 unicode-ident = "1.0.22"
 libc = "0.2"

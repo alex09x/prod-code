@@ -71,9 +71,8 @@ pub fn is_in_dependency_dir(path: &Path) -> bool {
 
 /// Is `dir` a Cargo crate that the workspace at `root` does not own?
 ///
-/// Reads the root manifest's `[workspace]` table: a directory listed under `exclude` (by prefix)
-/// or absent from a `members` list that has no glob covering it is not part of the workspace's
-/// project model, however much it looks like one from the outside.
+/// Only `[workspace]` describes membership; `[package].exclude` controls packaging.
+/// A child outside the members (including an empty virtual workspace) needs its own root.
 pub(crate) fn excluded_from_root_workspace(root: &Path, dir: &Path) -> bool {
     if !dir.join("Cargo.toml").is_file() {
         return false;
@@ -84,92 +83,166 @@ pub(crate) fn excluded_from_root_workspace(root: &Path, dir: &Path) -> bool {
     let Ok(rel) = dir.strip_prefix(root) else {
         return false;
     };
-    let rel = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/");
-    if rel.is_empty() {
+    if rel.as_os_str().is_empty() {
         return false;
     }
     let (members, excludes) = workspace_lists(&manifest);
-    if excludes
-        .iter()
-        .any(|e| rel == *e || rel.starts_with(&format!("{e}/")))
-    {
+    if workspace_excludes(&excludes, rel) {
         return true;
     }
-    // No `members` at all: the manifest is a plain package, and a crate below it is its own.
-    if members.is_empty() {
-        return !manifest.contains("[workspace]");
+    if members
+        .iter()
+        .any(|pattern| cargo_pattern_matches(pattern, rel))
+    {
+        return false;
     }
-    !members.iter().any(|m| match m.strip_suffix("/*") {
-        Some(prefix) => {
-            rel.starts_with(&format!("{prefix}/")) && rel[prefix.len() + 1..].find('/').is_none()
-        }
-        None => rel == *m,
-    })
+    !implicit_path_member(root, dir, &manifest, &members, &excludes)
 }
 
-/// The `members` and `exclude` entries of a root manifest's `[workspace]` table, read without a
-/// TOML parser: both are arrays of plain strings, and this only has to recognise them.
-pub(crate) fn workspace_lists(manifest: &str) -> (Vec<String>, Vec<String>) {
-    let mut members = Vec::new();
-    let mut excludes = Vec::new();
-    let mut target: Option<&mut Vec<String>> = None;
-    for line in manifest.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            target = None;
+fn normalized_path(path: &Path) -> std::path::PathBuf {
+    path.components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect()
+}
+
+fn workspace_excludes(excludes: &[String], relative: &Path) -> bool {
+    // Cargo expands member globs, but exclusions are literal directory prefixes.
+    // In particular, excluding `crates/foo-*` must not exclude `crates/foo-one`.
+    let relative = normalized_path(relative);
+    excludes
+        .iter()
+        .any(|exclude| relative.starts_with(normalized_path(Path::new(exclude))))
+}
+
+/// Cargo also includes in-tree path dependencies of workspace packages, recursively.
+/// Discover only packages reachable from the root package or explicit members; a
+/// crate merely sitting below an empty virtual workspace is still independent.
+fn implicit_path_member(
+    root: &Path,
+    dir: &Path,
+    manifest: &str,
+    members: &[String],
+    excludes: &[String],
+) -> bool {
+    let Ok(manifest) = toml::from_str::<toml::Value>(manifest) else {
+        return false;
+    };
+    if manifest
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .is_none()
+    {
+        return false;
+    }
+    let mut pending = vec![root.to_path_buf()];
+    for member in members {
+        // Escape the checkout's spelling, retaining glob syntax only in the member.
+        let pattern = Path::new(&glob::Pattern::escape(&root.to_string_lossy())).join(member);
+        if let Some(pattern) = pattern.to_str()
+            && let Ok(paths) = glob::glob(pattern)
+        {
+            pending.extend(paths.flatten());
         }
-        let start = |key: &str| {
-            trimmed
-                .strip_prefix(key)
-                .map(|rest| rest.trim_start().starts_with('='))
-                .unwrap_or(false)
+    }
+    let mut seen = std::collections::HashSet::new();
+    while let Some(package) = pending.pop() {
+        let Ok(package) = package.canonicalize() else {
+            continue;
         };
-        if start("members") {
-            members.extend(entries_on(trimmed));
-            target = if trimmed.trim_end().ends_with(']') {
-                None
-            } else {
-                Some(&mut members)
-            };
+        let Ok(relative) = package.strip_prefix(root) else {
+            continue;
+        };
+        if workspace_excludes(excludes, relative) || !seen.insert(package.clone()) {
             continue;
         }
-        if start("exclude") {
-            excludes.extend(entries_on(trimmed));
-            target = if trimmed.trim_end().ends_with(']') {
-                None
-            } else {
-                Some(&mut excludes)
-            };
+        let Some(parsed) = std::fs::read_to_string(package.join("Cargo.toml"))
+            .ok()
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        else {
+            continue;
+        };
+        if parsed.get("package").is_none() {
             continue;
         }
-        if let Some(list) = target.as_deref_mut() {
-            list.extend(entries_on(trimmed));
-            if trimmed.starts_with(']') || trimmed.ends_with(']') {
-                target = None;
+        if package == dir {
+            return true;
+        }
+        dependency_paths(root, &package, &parsed, &manifest, &mut pending);
+        if let Some(targets) = parsed.get("target").and_then(toml::Value::as_table) {
+            for target in targets.values() {
+                dependency_paths(root, &package, target, &manifest, &mut pending);
             }
         }
     }
-    (members, excludes)
+    false
 }
 
-/// The quoted strings on one line of a TOML array.
-pub(crate) fn entries_on(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = line;
-    while let Some(open) = rest.find('"') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('"') else { break };
-        let value = after[..close].trim_matches('/').to_string();
-        if !value.is_empty() {
-            out.push(value);
+fn dependency_paths(
+    root: &Path,
+    package: &Path,
+    manifest: &toml::Value,
+    workspace: &toml::Value,
+    pending: &mut Vec<std::path::PathBuf>,
+) {
+    for key in ["dependencies", "build-dependencies", "dev-dependencies"] {
+        if let Some(dependencies) = manifest.get(key).and_then(toml::Value::as_table) {
+            for (name, dependency) in dependencies {
+                let (base, dependency) =
+                    if dependency.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
+                        let Some(inherited) = workspace
+                            .get("workspace")
+                            .and_then(|table| table.get("dependencies"))
+                            .and_then(|table| table.get(name))
+                        else {
+                            continue;
+                        };
+                        (root, inherited)
+                    } else {
+                        (package, dependency)
+                    };
+                if let Some(path) = dependency.get("path").and_then(toml::Value::as_str) {
+                    pending.push(base.join(path));
+                }
+            }
         }
-        rest = &after[close + 1..];
     }
-    out
+}
+
+/// Read the actual workspace table, including TOML literal/escaped strings and dotted keys.
+pub(crate) fn workspace_lists(manifest: &str) -> (Vec<String>, Vec<String>) {
+    let Ok(manifest) = toml::from_str::<toml::Value>(manifest) else {
+        return (Vec::new(), Vec::new());
+    };
+    let strings = |key| {
+        manifest
+            .get("workspace")
+            .and_then(|table| table.get(key))
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    (strings("members"), strings("exclude"))
+}
+
+fn cargo_pattern_matches(pattern: &str, path: &Path) -> bool {
+    // Normalize path spelling, not glob syntax: retain absolute roots and platform
+    // separator rules, while accepting Cargo's `./crates/foo/` spelling.
+    let pattern = normalized_path(Path::new(pattern));
+    let path: std::path::PathBuf = path.components().collect();
+    pattern.to_str().is_some_and(|pattern| {
+        glob::Pattern::new(pattern).is_ok_and(|pattern| {
+            pattern.matches_path_with(
+                &path,
+                glob::MatchOptions {
+                    require_literal_separator: true,
+                    ..Default::default()
+                },
+            )
+        })
+    })
 }
 
 pub(crate) fn has_c_sources(dir: &Path) -> bool {

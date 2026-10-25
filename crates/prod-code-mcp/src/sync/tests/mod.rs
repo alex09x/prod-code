@@ -12,5 +12,6 @@ mod cache_and_plan;
 mod dirty;
 mod engine_and_cgo;
 mod membership_and_relevance;
+mod project_root_regression;
 mod scan;
 mod watermark_and_state;
