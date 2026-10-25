@@ -15,9 +15,15 @@ mod reload;
 pub mod transport;
 
 #[cfg(test)]
+mod dispatch_tests;
+#[cfg(test)]
 mod reload_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transport_loop_tests;
+#[cfg(test)]
+mod transport_serve_tests;
 #[cfg(test)]
 mod transport_tests;
 

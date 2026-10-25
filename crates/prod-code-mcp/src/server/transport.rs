@@ -92,7 +92,7 @@ where
     let mut in_flight = ToolCalls::new();
     let mut active_aborts = ActiveCalls::new();
     let mut reload_deadline = None;
-    let period = std::time::Duration::from_secs(30);
+    let period = reload.rebalance_every;
     let mut rebalance_interval =
         tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     rebalance_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -254,7 +254,7 @@ where
     Ok(())
 }
 
-fn format_handled_response(
+pub(super) fn format_handled_response(
     req_id: Option<serde_json::Value>,
     outcome: std::result::Result<Result<Option<serde_json::Value>>, Box<dyn std::any::Any + Send>>,
 ) -> Option<String> {

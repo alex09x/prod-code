@@ -57,9 +57,7 @@ pub fn find_calls_in_content(
 
         // Line and column for site reporting
         let (lsp_line, lsp_col) = crate::signature::position_at(content, at).unwrap_or((0, 0));
-        let line = lsp_line.saturating_sub(1);
-        let col = lsp_col;
-        let site = format!("{file_rel}:{line}:{col}");
+        let site = format!("{file_rel}:{lsp_line}:{lsp_col}");
 
         if is_import_or_export_context(content, at, lang) {
             semantic_references.remove(&(lsp_line, lsp_col));
