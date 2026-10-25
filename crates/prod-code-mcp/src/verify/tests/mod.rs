@@ -8,6 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+#[cfg(unix)]
+mod clang_tidy_paths;
 mod diagnostic_budget;
 mod failure_cause;
 mod matrix;
