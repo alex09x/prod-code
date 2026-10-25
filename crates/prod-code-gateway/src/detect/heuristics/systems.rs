@@ -25,7 +25,7 @@ pub fn is_make_cpp_project(root: &Path) -> bool {
                 e.path()
                     .extension()
                     .and_then(|x| x.to_str())
-                    .is_some_and(|x| C_SOURCE_EXTENSIONS.contains(&x))
+                    .is_some_and(|x| C_SOURCE_EXTENSIONS.contains(&x.to_ascii_lowercase().as_str()))
             })
         })
     };

@@ -9,5 +9,6 @@
  */
 
 mod basic;
+mod make_cpp;
 mod matrix;
 mod starlark;

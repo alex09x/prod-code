@@ -252,7 +252,10 @@ pub(crate) fn has_c_sources(dir: &Path) -> bool {
                 .extension()
                 .and_then(|x| x.to_str())
                 .is_some_and(|x| {
-                    matches!(x, "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx")
+                    matches!(
+                        x.to_ascii_lowercase().as_str(),
+                        "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx"
+                    )
                 })
         })
     })
