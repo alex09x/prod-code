@@ -12,6 +12,10 @@ use crate::pull_push::braces::find_matching_brace;
 use crate::pull_push::types::{ClassDecl, MemberDecl, MemberKind};
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "rust_tests.rs"]
+mod tests;
+
 pub fn parse_rust_traits(text: &str, file_path: &Path) -> Vec<ClassDecl> {
     let mut traits = Vec::new();
     let bytes = text.as_bytes();

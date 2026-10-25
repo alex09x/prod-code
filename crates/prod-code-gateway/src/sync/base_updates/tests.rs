@@ -94,6 +94,27 @@ async fn updates_apply_valid_utf8_preserve_the_base_on_unreadable_input_and_defe
     })
     .await
     .unwrap();
+    // Deleting a synced source removes it from the analyzer, including on repeated deletion.
+    std::fs::remove_file(&path).unwrap();
+    for _ in 0..2 {
+        assert!(
+            push_base_updates(
+                vec![Arc::clone(&engine)],
+                vec![path.clone()],
+                Duration::from_secs(2)
+            )
+            .await
+        );
+        assert_eq!(
+            engine
+                .lock()
+                .await
+                .document_symbols(&path)
+                .unwrap_err()
+                .to_string(),
+            format!("File not found in VFS: {path:?}")
+        );
+    }
     assert!(push_base_updates(vec![], vec![path.clone()], Duration::ZERO).await);
     assert!(push_base_updates(vec![engine], vec![], Duration::ZERO).await);
 }

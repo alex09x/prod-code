@@ -16,6 +16,53 @@ use crate::commands::dispatch::tests::{answered_locally, refusal_in};
 use std::path::Path;
 
 #[test]
+fn coverage_w2_sync_pull_without_a_path_has_an_actionable_refusal() {
+    assert_eq!(
+        refusal_in(None, &["sync", "--pull"]),
+        "--pull requires at least one file or path to pull (e.g. `prod-code sync --pull path/to/file.rs` or `prod-code pull <files...>`); to push current changes omit --pull"
+    );
+}
+
+#[test]
+fn coverage_w2_expression_text_dispatch_renders_a_local_proposal() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("proposal.rs");
+    std::fs::write(
+        &file,
+        "fn sample() {\n    let value: u32 = 7;\n    value\n}\n",
+    )
+    .unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "commands::dispatch::ops::tests::coverage_w2_expression_text_child",
+            "--nocapture",
+        ])
+        .env("PROD_CODE_W2_PROPOSAL_FILE", &file)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("Exact type match: `value` is declared as `u32`"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("value"), "{stdout}");
+}
+
+#[test]
+fn coverage_w2_expression_text_child() {
+    let Ok(file) = std::env::var("PROD_CODE_W2_PROPOSAL_FILE") else {
+        return;
+    };
+    answered_locally(&["propose-expression", &file, "3", "u32"]).unwrap();
+}
+
+#[test]
 fn pulling_needs_a_workspace_root() {
     for args in [vec!["pull", "src/a.rs"], vec!["sync", "--pull", "src/a.rs"]] {
         assert_eq!(

@@ -16,6 +16,49 @@ use super::helpers::{node_on, node_with};
 use crate::cluster::pick::pick_node_with;
 use crate::cluster::placement::{Placement, load_placement, save_placement};
 
+#[tokio::test]
+async fn coverage_w2_pick_refuses_missing_engines_and_replaces_absent_placement() {
+    assert_eq!(
+        pick_node_with(&[], "sample", None, None, None)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "no gateway addresses given"
+    );
+    let unsupported = node_on(&["go"], Some("linux x86_64")).await;
+    assert_eq!(
+        pick_node_with(&[unsupported], "sample", Some("rust"), None, None)
+            .await
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "no reachable gateway serves rust (reachable without it: {unsupported}); add a node with the rust language server installed"
+        )
+    );
+    let selected = node_on(&["rust"], Some("linux x86_64")).await;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("placement.json");
+    let mut placement = Placement::default();
+    placement.workspaces.insert("sample".into(), unsupported);
+    save_placement(&path, &placement);
+    assert_eq!(
+        pick_node_with(
+            &[selected, unsupported],
+            "sample",
+            Some("rust"),
+            None,
+            Some(&path)
+        )
+        .await
+        .unwrap(),
+        selected
+    );
+    assert_eq!(
+        load_placement(&path).workspaces,
+        std::collections::BTreeMap::from([("sample".into(), selected)])
+    );
+}
+
 /// Without a cluster answer, a node short of memory or disk is passed over for a busier one
 /// that has room, and taken only when every node is short (#396).
 #[tokio::test]

@@ -14,3 +14,5 @@ mod matrix;
 mod parse;
 mod plan;
 mod render;
+mod wave2;
+mod wave2_js;

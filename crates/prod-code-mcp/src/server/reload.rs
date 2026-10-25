@@ -29,6 +29,8 @@ pub(super) struct Reload {
     pub requested: Arc<AtomicBool>,
     pub notify: Arc<Notify>,
     pub timeout: Duration,
+    /// How often the loop asks whether the cluster has a better node for this workspace.
+    pub rebalance_every: Duration,
     pub reexec: Box<dyn FnMut(&Path) -> std::io::Error + Send>,
 }
 
@@ -116,6 +118,7 @@ impl Reload {
             requested,
             notify,
             timeout: Duration::from_secs(30),
+            rebalance_every: Duration::from_secs(30),
             reexec: Box::new(hot_reload::reexec),
         }
     }

@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::protocol::{
     self, JsonRpcRequest, JsonRpcResponse, MCP_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
@@ -51,6 +51,24 @@ pub async fn handle_mcp_request(
     workspace_root: &Path,
     req_val: serde_json::Value,
 ) -> Result<Option<serde_json::Value>> {
+    handle_mcp_request_with(remote, workspace_root, req_val, |old, root| async move {
+        rediscover_node(old, &root).await
+    })
+    .await
+}
+
+/// [`handle_mcp_request`] with the search for a live node, after the gateway could not be
+/// reached, given: `rediscover(old gateway, workspace root)`.
+pub(crate) async fn handle_mcp_request_with<D, F>(
+    remote: &mut SocketAddr,
+    workspace_root: &Path,
+    req_val: serde_json::Value,
+    rediscover: D,
+) -> Result<Option<serde_json::Value>>
+where
+    D: Fn(SocketAddr, PathBuf) -> F,
+    F: std::future::Future<Output = Option<SocketAddr>>,
+{
     let req: JsonRpcRequest = match serde_json::from_value(req_val) {
         Ok(r) => r,
         Err(e) => {
@@ -124,7 +142,8 @@ pub async fn handle_mcp_request(
                             "gateway unreachable, running UDP discovery"
                         );
                         let old = *remote;
-                        if let Some(new_addr) = rediscover_node(old, workspace_root).await {
+                        if let Some(new_addr) = rediscover(old, workspace_root.to_path_buf()).await
+                        {
                             *remote = new_addr;
                             let identity = crate::sync::workspace_identity(workspace_root);
                             let name = identity.base.unwrap_or(identity.name);

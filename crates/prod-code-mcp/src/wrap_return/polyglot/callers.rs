@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+#[path = "callers/coverage_w2.rs"]
+mod coverage_w2;
+
 use super::enclosing::enclosing_polyglot_info;
 use super::find::find_polyglot_decl;
 use super::import::{

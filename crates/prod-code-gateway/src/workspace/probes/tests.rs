@@ -112,3 +112,92 @@ async fn a_failing_cmake_configure_is_survived_and_leaves_the_sources_alone() {
     );
     assert!(!broken.path().join("build/compile_commands.json").exists());
 }
+
+/// An executable that acts as `cmake` when called with `-S` (running `body` in the build
+/// directory's parent) and does nothing otherwise. It is run once before it is returned: a file
+/// just written cannot be executed while a process forked by a parallel test still holds the
+/// descriptor it was written through.
+#[cfg(unix)]
+fn fake_cmake(dir: &Path, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-cmake");
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\n[ \"$1\" = \"-S\" ] || exit 0\n{body}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for _ in 0..500 {
+        match std::process::Command::new(&path).status() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            result => {
+                assert!(result.unwrap().success());
+                break;
+            }
+        }
+    }
+    path
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cmake_outcomes_are_reported_and_only_a_success_leaves_a_database() {
+    let tools = tempfile::tempdir().unwrap();
+    let ok = fake_cmake(
+        tools.path(),
+        "mkdir -p build\nprintf '%s\\n' \"$*\" > build/args.txt\necho '[]' > build/compile_commands.json",
+    );
+    let sleeper_dir = tempfile::tempdir().unwrap();
+    let sleeper = fake_cmake(sleeper_dir.path(), "exec sleep 3");
+    let failing_dir = tempfile::tempdir().unwrap();
+    let failing = fake_cmake(
+        failing_dir.path(),
+        "echo first >&2\necho the-last-line >&2\nexit 3",
+    );
+    let missing = tools.path().join("no-such-cmake");
+
+    // (program, limit in milliseconds, how the configure ends, whether a database exists after)
+    let cases: [(&Path, u64, CmakeRun, bool); 4] = [
+        (&ok, 20_000, CmakeRun::Configured, true),
+        (
+            &failing,
+            20_000,
+            CmakeRun::Failed("the-last-line".into()),
+            false,
+        ),
+        (
+            &missing,
+            20_000,
+            CmakeRun::NotRunnable("No such file or directory (os error 2)".into()),
+            false,
+        ),
+        (&sleeper, 100, CmakeRun::TimedOut, false),
+    ];
+    for (program, limit_ms, expected, database) in cases {
+        let project = package(&[("CMakeLists.txt", "project(sample)\n")]);
+        let started = std::time::Instant::now();
+        let run = configure_cmake(project.path(), program, Duration::from_millis(limit_ms)).await;
+        assert_eq!(run, expected);
+        assert_eq!(
+            project.path().join("build/compile_commands.json").is_file(),
+            database,
+            "{expected:?}"
+        );
+        if run == CmakeRun::TimedOut {
+            assert!(started.elapsed() < Duration::from_millis(2500));
+        }
+        if database {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("build/args.txt")).unwrap(),
+                "-S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON\n"
+            );
+            // A second call finds the database and leaves it alone.
+            assert_eq!(
+                configure_cmake(project.path(), program, Duration::from_secs(20)).await,
+                CmakeRun::Skipped
+            );
+        }
+    }
+}

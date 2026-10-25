@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::path::Path;
 
 /// A framed local server with explicit answers and an ordered notification transcript.
-pub(super) async fn server(root: &Path, responses: Value) -> GenericLspEngine {
+pub(crate) async fn server(root: &Path, responses: Value) -> GenericLspEngine {
     let script = root.join("scripted-server.py");
     let answers = root.join("answers.json");
     std::fs::write(&answers, responses.to_string()).unwrap();

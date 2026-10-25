@@ -148,9 +148,18 @@ pub fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> 
     match lang {
         Language::Python => line.starts_with("import ") || line.starts_with("from "),
         Language::TypeScript | Language::JavaScript => {
+            // `export const a = f(1)` declares something and calls `f`: only an export that
+            // merely names the function (`export { f }`, `export default f`) is not a use of it.
+            let called = content[at..]
+                .trim_start_matches(is_ident)
+                .trim_start()
+                .starts_with('(');
             if line.starts_with("import ")
                 || line.starts_with("import{")
-                || line.starts_with("export ")
+                || line.starts_with("export {")
+                || line.starts_with("export type {")
+                || line.starts_with("export * ")
+                || (line.starts_with("export default ") && !called)
                 || line.starts_with("export{")
                 || line.contains(" from ")
                 || line.contains("require(")

@@ -169,3 +169,115 @@ async fn janitor_evicts_idle_workspaces_prunes_old_copies_and_records_gateway_co
     assert_eq!(snapshot.workspace_count, 0);
     assert_eq!(snapshot.engine_count, 0);
 }
+
+#[test]
+fn idle_engines_are_unloaded_after_the_configured_time_cut_to_the_pressure_limit() {
+    assert_eq!(PRESSURE_EVICT_IDLE, Duration::from_secs(300));
+    // (--idle-evict-secs, host short of memory, after how many seconds)
+    for (configured, short, expected) in [
+        (0, false, None),
+        (0, true, Some(300)),
+        (60, false, Some(60)),
+        (60, true, Some(60)),
+        (300, true, Some(300)),
+        (900, false, Some(900)),
+        (900, true, Some(300)),
+    ] {
+        assert_eq!(
+            evict_after(configured, short),
+            expected.map(Duration::from_secs),
+            "{configured} {short}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_first_sweep_collects_the_inventory_prunes_old_metric_logs_and_keeps_active_work() {
+    crate::test_cache_support::isolated!();
+    let temp = tempfile::tempdir().unwrap();
+    let storage = temp.path().join("storage");
+    std::fs::create_dir(&storage).unwrap();
+    let mut state = ServerState::new(storage.clone());
+    state.engine_allowlist = vec!["unavailable-test-engine".into()];
+    state.metrics.set_node("sample");
+    let metrics_dir = state.metrics.dir().to_path_buf();
+    std::fs::create_dir_all(&metrics_dir).unwrap();
+    let expired = metrics_dir.join("events-2000-01-01.jsonl");
+    let unrelated = metrics_dir.join("events-notes.txt");
+    std::fs::write(&expired, "{}\n").unwrap();
+    std::fs::write(&unrelated, "keep").unwrap();
+
+    // Two loaded workspaces on a node short of memory, and no peer to hand either to: the one in
+    // use stays where it is, and the idle one is not unloaded before its time.
+    let mut loaded = Vec::new();
+    for (name, active) in [("busy", 2), ("quiet", 0)] {
+        let workspace = Arc::new(crate::workspace::shared::SharedWorkspace::new(
+            storage.join(name),
+            "text".into(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        workspace.active_sessions.store(active, Ordering::Relaxed);
+        state.workspace_manager.workspaces.write().await.insert(
+            workspace.key.clone(),
+            crate::workspace::loader::LoadState::Ready(Arc::clone(&workspace)),
+        );
+        loaded.push(workspace);
+    }
+    let mut redirects = loaded[0].rebalance_tx.subscribe();
+    let state = Arc::new(state);
+    assert!(state.metrics.toolchain_inventory().is_none());
+    let task = tokio::spawn(janitor_with_probe(
+        Arc::clone(&state),
+        0,
+        0,
+        0,
+        0,
+        Duration::from_millis(5),
+        |_| prod_code_protocol::HostResources {
+            memory_total_bytes: Some(100),
+            memory_available_bytes: Some(0),
+            storage_free_millis: Some(1000),
+        },
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while state.metrics.toolchain_inventory().is_none() || expired.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Let a few more sweeps run under pressure before looking.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let inventory = state.metrics.toolchain_inventory().unwrap();
+    assert_eq!(inventory.node, "sample");
+    // Nothing is advertised, so no engine is reported as available whatever the host has.
+    assert!(inventory.engines.iter().all(|engine| !engine.available));
+    assert!(!expired.exists());
+    assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "keep");
+    assert!(redirects.try_recv().is_err());
+    assert_eq!(state.workspace_manager.loaded_count().await, 2);
+    for workspace in &loaded {
+        assert!(!workspace.unloaded.load(Ordering::Relaxed));
+    }
+    assert_eq!(loaded[0].active_sessions.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn the_gateway_janitor_waits_a_full_period_before_its_first_sweep() {
+    crate::test_cache_support::isolated!();
+    let temp = tempfile::tempdir().unwrap();
+    let state = Arc::new(ServerState::new(temp.path().join("storage")));
+    let task = tokio::spawn(janitor(Arc::clone(&state), 0, 0, 0, 0));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!task.is_finished());
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(state.metrics.latest_snapshot().is_none());
+    assert!(state.metrics.toolchain_inventory().is_none());
+}
