@@ -1,0 +1,23 @@
+{
+  "base_commit": "c8b8fd85beb439e73380b934bb43ccea59281b25",
+  "algorithm": "SHA-256",
+  "final_source": {
+    "crates/prod-code-engine-rust/src/editor/mod.rs": "03d26e1ac08bf0857d186e87ac880797a511883ff4cb813a650e0c0293b1eb2a",
+    "crates/prod-code-engine-rust/src/editor/extensions.rs": "7631f480908bdd92f36787c3b1da9a29a8530d6b86a9fd552f40cb568b331baf",
+    "crates/prod-code-engine-rust/src/editor/snapshot.rs": "dc020a4fadf6fa0353ddf30cb9ada6b58f33832dd19a8d953452e1ba9bd9418c",
+    "crates/prod-code-gateway/src/lsp_handlers/mod.rs": "82577472c6e93fd12cdb02940220197641066aa52fe816e71fefe9434cbc2a6f",
+    "crates/prod-code-gateway/src/lsp_handlers/editor.rs": "d10dc07eca8afc58226dac01505949bb4dc7e2e0f74f72bfff793ce87f3780a3",
+    "crates/prod-code-gateway/src/lsp_handlers/native_extensions.rs": "e25aa3900c64716754b78b4e7196ecd03bb56dc9e5ce970aa02f5ceb8c200aca",
+    "crates/prod-code-gateway/tests/native_rust_extensions.rs": "1a87171dcdf71011b0c863ac88ee3dd3c421a231296e32216c6497584eeb4187",
+    "crates/prod-code-gateway/tests/common/native_rust.rs": "c927cd130f847ba2fc75a37b26a0e269fff4557119c634e3daf71732340ddf50",
+    "crates/prod-code-gateway/tests/native_rust_extensions/views.rs": "76f1f77fdeb568d4a3a4553f60c2e554a1db0544cc69401011a81fd9d89eef6a"
+  },
+  "baseline_source": {
+    "crates/prod-code-engine-rust/src/editor/mod.rs": "69b16e0d48a178fd8ba70ac9eef4d4a6afb089e19293d965e58337cfb5dcf9a7",
+    "crates/prod-code-engine-rust/src/editor/snapshot.rs": "5262acb588124a37ce174acdde972a799073f40484aaf150b564ae26798d5607",
+    "crates/prod-code-gateway/src/lsp_handlers/mod.rs": "2e66411d678245f0ec4df764fc73a58e78ed22d994de5fc5c30946db004ea548",
+    "crates/prod-code-gateway/src/lsp_handlers/editor.rs": "ce6668b3acaa07299f36c556cb8f6eb9ab952293f571527eaaec39dc3fd202fa",
+    "crates/prod-code-gateway/src/session/lsp_rust.rs": "8900248fc154cbf9348d014f554acc81a1622ba7da8437a788e0d4386c5b1843",
+    "crates/prod-code-gateway/src/lsp/bounded_query.rs": "61f8741b934a3490c909c02f2f4f58c6096075b6f315c060c2587411b27b632c"
+  }
+}

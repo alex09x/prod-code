@@ -1,0 +1,25 @@
+Source-discovery/read failures before the implementation (no repository changes):
+
+Command:
+rg --files crates/engine-rust crates/gateway | head -90; prod-code --help
+Error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.
+Fallback: listed the known crates directory, then used prod-code grep/def and bounded reads of identified files.
+
+Command:
+sed -n '1,205p' crates/prod-code-gateway/src/session/lsp_rust.rs; sed -n '1,205p' crates/prod-code-gateway/src/session/message_dispatch.rs; sed -n '1,180p' crates/prod-code-engine-rust/src/editor/mod.rs; ls crates/prod-code-engine-rust/src/snapshot; sed -n '1,180p' crates/prod-code-gateway/tests/common/mod.rs
+Error (exit 1):
+sed: crates/prod-code-gateway/tests/common/mod.rs: No such file or directory
+Fallback: listed the known tests/common directory and read the existing integration tests instead.
+
+Command:
+sed -n '1,100p' crates/prod-code-gateway/src/lsp_handlers/hover.rs; sed -n '1,110p' crates/prod-code-gateway/src/lsp_handlers/mod.rs; prod-code grep 'snapshot_for|activate_session' crates/prod-code-gateway/src/lsp_handlers/queries.rs
+Errors (exit 1):
+sed: crates/prod-code-gateway/src/lsp_handlers/hover.rs: No such file or directory
+Error: search path does not exist: crates/prod-code-gateway/src/lsp_handlers/queries.rs (did you mean `crates/prod-code-engine-go/src/lsp/queries.rs`?)
+The absolute assigned-checkout prefix in that last diagnostic is omitted for repository privacy.
+Fallback: read the actual lsp_handlers module declaration and navigation.rs, then resolved execute_bounded_query_with_timeout and semantic_query_budget with prod-code def.
+
+Compiler/test failures and their exact commands are separately recorded in README.md
+and the accompanying initial-test-compile, baseline, short-deadline and development logs.
+No public issue was filed: the worker task explicitly prohibited publication/messages.

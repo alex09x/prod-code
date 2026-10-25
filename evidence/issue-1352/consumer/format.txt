@@ -1,0 +1,2 @@
+[prod-code exec] 3 file(s) changed by the command written back: crates/prod-code-gateway/tests/common/native_rust/bridge.rs, crates/prod-code-gateway/tests/native_rust_extensions.rs, crates/prod-code-gateway/tests/native_rust_extensions/consumer.rs
+[prod-code exec] exit 0 in 0.5s (server 0.1s, cpu 0.0s user 0.0s sys, peak 40 MB) on node $BUILD_NODE, copy <build-checkout> (linux x86_64)

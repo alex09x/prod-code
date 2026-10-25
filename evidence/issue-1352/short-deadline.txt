@@ -1,0 +1,71 @@
+   Compiling prod-code-engine-rust v0.3.41 (<build-checkout>/crates/prod-code-engine-rust)
+   Compiling prod-code-gateway v0.3.41 (<build-checkout>/crates/prod-code-gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.08s
+     Running tests/native_rust_extensions.rs (target/debug/deps/native_rust_extensions-bb44ec34bd97ef63)
+
+running 5 tests
+test native_extensions_answer_through_gateway_dispatch ... REQUEST session=1 {"id":"syntax-baseline","jsonrpc":"2.0","method":"rust-analyzer/viewSyntaxTree","params":{"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+NO RESPONSE session=1 (3 second deadline or closed output)
+REQUEST session=1 {"id":1352,"jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":24,"line":1},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+NO RESPONSE session=1 (3 second deadline or closed output)
+
+thread 'native_extensions_answer_through_gateway_dispatch' (1368174) panicked at crates/prod-code-gateway/tests/native_rust_extensions.rs:35:33:
+native endpoint silently dropped the request
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test native_extensions_bound_invalid_inputs_and_unavailable_expansions ... REQUEST session=31 {"id":"invalid","jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=31 {"error":{"code":-32602,"message":"position.line must be a non-negative 32-bit integer"},"id":"invalid","jsonrpc":"2.0"}
+REQUEST session=31 {"id":"invalid","jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":0,"line":-1},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=31 {"error":{"code":-32602,"message":"position.line must be a non-negative 32-bit integer"},"id":"invalid","jsonrpc":"2.0"}
+REQUEST session=31 {"id":"invalid","jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":4294967296,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=31 {"error":{"code":-32602,"message":"position.character must be a non-negative 32-bit integer"},"id":"invalid","jsonrpc":"2.0"}
+REQUEST session=31 {"id":"invalid","jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":0,"line":99},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=31 {"error":{"code":-32602,"message":"position is outside the document or splits a UTF-16 character"},"id":"invalid","jsonrpc":"2.0"}
+REQUEST session=31 {"id":"invalid","jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":999,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=31 {"error":{"code":-32602,"message":"position is outside the document or splits a UTF-16 character"},"id":"invalid","jsonrpc":"2.0"}
+REQUEST session=31 {"id":"invalid","jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":1.5,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=31 {"error":{"code":-32602,"message":"position.character must be a non-negative 32-bit integer"},"id":"invalid","jsonrpc":"2.0"}
+REQUEST session=31 {"id":"no-macro","jsonrpc":"2.0","method":"rust-analyzer/expandMacro","params":{"position":{"character":0,"line":1},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+
+thread 'native_extensions_bound_invalid_inputs_and_unavailable_expansions' (1368391) panicked at crates/prod-code-gateway/tests/common/native_rust.rs:120:45:
+native request must answer within 3 seconds
+NO RESPONSE session=31 (3 second deadline or closed output)
+FAILED
+test native_extensions_respect_worktree_and_validation_views ... REQUEST session=43 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"macro_rules! choose { ($x:expr) => { $x + 71 }; }\npub fn first() -> i32 { choose!(1) }\npub fn second() -> i32 {\n    macro_rules! choose { ($x:expr) => { $x * 20 }; }\n    choose!(2)\n}\n","uri":"file:///client/src/lib.rs","version":1}}}
+REQUEST session=43 {"id":"validation-proposal","jsonrpc":"2.0","method":"rust-analyzer/viewSyntaxTree","params":{"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+
+thread 'native_extensions_respect_worktree_and_validation_views' (1368582) panicked at crates/prod-code-gateway/tests/common/native_rust.rs:120:45:
+native request must answer within 3 seconds
+NO RESPONSE session=43 (3 second deadline or closed output)
+FAILED
+test native_extensions_use_the_consumers_edition ... REQUEST session=51 {"id":"2021","jsonrpc":"2.0","method":"rust-analyzer/viewSyntaxTree","params":{"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+
+thread 'native_extensions_use_the_consumers_edition' (1371202) panicked at crates/prod-code-gateway/tests/common/native_rust.rs:120:45:
+native request must answer within 3 seconds
+NO RESPONSE session=51 (3 second deadline or closed output)
+FAILED
+test native_trees_and_macros_use_private_session_overlays ... REQUEST session=11 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"macro_rules! choose { ($x:expr) => { $x + 37 }; }\r\n// é🦀\r\npub fn first() -> i32 { choose!(1) }\r\npub fn second() -> i32 {\r\n    macro_rules! choose { ($x:expr) => { $x * 43 }; }\r\n    choose!(2)\r\n}\r\n","uri":"file:///client/src/lib.rs","version":1}}}
+REQUEST session=12 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"macro_rules! choose { ($x:expr) => { $x + 99 }; }\npub fn first() -> i32 { choose!(1) }\npub fn second() -> i32 {\n    macro_rules! choose { ($x:expr) => { $x * 20 }; }\n    choose!(2)\n}\n","uri":"file:///client/src/lib.rs","version":1}}}
+REQUEST session=11 {"id":"proposed-tree","jsonrpc":"2.0","method":"rust-analyzer/viewSyntaxTree","params":{"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+
+thread 'native_trees_and_macros_use_private_session_overlays' (1371401) panicked at crates/prod-code-gateway/tests/common/native_rust.rs:120:45:
+native request must answer within 3 seconds
+NO RESPONSE session=11 (3 second deadline or closed output)
+FAILED
+
+failures:
+
+failures:
+    native_extensions_answer_through_gateway_dispatch
+    native_extensions_bound_invalid_inputs_and_unavailable_expansions
+    native_extensions_respect_worktree_and_validation_views
+    native_extensions_use_the_consumers_edition
+    native_trees_and_macros_use_private_session_overlays
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.30s
+
+error: test failed, to rerun pass `-p prod-code-gateway --test native_rust_extensions`
+[prod-code exec] exit 101 in 35.9s (server 35.5s, cpu 40.5s user 6.3s sys, peak 1563 MB) on node <Linux-build-node>, copy <build-path> (linux x86_64)

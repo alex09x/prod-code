@@ -1,0 +1,3 @@
+returned rustc exit=0
+stdout=
+stderr=

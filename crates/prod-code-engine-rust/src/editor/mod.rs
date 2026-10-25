@@ -14,6 +14,7 @@
 //! document highlight, code actions, formatting) over typed JSON-RPC payloads.
 
 pub mod engine;
+mod extensions;
 pub mod format;
 pub mod lines;
 pub mod mapping;
@@ -22,5 +23,6 @@ pub mod snapshot;
 #[cfg(test)]
 mod tests;
 
+pub use extensions::InvalidExtensionParams;
 pub use lines::Lines;
 pub use snapshot::EDITOR_METHODS;

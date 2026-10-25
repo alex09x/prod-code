@@ -22,6 +22,21 @@ pub(crate) fn lsp_editor_request(
     params: serde_json::Value,
     engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
 ) {
+    if matches!(
+        method,
+        "rust-analyzer/viewSyntaxTree" | "rust-analyzer/expandMacro"
+    ) {
+        super::native_extensions::lsp_native_extension(
+            out_tx,
+            translator,
+            view,
+            id,
+            method,
+            params,
+            engine_lock,
+        );
+        return;
+    }
     let engine_arc = Arc::clone(engine_lock);
     let req_id = id.clone().unwrap_or(serde_json::json!(1));
     let out_tx_task = out_tx.clone();

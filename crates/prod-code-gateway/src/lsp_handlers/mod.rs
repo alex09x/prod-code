@@ -10,6 +10,7 @@
 
 pub(crate) mod editor;
 mod module_path;
+mod native_extensions;
 pub(crate) mod navigation;
 pub(crate) mod refactor;
 pub(crate) mod symbols;
