@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use super::resolve::shape_of;
-use super::types::{MANY_FIELDS, Shape, inner_of, split_top_level};
+use super::types::{Shape, inner_of, split_top_level};
 
 /// A value expression for a type, without consulting the analyzer.
 ///
@@ -175,12 +175,23 @@ pub(crate) async fn build_literal(
     fallbacks: &mut Vec<String>,
     hint: Option<&Path>,
 ) -> Option<String> {
-    let (shape, _path) = shape_of(remote, root, name, hint).await.ok()?;
+    let (mut shape, _path) = shape_of(remote, root, name, hint).await.ok()?;
+    let mut constructor = name.to_string();
+    if let Shape::Enum(variants) = shape {
+        // Prefer a unit value without inventing payloads; payload-only enums still
+        // use the ordinary recursive field builder, including its depth/cycle guards.
+        let variant = variants
+            .iter()
+            .find(|v| v.shape == Shape::Unit)
+            .or_else(|| variants.first())?;
+        constructor = format!("{name}::{}", variant.name);
+        shape = variant.shape.clone();
+    }
     let pad = "    ".repeat(indent + 1);
     let closing = "    ".repeat(indent);
     match shape {
-        Shape::Unit => Some(name.to_string()),
-        Shape::Enum(variants) => variants.first().map(|v| format!("{name}::{v}")),
+        Shape::Unit => Some(constructor),
+        Shape::Enum(_) => None,
         Shape::Tuple(types) => {
             let mut parts = Vec::new();
             for ty in types {
@@ -188,14 +199,14 @@ pub(crate) async fn build_literal(
                     Box::pin(value_for(remote, root, &ty, depth, indent, seen, fallbacks)).await,
                 );
             }
-            Some(format!("{name}({})", parts.join(", ")))
+            Some(format!("{constructor}({})", parts.join(", ")))
         }
         Shape::Record(fields) => {
             if fields.is_empty() {
-                return Some(format!("{name} {{}}"));
+                return Some(format!("{constructor} {{}}"));
             }
             let mut lines = Vec::new();
-            for (field, ty) in fields.iter().take(MANY_FIELDS) {
+            for (field, ty) in &fields {
                 let value = Box::pin(value_for(
                     remote,
                     root,
@@ -208,7 +219,10 @@ pub(crate) async fn build_literal(
                 .await;
                 lines.push(format!("{pad}{field}: {value},"));
             }
-            Some(format!("{name} {{\n{}\n{closing}}}", lines.join("\n")))
+            Some(format!(
+                "{constructor} {{\n{}\n{closing}}}",
+                lines.join("\n")
+            ))
         }
     }
 }

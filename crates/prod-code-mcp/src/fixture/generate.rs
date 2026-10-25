@@ -17,7 +17,7 @@ use crate::parameter_object::Language;
 
 use super::polyglot::{PolyglotShape, format_polyglot_fixture};
 use super::resolve::shape_of_polyglot;
-use super::types::{Fixture, FixtureOptions, Shape, snake_case};
+use super::types::{Fixture, FixtureOptions, snake_case};
 use super::values::build_literal;
 
 /// Generates a fixture for `symbol`, and type-checks it when asked.
@@ -69,17 +69,9 @@ pub async fn generate_with_options(
     let mut fallbacks = Vec::new();
 
     let (value, snippet) = if lang == Language::Rust && !options.randomized && !is_mock {
-        let rust_shape = match &shape {
-            PolyglotShape::Record(f) => Shape::Record(f.clone()),
-            PolyglotShape::Tuple(t) => Shape::Tuple(t.clone()),
-            PolyglotShape::Unit => Shape::Unit,
-            PolyglotShape::Enum(v) => Shape::Enum(v.clone()),
-            PolyglotShape::Interface { .. } => Shape::Unit,
-            PolyglotShape::InterfaceWithFields { .. } => Shape::Unit,
-        };
         let mut seen = vec![symbol.to_string()];
-        let val = match &rust_shape {
-            Shape::Unit => symbol.to_string(),
+        let val = match &shape {
+            PolyglotShape::Unit => symbol.to_string(),
             _ => build_literal(
                 remote,
                 root,

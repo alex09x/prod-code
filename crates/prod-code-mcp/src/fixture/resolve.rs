@@ -16,8 +16,9 @@ use anyhow::{Context, Result};
 use crate::parameter_object::Language;
 use crate::tools::{SymbolHit, workspace_symbol_search};
 
+use super::builder::lexer::{Kind, Source};
 use super::polyglot::{PolyglotShape, parse_polyglot_shape};
-use super::types::{Shape, split_top_level, strip_visibility};
+use super::types::{EnumVariant, Shape, split_top_level, strip_visibility};
 
 /// The declaration body hover returns, without the markdown fences and the module line.
 #[allow(dead_code)]
@@ -47,15 +48,56 @@ pub(crate) fn declaration_from_hover(hover: &str) -> Option<String> {
     })
 }
 
-/// Reads a declaration into a shape. Doc comments and attributes are ignored.
+/// Flatten a body only after lexing comments and removing complete attributes.
+fn body_without_attributes(body: &str) -> Option<String> {
+    let mut source = Source::new(body).ok()?;
+    let mut kept = Vec::new();
+    let mut i = 0;
+    while i < source.tokens.len() {
+        if !source.is(i, "#") {
+            kept.push(source.tokens[i]);
+            i += 1;
+            continue;
+        }
+        if !source.is(i + 1, "[") {
+            return None;
+        }
+        // Source alone cannot prove which conditional fields/variants exist.
+        if source.is(i + 2, "cfg") || source.is(i + 2, "cfg_attr") {
+            return None;
+        }
+        let mut closers = vec!["]"];
+        i += 2;
+        while !closers.is_empty() {
+            let token = source.tokens.get(i)?;
+            if token.kind == Kind::Punct {
+                match source.t(i) {
+                    "[" => closers.push("]"),
+                    "(" => closers.push(")"),
+                    "{" => closers.push("}"),
+                    "]" | ")" | "}" if closers.pop()? != source.t(i) => return None,
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+    }
+    source.tokens = kept;
+    Some(source.spell(0, source.tokens.len()))
+}
+
+/// Reads a declaration into a shape. Doc comments and inert attributes are ignored.
 pub fn parse_shape(decl: &str) -> Option<Shape> {
-    let head = decl.trim_start();
-    let is_enum = head.starts_with("enum") || head.starts_with("pub enum");
-    let Some(open) = decl.find('{') else {
+    let head = strip_visibility(decl);
+    let is_enum = head
+        .strip_prefix("enum")
+        .is_some_and(|s| s.starts_with(char::is_whitespace));
+    // Visibility restrictions contain parentheses too. Only inspect the item's body.
+    let Some(open) = head.find('{') else {
         // `struct Name(A, B);` or `struct Name;`
-        if let Some(open) = decl.find('(') {
-            let close = decl.rfind(')')?;
-            let types = split_top_level(&decl[open + 1..close])
+        if let Some(open) = head.find('(') {
+            let close = head.rfind(')')?;
+            let types = split_top_level(&head[open + 1..close])
                 .into_iter()
                 .map(|t| strip_visibility(&t).to_string())
                 .filter(|t| !t.is_empty())
@@ -64,38 +106,47 @@ pub fn parse_shape(decl: &str) -> Option<Shape> {
         }
         return Some(Shape::Unit);
     };
-    let close = decl.rfind('}').filter(|c| *c > open)?;
-    let body = &decl[open + 1..close];
+    let close = head.rfind('}').filter(|c| *c > open)?;
+    // Lex original newlines so comments and attribute literals retain boundaries.
+    let body = body_without_attributes(&head[open + 1..close])?;
     if is_enum {
-        let variants = body
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with('#'))
-            .filter_map(|l| {
-                let name: String = l
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                (!name.is_empty()).then_some(name)
+        let variants = split_top_level(&body)
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let l = l.trim();
+                let variant = Source::new(l).ok()?;
+                let token = variant.tokens.first()?;
+                if token.kind != Kind::Ident {
+                    return None;
+                }
+                let name = variant.t(0).to_string();
+                let tail = l[token.end..].trim_start();
+                let shape = if tail.starts_with(['(', '{']) {
+                    parse_shape(&format!("struct {name}{tail}"))?
+                } else if tail.is_empty() || tail.starts_with('=') {
+                    Shape::Unit
+                } else {
+                    return None;
+                };
+                Some(EnumVariant { name, shape })
             })
-            .collect();
+            .collect::<Option<Vec<_>>>()?;
         return Some(Shape::Enum(variants));
     }
     let mut fields = Vec::new();
-    for raw in split_top_level(body) {
+    for raw in split_top_level(&body) {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+        if line.is_empty() {
             continue;
         }
         let line = strip_visibility(line);
-        let Some((name, ty)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim();
-        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            continue;
+        let field = Source::new(line).ok()?;
+        if field.tokens.first()?.kind != Kind::Ident || !field.is(1, ":") || field.tokens.len() < 3
+        {
+            return None;
         }
-        fields.push((name.to_string(), ty.trim().to_string()));
+        fields.push((field.t(0).to_string(), field.spell(2, field.tokens.len())));
     }
     Some(Shape::Record(fields))
 }
@@ -232,6 +283,28 @@ pub(crate) fn extract_decl_around_line(text: &str, line: u32) -> Option<String> 
     Some(lines[start..=end].join("\n"))
 }
 
+fn rust_record_declaration(text: &str, line: u32) -> Option<String> {
+    let tail = text
+        .lines()
+        .skip(line.checked_sub(1)? as usize)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let head = strip_visibility(&tail);
+    if !head.starts_with("struct ") && !head.starts_with("enum ") {
+        return None;
+    }
+    // Skip visibility parentheses; attribute literals/comments cannot end the body.
+    let source = Source::new(head).ok()?;
+    let first = (0..source.tokens.len())
+        .find(|&i| source.is(i, "{") || source.is(i, "(") || source.is(i, ";"))?;
+    if !source.is(first, "{") {
+        return None;
+    }
+    let close = source.close_of(first)?;
+    let offset = tail.len() - head.len();
+    Some(tail[..offset + source.tokens[close].end].to_string())
+}
+
 /// The polyglot shape of a named type and the file that declares it.
 pub async fn shape_of_polyglot(
     remote: SocketAddr,
@@ -240,6 +313,27 @@ pub async fn shape_of_polyglot(
     hint: Option<&Path>,
     explicit_lang: Option<Language>,
 ) -> Result<(PolyglotShape, String, Language)> {
+    let (decl, file, lang) = resolved_declaration(remote, root, name, hint, explicit_lang).await?;
+    let poly_shape = parse_polyglot_shape(&decl, lang)
+        .or_else(|| {
+            parse_shape(&decl).map(|s| match s {
+                Shape::Record(f) => PolyglotShape::Record(f),
+                Shape::Tuple(t) => PolyglotShape::Tuple(t),
+                Shape::Unit => PolyglotShape::Unit,
+                Shape::Enum(v) => PolyglotShape::Enum(v.into_iter().map(|v| v.name).collect()),
+            })
+        })
+        .with_context(|| format!("cannot read the shape of `{name}`"))?;
+    Ok((poly_shape, file, lang))
+}
+
+async fn resolved_declaration(
+    remote: SocketAddr,
+    root: &Path,
+    name: &str,
+    hint: Option<&Path>,
+    explicit_lang: Option<Language>,
+) -> Result<(String, String, Language)> {
     let hit = resolve_type(remote, root, name, hint).await?;
     let lang = explicit_lang
         .or_else(|| Language::of(&hit.path))
@@ -259,6 +353,11 @@ pub async fn shape_of_polyglot(
     let text = std::fs::read_to_string(&hit.path)
         .with_context(|| format!("cannot read {}", hit.path.display()))?;
     let decl = declaration_at(&symbols, hit.line, &text)
+        .or_else(|| {
+            (lang == Language::Rust)
+                .then(|| rust_record_declaration(&text, hit.line))
+                .flatten()
+        })
         .or_else(|| extract_decl_around_line(&text, hit.line))
         .with_context(|| {
             format!(
@@ -267,23 +366,13 @@ pub async fn shape_of_polyglot(
                 hit.line
             )
         })?;
-    let poly_shape = parse_polyglot_shape(&decl, lang)
-        .or_else(|| {
-            parse_shape(&decl).map(|s| match s {
-                Shape::Record(f) => PolyglotShape::Record(f),
-                Shape::Tuple(t) => PolyglotShape::Tuple(t),
-                Shape::Unit => PolyglotShape::Unit,
-                Shape::Enum(v) => PolyglotShape::Enum(v),
-            })
-        })
-        .with_context(|| format!("cannot read the shape of `{name}`"))?;
     let file = hit
         .path
         .strip_prefix(root)
         .unwrap_or(&hit.path)
         .to_string_lossy()
         .into_owned();
-    Ok((poly_shape, file, lang))
+    Ok((decl, file, lang))
 }
 
 /// The shape of a named type and the file that declares it.
@@ -293,14 +382,8 @@ pub async fn shape_of(
     name: &str,
     hint: Option<&Path>,
 ) -> Result<(Shape, String)> {
-    let (poly, file, _lang) = shape_of_polyglot(remote, root, name, hint, None).await?;
-    let shape = match poly {
-        PolyglotShape::Record(f) => Shape::Record(f),
-        PolyglotShape::Tuple(t) => Shape::Tuple(t),
-        PolyglotShape::Unit => Shape::Unit,
-        PolyglotShape::Enum(v) => Shape::Enum(v),
-        PolyglotShape::Interface { .. } => Shape::Unit,
-        PolyglotShape::InterfaceWithFields { .. } => Shape::Unit,
-    };
+    let (decl, file, _lang) = resolved_declaration(remote, root, name, hint, None).await?;
+    let shape =
+        parse_shape(&decl).with_context(|| format!("cannot read the Rust shape of `{name}`"))?;
     Ok((shape, file))
 }
