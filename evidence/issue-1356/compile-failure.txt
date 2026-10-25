@@ -1,0 +1,31 @@
+   Compiling prod-code-mcp v0.3.41 (<build-path>)
+error[E0597]: `root` does not live long enough
+   --> crates/prod-code-mcp/src/session/tests/lifecycle.rs:154:48
+    |
+147 |         let root = ws.root();
+    |             ---- binding `root` declared here
+...
+154 |         watchers.push(crate::watch::test_owner(&root));
+    |                                                ^^^^^ borrowed value does not live long enough
+...
+169 |     }
+    |     - `root` dropped here while still borrowed
+...
+185 | }
+    | - borrow might be used here, when `watchers` is dropped and runs the `Drop` code for type `Vec`
+    |
+    = note: values in a scope are dropped in the opposite order they are defined
+note: this call may capture more lifetimes than intended, because Rust 2024 has adjusted the `impl Trait` lifetime capture rules
+   --> crates/prod-code-mcp/src/session/tests/lifecycle.rs:154:23
+    |
+154 |         watchers.push(crate::watch::test_owner(&root));
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: use the precise capturing `use<...>` syntax to make the captures explicit
+   --> crates/prod-code-mcp/src/watch.rs:145:59
+    |
+145 | pub(crate) fn test_owner(root: &Path) -> impl Fn() -> bool + use<> {
+    |                                                            +++++++
+
+For more information about this error, try `rustc --explain E0597`.
+error: could not compile `prod-code-mcp` (lib test) due to 1 previous error
+[prod-code exec] exit 101 in 3.8s (server 3.3s, cpu 2.6s user 0.7s sys, peak 1184 MB) on node <Linux build node>, copy <build-path> (linux x86_64)

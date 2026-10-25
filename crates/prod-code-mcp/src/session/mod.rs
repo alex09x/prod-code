@@ -14,6 +14,7 @@
 //! connection per query.
 
 mod connection;
+mod lifecycle;
 mod methods;
 mod pool;
 #[cfg(test)]

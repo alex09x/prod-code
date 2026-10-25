@@ -1,0 +1,22 @@
+{
+  "task": 4268,
+  "original_status": "failed",
+  "failure_code": "capture_failed",
+  "preserved_candidate": "1e1d7c194e8b69d934462871802a06111a8d4a23",
+  "recovery": "Only post-acceptance session and watch logs copied unchanged from terminal worker; all nine recorded source hashes matched before runner correction.",
+  "actual_acceptance": {
+    "session_tests": 16,
+    "watch_tests": 7,
+    "both_exit_codes": 0,
+    "default_parallelism": true,
+    "retired_client_socket_descriptors_open": "0/20"
+  },
+  "runner_change": "Print source hashes and test output without writing tracked artifacts. Test argv and environment unchanged. Python AST parse succeeded; no test rerun.",
+  "current_runner_sha256": "d1d26ee5d5b1180a930280a739d6156fcdd51a41a239259b2857c213c19cafe1",
+  "limits": [
+    "Production and tests unchanged from preserved candidate.",
+    "Historical source-hashes.json deliberately binds the original runner.",
+    "Process FD sample includes unrelated concurrent fixtures; only retired fixture client sockets are asserted closed.",
+    "Independent aggregate review still required; not integrated."
+  ]
+}

@@ -1,0 +1,25 @@
+   Compiling prod-code-mcp v0.3.41 (<build-path>)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.93s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 4 tests
+test session::tests::lifecycle::a_reused_socket_revalidates_changed_text ... ok
+test session::tests::lifecycle::warm_roots_and_exact_path_identity_survive_retirement ... ok
+retire cycles=20 retained=0 descriptors before=Some(25) after=Some(127); no cleanup/disconnect/limit changes
+
+thread 'session::tests::lifecycle::retired_roots_release_real_client_owners' (3030029) panicked at crates/prod-code-mcp/src/session/tests/lifecycle.rs:160:9:
+bounded descriptor growth: 25 -> 127
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test session::tests::lifecycle::retired_roots_release_real_client_owners ... FAILED
+test session::tests::lifecycle::active_and_queued_queries_survive_idle_cache_pressure ... ok
+
+failures:
+
+failures:
+    session::tests::lifecycle::retired_roots_release_real_client_owners
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1477 filtered out; finished in 0.80s
+
+error: test failed, to rerun pass `-p prod-code-mcp --lib`
+[prod-code exec] exit 101 in 18.8s (server 17.8s, cpu 26.6s user 4.5s sys, peak 3005 MB) on node <Linux build node>, copy <build-path> (linux x86_64)

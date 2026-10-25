@@ -1,0 +1,53 @@
+{
+  "baseline": {
+    "base": "8242a7edf2f84fd6385a8a3f4759ec0502d3f847",
+    "command": "cargo test -p prod-code-mcp --lib session::tests::lifecycle::retired_roots_release_real_client_owners -- --nocapture",
+    "exit_code": 101,
+    "retired_sessions_retained": 20,
+    "descriptor_before": 11,
+    "descriptor_after": 116,
+    "output": "before.txt"
+  },
+  "focused_after": {
+    "command": "cargo test -p prod-code-mcp --lib session::tests::lifecycle::retired_roots_release_real_client_owners -- --nocapture",
+    "exit_code": 0,
+    "retired_sessions_retained": 0,
+    "retired_client_socket_descriptors": 0,
+    "descriptor_before": 11,
+    "descriptor_after": 16,
+    "output": "after.txt"
+  },
+  "development_failures": [
+    "development.txt: retired owners were released, but the process-wide descriptor delta also measured concurrent unrelated clients; replaced that assertion with fixture socket-inode ownership and kept process descriptor evidence",
+    "compile-failure.txt: test helper impl Fn captured the root borrow under Rust 2024; repaired with precise use<> capture"
+  ],
+  "format_and_lint": {
+    "format": "rustfmt --edition 2024 --config skip_children=true on the eight changed Rust files",
+    "lint": "cargo clippy -p prod-code-mcp --lib --no-deps",
+    "exit_code": 0,
+    "lint_warnings": 103,
+    "output": "format-lint.txt"
+  },
+  "final_gate": {
+    "command": "python3 evidence/issue-1356/run-final.py",
+    "node_kind": "Linux x86_64 build node",
+    "exit_code": 0,
+    "session_tests_passed": 16,
+    "watch_tests_passed": 7,
+    "soft_descriptor_limit": 1024,
+    "hard_descriptor_limit": 1000000,
+    "test_serialization": false,
+    "explicit_cache_cleanup_or_disconnect": false,
+    "limit_change": false,
+    "output": "final.txt",
+    "source_hashes": "source-hashes.json"
+  },
+  "limits": [
+    "The focused before/after commands exercise 20 retirement cycles, not whole-node exhaustion.",
+    "Parallel-module process descriptor counts include unrelated fixtures; fixture socket descriptors are asserted individually.",
+    "The scripted gateway supplies semantic replies only; client sync, sockets, cache ownership and filesystem watchers are real.",
+    "Runtime verification was on Linux; platform-specific fallback remains conservative on metadata failures.",
+    "This resource gate does not establish a successful constructor gate or diagnose the separate zero-rewrite failure.",
+    "Session and watcher idle budgets are each 16; idle age is checked on access or query retirement, without a background reaper. Live query owners remain pinned."
+  ]
+}

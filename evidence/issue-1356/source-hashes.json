@@ -1,0 +1,11 @@
+{
+  "crates/prod-code-mcp/src/session/mod.rs": "0db55209bd97dd37bcb729ab42fd47c779c5e445f34d024974ba75c0324c19d2",
+  "crates/prod-code-mcp/src/session/lifecycle.rs": "88a22e6858188519eb22f80a2c2d8c4fa9ca28bfce385cf501436e50c18ad859",
+  "crates/prod-code-mcp/src/session/pool.rs": "300ae26a62e16cb42671609384ac812bf0e0108d92cd8f2124af4bd9f1e505e3",
+  "crates/prod-code-mcp/src/session/tests/mod.rs": "cd7fa4a7de31da76ce0a9097ce9ec31959b623ee62ca5c53734c7a25c4339072",
+  "crates/prod-code-mcp/src/session/tests/lifecycle.rs": "e8b99c5a07115553b95d6c08bcfedbf2b7db473694b94cb9d2ec8c4872d19fc6",
+  "crates/prod-code-mcp/src/watch.rs": "5cc5151689bc2bdc2e7cb969312a86b3b2aba66dc936ec30f4ef696d6289d7a5",
+  "crates/prod-code-mcp/src/watch/lifecycle.rs": "11066f1571ba90ff5dfc59b9598ab7b1437b628ad8b4b1dec3030bbae53ca98c",
+  "crates/prod-code-mcp/src/watch/tests/lifecycle.rs": "0cfed0e4bc39ac72b66dd47ee757d3eb69aeee5ca124e3ff9781b9fdf7be2394",
+  "evidence/issue-1356/run-final.py": "c2105e1f7743b90c6d262c9d6f56fa00ccc75b217eca47965636575cc87adccd"
+}

@@ -1,0 +1,16 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 7 tests
+test watch::tests::build_directories_and_vcs_are_ignored ... ok
+test watch::tests::generation_advances_on_change_and_sync_is_due_once ... ok
+test watch::tests::lifecycle::missing_root_metadata_never_reuses_synced_state ... ok
+test watch::tests::lifecycle::recreated_roots_reject_old_sync_even_with_a_live_old_lease ... ok
+test watch::tests::lifecycle::pinned_watcher_keeps_ignore_and_config_generations ... ok
+test watch::tests::lifecycle::retired_watchers_release_their_real_owners ... ok
+test watch::tests::lifecycle::evicted_watch_tokens_cannot_acknowledge_a_new_incarnation ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1475 filtered out; finished in 0.17s
+
+
+exit_code=0

@@ -1,0 +1,7 @@
+{
+  "base": "8242a7edf2f84fd6385a8a3f4759ec0502d3f847",
+  "sha256": {
+    "crates/prod-code-mcp/src/session/pool.rs": "d6b23398793cc014f6e641ce687db26e2ef0819de94fbf0fcb9c78b95a3c5b0a",
+    "crates/prod-code-mcp/src/watch.rs": "1f3a70f72831831d8c105b82596fffc8141c7143e2c8da973d1718beb11c260d"
+  }
+}

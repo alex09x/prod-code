@@ -9,29 +9,15 @@
  */
 
 use anyhow::Result;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::Ordering;
 
 use crate::sync::{engine_project, workspace_identity};
 
+use super::lifecycle::{PoolKey, QueryLease};
+pub(crate) use super::lifecycle::{pool, session_slot};
 use super::types::{LspSession, OPEN_BUDGET, budget_for, timeout_error};
-
-/// Long-lived sessions of this process, one per (gateway, checkout, nested project): the
-/// MCP server keeps them across tool calls so a query costs one round trip instead of a
-/// connection, a sync and a handshake each time.
-pub(crate) type SessionSlot = Arc<tokio::sync::Mutex<Option<LspSession>>>;
-
-pub(crate) fn pool() -> &'static tokio::sync::Mutex<HashMap<String, SessionSlot>> {
-    static POOL: OnceLock<tokio::sync::Mutex<HashMap<String, SessionSlot>>> = OnceLock::new();
-    POOL.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
-}
-
-pub(crate) async fn session_slot(key: &str) -> SessionSlot {
-    let mut sessions = pool().lock().await;
-    Arc::clone(sessions.entry(key.to_string()).or_default())
-}
 
 pub(crate) fn is_connection_error(err: &anyhow::Error) -> bool {
     let text = format!("{err:#}").to_ascii_lowercase();
@@ -49,7 +35,7 @@ pub(crate) fn is_connection_error(err: &anyhow::Error) -> bool {
 
 /// The checkout a query about `file` is asked in, and the key of its pooled session: one per
 /// node, checkout and nested project.
-pub(crate) fn pool_key(remote: SocketAddr, root: &Path, file: &Path) -> (PathBuf, String) {
+pub(crate) fn pool_key(remote: SocketAddr, root: &Path, file: &Path) -> (PathBuf, PoolKey) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     // A local file of another checkout, such as a clone next to this one, is asked about in
     // that checkout's own session: this one's analyzer never loaded it, and a server of another
@@ -62,12 +48,13 @@ pub(crate) fn pool_key(remote: SocketAddr, root: &Path, file: &Path) -> (PathBuf
     {
         engine = Some(own);
     }
-    let key = format!(
-        "{remote}|{}|{}|{}",
-        root.display(),
-        subpath.unwrap_or_default(),
-        engine.unwrap_or_default()
-    );
+    let key = PoolKey {
+        remote,
+        identity: crate::watch::root_identity(&root),
+        root: root.clone(),
+        subpath: subpath.unwrap_or_default(),
+        engine: engine.unwrap_or_default().to_string(),
+    };
     (root, key)
 }
 
@@ -79,7 +66,11 @@ pub async fn pooled_engine_age(
     file: &Path,
 ) -> Option<std::time::Duration> {
     let (_, key) = pool_key(remote, root, file);
-    let slot = pool().lock().await.get(&key).cloned()?;
+    let slot = pool()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned()?;
     // Metadata is advisory; it must not queue behind a query just to report its age.
     let session = slot.try_lock().ok()?;
     session.as_ref().and_then(LspSession::engine_age)
@@ -89,7 +80,12 @@ pub async fn pooled_engine_age(
 /// at `root`; `false` when there is none yet (#391).
 pub async fn pooled_index_gated(remote: SocketAddr, root: &Path, file: &Path) -> bool {
     let (_, key) = pool_key(remote, root, file);
-    let Some(slot) = pool().lock().await.get(&key).cloned() else {
+    let Some(slot) = pool()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned()
+    else {
         return false;
     };
     slot.try_lock()
@@ -129,7 +125,7 @@ pub(crate) async fn pooled_query_with_budget(
 ) -> Result<serde_json::Value> {
     let deadline = tokio::time::Instant::now() + budget;
     let (root, key) = pool_key(remote, root, file);
-    let slot = session_slot(&key).await;
+    let slot = QueryLease::new(session_slot(&key).await);
     let mut stored = tokio::time::timeout_at(deadline, slot.lock())
         .await
         .map_err(|_| timeout_error("waiting for another query in this workspace", budget))?;
@@ -189,15 +185,20 @@ pub(crate) async fn pooled_query_with_budget(
                 }
             }
             if session.is_none() {
+                let generation = crate::watch::current_generation(&root);
                 session = Some(LspSession::open(target_remote, &root, Some(file)).await?);
-                crate::watch::mark_synced(&root, crate::watch::current_generation(&root));
+                crate::watch::mark_synced(&root, generation);
+                slot.generation.store(generation, Ordering::Relaxed);
             }
             let current = session.as_mut().expect("just inserted");
             let generation = crate::watch::current_generation(&root);
             let result = async {
-                if crate::watch::sync_due(&root, generation) {
+                if slot.generation.load(Ordering::Relaxed) != generation
+                    || crate::watch::sync_due(&root, generation)
+                {
                     current.refresh().await?;
                     crate::watch::mark_synced(&root, generation);
+                    slot.generation.store(generation, Ordering::Relaxed);
                     crate::call_tree::clear_call_hierarchy_cache_for(&root);
                 }
                 current.query(file, method, params.clone()).await
