@@ -248,9 +248,17 @@ fn macos_only_cgo_is_found_unless_linux_skips_the_file() {
 fn nested_project_of_another_language_gets_a_subpath() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = ['crates/a']\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join("crates/a/src")).unwrap();
-    std::fs::write(root.join("crates/a/Cargo.toml"), "[package]\n").unwrap();
+    std::fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = 'a'\nversion = '0.1.0'\nedition = '2024'\n",
+    )
+    .unwrap();
     std::fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
     std::fs::create_dir_all(root.join("swift/Sources/App")).unwrap();
     std::fs::write(root.join("swift/Package.swift"), "").unwrap();

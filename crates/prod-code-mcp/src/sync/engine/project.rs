@@ -14,15 +14,16 @@ use crate::sync::engine::workspace::{
 };
 use std::path::{Path, PathBuf};
 
-/// Engine the gateway is expected to pick for `root` from its manifest, or `None` when the
-/// checkout carries no manifest the gateway keys on. Mirrors the gateway's detection order.
 /// The project a path belongs to inside a checkout: the nearest ancestor of `hint` (up to
-/// `root`) carrying a manifest of a *different* language than the checkout root. Returns the
+/// `root`) carrying a manifest not owned by the checkout root's project. Returns the
 /// engine subpath (relative, `/`-separated) and that project's engine; `(None, root engine)`
 /// when the path belongs to the root project (nested crates of one Cargo workspace stay
 /// with the workspace).
 pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'static str>) {
     let root_engine = expected_engine(root);
+    // Keep direct root detection (including its bare-source language policies)
+    // distinct from a language inferred only from a child project.
+    let root_project_engine = engine_at(root);
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     // A caller may name a source relative to this checkout while its process runs elsewhere.
     // Resolve it against the supplied root before examining files or project manifests (#488).
@@ -93,7 +94,9 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
             // Same language is not the same project. A Cargo workspace answers for its
             // members; a crate it excludes belongs to no project the root analyzer loaded, so
             // it needs one of its own or every query in it comes back null.
-            if Some(engine) == root_engine && !excluded_from_root_workspace(&canonical_root, &dir) {
+            if Some(engine) == root_project_engine
+                && !excluded_from_root_workspace(&canonical_root, &dir)
+            {
                 break;
             }
             // A file of another language inside the project (a Python script in a Swift
