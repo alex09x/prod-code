@@ -15,16 +15,33 @@ use std::time::Duration;
 /// so its background index covers the whole tree (cross-file rename and references) from the
 /// first query. Best effort: a failure only means clangd runs without a compilation database.
 pub(crate) async fn warm_cmake_compile_commands(workspace_root: &Path) {
+    configure_cmake(workspace_root, Path::new("cmake"), Duration::from_secs(180)).await;
+}
+
+/// How a CMake configure ended.
+#[derive(Debug, PartialEq)]
+enum CmakeRun {
+    /// Nothing to configure: no `CMakeLists.txt`, or a compilation database already there.
+    Skipped,
+    Configured,
+    /// CMake ran and failed; the last line of its error output.
+    Failed(String),
+    NotRunnable(String),
+    TimedOut,
+}
+
+/// [`warm_cmake_compile_commands`] with the program to run and how long to wait for it.
+async fn configure_cmake(workspace_root: &Path, program: &Path, limit: Duration) -> CmakeRun {
     if !workspace_root.join("CMakeLists.txt").is_file()
         || workspace_root
             .join("build")
             .join("compile_commands.json")
             .is_file()
     {
-        return;
+        return CmakeRun::Skipped;
     }
     let started = std::time::Instant::now();
-    let mut cmd = tokio::process::Command::new("cmake");
+    let mut cmd = tokio::process::Command::new(program);
     cmd.args([
         "-S",
         ".",
@@ -38,20 +55,37 @@ pub(crate) async fn warm_cmake_compile_commands(workspace_root: &Path) {
     for (k, v) in crate::compiler_cache_env(workspace_root, crate::on_path("ccache")) {
         cmd.env(k, v);
     }
-    let result = tokio::time::timeout(Duration::from_secs(180), cmd.output()).await;
+    let result = tokio::time::timeout(limit, cmd.output()).await;
     match result {
-        Ok(Ok(out)) if out.status.success() => tracing::info!(
-            workspace = ?workspace_root,
-            duration_ms = started.elapsed().as_millis() as u64,
-            "cmake configured build/compile_commands.json for clangd"
-        ),
-        Ok(Ok(out)) => tracing::warn!(
-            workspace = ?workspace_root,
-            stderr = %String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or(""),
-            "cmake configure failed; clangd runs without a compilation database"
-        ),
-        Ok(Err(e)) => tracing::warn!(workspace = ?workspace_root, error = %e, "cmake not runnable"),
-        Err(_) => tracing::warn!(workspace = ?workspace_root, "cmake configure timed out"),
+        Ok(Ok(out)) if out.status.success() => {
+            tracing::info!(
+                workspace = ?workspace_root,
+                duration_ms = started.elapsed().as_millis() as u64,
+                "cmake configured build/compile_commands.json for clangd"
+            );
+            CmakeRun::Configured
+        }
+        Ok(Ok(out)) => {
+            let stderr = String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
+                .to_string();
+            tracing::warn!(
+                workspace = ?workspace_root,
+                stderr = %stderr,
+                "cmake configure failed; clangd runs without a compilation database"
+            );
+            CmakeRun::Failed(stderr)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(workspace = ?workspace_root, error = %e, "cmake not runnable");
+            CmakeRun::NotRunnable(e.to_string())
+        }
+        Err(_) => {
+            tracing::warn!(workspace = ?workspace_root, "cmake configure timed out");
+            CmakeRun::TimedOut
+        }
     }
 }
 
@@ -72,6 +106,17 @@ pub(crate) async fn wait_for_swift_build_settings(
     engine: &prod_code_engine_generic::GenericLspEngine,
     root: &Path,
 ) {
+    wait_for_swift_settings_within(engine, root, SWIFT_SETTINGS_WAIT).await;
+}
+
+/// [`wait_for_swift_build_settings`] with how long to wait for the settings. `None` when the root
+/// has no settings to wait for; otherwise what the check came to, with the reason when the
+/// server never reported on the probe.
+async fn wait_for_swift_settings_within(
+    engine: &prod_code_engine_generic::GenericLspEngine,
+    root: &Path,
+    wait: Duration,
+) -> Option<Result<bool, String>> {
     if root.components().any(|c| {
         matches!(
             c.as_os_str().to_string_lossy().as_ref(),
@@ -85,15 +130,13 @@ pub(crate) async fn wait_for_swift_build_settings(
                 | "DerivedData"
         )
     }) {
-        return;
+        return None;
     }
-    let Some((path, text)) = swift_probe_file(root) else {
-        return;
-    };
+    let (path, text) = swift_probe_file(root)?;
     let (probe, line) = with_probe_line(&text);
     let started = std::time::Instant::now();
     let checked = engine
-        .wait_for_semantic_check(&path, "swift", &probe, line, SWIFT_SETTINGS_WAIT)
+        .wait_for_semantic_check(&path, "swift", &probe, line, wait)
         .await;
     let waited_ms = started.elapsed().as_millis() as u64;
     match checked {
@@ -103,10 +146,11 @@ pub(crate) async fn wait_for_swift_build_settings(
         Ok(false) => {
             tracing::warn!(workspace = ?root, waited_ms, "sourcekit-lsp found no type error in the probe; its checks may report syntax errors only")
         }
-        Err(err) => {
+        Err(ref err) => {
             tracing::warn!(workspace = ?root, waited_ms, error = %err, "sourcekit-lsp never reported on the probe; whether its checks have the package's build settings is unknown")
         }
     }
+    Some(checked.map_err(|err| err.to_string()))
 }
 
 /// A Swift source of the SwiftPM package at `root`, and its text: the first under `Sources/` by
@@ -153,3 +197,5 @@ pub(crate) fn with_probe_line(text: &str) -> (String, u64) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wait_tests;
