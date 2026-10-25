@@ -1,0 +1,62 @@
+{
+  "issue": 1367,
+  "original_review_comment": 4060342191,
+  "base": "39c2aedff6095e75fb4c5d151af664aca6f43d9d",
+  "candidate": "6c1270133e1303d72abb2c740fe9eec0502abf3f",
+  "source_hashes": {
+    "crates/prod-code-gateway/src/session/client_handler.rs": "7c105f8529540c92f9c6643478df29b0637656b28031ec6bd6f37277130713e2",
+    "crates/prod-code-gateway/tests/probe_search_invalidation.rs": "d077ef818c90fa98d0e99e8657a246edcb6e1d879da6834e24c99c1158a43ded"
+  },
+  "node_kind": "Linux x86_64 build node",
+  "baseline": {
+    "command": "cargo test -p prod-code-gateway --test probe_search_invalidation",
+    "exit": 101,
+    "passed": 0,
+    "failed": 1,
+    "exact_final_test_bytes": true,
+    "result": "obsolete_manifest_target from deleted file survives manifest probe"
+  },
+  "final": {
+    "command": "cargo test -p prod-code-gateway --test probe_search_invalidation",
+    "exit": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "observed_at_utc": "2026-10-25T22:22:19Z",
+    "source_hash_observed_at_utc": "2026-10-25T22:22:32Z"
+  },
+  "format": {
+    "command": "rustfmt --edition 2024 --check crates/prod-code-gateway/src/session/client_handler.rs crates/prod-code-gateway/tests/probe_search_invalidation.rs",
+    "exit": 0,
+    "note": "Initial formatting check failed on two call layouts; both were corrected before final checks."
+  },
+  "lint": {
+    "command": "cargo clippy -p prod-code-gateway --test probe_search_invalidation --no-deps",
+    "exit": 0,
+    "gateway_library_warnings": 56,
+    "changed_file_warnings": 0
+  },
+  "evidence_recovery": "Full retained execution outputs recovered; successful final tests were reused because source and test bytes match. Earlier baseline used overlapping lexical fixture names; parent exact-baseline run uses the final test bytes and independently fails for the deleted symbol.",
+  "raw_log_sha256": {
+    "worker-before.txt": "d5dc14f0b08de3ed5c5e4652b95489fb92d6c3088d164e70a0d1e116063015c4",
+    "format-lint.txt": "26e7e8fda05f4e361ef37cae64bf4b1a5926823ccf443743ccd29656ac8b48e3",
+    "format-first.txt": "be1748c64fd61f4503f8409bad03f822ea398711c5df3c695a8e3a052ebf7f8e",
+    "final.txt": "39dd466cfb118f24f75f7b13e889d0c01f589fdf9152d6f0bc2fc39daae4668b",
+    "source-hashes.txt": "e14cb79955b9bbc1250c0634e921654db3aeede744bc2859a551de73f273b232",
+    "exact-before.txt": "d8621c4f7392bcfa91af2c1b058f0137e788f4b26f5552ca2bb793efbd6d0b0b"
+  },
+  "primary_review": "Complete production/test diff inspected: same server workspace path derivation as probe, cache forgotten before response only after deletion or seeding; real TCP dispatch, filesystem and index assertions. No semantic source edits during delivery.",
+  "limits": [
+    "No workspace-wide suite or numerical coverage run.",
+    "Test executes real in-process gateway dispatch and search; no installed gateway deployment is claimed."
+  ],
+  "public_log_normalization": "Private path/endpoint redaction, CR removal, and trailing horizontal whitespace removal only; original raw hashes are retained separately.",
+  "public_log_sha256": {
+    "worker-before.txt": "02eaa876a04519f62b9c25c2b30a4a650be00075e5c862e78f47fd0471d9c399",
+    "format-first.txt": "ee96b753dc5bdf7ac48979abc8eb80905ca4aa99e9e25cde283a299cefa4c017",
+    "final.txt": "f1f14e503147a02187f49a5bce3395cc5c488fc3488f7ff882c20b0d3284509a",
+    "exact-before.txt": "e9de5a9aef8dee7597b9d360c2621b4f7922e177a3bebf59c1e939c71a8c763e",
+    "source-hashes.txt": "f063048d2e41f3d93eaea0f59aba543be27bb788efc4fb99978ad3c5213149a3",
+    "format-lint.txt": "8d9b02c5e51f78779344feda27457985f0ea414ac0008a8ef6e02a3fe49dcec0"
+  }
+}
