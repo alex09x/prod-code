@@ -1,0 +1,33 @@
+{
+  "note": "Failed discovery/tool invocations retained; endpoint only is parameterized for privacy. These were bounded tool/discovery failures, not unresolved product failures.",
+  "failures": [
+    {
+      "command": "sed -n '1,200p' evidence/codex-review-audit/fixit-three-current.json && rg --files crates/prod-code-mcp/src/fixit && prod-code outline crates/prod-code-mcp/src/fixit",
+      "error": "Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.",
+      "fallback": "Read the named evidence and run prod-code outline separately."
+    },
+    {
+      "command": "prod-code outline crates/prod-code-mcp/src/testkit",
+      "exit": 1,
+      "error": "Error: cannot outline: file does not exist: crates/prod-code-mcp/src/testkit",
+      "fallback": "Next guess also failed; then git ls-files established the actual testkit crate path."
+    },
+    {
+      "command": "prod-code outline crates/prod-code-mcp/src/testkit.rs",
+      "exit": 1,
+      "error": "Error: cannot outline: file does not exist: crates/prod-code-mcp/src/testkit.rs",
+      "fallback": "git ls-files established crates/prod-code-testkit/src/lib.rs and its helper modules."
+    },
+    {
+      "command": "sed -n '200,360p' crates/prod-code-testkit/src/scripted_gateway.rs && sed -n '20,125p' crates/prod-code-mcp/src/exec/runner.rs && sed -n '1,150p' crates/prod-code-mcp/src/sync/tests/project_root_regression.rs && sed -n '1,120p' crates/prod-code-mcp/src/verify/plan.rs",
+      "exit": 1,
+      "error": "sed: crates/prod-code-mcp/src/verify/plan.rs: No such file or directory",
+      "fallback": "git ls-files confirmed verify/plan/basic.rs, mod.rs and scope.rs before the targeted read."
+    },
+    {
+      "command": "rg -n -C 3 'src/fixit' /private/tmp/fixit1349-lint.log; prod-code exec --remote \"$BUILD_NODE\" --timeout-secs 900 --env RUST_TEST_NOCAPTURE=1 -- cargo test -p prod-code-mcp --lib fixit::tests > /private/tmp/fixit1349-after.log 2>&1; result=$?; tail -n 100 /private/tmp/fixit1349-after.log; exit $result",
+      "error": "Command blocked by PreToolUse hook: Recursive grep/find outside the workspace is always blocked: it walks huge trees (home directories, caches, logs) for minutes or hours.",
+      "fallback": "Read that single log with Python; execute the final gate separately."
+    }
+  ]
+}

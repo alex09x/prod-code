@@ -1,0 +1,92 @@
+{
+  "candidate": "23c1fde1e5fd1d8be18dbfc46d3a2e1fa3c6fa0c",
+  "delivery_base": "c8b8fd85beb439e73380b934bb43ccea59281b25",
+  "checked_source_base": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+  "candidate_files_unchanged": [
+    {
+      "path": "crates/prod-code-mcp/src/fixit/apply.rs",
+      "sha256": "7397466641d6d72f950db38475af0cb8975e2ea3f66269890d2227b10fa59d8f"
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/plan.rs",
+      "sha256": "72653e1ed47d9537c22a872f3331ceefc9eae5e61189e288efe555a9acc51d73"
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests.rs",
+      "sha256": "094ab7eac0a568dc018f8550013453e2940bb1c1507b5c4545fccaed91ab9337"
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349.rs",
+      "sha256": "5f033c6286d9ce5130f06213026a29b25cde0732a910ba685446eea4ee094093"
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349/boundary.rs",
+      "sha256": "b89f2f099c9d5381126ef432f1e4661e17a7119bcc93d8effc77e65ab11c08e9"
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349/gateway.rs",
+      "sha256": "8b57ed4ebd99e4b1c2894307d6e8229da37bf8c1c25697ba9d0dcbc6e77104d1"
+    },
+    {
+      "path": "crates/prod-code-mcp/src/fixit/tests/issue1349/tools.rs",
+      "sha256": "45e6eab065878ff3d65bdba97d6039b444b76b2614c20f4bb8c4d046ee7625d6"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/after.txt",
+      "sha256": "fcdd72bb724c0054c585ae2de51fdc934d6b953be9cd69c12cab55061e137920"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/before-nested.txt",
+      "sha256": "9b7104b16db4f355c09639ac9d2f7a5923f81a7f68f5333abbb37c0252e674f9"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/before.txt",
+      "sha256": "707170bf605eb3f7e983d189addf12b5fee0e8dd1264e5970eb4075c49cf4e33"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/evidence.json",
+      "sha256": "4153b4726bf139c8620394244460e99b4535a2709fbb4ed58bae39028a752c25"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/format.txt",
+      "sha256": "0ad791c048787c01c707d5f6c077d6f763849d67ed14695d514c8df59f1143c0"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/lint.txt",
+      "sha256": "3c45499847b17621a9cd1005393002ad531c3e95972a16f233a005e7e708754c"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/source-pairs.json",
+      "sha256": "672bbcba44af8c30bc300f5a58ddbf6578a5e899ff327c65bd57af7179e89fc5"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-1349-repair/tool-failures.json",
+      "sha256": "24d0c6b2932243349ba73a923a8739539a538821021b490a03d772fdeaad0f3a"
+    },
+    {
+      "path": "evidence/codex-review-audit/fixit-three-current.json",
+      "sha256": "a709b6fdf453b21449e7f96f6bf5198944fb4016227e702c3f94699bd4b11783"
+    }
+  ],
+  "review": {
+    "decision": "approve",
+    "confidence": 0.96,
+    "summary": "No findings.",
+    "violations": [],
+    "findings": [],
+    "deviations": [
+      "Reviewed full fixit production delta, existing caller/project-root behavior, scripted gateway protocol, nested/outside/multipart/alias/UTF-8/stale/overlap and fixer-success/failure controls.",
+      "All eight recorded source hashes matched. The full candidate source/evidence files remain unchanged on delivery base; the base advanced only by two roadmap documents.",
+      "Reused exact-source recorded formatting exit0, non-deny Clippy exit0 (107 library-test warnings,103 duplicates; none naming fixit), and final23/23 tests. No unchanged passing gate was replayed.",
+      "Tests drive real planning, run_remote protocol and filesystem write paths, but command diagnostics/exit frames are scripted. No real cargo-clippy/ruff fixture execution or broader language certification claimed."
+    ]
+  },
+  "checks": {
+    "git_diff_cached_check": 0,
+    "private_path_scan": "passed known actual home/LAN patterns"
+  },
+  "limits": [
+    "Existing file-system concurrent mutation/TOCTOU behavior is not redesigned.",
+    "No node deployment or installed-client behavior is claimed."
+  ]
+}

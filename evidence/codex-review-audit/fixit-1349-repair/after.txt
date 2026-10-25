@@ -1,0 +1,47 @@
+Observed terminal exit status: 0
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>/crates/prod-code-mcp)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.99s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 23 tests
+test fixit::tests::a_fix_is_applied_whole_once_and_only_to_the_text_it_was_made_for ... ok
+test fixit::tests::fixed_render_caps_huge_outcomes_preserving_after_report ... ok
+test fixit::tests::the_report_says_what_was_fixed_skipped_and_left ... ok
+test fixit::tests::only_machine_applicable_suggestions_are_taken ... ok
+test fixit::tests::fixed_render_preserves_outcomes_and_post_fix_report ... ok
+test fixit::tests::issue1349::issue1349_root_planner_still_resolves_root_relative_files ... ok
+test fixit::tests::issue1349::boundary::issue1349_canonical_root_and_inside_symlink_share_overlap_tracking ... ok
+test fixit::tests::issue1349::boundary::issue1349_inside_parent_components_and_alias_overlap_remain_valid ... ok
+test fixit::tests::issue1349::issue1349_planner_separates_command_directory_from_outer_boundary ... ok
+boundary planner: symlink=false, files=1, skipped=[Some("src/../../.tmpGjD8u3/outside.rs is not a file of this workspace"), None]
+boundary planner: symlink=true, files=1, skipped=[Some("src/link.rs is not a file of this workspace"), None]
+test fixit::tests::issue1349::boundary::issue1349_rejected_multipart_does_not_reserve_edits_or_split_utf8 ... ok
+fixer protocol: case=timeout, changed=true, result=Err("fixes: `ruff check . --fix --output-format concise` timed out; 1 changed file(s) already pulled: main.py\nscripted timeout failure\n"), bytes="value = 2\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_partial_timeout ... ok
+fixer protocol: case=unknown, changed=false, result=Err("fixes: `ruff check . --fix --output-format concise` failed: exit code is unknown; 0 changed file(s) already pulled: \nscripted unknown failure\n"), bytes="value = 1\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_missing_exit ... ok
+fixer protocol: case=start, changed=false, result=Err("fixes: `ruff check . --fix --output-format concise` failed to start: scripted spawn refusal; 0 changed file(s) already pulled: \nscripted start failure\n"), bytes="value = 1\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_start_failure ... ok
+fixer protocol: case=exit, changed=false, result=Err("fixes: `ruff check . --fix --output-format concise` failed with exit code 2; 0 changed file(s) already pulled: \nscripted exit failure\n"), bytes="value = 1\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_nonzero_exit ... ok
+fixer protocol: case=unknown, changed=true, result=Err("fixes: `ruff check . --fix --output-format concise` failed: exit code is unknown; 1 changed file(s) already pulled: main.py\nscripted unknown failure\n"), bytes="value = 2\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_partial_missing_exit ... ok
+fixer protocol: case=timeout, changed=false, result=Err("fixes: `ruff check . --fix --output-format concise` timed out; 0 changed file(s) already pulled: \nscripted timeout failure\n"), bytes="value = 1\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_timeout ... ok
+fixer protocol: case=exit, changed=true, result=Err("fixes: `ruff check . --fix --output-format concise` failed with exit code 2; 1 changed file(s) already pulled: main.py\nscripted exit failure\n"), bytes="value = 2\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_partial_nonzero_exit ... ok
+fixer protocol: case=start, changed=true, result=Err("fixes: `ruff check . --fix --output-format concise` failed to start: scripted spawn refusal; 1 changed file(s) already pulled: main.py\nscripted start failure\n"), bytes="value = 2\n", requests=2
+test fixit::tests::issue1349::tools::issue1349_fixer_partial_start_failure ... ok
+test fixit::tests::issue1349::tools::issue1349_no_fix_mode_and_non_lint_preserve_initial_report ... ok
+nested protocol: ok=true, outer="use std::fmt;\npub fn sample() {}\n", nested="pub fn sample() {}\n"
+test fixit::tests::issue1349::issue1349_nested_command_directory_does_not_edit_outer_shadow ... ok
+boundary protocol: symlink=false, result=Ok(true), valid="pub fn sample() {}\n"
+test fixit::tests::issue1349::boundary::issue1349_traversal_skips_whole_suggestion_and_applies_valid_fix ... ok
+boundary protocol: symlink=true, result=Ok(true), valid="pub fn sample() {}\n"
+test fixit::tests::issue1349::boundary::issue1349_symlink_skips_whole_suggestion_and_applies_valid_fix ... ok
+test fixit::tests::issue1349::tools::issue1349_successful_fixer_with_and_without_changes ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 1449 filtered out; finished in 0.17s
+
+[prod-code exec] exit 0 in 12.6s (server 12.2s, cpu 19.6s user 3.7s sys, peak 2447 MB) on node <build-node>, copy <remote-workspace> (linux x86_64)

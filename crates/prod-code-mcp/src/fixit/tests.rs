@@ -12,6 +12,8 @@ use super::parse::parse_fixes;
 use super::plan::plan;
 use super::types::{Edit, Fix, Fixed, Outcome};
 
+mod issue1349;
+
 // An unused import, as cargo reports it: the suggestion is in a child.
 const UNUSED: &str = r#"{"reason":"compiler-message","message":{"level":"warning","code":{"code":"unused_imports"},"message":"unused import: `std::fmt`","spans":[{"file_name":"src/lib.rs","byte_start":4,"byte_end":12,"line_start":1,"is_primary":true,"text":[{"text":"use std::fmt;"}],"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"message":"remove the whole `use` item","spans":[{"file_name":"src/lib.rs","byte_start":0,"byte_end":14,"line_start":1,"is_primary":true,"text":[{"text":"use std::fmt;"}],"suggested_replacement":"","suggestion_applicability":"MachineApplicable"}],"children":[]}]}}"#;
 
@@ -33,12 +35,13 @@ fn only_machine_applicable_suggestions_are_taken() {
 #[test]
 fn a_fix_is_applied_whole_once_and_only_to_the_text_it_was_made_for() {
     let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/lib.rs"), "use std::fmt;\nfn f() {}\n").unwrap();
     let fix = parse_fixes(UNUSED).remove(0);
     // Reported twice (lib and test targets), applied once.
-    let (files, outcomes) = plan(dir.path(), &[fix.clone(), fix.clone()]);
-    assert_eq!(files[&dir.path().join("src/lib.rs")], "fn f() {}\n");
+    let (files, outcomes) = plan(&root, &[fix.clone(), fix.clone()]);
+    assert_eq!(files[&root.join("src/lib.rs")], "fn f() {}\n");
     assert_eq!(outcomes.len(), 1);
     assert!(outcomes[0].skipped.is_none());
 
@@ -60,9 +63,9 @@ fn a_fix_is_applied_whole_once_and_only_to_the_text_it_was_made_for() {
         ],
         ..fix.clone()
     };
-    let (files, outcomes) = plan(dir.path(), &[parens, fix.clone()]);
+    let (files, outcomes) = plan(&root, &[parens, fix.clone()]);
     assert_eq!(
-        files[&dir.path().join("src/lib.rs")],
+        files[&root.join("src/lib.rs")],
         "use( std::fmt);\nfn f() {}\n"
     );
     assert_eq!(
@@ -72,7 +75,7 @@ fn a_fix_is_applied_whole_once_and_only_to_the_text_it_was_made_for() {
 
     // The line is not what the compiler saw, or the file is not the workspace's.
     std::fs::write(dir.path().join("src/lib.rs"), "use std::io;\nfn f() {}\n").unwrap();
-    let (files, outcomes) = plan(dir.path(), std::slice::from_ref(&fix));
+    let (files, outcomes) = plan(&root, std::slice::from_ref(&fix));
     assert!(files.is_empty());
     assert_eq!(
         outcomes[0].skipped.as_deref(),
@@ -85,7 +88,7 @@ fn a_fix_is_applied_whole_once_and_only_to_the_text_it_was_made_for() {
         }],
         ..fix
     };
-    let (_, outcomes) = plan(dir.path(), &[outside]);
+    let (_, outcomes) = plan(&root, &[outside]);
     assert!(
         outcomes[0]
             .skipped

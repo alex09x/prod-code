@@ -1,0 +1,24 @@
+Observed terminal exit status: 101
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.04s
+     Running unittests src/lib.rs (target/debug/deps/prod_code_mcp-6aa9f0a1d4b36c0a)
+
+running 1 test
+nested protocol: ok=true, outer="pub fn sample() {}\n", nested="use std::fmt;\npub fn sample() {}\n"
+
+thread 'fixit::tests::issue1349::issue1349_nested_command_directory_does_not_edit_outer_shadow' (1299462) panicked at crates/prod-code-mcp/src/fixit/tests/issue1349.rs:51:5:
+assertion `left == right` failed: outer shadow must stay byte-identical
+  left: [112, 117, 98, 32, 102, 110, 32, 115, 97, 109, 112, 108, 101, 40, 41, 32, 123, 125, 10]
+ right: [117, 115, 101, 32, 115, 116, 100, 58, 58, 102, 109, 116, 59, 10, 112, 117, 98, 32, 102, 110, 32, 115, 97, 109, 112, 108, 101, 40, 41, 32, 123, 125, 10]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fixit::tests::issue1349::issue1349_nested_command_directory_does_not_edit_outer_shadow ... FAILED
+
+failures:
+
+failures:
+    fixit::tests::issue1349::issue1349_nested_command_directory_does_not_edit_outer_shadow
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1467 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p prod-code-mcp --lib`
+[prod-code exec] exit 101 in 9.6s (server 9.2s, cpu 15.5s user 2.7s sys, peak 2110 MB) on node <build-node>, copy <remote-workspace> (linux x86_64)

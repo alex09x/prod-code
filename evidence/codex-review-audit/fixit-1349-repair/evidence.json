@@ -1,0 +1,73 @@
+{
+  "issue": 1349,
+  "base": "da5545fb204c0bfc3225e66ff0d11ca31771349d",
+  "node_kind": "Linux build node (x86_64)",
+  "method": "Protocol tests through real check_and_fix, planner, remote execution and workspace edit entrypoints. Command output and exit frames are scripted; no real cargo clippy or ruff run inside the fixtures. The outer verification itself runs real Cargo tests and Clippy.",
+  "redactions": "BUILD_NODE is the supplied remote endpoint, omitted for public privacy; home/workspace paths in terminal logs are replaced. Other command arguments and outputs are unchanged. Temporary fixture paths remain as emitted.",
+  "runs": [
+    {
+      "phase": "before",
+      "command": "prod-code exec --remote \"$BUILD_NODE\" --timeout-secs 900 -- cargo test -p prod-code-mcp --lib fixit::tests::issue1349 -- --nocapture",
+      "exit": 101,
+      "log": "before.txt",
+      "result": "3 passed, 11 failed. Nested test first failed on an incorrect fixture command assertion; its causal rerun follows. Production sources remained identical to base."
+    },
+    {
+      "phase": "before-nested",
+      "command": "prod-code exec --remote \"$BUILD_NODE\" --timeout-secs 900 -- cargo test -p prod-code-mcp --lib fixit::tests::issue1349::issue1349_nested_command_directory_does_not_edit_outer_shadow -- --nocapture",
+      "exit": 101,
+      "log": "before-nested.txt",
+      "result": "0 passed, 1 failed: outer shadow bytes changed while nested bytes remained unchanged. Production sources remained identical to base."
+    },
+    {
+      "phase": "format",
+      "command": "prod-code exec --remote \"$BUILD_NODE\" --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/fixit/apply.rs crates/prod-code-mcp/src/fixit/plan.rs crates/prod-code-mcp/src/fixit/tests.rs crates/prod-code-mcp/src/fixit/tests/issue1349.rs crates/prod-code-mcp/src/fixit/tests/issue1349/boundary.rs crates/prod-code-mcp/src/fixit/tests/issue1349/gateway.rs crates/prod-code-mcp/src/fixit/tests/issue1349/tools.rs",
+      "exit": 0,
+      "log": "format.txt"
+    },
+    {
+      "phase": "lint",
+      "command": "prod-code exec --remote \"$BUILD_NODE\" --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --tests -- --cap-lints warn",
+      "exit": 0,
+      "log": "lint.txt",
+      "result": "Existing warnings retained; no diagnostic names a fixit source."
+    },
+    {
+      "phase": "after",
+      "command": "prod-code exec --remote \"$BUILD_NODE\" --timeout-secs 900 --env RUST_TEST_NOCAPTURE=1 -- cargo test -p prod-code-mcp --lib fixit::tests",
+      "exit": 0,
+      "log": "after.txt",
+      "result": "23 passed, 0 failed. Final specified cargo gate, with libtest output capture disabled for fixture evidence."
+    }
+  ],
+  "causal_findings": [
+    {
+      "finding": "nested command directory",
+      "before": "before-nested.txt: outer becomes pub fn sample() {} while nested retains use std::fmt;",
+      "after": "after.txt: outer byte-identical, nested import removed, outcome file nested/src/lib.rs; root planner and separate command-directory planner both pass",
+      "counterexample": "If the outer directory were the command directory, recorded ExecRequest.subdir would be empty. Both observed commands select nested."
+    },
+    {
+      "finding": "normalized boundary",
+      "before": "before.txt: planner admits three files and both multipart outcomes; global guard errors outside checkout, valid.rs retains the import, for traversal and symlink cases",
+      "after": "after.txt: planner emits one file, rejects entire unsafe multipart suggestion, public call succeeds and fixes valid.rs; source asserts outside.rs and src/lib.rs byte-identical",
+      "counterexample": "If normalization already occurred before planning, the bad multipart would be skipped and would not reach the global workspace guard."
+    },
+    {
+      "finding": "fixer exit propagation",
+      "before": "before.txt: initial green lint plus failed spawn, timeout, nonzero or missing exit returns Ok(true), with zero or one rewritten file; changed cases request an extra green lint",
+      "after": "after.txt: terminal failure returns Err with command, status, output and pulled file count/names; main.py bytes match actual pulled changes; no extra lint masks failures",
+      "counterexample": "If before.ok() were irrelevant to a failed fixer, no failed scripted fixer could return Ok(true)."
+    }
+  ],
+  "fixture_bytes": {
+    "rust_before": "use std::fmt;\npub fn sample() {}\n",
+    "rust_fixed": "pub fn sample() {}\n",
+    "python_before": "value = 1\n",
+    "python_partial": "value = 2\n",
+    "utf8_before": "é\n",
+    "utf8_valid_fix": "e\n"
+  },
+  "coverage": "18 new tests plus 5 existing fixit tests. Includes inside parent components, canonical roots and aliases, overlap and stale-line guards, UTF-8, no partial multipart changes, all fixer failure modes with/without partial writes, successful fixer modes, no fix command and non-lint behavior with green/red initial reports.",
+  "unchanged_scope": "No dependency, root Cargo, verification, exec, handler or unrelated worker changes. No manual sync, installs, restarts, publication, messages, delegation or commits."
+}
