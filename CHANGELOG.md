@@ -15,6 +15,8 @@
   The CMake configure probe and the Swift settings wait now take their program and time limit as parameters, so their outcomes can be tested (#1195).
 
 ### Fixed
+- **Make Project Source Extensions** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, #1270):
+  Root and nested Make projects now recognize uppercase C/C++ source and header suffixes, including `.C`, `.CPP` and `.HPP`, with the same manifest precedence as lowercase sources.
 - **Nested Project Roots and Cargo Membership** (`crates/prod-code-mcp`, #1262):
   A language inferred from a child no longer hides that child's project root. Independent crates below empty virtual workspaces retain their own roots. Cargo membership now reads the actual TOML workspace table, honors literal path-prefix exclusions, ignores package packaging exclusions, and matches interior member globs without absorbing unrelated or deeper child projects. Implicit in-tree path-dependency members continue to share their workspace's session.
 - **Bugs Found by the Coverage Campaign, Wave 2** (`crates/prod-code-mcp`, #1195):
