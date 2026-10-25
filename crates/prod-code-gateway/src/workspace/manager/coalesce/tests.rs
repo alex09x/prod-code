@@ -12,6 +12,8 @@ use super::*;
 use std::future::Future;
 use std::pin::Pin;
 
+mod worktrees;
+
 #[tokio::test]
 async fn waiting_sessions_receive_the_leaders_failure_close_or_published_workspace() {
     let temp = tempfile::tempdir().unwrap();

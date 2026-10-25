@@ -25,6 +25,9 @@ use super::sccache::ensure_sccache_server;
 use super::staging::failed;
 use super::types::{DEFAULT_TAIL_BYTES, DEFAULT_TIMEOUT_SECS, Job};
 
+#[cfg(test)]
+mod tests;
+
 fn default_parallel() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 8).max(1))
