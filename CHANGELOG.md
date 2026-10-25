@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Tests
+- **Coverage Campaign, Wave 2** (all crates):
+  Workspace region coverage rose from 90.30% to 90.84%, and files under the 80% gate fell from 32 to 8. New tables cover:
+  - `verify` planning and parsing;
+  - the MCP transport, dispatch retry and rebalance tick;
+  - `fixit`;
+  - polyglot inline-parameter and type migration;
+  - the gateway LSP intercept, the workspace coalescer, shadow runner and probes;
+  - the remaining client, engine and cluster files.
+
+  The CMake configure probe and the Swift settings wait now take their program and time limit as parameters, so their outcomes can be tested (#1195).
+
+### Fixed
+- **Bugs Found by the Coverage Campaign, Wave 2** (`crates/prod-code-mcp`, #1195):
+  - Inline-parameter reported call sites one line too early.
+  - It treated `export const a = f(1)` as a mere export of `f` rather than a call.
+  - Type migration matched an identifier that only began with the requested name (`value_suffix` for `value`) and names inside comments and imports.
+
 ## v0.3.40 — 2026-10-24
 
 ### Tests

@@ -45,7 +45,7 @@ fn coverage_w2_transitive_parameters_cross_files_and_continue_downstream() {
     );
     assert_eq!(rewritten[&callee], target.replace("u32", "u64"));
     assert_eq!(rewritten[&initial], input);
-    assert_eq!(also, [callee.clone()]);
+    assert_eq!(also, std::slice::from_ref(&callee));
     assert_eq!(std::fs::read_to_string(callee).unwrap(), target);
 }
 
