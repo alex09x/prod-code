@@ -73,14 +73,16 @@ impl Workspace {
             assert!(git(&["init", "-q"]).success(), "git init");
         }
         assert!(git(&["add", "-A"]).success(), "git add");
-        git(&[
+        let status = git(&[
             "-c",
             "user.email=test@example.invalid",
             "-c",
             "user.name=test",
             "commit",
+            "--allow-empty",
             "-qm",
             "fixture",
         ]);
+        assert!(status.success(), "git commit");
     }
 }

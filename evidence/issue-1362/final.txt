@@ -1,0 +1,10 @@
+   Compiling prod-code-testkit v0.3.41 (<build-path>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+     Running tests/empty_workspace.rs (target/debug/deps/empty_workspace-93a73f98e7bea6a5)
+
+running 1 test
+test empty_workspaces_have_a_committed_empty_tree ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+[prod-code exec] exit 0 in 0.6s (server 0.5s, cpu 0.2s user 0.3s sys, peak 207 MB) on node <build-node>, copy <build-path> (linux x86_64)
