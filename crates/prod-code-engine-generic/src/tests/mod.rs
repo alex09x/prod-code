@@ -11,4 +11,5 @@
 mod config;
 mod diagnostics;
 mod lifecycle;
+mod lsp_secret_spawn;
 mod response_exit;
