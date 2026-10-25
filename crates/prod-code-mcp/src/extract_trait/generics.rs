@@ -198,8 +198,12 @@ pub fn generic_arguments(generics: &str) -> Result<Vec<String>> {
 }
 
 pub fn impl_body_open(text: &str, impl_at: usize) -> Result<usize> {
+    impl_body_open_in_code(text, impl_at, &lexical_code(text))
+}
+
+/// Scan a header using the lexical mask of `text`, shared across impl candidates.
+pub(crate) fn impl_body_open_in_code(text: &str, impl_at: usize, code: &[bool]) -> Result<usize> {
     let bytes = text.as_bytes();
-    let code = lexical_code(text);
     let mut angle = 0i32;
     let mut paren = 0i32;
     let mut square = 0i32;

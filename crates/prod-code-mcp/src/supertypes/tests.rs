@@ -8,9 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::headers::implementation_header;
 use super::syntax::{
-    derives_above, header_from, impl_header_start, impl_trait, is_trait_decl, skip_generics,
-    supertraits, word_at,
+    derives_above, header_from, impl_trait, is_trait_decl, skip_generics, supertraits, word_at,
 };
 use super::types::{Kind, Supertype, Supertypes};
 use super::validate::locations;
@@ -113,8 +113,12 @@ fn derives_are_read_from_the_attributes_above_the_declaration() {
         "}",
         "pub enum E {",
     ];
-    assert_eq!(impl_header_start(&impls, 2), Some(0));
-    assert_eq!(impl_header_start(&impls, 4), None);
+    let source = impls.join("\n");
+    assert_eq!(
+        implementation_header(&source, 2, 8).as_deref(),
+        Some("impl<T>\n    Default\n    for Holder<T> ")
+    );
+    assert_eq!(implementation_header(&source, 4, 9), None);
 }
 
 #[test]

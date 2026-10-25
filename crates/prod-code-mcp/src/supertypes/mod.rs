@@ -24,6 +24,7 @@
 //! (`textDocument/prepareTypeHierarchy`, then `typeHierarchy/supertypes`). A server without one
 //! gets that said instead of an empty list.
 
+mod headers;
 pub mod resolve;
 pub(crate) mod rust;
 pub mod syntax;
