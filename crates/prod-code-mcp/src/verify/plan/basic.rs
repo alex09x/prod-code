@@ -31,7 +31,7 @@ pub fn clang_tidy_script(build: CppBuild, fix: bool) -> Result<String> {
         }
     };
     Ok(format!(
-        "{configure} && find . -path ./build -prune -o \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print | xargs -r clang-tidy -p build --quiet{}",
+        "{configure} && find . -path ./build -prune -o \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print0 | xargs -0 -r clang-tidy -p build --quiet{}",
         if fix { " -fix" } else { "" }
     ))
 }

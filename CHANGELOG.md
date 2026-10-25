@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **clang-tidy Filename Boundaries** (`crates/prod-code-mcp`, #1282):
+  CMake and Meson lint/fix plans pass source paths through NUL-delimited `find` and `xargs`, preserving spaces, quotes and backslashes as filename characters.
 - **F# and NASM Sources in Non-Git Workspaces** (`crates/prod-code-mcp`, #1275):
   Filesystem scanning and sync planning now include `.fs`, `.fsi`, `.fsx`, and `.nasm` sources, including uppercase suffixes, alongside their project manifests. The relevance watermark version is advanced so older sync state cannot retain the omissions. Unchanged warm plans and existing artifact/data exclusions are preserved.
 - **A Rebalance Redirect Right After the Handshake Is No Longer Lost** (`crates/prod-code-gateway`):
