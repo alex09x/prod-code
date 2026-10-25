@@ -68,7 +68,7 @@ pub async fn invert(
         .find('{')
         .map(|i| close + i)
         .with_context(|| format!("`{name}` has no body"))?;
-    let body_close = crate::parameter_object::matching_bracket(&text, body_open)
+    let body_close = crate::extract_trait::lex::matching_close_brace(&text, body_open)
         .context("the body does not close")?;
 
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
@@ -107,14 +107,12 @@ pub async fn invert(
             !(same_file && body_open < at && at < body_close),
             "`{name}` calls itself; invert a recursive predicate by hand"
         );
-        let Some((_, args_end)) = crate::parameter_object::call_args_span(&body, at + name.len())
-        else {
+        let Some((_, args_end)) = super::rust_syntax::call_args(&body, at + name.len()) else {
             unmatched.push(format!("{site} `{name}` used as a value"));
             continue;
         };
         let begin = call_start(&body, at);
-        let after = body[args_end + 1..].trim_start();
-        let continues = after.starts_with('.') || after.starts_with('?') || after.starts_with('[');
+        let continues = super::rust_syntax::call_continues(&body, args_end + 1);
         let lead = body[..begin].trim_end();
         let spot = edits.entry(path.clone()).or_default();
         spot.push((at, name.len(), new_name.to_string()));

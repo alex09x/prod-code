@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Predicate Inversion Preservation** (`crates/prod-code-mcp`, #1295):
+  Inversion preserves raw-literal bytes and returns owned by nested functions, closures and async blocks. Generic call arguments, qualified paths and type-macro token trees retain their boundaries while selected callers receive the compensating negation.
 - **Language-Safe Convert-to-Method Verification** (`crates/prod-code-mcp`, #1301):
   Non-Rust convert-to-method requests reject `verify: compile` before planning or writing, rather than treating an unrelated Cargo check as verification. Ordinary non-Rust conversion and Rust compile verification retain their existing behavior.
 - **Rust Make-Static Safety** (`crates/prod-code-mcp`, #1297):
