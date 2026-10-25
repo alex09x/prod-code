@@ -1,0 +1,14 @@
+Base: a03cc570876544fb9a6b6e58e7f3f56d9fff30dd
+Node: Linux x86_64 build node; real Cargo in private fixture copies.
+Command: prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test validate_diff_proposal rejects_missing_module -- --nocapture
+Observed terminal exit: 101
+2 failed, 0 passed, 8 filtered out.
+deletion_only_rejects_missing_module: compiler must run: the change touches no file that can be checked
+mixed_diff_rejects_missing_module: expected error, got success; compiler reported 0 errors and full compiler & borrow-checker proof verified clean.
+The mixed fixture used execute_tool/code_validate_edits, serialized ShadowRunRequest interception, and actual Cargo on the received staged files. The deletion-only input returned before any shadow request.
+
+Navigation limitations:
+mcp__prod_code__code_definition({"symbol":"compile_check"}): MCP tool call requires approval, but approval policy is never.
+prod-code def --symbol compile_check: no output; interrupted foreground command, terminal exit 130.
+Bounded fallback read attempted crates/prod-code-mcp/src/sync/engine.rs and crates/prod-code-mcp/src/sync.rs: No such file or directory (exit 1); subsequently used git tree inventory and confirmed sync/engine/project.rs and sync/mod.rs.
+No publication was performed, per worker contract.

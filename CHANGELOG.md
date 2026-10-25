@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Complete Compiler Proposals** (`crates/prod-code-mcp`, #1256):
+  Diff validation stages file deletions together with additions and replacements in every compiler shadow request. Unsupported resource operations and escaping paths refuse the whole proposal. Reports identify the configured command and unresolved command roots, without claiming broader target or feature coverage.
 - **Rust Fixture Completeness** (`crates/prod-code-mcp`, #1307):
   Default Rust generation includes every record field and retains enum variant shapes to produce values. Visibility stripping preserves identifiers beginning with `pub`; balanced attributes, raw field names and function-return arrows retain their declaration boundaries.
 - **Rust Supertype Header Preservation** (`crates/prod-code-mcp`, #1305):

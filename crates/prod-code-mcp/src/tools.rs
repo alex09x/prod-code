@@ -43,7 +43,10 @@ pub use outline::{
 };
 
 pub(crate) mod batch;
+mod compiler_proposal;
 pub mod execution;
+mod validation_diff;
+mod validation_proposal;
 pub use execution::*;
 pub(crate) async fn dispatch_tool(
     remote: SocketAddr,

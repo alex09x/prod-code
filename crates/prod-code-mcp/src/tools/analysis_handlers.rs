@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::path::Path;
 
-use super::diagnostics_handler::compile_check;
 use super::exec_handler::{parse_exec_argv, resolve_exec_subdir};
 use super::resolve_file_path;
 use super::symbols::resolve_symbol;
@@ -269,45 +268,10 @@ pub(crate) async fn handle_validate_edits(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    // A patch or a WorkspaceEdit becomes whole files first: the overlay takes files.
-    let mut notes = String::new();
-    let edits: Vec<(std::path::PathBuf, String)> =
-        if let Some(diff) = args.get("diff").and_then(|v| v.as_str()) {
-            let patched = crate::patch::apply(workspace_root, diff)?;
-            for gone in &patched.deleted {
-                notes.push_str(&format!(
-                    "{} is deleted by the diff; what still uses it is not checked here\n",
-                    gone.strip_prefix(workspace_root).unwrap_or(gone).display()
-                ));
-            }
-            patched.texts
-        } else if let Some(edit) = args.get("workspace_edit") {
-            let (planned, moves) = crate::refactor::planned_texts(workspace_root, edit)?;
-            if moves {
-                notes.push_str(
-                "the edit also creates, renames or deletes files; those parts are not checked\n",
-            );
-            }
-            planned
-        } else {
-            args.get("edits")
-                .and_then(|v| v.as_array())
-                .context("Missing 'edits' argument (or `diff`, or `workspace_edit`)")?
-                .iter()
-                .map(|e| {
-                    let path = e
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .context("edit without 'path'")?;
-                    let text = e
-                        .get("new_text")
-                        .and_then(|v| v.as_str())
-                        .with_context(|| format!("edit for {path} without 'new_text'"))?;
-                    Ok((resolve_file_path(workspace_root, path), text.to_string()))
-                })
-                .collect::<Result<_>>()?
-        };
-    if edits.is_empty() {
+    let proposal = super::validation_proposal::ValidationProposal::parse(workspace_root, args)?;
+    let edits = proposal.texts(workspace_root);
+    let notes = proposal.notes();
+    if proposal.spec.edits.is_empty() {
         return Ok(McpToolCallResult::error(
             "the change touches no file that can be checked".to_string(),
         ));
@@ -322,6 +286,9 @@ pub(crate) async fn handle_validate_edits(
                 .collect()
         })
         .unwrap_or_default();
+    for path in &also_check {
+        crate::shadow::relative_edit_path(workspace_root, path)?;
+    }
     let reports =
         crate::diagnostics::validate_texts_interactive(remote, workspace_root, &edits, &also_check)
             .await?;
@@ -352,7 +319,8 @@ pub(crate) async fn handle_validate_edits(
     let borrow_check = args.get("borrow_check").and_then(|v| v.as_bool()) == Some(true);
     let compile = args.get("compile").and_then(|v| v.as_bool()) == Some(true);
     if compile || borrow_check {
-        let (compiled_errors, compiled) = compile_check(remote, workspace_root, &edits).await?;
+        let (compiled_errors, compiled) =
+            super::compiler_proposal::compile_proposal(remote, workspace_root, &proposal).await?;
         text.push_str(&format!("\n{compiled}"));
         errors += compiled_errors;
     }

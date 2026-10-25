@@ -1,0 +1,23 @@
+Cargo workspace ownership review repair for issue 1256
+Input: 8bf4d1189bc1444e52c8d277d2345c912fa57184 (prior implementation).
+Command (remote endpoint sanitized):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test validate_diff_proposal cargo_workspace_member_uses_root_command_for_complete_proposals -- --nocapture
+Observed terminal exit: 101. One failed, zero passed, 26 filtered out.
+The first text-only member call failed despite actual Cargo exit 0:
+additional command root crates/member is unverified/incomplete
+compiler: argv=["cargo","check","--workspace","--all-targets","--message-format=json"] cwd="." timeout_secs=900 exit=0 error=null timed_out=false: 0 error(s)
+The serialized ShadowRunRequest was executed by the real Cargo fixture gateway.
+The failure matches the review: an owned member's manifest is incorrectly counted as independent.
+
+Navigation limitations (no public publication authorized):
+prod-code def --symbol engine_project --remote <build-node> emitted no output; interrupted the foreground command, terminal exit 130. Used successful prod-code outline plus bounded local reads instead.
+sed -n '1,150p' sync/engine/workspace.rs
+Output: sed: sync/engine/workspace.rs: No such file or directory
+sed -n '1,145p' sync/engine/project.rs
+Output: sed: sync/engine/project.rs: No such file or directory
+These reads were inside a shell command whose final successful read returned 0;
+that shell status is not represented as success of the missing-path reads.
+git ls-files '*engine*workspace*' '*engine*project*' then confirmed
+crates/prod-code-mcp/src/sync/engine/workspace.rs and
+crates/prod-code-mcp/src/sync/engine/project.rs. No project location was inferred
+from the failed reads.

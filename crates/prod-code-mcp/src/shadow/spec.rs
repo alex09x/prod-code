@@ -10,23 +10,25 @@
 
 use super::types::{HypothesisEdit, HypothesisSpec};
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// The `/`-separated path of `file` inside `root`.
 pub fn relative_edit_path(root: &Path, file: &Path) -> Result<String> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = std::fs::canonicalize(root).context("cannot resolve workspace root")?;
     let file = if file.is_absolute() {
         file.to_path_buf()
     } else {
         root.join(file)
     };
-    // The file may not exist yet: canonicalize its parent when possible.
-    let file = match (file.parent(), file.file_name()) {
-        (Some(parent), Some(name)) if parent.exists() => std::fs::canonicalize(parent)
-            .map(|p| p.join(name))
-            .unwrap_or(file),
-        _ => file,
-    };
+    anyhow::ensure!(
+        !file.components().any(|c| matches!(c, Component::ParentDir)),
+        "{} is outside the workspace",
+        file.display()
+    );
+    // Resolve the nearest existing ancestor, leaving the leaf alone for deletion.
+    let parent = file.parent().context("an edit needs a parent directory")?;
+    let name = file.file_name().context("an edit needs a file name")?;
+    let file = resolve_parent(parent)?.join(name);
     let rel = file
         .strip_prefix(&root)
         .with_context(|| format!("{} is outside the workspace", file.display()))?;
@@ -37,6 +39,37 @@ pub fn relative_edit_path(root: &Path, file: &Path) -> Result<String> {
         .join("/");
     anyhow::ensure!(!rel.is_empty(), "an edit needs a file path");
     Ok(rel)
+}
+
+fn resolve_parent(parent: &Path) -> Result<PathBuf> {
+    let mut at = parent.to_path_buf();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::canonicalize(&at) {
+            Ok(mut real) => {
+                anyhow::ensure!(real.is_dir(), "{} is not a directory", real.display());
+                real.extend(missing.iter().rev());
+                return Ok(real);
+            }
+            Err(error) => {
+                match std::fs::symlink_metadata(&at) {
+                    Err(meta)
+                        if error.kind() == std::io::ErrorKind::NotFound
+                            && meta.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => anyhow::bail!("cannot resolve {}: {error}", at.display()),
+                }
+                missing.push(
+                    at.file_name()
+                        .context("parent has no existing ancestor")?
+                        .to_os_string(),
+                );
+                at = at
+                    .parent()
+                    .context("parent has no existing ancestor")?
+                    .to_path_buf();
+            }
+        }
+    }
 }
 
 /// Parses the `hypotheses` array shared by the MCP tool and the CLI spec file: every entry has
