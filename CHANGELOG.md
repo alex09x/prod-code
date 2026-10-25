@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Parameter-Object Preservation** (`crates/prod-code-mcp`, #1293):
+  Generated structs retain module ownership and attached attributes, including raw module names, header macros and Unicode trivia. Same-line parameter uses and nested calls are rewritten using original source coordinates, and explicit lifetimes no longer stop later elided references from receiving the generated lifetime.
 - **Rust Predicate Inversion Preservation** (`crates/prod-code-mcp`, #1295):
   Inversion preserves raw-literal bytes and returns owned by nested functions, closures and async blocks. Generic call arguments, qualified paths and type-macro token trees retain their boundaries while selected callers receive the compensating negation.
 - **Language-Safe Convert-to-Method Verification** (`crates/prod-code-mcp`, #1301):
