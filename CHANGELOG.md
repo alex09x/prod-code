@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Promise Caller Preservation** (`crates/prod-code-mcp`, #1280):
+  Promise wrapping requires evidence for selected member callers, retains existing awaits around postfix results, and preserves uncertain regex/division occurrences as unmatched references. Ambiguous or unsupported callers refuse writes, including forced apply, while proven calls retain their value and evaluation order.
 - **Rust Introduce-Variable Preservation** (`crates/prod-code-mcp`, #1300):
   Extraction checks executable syntax, binding and primitive-operation identity before reusing a value, retaining strings, comments and pattern literals. Fresh-name checks use Rust's NFC identifier identity, and uncertain effects, macro captures and guarded panic placement refuse writes.
 - **Failure-Dossier Evidence Preservation** (`crates/prod-code-mcp`, #1306):

@@ -271,11 +271,23 @@ pub(crate) fn is_ts_js_namespace_import(
         if let Some((clause, rest)) = split_import_from(part) {
             let specifier = extract_specifier(rest);
             if specifier_matches_decl(specifier, caller_path, decl_file) {
-                let clause = clause.trim();
-                if let Some((_, local)) = clause.split_once("as") {
-                    if local.trim() == receiver {
-                        return true;
-                    }
+                let clause_mask = lexical_code_mask(clause, Language::TypeScript);
+                let clause_code: String = clause
+                    .char_indices()
+                    .map(|(at, c)| if clause_mask[at] { c } else { ' ' })
+                    .collect();
+                let namespace = clause_code
+                    .rsplit(',')
+                    .next()
+                    .unwrap_or(&clause_code)
+                    .trim();
+                if let Some(alias) = namespace
+                    .strip_prefix('*')
+                    .and_then(|rest| rest.trim_start().strip_prefix("as"))
+                    && alias.starts_with(char::is_whitespace)
+                    && alias.trim() == receiver
+                {
+                    return true;
                 }
             }
         }

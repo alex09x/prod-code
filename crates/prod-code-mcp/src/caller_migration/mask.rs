@@ -10,6 +10,11 @@
 
 use crate::parameter_object::Language;
 
+#[path = "mask_js.rs"]
+mod js;
+
+pub(crate) use js::ambiguous_regex_prefix;
+
 /// Computes a boolean mask indicating executable code bytes (`true`) versus comments, string
 /// literal text, and interpolation delimiters (`false`). Executable expressions inside JS/TS
 /// template literals (`${...}`), Python f-strings (`f"...{...}..."`), and Swift string
@@ -79,7 +84,11 @@ fn scan_code_into_mask(
             let mut j = i + 2;
             let mut depth = 1usize;
             while j < end && depth > 0 {
-                if bytes[j] == b'/' && bytes.get(j + 1) == Some(&b'*') {
+                // JavaScript/TypeScript block comments end at the first */.
+                if !matches!(lang, Language::TypeScript | Language::JavaScript)
+                    && bytes[j] == b'/'
+                    && bytes.get(j + 1) == Some(&b'*')
+                {
                     depth += 1;
                     j += 2;
                 } else if bytes[j] == b'*' && bytes.get(j + 1) == Some(&b'/') {
@@ -193,23 +202,13 @@ fn scan_code_into_mask(
                     while w > start && is_ident_byte(bytes[w - 1]) {
                         w -= 1;
                     }
-                    regex_allowed = [
-                        &b"return"[..],
-                        b"typeof",
-                        b"void",
-                        b"delete",
-                        b"throw",
-                        b"new",
-                        b"in",
-                        b"of",
-                        b"instanceof",
-                        b"case",
-                        b"yield",
-                        b"await",
-                        b"else",
-                        b"do",
-                    ]
-                    .contains(&&bytes[w..=i]);
+                    // Only yield inherits function grammar across templates;
+                    // other keywords keep the interpolation's expression context.
+                    regex_allowed = if &bytes[w..=i] == b"yield" {
+                        js::keyword_allows_regex(&bytes[..=i], &code[..=i], w)
+                    } else {
+                        js::keyword_allows_regex(&bytes[start..=i], &code[start..=i], w - start)
+                    };
                 }
             } else {
                 regex_allowed = !(matches!(b, b')' | b']' | b'.')
