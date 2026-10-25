@@ -10,12 +10,13 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::diagnostics::correspondence::{old_range, unchanged_lines, whole_snapshot_embedding};
 pub use crate::diagnostics::ident::mentions_identifier;
 use crate::diagnostics::parse::{INVALID_DIAGNOSTICS, classify_hallucination};
+use crate::diagnostics::scope::RustContexts;
 use crate::diagnostics::types::{DiagnosticsReport, DocDiagnostic};
 
-/// What makes two diagnostics the same one across an edit: lines move, so not the position,
-/// but the text of the line it is on.
+/// Diagnostic content identity. This alone does not establish occurrence correspondence.
 pub fn identity(d: &DocDiagnostic, text: &str) -> (String, Option<String>, String, String) {
     let line = text
         .lines()
@@ -35,32 +36,65 @@ pub fn refresh_hallucinations(report: &mut DiagnosticsReport) {
         .collect();
 }
 
+fn unchecked(d: &DocDiagnostic) -> bool {
+    matches!(d.code.as_deref(), Some(code) if code == prod_code_protocol::ANALYZER_PANIC_CODE
+        || code == UNLINKED_FILE || code == INVALID_DIAGNOSTICS)
+}
+
 /// Moves from `report.items` to `report.preexisting` every diagnostic that `before` — the same
 /// file's diagnostics against `before_text`, the text on disk — already had. Each diagnostic
-/// before the edit accounts for at most one after it, so a second copy of an old error on a new
-/// line is still the edit's.
+/// before the edit accounts for at most one after it, at a proven unchanged occurrence.
+/// Ambiguous line correspondence and changed ranges remain in the blocking report.
 pub fn set_aside_preexisting(
     report: &mut DiagnosticsReport,
     text: &str,
     before: &DiagnosticsReport,
     before_text: &str,
 ) {
-    let mut old: HashMap<(String, Option<String>, String, String), usize> = HashMap::new();
+    // Rust has structural evidence below. Other languages require retained code context;
+    // even insertion-only alignments can transfer a line into a newly introduced scope.
+    let lines = if report.file.ends_with(".rs")
+        || whole_snapshot_embedding(before_text, text, &report.file)
+    {
+        unchanged_lines(before_text, text)
+    } else {
+        Vec::new()
+    };
+    let rust_contexts = report
+        .file
+        .ends_with(".rs")
+        .then(|| (RustContexts::new(before_text), RustContexts::new(text)));
+    let mut old = HashMap::new();
     for d in &before.items {
-        *old.entry(identity(d, before_text)).or_default() += 1;
+        *old.entry((
+            identity(d, before_text),
+            d.line,
+            d.col,
+            d.end,
+            d.source.clone(),
+        ))
+        .or_insert(0usize) += 1;
     }
     let items = std::mem::take(&mut report.items);
     for d in items {
         // A file the analyzer panicked on, or that no crate includes, was not checked; that it
         // was not checked before the edit either does not make it checked now (#94, #467).
-        if d.code.as_deref() == Some(prod_code_protocol::ANALYZER_PANIC_CODE)
-            || d.code.as_deref() == Some(UNLINKED_FILE)
-            || d.code.as_deref() == Some(INVALID_DIAGNOSTICS)
-        {
+        if unchecked(&d) {
             report.items.push(d);
             continue;
         }
-        match old.get_mut(&identity(&d, text)) {
+        let range = old_range(&lines, d.line, d.end);
+        let count = range.and_then(|(line, end)| {
+            if let Some((before, after)) = &rust_contexts {
+                match (before, after) {
+                    (Some(before), Some(after))
+                        if after.corresponds(before, &lines, (d.line, d.col), (line, d.col)) => {}
+                    _ => return None,
+                }
+            }
+            old.get_mut(&(identity(&d, text), line, d.col, end, d.source.clone()))
+        });
+        match count {
             Some(n) if *n > 0 => {
                 *n -= 1;
                 report.preexisting.push(d);
@@ -81,11 +115,9 @@ pub fn set_aside_preexisting(
     refresh_hallucinations(report);
 }
 
-/// Moves to `report.in_derive` every E0282 on a line of `text` that is a `#[derive(...)]`
-/// attribute: an inference failure inside the analyzer's expansion of the derive, not in code
-/// anyone wrote. Moves to `report.auto_trait` every E0277 of a Rust file that a type is not
-/// `Send`, `Sync` or `Unpin` (#327). Moves to `report.unresolved_macros` unresolved built-in
-/// Rust prelude macros (assert_eq!, vec!) in test/detached modules (#950).
+/// Explain possible derive/auto-trait analyzer limitations without discarding error authority:
+/// attribute/message shape is not proof that rustc accepts the code (#1286).
+/// The existing detached/test prelude-macro policy is unchanged (#950).
 pub fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
     let rust = report.file.ends_with(".rs");
     let disabled_prelude = text.contains("no_implicit_prelude") || text.contains("no_std");
@@ -98,15 +130,41 @@ pub fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
         || text.contains("mod tests");
     let prelude_limitation = rust && is_test && !disabled_prelude;
     let items = std::mem::take(&mut report.items);
-    for d in items {
+    for mut d in items {
+        if unchecked(&d) {
+            report.items.push(d);
+            continue;
+        }
         let line = text
             .lines()
             .nth(d.line.saturating_sub(1) as usize)
             .unwrap_or("");
-        if d.code.as_deref() == Some("E0282") && line.trim_start().starts_with("#[derive(") {
-            report.in_derive.push(d);
+        let limitation = if rust
+            && d.code.as_deref() == Some("E0282")
+            && line.trim_start().starts_with("#[derive(")
+        {
+            Some(
+                "A derive expansion can expose an analyzer inference limitation, but the attribute is not proof: custom derives can produce genuine E0282 errors. This diagnostic remains counted; an explicit compiler check can distinguish them.",
+            )
         } else if rust && d.code.as_deref() == Some("E0277") && is_auto_trait_bound(&d.message) {
-            report.auto_trait.push(d);
+            Some(
+                "rust-analyzer can fail to prove Send, Sync or Unpin, but the message is not proof of an analyzer limitation: genuine Rust E0277 errors use the same wording. This diagnostic remains counted; an explicit compiler check can distinguish them.",
+            )
+        } else {
+            None
+        };
+        if let Some(limitation) = limitation {
+            if !d
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains(limitation))
+            {
+                d.note = Some(match d.note.take() {
+                    Some(note) => format!("{note}\n{limitation}"),
+                    None => limitation.into(),
+                });
+            }
+            report.items.push(d);
         } else if prelude_limitation && is_unresolved_prelude_macro(&d.message) {
             report.auto_trait.push(d);
         } else {
@@ -144,6 +202,7 @@ pub fn is_auto_trait_bound(message: &str) -> bool {
         .any(|bound| first.contains(bound))
         || first.contains("cannot be sent between threads safely")
         || first.contains("cannot be shared between threads safely")
+        || first.contains("cannot be unpinned")
 }
 
 /// Whether a diagnostic message is about an unresolved Rust prelude macro (`assert_eq!`, `vec!`,

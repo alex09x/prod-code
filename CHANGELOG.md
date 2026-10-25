@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Diagnostic Error Authority** (`crates/prod-code-mcp`, #1286):
+  Genuine derive-inference and auto-trait errors remain blocking with explanatory notes. Baseline subtraction requires unambiguous occurrence, range and owner correspondence; changed literal/header identities and uncertain matches retain their errors.
 - **Promise Caller Preservation** (`crates/prod-code-mcp`, #1280):
   Promise wrapping requires evidence for selected member callers, retains existing awaits around postfix results, and preserves uncertain regex/division occurrences as unmatched references. Ambiguous or unsupported callers refuse writes, including forced apply, while proven calls retain their value and evaluation order.
 - **Rust Introduce-Variable Preservation** (`crates/prod-code-mcp`, #1300):
