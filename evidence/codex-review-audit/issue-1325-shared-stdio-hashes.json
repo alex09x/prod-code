@@ -1,0 +1,85 @@
+{
+  "base_commit": "e74b152a0cc216daaf7f1c51fcaea89761f84b11",
+  "prior_attempt_commit": "371aad533cb1775f86e66a39721ed6a667185099",
+  "hash_algorithm": "SHA-256",
+  "exercised_platform": "linux x86_64",
+  "files": [
+    {
+      "path": "crates/prod-code-mcp/src/server/mod.rs",
+      "base_sha256": "4cbafdaa87e4e5b4969d085692d5395acb0291fe6624f8767ad4c20a8c4929c2",
+      "prior_attempt_sha256": "1db16714b4980f31db9c7aeebb2710cbc0ad5678115ca19a5cdbe3c616bbd9c7",
+      "final_sha256": "92b354dc005e6e79687f67edc5528ce72df6f75a72967d838fac77874705409a",
+      "lines": 43
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/reload.rs",
+      "base_sha256": "8a081e73a99879c4214f15a062cc7cf35b53f1e9b133d8f8cd21455f87a08f47",
+      "prior_attempt_sha256": "504dd1d4d22eca6db4cbc0cf9ac1200b0d73589dd92cc32c697346b364348b27",
+      "final_sha256": "504dd1d4d22eca6db4cbc0cf9ac1200b0d73589dd92cc32c697346b364348b27",
+      "lines": 129
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/transport.rs",
+      "base_sha256": "0fca324320aea85d286482ede5b66e337407e263eee09225c6adfcd5128fd414",
+      "prior_attempt_sha256": "a473751329b354080ff2c3507a3f20eb5808a7a120b70d77134c49ab79a163f0",
+      "final_sha256": "a473751329b354080ff2c3507a3f20eb5808a7a120b70d77134c49ab79a163f0",
+      "lines": 400
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/stdin.rs",
+      "base_sha256": null,
+      "prior_attempt_sha256": "96b7d218170da2cead85efc0c63991eb52a5091394efcbbdd6a15718a68f6c1f",
+      "final_sha256": "96b7d218170da2cead85efc0c63991eb52a5091394efcbbdd6a15718a68f6c1f",
+      "lines": 55
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/stdin_unix.rs",
+      "base_sha256": null,
+      "prior_attempt_sha256": "44074ca1ffabf74cada49764b3d82312d85814d9a3639195ba3fa3377ae8d00d",
+      "final_sha256": "23fe58b6c26c35364e768d5c074b4008835729e4302afa4dd602209a7c8ad436",
+      "lines": 195
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/reload_tests.rs",
+      "base_sha256": "3053bc7443585fe2062505d3526e9bb26b1727870b3e04a651244584d1992f28",
+      "prior_attempt_sha256": "4f89327c74fb54345da5bd65c61d2299077a997325f006dfd50e724626cd953d",
+      "final_sha256": "4f89327c74fb54345da5bd65c61d2299077a997325f006dfd50e724626cd953d",
+      "lines": 220
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/reload_pending_tests.rs",
+      "base_sha256": null,
+      "prior_attempt_sha256": "5e86b84bb4ca733c74adb0869e103c848f166666130a9b631bfab33f4f10f7ab",
+      "final_sha256": "5e86b84bb4ca733c74adb0869e103c848f166666130a9b631bfab33f4f10f7ab",
+      "lines": 92
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/reload_process_tests.rs",
+      "base_sha256": null,
+      "prior_attempt_sha256": "74b11f0fb318c0311d2cc2cee75190f71632c95d6e78d51dce486fab2da57585",
+      "final_sha256": "b8cab1e84753a445ca7fcd448425c4ff5f64ae7595c88b4558045b0b4bd6f17f",
+      "lines": 345
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/dispatch.rs",
+      "base_sha256": "85b0a980a8c6abc7f910954087c07bd5e6bb027739cea2c018403ded04b923bb",
+      "prior_attempt_sha256": "85b0a980a8c6abc7f910954087c07bd5e6bb027739cea2c018403ded04b923bb",
+      "final_sha256": "85b0a980a8c6abc7f910954087c07bd5e6bb027739cea2c018403ded04b923bb",
+      "lines": 218
+    },
+    {
+      "path": "crates/prod-code-mcp/src/hot_reload.rs",
+      "base_sha256": "b6d6ec465403eb9b1e32c36f35c0bdc59cd0644cddce556fb40638b082438d68",
+      "prior_attempt_sha256": "b6d6ec465403eb9b1e32c36f35c0bdc59cd0644cddce556fb40638b082438d68",
+      "final_sha256": "b6d6ec465403eb9b1e32c36f35c0bdc59cd0644cddce556fb40638b082438d68",
+      "lines": 171
+    },
+    {
+      "path": "crates/prod-code-mcp/src/server/reload_shared_stdio_tests.rs",
+      "base_sha256": null,
+      "prior_attempt_sha256": null,
+      "final_sha256": "da33729e8655d706fb5d100315d693649a54841d07a9e40c34d11e9b0dbf517b",
+      "lines": 136
+    }
+  ]
+}
