@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Rust Make-Static Safety** (`crates/prod-code-mcp`, #1297):
+  Owning receivers are refused before planning or writing, preserving consumption and destructor timing. Impl classification ignores comments and higher-ranked bounds while preserving trait-method refusal for raw and Unicode identifiers.
+
 ## v0.3.41 — 2026-10-24
 
 ### Tests
