@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Language-Safe Convert-to-Method Verification** (`crates/prod-code-mcp`, #1301):
+  Non-Rust convert-to-method requests reject `verify: compile` before planning or writing, rather than treating an unrelated Cargo check as verification. Ordinary non-Rust conversion and Rust compile verification retain their existing behavior.
 - **Rust Make-Static Safety** (`crates/prod-code-mcp`, #1297):
   Owning receivers are refused before planning or writing, preserving consumption and destructor timing. Impl classification ignores comments and higher-ranked bounds while preserving trait-method refusal for raw and Unicode identifiers.
 

@@ -201,7 +201,7 @@ pub fn refactoring_tools() -> Vec<McpTool> {
                     "class_name": { "type": "string", "description": "Optional class or struct name declaring the function" },
                     "line": { "type": "integer", "description": "1-based line of the function's name" },
                     "character": { "type": "integer", "description": "1-based column of the function's name" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile` (Rust only): compile the proposed result in a shadow before writing it; rejected for other languages" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 }
