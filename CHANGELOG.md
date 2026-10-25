@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.41 — 2026-10-24
+
 ### Tests
 - **Coverage Campaign, Wave 3** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, `tests/support`):
   Every file now meets the 80% per-file region gate. New gateway tests cover:
