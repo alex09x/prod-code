@@ -135,3 +135,113 @@ fn an_internal_domain_is_resolved_without_a_lookup() {
     answered_locally(&["resolve", "shop.code.internal", "--json"])
         .expect("an internal domain resolves from the cluster view alone");
 }
+
+#[test]
+fn coverage_w3_metrics_with_no_nodes_is_a_successful_empty_report() {
+    for args in [vec!["metrics"], vec!["metrics", "--json"]] {
+        answered_locally(&args).unwrap();
+    }
+}
+
+#[test]
+fn coverage_w3_expression_relative_path_and_refusal_are_rendered() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("proposal.rs"),
+        "fn sample() {\n    let value: u32 = 7;\n    value\n}\n",
+    )
+    .unwrap();
+    for mode in ["json", "text", "missing"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .current_dir(dir.path())
+            .args([
+                "--exact",
+                "commands::dispatch::ops::tests::coverage_w3_expression_child",
+                "--nocapture",
+            ])
+            .env("PROD_CODE_W3_EXPRESSION_MODE", mode)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if mode == "json" {
+            assert!(stdout.contains("\"candidate_count\": 1"), "{stdout}");
+            assert!(stdout.contains("\"expression\": \"value\""), "{stdout}");
+        } else if mode == "text" {
+            assert!(
+                stdout.contains("Exact type match: `value` is declared as `u32`"),
+                "{stdout}"
+            );
+        } else {
+            assert!(stdout.contains("Failed to read file"), "{stdout}");
+            assert!(stdout.contains("missing.rs"), "{stdout}");
+        }
+    }
+}
+
+#[test]
+fn coverage_w3_expression_child() {
+    let Ok(mode) = std::env::var("PROD_CODE_W3_EXPRESSION_MODE") else {
+        return;
+    };
+    let file = if mode == "missing" {
+        "missing.rs"
+    } else {
+        "proposal.rs"
+    };
+    let mut args = vec!["propose-expression", file, "3", "u32"];
+    if mode == "json" {
+        args.push("--json");
+    }
+    if mode == "missing" {
+        let error = answered_locally(&args).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Failed to read file {}",
+                std::env::current_dir()
+                    .unwrap()
+                    .join("missing.rs")
+                    .display()
+            )
+        );
+        println!("{error}");
+    } else {
+        answered_locally(&args).unwrap();
+    }
+}
+
+#[test]
+fn coverage_w3_non_ops_commands_cannot_enter_the_ops_dispatcher() {
+    use crate::commands::dispatch::tests::{on_big_stack, parse};
+    for args in [vec!["package", "status"], vec!["def", "file.rs", "1", "1"]] {
+        let panic = std::panic::catch_unwind(|| {
+            on_big_stack(move || {
+                let command = parse(&args);
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let cx = super::DispatchContext {
+                    remote: "127.0.0.1:9".parse().unwrap(),
+                    remotes: &[],
+                    placement_key: "coverage-w3",
+                    cwd_engine: None,
+                    lsp_engine: None,
+                    cwd_root: None,
+                };
+                runtime.block_on(super::dispatch_ops(command, &cx)).unwrap();
+            })
+        })
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"internal error: entered unreachable code")
+        );
+    }
+}
