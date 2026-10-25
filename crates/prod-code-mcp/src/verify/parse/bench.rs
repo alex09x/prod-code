@@ -18,7 +18,7 @@ pub fn parse_bench_text(text: &str) -> Vec<BenchResult> {
     let mut previous = "";
     for line in text.lines() {
         let t = line.trim();
-        if let Some(at) = t.find("time:") {
+        if let Some(at) = t.rfind("time:") {
             let inner = t[at + 5..]
                 .trim()
                 .trim_start_matches('[')

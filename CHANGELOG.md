@@ -19,6 +19,8 @@
   The CMake configure probe and the Swift settings wait now take their program and time limit as parameters, so their outcomes can be tested (#1195).
 
 ### Fixed
+- **Criterion Result Markers** (`crates/prod-code-mcp`, #1276):
+  Benchmark names containing `time:`, such as `runtime::poll`, no longer hide Criterion's timing result. Single-line and wrapped results preserve the complete benchmark name.
 - **Language-server Child Environments** (`crates/prod-code-gateway`, `crates/prod-code-engine-generic`, #1269):
   Editor proxy and generic language servers no longer receive cluster authentication or TLS environment variables, including reserved names supplied through server configuration. Ordinary environment configuration is preserved.
 - **Make Project Source Extensions** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, #1270):
