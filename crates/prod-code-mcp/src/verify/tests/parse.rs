@@ -323,6 +323,30 @@ fn benchmark_results_are_read_from_criterion_libtest_and_go() {
 }
 
 #[test]
+fn criterion_result_marker_preserves_module_style_names() {
+    let stdout =
+        "runtime::poll time: [1 ns 2 ns 3 ns]\nruntime::slow\n    time: [10 us 20 us 30 us]\n";
+    let (_, _, benches, _, _, _) = parse_verification_output(
+        "rust",
+        VerifyKind::Bench,
+        stdout,
+        "",
+        &ProjectTools::default(),
+    );
+    let results: Vec<_> = benches
+        .iter()
+        .map(|b| (b.name.as_str(), b.estimate.as_str(), b.range.as_deref()))
+        .collect();
+    assert_eq!(
+        results,
+        [
+            ("runtime::poll", "2 ns", Some("1 ns .. 3 ns")),
+            ("runtime::slow", "20 us", Some("10 us .. 30 us")),
+        ]
+    );
+}
+
+#[test]
 fn test_toolchain_msrv_rejection_detection() {
     let mut report = VerifyReport {
         kind: VerifyKind::Test,
