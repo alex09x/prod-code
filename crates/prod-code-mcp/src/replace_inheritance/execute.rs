@@ -94,6 +94,16 @@ pub async fn replace_inheritance_impl(
         Some(m) if !m.is_empty() => m.to_vec(),
         _ => {
             if let Some(base_cls) = &base_class_opt {
+                // An opaque remainder can contain additional inherited methods.
+                // Filtering it out would silently shrink the subclass's API.
+                anyhow::ensure!(
+                    !base_cls
+                        .members
+                        .iter()
+                        .any(|m| m.kind == MemberKind::Opaque),
+                    "cannot safely discover all methods of base class '{base_name}': \
+                     unsupported declaration boundary; nothing was written"
+                );
                 base_cls
                     .members
                     .iter()
@@ -101,6 +111,11 @@ pub async fn replace_inheritance_impl(
                         m.kind == MemberKind::Method
                             && !m.name.starts_with('_')
                             && m.name != "constructor"
+                            // Swift initializers are parsed for modifier stripping,
+                            // but the transform initializes the delegate separately.
+                            && !(base_cls.language == "swift" && m.name == "init")
+                            && !(base_cls.language == "cpp"
+                                && (m.name == base_cls.name || m.name.starts_with('~')))
                             && !sub_class.members.iter().any(|sm| sm.name == m.name)
                     })
                     .map(|m| m.name.clone())

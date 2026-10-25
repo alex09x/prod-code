@@ -1,0 +1,32 @@
+{
+  "decision": "reject",
+  "confidence": 0.99,
+  "summary": "P2: Swift initializer discovery regresses ordinary default delegation. The new parser records init as a Method (crates/prod-code-mcp/src/pull_push/languages/swift.rs:128,143), but default forwarding excludes constructors only by the TypeScript/C++ names (crates/prod-code-mcp/src/replace_inheritance/execute.rs:111). A base with init() and a subclass inheriting that initializer therefore selects init, which fails with \"Swift base method has no `func` declaration\" at crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs:134. This is static control-flow evidence, not a Swift compiler/runtime result. Aggregate reviewed: e74b152a0cc216daaf7f1c51fcaea89761f84b11..57e0d08a81127c7bde3295f43af95bb59d87d60b. The original sibling literal comparison, C++ destructor separation/exclusion, same-name methods, TypeScript decorators, opaque-base refusals, and ordinary C++ forwarding controls are otherwise supported. Inspected the original final terminal log: 29 passed, zero failed/ignored, terminal exit 0. All 26 emitted shared-consumer source-pair hashes matched, their 25 non-Swift compiler/runtime pairs succeeded, and the retained final records matched that log. The candidate source manifest also matched (crates/prod-code-mcp/tests/pull_up_literal_preservation/opaque_base_review_evidence.json:25,110,157). Swift remains source-only; no tests, builds, or formatters were run for this review.",
+  "violations": [],
+  "findings": [
+    {
+      "priority": "P2",
+      "code": "SWIFT_INITIALIZER_DEFAULT_FORWARDING",
+      "title": "Exclude Swift initializers from default method forwarding",
+      "detail": "The initializer parsing added here stores init declarations as MemberKind::Method. For the ordinary input `class Pet {\\n    init() {}\\n    func speak() -> String { return \"base\" }\\n}\\nclass Dog: Pet {}\\n`, calling replace_inheritance_impl for Dog with methods_opt=None (or Some(&[])) now includes init in methods_to_forward because Dog has no explicit initializer and the filter excludes only constructor plus C++ constructors/destructors. transform_swift then passes Pet's `init() {}` declaration to swift_forwarding_method, which immediately returns `Swift base method has no `func` declaration`. Before this change, the parser omitted initializers, so the same default path forwarded speak and generated Dog's delegate-initializing init. Retain initializer discovery for stripping override, but do not treat it as a forwardable method. This refusal removes previously useful ordinary behavior, rather than rejecting an opaque declaration.",
+      "path": "crates/prod-code-mcp/src/pull_push/languages/swift.rs",
+      "line": 143,
+      "evidence": [
+        "crates/prod-code-mcp/src/pull_push/languages/swift.rs:119-147 recognizes init, names it init, and classifies it as MemberKind::Method; the aggregate base recognized only func declarations.",
+        "crates/prod-code-mcp/src/replace_inheritance/execute.rs:93-119 selects all such methods for omitted/empty selections, excluding constructor and C++ special members but not Swift init.",
+        "crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs:76-100 generates an initializer separately and then forwards every selected method.",
+        "crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs:132-134 requires a func token and returns the exact error for an initializer.",
+        "crates/prod-code-mcp/tests/pull_up_literal_preservation/swift_replacement.rs:17-27 invokes transform_swift with an explicit empty method list; its initializer assertions do not exercise public default discovery."
+      ],
+      "suggested_fix": "Keep parsing Swift initializers for declaration-local modifier removal, and exclude Swift init declarations from the default forwarding set, or give initializers a distinct member kind and filter on actual methods. Add a focused public-entry regression for a base with an explicit init and an inheriting subclass, covering both omitted and empty method selections while confirming speak is forwarded."
+    }
+  ],
+  "deviations": [
+    "Read-only production/test review; only this requested JSON artifact was written. No issues, PRs, messages, delegation, integration, tests, builds, or formatters.",
+    "Recorded final29 execution was inspected rather than rerun. Its terminal zero exit and 29-test summary corroborate opaque_base_review_evidence.json:110-112. The log contains 26 shared-consumer records; all source hashes and retained final records matched. Swift records establish source assertions only, as documented at opaque_base_review_evidence.json:389-395.",
+    "Recorded scoped Clippy failed with 103 library diagnostics; this review does not claim lint passed (opaque_base_review_evidence.json:53-107).",
+    "Navigation failure: `rg -n 'final29' crates/prod-code-mcp/tests/pull_up_literal_preservation && nl -ba crates/prod-code-mcp/tests/pull_up_literal_preservation/opaque_base_review_evidence.json | sed -n '1,150p' && nl -ba crates/prod-code-mcp/src/pull_push/sibling.rs | sed -n '1,230p'` was blocked by PreToolUse: Grep for text pattern `final29` over source files is blocked. Bounded named-file reads were used.",
+    "Navigation failure: code_grep({pattern:\"final29|task4042-opaque-final|test result: ok\",path:\"crates/prod-code-mcp/tests/pull_up_literal_preservation\",include:[\"*.json\"],max_results:60}) returned `MCP tool call requires approval, but approval policy is never`. No publication was attempted; bounded reads and recorded JSON/log inspection supplied the evidence.",
+    "Navigation diagnostic: `nl -ba crates/prod-code-mcp/src/replace_inheritance/forwarding/swift.rs | sed -n '1,180p'` printed `No such file or directory`; the forwarding helper was confirmed at crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs:126 instead. Login-shell initialization also emitted `(eval):5: parse error near `end'`; subsequent foreground commands used login=false."
+  ]
+}

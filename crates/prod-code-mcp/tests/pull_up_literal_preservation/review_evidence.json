@@ -1,0 +1,109 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1327",
+  "original_evidence": "evidence.json (retained byte-for-byte from the previous attempt)",
+  "task_base_sha": "e74b152a0cc216daaf7f1c51fcaea89761f84b11",
+  "review_repair_baseline_sha": "a8df11f3a1a3ca4fdeba3e408d41a722eb2ecd70",
+  "node_kind": "Linux x86_64 build node",
+  "limitations": [
+    "The checkout starts with the previous attempt committed. Original pinned-base Python/JavaScript false-equivalence evidence remains in evidence.json; it was not re-created by reverting this checkout.",
+    "The new C++ regression compiled and ran the original program, then failed compiling the transformed program before repair. No transformed baseline runtime value or transformed baseline source dump was captured after that failure.",
+    "Scripted diagnostic replies remain plumbing only, not semantic proof. Real Python and Node runtimes and C++17 compiler/executables assert values. TypeScript and Swift replacement additions assert declaration boundaries and source preservation only, without claiming compiler/runtime validation.",
+    "C++ relocation recognizes balanced ordinary defaults, qualifiers, noexcept expressions and attributes. Unsupported declarators (including trailing return types and raw-string headers) refuse before analyzer access or writes, instead of silently retaining final.",
+    "Scoped strict Clippy stopped in the library with 103 diagnostics; test-target lint did not complete. All diagnostic locations are outside edited lines, including unchanged code in the two modified replacement files. No unrelated lint fixes or broad repository gate were run.",
+    "The existing pull/push and replacement integration results are reused after formatting; only the changed literal-preservation target needed the final acceptance run. Original evidence is retained separately."
+  ],
+  "baseline_checks": [
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation cpp_default_arguments_do_not_relocate_final_onto_the_parent -- --exact",
+      "exit": 0,
+      "result": "0 tests selected, 6 filtered out. This unqualified-name probe is not passing regression evidence."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation brace_language::cpp_default_arguments_do_not_relocate_final_onto_the_parent -- --exact",
+      "exit": 101,
+      "result": "1 failed. c++: <stdin>:19:17: Cat::speak(int) overriding final Pet::speak(int); declaration at <stdin>:12:17."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test replace_inheritance_tests test_replace_inheritance_typescript -- --exact",
+      "exit": 101,
+      "result": "1 failed at replace_inheritance_tests.rs:181: assertion failed: !content.contains(\"override find\")."
+    }
+  ],
+  "final_checks": [
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true <12 changed Rust files>",
+      "exit": 0,
+      "result": "4 files formatted; no other files changed by the formatter."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --test pull_up_literal_preservation --test pull_push_tests --test replace_inheritance_tests -- -D warnings",
+      "exit": 101,
+      "result": "103 library diagnostics. First locations: config/mod.rs:52,53,63,64 and diagnostics/stream/feed.rs:31. Also unchanged lines replace_inheritance/languages/cpp.rs:174 and swift.rs:195. No diagnostic locations in newly edited code."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation --test replace_inheritance_tests --test pull_push_tests",
+      "exit": 0,
+      "result": "9 + 10 + 15 passed. Literal-preservation target rerun after fixture completion and formatting; existing integration evidence reused."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 0,
+      "result": "9 passed, 0 failed; 12 before/after runtime pairs printed with verified SHA-256 hashes."
+    }
+  ],
+  "navigation_limitations": [
+    {
+      "command": "rg --files crates/prod-code-mcp/tests/pull_up_literal_preservation*",
+      "error": "PreToolUse hook blocked the entire read-only command batch: source-file search requires prod-code tools. Bounded fallback: ls plus prod-code outline."
+    },
+    {
+      "command": "prod-code def --symbol Language",
+      "error": "Language is ambiguous (5 candidates); qualify it or pass path. Bounded fallback: read the exact parameter_object/types.rs enum slice."
+    },
+    {
+      "command": "prod-code grep 'raw.*string|raw_string|R\"|skip_cpp' crates/prod-code-mcp/src --max-matches 25",
+      "error": "unexpected argument --max-matches found. Bounded fallback: prod-code grep with --max-results 15."
+    }
+  ],
+  "cpp_review_regression_and_replacement_runtime_evidence": [
+    {
+      "before": {
+        "stage": "before",
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Pet {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n    virtual std::string other() const noexcept(true) { return \"root other\"; }\n};\nclass Dog : public Pet {\npublic:\n    // override final comment before member\n    std::string speak(int n = 0) override final { return \" override final\"; }\n    std::string other() const noexcept(true) override final { return \"final override\"; }\n};\n",
+        "sha256": "74a15c14ba69cc9df8f01883fbd42d99a39ffed013f9c9b73e2bb7101e5ab521",
+        "runtime": [
+          " override final"
+        ]
+      },
+      "after": {
+        "stage": "after",
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Pet {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n    virtual std::string other() const noexcept(true) { return \"root other\"; }\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    // override final comment before member\n    std::string speak(int n = 0) { return \" override final\"; }\n    std::string other() const noexcept(true) { return \"final override\"; }\n\n\n};\n",
+        "sha256": "08919a52de9b0b60a5f33cb4b8d51b40f4fa18a1e0423d6ee44c8d0ae970c44c",
+        "runtime": [
+          " override final"
+        ]
+      }
+    },
+    {
+      "before": {
+        "stage": "before",
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n};\nclass Dog : public Pet {\npublic:\n    std::string speak(int n = 0) override final { return \" override final\"; }\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(int n = 0) override final { return \" final\"; }\n};\n",
+        "sha256": "b9aef1772635d97a996a1086f58976d2ba628f34b1a532ddfabc76ad8e8d55bd",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      },
+      "after": {
+        "stage": "after",
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n\npublic:\n    std::string speak(int n = 0) { return \" override final\"; }\n};\nclass Dog : public Pet {\npublic:\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(int n = 0) override final { return \" final\"; }\n};\n",
+        "sha256": "7312b44d073801d6550d0261e90a5e4fd8caf236fe94360855d2385785b66f5a",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      }
+    }
+  ],
+  "other_runtime_pairs_verified": 10
+}

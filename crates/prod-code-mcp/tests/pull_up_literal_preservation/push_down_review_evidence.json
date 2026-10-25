@@ -1,0 +1,200 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1327",
+  "effective_base_sha": "3c1c299ef8ad765694288ee5fe1acb6cf11494bb",
+  "retained_retry_base_sha": "604e99e2faff58c23a691b20792953975480704c",
+  "node_kind": "Linux x86_64 build node",
+  "retained_evidence_sha256": {
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/boundary_review_evidence.json": "aa2b1acad44015cc4c67e26fc2fae1a4f0d116bd8db4c37c5a531305e7bffd50",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/evidence.json": "45316949cf0414c98bef0601c001e783a031dced66148f54a3b832698436adc2",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/review_evidence.json": "1c4973989c27e62855b5f3d3e1b12d3a909178b97e116d6e2fcb3c3d9beef5fe",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/review_followup_evidence.json": "d33f9e873ce1b4438f5fde24c8a61a1ca3dec28487ef3a65631bb6ee5ef65bb7",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/shared_consumer_evidence.json": "ddaa7e75aba5d87651b89a839d7fefd68c5794c9cc72134b63181119f5c65fa3",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/swift_review_evidence.json": "a9da6ed00c57a87ffcec2743d3670525f101a6cdab772f5eb6438608bc315d7c"
+  },
+  "verified_source_sha256": {
+    "crates/prod-code-mcp/src/pull_push/cpp_modifiers.rs": "db875e14b9bb4a17b7dba29139de4af19db419f05cc505c179a313483da3a974",
+    "crates/prod-code-mcp/src/pull_push/languages/cpp.rs": "79b2c0b4bd4a2be9e546e3563603a419ef2d03a3907237e59538c025c7872bda",
+    "crates/prod-code-mcp/src/pull_push/languages/typescript.rs": "7f38b7438f19ecb9b08448b17281bb9e0d27d12b731f6b9b2315942ba4845c83",
+    "crates/prod-code-mcp/src/pull_push/modifiers.rs": "e9964aaa2a120206c0c2f894064746b1d8c715934c998928608193b928d97f5a",
+    "crates/prod-code-mcp/src/pull_push/push_down.rs": "c3c1c8a905e44f9cdd504f7fbceab1cb45f7d9679ca9b9692e823b174985ba2b",
+    "crates/prod-code-mcp/src/pull_push/types.rs": "1d43810e34bc4320dc397c3d91055dc2d411a2d03d7630e4024dd568f578c5c9",
+    "crates/prod-code-mcp/src/replace_inheritance/execute.rs": "5c1092c8dd7856136fb6d5588db5adbf0f5ce2b530a949bf6dd5a4fcd8812508",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation.rs": "36bff887d240ddbe0b9102f5545f1a491f2c5d6165e4b39a281fe8464fcfc8b0",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/boundary_regressions.rs": "008a58b189ecbf50d14b132be0ab57377e6f235c6011cd7d51636432023d952a",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/consumer_evidence.rs": "cc420035324ba9a5140a681c15cd248d9f9e5532c7aa6f2cd357ae4d5fd5aead",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/review_regressions.rs": "f239751c508a1ce6361f160a8d3992e80ea7b16011f2ecb7251b5199b07af6e6",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/shared_consumers.rs": "b28f2a94f27efa51be7f9747555312398ed35d25cd915cf6e514539bd5726b35",
+    "crates/prod-code-mcp/tests/pull_up_literal_preservation/support.rs": "92ee78164222a36febf9d143829eb32efddde8a718f7cc6e2a31d44630ccc737"
+  },
+  "new_test_sha256": "21bbd29b33a0fe8750edbd0a8ae2f483f41f9d01cfc38da9822b57faa755163e",
+  "checks": [
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation push_down_regressions::cpp_opaque_push_down -- --nocapture",
+      "exit": 101,
+      "result": "0 passed, 1 failed before production edits. speak and following other both moved; Pet body reduced to public:. Both programs compiled and printed 17. Eleven scripted analyzer requests; write accepted."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/pull_push/types.rs crates/prod-code-mcp/src/pull_push/languages/cpp.rs crates/prod-code-mcp/src/pull_push/modifiers.rs crates/prod-code-mcp/src/pull_push/push_down.rs crates/prod-code-mcp/tests/pull_up_literal_preservation.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/push_down_regressions.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/review_regressions.rs",
+      "exit": 0,
+      "result": "One scoped rustfmt invocation. Existing refusal wording was preserved afterward. After the first acceptance failure, only the positive test assertion was corrected to ignore declaration-leading spaces/tabs. No formatting or lint reruns."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --test pull_up_literal_preservation -- -D warnings",
+      "exit": 101,
+      "error": "error: could not compile `prod-code-mcp` (lib) due to 103 previous errors",
+      "result": "Same 49 diagnostic files as retained review_followup_evidence.json. None overlap the effective task diff; test-target lint blocked by library failure. No unrelated edits or lint reruns.",
+      "diagnostic_files": [
+        "crates/prod-code-mcp/src/config/mod.rs",
+        "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+        "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+        "crates/prod-code-mcp/src/dossier/assertions/cpp.rs",
+        "crates/prod-code-mcp/src/dossier/assertions/go.rs",
+        "crates/prod-code-mcp/src/dossier/assertions/python.rs",
+        "crates/prod-code-mcp/src/dossier/locations.rs",
+        "crates/prod-code-mcp/src/encapsulate_field/polyglot/lsp.rs",
+        "crates/prod-code-mcp/src/encapsulate_field/polyglot/mod.rs",
+        "crates/prod-code-mcp/src/extract_delegate/polyglot/execute.rs",
+        "crates/prod-code-mcp/src/extract_function/binding.rs",
+        "crates/prod-code-mcp/src/extract_function/duplicates/search.rs",
+        "crates/prod-code-mcp/src/fixture/builder/lexer.rs",
+        "crates/prod-code-mcp/src/fixture/polyglot/parsers_go_ts.rs",
+        "crates/prod-code-mcp/src/generify/polyglot.rs",
+        "crates/prod-code-mcp/src/impact/signatures.rs",
+        "crates/prod-code-mcp/src/impact/test_cmd.rs",
+        "crates/prod-code-mcp/src/move_item/item.rs",
+        "crates/prod-code-mcp/src/parameter_object/binding.rs",
+        "crates/prod-code-mcp/src/parameter_object/polyglot_callers.rs",
+        "crates/prod-code-mcp/src/prune/execute.rs",
+        "crates/prod-code-mcp/src/remote_fs/mod.rs",
+        "crates/prod-code-mcp/src/replace_constructor/sites/helpers.rs",
+        "crates/prod-code-mcp/src/replace_inheritance/languages/cpp.rs",
+        "crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs",
+        "crates/prod-code-mcp/src/server/failover.rs",
+        "crates/prod-code-mcp/src/session/pool.rs",
+        "crates/prod-code-mcp/src/signature/call_sites.rs",
+        "crates/prod-code-mcp/src/signature/modifiers.rs",
+        "crates/prod-code-mcp/src/signature_go/reorder_verify.rs",
+        "crates/prod-code-mcp/src/supertypes/rust.rs",
+        "crates/prod-code-mcp/src/sync/cache.rs",
+        "crates/prod-code-mcp/src/sync/read.rs",
+        "crates/prod-code-mcp/src/sync/scan.rs",
+        "crates/prod-code-mcp/src/to_method/helpers.rs",
+        "crates/prod-code-mcp/src/tools/execution.rs",
+        "crates/prod-code-mcp/src/tools/symbols/alias.rs",
+        "crates/prod-code-mcp/src/tools/symbols/resolve.rs",
+        "crates/prod-code-mcp/src/tools/symbols/type_members.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/restructure.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs",
+        "crates/prod-code-mcp/src/wrap_return/utils.rs",
+        "crates/prod-code-mcp/src/xml_svg/lexer.rs"
+      ]
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 101,
+      "result": "27 passed, 1 failed: positive push-down assertion expected four spaces but received eight. Declaration-leading indentation is permitted to change. No production failure; repaired assertion compares all remaining bytes exactly."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 0,
+      "result": "28 passed, 0 failed. Required exact focused acceptance target; all 26 retained tests and both new push-down tests pass. C++/TypeScript compiler and Node runtime controls executed. New refusal covers apply/dry-run and force true/false, preserves complete original source, and observes zero analyzer requests."
+    }
+  ],
+  "discovery_failures": [
+    {
+      "command": "git diff --stat 3c1c299ef8ad765694288ee5fe1acb6cf11494bb && git log -3 --oneline && rg --files crates/prod-code-mcp/src/pull_push crates/prod-code-mcp/tests/pull_up_literal_preservation* | head -65 && prod-code outline crates/prod-code-mcp/src/pull_push && prod-code outline crates/prod-code-mcp/tests/pull_up_literal_preservation.rs",
+      "error": "Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.",
+      "fallback": "Repeated git commands with prod-code outline only; terminal exit 0."
+    }
+  ],
+  "baseline_push_down_source_evidence": [
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "17"
+      },
+      "after_sha256": "cf47b99002ed706b29215d1529efc016cb3f430617c37f2eda7b50e4bd4b0bbb",
+      "after_source": "#include <iostream>\nclass Pet {\npublic:};\nclass Dog : public Pet {\n\n    public:\n        int speak() noexcept(sizeof(R\"(x)\") > 0) { return 1; }\n        int other() { return 7; }\n\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "17"
+      },
+      "before_sha256": "7ba9e139aa50c14246d0d5d5c37f75b7adfb5fdc961bc971b8a9b55b0befe76c",
+      "before_source": "#include <iostream>\nclass Pet {\npublic:\n    int speak() noexcept(sizeof(R\"(x)\") > 0) { return 1; }\n    int other() { return 7; }\n};\nclass Dog : public Pet {\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "label": "cpp_opaque_push_down",
+      "language": "cpp"
+    }
+  ],
+  "repaired_push_down_source_evidence": [
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "17"
+      },
+      "after_sha256": "7ba9e139aa50c14246d0d5d5c37f75b7adfb5fdc961bc971b8a9b55b0befe76c",
+      "after_source": "#include <iostream>\nclass Pet {\npublic:\n    int speak() noexcept(sizeof(R\"(x)\") > 0) { return 1; }\n    int other() { return 7; }\n};\nclass Dog : public Pet {\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "17"
+      },
+      "before_sha256": "7ba9e139aa50c14246d0d5d5c37f75b7adfb5fdc961bc971b8a9b55b0befe76c",
+      "before_source": "#include <iostream>\nclass Pet {\npublic:\n    int speak() noexcept(sizeof(R\"(x)\") > 0) { return 1; }\n    int other() { return 7; }\n};\nclass Dog : public Pet {\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "label": "cpp_opaque_push_down",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "717"
+      },
+      "after_sha256": "df5df4a2fc16841f7c20b3ec0adbab587efb139b158c2e79312baf1a62c93655",
+      "after_source": "#include <iostream>\nclass Pet {\npublic:\n    int other() { return 7; }\n};\nclass Dog : public Pet {\n\n    public:\n        int speak() noexcept(sizeof(\"override final\") > 0) { return 1; }\n};\nint main() { std::cout << Pet().other() << Dog().speak() << Dog().other(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "717"
+      },
+      "before_sha256": "82902eb2b99b4d9b2528b9dc7261e4e9a2a980e2ccf755759b8e6b77e022929c",
+      "before_source": "#include <iostream>\nclass Pet {\npublic:\n    int speak() noexcept(sizeof(\"override final\") > 0) { return 1; }\n    int other() { return 7; }\n};\nclass Dog : public Pet {\n};\nint main() { std::cout << Pet().other() << Dog().speak() << Dog().other(); }\n",
+      "label": "cpp_ordinary_push_down",
+      "language": "cpp"
+    }
+  ],
+  "limits": [
+    "Original three pre-edit public reproductions and exact source/runtime failures remain in shared_consumer_evidence.json; their successful controls reran in the final target. All historical evidence files are byte-identical to retained HEAD.",
+    "Swift compiler/runtime unavailable on acceptance node per retained tool-availability evidence. Swift assertions are source-only; no installation or Swift semantic verification claimed.",
+    "Scripted gateway supplies analyzer transport only. Actual C++/TypeScript compiler and Node controls separately establish fixture behavior; no live analyzer proof claimed.",
+    "Opaque C++ raw-string suffixes remain unsupported and now refuse relocation rather than silently moving the rest of a class. No universal parser claim.",
+    "No publication, messages, delegation, dependencies, installs, infrastructure actions, other-worktree edits, or commit created; caller owns result commit.",
+    "No broad suites or repeated successful verification runs. Required focused target repeated only after fixing its single failed assertion."
+  ]
+}

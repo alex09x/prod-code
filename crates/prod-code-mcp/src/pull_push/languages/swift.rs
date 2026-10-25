@@ -9,6 +9,7 @@
  */
 
 use crate::pull_push::braces::find_matching_brace;
+use crate::pull_push::modifiers::swift_declaration_start;
 use crate::pull_push::types::{ClassDecl, MemberDecl, MemberKind};
 use std::path::Path;
 
@@ -110,11 +111,25 @@ fn parse_swift_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
 
         let is_override = trimmed.contains("override ");
 
-        // func
-        if let Some(func_idx) = trimmed.find("func ") {
-            let after_func = trimmed[func_idx + 5..].trim_start();
+        // Methods and initializers share body boundaries. In particular, an
+        // initializer's override must be removed when its superclass is removed.
+        let method_header = trimmed
+            .find("func ")
+            .map(|index| (trimmed[index + 5..].trim_start(), false))
+            .or_else(|| {
+                let declaration = &trimmed[swift_declaration_start(trimmed)?..];
+                let tail = declaration.strip_prefix("init")?;
+                tail.trim_start()
+                    .starts_with(['(', '?', '!', '<'])
+                    .then_some((declaration, true))
+            });
+        if let Some((after_func, initializer)) = method_header {
             if let Some(open_paren) = after_func.find('(') {
-                let ident = after_func[..open_paren].trim();
+                let ident = if initializer {
+                    "init"
+                } else {
+                    after_func[..open_paren].trim()
+                };
                 let member_start = line_offsets[i];
                 if let Some(open_brace_rel) = body[line_offsets[i] - body_offset..].find('{') {
                     let global_open = line_offsets[i] + open_brace_rel;

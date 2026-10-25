@@ -1,0 +1,308 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1327",
+  "task_base_sha": "e74b152a0cc216daaf7f1c51fcaea89761f84b11",
+  "review_repair_baseline_sha": "6364cda964e691fa14f4c0e060dcd96982e96960",
+  "retained_evidence_sha256": {
+    "evidence.json": "45316949cf0414c98bef0601c001e783a031dced66148f54a3b832698436adc2",
+    "review_evidence.json": "1c4973989c27e62855b5f3d3e1b12d3a909178b97e116d6e2fcb3c3d9beef5fe"
+  },
+  "node_kind": "Linux x86_64 build node",
+  "baseline": {
+    "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation swift_replacement::",
+    "exit": 101,
+    "result": "All 3 new regressions failed before production edits: explicit override initializer retained; attributed method override retained; attribute stripping returned the declaration unchanged. Nine existing tests filtered out."
+  },
+  "checks": [
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation --test pull_push_tests --test replace_inheritance_tests",
+      "exit": 0,
+      "result": "12 + 15 + 10 tests passed before scoped formatting."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/pull_push/modifiers.rs crates/prod-code-mcp/src/pull_push/languages/swift.rs crates/prod-code-mcp/tests/pull_up_literal_preservation.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/replacement.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/swift_replacement.rs",
+      "exit": 0,
+      "result": "Five scoped files selected; four formatting-only changes returned."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --test pull_up_literal_preservation --test pull_push_tests --test replace_inheritance_tests -- -D warnings",
+      "exit": 101,
+      "result": "103 library diagnostics, matching the prior recorded count. All 107 reported source locations are outside this attempt's modified files; test-target lint did not complete. First locations: config/mod.rs:52,53,63,64 and diagnostics/stream/feed.rs:31."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 0,
+      "result": "12 passed, 0 failed after formatting; exact required acceptance target. The 12 runtime pairs and 3 Swift source pairs below were parsed from this run and all SHA-256 hashes rechecked."
+    }
+  ],
+  "limitations": [
+    "The pinned-base public pull_up_impl Python/JavaScript reproduction remains in evidence.json. The checkout already contained that repair, so the pinned-base failures were not recreated by reverting it.",
+    "Scripted diagnostics remain transport plumbing only. Python, Node, and C++17 compiler/executables assert actual original/transformed values; they do not claim analyzer verification.",
+    "command -v swift and command -v swiftc returned no paths on the acceptance node. Swift additions assert exact declaration modifier removal, member boundaries, attribute argument bytes, and preserved literal source only; there is no Swift compiler/runtime evidence.",
+    "The baseline failure output displayed transformed Swift source but did not print its hash or original source. New source/hash pairs below come from the repaired final run, not a reconstructed baseline run.",
+    "The combined integration checks are reused after formatting because only whitespace changed. No broad repository suite, dependency change, install, publication, deployment or other-worktree edit was performed.",
+    "Strict lint was already recorded failing in both retained evidence files. This attempt did not run a fresh pre-edit lint baseline or change unrelated lint failures."
+  ],
+  "navigation_failures": [
+    {
+      "command": "mcp__prod_code__code_outline({\"path\":\"crates/prod-code-mcp/src/pull_push/modifiers.rs\"})",
+      "error": "MCP tool call requires approval, but approval policy is never",
+      "fallback": "prod-code outline CLI at the same path succeeded."
+    },
+    {
+      "command": "mcp__prod_code__code_outline({\"path\":\"crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs\"})",
+      "error": "MCP tool call requires approval, but approval policy is never",
+      "fallback": "Bounded local source read plus prod-code definition/outline CLI succeeded."
+    },
+    {
+      "command": "rg -n 'SWIFT_SOURCE_EVIDENCE|test result:' /tmp/task4009-focused.log",
+      "error": "Command blocked by PreToolUse hook: Recursive grep/find outside the workspace is always blocked: it walks huge trees (home directories, caches, logs) for minutes or hours. Search inside the project with `prod-code grep`, or read the one file you need by its path.",
+      "fallback": "Read only that exact log with pathlib.Path.read_text and filter its lines in memory."
+    }
+  ],
+  "swift_source_evidence": [
+    {
+      "after_sha256": "80d163313f17a49887ec46ff3a3405d44b0dbdac2a12ac580f42ecdeaa088b38",
+      "after_source": "class Pet {\n    init() {}\n}\nclass Dog {\ninit() {\n        self.pet = Pet()\n    }\nfunc speak() -> String { return \"override final init()\" }\n\n    private let pet: Pet\n}\n",
+      "before_sha256": "30cc697ed357082ed5a14a6b2c32c4385d7fe6b8f266372b318d05f551a4cb75",
+      "before_source": "class Pet {\n    init() {}\n}\nclass Dog: Pet {\noverride init() {\n        super.init()\n    }\nfunc speak() -> String { return \"override final init()\" }\n}\n",
+      "limitation": "Swift source assertions only; no Swift toolchain on this node",
+      "runtime": null
+    },
+    {
+      "after_sha256": "b83e177c17353abc2e2d0d87c7887a58ee00200f6f692b0132f8558c4920e51f",
+      "after_source": "class Pet {\n    func speak() -> String { return \"base\" }\n}\nclass Dog {\n    @available(*, deprecated, message: \"override ) final\") @MainActor public /* override */ func speak() -> String {\nreturn \"override final\"\n    }\n\n    private let pet: Pet\n\n    init() {\n        self.pet = Pet()\n    }\n}\n",
+      "before_sha256": "63a0bd1554430ebd7b60f412a8e69ff3d901ec266f935ec09133a48cb151819a",
+      "before_source": "class Pet {\n    func speak() -> String { return \"base\" }\n}\nclass Dog: Pet {\n    @available(*, deprecated, message: \"override ) final\") @MainActor public override /* override */ func speak() -> String {\nreturn \"override final\"\n    }\n}\n",
+      "limitation": "Swift source assertions only; no Swift toolchain on this node",
+      "runtime": null
+    },
+    {
+      "after_sha256": "6177da1b60bd59e9f74cbec7535dbdd8b5687c26469a4ba7d485c029d195156b",
+      "after_source": "class Pet {\n    init() {}\n}\nclass Dog {\n@available(*, deprecated) init() {\n        self.pet = Pet()\n    }\nfunc speak() -> String { return \"override final init()\" }\n\n    private let pet: Pet\n}\n",
+      "before_sha256": "1f97a66cee9269ff07798f5d0f04263270cd441590da698417841a695b43c6ac",
+      "before_source": "class Pet {\n    init() {}\n}\nclass Dog: Pet {\n@available(*, deprecated) override init() {\n        super.init()\n    }\nfunc speak() -> String { return \"override final init()\" }\n}\n",
+      "limitation": "Swift source assertions only; no Swift toolchain on this node",
+      "runtime": null
+    }
+  ],
+  "runtime_evidence": [
+    {
+      "before": {
+        "source": "class Pet:\n    pass\n\nclass Dog(Pet):\n        def speak(self):\n            return \"\"\"hello \n            \n            world\n            \"\"\"\n\nclass Cat(Pet):\n        def speak(self):\n            return \"\"\"hello\n            \n            world\n            \"\"\"\n",
+        "sha256": "8cab72675c64cde8c8c7bfd3fd79c63ba255777365aed733555cad7a8327dad3",
+        "runtime": [
+          "hello \n            \n            world\n            ",
+          "hello\n            \n            world\n            "
+        ]
+      },
+      "after": {
+        "source": "class Pet:\n    def speak(self):\n        return \"\"\"hello \n            \n            world\n            \"\"\"\n\nclass Dog(Pet):\n    pass\n\nclass Cat(Pet):\n        def speak(self):\n            return \"\"\"hello\n            \n            world\n            \"\"\"\n",
+        "sha256": "3871b8bf622e8f9d72e6416c68e5e41ea7d549a9c3900aa3f3125ea26ecb311e",
+        "runtime": [
+          "hello \n            \n            world\n            ",
+          "hello\n            \n            world\n            "
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "class Pet:\n    pass\n\nclass Dog(Pet):\n    def speak(self):\n        return \"\"\"hello \n        world\n        \"\"\"\n\nclass Cat(Pet):\n    def speak(self):\n        return \"\"\"hello\n        world\n        \"\"\"\n",
+        "sha256": "27c53382ed8744482d1dca00f6ae11c1ccb8331401654c1a1e6a4f8d9ee7ff90",
+        "runtime": [
+          "hello \n        world\n        ",
+          "hello\n        world\n        "
+        ]
+      },
+      "after": {
+        "source": "class Pet:\n    def speak(self):\n        return \"\"\"hello \n        world\n        \"\"\"\n\nclass Dog(Pet):\n    pass\n\nclass Cat(Pet):\n    def speak(self):\n        return \"\"\"hello\n        world\n        \"\"\"\n",
+        "sha256": "83a11e6915d6917b031818de05f8a9332e6c580302f4b314eb788aedc60de1e0",
+        "runtime": [
+          "hello \n        world\n        ",
+          "hello\n        world\n        "
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "class Pet:\n    pass\n\nclass Dog(Pet):\n    def speak(self):\n        return 7\n\nclass Copy(Pet):\n    def speak(self):\n        return 7\n\nclass Cat(Pet):\n    def speak(self):\n        return 8\n",
+        "sha256": "c7629c00f0efb92875ce39a1c0baaa5ec7f901ecb7a4008a3e32146f71596b34",
+        "runtime": [
+          "7",
+          "7",
+          "8"
+        ]
+      },
+      "after": {
+        "source": "class Pet:\n    def speak(self):\n        return 7\n\nclass Dog(Pet):\n    pass\n\nclass Copy(Pet):\n    pass\n\nclass Cat(Pet):\n    def speak(self):\n        return 8\n",
+        "sha256": "35370f3dfc48e652ceb7755bfe726a58cf1dc602eea9dd1dba1571b8a54ee56f",
+        "runtime": [
+          "7",
+          "7",
+          "8"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "class Pet {}\nclass Dog extends Pet {\n    speak() {\n        return `override final \n        tail`;\n    }\n}\nclass Cat extends Pet {\n    speak() {\n        return `final \n        tail`;\n    }\n}\n",
+        "sha256": "7b0aaf3c1e25e70de183e976aa2a0f494d3805e0d4c8ea089c45348cf30aad0f",
+        "runtime": [
+          "override final \n        tail",
+          "final \n        tail"
+        ]
+      },
+      "after": {
+        "source": "class Pet {\n    speak() {\n        return `override final \n        tail`;\n    }\n}\nclass Dog extends Pet {\n}\nclass Cat extends Pet {\n    speak() {\n        return `final \n        tail`;\n    }\n}\n",
+        "sha256": "fc227b68330c69a7da764cde389e9d49db6a8073c67091107b713685a275eb28",
+        "runtime": [
+          "override final \n        tail",
+          "final \n        tail"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "class Pet:\n    pass\n\nfrom base import Pet\n\nclass Dog(Pet):\n        def speak(self):\n            return \"\"\"hello \n            \n            world\n            \"\"\"\n\nclass Cat(Pet):\n        def speak(self):\n            return \"\"\"hello\n            \n            world\n            \"\"\"\n",
+        "sha256": "42e1d579cd5fc7e76459ae1c2c742249e7c2508af7ee6b9dd0eb0857ff9e96da",
+        "runtime": [
+          "hello \n            \n            world\n            ",
+          "hello\n            \n            world\n            "
+        ]
+      },
+      "after": {
+        "source": "class Pet:\n    def speak(self):\n        return \"\"\"hello \n            \n            world\n            \"\"\"\n\nfrom base import Pet\n\nclass Dog(Pet):\n    pass\n\nclass Cat(Pet):\n        def speak(self):\n            return \"\"\"hello\n            \n            world\n            \"\"\"\n",
+        "sha256": "e88266e24ea204551c990e84ca818342ed1eec2162ed74bec80882485f2be424",
+        "runtime": [
+          "hello \n            \n            world\n            ",
+          "hello\n            \n            world\n            "
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "class Pet:\n    pass\n\nfrom base import Pet\n\nclass Dog(Pet):\n    def speak(self):\n        return 7\n\nclass Copy(Pet):\n    def speak(self):\n        return 7\n\nclass Cat(Pet):\n    def speak(self):\n        return 8\n",
+        "sha256": "991de62023bfd335d705a9b76072b6c70c5df79096f348ded2fc82dbf6b1d54f",
+        "runtime": [
+          "7",
+          "7",
+          "8"
+        ]
+      },
+      "after": {
+        "source": "class Pet:\n    def speak(self):\n        return 7\n\nfrom base import Pet\n\nclass Dog(Pet):\n    pass\n\nclass Copy(Pet):\n    pass\n\nclass Cat(Pet):\n    def speak(self):\n        return 8\n",
+        "sha256": "1eb9751f29c96e3733a168774f7d8e6bbd482d4d80f857a64ce39bc6088f9143",
+        "runtime": [
+          "7",
+          "7",
+          "8"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Pet {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n    virtual std::string other() const noexcept(true) { return \"root other\"; }\n};\nclass Dog : public Pet {\npublic:\n    // override final comment before member\n    std::string speak(int n = 0) override final { return \" override final\"; }\n    std::string other() const noexcept(true) override final { return \"final override\"; }\n};\n",
+        "sha256": "74a15c14ba69cc9df8f01883fbd42d99a39ffed013f9c9b73e2bb7101e5ab521",
+        "runtime": [
+          " override final"
+        ]
+      },
+      "after": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Pet {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n    virtual std::string other() const noexcept(true) { return \"root other\"; }\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    // override final comment before member\n    std::string speak(int n = 0) { return \" override final\"; }\n    std::string other() const noexcept(true) { return \"final override\"; }\n\n\n};\n",
+        "sha256": "08919a52de9b0b60a5f33cb4b8d51b40f4fa18a1e0423d6ee44c8d0ae970c44c",
+        "runtime": [
+          " override final"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n};\nclass Dog : public Pet {\npublic:\n    std::string speak(int n = 0) override final { return \" override final\"; }\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(int n = 0) override final { return \" final\"; }\n};\n",
+        "sha256": "b9aef1772635d97a996a1086f58976d2ba628f34b1a532ddfabc76ad8e8d55bd",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      },
+      "after": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(int n = 0) { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n\npublic:\n    std::string speak(int n = 0) { return \" override final\"; }\n};\nclass Dog : public Pet {\npublic:\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(int n = 0) override final { return \" final\"; }\n};\n",
+        "sha256": "7312b44d073801d6550d0261e90a5e4fd8caf236fe94360855d2385785b66f5a",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak() { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n};\nclass Dog : public Pet {\npublic:\n    std::string speak() override final { return \" override final\"; }\n};\nclass Cat : public Pet {\npublic:\n    std::string speak() override final { return \" final\"; }\n};\n",
+        "sha256": "46b7dc56e0b1769c1b9211a4f211943fd3d1ac41c8006dafc8b669f6c78af0df",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      },
+      "after": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak() { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n\npublic:\n    std::string speak() { return \" override final\"; }\n};\nclass Dog : public Pet {\npublic:\n};\nclass Cat : public Pet {\npublic:\n    std::string speak() override final { return \" final\"; }\n};\n",
+        "sha256": "21f9a7c4379cd35f319316b171233aea2a23f029ab2defecc0080bc7e0aaf43b",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(int n = (0)) { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n};\nclass Dog : public Pet {\npublic:\n    std::string speak(int n = (0)) override final { return \" override final\"; }\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(int n = (0)) override final { return \" final\"; }\n};\n",
+        "sha256": "82b9f8419eaffc9465aab561fe833bd3b07f90ced87c2baa26c1d5aa1285cf8f",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      },
+      "after": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(int n = (0)) { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n\npublic:\n    std::string speak(int n = (0)) { return \" override final\"; }\n};\nclass Dog : public Pet {\npublic:\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(int n = (0)) override final { return \" final\"; }\n};\n",
+        "sha256": "091f7756e3d2cca3d377bf98ccda5e6264b0c2eed80025c2883e2a17128dec3b",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(const char* n = \"override final\") { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n};\nclass Dog : public Pet {\npublic:\n    std::string speak(const char* n = \"override final\") override final { return \" override final\"; }\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(const char* n = \"override final\") override final { return \" final\"; }\n};\n",
+        "sha256": "f93624237f95ce5b7295a35332121ab74dc6db1b204f2b8163c2fd69a07270e1",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      },
+      "after": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(const char* n = \"override final\") { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n\npublic:\n    std::string speak(const char* n = \"override final\") { return \" override final\"; }\n};\nclass Dog : public Pet {\npublic:\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(const char* n = \"override final\") override final { return \" final\"; }\n};\n",
+        "sha256": "5597a13c4d952d5e8ebdede9c78d049117aedf42d06f8ae5744942589d09f1be",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      }
+    },
+    {
+      "before": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(char n = ')') { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n};\nclass Dog : public Pet {\npublic:\n    std::string speak(char n = ')') override final { return \" override final\"; }\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(char n = ')') override final { return \" final\"; }\n};\n",
+        "sha256": "a45d60786333a9016e123b2d86a67bd5b169bcaa1e4e0d898382bdabedbb1f09",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      },
+      "after": {
+        "source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak(char n = ')') { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n\npublic:\n    std::string speak(char n = ')') { return \" override final\"; }\n};\nclass Dog : public Pet {\npublic:\n};\nclass Cat : public Pet {\npublic:\n    std::string speak(char n = ')') override final { return \" final\"; }\n};\n",
+        "sha256": "f85f84de0c1f2b5e564e3577b921017fe3bfbeb8379a4e82b4b2d7263295d1f7",
+        "runtime": [
+          " override final",
+          " final"
+        ]
+      }
+    }
+  ]
+}

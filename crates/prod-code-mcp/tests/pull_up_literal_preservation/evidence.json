@@ -1,0 +1,59 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1327",
+  "original_finding": "Codex4130719491",
+  "base_sha": "e74b152a0cc216daaf7f1c51fcaea89761f84b11",
+  "node_kind": "Linux x86_64 build node",
+  "limitations": [
+    "The original issue was source-derived; this task first reproduced the Python and JavaScript value changes through public pull_up_impl with clean_siblings=true and apply=true before production edits.",
+    "ScriptedGateway answers only diagnostic/transport plumbing. Its empty diagnostic replies are not semantic proof. Actual Python, Node and C++ compiler/runtime executions assert original and transformed values, and result.verified remains false.",
+    "The first baseline attempt failed to compile the test harness: E0308, support.rs:47, expected &Path, found PathBuf. Borrowing the root fixed that harness error before the runtime baseline was obtained.",
+    "No baseline Clippy or existing pull_push_tests run was recorded. The final strict Clippy invocation failed with 103 library diagnostics; examples are unchanged config/mod.rs:52 and diagnostics/stream/feed.rs:31. The tool output was truncated, so this record does not claim every diagnostic is pre-existing or that test-target lint completed.",
+    "Comparison intentionally retains differently formatted siblings when continuation bytes differ. It does not claim general semantic equivalence, and it preserves literal CRLF and trailing whitespace rather than normalizing them.",
+    "After the first successful final test run, only evidence output plumbing changed to bypass successful-test stdout capture. The new target was rerun on that final harness state; existing-test evidence is reused because production code did not change.",
+    "No full repository test/build gate, dependency change, installation, publication or deployment was performed. Remote addresses and temporary paths are omitted from this public record."
+  ],
+  "checks": [
+    {"stage": "baseline after harness correction", "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation -- --nocapture", "exit": 101, "result": "1 passed, 2 failed: Python and JavaScript runtime values changed"},
+    {"stage": "format", "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true <seven changed Rust files>", "exit": 0, "result": "Scoped formatting completed; after the evidence-output-only change, support.rs was formatted again successfully"},
+    {"stage": "lint", "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --test pull_up_literal_preservation --test pull_push_tests -- -D warnings", "exit": 101, "result": "could not compile prod-code-mcp (lib) due to 103 previous errors"},
+    {"stage": "existing focused integration tests", "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_push_tests", "exit": 0, "result": "15 passed; includes Python pass insertion, analyzer-error no-write guards, ordinary C++ access labels, same-file and multi-file paths, TypeScript and Swift modifiers"},
+    {"stage": "final acceptance", "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation", "exit": 0, "result": "5 passed, 0 failed; actual Python, JavaScript and C++ values preserved"}
+  ],
+  "python": {
+    "before_source": "class Pet:\n    pass\n\nclass Dog(Pet):\n    def speak(self):\n        return \"\"\"hello \n        world\n        \"\"\"\n\nclass Cat(Pet):\n    def speak(self):\n        return \"\"\"hello\n        world\n        \"\"\"\n",
+    "before_sha256": "27c53382ed8744482d1dca00f6ae11c1ccb8331401654c1a1e6a4f8d9ee7ff90",
+    "before_runtime": ["hello \n        world\n        ", "hello\n        world\n        "],
+    "baseline_after_source": "class Pet:\n    def speak(self):\n        return \"\"\"hello \n        world\n        \"\"\"\n\nclass Dog(Pet):\n    pass\n\nclass Cat(Pet):\n    pass\n",
+    "baseline_after_sha256": "622778632a78109e9df9c551f8c6318640c8a073d733889acaa9cd50d39ff6a7",
+    "baseline_after_runtime": ["hello \n        world\n        ", "hello \n        world\n        "],
+    "repaired_after_source": "class Pet:\n    def speak(self):\n        return \"\"\"hello \n        world\n        \"\"\"\n\nclass Dog(Pet):\n    pass\n\nclass Cat(Pet):\n    def speak(self):\n        return \"\"\"hello\n        world\n        \"\"\"\n",
+    "repaired_after_sha256": "83a11e6915d6917b031818de05f8a9332e6c580302f4b314eb788aedc60de1e0",
+    "repaired_after_runtime": ["hello \n        world\n        ", "hello\n        world\n        "]
+  },
+  "javascript": {
+    "before_source": "class Pet {}\nclass Dog extends Pet {\n    speak() {\n        return `override final \n        tail`;\n    }\n}\nclass Cat extends Pet {\n    speak() {\n        return `final \n        tail`;\n    }\n}\n",
+    "before_sha256": "7b0aaf3c1e25e70de183e976aa2a0f494d3805e0d4c8ea089c45348cf30aad0f",
+    "before_runtime": ["override final \n        tail", "final \n        tail"],
+    "baseline_after_source": "class Pet {\n    speak() {\n        return `final \n        tail`;\n    }\n}\nclass Dog extends Pet {\n}\nclass Cat extends Pet {\n}\n",
+    "baseline_after_sha256": "561b584e85e6ae0dd3629016219c2556928e50db7be9c6e20b9f382462ad3518",
+    "baseline_after_runtime": ["final \n        tail", "final \n        tail"],
+    "repaired_after_source": "class Pet {\n    speak() {\n        return `override final \n        tail`;\n    }\n}\nclass Dog extends Pet {\n}\nclass Cat extends Pet {\n    speak() {\n        return `final \n        tail`;\n    }\n}\n",
+    "repaired_after_sha256": "fc227b68330c69a7da764cde389e9d49db6a8073c67091107b713685a275eb28",
+    "repaired_after_runtime": ["override final \n        tail", "final \n        tail"]
+  },
+  "cpp": {
+    "before_source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak() { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n};\nclass Dog : public Pet {\npublic:\n    std::string speak() override final { return \" override final\"; }\n};\nclass Cat : public Pet {\npublic:\n    std::string speak() override final { return \" final\"; }\n};\n",
+    "before_sha256": "46b7dc56e0b1769c1b9211a4f211943fd3d1ac41c8006dafc8b669f6c78af0df",
+    "before_runtime": [" override final", " final"],
+    "repaired_after_source": "#include <string>\n#include <iostream>\n#include <iomanip>\nclass Root {\npublic:\n    virtual std::string speak() { return \"root\"; }\n};\nclass Pet : public Root {\npublic:\n\npublic:\n    std::string speak() { return \" override final\"; }\n};\nclass Dog : public Pet {\npublic:\n};\nclass Cat : public Pet {\npublic:\n    std::string speak() override final { return \" final\"; }\n};\n",
+    "repaired_after_sha256": "21f9a7c4379cd35f319316b171233aea2a23f029ab2defecc0080bc7e0aaf43b",
+    "repaired_after_runtime": [" override final", " final"],
+    "compiler": "c++ -std=c++17 -x c++ - -o <temporary-binary>; original and transformed programs both compiled and ran successfully"
+  },
+  "controls": [
+    {"case": "plain identical and different body, same file", "before_sha256": "c7629c00f0efb92875ce39a1c0baaa5ec7f901ecb7a4008a3e32146f71596b34", "after_sha256": "35370f3dfc48e652ceb7755bfe726a58cf1dc602eea9dd1dba1571b8a54ee56f", "before_and_after_runtime": ["7", "7", "8"]},
+    {"case": "plain identical and different body, multi-file (base text concatenated with children)", "before_sha256": "991de62023bfd335d705a9b76072b6c70c5df79096f348ded2fc82dbf6b1d54f", "after_sha256": "1eb9751f29c96e3733a168774f7d8e6bbd482d4d80f857a64ce39bc6088f9143", "before_and_after_runtime": ["7", "7", "8"]},
+    {"case": "different indentation, same file", "before_sha256": "8cab72675c64cde8c8c7bfd3fd79c63ba255777365aed733555cad7a8327dad3", "after_sha256": "3871b8bf622e8f9d72e6416c68e5e41ea7d549a9c3900aa3f3125ea26ecb311e", "before_and_after_runtime": ["hello \n            \n            world\n            ", "hello\n            \n            world\n            "]},
+    {"case": "different indentation, multi-file (base text concatenated with children)", "before_sha256": "42e1d579cd5fc7e76459ae1c2c742249e7c2508af7ee6b9dd0eb0857ff9e96da", "after_sha256": "e88266e24ea204551c990e84ca818342ed1eec2162ed74bec80882485f2be424", "before_and_after_runtime": ["hello \n            \n            world\n            ", "hello\n            \n            world\n            "]}
+  ]
+}

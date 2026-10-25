@@ -9,6 +9,7 @@
  */
 
 use crate::pull_push::braces::find_matching_brace;
+use crate::pull_push::modifiers::typescript_declaration_start;
 use crate::pull_push::types::{ClassDecl, MemberDecl, MemberKind};
 use std::path::Path;
 
@@ -122,36 +123,47 @@ fn parse_ts_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
             continue;
         }
 
-        let is_override = trimmed.contains("override ") || trimmed.starts_with("override\t");
+        let member_start = line_offsets[i];
+        let rest = &body[member_start - body_offset..];
+        let Some((declaration_start, is_override)) = typescript_declaration_start(rest) else {
+            i += 1;
+            continue;
+        };
+        let declaration = &rest[declaration_start..];
+        let declaration_line = declaration.lines().next().unwrap_or("").trim_end();
 
         // Check for method: identifier followed by `(` and containing `{`
-        if let Some(open_paren) = trimmed.find('(') {
-            let before_paren = trimmed[..open_paren].trim();
+        if let Some(open_paren) = declaration_line.find('(') {
+            let before_paren = declaration_line[..open_paren].trim();
             let ident = before_paren.split_whitespace().last().unwrap_or("");
             if !ident.is_empty()
                 && ident.chars().all(|c| c.is_alphanumeric() || c == '_')
-                && ident != "constructor"
                 && ident != "if"
                 && ident != "while"
                 && ident != "for"
             {
                 // Find matching brace for method body
-                let member_start = line_offsets[i];
-                if let Some(open_brace_in_body) = body[line_offsets[i] - body_offset..].find('{') {
-                    let global_open = line_offsets[i] + open_brace_in_body;
+                let parameters_end =
+                    typescript_parameters_end(rest, declaration_start + open_paren);
+                if let Some(parameters_end) = parameters_end
+                    && let Some(open_brace_in_body) = rest[parameters_end + 1..].find('{')
+                {
+                    let global_open = member_start + parameters_end + 1 + open_brace_in_body;
                     if let Some(global_close) = find_matching_brace(body, global_open - body_offset)
                     {
                         let member_end = body_offset + global_close + 1;
                         let full_text =
                             body[member_start - body_offset..member_end - body_offset].to_string();
-                        members.push(MemberDecl {
-                            name: ident.to_string(),
-                            kind: MemberKind::Method,
-                            is_override,
-                            start_offset: member_start,
-                            end_offset: member_end,
-                            full_text,
-                        });
+                        if ident != "constructor" {
+                            members.push(MemberDecl {
+                                name: ident.to_string(),
+                                kind: MemberKind::Method,
+                                is_override,
+                                start_offset: member_start,
+                                end_offset: member_end,
+                                full_text,
+                            });
+                        }
                         // Skip past method
                         while i < lines.len() && line_offsets[i] < member_end {
                             i += 1;
@@ -163,7 +175,7 @@ fn parse_ts_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
         }
 
         // Check for property / field: ends with `;`
-        if let Some(before_semi_raw) = trimmed.strip_suffix(';') {
+        if let Some(before_semi_raw) = declaration_line.strip_suffix(';') {
             let before_semi = before_semi_raw.trim();
             let before_assign = before_semi.split('=').next().unwrap_or(before_semi).trim();
             let before_colon = before_assign
@@ -177,8 +189,7 @@ fn parse_ts_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                 && ident != "return"
                 && ident != "break"
             {
-                let member_start = line_offsets[i];
-                let member_end = line_offsets[i] + line.len();
+                let member_end = member_start + declaration_start + declaration_line.len();
                 let full_text =
                     body[member_start - body_offset..member_end - body_offset].to_string();
                 members.push(MemberDecl {
@@ -189,6 +200,12 @@ fn parse_ts_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
                     end_offset: member_end,
                     full_text,
                 });
+                // A decorator may start several lines before the field declaration.
+                // Consume its complete range so the field is never recorded twice.
+                while i < lines.len() && line_offsets[i] < member_end {
+                    i += 1;
+                }
+                continue;
             }
         }
 
@@ -196,4 +213,33 @@ fn parse_ts_members(body: &str, body_offset: usize) -> Vec<MemberDecl> {
     }
 
     members
+}
+
+/// Balance parameter parentheses using the TypeScript lexer, including backtick
+/// text and executable template interpolations, rather than counting literal bytes.
+fn typescript_parameters_end(text: &str, open: usize) -> Option<usize> {
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let code = crate::caller_migration::lexical_code_mask(
+        text,
+        crate::parameter_object::Language::TypeScript,
+    );
+    let mut depth = 0usize;
+    for (offset, byte) in text.bytes().enumerate().skip(open) {
+        if !code[offset] {
+            continue;
+        }
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

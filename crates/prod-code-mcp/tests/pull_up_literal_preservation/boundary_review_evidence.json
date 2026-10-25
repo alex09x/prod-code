@@ -1,0 +1,383 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1327",
+  "pinned_base_sha": "3c1c299ef8ad765694288ee5fe1acb6cf11494bb",
+  "repaired_candidate_sha": "f52f8a064f6ccf87dfefb38ecea32b5a23cab047",
+  "node_kind": "Linux x86_64 build node",
+  "controls": {
+    "swift": null,
+    "swiftc": null,
+    "cpp": "c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+    "typescript": "Version 7.0.2",
+    "node": "v22.23.2"
+  },
+  "retained_evidence_sha256": {
+    "evidence.json": "45316949cf0414c98bef0601c001e783a031dced66148f54a3b832698436adc2",
+    "review_evidence.json": "1c4973989c27e62855b5f3d3e1b12d3a909178b97e116d6e2fcb3c3d9beef5fe",
+    "swift_review_evidence.json": "a9da6ed00c57a87ffcec2743d3670525f101a6cdab772f5eb6438608bc315d7c",
+    "shared_consumer_evidence.json": "ddaa7e75aba5d87651b89a839d7fefd68c5794c9cc72134b63181119f5c65fa3"
+  },
+  "checks": [
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation boundary_regressions:: -- --nocapture",
+      "exit": 101,
+      "result": "Before production edits: 0 passed, 4 failed, 19 filtered out. Three public inheritance transformations produced compiler-invalid output despite successful original compiler/runtime controls. Pull-up reported member speak missing in Dog."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/pull_push/cpp_modifiers.rs crates/prod-code-mcp/src/pull_push/languages/cpp.rs crates/prod-code-mcp/src/pull_push/languages/typescript.rs crates/prod-code-mcp/tests/pull_up_literal_preservation.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/shared_consumers.rs crates/prod-code-mcp/tests/pull_up_literal_preservation/boundary_regressions.rs",
+      "exit": 0,
+      "result": "One scoped formatting invocation after the coherent repair."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --lib --test pull_up_literal_preservation -- -D warnings",
+      "exit": 101,
+      "result": "103 library diagnostics across 49 untouched files, matching the retained candidate evidence. No diagnostic file overlaps the repair. Test-target lint blocked by library failure. No unrelated fixes or lint rerun.",
+      "diagnostic_files": [
+        "crates/prod-code-mcp/src/config/mod.rs",
+        "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+        "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+        "crates/prod-code-mcp/src/dossier/assertions/cpp.rs",
+        "crates/prod-code-mcp/src/dossier/assertions/go.rs",
+        "crates/prod-code-mcp/src/dossier/assertions/python.rs",
+        "crates/prod-code-mcp/src/dossier/locations.rs",
+        "crates/prod-code-mcp/src/encapsulate_field/polyglot/lsp.rs",
+        "crates/prod-code-mcp/src/encapsulate_field/polyglot/mod.rs",
+        "crates/prod-code-mcp/src/extract_delegate/polyglot/execute.rs",
+        "crates/prod-code-mcp/src/extract_function/binding.rs",
+        "crates/prod-code-mcp/src/extract_function/duplicates/search.rs",
+        "crates/prod-code-mcp/src/fixture/builder/lexer.rs",
+        "crates/prod-code-mcp/src/fixture/polyglot/parsers_go_ts.rs",
+        "crates/prod-code-mcp/src/generify/polyglot.rs",
+        "crates/prod-code-mcp/src/impact/signatures.rs",
+        "crates/prod-code-mcp/src/impact/test_cmd.rs",
+        "crates/prod-code-mcp/src/move_item/item.rs",
+        "crates/prod-code-mcp/src/parameter_object/binding.rs",
+        "crates/prod-code-mcp/src/parameter_object/polyglot_callers.rs",
+        "crates/prod-code-mcp/src/prune/execute.rs",
+        "crates/prod-code-mcp/src/remote_fs/mod.rs",
+        "crates/prod-code-mcp/src/replace_constructor/sites/helpers.rs",
+        "crates/prod-code-mcp/src/replace_inheritance/languages/cpp.rs",
+        "crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs",
+        "crates/prod-code-mcp/src/server/failover.rs",
+        "crates/prod-code-mcp/src/session/pool.rs",
+        "crates/prod-code-mcp/src/signature/call_sites.rs",
+        "crates/prod-code-mcp/src/signature/modifiers.rs",
+        "crates/prod-code-mcp/src/signature_go/reorder_verify.rs",
+        "crates/prod-code-mcp/src/supertypes/rust.rs",
+        "crates/prod-code-mcp/src/sync/cache.rs",
+        "crates/prod-code-mcp/src/sync/read.rs",
+        "crates/prod-code-mcp/src/sync/scan.rs",
+        "crates/prod-code-mcp/src/to_method/helpers.rs",
+        "crates/prod-code-mcp/src/tools/execution.rs",
+        "crates/prod-code-mcp/src/tools/symbols/alias.rs",
+        "crates/prod-code-mcp/src/tools/symbols/resolve.rs",
+        "crates/prod-code-mcp/src/tools/symbols/type_members.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/restructure.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+        "crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs",
+        "crates/prod-code-mcp/src/wrap_return/utils.rs",
+        "crates/prod-code-mcp/src/xml_svg/lexer.rs"
+      ]
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 101,
+      "result": "22 passed, 1 failed. The added third C++ suffix control incorrectly required a non-constexpr std::string::empty() call in a C++17 noexcept condition. Both original and transformed control compilation failed. Corrected the fixture to an outer noexcept(noexcept(...)) expression; production code unchanged."
+    },
+    {
+      "command": "prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test pull_up_literal_preservation",
+      "exit": 0,
+      "result": "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.90s",
+      "new_control_pairs": 8
+    }
+  ],
+  "limits": [
+    "Swift and swiftc are absent on the acceptance node (shutil.which returned null); no installation attempted. Retained Swift coverage asserts source only.",
+    "The scripted pull-up gateway supplies transport diagnostics only. Independent C++17 / TypeScript compiler and Node/runtime controls verify these sanitized programs.",
+    "The added cases target the three reported member-boundary regressions. They do not establish universal language parsing support. The existing unsupported C++ header refusal remains intentional.",
+    "No production changes to literal-safe comparison, moved-text reindentation, analyzer write refusal, Python pass handling or C++ access selection. The final target includes all 19 retained tests.",
+    "No dependencies, installs, other-worktree changes, publication, messages, delegation, background providers or infrastructure actions. No commit created; caller owns the result commit.",
+    "One final required target was repeated only after correcting its failing test fixture; earlier successful production and runtime evidence is retained. Formatting and lint were invoked once."
+  ],
+  "navigation_limits": [
+    {
+      "command": "prod-code def --remote <build-node> --symbol literal_mask --symbol strip_cpp_suffix --symbol attribute_end --symbol typescript_declaration_start",
+      "result": "literal_mask lookup timed out after its 15.0s batch share; known lexical_code_mask definition lookup succeeded subsequently."
+    },
+    {
+      "command": "prod-code def --remote <build-node> --symbol prod_code_mcp::parameter_object::language::Language --symbol prod_code_mcp::caller_migration::mask::scan_code_into_mask",
+      "result": "Language lookup timed out after its 30.0s batch share; scan_code_into_mask returned its definition. No cluster or infrastructure action."
+    },
+    {
+      "command": "sed -n '1,160p' crates/prod-code-mcp/src/pull_push/languages.rs",
+      "result": "No such file or directory. Subsequently read the confirmed crates/prod-code-mcp/src/pull_push/languages/mod.rs file."
+    },
+    {
+      "command": "rg --files crates/prod-code-mcp/src/pull_push crates/prod-code-mcp/tests/pull_up_literal_preservation",
+      "result": "Blocked by source-discovery hook; continued with explicit known paths and prod-code definitions. No files changed by this command."
+    }
+  ],
+  "before_production_edit_records": [
+    {
+      "after_control": {
+        "compiler_exit": 2,
+        "compiler_stderr": "",
+        "compiler_stdout": "pets.ts(10,38): error TS1068: Unexpected token. A constructor, method, accessor, or property was expected.\npets.ts(11,38): error TS1005: ';' expected.\npets.ts(13,5): error TS1128: Declaration or statement expected.\npets.ts(14,1): error TS1128: Declaration or statement expected.\n"
+      },
+      "after_sha256": "f393a2d7432467bc2df2b943d0275a89d8b570f59aca6cd412d2bb00910b1133",
+      "after_source": "function memo(_target: any, _key: string) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    value: string = \"base\";\n    otherValue: string = \"base\";\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n    @memo\n    value: string = \"override final\";({ override: `override ( final`, nested: [(\"override\")] })\n    otherValue: string = \"other\";r() { return 1; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().value, new Dog().otherValue, new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"other\",1]\n"
+      },
+      "before_sha256": "83a65a3c167b2d51e1de3a7169c91e68a1cdb098b1efeddb73f4f69634a6db28",
+      "before_source": "function memo(_target: any, _key: string) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    value: string = \"base\";\n    otherValue: string = \"base\";\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n    @memo\n    override value: string = \"override final\";\n    @tag({ override: `override ( final`, nested: [(\"override\")] })\n    override otherValue: string = \"other\";\n    other() { return 1; }\n}\nconsole.log(JSON.stringify([new Dog().value, new Dog().otherValue, new Dog().other()]));\n",
+      "label": "typescript_decorated_fields",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 1,
+        "compiler_stderr": "pets.cpp:14:1: error: ‘Dog::~Dog()’ marked ‘override’, but does not override\n   14 | ~Dog() /* ; */ override {}\n      | ^\npets.cpp:15:13: error: ‘std::string Dog::speak()’ marked ‘override’, but does not override\n   15 | std::string speak() /* ; */ override { return \"override final\"; }\n      |             ^~~~~\n",
+        "compiler_stdout": ""
+      },
+      "after_sha256": "31bc5a101bd7d4b5ecf95f3a8b5a9dfe596d16c39decb0f1b787d4282c73cc24",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n~Dog() /* ; */ override {}\nstd::string speak() /* ; */ override { return \"override final\"; }\nint other() { return 7; }\n\n\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final7"
+      },
+      "before_sha256": "2cbfa379ba7908f89111cd01d3af6f3af870c8d632927fb29d5c32fa36a844ff",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n~Dog() /* ; */ override {}\nstd::string speak() /* ; */ override { return \"override final\"; }\nint other() { return 7; }\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "label": "cpp_suffix_delimiters",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 2,
+        "compiler_stderr": "",
+        "compiler_stdout": "pets.ts(6,10): error TS4112: This member cannot have an 'override' modifier because its containing class 'Dog' does not extend another class.\n"
+      },
+      "after_sha256": "56ae58ef4bec2d61ed87739f934d4278b6864b11e0deca3f5b85206ef991316d",
+      "after_source": "class Pet {\n    speak(value = `(`) { return value; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\noverride speak(value = `(`) { return value; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"(\",\"override final\"]\n"
+      },
+      "before_sha256": "b84e267eb44bec96c30725e011d4a038757537406c9e3c5c2ef2f4ad969708a7",
+      "before_source": "class Pet {\n    speak(value = `(`) { return value; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\noverride speak(value = `(`) { return value; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_template_parameters",
+      "language": "typescript"
+    }
+  ],
+  "after_repair_records": [
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final7"
+      },
+      "after_sha256": "c038d0555ce4461deda02a444ea67cf14e1375a1a09f8bc93c89c574ac70072e",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n~Dog() /* ; */ {}\nstd::string speak() /* ; */ { return \"override final\"; }\nint other() { return 7; }\n\n\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final7"
+      },
+      "before_sha256": "2cbfa379ba7908f89111cd01d3af6f3af870c8d632927fb29d5c32fa36a844ff",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n~Dog() /* ; */ override {}\nstd::string speak() /* ; */ override { return \"override final\"; }\nint other() { return 7; }\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "label": "cpp_suffix_delimiters",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"other\",1]\n"
+      },
+      "after_sha256": "75c54e4185bdd8031ce676a7725b2bce452a9ecf945bfcf47ccfffb452ca4b10",
+      "after_source": "function memo(_target: any, _key: string) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    value: string = \"base\";\n    otherValue: string = \"base\";\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\n    @memo\n    value: string = \"override final\";\n    @tag({ override: `override ( final`, nested: [(\"override\")] })\n    otherValue: string = \"other\";\n    other() { return 1; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().value, new Dog().otherValue, new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final\",\"other\",1]\n"
+      },
+      "before_sha256": "83a65a3c167b2d51e1de3a7169c91e68a1cdb098b1efeddb73f4f69634a6db28",
+      "before_source": "function memo(_target: any, _key: string) {}\nfunction tag(_value: any) { return memo; }\nclass Pet {\n    value: string = \"base\";\n    otherValue: string = \"base\";\n}\nclass Dog extends Pet {\n    constructor() { super(); }\n    @memo\n    override value: string = \"override final\";\n    @tag({ override: `override ( final`, nested: [(\"override\")] })\n    override otherValue: string = \"other\";\n    other() { return 1; }\n}\nconsole.log(JSON.stringify([new Dog().value, new Dog().otherValue, new Dog().other()]));\n",
+      "label": "typescript_decorated_fields",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"(\",\"override final\"]\n"
+      },
+      "after_sha256": "804e9eff55a8a54bb60bf7c2ab213c0833b0fec51c35c73ff09a7e479d0623c5",
+      "after_source": "class Pet {\n    speak(value = `(`) { return value; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\nspeak(value = `(`) { return value; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"(\",\"override final\"]\n"
+      },
+      "before_sha256": "b84e267eb44bec96c30725e011d4a038757537406c9e3c5c2ef2f4ad969708a7",
+      "before_source": "class Pet {\n    speak(value = `(`) { return value; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\noverride speak(value = `(`) { return value; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_template_parameters",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"(\",\"(\",\")\"]\n"
+      },
+      "after_sha256": "ac47d1a314f466ec6fca253e3cf4d4439840935756a971ecf787238abef87197",
+      "after_source": "interface Pet { speak(value?: string): string; }\nclass Pet {\n    speak(value = `(`) { return value; }\n}\nclass Dog extends Pet {\n}\nclass Copy extends Pet {\n}\nclass Cat extends Pet {\n    override speak(value = `)`) { return value; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"(\",\"(\",\")\"]\n"
+      },
+      "before_sha256": "c86621c6169f2ee268e3a4dd08a60fba71f405fb7191b4d001a99a22b5dcfd78",
+      "before_source": "interface Pet { speak(value?: string): string; }\nclass Pet {}\nclass Dog extends Pet {\n    override speak(value = `(`) { return value; }\n}\nclass Copy extends Pet {\n    override speak(value = `(`) { return value; }\n}\nclass Cat extends Pet {\n    override speak(value = `)`) { return value; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Copy().speak(), new Cat().speak()]));\n",
+      "label": "typescript_template_parameter_pull",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final7"
+      },
+      "after_sha256": "83d843e0dd890ec1d1151792ad4593611fca32da163bd4e62b915e5d2f88b54f",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n~Dog() /* ; */ {}\nstd::string speak() /* { ; */ noexcept(sizeof(\";{override final\") > 0) { return \"override final\"; }\nint other() { return 7; }\n\n\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final7"
+      },
+      "before_sha256": "768681ef8fc72dda36627b2b48addfe4d54ed30f165d570955fd75b3740904db",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n~Dog() /* ; */ override {}\nstd::string speak() /* { ; */ noexcept(sizeof(\";{override final\") > 0) override final { return \"override final\"; }\nint other() { return 7; }\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "label": "cpp_suffix_delimiters",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final ; { (\",\"override final\"]\n"
+      },
+      "after_sha256": "bba1d2c2b65bddbc04655e21a52c6666eca2a93b109335fe736a5a8a5a4a7c2c",
+      "after_source": "class Pet {\n    speak(value = `override final ; { (`) { return value; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\nspeak(value = `override final ; { (`) { return value; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"override final ; { (\",\"override final\"]\n"
+      },
+      "before_sha256": "64a823507f84d4f64f0ff2c867cfda90ff9d810d4c5f820605866b5f7574db82",
+      "before_source": "class Pet {\n    speak(value = `override final ; { (`) { return value; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\noverride speak(value = `override final ; { (`) { return value; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_template_parameters",
+      "language": "typescript"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final7"
+      },
+      "after_sha256": "307b59c74ac16555b76d4b43234da515e6159ab126edb0c9c68172439f86a159",
+      "after_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog {\n    private:\n    Pet pet;\n    private:\npublic:\n    Dog() {}\n~Dog() /* ; */ {}\nstd::string speak() noexcept(noexcept(std::string{\";{override final\"})) { return \"override final\"; }\nint other() { return 7; }\n\n\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "override final7"
+      },
+      "before_sha256": "6f311f43635dcfd236d1b77ec4ffc74df619727bf0ae253c67257da450aaf0c2",
+      "before_source": "#include <iostream>\n#include <string>\nclass Pet {\npublic:\n    virtual ~Pet() {}\nvirtual std::string speak() { return \"base\"; }\n};\nclass Dog : public Pet {\npublic:\n    Dog() {}\n~Dog() /* ; */ override {}\nstd::string speak() noexcept(noexcept(std::string{\";{override final\"})) override { return \"override final\"; }\nint other() { return 7; }\n};\nint main() { std::cout << Dog().speak() << Dog().other(); }\n",
+      "label": "cpp_suffix_delimiters",
+      "language": "cpp"
+    },
+    {
+      "after_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"(7\",\"override final\"]\n"
+      },
+      "after_sha256": "8ef582f601ab052ff375a1907bab1c6c8d7ee2c9efd418d9f85cdcc320ac1f04",
+      "after_source": "class Pet {\n    speak(value = `(${(() => 7)()}`) { return value; }\n}\nclass Dog {\n    constructor() { this.pet = new Pet(); }\nspeak(value = `(${(() => 7)()}`) { return value; }\nother() { return \"override final\"; }\n\n    private pet: Pet;\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "before_control": {
+        "compiler_exit": 0,
+        "compiler_stderr": "",
+        "compiler_stdout": "",
+        "runtime_exit": 0,
+        "stderr": "",
+        "stdout": "[\"(7\",\"override final\"]\n"
+      },
+      "before_sha256": "2fa7df4be12c1078f5ac60a139447a5bbbb24424f6a51ebf112097ce2428e545",
+      "before_source": "class Pet {\n    speak(value = `(${(() => 7)()}`) { return value; }\n}\nclass Dog extends Pet {\n    constructor() { super(); }\noverride speak(value = `(${(() => 7)()}`) { return value; }\nother() { return \"override final\"; }\n}\nconsole.log(JSON.stringify([new Dog().speak(), new Dog().other()]));\n",
+      "label": "typescript_template_parameters",
+      "language": "typescript"
+    }
+  ]
+}

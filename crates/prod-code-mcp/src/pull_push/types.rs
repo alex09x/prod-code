@@ -101,4 +101,6 @@ pub enum MemberKind {
     Field,
     Constant,
     AssociatedType,
+    /// A named declaration whose end is unproven; its span may contain other members.
+    Opaque,
 }

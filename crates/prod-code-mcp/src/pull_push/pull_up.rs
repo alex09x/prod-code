@@ -8,10 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::format::{
-    adjust_indentation, cpp_member_access, replace_python_pass, strip_override_modifiers,
-};
+use super::format::{adjust_pulled_member, cpp_member_access, replace_python_pass};
 use super::languages::parse_classes_in_text;
+use super::modifiers::strip_moved_member_modifiers;
 use super::sibling::clean_siblings_impl;
 use super::types::HierarchyRefactorResult;
 use super::workspace::find_class_in_workspace;
@@ -108,7 +107,7 @@ pub async fn pull_up_impl(
     // Prepare moved members text with stripped override modifiers and adjusted indentation
     let mut prepared_members = Vec::new();
     for m in &member_decls_to_move {
-        let stripped = strip_override_modifiers(&m.full_text, &language);
+        let stripped = strip_moved_member_modifiers(m, &language)?;
         let source = if language == "cpp" {
             format!(
                 "{}:\n{stripped}",
@@ -117,7 +116,7 @@ pub async fn pull_up_impl(
         } else {
             stripped
         };
-        let adjusted = adjust_indentation(&source, &super_class.indent);
+        let adjusted = adjust_pulled_member(&source, &super_class.indent, &language);
         prepared_members.push(adjusted);
     }
 
