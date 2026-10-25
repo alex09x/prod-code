@@ -48,6 +48,9 @@ pub(crate) async fn janitor(
     .await;
 }
 
+/// The probe each sweep reads the host's memory and disk through.
+type HostProbe = Box<dyn Fn(&Path) -> prod_code_protocol::HostResources + Send + Sync>;
+
 async fn janitor_with_probe(
     state: Arc<ServerState>,
     idle_evict_secs: u64,
@@ -55,7 +58,30 @@ async fn janitor_with_probe(
     prune_workspace_secs: u64,
     prune_below_free_percent: u64,
     period: Duration,
-    host_resources: impl Fn(&Path) -> prod_code_protocol::HostResources,
+    host_resources: impl Fn(&Path) -> prod_code_protocol::HostResources + Send + Sync + 'static,
+) {
+    // The loop takes a boxed probe so it is compiled once: a generic loop would be one copy per
+    // probe type, and the production copy would never run under the tests.
+    janitor_loop(
+        state,
+        idle_evict_secs,
+        prune_worktree_secs,
+        prune_workspace_secs,
+        prune_below_free_percent,
+        period,
+        Box::new(host_resources),
+    )
+    .await;
+}
+
+async fn janitor_loop(
+    state: Arc<ServerState>,
+    idle_evict_secs: u64,
+    prune_worktree_secs: u64,
+    prune_workspace_secs: u64,
+    prune_below_free_percent: u64,
+    period: Duration,
+    host_resources: HostProbe,
 ) {
     let mut ticker = tokio::time::interval(period);
     ticker.tick().await;

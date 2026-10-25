@@ -99,7 +99,28 @@ impl BackendWorker {
             "go" => "gopls",
             other => anyhow::bail!("no managed backend language server for engine `{other}`"),
         };
+        Self::spawn_command(
+            workspace_root,
+            engine,
+            binary,
+            &[],
+            write_timeout,
+            health_probe_interval,
+            health_response_timeout,
+        )
+        .await
+    }
 
+    /// Spawns `binary` with `args` as the language server of `engine` and initializes it.
+    pub(crate) async fn spawn_command(
+        workspace_root: &Path,
+        engine: &str,
+        binary: &str,
+        args: &[String],
+        write_timeout: Duration,
+        health_probe_interval: Duration,
+        health_response_timeout: Duration,
+    ) -> Result<Self> {
         tracing::info!(
             engine,
             binary,
@@ -108,6 +129,7 @@ impl BackendWorker {
         );
 
         let mut cmd = Command::new(binary);
+        cmd.args(args);
         cmd.kill_on_drop(true);
         cmd.current_dir(workspace_root)
             .stdin(Stdio::piped())

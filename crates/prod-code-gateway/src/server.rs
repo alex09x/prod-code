@@ -15,6 +15,15 @@ mod tests;
 
 /// Runs the gateway: bind, serve, and return when a signal says to stop.
 pub async fn run(cli: ServerCli) -> Result<()> {
+    run_announcing(cli, None).await
+}
+
+/// [`run`], telling `bound` the address the TCP listener took once every listener is accepting
+/// and the stop signals are handled.
+pub(crate) async fn run_announcing(
+    cli: ServerCli,
+    bound_tx: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+) -> Result<()> {
     let auth_token = prod_code_protocol::transport::try_auth_token()?;
     ensure_blocking_stdio();
     prefer_rustup_toolchain();
@@ -149,7 +158,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     let advertise = cli
         .advertise
         .clone()
-        .unwrap_or_else(|| detect_advertise_addr(cli.bind, peers.first().map(String::as_str)));
+        .unwrap_or_else(|| detect_advertise_addr(bound, peers.first().map(String::as_str)));
     *state.advertise.write().await = advertise.clone();
     state.metrics.set_node(&advertise);
     {
@@ -272,6 +281,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 
     let handshake_limiter = Arc::new(tokio::sync::Semaphore::new(128));
     let tls_acceptor = tls_acceptor.map(Arc::new);
+    if let Some(tx) = bound_tx {
+        let _ = tx.send(bound);
+    }
 
     loop {
         tokio::select! {
@@ -327,6 +339,16 @@ pub async fn run(cli: ServerCli) -> Result<()> {
                                     let mut s = socket;
                                     let _ = s.write_all(b"HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nUpgrade to TLS/SSL required: port 9400 enforces encrypted transport.\r\n").await;
                                     let _ = s.flush().await;
+                                    // Close our side, then drain what the client already sent:
+                                    // closing with unread input makes the kernel reset the
+                                    // connection, and the client never sees the 426.
+                                    let _ = s.shutdown().await;
+                                    let mut sink = [0u8; 1024];
+                                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                                        use tokio::io::AsyncReadExt;
+                                        while matches!(s.read(&mut sink).await, Ok(n) if n > 0) {}
+                                    })
+                                    .await;
                                     return;
                                 }
                                 AnyStream::Tcp(socket)

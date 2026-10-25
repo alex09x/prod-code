@@ -10,6 +10,8 @@
 
 use super::*;
 
+mod sweeps;
+
 #[tokio::test]
 async fn pressure_redirects_active_sessions_to_a_compatible_peer_including_swift() {
     crate::test_cache_support::isolated!();

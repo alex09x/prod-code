@@ -14,6 +14,21 @@ use std::path::Path;
 
 /// A framed local server with explicit answers and an ordered notification transcript.
 pub(crate) async fn server(root: &Path, responses: Value) -> GenericLspEngine {
+    GenericLspEngine::spawn(
+        root,
+        GenericLspConfig {
+            command: "python3".into(),
+            args: scripted_server_args(root, responses),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// The arguments that run the scripted server under `python3`: its script and its answers,
+/// written under `root`. The notifications it received are answered to `test/events`.
+pub(crate) fn scripted_server_args(root: &Path, responses: Value) -> Vec<String> {
     let script = root.join("scripted-server.py");
     let answers = root.join("answers.json");
     std::fs::write(&answers, responses.to_string()).unwrap();
@@ -42,17 +57,8 @@ while True:
     else: answer = answers.get(method, {'result':None})
     send(dict({'jsonrpc':'2.0','id':msg['id']}, **answer))
 "#).unwrap();
-    GenericLspEngine::spawn(
-        root,
-        GenericLspConfig {
-            command: "python3".into(),
-            args: vec![
-                script.to_string_lossy().into_owned(),
-                answers.to_string_lossy().into_owned(),
-            ],
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap()
+    vec![
+        script.to_string_lossy().into_owned(),
+        answers.to_string_lossy().into_owned(),
+    ]
 }
