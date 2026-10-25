@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **F# and NASM Sources in Non-Git Workspaces** (`crates/prod-code-mcp`, #1275):
+  Filesystem scanning and sync planning now include `.fs`, `.fsi`, `.fsx`, and `.nasm` sources, including uppercase suffixes, alongside their project manifests. The relevance watermark version is advanced so older sync state cannot retain the omissions. Unchanged warm plans and existing artifact/data exclusions are preserved.
 - **A Rebalance Redirect Right After the Handshake Is No Longer Lost** (`crates/prod-code-gateway`):
   The session subscribed to rebalance redirects only once its loop started. A redirect issued between the handshake response and the first loop turn reached nobody, so `trigger_rebalance` reported 0 sessions. Under the loaded coverage run this failed `editor_session_receives_rebalance_redirect`. The subscription is now taken before the handshake response is sent. The live cluster test now retries a refused connect until its deadline, instead of failing on the first try while the second gateway starts. Under parallel load, each test passes 10 times out of 10 (#1264).
 
