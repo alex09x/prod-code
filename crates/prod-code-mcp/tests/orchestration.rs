@@ -36,6 +36,9 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_util::codec::Framed;
 
+#[path = "introduce_variable_preservation/analyzer.rs"]
+mod introduce_variable_analyzer;
+
 /// The checkout a test drives a tool against.
 fn workspace() -> Workspace {
     Workspace::empty()
@@ -3672,11 +3675,33 @@ const AREA: &str = "pub fn area(w: u32, h: u32) -> u32 {\n    let a = (w + 1) * 
 async fn a_variable_is_introduced_for_every_occurrence() {
     let ws = workspace();
     let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"introduce_fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    );
     let lib = write(&ws, "src/lib.rs", AREA);
     commit(&ws);
+    let analyzers = std::sync::Mutex::new(Vec::new());
     let clean = || {
-        scripted_gateway(Arc::new(move |method, _params| match method {
+        let analyzer = Arc::new(std::sync::Mutex::new(
+            introduce_variable_analyzer::Analyzer::start(
+                &lib,
+                &std::fs::read_to_string(&lib).unwrap(),
+            ),
+        ));
+        let connection = Arc::downgrade(&analyzer);
+        analyzers.lock().unwrap().push(analyzer.clone());
+        scripted_gateway(Arc::new(move |method, params| match method {
             "textDocument/diagnostic" => answers::no_diagnostics(),
+            "rust-analyzer/viewSyntaxTree" | "textDocument/definition" | "textDocument/hover" => {
+                connection
+                    .upgrade()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .request(method, params.clone())
+            }
             _ => serde_json::Value::Null,
         }))
     };
@@ -3746,15 +3771,15 @@ async fn a_variable_is_introduced_for_every_occurrence() {
             .await
         }
     };
-    let twice = "pub fn twice(s: &mut S) -> u32 {\n    let a = s.x + 1;\n    a + (s.x + 1)\n}\n";
+    let twice = "pub fn twice(s: &mut S) -> u32 {\n    let a = s.x + 1;\n    a + (s.x + 1)\n}\nstruct S { x: u32 }\nimpl S { fn bump(&mut self) { self.x += 1; } }\n";
     at(twice, 2, 13, 20).await.expect("introduced");
     assert_eq!(
         ws.read("src/lib.rs"),
-        "pub fn twice(s: &mut S) -> u32 {\n    let v = s.x + 1;\n    let a = v;\n    a + v\n}\n"
+        "pub fn twice(s: &mut S) -> u32 {\n    let v = s.x + 1;\n    let a = v;\n    a + v\n}\nstruct S { x: u32 }\nimpl S { fn bump(&mut self) { self.x += 1; } }\n"
     );
     let bumped = twice.replace("    a + (", "    s.bump();\n    a + (");
     let err = at(&bumped, 2, 13, 20).await.expect_err("refused");
-    assert!(format!("{err:#}").contains("`s` changes"), "{err:#}");
+    assert!(format!("{err:#}").contains("METHOD_CALL_EXPR"), "{err:#}");
     let ratio = "pub fn ratio(a: u32, b: u32) -> u32 {\n    let mut r = 0;\n    if b != 0 {\n        r += a / b;\n    }\n    if b > 1 {\n        r += a / b;\n    }\n    r\n}\n";
     let err = at(ratio, 4, 14, 19).await.expect_err("refused");
     assert!(format!("{err:#}").contains("`a / b` can panic"), "{err:#}");
@@ -3763,20 +3788,22 @@ async fn a_variable_is_introduced_for_every_occurrence() {
     for (text, why) in [
         (
             AREA.replace("(w + 1)", "(w.pow(2))"),
-            "cannot be evaluated once",
+            "cannot prove operator purity",
         ),
         (
             AREA.replace("    let b", "    let w = 3;\n    let b"),
-            "`w` changes",
+            "ambiguous binding identity",
         ),
         (
             "pub fn area(mut w: u32, h: u32) -> u32 {\n    let a = (w + 1) * (h + 1);\n    while w < h {\n        let _ = (w + 1);\n        w += 2;\n    }\n    a\n}\n"
                 .to_string(),
-            "`w` changes",
+            "cannot prove purity of this operator",
         ),
     ] {
         std::fs::write(&lib, &text).unwrap();
-        let err = introduce(clean().await, "w1")
+        let end_col = if text.contains("w.pow(2)") { 23 } else { 20 };
+        let err = prod_code_mcp::introduce_variable::introduce_variable(
+            clean().await, &root, &lib, (2, 13), (2, end_col), "w1", true, false)
             .await
             .expect_err("refused");
         assert!(format!("{err:#}").contains(why), "{err:#}");
@@ -3786,7 +3813,12 @@ async fn a_variable_is_introduced_for_every_occurrence() {
     // The analyzer's error in the proposal stops the write.
     std::fs::write(&lib, AREA).unwrap();
     let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let rejecting = scripted_gateway(Arc::new(move |method, _params| match method {
+    let analyzer = Arc::new(std::sync::Mutex::new(
+        introduce_variable_analyzer::Analyzer::start(&lib, AREA),
+    ));
+    let connection = Arc::downgrade(&analyzer);
+    analyzers.lock().unwrap().push(analyzer.clone());
+    let rejecting = scripted_gateway(Arc::new(move |method, params| match method {
         "textDocument/diagnostic"
             if pulls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -3798,6 +3830,8 @@ async fn a_variable_is_introduced_for_every_occurrence() {
             { "severity": 1, "code": "E0425", "message": "cannot find value `w1` in this scope",
               "range": { "start": { "line": 4, "character": 12 }, "end": { "line": 4, "character": 14 } } }
         ] }),
+        "rust-analyzer/viewSyntaxTree" | "textDocument/definition" | "textDocument/hover" =>
+            connection.upgrade().unwrap().lock().unwrap().request(method, params.clone()),
         _ => serde_json::Value::Null,
     }))
     .await;

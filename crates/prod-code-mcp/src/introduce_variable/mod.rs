@@ -12,6 +12,10 @@
 //! function becomes `let w1 = w + 1;` once, and `w1` three times.
 
 pub mod analysis;
+mod capture;
+mod planning;
+mod purity;
+mod syntax;
 pub mod transform;
 pub mod types;
 
