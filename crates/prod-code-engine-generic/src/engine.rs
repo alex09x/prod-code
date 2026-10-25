@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result};
 use prod_code_protocol::readiness::Readiness;
+use prod_code_protocol::transport::ScrubSecrets;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -101,6 +102,7 @@ impl GenericLspEngine {
         for (k, v) in &config.env {
             cmd.env(k, v);
         }
+        cmd.scrub_cluster_secrets();
 
         let mut attempts = 0;
         let mut child = loop {

@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
+use prod_code_protocol::transport::ScrubSecrets;
 use prod_code_protocol::{
     AnyStream, PathTranslator, ProdCodeCodec, WireMessage, readiness::Readiness,
 };
@@ -119,6 +120,7 @@ where
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    process.scrub_cluster_secrets();
     #[cfg(unix)]
     {
         process.process_group(0);

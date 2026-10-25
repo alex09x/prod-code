@@ -15,6 +15,8 @@
   The CMake configure probe and the Swift settings wait now take their program and time limit as parameters, so their outcomes can be tested (#1195).
 
 ### Fixed
+- **Language-server Child Environments** (`crates/prod-code-gateway`, `crates/prod-code-engine-generic`, #1269):
+  Editor proxy and generic language servers no longer receive cluster authentication or TLS environment variables, including reserved names supplied through server configuration. Ordinary environment configuration is preserved.
 - **Make Project Source Extensions** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, #1270):
   Root and nested Make projects now recognize uppercase C/C++ source and header suffixes, including `.C`, `.CPP` and `.HPP`, with the same manifest precedence as lowercase sources.
 - **Nested Project Roots and Cargo Membership** (`crates/prod-code-mcp`, #1262):

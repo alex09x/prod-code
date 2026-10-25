@@ -22,6 +22,8 @@ pub(crate) mod reader;
 pub mod registry;
 
 #[cfg(test)]
+mod lsp_secret_spawn;
+#[cfg(test)]
 mod tests;
 
 pub use command::{
