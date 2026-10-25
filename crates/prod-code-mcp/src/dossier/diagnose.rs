@@ -10,14 +10,17 @@
 
 use crate::session::LspSession;
 use crate::verify::{VerifyKind, VerifyReport, run_verify};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
+use tokio::time::{Instant, timeout_at};
 
 use super::assertions::parse_assertion_evidence;
-use super::locations::{git_diff_of, locations_in_with_hint, suggested};
+use super::locations::{git_diff_of, locations_in_with_hint};
 use super::types::{DossierReport, FailureDossier, FailureSite, Suspect};
+use super::verification::test_build_suggestions;
 
 /// Runs the tests (all, or `filter`) and builds a dossier for every failure.
 pub async fn diagnose(
@@ -27,16 +30,30 @@ pub async fn diagnose(
     filter: Option<&str>,
     timeout_secs: u64,
 ) -> Result<DossierReport> {
+    // Zero has the same default meaning as remote execution. Both compiler passes,
+    // including their pre-flight syncs, belong to this one caller budget.
+    let budget = Duration::from_secs(if timeout_secs == 0 {
+        3600
+    } else {
+        timeout_secs
+    });
+    let deadline = Instant::now()
+        .checked_add(budget)
+        .context("failure diagnosis timeout is too large")?;
     let project_hint = hint.or(Some(root));
-    let report: VerifyReport = run_verify(
-        remote,
-        root,
-        project_hint,
-        VerifyKind::Test,
-        filter,
-        timeout_secs,
+    let report: VerifyReport = timeout_at(
+        deadline,
+        run_verify(
+            remote,
+            root,
+            project_hint,
+            VerifyKind::Test,
+            filter,
+            timeout_secs,
+        ),
     )
-    .await?;
+    .await
+    .context("failure diagnosis exceeded its shared verification deadline")??;
     let build_errors: Vec<String> = report
         .diagnostics
         .iter()
@@ -54,21 +71,12 @@ pub async fn diagnose(
         .collect();
     // Tests that do not build fail for a reason the compiler may already know how to fix: its
     // machine-applicable suggestions for the errors are the fixes to suggest.
-    let suggested_fixes = if build_errors.is_empty() || report.language != "rust" {
-        Vec::new()
-    } else {
-        run_verify(
-            remote,
-            root,
-            project_hint,
-            VerifyKind::Check,
-            None,
-            timeout_secs,
-        )
-        .await
-        .map(|check| suggested(&check.fixes))
-        .unwrap_or_default()
-    };
+    let suggested_fixes =
+        if build_errors.is_empty() || report.language != "rust" || report.timed_out {
+            Vec::new()
+        } else {
+            test_build_suggestions(remote, root, project_hint, &report.command, deadline).await
+        };
     let mut dossiers = Vec::new();
     if !report.failures.is_empty() {
         let mut session = LspSession::open(remote, root, None).await.ok();

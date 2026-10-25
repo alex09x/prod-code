@@ -85,11 +85,9 @@ fn parses_rust_assert_eq_with_custom_message() {
 }
 
 #[test]
-fn a_left_line_inside_a_custom_message_is_not_an_operand() {
+fn a_left_line_inside_a_custom_message_is_ambiguous() {
     let output = "thread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed: first line\n  left: from the message\n  left: 7\n right: 8\n\n";
-    let ev = parse_assertion_evidence(output).expect("parsed assertion");
-    assert_eq!(ev.left.as_deref(), Some("7"));
-    assert_eq!(ev.right.as_deref(), Some("8"));
+    assert_eq!(parse_assertion_evidence(output), None);
 }
 
 #[test]

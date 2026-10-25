@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Failure-Dossier Evidence Preservation** (`crates/prod-code-mcp`, #1306):
+  Compiler suggestions retain the failing Rust test command's package and filter selection, and both verification passes share one timeout budget. Rust assertion output with duplicate operand markers is reported as ambiguous instead of truncating a value.
 - **Rust Parameter-Object Preservation** (`crates/prod-code-mcp`, #1293):
   Generated structs retain module ownership and attached attributes, including raw module names, header macros and Unicode trivia. Same-line parameter uses and nested calls are rewritten using original source coordinates, and explicit lifetimes no longer stop later elided references from receiving the generated lifetime.
 - **Rust Predicate Inversion Preservation** (`crates/prod-code-mcp`, #1295):

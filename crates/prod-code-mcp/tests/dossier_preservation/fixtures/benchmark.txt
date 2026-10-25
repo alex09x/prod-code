@@ -1,0 +1,5 @@
+fn main() {
+    fn consume(_: &str) {}
+    let benchmark_value = String::from("benchmark");
+    consume(benchmark_value);
+}
