@@ -13,6 +13,7 @@ mod dirty;
 mod engine_and_cgo;
 mod make_cpp;
 mod membership_and_relevance;
+mod non_git_language_sources;
 mod project_root_regression;
 mod scan;
 mod watermark_and_state;
