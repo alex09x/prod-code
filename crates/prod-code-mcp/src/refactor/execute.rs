@@ -21,9 +21,10 @@ use super::ops::{check_multi_ops, multi_operations};
 /// before it. Returns the relative paths written, moved or deleted, in application order.
 ///
 /// A multi-file refactor that stops halfway is worse than one that never started: the checkout
-/// is inconsistent and nothing says which half landed. Everything is checked before the first
-/// byte moves, and each step records how to take it back, renames of whole directories
-/// included, so a failure puts every path and byte back as it was.
+/// is inconsistent and nothing says which half landed. Paths and independent state are checked
+/// before the first byte moves; state affected by earlier steps is checked when that step runs.
+/// Each mutation records how to take it back, renames of whole directories included, so a
+/// failure puts every path and byte back as it was.
 pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let touched = apply_multi_repository_workspace_edit(&[&canonical_root], edit)?;
@@ -41,8 +42,9 @@ pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec
 /// Applies an LSP `WorkspaceEdit` atomically across multiple repository checkouts (`roots`).
 ///
 /// Every change in `documentChanges` or `changes` is matched to its corresponding repository root.
-/// Pre-flight validation confirms file readability and deletion safety across all repositories
-/// before a single byte moves. A unified transactional journal tracks all mutations across all
+/// Pre-flight validation confirms paths and unaffected file readability and deletion safety.
+/// Checks affected by earlier steps run against the ordered state during execution.
+/// A unified transactional journal tracks all mutations across all
 /// checkouts; if any change fails in any repository, every modified file, created file or directory,
 /// and moved path across all repositories is rolled back to its exact original state.
 ///
