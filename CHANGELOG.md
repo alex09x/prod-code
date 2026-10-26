@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Signature Changes Read Each JS/TS Caller as Its Own Language** (`crates/prod-code-mcp`, #1407):
+  `code_change_signature` on a TypeScript function parses a `.js` caller with JSX, and on a JavaScript function parses a `.ts` caller without it. Before, the declaration's language decided: in a `.js` caller, `<p>ready to` followed by `export {f(1, 2)}` on the next line read as a module export, so only the declaration was reordered and the program printed 21 instead of 12. A `.ts` caller with `(<number>1)` of a JavaScript function was refused.
 - **Flat Outlines Hide Locals on the Function's Own Line** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1403):
   `code_outline` and `prod-code outline` tell a local from a top-level item by line and character when the analyzer answers with a flat symbol list. In `fn f() { let x = 1; } static S: u8 = 0;`, `x` is hidden and counted as a hidden local, while `S` after the function stays listed. Before, a variable on the function's starting line was always shown. Nested answers are unchanged.
 - **Re-Exports Never Outrank Their Definition** (`crates/prod-code-mcp`, #1402):

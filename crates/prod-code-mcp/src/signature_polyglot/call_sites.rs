@@ -36,6 +36,16 @@ pub fn rewrite_file_calls(
     semantic_references: &mut HashSet<(PathBuf, u32, u32)>,
     unmatched: &mut Vec<String>,
 ) -> Option<String> {
+    // A caller is read as its own file's language, not the declaration's: a `.js` caller of a
+    // TypeScript function holds JSX, and a `.ts` caller of a JavaScript one `<T>x` assertions
+    // (#1407).
+    let lang = match (lang, Language::of(src_path)) {
+        (
+            Language::JavaScript | Language::TypeScript,
+            Some(own @ (Language::JavaScript | Language::TypeScript)),
+        ) => own,
+        _ => lang,
+    };
     let jsx = lang == Language::JavaScript
         || matches!(
             src_path.extension().and_then(|s| s.to_str()),
