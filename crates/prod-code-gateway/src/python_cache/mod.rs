@@ -20,7 +20,6 @@ pub mod prune;
 pub mod seed;
 
 pub use detect::{find_venv_stubs, is_python_project};
-pub(crate) use env::is_shared_stub_cache_link;
 pub use env::{
     PYTHON_STUB_CACHE_ENV, ensure_cache_dir, ensure_mypypath_view, python_stub_cache_dir,
     python_stub_cache_env, python_stub_cache_env_for_dir, python_stub_cache_env_for_workspace,

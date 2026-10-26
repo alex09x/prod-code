@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Sync Never Deletes Through a Directory Symlink** (`crates/prod-code-gateway`, #1526):
+  Manifest reconciliation and command snapshots no longer walk a directory symlink on the node copy, the link `copy_tree` keeps as a link. Before, an alias such as `src/again -> .` made `src/again/value.rs` look absent from the client's manifest. The real `src/value.rs` was deleted through it, a link to a parent recursed, and files behind a link pointing outside the copy could be removed. The link itself stays; an ordinary unlisted file is still deleted. The special case for the shared Python stub link is covered by the same rule and was removed.
 - **Generify Reads Prefixed C++ Character Literals** (`crates/prod-code-mcp`, #1552):
   The namespace scan skips `L'}'`, `u'}'`, `U'}'` and `u8'}'` as character literals. Before, such a brace closed `namespace a`, and a header that declares the function was taken as unrelated. Digit separators such as `1'000` and `0xFF'FF` are still read as numbers.
 - **Rename Test Names Only in Real Tests** (`crates/prod-code-mcp`, #1550):

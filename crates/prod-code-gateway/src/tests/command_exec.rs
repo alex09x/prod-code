@@ -113,6 +113,54 @@ fn a_directory_gone_locally_is_gone_from_the_copy() {
     assert!(root.exists(), "the workspace root itself is never removed");
 }
 
+/// A directory symlink on the copy is not walked: the files behind an alias of the source tree
+/// or of a parent are not "absent from the manifest", so reconciliation deletes nothing through
+/// it, and a link back up cannot recurse (#1526). An ordinary unlisted file still goes.
+#[test]
+fn reconciliation_never_deletes_through_a_directory_symlink() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/value.rs"), "v").unwrap();
+    std::fs::write(root.join("src/stale.rs"), "s").unwrap();
+    std::fs::write(outside.path().join("shared.rs"), "x").unwrap();
+    std::os::unix::fs::symlink(".", root.join("src/again")).unwrap();
+    std::os::unix::fs::symlink("..", root.join("src/up")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.join("vendor")).unwrap();
+    let manifest = [FileStamp {
+        relative_path: "src/value.rs".to_string(),
+        size: 1,
+        hash: content_hash(b"v"),
+    }];
+    let (missing, deleted) = reconcile_manifest(root, &manifest);
+    assert!(missing.is_empty(), "{missing:?}");
+    assert_eq!(deleted, ["src/stale.rs"]);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/value.rs")).unwrap(),
+        "v"
+    );
+    assert!(
+        outside.path().join("shared.rs").is_file(),
+        "a link target outside is kept"
+    );
+    for link in ["src/again", "src/up", "vendor"] {
+        assert!(
+            std::fs::symlink_metadata(root.join(link)).is_ok_and(|m| m.file_type().is_symlink()),
+            "{link} stays a link"
+        );
+    }
+    let stamped = snapshot_tree(root);
+    assert!(
+        stamped
+            .stamps
+            .keys()
+            .all(|rel| !rel.starts_with("src/again") && !rel.starts_with("vendor")),
+        "{:?}",
+        stamped.stamps.keys().collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn test_changed_since_reports_new_changed_and_deleted() {
     let temp = tempfile::tempdir().unwrap();
