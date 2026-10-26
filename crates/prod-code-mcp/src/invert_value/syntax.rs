@@ -27,25 +27,7 @@ pub(crate) fn enclosing_open_brace(text: &str, at: usize) -> Option<usize> {
 /// The derives on the item whose header starts at `header`: the words inside every
 /// `#[derive(…)]` directly above it.
 pub(crate) fn derives_above(text: &str, header: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in text[..header].lines().rev() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if !line.starts_with("#[") && !line.starts_with("///") && !line.starts_with("//") {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("#[derive(") {
-            out.extend(
-                rest.trim_end_matches(")]")
-                    .split(',')
-                    .map(|w| w.trim().rsplit("::").next().unwrap_or("").to_string())
-                    .filter(|w| !w.is_empty()),
-            );
-        }
-    }
-    out
+    super::context::derives_above(text, header)
 }
 
 /// The end of the expression that starts at `from`: the first `;`, or `,` / `)` / `}` / `]` that

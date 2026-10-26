@@ -173,7 +173,7 @@ pub async fn invert_value(
             None => (at, false),
         };
         let lead = body[..begin].trim_end();
-        if lead.ends_with('&') || lead.ends_with("&mut") {
+        if super::context::borrowed_place(&body, begin, end) {
             blocked.push(format!(
                 "{site} `{name}` is borrowed: the reference would read the opposite"
             ));

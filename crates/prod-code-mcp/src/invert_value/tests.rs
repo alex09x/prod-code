@@ -75,3 +75,46 @@ fn derives_and_patterns_and_strings_are_seen() {
         Some("u32")
     );
 }
+
+#[test]
+fn complete_attached_derives_allow_trivia_and_qualified_names() {
+    for declaration in ["struct S", "pub struct S", "pub(crate) struct S"] {
+        let text = format!(
+            "#[derive(Debug)]\n#[derive(\n ::core /* path */ ::default::Default,\n serde::Serialize, serde :: Deserialize,\n)]\n/* ] */\n#[doc = \"derive(Unrelated)\"]\n/// docs\n{declaration} {{ x: bool }}"
+        );
+        assert_eq!(
+            derives_above(&text, text.find(declaration).unwrap()),
+            ["Debug", "Default", "Serialize", "Deserialize"]
+        );
+    }
+    let text = "#[derive(Default)] struct Other;\n#[derive(Debug)] struct S { x: bool }";
+    assert_eq!(
+        derives_above(text, text.find("#[derive(Debug)]").unwrap()),
+        ["Debug"]
+    );
+    let text = "#[derive(Default)] struct Other;\nstruct S { x: bool }";
+    assert!(derives_above(text, text.find("struct S").unwrap()).is_empty());
+}
+
+#[test]
+fn borrows_require_the_complete_place_and_unary_ampersand() {
+    for (text, borrowed) in [
+        ("let r = &mut (((f.enabled)));", true),
+        ("let r = & /* trivia */ mut (f.enabled);", true),
+        ("let r = &(f.enabled);", true),
+        ("let r = &&(f.enabled);", true),
+        ("let r = true & (f.enabled);", false),
+        ("let r = true && (f.enabled);", false),
+        ("let r = &(false | (f.enabled));", false),
+        ("let r = &(f.enabled | false);", false),
+        ("let r = &identity(f.enabled);", false),
+        ("let r = \"&mut (\"; /* & ( */ (f.enabled);", false),
+    ] {
+        let begin = text.rfind("f.enabled").unwrap();
+        assert_eq!(
+            super::context::borrowed_place(text, begin, begin + "f.enabled".len()),
+            borrowed,
+            "{text}"
+        );
+    }
+}

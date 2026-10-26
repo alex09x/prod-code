@@ -11,6 +11,7 @@
 //! Inverting a boolean field or local variable: `enabled` becomes `disabled`, and every place that
 //! reads it or writes it keeps doing what it did.
 
+mod context;
 pub mod lsp;
 pub mod syntax;
 pub mod transform;
