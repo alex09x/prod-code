@@ -168,6 +168,32 @@ fn metavariables_stop_at_statement_boundaries() {
     assert_eq!(rewritten, "let keep = 1; handle(obj);\n");
 }
 
+/// A receiver ends at a binary operator outside its delimiters, so the operand beside it is
+/// kept; a grouped compound receiver, a unary prefix and a turbofish still match (#1432).
+#[test]
+fn metavariables_before_a_member_access_bind_only_the_receiver() {
+    let rule = CodemodRule::parse("$a.unwrap() ==>> handle($a)").unwrap();
+    for (source, expected) in [
+        ("let r = 1 + obj.unwrap();\n", "let r = 1 + handle(obj);\n"),
+        (
+            "let r = a * b.unwrap() - c;\n",
+            "let r = a * handle(b) - c;\n",
+        ),
+        ("let r = x == y.unwrap();\n", "let r = x == handle(y);\n"),
+        (
+            "let r = (left + right).unwrap();\n",
+            "let r = handle((left + right));\n",
+        ),
+        ("let r = -n.unwrap();\n", "let r = -handle(n);\n"),
+        (
+            "let r = parse::<u8, u16>(s).unwrap();\n",
+            "let r = handle(parse::<u8, u16>(s));\n",
+        ),
+    ] {
+        assert_eq!(rewrite_source(source, &rule).unwrap(), expected, "{source}");
+    }
+}
+
 #[test]
 fn codemod_scope_rejects_parent_absolute_and_symlink_paths() {
     let workspace = tempfile::tempdir().unwrap();

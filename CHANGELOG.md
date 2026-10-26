@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Codemod Receiver Boundaries** (`crates/prod-code-mcp`, #1432):
+  A placeholder before `.`, `->` or `?.` binds only the receiver: `$a.unwrap() ==>> handle($a)` turns `1 + obj.unwrap()` into `1 + handle(obj)`, not `handle(1 + obj)`. Grouped receivers, unary prefixes and turbofish arguments such as `parse::<u8, u16>(s)` still match whole.
 - **Unicode in Rust Match Arms** (`crates/prod-code-mcp`, #1430):
   Replace-conditional no longer panics on a `match` arm such as `0 => f(é, 0),`: the arm scanner trims its rolling context by characters instead of cutting a multi-byte identifier.
 - **Python Setter Evaluation Order** (`crates/prod-code-mcp`, #1406):
