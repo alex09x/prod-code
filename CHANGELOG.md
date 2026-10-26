@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Symbol Resolution Bounds Its Remote Reads** (`crates/prod-code-mcp`, #1413):
+  A symbol lookup asks the gateway for at most 16 distinct dependency files, counting reads that fail, and never asks for a failed path twice. Before, only successful reads counted: an answer with 40 unreadable paths, each listed twice, made 80 sequential round trips.
 - **Go Result Replacement Knows Its Boundaries** (`crates/prod-code-mcp`, #1411):
   - `func Count() (int)` is read as the one unnamed result `int`, and the replacement keeps the parentheses. Before, it was refused.
   - A caller in another module of a `go.work` refuses the replacement. Only the declaring module is compiled with the change, so before, `func Use() int { return a.Value() }` in the sibling module went unchecked when `Value` became `uint`.
