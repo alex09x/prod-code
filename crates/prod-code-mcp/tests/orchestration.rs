@@ -2375,7 +2375,7 @@ async fn extracting_a_field_initialises_it_everywhere_the_struct_is_built() {
     assert!(done.applied);
     assert_eq!(
         ws.read("src/store.rs"),
-        "pub struct Store {\n    pub entries: Vec<u32>,\n    cap: usize,\n}\n\nimpl Store {\n    pub fn new() -> Self {\n        Self { cap: 64 * 1024, entries: Vec::new() }\n    }\n\n    pub fn limit(&self) -> usize {\n        let cap = self.cap;\n        cap.min(self.entries.len())\n    }\n}\n"
+        "pub struct Store {\n    pub entries: Vec<u32>,\n    pub(crate) cap: usize,\n}\n\nimpl Store {\n    pub fn new() -> Self {\n        Self { cap: 64 * 1024, entries: Vec::new() }\n    }\n\n    pub fn limit(&self) -> usize {\n        let cap = self.cap;\n        cap.min(self.entries.len())\n    }\n}\n"
     );
     assert_eq!(
         ws.read("src/app.rs"),

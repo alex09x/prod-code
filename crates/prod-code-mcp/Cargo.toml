@@ -31,6 +31,8 @@ unicode-ident = "1.0.22"
 # Reuse the locked URL stack's normalizer for Rust's NFC identifier identity.
 icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 libc = "0.2"
+# Use the engine's already locked Rust parser for exact expression ancestry.
+ra_ap_syntax = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "syntax" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

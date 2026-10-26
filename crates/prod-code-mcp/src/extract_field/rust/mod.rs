@@ -9,8 +9,10 @@
  */
 
 pub mod execute;
+mod expressions;
 pub mod insertion;
 pub mod locate;
+mod syntax;
 
 pub use execute::extract;
 pub use insertion::{field_insertion, literal_insertion};
