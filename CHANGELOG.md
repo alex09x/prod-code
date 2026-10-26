@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Boolean Value Inversion Blockers** (`crates/prod-code-mcp`, #1375):
+  Semantic blockers now stop a compile-verified inversion before it writes, unless `force` is set. Multiline and qualified `Default`/serde derives are recognized through comments, and grouped borrows such as `&mut (f.enabled)` count as borrowed places.
 - **Stale Deletion Hunks** (`crates/prod-code-mcp`, #1374):
   A patch that deletes a file is applied only when its hunks reproduce the live file exactly, carriage returns and the final newline included. A stale, incomplete or replaced preimage refuses the whole proposal before the analyzer or any write; a Git preimage no longer stands in for a missing live file.
 - **Pull-Up Literal and Declaration Preservation** (`crates/prod-code-mcp`, #1327):

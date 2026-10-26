@@ -202,6 +202,14 @@ pub(crate) async fn handle_invert_boolean(
         .await?
     };
     refuse_incomplete(apply, &done.unmatched)?;
+    // Compile verification plans without applying: enforce the value planner's semantic
+    // refusal before the compile gate can write a type-correct but meaning-changing plan.
+    anyhow::ensure!(
+        !apply || done.blocked.is_empty() || force,
+        "{} use(s) cannot keep their meaning under the inversion; nothing was written:\n  {}",
+        done.blocked.len(),
+        done.blocked.join("\n  ")
+    );
     let gate = if verify && (done.unmatched.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
