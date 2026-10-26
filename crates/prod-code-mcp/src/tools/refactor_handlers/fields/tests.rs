@@ -33,6 +33,11 @@ async fn gateway(exit: i64, diagnostics: Value) -> ScriptedGateway {
     ScriptedGateway::start(move |method, _params| match method {
         "textDocument/diagnostic" => diagnostics.clone(),
         "prod-code/shadow-run" => json!({ "exit_code": exit }),
+        "textDocument/documentSymbol" => json!([answers::nested(
+            answers::document_symbol("Server", 5, 1, 4, 1),
+            vec![answers::document_symbol("port", 8, 2, 2, 5)],
+        )]),
+        "textDocument/references" => json!([]),
         _ => Value::Null,
     })
     .await

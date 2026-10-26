@@ -182,7 +182,10 @@ fn the_report_names_the_accessors_and_everything_left_over() {
         "{text}"
     );
     assert!(text.contains("2 read(s) and 1 write(s)"), "{text}");
-    assert!(text.contains("3 reference(s) inside it left"), "{text}");
+    assert!(
+        text.contains("3 reference(s) inside the declaring privacy scope retained"),
+        "{text}"
+    );
     assert!(text.contains("cannot become a method call"), "{text}");
     assert!(text.contains("a call, not a field access"), "{text}");
     assert!(text.contains("the analyzer rejects the result"), "{text}");

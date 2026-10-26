@@ -17,10 +17,10 @@ use anyhow::{Context, Result};
 use super::super::case::{display, is_ident};
 use super::super::types::{Access, EncapsulatedField};
 use super::accessors::accessors;
-use super::analysis::{access_at, field_at, inherent_impl, is_generic, owner_at, returns_by_value};
+use super::analysis::{access_at, field_at, is_generic, owner_at, returns_by_value};
 
 /// Makes the field declared at `line`:`col` of `file` private and rewrites every access to it
-/// outside that file into a call of its getter or setter.
+/// outside its declaring module into a call of its getter or setter.
 #[allow(clippy::too_many_arguments)]
 pub async fn encapsulate(
     remote: SocketAddr,
@@ -45,11 +45,13 @@ pub async fn encapsulate(
     let (owner, struct_at, struct_close) = owner_at(&text, decl.name_at)
         .with_context(|| format!("`{field}` is not a field of a struct with named fields"))?;
     let by_value = by_value.unwrap_or_else(|| returns_by_value(&decl.ty));
+    let privacy = super::privacy::scope(&text, decl.name_at)?;
 
-    // Every reference outside the declaring file, classified by what it does there.
+    // References outside the declaring module, classified by what they do there.
     let (name_line, name_col) = crate::signature::position_at(&text, decl.name_at)?;
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
+    let mut setters: BTreeMap<PathBuf, Vec<super::edits::Setter>> = BTreeMap::new();
     let (mut reads, mut writes, mut chained_reads, mut left_in_file) = (0, 0, 0, 0);
     let mut blocked = Vec::new();
     let mut unmatched = Vec::new();
@@ -57,10 +59,6 @@ pub async fn encapsulate(
         .await
         .with_context(|| format!("cannot find the uses of `{field}`; nothing was planned"))?;
     for (path, rl, rc) in refs {
-        if path == *file {
-            left_in_file += 1;
-            continue;
-        }
         let body = crate::refactor::referenced_text(&mut texts, &path)?;
         let at_site = format!("{}:{rl}:{rc}", display(root, &path));
         let Some(at) = crate::signature::offset_of(body, rl, rc) else {
@@ -75,6 +73,10 @@ pub async fn encapsulate(
             ));
             continue;
         }
+        if path == *file && privacy.contains(&at) {
+            left_in_file += 1;
+            continue;
+        }
         match access_at(body, at, field.len()) {
             Access::Read { chained } => {
                 edits
@@ -87,12 +89,19 @@ pub async fn encapsulate(
                 }
             }
             Access::Write { rhs } => {
-                let value = body[rhs.0..rhs.1].trim().to_string();
-                edits.entry(path.clone()).or_default().push((
-                    at,
-                    rhs.1 - at,
-                    format!("set_{field}({value})"),
-                ));
+                let suffix = body[at + field.len()..rhs.0 - 1].trim_matches([' ', '\t', '\r']);
+                setters
+                    .entry(path.clone())
+                    .or_default()
+                    .push(super::edits::Setter::new(
+                        body,
+                        at,
+                        rhs.0,
+                        rhs.1,
+                        format!("set_{field}{suffix}"),
+                        crate::parameter_object::Language::Rust,
+                    ));
+                edits.entry(path.clone()).or_default();
                 writes += 1;
             }
             Access::Blocked(why) => {
@@ -106,19 +115,32 @@ pub async fn encapsulate(
 
     // The declaring file: the field loses its visibility and the accessors are added.
     let setter = writes > 0;
+    let implementations = super::privacy::implementations(&text, &owner, &privacy)?;
+    super::collisions::check(
+        remote,
+        root,
+        file,
+        &text,
+        struct_at,
+        &field,
+        setter,
+        &implementations,
+    )
+    .await?;
     for method in std::iter::once(field.clone()).chain(setter.then(|| format!("set_{field}"))) {
         anyhow::ensure!(
-            !text.contains(&format!("fn {method}(")) && !text.contains(&format!("fn {method}<")),
+            !implementations.iter().any(|(open, close)| {
+                let body = &text[*open..*close];
+                body.contains(&format!("fn {method}(")) || body.contains(&format!("fn {method}<"))
+            }),
             "`{owner}` already has a `fn {method}` in {}; rename it or the field first",
             display(root, file)
         );
     }
     let own = edits.entry(file.to_path_buf()).or_default();
     own.push((decl.vis_at, decl.name_at - decl.vis_at, String::new()));
-    match inherent_impl(&text, &owner) {
-        Some(open) => {
-            let close = crate::parameter_object::matching_bracket(&text, open)
-                .with_context(|| format!("the `impl {owner}` block does not close"))?;
+    match implementations.first().copied() {
+        Some((open, close)) => {
             let line_start = text[..open].rfind('\n').map_or(0, |i| i + 1);
             let impl_indent: String = text[line_start..]
                 .chars()
@@ -163,11 +185,13 @@ pub async fn encapsulate(
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {
-        let mut body = texts.get(&path).cloned().unwrap_or_default();
-        file_edits.sort_by_key(|(at, _, _)| *at);
-        for (at, len, replacement) in file_edits.into_iter().rev() {
-            body.replace_range(at..at + len, &replacement);
-        }
+        let original = texts.get(&path).context("missing referenced source")?;
+        super::edits::compose(
+            original,
+            &mut file_edits,
+            setters.remove(&path).unwrap_or_default(),
+        )?;
+        let body = super::edits::apply(original, file_edits)?;
         rewritten.insert(path, body);
     }
 

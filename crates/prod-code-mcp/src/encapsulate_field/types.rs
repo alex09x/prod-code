@@ -37,7 +37,7 @@ pub struct EncapsulatedField {
     /// Reads that go on to call a method on the field or index it: if one of those mutates it,
     /// a getter that returns `&T` does not compile, and only the compiler says so.
     pub chained_reads: usize,
-    /// References inside the declaring file, which stay direct accesses.
+    /// References inside the declaring privacy scope, which stay direct accesses.
     pub left_in_file: usize,
     /// Uses that cannot become a method call, with the reason.
     pub blocked: Vec<String>,
@@ -150,8 +150,8 @@ impl EncapsulatedField {
             s
         };
         out.push_str(&format!(
-            "- {} read(s) and {} write(s) outside {} rewritten; {} reference(s) inside it left \
-             as they are, because a private field is still visible there\n\n",
+            "- {} read(s) and {} write(s) rewritten for {}; {} reference(s) inside the \
+             declaring privacy scope retained as direct accesses\n\n",
             self.reads, self.writes, self.file, self.left_in_file
         ));
         let mut body = String::new();

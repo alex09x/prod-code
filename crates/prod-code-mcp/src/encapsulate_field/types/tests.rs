@@ -119,7 +119,7 @@ fn coverage_accessor_reports_across_languages() {
             assert_eq!(
                 result.render(1000),
                 format!(
-                    "`{owner}` ({file})\n\n- the field becomes private\n- getter: `{getter}`\n{setter_line}- 2 read(s) and {writes} write(s) outside {file} rewritten; 3 reference(s) inside it left as they are, because a private field is still visible there\n\n0 changed line(s) in 0 file(s)\n\n\nthe analyzer accepts the result: 0 errors\n\nnothing was written; pass `apply: true` to make these edits\n"
+                    "`{owner}` ({file})\n\n- the field becomes private\n- getter: `{getter}`\n{setter_line}- 2 read(s) and {writes} write(s) rewritten for {file}; 3 reference(s) inside the declaring privacy scope retained as direct accesses\n\n0 changed line(s) in 0 file(s)\n\n\nthe analyzer accepts the result: 0 errors\n\nnothing was written; pass `apply: true` to make these edits\n"
                 )
             );
         }
