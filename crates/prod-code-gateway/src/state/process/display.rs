@@ -60,7 +60,8 @@ fn without_query_secrets(arg: &str) -> Option<String> {
     let pairs: Vec<String> = arg[query_start..query_end]
         .split('&')
         .map(|pair| match pair.split_once('=') {
-            Some((key, _)) if names_a_secret(key) => {
+            // A URL consumer decodes `p%61ssword` to `password`, so the check reads it decoded.
+            Some((key, _)) if names_a_secret(&percent_decoded(key)) => {
                 changed = true;
                 format!("{key}={REDACTED}")
             }
@@ -75,6 +76,31 @@ fn without_query_secrets(arg: &str) -> Option<String> {
             &arg[query_end..]
         )
     })
+}
+
+/// A query key as a URL consumer reads it: `%XX` escapes decoded and `+` as a space. An
+/// invalid escape is kept as it is (#1539).
+fn percent_decoded(key: &str) -> String {
+    let bytes = key.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                (Some(high), Some(low)) => {
+                    out.push((high * 16 + low) as u8);
+                    i += 3;
+                    continue;
+                }
+                _ => out.push(b'%'),
+            },
+            b'+' => out.push(b' '),
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Both URL redactions, userinfo and query, on one argument.
@@ -206,6 +232,22 @@ mod tests {
             ]),
             "env DATABASE_URL=mysql://example.invalid/db?pwd=<redacted>"
         );
+        // Percent-encoded key names decode to a secret name (#1539).
+        assert_eq!(
+            shown(&[
+                "tool",
+                "postgresql://example.invalid/db?p%61ssword=SYNTHETIC-CANARY"
+            ]),
+            "tool postgresql://example.invalid/db?p%61ssword=<redacted>"
+        );
+        assert_eq!(
+            shown(&[
+                "curl",
+                "https://example.invalid/x?%74oken=SYNTHETIC-CANARY&q=%zz"
+            ]),
+            "curl https://example.invalid/x?%74oken=<redacted>&q=%zz"
+        );
+        assert_eq!(percent_decoded("p%61ss+word%"), "pass word%");
         // A query with nothing secret is left as it is.
         assert_eq!(
             shown(&["curl", "https://example.invalid/search?q=rust&page=2"]),
