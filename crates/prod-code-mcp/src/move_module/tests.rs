@@ -22,7 +22,7 @@ fn a_declaration_is_found_with_its_attributes_and_nothing_nested() {
     assert_eq!(line, "pub(crate) mod b;");
     assert!(declaration(text, "c").is_none());
     assert!(declaration("mod bb;\nmod ab;\n", "b").is_none());
-    assert!(declaration("    mod b;\n", "b").is_none());
+    assert!(declaration("    mod b;\n", "b").is_some());
     assert!(declaration("mod b {}\n", "b").is_none());
 }
 
@@ -42,10 +42,10 @@ fn super_becomes_the_old_parent_but_not_inside_a_longer_name() {
         "use super::helper;\nfn f() { super::x(); my_super::y(); super::super::z(); }\n",
         "crate::a",
     );
-    assert_eq!(n, 2);
+    assert_eq!(n, 3);
     assert_eq!(
         out,
-        "use crate::a::helper;\nfn f() { crate::a::x(); my_super::y(); super::super::z(); }\n"
+        "use crate::a::helper;\nfn f() { crate::a::x(); my_super::y(); crate::z(); }\n"
     );
 }
 

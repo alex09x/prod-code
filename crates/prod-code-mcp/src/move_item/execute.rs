@@ -15,15 +15,11 @@ use std::path::{Path, PathBuf};
 
 use super::budget::{MoveBudget, document_symbols};
 use super::child::move_to_child;
-use super::imports::{
-    add_import, carry_imports, drop_import, has_use_super_glob, requalify,
-    source_declares_child_module,
-};
-use super::item::{
-    append_item, cut, display, move_inherent_method, offset_of, span_at, with_doc_comment,
-};
-use super::module::{declare_module, extract_inline_module, module_of, target_text};
+use super::imports::{add_import, carry_imports, drop_import, has_use_super_glob, requalify};
+use super::item::{append_item, cut, display, move_inherent_method, offset_of, span_at};
+use super::module::extract_inline_module;
 use super::types::Move;
+use super::{ownership::filesystem, plan::ItemPlan, rust_syntax};
 
 /// Moves the declaration at `file:line:col` into `target`, rewriting the imports of every file
 /// that uses it. Nothing is written unless `apply`, and not then if it does not compile.
@@ -51,13 +47,21 @@ pub async fn move_item(
         .await;
     }
     let budget = MoveBudget::new();
+    anyhow::ensure!(
+        target.extension().is_some_and(|e| e == "rs"),
+        "{} is not a Rust source file",
+        display(root, target)
+    );
+    filesystem::no_links(root, file)?;
+    filesystem::no_links(root, target)?;
     let source_text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let (mut new_module_parent, target_text) = target_text(root, target)?;
-
-    let (from_dir, from_module) = module_of(file)?;
-    let (to_dir, mut to_module) = module_of(target)?;
-    super::test_crate::ensure_same_crate(file, target, &from_dir, &to_dir)?;
+    let plan = ItemPlan::new(root, file, target, line, col, &source_text)?;
+    let (graph, from_owners, to_owners) = (&plan.graph, &plan.from, &plan.to);
+    let from_module = from_owners[0].module.clone();
+    let mut to_module = to_owners[0].module.clone();
+    let mut new_module_parent = plan.new_module_parent.clone();
+    let target_text = plan.target_text.as_str();
     anyhow::ensure!(
         from_module != to_module,
         "{} and {} are the same module",
@@ -71,8 +75,7 @@ pub async fn move_item(
             document_symbols(remote, root, file),
         )
         .await?;
-    let child = from_dir == to_dir
-        && from_module.krate == to_module.krate
+    let child = from_module.krate == to_module.krate
         && to_module.segments.len() == from_module.segments.len() + 1
         && to_module.segments.starts_with(&from_module.segments);
     let (name, decl_start, decl_end) =
@@ -96,7 +99,7 @@ pub async fn move_item(
                         &source_text,
                         (impl_at, impl_open),
                         target,
-                        &target_text,
+                        target_text,
                         owner,
                     )
                     .await)
@@ -125,14 +128,16 @@ pub async fn move_item(
              (`prod-code move-module <its file> --to <new file>`)"
         );
     }
-    let start = with_doc_comment(&source_text, decl_start);
+    let edition = rust_syntax::edition(&from_owners[0].root);
+    rust_syntax::ensure_whole_lines(&source_text, decl_start, &name, edition)?;
+    let start = rust_syntax::item_start(&source_text, decl_start, edition);
     let mut created = None;
     let mut extracted_inline_mod = false;
     let (source_new, target_new, item, carried) =
         if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
             move_inherent_method(
                 &source_text,
-                &target_text,
+                target_text,
                 verified_target_impl,
                 (impl_at, impl_open, impl_close),
                 start,
@@ -157,19 +162,29 @@ pub async fn move_item(
                 move_to_child(
                     &source_text,
                     &item,
-                    &target_text,
-                    file.starts_with(from_dir.join("tests")),
+                    target_text,
+                    from_owners[0].test_crate,
+                    edition,
                 )?
-            } else if source_declares_child_module(&source_text, target)
-                && has_use_super_glob(&target_text)
+            } else if to_owners.iter().any(|owner| {
+                owner
+                    .declaration
+                    .as_ref()
+                    .is_some_and(|(parent, _)| parent == file)
+            }) && has_use_super_glob(target_text)
             {
-                (target_text.clone(), item, Vec::new())
+                (target_text.to_string(), item, Vec::new())
             } else {
-                let (text, carried) = carry_imports(&source_text, &item, &target_text);
+                let (text, carried) = carry_imports(&source_text, &item, target_text);
                 (text, item, carried)
             };
             let target_new = if target_with_imports.trim().is_empty() {
-                format!("{}\n", item.trim())
+                let ending = source_text
+                    .split_inclusive('\n')
+                    .nth(decl_end.saturating_sub(1) as usize)
+                    .filter(|line| line.ends_with("\r\n"))
+                    .map_or("\n", |_| "\r\n");
+                format!("{item}{ending}")
             } else {
                 append_item(&target_with_imports, &item)
             };
@@ -214,7 +229,7 @@ pub async fn move_item(
         .into_iter()
         .map(|note| format!("{}: {note}", display(root, target)))
         .collect();
-    let mut left_alone = Vec::new();
+    let left_alone = Vec::new();
     let mut unmatched = Vec::new();
     let mut callers: Vec<PathBuf> = Vec::new();
     if enclosing_impl.is_some() {
@@ -235,14 +250,8 @@ pub async fn move_item(
                 rewritten.insert(target.to_path_buf(), text);
                 continue;
             }
-            let Ok((_, module)) = module_of(path) else {
-                left_alone.push(format!(
-                    "{} — outside the ordinary crate layout, its imports were not touched",
-                    display(root, path)
-                ));
-                continue;
-            };
-            let prefix = to_module.spelled_from(&module.krate);
+            let callers = graph.owners(path, None)?;
+            let prefix = graph.caller_spelling(&callers, to_owners)?;
             // Taken as empty, the file would be written back as only its new imports (#446).
             let current = match rewritten.get(path) {
                 Some(text) => text.clone(),
@@ -299,27 +308,8 @@ pub async fn move_item(
     // A new module is declared last: the imports above were placed at the positions the
     // analyzer gave, which a line inserted into the parent first would have shifted.
     if let Some(parent) = &new_module_parent {
-        let module_name = target
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let public = source_text
-            .lines()
-            .nth(decl_start.saturating_sub(1) as usize)
-            .is_some_and(|line| line.trim_start().starts_with("pub"));
-        let parent_text = match rewritten.get(parent) {
-            Some(text) => text.clone(),
-            None => std::fs::read_to_string(parent)
-                .with_context(|| format!("cannot read {}", parent.display()))?,
-        };
-        rewritten.insert(
-            parent.clone(),
-            if source_declares_child_module(&parent_text, target) {
-                parent_text
-            } else {
-                declare_module(&parent_text, &module_name, public)
-            },
-        );
+        let public = rust_syntax::public(&source_text, decl_start, edition);
+        plan.declare(&mut rewritten, target, public)?;
         created = Some((display(root, target), display(root, parent)));
     }
 
@@ -327,29 +317,23 @@ pub async fn move_item(
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
+    callers.extend(from_owners.iter().map(|owner| owner.root.clone()));
+    callers.extend(
+        graph
+            .nodes
+            .iter()
+            .filter(|owner| rewritten.contains_key(&owner.file))
+            .map(|owner| owner.root.clone()),
+    );
+    callers.sort();
+    callers.dedup();
+    for (path, _) in &edits {
+        filesystem::no_links(root, path)?;
+    }
+    graph.ensure_unaliased(root, edits.iter().map(|(p, _)| p.as_path()))?;
     let diagnostics = budget.validate(remote, root, &edits, &callers).await?;
 
-    let mut applied = false;
-    if apply {
-        anyhow::ensure!(
-            unmatched.is_empty(),
-            "{} reference(s) to `{name}` were not rewritten; nothing was written:\n  {}",
-            unmatched.len(),
-            unmatched.join("\n  ")
-        );
-        anyhow::ensure!(
-            diagnostics.is_empty() || force,
-            "the move does not compile ({} error(s)); nothing was written. Fix the request, or \
-             pass `force: true` to write it anyway:\n  {}",
-            diagnostics.len(),
-            diagnostics.join("\n  ")
-        );
-        let edit = crate::signature::whole_file_edit(&rewritten);
-        crate::refactor::apply_workspace_edit(root, &edit)?;
-        applied = true;
-    }
-
-    Ok(Move {
+    let mut result = Move {
         symbol: name.clone(),
         root: root.to_path_buf(),
         from: display(root, file),
@@ -370,7 +354,11 @@ pub async fn move_item(
         left_alone,
         unmatched,
         diagnostics,
-        applied,
+        applied: false,
         created,
-    })
+    };
+    if apply {
+        result.write(force)?;
+    }
+    Ok(result)
 }

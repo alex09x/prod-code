@@ -1194,7 +1194,7 @@ async fn a_moved_item_takes_its_imports_and_leaves_one_behind() {
         "Cargo.toml",
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
-    let source = "use std::path::Path;\nuse std::collections::BTreeMap;\n\n\
+    let source = "mod home;\nuse std::path::Path;\nuse std::collections::BTreeMap;\n\n\
                   /// Says the name.\n\
                   pub fn describe(p: &Path) -> String {\n    p.display().to_string()\n}\n\n\
                   pub fn caller(p: &Path) -> String {\n    describe(p)\n}\n";
@@ -1205,18 +1205,18 @@ async fn a_moved_item_takes_its_imports_and_leaves_one_behind() {
     let lib_for_script = lib.clone();
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
         "textDocument/documentSymbol" => serde_json::json!([
-            answers::document_symbol("describe", 12, 5, 7, 8),
-            answers::document_symbol("caller", 12, 9, 11, 8),
+            answers::document_symbol("describe", 12, 6, 8, 8),
+            answers::document_symbol("caller", 12, 10, 12, 8),
         ]),
-        // `describe(p)` on line 10, as the file is before the cut.
-        "textDocument/references" => answers::locations(&lib_for_script, &[(10, 5)]),
+        // `describe(p)` on line 11, as the file is before the cut.
+        "textDocument/references" => answers::locations(&lib_for_script, &[(11, 5)]),
         "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
 
     let moved =
-        match prod_code_mcp::move_item::move_item(remote, &root, &lib, 5, 8, &home, false, false)
+        match prod_code_mcp::move_item::move_item(remote, &root, &lib, 6, 8, &home, false, false)
             .await
         {
             Ok(moved) => moved,
@@ -1287,7 +1287,7 @@ async fn a_move_that_does_not_compile_is_refused_with_the_reason() {
     let lib = write(
         &ws,
         "src/lib.rs",
-        "fn secret() -> u8 {\n    1\n}\n\npub fn shown() -> u8 {\n    secret()\n}\n",
+        "fn secret() -> u8 {\n    1\n}\n\npub fn shown() -> u8 {\n    secret()\n}\nmod home;\n",
     );
     let home = write(&ws, "src/home.rs", "//! The new home.\n");
     commit(&ws);
@@ -3670,7 +3670,7 @@ async fn a_move_into_a_new_module_creates_and_declares_it() {
     .await
     .expect_err("no module file declares `nowhere`");
     assert!(
-        format!("{err:#}").contains("create the parent module first"),
+        format!("{err:#}").contains("target has no unique parent"),
         "{err:#}"
     );
 }
@@ -4174,23 +4174,8 @@ async fn conditional_and_self_dependent_trait_extractions_are_refused_without_wr
     }))
     .await;
 
+    // Conditional impls and methods are extracted with their `cfg` (extract_trait_syntax_preservation).
     for (source, why) in [
-        (
-            "pub struct Example<T>(T);\n#[cfg(any())] impl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n",
-            "attributes on impl blocks",
-        ),
-        (
-            "pub struct Example<T>(T);\n#[cfg(\n    any()\n)]\n// attached condition remains active\n\nimpl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n",
-            "attributes on impl blocks",
-        ),
-        (
-            "pub struct Example<T>(T);\nimpl<T> Example<T> { #[cfg(any())] pub fn selected(&self) {} pub fn kept(&self) {} }\n",
-            "conditional methods",
-        ),
-        (
-            "pub struct Example<T>(T);\nimpl<T> Example<T> { #[cfg_attr(\n    any(),\n    allow(dead_code)\n)] pub fn selected(&self) {} pub fn kept(&self) {} }\n",
-            "conditional methods",
-        ),
         (
             "pub struct Example<T>(T);\nimpl<T: From<Self>> Example<T> { pub fn selected(self) -> T { T::from(self) } }\n",
             "depend on `Self`",
@@ -4808,7 +4793,7 @@ async fn a_module_moves_with_its_files_and_every_path_to_it() {
     };
     assert_eq!(
         text_of("src/lib.rs"),
-        "pub mod a;\npub mod c;\n\nuse crate::a::{uses};\nuse crate::c::b;\n\npub fn top() -> u32 {\n    b::inner() + crate::c::b::inner() + uses()\n}\n"
+        "pub mod a;\npub mod c;\n\nuse crate::a::{ uses};\nuse crate::c::b;\n\npub fn top() -> u32 {\n    b::inner() + crate::c::b::inner() + uses()\n}\n"
     );
     assert_eq!(
         text_of("src/a.rs"),
@@ -4826,7 +4811,7 @@ async fn a_module_moves_with_its_files_and_every_path_to_it() {
     let rendered = done.render(20_000);
     assert!(rendered.contains("src/a/b.rs -> src/c/b.rs"), "{rendered}");
     assert!(
-        rendered.contains("2 `super::` now `crate::a::`"),
+        rendered.contains("2 lexical `super` path(s) preserve their original scope"),
         "{rendered}"
     );
     assert!(rendered.contains("nothing was written"), "{rendered}");

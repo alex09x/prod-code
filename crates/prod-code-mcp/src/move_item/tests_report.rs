@@ -153,17 +153,18 @@ mod refusals {
             (
                 "src/lib.rs",
                 "src/sub/x.rs",
-                "src/sub/x.rs does not exist, and neither does a module file to declare it in (for `src/a/x.rs`, `src/a.rs` or `src/a/mod.rs`); create the parent module first",
+                "target has no unique parent in the source Cargo root: no module declares <root>/src/sub; create the parent module first; nothing was written",
             ),
             (
                 "src/b.rs",
                 "src/b/mod.rs",
-                "src/b.rs and src/b/mod.rs are the same module",
+                // No module declares src/b.rs, so ownership refuses before comparing paths.
+                "<root>/src/b.rs has no known Cargo/module owner; nothing was written",
             ),
             (
                 "tools/x.rs",
                 "src/lib.rs",
-                "<root>/tools/x.rs is not under <root>/src; only the ordinary crate layout is understood",
+                "<root>/tools/x.rs has no known Cargo/module owner; nothing was written",
             ),
         ];
         for (file, target, want) in cases {
@@ -180,7 +181,7 @@ mod refusals {
         let (_dir, root) = crate_dir("[workspace]\n");
         assert_eq!(
             refusal(&root, "src/lib.rs", "src/b.rs").await,
-            "<root>/Cargo.toml names no package"
+            "no Cargo target roots found; nothing was written"
         );
     }
 

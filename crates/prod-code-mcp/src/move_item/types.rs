@@ -42,6 +42,37 @@ pub struct Move {
 }
 
 impl Move {
+    pub(super) fn write(&mut self, force: bool) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.unmatched.is_empty(),
+            "{} reference(s) to `{}` were not rewritten; nothing was written:\n  {}",
+            self.unmatched.len(),
+            self.symbol,
+            self.unmatched.join("\n  ")
+        );
+        anyhow::ensure!(
+            self.diagnostics.is_empty() || force,
+            "the move does not compile ({} error(s)); nothing was written. Fix the request, or \
+             pass `force: true` to write it anyway:\n  {}",
+            self.diagnostics.len(),
+            self.diagnostics.join("\n  ")
+        );
+        let files: std::collections::BTreeMap<PathBuf, String> = self
+            .rewritten
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.clone()))
+            .collect();
+        for path in files.keys() {
+            super::ownership::filesystem::no_links(&self.root, path)?;
+        }
+        crate::refactor::apply_workspace_edit(
+            &self.root,
+            &crate::signature::whole_file_edit(&files),
+        )?;
+        self.applied = true;
+        Ok(())
+    }
+
     /// The report: what moved, what it costs the files that used it, and whether it compiles.
     pub fn render(&self, diff_budget: usize) -> String {
         let mut out = format!(

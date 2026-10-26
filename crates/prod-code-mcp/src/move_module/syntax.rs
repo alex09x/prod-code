@@ -8,9 +8,12 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
-use crate::move_item::{ModulePath, parent_module_file};
+use crate::move_item::ModulePath;
+#[cfg(test)]
+use crate::move_item::parent_module_file;
 
 pub fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -20,72 +23,39 @@ pub fn is_ident(c: char) -> bool {
 /// attributes to the end of its line, and the declaration line itself. `None` when the module is
 /// not declared that way.
 pub fn declaration(text: &str, name: &str) -> Option<(usize, usize, String)> {
-    let mut offset = 0;
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    for (i, line) in lines.iter().enumerate() {
-        let t = line.trim_end();
-        let decl = t
-            .strip_suffix(&format!("mod {name};"))
-            .is_some_and(|vis| vis.is_empty() || (vis.starts_with("pub") && vis.ends_with(' ')));
-        if decl && !line.starts_with(char::is_whitespace) {
-            let mut start = offset;
-            for above in lines[..i].iter().rev() {
-                let a = above.trim_start();
-                if a.starts_with("///") || a.starts_with("#[") {
-                    start -= above.len();
-                } else {
-                    break;
-                }
-            }
-            return Some((start, offset + line.len(), t.to_string()));
-        }
-        offset += line.len();
-    }
-    None
+    crate::move_item::rust_syntax::declaration(text, name)
 }
 
 /// `text` with `block` (a module declaration with its attributes) declared where
 /// [`crate::move_item::declare_module`] would put a bare one.
 pub fn declare_block(text: &str, name: &str, block: &str) -> String {
-    let placed = crate::move_item::declare_module(text, name, false);
-    let bare = format!("mod {name};");
-    match placed.lines().position(|l| l == bare) {
-        Some(at) => {
-            let mut lines: Vec<String> = placed.lines().map(str::to_string).collect();
-            lines[at] = block.trim_end().to_string();
-            let mut out = lines.join("\n");
-            out.push('\n');
-            out
+    declare_block_in(text, name, block, ra_ap_syntax::Edition::CURRENT)
+}
+
+pub(super) fn declare_block_in(
+    text: &str,
+    name: &str,
+    block: &str,
+    edition: ra_ap_syntax::Edition,
+) -> String {
+    let mut placed = crate::move_item::declare_module_in(text, name, false, edition);
+    if let Some((start, end, _)) =
+        crate::move_item::rust_syntax::declaration_in(&placed, name, edition)
+    {
+        placed.replace_range(start..end, block);
+        if !block.ends_with('\n') {
+            placed.insert(start + block.len(), '\n');
         }
-        None => placed,
     }
+    placed
 }
 
 /// `text` with every `super::` (as a path's head, not the tail of a longer name) made `head::`.
 pub fn resolve_super(text: &str, head: &str) -> (String, usize) {
-    let mut out = String::with_capacity(text.len());
-    let mut count = 0;
-    let mut at = 0;
-    for (i, _) in text.match_indices("super::") {
-        // Not the tail of a longer name, and not the second `super` of `super::super::`.
-        if i < at
-            || text[..i].chars().next_back().is_some_and(is_ident)
-            || text[..i].ends_with("::")
-        {
-            continue;
-        }
-        // `super::super::` reaches past the old parent; it is left for the type check to name.
-        if text[i + 7..].starts_with("super::") {
-            continue;
-        }
-        out.push_str(&text[at..i]);
-        out.push_str(head);
-        out.push_str("::");
-        at = i + "super::".len();
-        count += 1;
-    }
-    out.push_str(&text[at..]);
-    (out, count)
+    let mut old: Vec<_> = head.split("::").skip(1).map(str::to_string).collect();
+    old.push("__moved".to_string());
+    crate::move_item::rust_syntax::rebase_super(text, &old, 0, ra_ap_syntax::Edition::CURRENT)
+        .unwrap_or_else(|_| (text.to_string(), 0))
 }
 
 /// How a reference to the module is spelled at `offset` of `text`: whether it stands in a `use`
@@ -123,6 +93,7 @@ pub fn spelling(text: &str, offset: usize) -> Spelling {
 
 /// The file that declares a module whose file is `file`: `src/a.rs` for `src/a/b.rs` and for
 /// `src/a/b/mod.rs`.
+#[cfg(test)]
 pub(crate) fn declaring_file(file: &Path) -> Option<PathBuf> {
     let module_file = if file.file_name().is_some_and(|n| n == "mod.rs") {
         file.parent()?.with_extension("rs")
@@ -133,21 +104,10 @@ pub(crate) fn declaring_file(file: &Path) -> Option<PathBuf> {
 }
 
 /// Every file under `dir`, recursively.
+#[cfg(test)]
 pub(crate) fn files_under(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            out.extend(files_under(&path));
-        } else {
-            out.push(path);
-        }
-    }
-    out.sort();
-    out
+    crate::move_item::ownership::filesystem::files(dir, dir)
+        .expect("test fixture must contain only regular files and directories")
 }
 
 pub(crate) fn parent_of(module: &ModulePath) -> ModulePath {

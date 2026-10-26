@@ -1,0 +1,1405 @@
+{
+  "schema_version": 1,
+  "input_artifact": "evidence/codex-review-audit/rust-moves-eleven-input.json",
+  "checked_production_main": "ae785e8d0f28b246804b78f6509c64438129ee7b",
+  "checked_worktree_commit": "c47478edb1ef5976b909058b8d451c833ef43dde",
+  "production_tree_identity": {
+    "command": "git diff --name-status ae785e8d0f28b246804b78f6509c64438129ee7b HEAD",
+    "observed": "Only A evidence/codex-review-audit/rust-moves-eleven-input.json; production source matches the checked production commit."
+  },
+  "method": {
+    "kind": "Read-only source audit; only the requested JSON artifact is written.",
+    "scope": "All eleven original bodies/IDs/URLs retained unchanged under original. Followed split item/module implementation, public MCP/CLI callers, declaration layout/visibility/import/reference helpers, validation, write application and directly relevant existing tests.",
+    "execution": "No repository tests/builds/compilation/formatting, live move calls, scenario fixtures, product edits, issues/PRs, messages, delegation or integration.",
+    "evidence_rule": "Numbered terminal source and successful semantic CLI searches confirmed citations. Source-predicted complete layouts are not executed regressions. Existing tests are evidence only for inspected assertions, with no claim they passed in this audit.",
+    "classification_rule": "Partial improvements do not clear a surviving reachable supported spelling/owner. Physical file identity and package-derived crate names do not establish Cargo target/module ownership. Merge/thread state is not evidence. No observed later contract supersedes a supplied concern."
+  },
+  "public_caller_evidence": [
+    {
+      "path": "crates/prod-code-client/src/commands/refactor/ast.rs",
+      "line": 206,
+      "anchor": "\"code_move\"",
+      "observation": "CLI item moves invoke the public MCP tool."
+    },
+    {
+      "path": "crates/prod-code-client/src/commands/dispatch/refactor_ast.rs",
+      "line": 151,
+      "anchor": "\"code_move_module\"",
+      "observation": "CLI module moves invoke the public MCP tool."
+    },
+    {
+      "path": "crates/prod-code-mcp/src/tools.rs",
+      "line": 195,
+      "anchor": "handle_move",
+      "observation": "Public item tool dispatch."
+    },
+    {
+      "path": "crates/prod-code-mcp/src/tools.rs",
+      "line": 196,
+      "anchor": "handle_move_module",
+      "observation": "Public module tool dispatch."
+    },
+    {
+      "path": "crates/prod-code-mcp/src/tools/refactor_handlers/move_ops.rs",
+      "line": 51,
+      "anchor": "move_item::move_item",
+      "observation": "Passes apply && !verify and force; compile verification is opt-in.",
+      "end_line": 90
+    },
+    {
+      "path": "crates/prod-code-mcp/src/tools/refactor_handlers/move_ops.rs",
+      "line": 173,
+      "anchor": "move_module::move_module",
+      "observation": "Plans the module move and calls write(force) on normal apply.",
+      "end_line": 200
+    },
+    {
+      "path": "crates/prod-code-mcp/src/tools/schemas/advanced_refactoring.rs",
+      "line": 228,
+      "anchor": "Move a declaration",
+      "observation": "Contract carries docs/attributes and creates missing targets with callers kept compiling."
+    },
+    {
+      "path": "crates/prod-code-mcp/src/tools/schemas/advanced_refactoring.rs",
+      "line": 246,
+      "anchor": "Move a whole module",
+      "observation": "Contract retains declaration docs/attributes/visibility in ordinary crate layout."
+    },
+    {
+      "path": "crates/prod-code-mcp/src/diagnostics/validate/engine.rs",
+      "line": 253,
+      "anchor": "edits.iter().map",
+      "observation": "Checks edited files plus explicit also_check, not all owning roots.",
+      "end_line": 263
+    },
+    {
+      "path": "crates/prod-code-mcp/src/refactor/execute.rs",
+      "line": 74,
+      "anchor": "check_multi_ops",
+      "observation": "Actual writer preflights and journals failures.",
+      "end_line": 85
+    }
+  ],
+  "findings": [
+    {
+      "comment_id": 4070041999,
+      "finding_id": "review-comment:4070041999",
+      "original": {
+        "comment_id": 4070041999,
+        "pr": 60,
+        "url": "https://github.com/alex09x/prod-code/pull/60#discussion_r4070041999",
+        "path_at_review": "crates/prod-code-mcp/src/move_item.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve multiline attributes when cutting declarations**\n\nWhen an item has a multiline attribute such as `#[derive(\\nClone,\\n)]`, the line immediately above the declaration is `)]`, so this backward scan stops and leaves the entire attribute in the source. If another item follows, the attribute silently attaches to that item while the moved declaration loses it; both files can still type-check, so `apply` can change `cfg`, derives, or other semantics without reporting a problem. Determine the complete outer-attribute span rather than recognizing only lines beginning with `#[`.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-22T09:08:12Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-22T09:05:47Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6kqZZY",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4070041999",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "The item preamble scan still stops at multiline attribute closures and block-doc closures. Native symbols begin at the declaration name, so the omission is reachable in production.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/item.rs",
+          "line": 68,
+          "anchor": "above.starts_with",
+          "observation": "Only ///, #[ and //! line prefixes extend the cut. )] and */ stop it.",
+          "end_line": 74
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 128,
+          "anchor": "with_doc_comment",
+          "observation": "This result determines the start of the item cut.",
+          "end_line": 155
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/item.rs",
+          "line": 85,
+          "anchor": "let item",
+          "observation": "cut copies only supplied inclusive lines and leaves earlier preamble in source.",
+          "end_line": 91
+        },
+        {
+          "path": "crates/prod-code-engine-rust/src/snapshot/navigation.rs",
+          "line": 206,
+          "anchor": "node.navigation_range.start()",
+          "observation": "Native Rust document symbols start at the name, not doc comments/attributes.",
+          "end_line": 216
+        },
+        {
+          "path": "crates/prod-code-gateway/src/lsp_handlers/symbols.rs",
+          "line": 203,
+          "anchor": "s.line.saturating_sub(1)",
+          "observation": "Gateway forwards that name-based line in location.range, consumed by span_at.",
+          "end_line": 205
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/tests.rs",
+          "line": 81,
+          "anchor": "a_doc_comment_and_its_attributes",
+          "observation": "Checks /// and single-line #[inline] precede the cut.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Not a multiline outer attribute/block doc assertion."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/move_regressions.rs",
+          "line": 158,
+          "anchor": "move_integration_test_preserves",
+          "observation": "Checks a single-line #[test] travels with an integration test.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "The preamble closing )] case is not exercised."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "item-multiline-derive-reattaches",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "pub mod source;\npub mod dest;\n",
+            "src/source.rs": "#[derive(\n    Clone,\n)]\npub struct Moved;\npub struct Stayed;\n",
+            "src/dest.rs": ""
+          },
+          "public_entry": {
+            "tool": "code_move",
+            "arguments": {
+              "path": "src/source.rs",
+              "line": 4,
+              "character": 12,
+              "to": "src/dest.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "Name-based decl_start is line 4; the scanner stops at line 3, )].",
+            "Only pub struct Moved; is cut; the derive remains attached to Stayed, and Moved is appended to declared dest."
+          ],
+          "predicted_behavior": "With no callers requiring Clone, a clean proposal can apply while Clone transfers from Moved to Stayed. A multiline /** ... */ immediately above the declaration also remains behind.",
+          "limits": [
+            "No public request, analyzer diagnostics, compiler or runtime was executed. Requires available complete analyzer evidence and valid ordinary reference positions."
+          ]
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4070042003,
+      "finding_id": "review-comment:4070042003",
+      "original": {
+        "comment_id": 4070042003,
+        "pr": 60,
+        "url": "https://github.com/alex09x/prod-code/pull/60#discussion_r4070042003",
+        "path_at_review": "crates/prod-code-mcp/src/move_item.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Convert LSP UTF-16 columns before rewriting references**\n\nLSP columns default to UTF-16 code units, but this converts `col` by counting Rust `char`s. When a reference appears after a supplementary character such as an emoji on the same line, the computed offset lands after the symbol, `requalify` skips it, and a bare reference may receive no import after the move. In the source file this can be applied despite leaving an unresolved call because the diagnostics fallback deliberately does not flag missing symbols in the file they were removed from.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-22T09:08:12Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-22T09:05:47Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6kqZZb",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4070042003",
+        "channel": "inline_review"
+      },
+      "status": "fixed_on_current_main",
+      "conclusion": "Move references now use strict shared UTF-16-to-byte conversion. Supplementary characters no longer shift offsets by counting Rust chars, and unmatched references block even forced writes.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/item.rs",
+          "line": 105,
+          "anchor": "crate::signature::offset_of",
+          "observation": "Item-move offset_of delegates to the shared converter."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/signature/parse.rs",
+          "line": 120,
+          "anchor": "pub fn offset_of",
+          "observation": "Strict 1-based conversion walks LF/CRLF and rejects invalid/surrogate-interior columns.",
+          "end_line": 139
+        },
+        {
+          "path": "crates/prod-code-mcp/src/signature/parse.rs",
+          "line": 137,
+          "anchor": "ch.len_utf16()",
+          "observation": "Supplementary characters count as two units."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/signature/references.rs",
+          "line": 169,
+          "anchor": "l.checked_add(1)",
+          "observation": "Parsing changes coordinate origin without altering the UTF-16 character count.",
+          "end_line": 185
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 355,
+          "anchor": "offset_of(&out",
+          "observation": "The actual reference rewrite uses the corrected converter.",
+          "end_line": 372
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 269,
+          "anchor": "offset_of(&current",
+          "observation": "Pre-rewrite matching uses the same converter.",
+          "end_line": 294
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 335,
+          "anchor": "unmatched.is_empty()",
+          "observation": "apply blocks stale positions independently of force.",
+          "end_line": 345
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/tests/move_positions.rs",
+          "line": 33,
+          "anchor": "move_position_encoding_table",
+          "observation": "Table checks ASCII, emoji, CRLF and emoji+CRLF: empty unmatched, bare-source import, qualified caller rewrite, target bytes and root declaration.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Scripted references/symbols/clean diagnostics, not general live analyzer certification."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/move_positions.rs",
+          "line": 133,
+          "anchor": "move_genuinely_stale_reference",
+          "observation": "Asserts refusal and unchanged files for stale positions with force false and true.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Not an assertion about unrelated layout/preamble semantics."
+        }
+      ],
+      "source_predicted_cases": [],
+      "limits": [
+        "Tests were not executed. Fixed is scoped to the supplied coordinate defect and the exact inspected assertions."
+      ]
+    },
+    {
+      "comment_id": 4070042008,
+      "finding_id": "review-comment:4070042008",
+      "original": {
+        "comment_id": 4070042008,
+        "pr": 60,
+        "url": "https://github.com/alex09x/prod-code/pull/60#discussion_r4070042008",
+        "path_at_review": "crates/prod-code-mcp/src/move_item.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject target files outside the crate module tree**\n\nThe target is only checked for existence and then assigned a module path from its filesystem location; there is no verification that its parent actually declares it. Moving an unreferenced public item to an existing orphan such as `src/home.rs` without `mod home;` can therefore produce no error diagnostics and be applied, while the item disappears from the compiled crate and breaks downstream users. Verify the target is present in rust-analyzer's module tree before constructing or applying the move.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-22T09:08:12Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-22T09:05:47Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6kqZZe",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4070042008",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "A wholly unlinked target has a diagnostic mitigation, but source-target module ownership remains unchecked. A target linked only into the binary can accept a library item, removing that API from the library.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/module.rs",
+          "line": 18,
+          "anchor": "if target.exists()",
+          "observation": "Existing targets are read without source owner/module-tree proof.",
+          "end_line": 35
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/module.rs",
+          "line": 118,
+          "anchor": "let rel = file.strip_prefix",
+          "observation": "Ordinary src identity is inferred from physical layout and package/lib name.",
+          "end_line": 135
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/test_crate.rs",
+          "line": 97,
+          "anchor": "if !file.starts_with",
+          "observation": "Owning-root traversal runs only for tests/, returning None for ordinary lib and bin files.",
+          "end_line": 109
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/test_crate.rs",
+          "line": 179,
+          "anchor": "from == to",
+          "observation": "Two None values pass ensure_same_crate, collapsing lib/bin ownership."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/diagnostics/filter.rs",
+          "line": 280,
+          "anchor": "UNLINKED_FILE",
+          "observation": "Reported unlinked-file is promoted to error, mitigating the plain orphan.",
+          "end_line": 284
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 301,
+          "anchor": "new_module_parent",
+          "observation": "Only absent targets get a new mod declaration; an existing binary-only file gets none in the library.",
+          "end_line": 324
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/diagnostics/tests/unit.rs",
+          "line": 298,
+          "anchor": "an_unlinked_proposal_is_counted",
+          "observation": "Asserts unlinked-file becomes a counted error.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Does not establish ownership of a linked file in the source Cargo target."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/orchestration.rs",
+          "line": 1189,
+          "anchor": "a_moved_item_takes_its_imports",
+          "observation": "Checks carried imports and source line adjustment with existing home.rs.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Fixture scripts clean diagnostics even though home.rs has no mod declaration; not module-tree validation proof."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "target-owned-only-by-binary",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "pub fn api() -> u8 { 7 }\n",
+            "src/main.rs": "mod home;\nfn main() {}\n",
+            "src/home.rs": ""
+          },
+          "public_entry": {
+            "tool": "code_move",
+            "arguments": {
+              "path": "src/lib.rs",
+              "line": 1,
+              "character": 8,
+              "to": "src/home.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "Existing home.rs returns no new_module_parent; ordinary src files get the same inferred crate name.",
+            "api is moved to home.rs without adding mod home; to lib.rs.",
+            "home.rs is included in the binary, so it is not unlinked from every crate; no library callers exist to expose the loss."
+          ],
+          "predicted_behavior": "A clean overlay can apply while the library loses api entirely and only the binary gains home::api.",
+          "limits": [
+            "No live diagnostics observed. A plain orphan home.rs is expected to refuse if unlinked-file is reported (force can bypass counted diagnostics). This case instead demonstrates missing source-target ownership."
+          ]
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4070042013,
+      "finding_id": "review-comment:4070042013",
+      "original": {
+        "comment_id": 4070042013,
+        "pr": 60,
+        "url": "https://github.com/alex09x/prod-code/pull/60#discussion_r4070042013",
+        "path_at_review": "crates/prod-code-mcp/src/move_item.rs",
+        "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Retain nested paths when narrowing grouped imports**\n\nFor a common import such as `use std::{path::Path, collections::HashMap};`, `leaf_names` reduces the needed entry to `Path`, and this reconstruction emits `use std::Path;` rather than `use std::path::Path;`. Consequently an otherwise valid move of an item using only `Path` is rejected by the overlay check. Narrow the original group entries while retaining their full relative paths instead of rebuilding them from leaf names.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-22T09:08:12Z",
+        "priority": "P2",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-22T09:05:47Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6kqZZh",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4070042013",
+        "channel": "inline_review"
+      },
+      "status": "fixed_on_current_main",
+      "conclusion": "Grouped imports retain relative paths alongside leaf names, recursively accumulating nested prefixes. The original std::{path::Path, collections::HashMap} case narrows to use std::path::Path;.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 108,
+          "anchor": "fn collect_use_group_entries",
+          "observation": "Recursive traversal joins submodule prefixes and retains rel_path plus leaf.",
+          "end_line": 146
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 167,
+          "anchor": "collect_use_group_entries",
+          "observation": "Group parsing keeps relative paths inside the first brace."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 255,
+          "anchor": "use_tree_entries(stmt)",
+          "observation": "narrowed resolves selected leaves to their original relative paths.",
+          "end_line": 269
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 267,
+          "anchor": "head.trim_start(), rel_paths[0]",
+          "observation": "Single-entry narrowing appends the retained relative path to the original pre-brace head."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 332,
+          "anchor": "narrowed(stmt",
+          "observation": "carry_imports calls corrected narrowing before insertion.",
+          "end_line": 335
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 168,
+          "anchor": "carry_imports",
+          "observation": "Ordinary non-child item moves use this implementation."
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/tests.rs",
+          "line": 241,
+          "anchor": "nested_multiline_use_groups_narrow",
+          "observation": "Checks no import for an unrelated item and retained risk_snapshot/spot_snapshot prefixes for needed leaves.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Two selected nested paths, not general use-tree grammar certification."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/tests.rs",
+          "line": 263,
+          "anchor": "risk_snapshot::RiskAccount",
+          "observation": "Exact asserted import retains both nested relative paths.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Not run here; the one-leaf Path outcome is independently derived from production line 267."
+        }
+      ],
+      "source_predicted_cases": [],
+      "limits": [
+        "No tests or compiler executed. Import grammars beyond the original concern are not certified."
+      ]
+    },
+    {
+      "comment_id": 4081385041,
+      "finding_id": "review-comment:4081385041",
+      "original": {
+        "comment_id": 4081385041,
+        "pr": 149,
+        "url": "https://github.com/alex09x/prod-code/pull/149#discussion_r4081385041",
+        "path_at_review": "crates/prod-code-mcp/src/move_item.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Read visibility from the declaration rather than the item prefix**\n\nWhen a public item has a doc comment or attribute, `item` begins with `///` or `#[...]`, so this test classifies it as private and emits `mod util;` instead of `pub mod util;`. The move can then silently make a public API unreachable to downstream crates not present in the workspace, or reject workspace callers in other crates; inspect the actual declaration line after leading comments and attributes.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-23T10:21:53Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-23T10:17:12Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6lG6m7",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4081385041",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "Separate-line docs/attributes are now handled by reading decl_start, but visibility is still inferred from an entire physical-line prefix instead of the declaration token. Same-line outer attributes or line-split visibility still hide a public API behind a private module.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 306,
+          "anchor": "let public = source_text",
+          "observation": "Visibility reads the name-bearing physical line.",
+          "end_line": 309
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 309,
+          "anchor": "starts_with(\"pub\")",
+          "observation": "#[inline] pub fn starts with #, yielding false."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/module.rs",
+          "line": 56,
+          "anchor": "if public",
+          "observation": "False emits mod util; rather than pub mod util;."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/child.rs",
+          "line": 49,
+          "anchor": "parsed.is(i, \"#\")",
+          "observation": "Child item handling skips attributes and retains the actual pub token; enclosing declaration remains wrong.",
+          "end_line": 64
+        },
+        {
+          "path": "crates/prod-code-engine-rust/src/snapshot/navigation.rs",
+          "line": 206,
+          "anchor": "navigation_range.start()",
+          "observation": "Symbol line is the name line; a same-line attribute still precedes pub on it."
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/tests/orchestration.rs",
+          "line": 3645,
+          "anchor": "pub mod util;",
+          "observation": "Asserts a plain pub fn moving into a new file gets a public module.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Fixture at line 3617 has no prefix on the declaration line."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/tests.rs",
+          "line": 81,
+          "anchor": "a_doc_comment_and_its_attributes",
+          "observation": "Checks cut preserves separate-line #[inline].",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Does not exercise new-module visibility."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "same-line-attribute-hides-public-module",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "#[inline] pub fn api() -> u8 { 7 }\n"
+          },
+          "public_entry": {
+            "tool": "code_move",
+            "arguments": {
+              "path": "src/lib.rs",
+              "line": 1,
+              "character": 18,
+              "to": "src/util.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "decl_start is line 1, whose prefix is #[inline], so public is false.",
+            "The item lexer preserves pub fn api in util.rs, but declare_module inserts private mod util; in lib.rs."
+          ],
+          "predicted_behavior": "A clean apply can succeed while downstream crates cannot access move_audit::util::api.",
+          "limits": [
+            "No downstream compile was run. The original separate-line /// and #[inline] forms are genuinely improved; this surviving valid spelling is not claimed to be that same original layout."
+          ]
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4081385046,
+      "finding_id": "review-comment:4081385046",
+      "original": {
+        "comment_id": 4081385046,
+        "pr": 149,
+        "url": "https://github.com/alex09x/prod-code/pull/149#discussion_r4081385046",
+        "path_at_review": "crates/prod-code-mcp/src/move_item.rs",
+        "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Choose the crate root that owns the moved item**\n\nIn a package containing both `src/lib.rs` and `src/main.rs`, moving an item from the binary into a new `src/util.rs` always declares the module in `lib.rs`. The later module-path logic still treats `main.rs` as the same crate and rewrites its references as `crate::util::...`, but that module is absent from the binary crate root, so validation rejects an otherwise valid move. The source's owning root must disambiguate which parent receives the declaration.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-23T10:21:53Z",
+        "priority": "P2",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-23T10:17:12Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6lG6m_",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4081385046",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "New target parent selection still prefers lib.rs without consulting the source Cargo target. Moving a main.rs helper can declare util in the library while importing crate::util in the binary.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/module.rs",
+          "line": 43,
+          "anchor": "vec![dir.join(\"lib.rs\"), dir.join(\"main.rs\")]",
+          "observation": "First existing root wins regardless of moved-item ownership.",
+          "end_line": 50
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 56,
+          "anchor": "target_text(root, target)",
+          "observation": "Parent selection has no source-file argument."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/module.rs",
+          "line": 131,
+          "anchor": "Some(\"lib\") | Some(\"main\")",
+          "observation": "Library and binary roots collapse to one package-derived ModulePath."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/test_crate.rs",
+          "line": 179,
+          "anchor": "from == to",
+          "observation": "Only integration-test roots are disambiguated."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 245,
+          "anchor": "to_module.spelled_from",
+          "observation": "Caller imports use the inferred crate::util path.",
+          "end_line": 292
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 315,
+          "anchor": "rewritten.insert",
+          "observation": "Only the selected parent receives the new declaration.",
+          "end_line": 323
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/tests.rs",
+          "line": 39,
+          "anchor": "a_new_module_s_parent",
+          "observation": "Asserts lib.rs/a.rs selection in a fixture without main.rs.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "No dual-target owner assertion."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/move_regressions.rs",
+          "line": 158,
+          "anchor": "move_integration_test_preserves",
+          "observation": "Exercises independent tests roots.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "tests/ owner logic is not ordinary src/lib.rs versus src/main.rs logic."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "binary-item-declared-in-library",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "",
+            "src/main.rs": "fn helper() -> u32 {\n    7\n}\nfn main() {\n    let _ = helper();\n}\n"
+          },
+          "public_entry": {
+            "tool": "code_move",
+            "arguments": {
+              "path": "src/main.rs",
+              "line": 1,
+              "character": 4,
+              "to": "src/util.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "Absent util.rs selects lib.rs as parent.",
+            "The helper goes to util.rs; main.rs gets use crate::util::helper; while mod util; appears only in lib.rs."
+          ],
+          "predicted_behavior": "The binary plan is invalid. An analyzer detecting unresolved crate::util refuses an otherwise valid ordinary move; force can write the wrong plan.",
+          "limits": [
+            "Exact diagnostics were not observed. Incorrect parent selection and resulting target-specific Rust paths are source-proven; unrelated blanket refusal is not a semantic fix."
+          ]
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4081385053,
+      "finding_id": "review-comment:4081385053",
+      "original": {
+        "comment_id": 4081385053,
+        "pr": 149,
+        "url": "https://github.com/alex09x/prod-code/pull/149#discussion_r4081385053",
+        "path_at_review": "crates/prod-code-mcp/src/move_item.rs",
+        "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Reuse an existing declaration for the missing module file**\n\nIf the parent already contains `mod util;` but `util.rs` has not been created yet, this unconditionally adds a second declaration when moving into that file. The proposed result then has two definitions of `util`, so the analyzer rejects the operation (or `force` writes invalid Rust), even though creating the missing file would have repaired the existing declaration. Detect a matching top-level declaration before inserting another one.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-23T10:21:53Z",
+        "priority": "P2",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-23T10:17:12Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6lG6nC",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4081385053",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "Standalone existing missing-file declarations are now reused. The guard still misses a valid same-line attribute plus mod declaration and duplicates it; it also scans nested lines without top-level ownership.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 317,
+          "anchor": "source_declares_child_module",
+          "observation": "The new guard suppresses insertion only on a predicate match.",
+          "end_line": 320
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 282,
+          "anchor": "fn source_declares_child_module",
+          "observation": "Checks filename-containing #[path] lines or trimmed mod-line spellings, not parsed owners.",
+          "end_line": 307
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/imports.rs",
+          "line": 299,
+          "anchor": "if t == mod_decl",
+          "observation": "Only bare/pub/pub(...) declaration prefixes match, not #[allow(...)] mod util;.",
+          "end_line": 303
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/module.rs",
+          "line": 60,
+          "anchor": "t.starts_with(\"mod \")",
+          "observation": "Insertion does not recognize the attributed same-line declaration either."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/execute.rs",
+          "line": 341,
+          "anchor": "diagnostics.is_empty() || force",
+          "observation": "Detected duplicate errors can refuse default apply but remain force-writable.",
+          "end_line": 348
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/tests/move_regressions.rs",
+          "line": 187,
+          "anchor": "assert_eq!",
+          "observation": "Checks the existing path-declared integration-test module occurs once after move.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Separate-line path attribute and mod; no same-line outer attribute or nested-owner assertion."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/tests.rs",
+          "line": 271,
+          "anchor": "child_path_module",
+          "observation": "Checks filename detection for separate-line #[path].",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Does not establish matching top-level/physical target ownership."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "attributed-missing-file-declaration-duplicated",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "#[allow(dead_code)] mod util;\npub fn api() -> u8 { 7 }\n"
+          },
+          "public_entry": {
+            "tool": "code_move",
+            "arguments": {
+              "path": "src/lib.rs",
+              "line": 2,
+              "character": 8,
+              "to": "src/util.rs",
+              "apply": true,
+              "force": true
+            }
+          },
+          "predicted_steps": [
+            "util.rs is absent but already declared by lib.rs.",
+            "After api is cut, the guard misses #[allow(dead_code)] mod util; and declare_module adds pub mod util;.",
+            "The plan has two declarations for the now-created util.rs."
+          ],
+          "predicted_behavior": "Ordinary duplicate-module diagnostics cause default refusal; force=true bypasses them and can write invalid duplicate declarations.",
+          "limits": [
+            "Standalone mod util; is fixed. The surviving case is another valid spelling of the original missing-file declaration. No live duplicate diagnostic was collected."
+          ]
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4086049421,
+      "finding_id": "review-comment:4086049421",
+      "original": {
+        "comment_id": 4086049421,
+        "pr": 190,
+        "url": "https://github.com/alex09x/prod-code/pull/190#discussion_r4086049421",
+        "path_at_review": "crates/prod-code-mcp/src/move_module.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Restrict `super::` rewriting to paths in the module scope**\n\nWhen the moved source contains `super::` in a string literal, comment, macro token, or nested inline module, this byte scan rewrites it as well. For example, `const HELP: &str = \"super::help\";` silently changes runtime data while still type-checking, and `mod inner { super::f(); }` is incorrectly redirected from the moved module to its old parent. Tokenize the source and rewrite only path expressions whose `super` actually resolves to the original parent.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-23T18:47:04Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-23T18:40:50Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6lSiqr",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4086049421",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "Whole-module moves still rewrite super:: with raw substring scanning, including literals/comments/macro tokens/nested module paths. The lexical child-item rebaser is a different caller path.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/syntax.rs",
+          "line": 69,
+          "anchor": "text.match_indices(\"super::\")",
+          "observation": "No lexer or module-depth information participates.",
+          "end_line": 88
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 262,
+          "anchor": "resolve_super(&text",
+          "observation": "This scanner rewrites the moved module own-file contents.",
+          "end_line": 269
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/child.rs",
+          "line": 18,
+          "anchor": "Source::new",
+          "observation": "Token-based rebasing exists for item-to-child moves, not the module path.",
+          "end_line": 34
+        },
+        {
+          "path": "crates/prod-code-mcp/src/tools/refactor_handlers/move_ops.rs",
+          "line": 197,
+          "anchor": "if apply",
+          "observation": "Ordinary module apply calls write after diagnostics; well-typed semantic changes do not block it.",
+          "end_line": 200
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/tests.rs",
+          "line": 40,
+          "anchor": "super_becomes_the_old_parent",
+          "observation": "Asserts simple use/function paths change, my_super is retained and super::super left.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "No literals/comments/macros/nested inline scopes."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/move_regressions.rs",
+          "line": 237,
+          "anchor": "r#",
+          "observation": "Asserts raw super::inputs string survives an item-child move.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Different production helper; not evidence for module moves."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/orchestration.rs",
+          "line": 4812,
+          "anchor": "src/c/b.rs",
+          "observation": "Asserts simple module super::helper becomes crate::a::helper.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "No lexical context assertion."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "super-string-macro-nested-scope",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "pub mod a;\npub mod c;\n",
+            "src/a.rs": "pub mod b;\npub fn f() -> u8 { 1 }\n",
+            "src/a/b.rs": "pub const HELP: &str = \"super::help\";\n// super::help is documentation.\npub fn f() -> u8 { 2 }\npub mod inner {\n    pub fn value() -> u8 { super::f() }\n}\nmacro_rules! text { ($($t:tt)*) => { stringify!($($t)*) }; }\npub const TOKEN: &str = text!(super::help);\n",
+            "src/c.rs": ""
+          },
+          "public_entry": {
+            "tool": "code_move_module",
+            "arguments": {
+              "path": "src/a/b.rs",
+              "to": "src/c/b.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "The scanner replaces all eligible occurrences with crate::a::.",
+            "HELP and the comment change; macro input tokens change; inner::value calls crate::a::f instead of b::f."
+          ],
+          "predicted_behavior": "A clean apply can change HELP to \"crate::a::help\" and inner::value from 2 to 1 while preserving type correctness.",
+          "limits": [
+            "No runtime executed. Exact stringify whitespace is not asserted; its input token change and the constant string/function result changes are source-derived."
+          ]
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4086049433,
+      "finding_id": "review-comment:4086049433",
+      "original": {
+        "comment_id": 4086049433,
+        "pr": 190,
+        "url": "https://github.com/alex09x/prod-code/pull/190#discussion_r4086049433",
+        "path_at_review": "crates/prod-code-mcp/src/move_module.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Keep multiline attributes and block docs with the declaration**\n\nWhen `mod b;` is preceded by a multiline attribute or a `/** ... */` doc comment, the reverse scan stops at the closing `)]` or `*/`, so only the declaration is moved. The orphaned attribute can then attach to the next item in the old parent while the moved module loses its `cfg` or other attribute; this can compile successfully while enabling the module under configurations where it was previously disabled.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-23T18:47:04Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-23T18:40:50Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6lSiq1",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4086049433",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "The module declaration scanner still walks backward only over /// or #[ line prefixes. Multiline attribute closures and block-doc closures leave preamble in the old parent.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/syntax.rs",
+          "line": 32,
+          "anchor": "for above",
+          "observation": "Backward scan considers preceding lines.",
+          "end_line": 40
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/syntax.rs",
+          "line": 34,
+          "anchor": "a.starts_with(\"///\")",
+          "observation": "Only /// or #[ qualify; )] and */ stop the span."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 101,
+          "anchor": "declaration(&parent_text",
+          "observation": "The incomplete range becomes the moved block.",
+          "end_line": 111
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 237,
+          "anchor": "replace_range(start..end",
+          "observation": "Only that range is removed; declare_block inserts the incomplete block into the new parent.",
+          "end_line": 247
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/tests.rs",
+          "line": 15,
+          "anchor": "a_declaration_is_found",
+          "observation": "Asserts /// plus single-line #[cfg] travel with pub(crate) mod b;.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "No multiline attribute or block-doc closing line."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/tests.rs",
+          "line": 30,
+          "anchor": "a_block_is_declared",
+          "observation": "Asserts an already supplied one-line cfg block is inserted.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Does not prove extraction supplied a complete preamble."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "module-cfg-block-doc-reattach",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\ndefault = [\"enabled\"]\nenabled = []\n",
+            "src/lib.rs": "pub mod a;\npub mod c;\n",
+            "src/a.rs": "/** B module documentation.\n * More detail.\n */\n#[cfg(\n    feature = \"enabled\"\n)]\npub mod b;\npub struct Stayed;\n",
+            "src/a/b.rs": "pub fn f() -> u8 { 7 }\n",
+            "src/c.rs": ""
+          },
+          "public_entry": {
+            "tool": "code_move_module",
+            "arguments": {
+              "path": "src/a/b.rs",
+              "to": "src/c/b.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "The scanner stops at )] above pub mod b; and cuts only the declaration.",
+            "Docs and cfg stay before Stayed in a.rs; c.rs gets an unconditional pub mod b;."
+          ],
+          "predicted_behavior": "With the default enabled feature a clean apply can succeed. With default features disabled afterwards, b is now enabled where previously absent, and Stayed is disabled. Documentation attaches to Stayed.",
+          "limits": [
+            "No feature configuration/compiler run. A block-doc-only variant also stops at */; the complete case includes both required preamble forms."
+          ]
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4086049448,
+      "finding_id": "review-comment:4086049448",
+      "original": {
+        "comment_id": 4086049448,
+        "pr": 190,
+        "url": "https://github.com/alex09x/prod-code/pull/190#discussion_r4086049448",
+        "path_at_review": "crates/prod-code-mcp/src/move_module.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Do not recurse through symlinked module directories**\n\nIf the module's submodule directory contains a symlink to a directory, `Path::is_dir` follows it and this recursion treats every target file as part of the module. Applying the move then copies those files and deletes their old paths through the symlink, potentially deleting files outside the checkout; a cyclic directory symlink can also recurse indefinitely. Inspect `symlink_metadata` and reject or preserve directory symlinks rather than traversing them.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-23T18:47:04Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-23T18:40:50Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6lSiq8",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4086049448",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "Directory enumeration still follows symlinks. Generic writer containment now mitigates outside-checkout deletion, but a link to another in-checkout module is still traversed and its shared physical file can be copied then deleted.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/syntax.rs",
+          "line": 143,
+          "anchor": "path.is_dir()",
+          "observation": "is_dir follows directory links; recursion has no symlink_metadata/visited protection.",
+          "end_line": 147
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 134,
+          "anchor": "files_under(dir)",
+          "observation": "Every returned descendant is planned as a moved file.",
+          "end_line": 140
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 274,
+          "anchor": "removed.push",
+          "observation": "All old descendant paths are added for removal; the link itself is not preserved."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/types.rs",
+          "line": 130,
+          "anchor": "for old in &self.removed",
+          "observation": "write emits descendant deletions.",
+          "end_line": 137
+        },
+        {
+          "path": "crates/prod-code-mcp/src/refactor/uri.rs",
+          "line": 28,
+          "anchor": "resolve(&path)",
+          "observation": "Operation paths are resolved through links before assigning a checkout.",
+          "end_line": 46
+        },
+        {
+          "path": "crates/prod-code-mcp/src/refactor/uri.rs",
+          "line": 96,
+          "anchor": "std::fs::canonicalize",
+          "observation": "Directory-link descendants resolve to physical targets.",
+          "end_line": 103
+        },
+        {
+          "path": "crates/prod-code-mcp/src/refactor/engine.rs",
+          "line": 196,
+          "anchor": "contained(root, rel)",
+          "observation": "An in-checkout resolved target is eligible for deletion.",
+          "end_line": 211
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/tests.rs",
+          "line": 73,
+          "anchor": "the_declaring_file_and_the_files",
+          "observation": "Asserts ordinary directory recursion finds three files.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "No links/cycles."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/refactor/tests/safety.rs",
+          "line": 161,
+          "anchor": "nothing_is_written_through_a_symlink",
+          "observation": "Checks generic writer containment for links leading outside checkout.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Not module enumeration or an in-checkout shared target."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "directory-link-deletes-shared-module",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "pub mod a;\npub mod c;\npub mod shared;\n",
+            "src/a.rs": "pub mod b;\n",
+            "src/a/b.rs": "pub mod alias;\n",
+            "src/shared/mod.rs": "pub const VALUE: u8 = 7;\n",
+            "src/c.rs": ""
+          },
+          "public_entry": {
+            "tool": "code_move_module",
+            "arguments": {
+              "path": "src/a/b.rs",
+              "to": "src/c/b.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "Create the listed directory link src/a/b/alias -> ../../shared in this hypothetical layout.",
+            "files_under follows it and copies alias/mod.rs to src/c/b/alias/mod.rs; the alias is properly declared at both old and proposed locations.",
+            "Validation still has src/shared/mod.rs on disk. At write, the removed src/a/b/alias/mod.rs resolves to src/shared/mod.rs, which is inside checkout."
+          ],
+          "predicted_behavior": "A clean ordinary apply can delete src/shared/mod.rs, leaving the unchanged root pub mod shared; with a missing module file while materializing the copied destination as ordinary directories.",
+          "limits": [
+            "Requires directory symlink support. No fixture was created. External deletion is now blocked; cycles still trigger recursive traversal before containment, but literally infinite traversal is not asserted."
+          ],
+          "symlinks": {
+            "src/a/b/alias": "../../shared"
+          }
+        }
+      ],
+      "limits": []
+    },
+    {
+      "comment_id": 4086049455,
+      "finding_id": "review-comment:4086049455",
+      "original": {
+        "comment_id": 4086049455,
+        "pr": 190,
+        "url": "https://github.com/alex09x/prod-code/pull/190#discussion_r4086049455",
+        "path_at_review": "crates/prod-code-mcp/src/move_module.rs",
+        "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Update every crate root that declares a top-level module**\n\nWhen a package has both `src/lib.rs` and `src/main.rs`, a top-level file such as `src/a.rs` may be declared by either or both roots, but `declaring_file` delegates to `parent_module_file`, which always selects the existing `lib.rs` first. If only the binary declares the module the move is incorrectly refused; if both roots declare it, the move updates only the library declaration and deletes the shared file, leaving the unchanged binary with a missing module that the edited-file-only analyzer check need not report.\n\nUseful? React with 👍 / 👎.",
+        "created_at": "2026-09-23T18:47:04Z",
+        "priority": "P1",
+        "pr_state": "MERGED",
+        "merged_at": "2026-09-23T18:40:50Z",
+        "thread": {
+          "id": "PRRT_kwDOUg52Zc6lSirB",
+          "resolved": false,
+          "outdated": false
+        },
+        "status": "needs_current_main_revalidation",
+        "evidence": [],
+        "finding_id": "review-comment:4086049455",
+        "channel": "inline_review"
+      },
+      "status": "outstanding",
+      "conclusion": "Whole-module moves still choose one filesystem parent rather than every Cargo target/module owner. A binary-only declaration is refused when lib.rs exists; a file shared by lib/bin can be deleted after updating only the library declaration.",
+      "current_evidence": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/syntax.rs",
+          "line": 132,
+          "anchor": "parent_module_file(&module_file)",
+          "observation": "A single first-existing declaring file is returned."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_item/module.rs",
+          "line": 43,
+          "anchor": "vec![dir.join(\"lib.rs\"), dir.join(\"main.rs\")]",
+          "observation": "Library is preferred even if only main.rs declares the source module.",
+          "end_line": 50
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 64,
+          "anchor": "declaring_file(file)",
+          "observation": "Only one old_parent is captured.",
+          "end_line": 65
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 101,
+          "anchor": "declaration(&parent_text",
+          "observation": "Binary-only ownership refuses when selected lib.rs lacks the declaration.",
+          "end_line": 106
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 238,
+          "anchor": "texts.insert(old_parent",
+          "observation": "Only this old parent loses the declaration."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/execute.rs",
+          "line": 285,
+          "anchor": "validate_texts(remote, root, &edits, &[])",
+          "observation": "Validation contains no extra owning roots or file deletions."
+        },
+        {
+          "path": "crates/prod-code-mcp/src/move_module/types.rs",
+          "line": 130,
+          "anchor": "for old in &self.removed",
+          "observation": "Application later deletes the shared physical file.",
+          "end_line": 137
+        },
+        {
+          "path": "crates/prod-code-engine-rust/src/snapshot/navigation.rs",
+          "line": 149,
+          "anchor": "res.references",
+          "observation": "References belong to queried module identities, not an enumeration of all Cargo owners of a physical path.",
+          "end_line": 163
+        }
+      ],
+      "relevant_existing_tests": [
+        {
+          "path": "crates/prod-code-mcp/src/move_module/tests.rs",
+          "line": 86,
+          "anchor": "declaring_file(&src.join(\"a.rs\"))",
+          "observation": "Checks lib.rs declaring file in a library-only fixture.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "No binary owner."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/orchestration.rs",
+          "line": 4729,
+          "anchor": "a_module_moves_with_its_files",
+          "observation": "Checks module paths, imports, submodules and deletion.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "One lib.rs root only."
+        },
+        {
+          "path": "crates/prod-code-mcp/tests/tools.rs",
+          "line": 5972,
+          "anchor": "move_module_reports_then_moves",
+          "observation": "Checks public MCP dry-run and apply.",
+          "execution": "not_run; source assertions inspected only",
+          "limits": "Single root and scripted clean diagnostics, not every-owner proof."
+        }
+      ],
+      "source_predicted_cases": [
+        {
+          "case_id": "module-shared-by-lib-and-bin",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "pub mod a;\npub mod c;\n",
+            "src/main.rs": "mod a;\nmod c;\nfn main() {}\n",
+            "src/a.rs": "pub const VALUE: u8 = 7;\n",
+            "src/c.rs": ""
+          },
+          "public_entry": {
+            "tool": "code_move_module",
+            "arguments": {
+              "path": "src/a.rs",
+              "to": "src/c/a.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "lib.rs is selected; its a declaration leaves and mod a; is added to shared c.rs.",
+            "main.rs declares its own a module from the same physical file; it is not a reference to the distinct library a declaration.",
+            "The overlay still has a.rs. Application deletes it after checking only proposed contents."
+          ],
+          "predicted_behavior": "A clean apply can leave binary main.rs with stale mod a; pointing to deleted src/a.rs. Updating the shared c.rs does not repair that old binary declaration.",
+          "limits": [
+            "No analyzer/reference transcript collected. This separates physical source identity from independent lib/bin module identities."
+          ]
+        },
+        {
+          "case_id": "module-owned-only-by-binary",
+          "provenance": "source-derived; not executed",
+          "complete_source_layout": {
+            "Cargo.toml": "[package]\nname = \"move_audit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "src/lib.rs": "pub mod c;\n",
+            "src/main.rs": "mod a;\nmod c;\nfn main() {}\n",
+            "src/a.rs": "pub const VALUE: u8 = 7;\n",
+            "src/c.rs": ""
+          },
+          "public_entry": {
+            "tool": "code_move_module",
+            "arguments": {
+              "path": "src/a.rs",
+              "to": "src/c/a.rs",
+              "apply": true
+            }
+          },
+          "predicted_steps": [
+            "declaring_file selects lib.rs, which has no mod a;.",
+            "declaration returns None before querying references or validation."
+          ],
+          "predicted_behavior": "The public entry errors that src/lib.rs does not declare mod a; and writes nothing, although main.rs owns an ordinary movable module.",
+          "limits": [
+            "This byte-preserving refusal is the original ordinary-owner defect, not a permitted hazardous-construct safe-refusal fix."
+          ]
+        }
+      ],
+      "limits": []
+    }
+  ],
+  "counts": {
+    "fixed_on_current_main": 2,
+    "outstanding": 9,
+    "superseded_by_later_contract": 0,
+    "uncertain": 0,
+    "total": 11
+  },
+  "limits": [
+    "Every new scenario is source-derived. No public execution, actual diagnostics, compiler or runtime result was collected. Analyzer unavailability/incomplete validation can refuse earlier; this is not a semantic fix.",
+    "Fixed means the supplied concern is addressed by the cited source, not general certification of Rust moves. Missing new tests alone is never a defect here.",
+    "Plain orphan targets have unlinked-file mitigation, but ownership in the source Cargo target remains unchecked. Same-line visibility/declaration reuse survive improvements to separate-line forms.",
+    "The generic writer protects outside-checkout paths. The remaining symlink case deliberately targets another in-checkout owner, avoiding a claim that external deletion still succeeds.",
+    "No PR merge or review resolution was used as proof. No listed test is reported as passed."
+  ],
+  "navigation_failures": [
+    {
+      "command": "wc -l evidence/codex-review-audit/rust-moves-eleven-input.json && sed -n '1,240p' evidence/codex-review-audit/rust-moves-eleven-input.json && git log -3 --oneline && rg --files | rg '(move_item|move_module|rust_move|rust_layout|rust_visibility)'",
+      "error": "Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.",
+      "fallback": "Explicit JSON read and prod-code CLI navigation."
+    },
+    {
+      "command": "mcp__prod_code__code_definition({\"symbols\":[\"move_item\",\"move_module\"]})",
+      "error": "MCP tool call requires approval, but approval policy is never",
+      "fallback": "Successful semantic prod-code CLI searches and numbered local split-file reads."
+    },
+    {
+      "command": "ls crates/prod-code-mcp/src/move_item* crates/prod-code-mcp/src/move_module* && nl -ba crates/prod-code-mcp/src/move_item.rs | sed -n '1,240p' && nl -ba crates/prod-code-mcp/src/move_module.rs | sed -n '1,240p'",
+      "error": "nl: crates/prod-code-mcp/src/move_item.rs: No such file or directory\nnl: crates/prod-code-mcp/src/move_module.rs: No such file or directory",
+      "fallback": "The successful ls showed split directories; read named implementations."
+    },
+    {
+      "command": "wc -l crates/prod-code-mcp/src/move_item/imports.rs crates/prod-code-mcp/src/move_item/tests.rs crates/prod-code-mcp/src/move_module/tests.rs crates/prod-code-mcp/src/signature.rs && nl -ba crates/prod-code-mcp/src/move_item/imports.rs | sed -n '1,240p'",
+      "error": "wc: crates/prod-code-mcp/src/signature.rs: open: No such file or directory",
+      "fallback": "Read imports separately; semantic def returned signature/parse.rs:120."
+    },
+    {
+      "command": "prod-code def --symbol offset_of && prod-code grep 'pub (async )?fn (references|validate_texts|apply_workspace_edit)|pub.*offset_of' crates/prod-code-mcp/src/signature crates/prod-code-mcp/src/diagnostics crates/prod-code-mcp/src/refactor",
+      "error": "`offset_of` is ambiguous (3 candidates); qualify it (Type::name) or pass `path`:\nerror: unexpected argument 'crates/prod-code-mcp/src/diagnostics' found\nUsage: prod-code grep [OPTIONS] <PATTERN> [PATH]",
+      "fallback": "Used exact returned signature/parse.rs:120 and a single src search path; confirmed local definition."
+    },
+    {
+      "command": "prod-code grep 'move_module|move_item|code_move_module|\"code_move\"' crates/prod-code-cli/src --max-results 50 && prod-code grep 'pub.*fn|mod util;|visibility|attribute' crates/prod-code-mcp/tests/move_regressions.rs --max-results 45",
+      "error": "Error: search path does not exist: <assigned-worktree>/crates/prod-code-cli/src",
+      "fallback": "Listed crates and inspected actual prod-code-client paths. Absolute worktree prefix omitted from public report."
+    },
+    {
+      "command": "prod-code grep 'move_module|move_item|code_move_module|\"code_move\"' crates/prod-code/src --max-results 60 && prod-code grep 'unlinked-file' crates/prod-code-engine-rust/src --max-results 30 && prod-code grep 'move_module|move_item|mod util|attribute|visibility' crates/prod-code-mcp/tests/move_regressions.rs --max-results 40",
+      "error": "Error: search path does not exist: <assigned-worktree>/crates/prod-code/src",
+      "fallback": "Used observed prod-code-client directory. Absolute worktree prefix omitted from public report."
+    },
+    {
+      "command": "python3 - (first inline audit report writer and source-anchor validator)",
+      "error": "AssertionError: ('crates/prod-code-mcp/src/move_item/execute.rs', 340, 'diagnostics.is_empty() || force', '        anyhow::ensure!(')",
+      "fallback": "The first writer failed before creating an artifact. Corrected the checked expression location to line 341, as already shown by numbered source."
+    }
+  ],
+  "verification": {
+    "repository_tests": "not run, required by audit contract",
+    "build_compile_lint_format": "not run, required by audit contract",
+    "source_anchor_failures": []
+  }
+}

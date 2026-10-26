@@ -269,8 +269,8 @@ use crate::p2p::{
 
     #[test]
     fn child_path_module_and_use_super_glob_are_detected() {
-        use super::super::imports::{has_use_super_glob, source_declares_child_module};
-        use std::path::Path;
+        use super::super::imports::has_use_super_glob;
+        use super::super::ownership::Graph;
 
         let source = "\
 pub fn compute() -> u32 { 42 }
@@ -279,14 +279,27 @@ pub fn compute() -> u32 { 42 }
 #[path = \"abstraction_deficit_tests.rs\"]
 mod deficits;
 ";
-        assert!(source_declares_child_module(
-            source,
-            Path::new("/repo/src/abstraction_deficit_tests.rs")
-        ));
-        assert!(!source_declares_child_module(
-            source,
-            Path::new("/repo/src/other_tests.rs")
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let lib = root.join("src/lib.rs");
+        std::fs::write(&lib, source).unwrap();
+        let graph = Graph::load(&root, &lib).unwrap();
+        let owners = graph
+            .owners(&root.join("src/abstraction_deficit_tests.rs"), None)
+            .unwrap();
+        assert_eq!(owners[0].module.segments, ["deficits"]);
+        assert_eq!(graph.parent(&owners[0]).unwrap().file, lib);
+        assert!(
+            graph
+                .owners(&root.join("src/other_tests.rs"), None)
+                .is_err()
+        );
         assert!(has_use_super_glob("use super::*;\n\n#[test]\nfn t() {}\n"));
         assert!(!has_use_super_glob("use crate::foo;\n"));
     }

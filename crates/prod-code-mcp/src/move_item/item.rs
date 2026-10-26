@@ -58,20 +58,7 @@ pub fn span_at(symbols: &serde_json::Value, line: u32) -> Option<(String, u32, u
 /// The analyzer's range starts at `fn`/`struct`; a declaration without its `///` and `#[…]`
 /// is a different declaration.
 pub fn with_doc_comment(text: &str, start: u32) -> u32 {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut first = start;
-    while first > 1 {
-        let above = lines
-            .get(first as usize - 2)
-            .map(|l| l.trim())
-            .unwrap_or("");
-        if above.starts_with("///") || above.starts_with("#[") || above.starts_with("//!") {
-            first -= 1;
-        } else {
-            break;
-        }
-    }
-    first
+    super::rust_syntax::item_start(text, start, ra_ap_syntax::Edition::CURRENT)
 }
 
 /// `text` without lines `start..=end`, and those lines on their own.
@@ -80,23 +67,28 @@ pub fn with_doc_comment(text: &str, start: u32) -> u32 {
 /// number of lines removed, and a cut that also tidied the blank lines around it would make
 /// that arithmetic a lie. Whatever blank line is left over is the formatter's business.
 pub fn cut(text: &str, start: u32, end: u32) -> (String, String) {
-    let lines: Vec<&str> = text.lines().collect();
-    let (s, e) = (start as usize - 1, end as usize);
-    let item = lines[s.min(lines.len())..e.min(lines.len())].join("\n");
-    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
-    kept.extend_from_slice(&lines[..s.min(lines.len())]);
-    kept.extend_from_slice(&lines[e.min(lines.len())..]);
-    let mut out = kept.join("\n");
-    out.push('\n');
+    let s = crate::signature::offset_of(text, start, 1).unwrap_or(text.len());
+    let e = crate::signature::offset_of(text, end.saturating_add(1), 1).unwrap_or(text.len());
+    let item = text[s..e].strip_suffix('\n').unwrap_or(&text[s..e]);
+    let item = item.strip_suffix('\r').unwrap_or(item).to_string();
+    let mut out = text.to_string();
+    out.replace_range(s..e, "");
     (out, item)
 }
 
 /// `item` appended to `text`, with exactly one blank line between them.
 pub fn append_item(text: &str, item: &str) -> String {
-    let mut out = text.trim_end().to_string();
-    out.push_str("\n\n");
-    out.push_str(item.trim_end());
-    out.push('\n');
+    let mut out = text.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str(item);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
     out
 }
 

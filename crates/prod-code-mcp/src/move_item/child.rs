@@ -13,24 +13,77 @@ use crate::fixture::builder::lexer::Source;
 use anyhow::Result;
 
 /// Rebase paths one module deeper without changing comments, strings, raw identifiers or
-/// later components of a `super::super::...` chain. The lexer also handles spaced paths.
-fn rebase(text: &str) -> Result<String> {
-    let source = Source::new(text)?;
+/// later components of a `super::super::...` chain. Restrictions use their own grammar.
+fn rebase(text: &str, edition: ra_ap_syntax::Edition) -> Result<String> {
+    use ra_ap_syntax::{AstNode, ast};
+    let source = super::rust_syntax::parse(text, edition);
     let mut out = text.to_string();
-    for i in (0..source.tokens.len()).rev() {
-        if !(source.is(i, "super") || source.is(i, "self"))
-            || !source.is(i + 1, "::")
-            || (i > 0 && source.is(i - 1, "::"))
-        {
+    let mut edits = Vec::new();
+    for path in source.syntax().descendants().filter_map(ast::Path::cast) {
+        if path.qualifier().is_some() {
             continue;
         }
-        let token = source.tokens[i];
-        let replacement = if source.is(i, "super") {
-            "super::super"
-        } else {
-            "super"
+        let Some(segment) = path.segment() else {
+            continue;
         };
-        out.replace_range(token.start..token.end, replacement);
+        let head = segment.syntax().text().to_string();
+        let nested = path
+            .syntax()
+            .ancestors()
+            .filter_map(ast::Module::cast)
+            .filter(|m| {
+                m.item_list().is_some_and(|items| {
+                    super::rust_syntax::range(items.syntax())
+                        .contains(&super::rust_syntax::range(segment.syntax()).start)
+                })
+            })
+            .count();
+        let mut chain = path.clone();
+        let mut supers = usize::from(head == "super");
+        while let Some(parent) = chain.syntax().parent().and_then(ast::Path::cast) {
+            if parent
+                .segment()
+                .is_some_and(|s| s.syntax().text().to_string() == "super")
+            {
+                supers += 1;
+                chain = parent;
+            } else {
+                break;
+            }
+        }
+        if head == "self" && super::rust_syntax::grouped_self(&path) {
+            continue;
+        }
+        // The selected item does not include its old surrounding module. A chain that
+        // reaches that boundary (including from a local inline module) must grow too.
+        if (head == "super" && supers >= nested) || (head == "self" && nested == 0) {
+            let visibility = super::rust_syntax::in_visibility(&path);
+            let has_in = path
+                .syntax()
+                .ancestors()
+                .find_map(ast::Visibility::cast)
+                .is_some_and(|v| {
+                    v.syntax()
+                        .descendants_with_tokens()
+                        .filter_map(|n| n.into_token())
+                        .any(|t| t.text() == "in")
+                });
+            edits.push((
+                super::rust_syntax::range(segment.syntax()),
+                if head == "super" {
+                    if visibility && !has_in {
+                        "in super::super"
+                    } else {
+                        "super::super"
+                    }
+                } else {
+                    "super"
+                },
+            ));
+        }
+    }
+    for (span, replacement) in edits.into_iter().rev() {
+        out.replace_range(span, replacement);
     }
     Ok(out)
 }
@@ -42,8 +95,9 @@ pub(super) fn move_to_child(
     item: &str,
     target: &str,
     inherit_parent: bool,
+    edition: ra_ap_syntax::Edition,
 ) -> Result<(String, String, Vec<String>)> {
-    let mut item = rebase(item)?;
+    let mut item = rebase(item, edition)?;
     let parsed = Source::new(&item)?;
     let mut i = 0;
     while parsed.is(i, "#") && parsed.is(i + 1, "[") {
@@ -61,24 +115,12 @@ pub(super) fn move_to_child(
         let at = token.start;
         if !parsed.is(i, "pub") {
             item.insert_str(at, "pub(super) ");
-        } else if parsed.is(i + 1, "(") && parsed.is(i + 3, ")") {
-            if parsed.is(i + 2, "self") {
-                item.replace_range(
-                    parsed.tokens[i + 2].start..parsed.tokens[i + 2].end,
-                    "super",
-                );
-            } else if parsed.is(i + 2, "super") {
-                item.replace_range(
-                    parsed.tokens[i + 2].start..parsed.tokens[i + 2].end,
-                    "in super::super",
-                );
-            }
         }
     }
     let (mut text, mut carried) = if has_use_super_glob(target) {
         (target.to_string(), Vec::new())
     } else {
-        carry_imports(&rebase(source)?, &item, target)
+        carry_imports(&rebase(source, edition)?, &item, target)
     };
     if inherit_parent && !has_use_super_glob(&text) {
         text = add_import(&text, "use super::*;");
@@ -93,7 +135,11 @@ mod tests {
 
     #[test]
     fn child_move_widens_items_but_not_impls_or_macros() {
-        let widened = |item: &str| move_to_child("", item, "", false).unwrap().1;
+        let widened = |item: &str| {
+            move_to_child("", item, "", false, ra_ap_syntax::Edition::CURRENT)
+                .unwrap()
+                .1
+        };
         assert_eq!(widened("fn f() {}"), "pub(super) fn f() {}");
         assert_eq!(
             widened("#[inline]\nfn f() {}"),

@@ -11,29 +11,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::item::display;
 use super::types::ModulePath;
-
-pub(super) fn target_text(root: &Path, target: &Path) -> Result<(Option<PathBuf>, String)> {
-    if target.exists() {
-        let text = std::fs::read_to_string(target)
-            .with_context(|| format!("cannot read {}", target.display()))?;
-        return Ok((None, text));
-    }
-    anyhow::ensure!(
-        target.extension().is_some_and(|e| e == "rs"),
-        "{} is not a Rust source file",
-        display(root, target)
-    );
-    let parent = parent_module_file(target).with_context(|| {
-        format!(
-            "{} does not exist, and neither does a module file to declare it in (for \
-         `src/a/x.rs`, `src/a.rs` or `src/a/mod.rs`); create the parent module first",
-            display(root, target)
-        )
-    })?;
-    Ok((Some(parent), String::new()))
-}
 
 /// The file that must declare the module `target` would be: `src/lib.rs` or `src/main.rs` for
 /// `src/util.rs`, and `src/a.rs` or `src/a/mod.rs` for `src/a/util.rs`. The first that exists.
@@ -53,40 +31,45 @@ pub fn parent_module_file(target: &Path) -> Option<PathBuf> {
 /// `text` with `mod name;` (or `pub mod name;`) declared after its last top-level `mod` line, or
 /// after its leading inner doc comments and attributes when it has none.
 pub fn declare_module(text: &str, name: &str, public: bool) -> String {
-    let line = format!("{}mod {name};", if public { "pub " } else { "" });
-    let lines: Vec<&str> = text.lines().collect();
-    let is_mod = |l: &str| {
-        let t = l.trim_start();
-        (t.starts_with("mod ") || t.starts_with("pub mod ") || t.starts_with("pub(crate) mod "))
-            && t.trim_end().ends_with(';')
-            && !l.starts_with(char::is_whitespace)
-    };
-    let at = match lines.iter().rposition(|l| is_mod(l)) {
-        Some(i) => i + 1,
-        None => text[..super::preamble::preamble_end(text)].lines().count(),
-    };
-    // Blank lines above the declaration and nothing else (what an item cut from the top of the
-    // file leaves behind) go.
-    let leading_blank = if lines[..at].iter().all(|l| l.trim().is_empty()) {
-        at
-    } else {
-        0
-    };
-    let at = at - leading_blank;
-    let mut out: Vec<String> = lines[leading_blank..]
+    declare_module_in(text, name, public, ra_ap_syntax::Edition::CURRENT)
+}
+
+pub(crate) fn declare_module_in(
+    text: &str,
+    name: &str,
+    public: bool,
+    edition: ra_ap_syntax::Edition,
+) -> String {
+    let declarations = super::rust_syntax::declarations(text, 0..text.len(), edition);
+    let last = declarations
         .iter()
-        .map(|l| l.to_string())
-        .collect();
-    out.insert(at, line);
-    // One blank line between the declarations and what follows them.
-    if lines.iter().rposition(|l| is_mod(l)).is_none()
-        && out.get(at + 1).is_some_and(|l| !l.trim().is_empty())
-    {
-        out.insert(at + 1, String::new());
-    }
-    let mut joined = out.join("\n");
-    joined.push('\n');
-    joined
+        .filter(|d| d.inline.is_none())
+        .next_back();
+    let at = last.map_or_else(
+        || super::preamble::preamble_end(text),
+        |d| super::rust_syntax::line_end(text, d.span.end),
+    );
+    let leading = if text[..at].trim().is_empty() { at } else { 0 };
+    let mut out = text[leading..].to_string();
+    let at = at - leading;
+    let before = if at > 0 && !out[..at].ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    let blank = if last.is_none() && !out[at..].is_empty() && !out[at..].starts_with(['\n', '\r']) {
+        "\n"
+    } else {
+        ""
+    };
+    out.insert_str(
+        at,
+        &format!(
+            "{before}{}mod {name};\n{blank}",
+            if public { "pub " } else { "" }
+        ),
+    );
+    out
 }
 
 /// The crate directory above `file`, and the module `file` is inside it.
