@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Unicode in Rust Match Arms** (`crates/prod-code-mcp`, #1430):
+  Replace-conditional no longer panics on a `match` arm such as `0 => f(é, 0),`: the arm scanner trims its rolling context by characters instead of cutting a multi-byte identifier.
 - **Python Setter Evaluation Order** (`crates/prod-code-mcp`, #1406):
   Encapsulating a Python field keeps the staged form for an assignment whose value is an attribute read, since a property getter can rebind the receiver first; literals and bare names still become a direct setter call. C++ literals now also get the direct call.
 - **Go Signature Stack Overflow** (`crates/prod-code-mcp`):

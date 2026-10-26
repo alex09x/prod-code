@@ -135,9 +135,9 @@ fn find_rust_arm_comma(expression: &str) -> Option<usize> {
             previous.push(ch);
         } else {
             previous.push(ch);
-            if previous.len() > 4 {
-                let drain_to = previous.len() - 4;
-                previous.drain(..drain_to);
+            // Keep the last four characters; a byte cut could split `é` and panic (#1430).
+            while previous.chars().count() > 4 {
+                previous.remove(0);
             }
         }
     }
