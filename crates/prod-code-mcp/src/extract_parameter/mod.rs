@@ -8,10 +8,24 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod c_arrays;
+mod c_bindings;
+mod c_constants;
+mod c_declarations;
+mod c_templates;
+mod contexts;
 pub mod enclosing;
 pub mod execute;
+mod expressions;
+mod go_bindings;
+mod go_types;
 pub mod hover;
+mod javascript;
+mod literals;
+mod occurrences;
+mod regions;
 pub mod syntax;
+mod tokens;
 pub mod types;
 
 #[cfg(test)]

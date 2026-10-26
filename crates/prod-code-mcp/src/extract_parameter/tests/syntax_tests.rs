@@ -315,5 +315,5 @@ fn a_parameter_after_one_that_collects_the_rest_is_refused() {
 fn an_argument_is_added_at_the_end_of_whatever_was_there() {
     assert_eq!(with_argument("", "64"), "64");
     assert_eq!(with_argument("a, b", "64"), "a, b, 64");
-    assert_eq!(with_argument("  a  ", "64"), "a, 64");
+    assert_eq!(with_argument("  a  ", "64"), "  a,   64");
 }

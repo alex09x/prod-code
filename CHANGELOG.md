@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Extract-Parameter Tokens and One-Line Bodies** (`crates/prod-code-mcp`, #1309):
+  `replace_all` replaces the selected expression as tokens, so `80` no longer rewrites `"80px"`, comments or longer numbers; one-line Rust functions no longer panic; `f(existing_arg,)` gains the new argument without a doubled comma; C-family casts keep their comparison precedence and comments their boundaries.
 - **Rust Extract-Delegate Literals, Receivers and Await** (`crates/prod-code-mcp`, #1334):
   Files that use the moved fields only in struct literals or patterns are rewritten too, `other.city` on another owner inside a moved method becomes `other.address.city` while `self` stays with the helper, and async forwarding awaits. Moved literal fields join as `address: Address { street, city }` on one line when nothing but code sits between them.
 - **Constructor Replacement Values and Coverage** (`crates/prod-code-mcp`, #1345):
