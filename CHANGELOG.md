@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **TypeScript Safe Delete Binds Its Snapshot to the Text It Cuts** (`crates/prod-code-mcp`, #1398):
+  `code_safe_delete` on a TypeScript function refuses when the target file in its project snapshot is not byte for byte the text it read first. Every later check compares against that snapshot, while the deletion is cut from the first read. An edit made between the two, such as `keep = 1` becoming `keep = 2`, passed every check and was overwritten.
 - **Go Safe Delete Refuses on Git-Ignored Callers** (`crates/prod-code-mcp`, #1397):
   `code_safe_delete` on a Go function refuses, before asking gopls or the compiler, when an untracked file of the same package that Git ignores mentions the function. Such a file is never synced to the build node, so neither check there could see the caller, and the local module would break. Tracked files that match an ignore pattern are synced and unaffected, and so are checkouts outside Git.
 - **Trait Parameter Removal Keeps Assigning Arguments** (`crates/prod-code-mcp`, #1396):

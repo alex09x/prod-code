@@ -11,8 +11,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::super::sources::{
-    collect_sources, display, inspect_source, module_marker, project_snapshot, refuse_linked_path,
-    regular_unlinked_inside, unchanged,
+    bind_original, collect_sources, display, inspect_source, module_marker, project_snapshot,
+    refuse_linked_path, regular_unlinked_inside, unchanged,
 };
 
 fn project(files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -269,4 +269,33 @@ fn a_source_must_be_a_regular_unlinked_file_inside_the_project() {
     );
     assert_eq!(display(&root, &root.join("src/a.ts")), "src/a.ts");
     assert_eq!(display(&root, Path::new("/x/y")), "/x/y");
+}
+
+/// The read and the snapshot are two steps: an edit between them, here `keep = 1` becoming
+/// `keep = 2`, leaves the snapshot and every later check agreeing with each other but not with
+/// the text the deletion is cut from. That mismatch is refused (#1398).
+#[test]
+fn the_snapshot_must_hold_the_text_the_deletion_is_planned_on() {
+    let dir = project(&[
+        ("tsconfig.json", "{}"),
+        ("src/a.ts", "export const keep = 1;\nfunction unused() {}\n"),
+    ]);
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let file = root.join("src/a.ts");
+    let original = std::fs::read_to_string(&file).unwrap();
+    // The same bytes in the snapshot: bound.
+    let observed = project_snapshot(&root).unwrap();
+    bind_original(&root, &observed, &file, &original).unwrap();
+    // A concurrent edit after the first read, before the snapshot.
+    std::fs::write(&file, "export const keep = 2;\nfunction unused() {}\n").unwrap();
+    let observed = project_snapshot(&root).unwrap();
+    let error = bind_original(&root, &observed, &file, &original)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("changed between its first read and the project snapshot"),
+        "{error}"
+    );
+    // Later checks alone would not notice: the project is unchanged since that snapshot.
+    unchanged(&root, &observed, "references").unwrap();
 }

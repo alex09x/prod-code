@@ -173,6 +173,29 @@ pub fn project_snapshot(project: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
     Ok(files)
 }
 
+/// Refuses unless `observed` holds `file` with exactly the text the deletion is planned on:
+/// every later check compares against the snapshot, and the rewrite starts from `original`, so
+/// the two must be the same bytes. An edit between the first read and the snapshot would
+/// otherwise pass every check and be overwritten (#1398).
+pub fn bind_original(
+    project: &Path,
+    observed: &BTreeMap<PathBuf, Vec<u8>>,
+    file: &Path,
+    original: &str,
+) -> Result<()> {
+    let key = file
+        .strip_prefix(project)
+        .context("the TypeScript source is outside its project; nothing was written")?;
+    anyhow::ensure!(
+        observed
+            .get(key)
+            .is_some_and(|bytes| bytes == original.as_bytes()),
+        "{} changed between its first read and the project snapshot; nothing was written",
+        key.display()
+    );
+    Ok(())
+}
+
 pub fn unchanged(project: &Path, observed: &BTreeMap<PathBuf, Vec<u8>>, stage: &str) -> Result<()> {
     anyhow::ensure!(
         project_snapshot(project)? == *observed,
