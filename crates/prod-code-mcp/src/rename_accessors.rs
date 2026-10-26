@@ -22,6 +22,8 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+mod owner;
+
 fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -98,39 +100,6 @@ pub fn merge_three(base: &str, a: &str, b: &str) -> Option<String> {
     Some(out.concat())
 }
 
-/// The struct whose braces enclose `at`, by name.
-fn enclosing_struct(text: &str, at: usize) -> Option<String> {
-    let mut depth = 0i32;
-    let open = text[..at].char_indices().rev().find_map(|(i, c)| {
-        match c {
-            '}' => depth += 1,
-            '{' if depth == 0 => return Some(i),
-            '{' => depth -= 1,
-            _ => {}
-        }
-        None
-    })?;
-    // The item's own header: from after the previous item (`}` or `;`) to the brace.
-    let item_start = text[..open].rfind(['}', ';']).map_or(0, |i| i + 1);
-    let head = text[item_start..open].trim_end();
-    let head = head.split(" where").next().unwrap_or(head).trim_end();
-    let before_generics = match head.strip_suffix('>') {
-        Some(_) => &head[..head.find('<')?],
-        None => head,
-    }
-    .trim_end();
-    let name_start = before_generics
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| is_ident(*c))
-        .last()
-        .map(|(i, _)| i)?;
-    before_generics[..name_start]
-        .trim_end()
-        .ends_with("struct")
-        .then(|| before_generics[name_start..].to_string())
-}
-
 /// Where the analyzer says the symbol at `line`:`col` of `file` is declared.
 async fn definition(
     remote: SocketAddr,
@@ -179,6 +148,32 @@ async fn definition(
     Ok((path, at("line"), at("character")))
 }
 
+/// Whether the method at `line`:`col` of `path` sits in an `impl` whose self type the analyzer
+/// resolves to the struct named at `owner_at` of `owner_path`. Another module's struct of the
+/// same name, or an answer the analyzer cannot give, is not the owner (#1383).
+async fn impl_is_for(
+    remote: SocketAddr,
+    root: &Path,
+    path: &Path,
+    line: u32,
+    col: u32,
+    owner_path: &Path,
+    owner_at: (u32, u32),
+) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Some(self_type) = crate::signature::offset_of(&text, line, col)
+        .and_then(|at| owner::impl_self_type(&text, at))
+        .and_then(|at| crate::signature::line_col_at(&text, at))
+    else {
+        return false;
+    };
+    definition(remote, root, path, self_type.0, self_type.1)
+        .await
+        .is_ok_and(|(p, l, c)| p == owner_path && (l, c) == owner_at)
+}
+
 /// Every file the renames change, merged into one text per file against the checkout, and the
 /// renames that went into it (`timeout → deadline`, `set_timeout → set_deadline`).
 pub async fn plan(
@@ -198,9 +193,11 @@ pub async fn plan(
         .chars()
         .take_while(|c| is_ident(*c))
         .collect();
-    let owner = enclosing_struct(&def_text, at).with_context(|| {
+    let owner = owner::enclosing_struct(&def_text, at).with_context(|| {
         format!("`{field}` is not a field of a struct; `accessors` applies to a field")
     })?;
+    let owner_at = crate::signature::line_col_at(&def_text, owner.name_at)
+        .context("the struct's name is on no position")?;
 
     // The field's own rename, then each accessor's, all against the checkout as it is.
     let mut renames: Vec<(PathBuf, u32, u32, String, String)> = vec![(
@@ -214,14 +211,23 @@ pub async fn plan(
         // A getter named after the field itself is a method, found like the others.
         std::iter::once((field.clone(), new_name.to_string())),
     ) {
-        let hits = crate::tools::workspace_symbol_search(remote, root, &old, None, 50).await?;
+        // The index of the project that declares the field, not the checkout root's (#1383).
+        let hits =
+            crate::tools::workspace_symbol_search(remote, root, &old, Some(&def_path), 50).await?;
         for hit in hits {
             let is_method = matches!(hit.kind, "Method" | "Function");
-            let in_owner = hit
+            let named_like_owner = hit
                 .container
                 .as_deref()
-                .is_some_and(|c| c == owner || c.ends_with(&format!(" {owner}")));
-            if hit.name == old && is_method && in_owner {
+                .is_some_and(|c| c == owner.name || c.ends_with(&format!(" {}", owner.name)));
+            if hit.name == old
+                && is_method
+                && named_like_owner
+                && impl_is_for(
+                    remote, root, &hit.path, hit.line, hit.col, &def_path, owner_at,
+                )
+                .await
+            {
                 renames.push((
                     hit.path.clone(),
                     hit.line,
@@ -308,14 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn a_field_s_struct_and_its_accessor_names_are_found() {
-        let t =
-            "pub struct Conn<T> where T: Clone {\n    timeout: u64,\n}\nfn f() { let x = 1; }\n";
-        assert_eq!(
-            enclosing_struct(t, t.find("timeout").unwrap()).as_deref(),
-            Some("Conn")
-        );
-        assert!(enclosing_struct(t, t.find("x =").unwrap()).is_none());
+    fn a_field_s_accessor_names_are_found() {
         let names: Vec<String> = accessor_names("timeout", "deadline")
             .into_iter()
             .map(|(o, n)| format!("{o}>{n}"))

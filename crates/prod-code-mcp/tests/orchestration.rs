@@ -3556,6 +3556,11 @@ async fn a_field_is_renamed_with_its_accessors_in_one_change() {
                                    "end": { "line": line - 1, "character": 11 + name.len() } } } }])
             };
             match method {
+                // `impl Conn` on line 5 resolves to the struct's name; anything else to the field.
+                "textDocument/definition" if line == 4 => serde_json::json!([{
+                    "uri": format!("file://{}", l.display()),
+                    "range": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 15 } }
+                }]),
                 "textDocument/definition" => serde_json::json!([{
                     "uri": format!("file://{}", l.display()),
                     "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 11 } }
