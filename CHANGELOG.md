@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Qualified Symbol Verification Checks Whole Names in UTF-16 Columns** (`crates/prod-code-mcp`, #1420):
+  A qualified lookup accepts an indexed position only when the whole name starts at it, with the LSP column read in UTF-16 code units. The column it answers is in the same units. Before:
+  - a stale `run` where the source now says `runner` was accepted, so a symbol-addressed rename or delete could aim at `runner`;
+  - after `"😀😀"` on the same line, the answered column was two units early.
 - **Metrics History Scans No Longer Block Event Recording** (`crates/prod-code-gateway`, #1416):
   A metrics request copies the in-memory events it needs and releases the ring's lock before it reads the daily history files. Every request completion records into that ring, so before, a request for a window older than the ring made recording wait for the whole file scan. The summary also runs on a blocking thread instead of an async worker.
 - **Exported-Only Outlines Count Each Member's Owners** (`crates/prod-code-mcp`, #1418):

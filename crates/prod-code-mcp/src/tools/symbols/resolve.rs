@@ -13,8 +13,8 @@ use super::matching::{
     ambiguous_candidates_error, bare_symbol_name, dedup_ties, no_symbol_message, qualifier_matches,
 };
 use super::sources::{
-    find_identifier_on_line, identifier_at, is_extension_declaration, is_use_declaration,
-    remote_sources, source_text,
+    find_identifier_on_line, identifier_at, identifier_starts_at, is_extension_declaration,
+    is_use_declaration, remote_sources, source_text,
 };
 use super::type_members::type_members;
 use super::types::{MalformedLspCoordinate, SymbolHit};
@@ -171,12 +171,14 @@ pub(crate) async fn resolve_symbol_ties(
                 identifier_at(&hit.path, &remote_texts, hit.line, hit.col, &hit.name)
                     || identifier_at(&hit.path, &remote_texts, hit.line, hit.col, bare);
             if matches_exact {
+                // A position already on the name stays. A stale one moves to the name's place on
+                // the line, as an LSP column in UTF-16 code units (#1420).
                 if let Some(text) = source_text(&hit.path, &remote_texts)
                     && let Some(row) = text.lines().nth(hit.line.saturating_sub(1) as usize)
+                    && !identifier_starts_at(row, hit.col, raw_bare)
                     && let Some(col_idx) = find_identifier_on_line(row, raw_bare)
                 {
-                    let char_col = row[..col_idx].chars().count() as u32 + 1;
-                    hit.col = char_col;
+                    hit.col = row[..col_idx].encode_utf16().count() as u32 + 1;
                 }
                 verified.push(hit);
             }

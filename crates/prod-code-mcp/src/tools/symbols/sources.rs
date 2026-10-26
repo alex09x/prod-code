@@ -159,7 +159,7 @@ pub fn find_identifier_on_line(row: &str, bare: &str) -> Option<usize> {
 }
 
 /// Whether `name` is the identifier at the 1-based line/column of `path` (false when the
-/// file cannot be read).
+/// file cannot be read), or written as a whole identifier elsewhere on that line.
 pub(crate) fn identifier_at(
     path: &Path,
     remote: &RemoteSources,
@@ -173,16 +173,36 @@ pub(crate) fn identifier_at(
     let Some(row) = text.lines().nth(line.saturating_sub(1) as usize) else {
         return false;
     };
-    let start = row
-        .char_indices()
-        .nth(col.saturating_sub(1) as usize)
-        .map(|(i, _)| i)
-        .unwrap_or(row.len());
     let bare = name.split(['(', '<']).next().unwrap_or(name);
-    if row[start..].starts_with(bare) {
-        return true;
+    identifier_starts_at(row, col, bare) || find_identifier_on_line(row, bare).is_some()
+}
+
+/// Whether the whole identifier `bare` starts at the 1-based LSP column `col` of `row`, which
+/// counts UTF-16 code units: `run` at the start of `runner` is not (#1420).
+pub(crate) fn identifier_starts_at(row: &str, col: u32, bare: &str) -> bool {
+    let Some(start) = byte_at_utf16(row, col.saturating_sub(1)) else {
+        return false;
+    };
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    row[start..].starts_with(bare)
+        && !row[start + bare.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_ident)
+        && !row[..start].chars().next_back().is_some_and(is_ident)
+}
+
+/// The byte offset of `row` that the 0-based UTF-16 column `units` names, if it is a char
+/// boundary within the row.
+pub(crate) fn byte_at_utf16(row: &str, units: u32) -> Option<usize> {
+    let mut counted = 0u32;
+    for (at, c) in row.char_indices() {
+        if counted == units {
+            return Some(at);
+        }
+        counted += c.len_utf16() as u32;
     }
-    find_identifier_on_line(row, bare).is_some()
+    (counted == units).then_some(row.len())
 }
 
 /// The files a workspace edit rewrites, as (path, whole new content). The gateway answers a
