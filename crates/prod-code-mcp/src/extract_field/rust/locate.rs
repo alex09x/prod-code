@@ -13,6 +13,10 @@ use crate::extract_field::types::Braces;
 
 /// Every `impl` block in `text`: the type it is for, where `impl` starts, and its braces.
 pub fn impl_blocks(text: &str) -> Vec<(String, usize, usize, usize)> {
+    let Some(code) = super::syntax::code(text) else {
+        return vec![];
+    };
+    let text = code.as_str();
     let mut out = Vec::new();
     for (at, _) in text.match_indices("impl") {
         let before = text[..at].trim_end_matches([' ', '\t']);
@@ -48,6 +52,8 @@ pub fn method_at(
     close: usize,
     offset: usize,
 ) -> Option<(String, String, usize, usize)> {
+    let code = super::syntax::code(text)?;
+    let text = code.as_str();
     let mut best = None;
     for (at, _) in text[open..close].match_indices("fn ") {
         let at = open + at;
@@ -86,6 +92,8 @@ pub fn method_at(
 /// The braces of the struct whose name starts at `name_at`, or `None` for a tuple or unit
 /// struct.
 pub fn struct_braces(text: &str, name_at: usize) -> Option<(usize, usize)> {
+    let code = super::syntax::code(text)?;
+    let text = code.as_str();
     let open = text[name_at..].find(['{', ';', '(']).map(|i| name_at + i)?;
     if text.as_bytes()[open] != b'{' {
         return None;
@@ -94,68 +102,14 @@ pub fn struct_braces(text: &str, name_at: usize) -> Option<(usize, usize)> {
 }
 
 pub fn braces_kind(text: &str, open: usize, close: usize) -> Braces {
-    // A bare `..` before the closing brace is a rest pattern; a literal's update syntax always
-    // names the value it copies from (`..base`). That settles `matches!(x, Store { a, .. })`,
-    // where nothing around the braces says which it is.
-    let inner = text[open + 1..close].trim_end().trim_end_matches(',');
-    let rest = inner.trim_end().ends_with("..");
-    if rest || followed_by_pattern_cue(text, close + 1, 0) {
-        return Braces::Pattern { rest };
-    }
-    Braces::Literal
-}
-
-/// Whether what follows `from` marks the text before it as a pattern: `=>`, a single `=`, `|`,
-/// a `:` type ascription, `in` (a `for` loop) or `if` (a match guard). Braces nested in a
-/// tuple, a slice, a variant or another struct — `Some(Store { a }) =>` — are a pattern when
-/// the brackets around them are, so a `)`, `]`, `}` or `,` sends the question outward.
-fn followed_by_pattern_cue(text: &str, from: usize, depth: usize) -> bool {
-    let after = text[from..].trim_start();
-    let word = |w: &str| {
-        after.starts_with(w)
-            && !after[w.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
-    };
-    if after.starts_with("=>")
-        || (after.starts_with('=') && !after.starts_with("=="))
-        || (after.starts_with('|') && !after.starts_with("||"))
-        || (after.starts_with(':') && !after.starts_with("::"))
-        || word("in")
-        || word("if")
-    {
-        return true;
-    }
-    if depth < 8 && after.starts_with([')', ']', '}', ',']) {
-        return enclosing_close(text, text.len() - after.len())
-            .is_some_and(|close| followed_by_pattern_cue(text, close + 1, depth + 1));
-    }
-    false
-}
-
-/// The bracket that closes the group `at` sits in, skipping any group opened after it.
-fn enclosing_close(text: &str, at: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut i = at;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' | b'{' => i = crate::parameter_object::matching_bracket(text, i)?,
-            b')' | b']' | b'}' => return Some(i),
-            b'"' => {
-                let mut j = i + 1;
-                while j < bytes.len() && bytes[j] != b'"' {
-                    j += if bytes[j] == b'\\' { 2 } else { 1 };
-                }
-                i = j;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
+    super::syntax::classify(text, open, close).unwrap_or(Braces::Pattern { rest: false })
 }
 
 /// Whether the name at `at` begins a value built with braces rather than a type named in an
 /// `impl` header, a return type or a bound. Returns the opening brace.
 pub fn constructor_brace(text: &str, at: usize, name: &str) -> Option<usize> {
+    let code = super::syntax::code(text)?;
+    let text = code.as_str();
     if !text[at..].starts_with(name) || text[at + name.len()..].starts_with(is_ident) {
         return None;
     }
@@ -198,6 +152,10 @@ pub fn constructor_brace(text: &str, at: usize, name: &str) -> Option<usize> {
 /// The braces of every `Self { … }` between `open` and `close`, leaving out `-> Self {`, where
 /// the brace is a function body.
 pub fn self_literals(text: &str, open: usize, close: usize) -> Vec<usize> {
+    let Some(code) = super::syntax::code(text) else {
+        return vec![];
+    };
+    let text = code.as_str();
     let mut out = Vec::new();
     for (at, _) in text[open..close].match_indices("Self") {
         let at = open + at;

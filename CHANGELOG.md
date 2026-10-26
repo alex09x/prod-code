@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Extract-Field Boundaries** (`crates/prod-code-mcp`, #1342):
+  Extract-field no longer rewrites matching text inside strings or longer numbers, keeps deeply nested patterns blocking instead of giving them an initializer, and keeps binding identity under NFC normalization and private constructors.
 - **Prune Runtime Roots and Engine Scope** (`crates/prod-code-mcp`, #1376):
   Zero-reference Rust items reached through `#[no_mangle]`, `#[export_name]` (also inside `unsafe(...)`) or an unknown registration attribute stay out of the dead set, so prune no longer deletes FFI entry points. Prune refuses non-Rust and mixed scopes before any query or write instead of reporting "nothing to prune".
 - **Boolean Value Inversion Blockers** (`crates/prod-code-mcp`, #1375):

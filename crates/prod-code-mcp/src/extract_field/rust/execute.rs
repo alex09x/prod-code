@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use crate::extract_field::helpers::{display, is_ident, mentions, source_line};
 use crate::extract_field::rust::insertion::{field_insertion, literal_insertion};
 use crate::extract_field::rust::locate::{
-    braces_kind, constructor_brace, impl_blocks, method_at, self_literals, struct_braces,
+    constructor_brace, impl_blocks, method_at, self_literals, struct_braces,
 };
 use crate::extract_field::types::{Braces, ExtractedField};
 
@@ -152,38 +152,21 @@ pub async fn extract(
 
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     // The method reads the field where it used to compute the value.
-    let mut replaced = 0usize;
-    if replace_all {
-        let mut at = body_open;
-        while let Some(i) = text[at..body_close].find(&expression) {
-            let hit = at + i;
-            edits.entry(file.to_path_buf()).or_default().push((
-                hit,
-                expression.len(),
-                format!("self.{name}"),
-            ));
-            replaced += 1;
-            at = hit + expression.len();
-        }
-    } else {
-        let lead = text[from..to].len() - text[from..to].trim_start().len();
-        edits.entry(file.to_path_buf()).or_default().push((
-            from + lead,
-            expression.len(),
-            format!("self.{name}"),
-        ));
-        replaced = 1;
+    let replacements = super::expressions::replacements(
+        file,
+        &text,
+        from,
+        to,
+        (body_open, body_close),
+        replace_all,
+    )?;
+    let replaced = replacements.len();
+    for (at, len) in replacements {
+        edits
+            .entry(file.to_path_buf())
+            .or_default()
+            .push((at, len, format!("self.{name}")));
     }
-    // The struct declares it.
-    edits
-        .entry(def_path.clone())
-        .or_default()
-        .push(field_insertion(
-            &def_text,
-            struct_open,
-            struct_close,
-            &format!("{name}: {ty}"),
-        ));
 
     // Every construction site initialises it.
     let field_init = format!("{name}: {init}");
@@ -192,6 +175,7 @@ pub async fn extract(
     let mut unmatched = Vec::new();
     let mut impl_files: Vec<PathBuf> = vec![def_path.clone(), file.to_path_buf()];
     let mut braces: Vec<(PathBuf, usize)> = Vec::new();
+    let mut owner_refs = vec![(file.to_path_buf(), owner_in_header)];
     let refs = crate::signature::references(remote, root, &def_path, def_line, def_col)
         .await
         .with_context(|| {
@@ -217,14 +201,19 @@ pub async fn extract(
         if !impl_files.contains(&path) {
             impl_files.push(path.clone());
         }
+        owner_refs.push((path.clone(), at));
         if let Some(open) = constructor_brace(body, at, spelled) {
             braces.push((path.clone(), open));
         }
     }
     for path in &impl_files {
         let body = crate::refactor::referenced_text(&mut texts, path)?.clone();
-        for (ty_name, _, open, close) in impl_blocks(&body) {
-            if ty_name == owner {
+        for (ty_name, header, open, close) in impl_blocks(&body) {
+            if ty_name == owner
+                && owner_refs
+                    .iter()
+                    .any(|(p, at)| p == path && header <= *at && *at < open)
+            {
                 braces.extend(
                     self_literals(&body, open, close)
                         .into_iter()
@@ -235,32 +224,48 @@ pub async fn extract(
     }
     braces.sort();
     braces.dedup();
+    let mut constructor_scopes = Vec::new();
     for (path, open) in braces {
         let body = &texts[&path];
         let (line, col) = crate::signature::position_at(body, open)?;
-        let Some(close) = crate::parameter_object::matching_bracket(body, open) else {
+        let Some(close) = super::syntax::close(body, open) else {
             unmatched.push(format!(
                 "{}:{line}:{col} (a construction whose braces do not close)",
                 display(root, &path)
             ));
             continue;
         };
-        match braces_kind(body, open, close) {
-            Braces::Literal => {
+        match super::syntax::classify(body, open, close) {
+            Some(Braces::Literal) => {
                 edits
                     .entry(path.clone())
                     .or_default()
                     .push(literal_insertion(body, open, &field_init));
                 constructors += 1;
+                constructor_scopes.push((path.clone(), body.clone(), open));
             }
-            Braces::Pattern { rest: true } => {}
-            Braces::Pattern { rest: false } => blocked.push(format!(
+            Some(Braces::Pattern { rest: true }) => {}
+            Some(Braces::Pattern { rest: false }) => blocked.push(format!(
                 "{}:{line}:{col} a pattern that lists every field no longer matches: `{}`",
                 display(root, &path),
                 source_line(body, open)
             )),
+            None => unmatched.push(format!(
+                "{}:{line}:{col} (cannot establish constructor versus pattern within the nesting limit)",
+                display(root, &path)
+            )),
         }
     }
+    let visibility = super::syntax::visibility((&def_path, &def_text, def_at), &constructor_scopes);
+    edits
+        .entry(def_path.clone())
+        .or_default()
+        .push(field_insertion(
+            &def_text,
+            struct_open,
+            struct_close,
+            &format!("{visibility}{name}: {ty}"),
+        ));
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {

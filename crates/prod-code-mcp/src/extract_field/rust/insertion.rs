@@ -15,7 +15,17 @@ pub fn field_insertion(
     close: usize,
     decl: &str,
 ) -> (usize, usize, String) {
-    let content_end = text[..close].trim_end().len();
+    let content_end = crate::fixture::builder::lexer::Source::new(text)
+        .ok()
+        .and_then(|s| {
+            s.tokens
+                .iter()
+                .rev()
+                .find(|t| t.end <= close)
+                .map(|t| t.end)
+        })
+        .unwrap_or_else(|| text[..close].trim_end().len());
+    let trailing = text[content_end..close].trim_end();
     let first_field = text[open + 1..close]
         .lines()
         .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"));
@@ -37,7 +47,7 @@ pub fn field_insertion(
     (
         content_end,
         close - content_end,
-        format!("{comma}\n{indent}{decl},\n{closing_indent}"),
+        format!("{comma}{trailing}\n{indent}{decl},\n{closing_indent}"),
     )
 }
 
