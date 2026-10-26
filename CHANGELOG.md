@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Generify Reads Prefixed C++ Character Literals** (`crates/prod-code-mcp`, #1552):
+  The namespace scan skips `L'}'`, `u'}'`, `U'}'` and `u8'}'` as character literals. Before, such a brace closed `namespace a`, and a header that declares the function was taken as unrelated. Digit separators such as `1'000` and `0xFF'FF` are still read as numbers.
 - **Rename Test Names Only in Real Tests** (`crates/prod-code-mcp`, #1550):
   `code_rename` with `comments` takes a Rust file's test functions from its syntax tree. `#[test] fn order_total()` spelled inside a string or raw string is data and keeps its bytes. Real tests under `#[test]`, `#[tokio::test]`, `*_test` and `rstest` are still renamed.
 - **Process-Group Signals Stay with Their Own Group** (`crates/prod-code-gateway`, #1545):

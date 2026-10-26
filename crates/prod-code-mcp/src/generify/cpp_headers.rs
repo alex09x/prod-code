@@ -55,8 +55,13 @@ pub(super) fn namespaces_at(text: &str, at: usize) -> Option<Vec<String>> {
             i += 1;
             continue;
         }
-        // A character literal, but not a digit separator as in `1'000`.
-        if b == b'\'' && !(i > 0 && bytes[i - 1].is_ascii_alphanumeric()) {
+        // A character literal, also prefixed (`L'}'`, `u8'}'`), but not a digit separator as
+        // in `1'000` or `0xFF'FF`: that `'` follows a word that starts with a digit (#1552).
+        let word_start = bytes[..i]
+            .iter()
+            .rposition(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
+            .map_or(0, |p| p + 1);
+        if b == b'\'' && !(word_start < i && bytes[word_start].is_ascii_digit()) {
             i += 1;
             while i < end && bytes[i] != b'\'' {
                 i += if bytes[i] == b'\\' { 2 } else { 1 };
@@ -210,6 +215,9 @@ mod tests {
         assert!(at(text, "int selected").unwrap().is_empty());
         let text = "/* namespace x { */ const char* s = \"namespace y {\"; char c = '{'; int n = 1'000;\nnamespace é { int z(); }";
         assert_eq!(at(text, "int z").unwrap(), ["é"]);
+        // Prefixed character literals are literals, digit separators are not (#1552).
+        let text = "namespace a {\nconst wchar_t m = L'}';\nchar16_t n = u'}'; char8_t o = u8'}';\nint h = 0xFF'FF; int k = 1'0;\nint selected(int x);\n}";
+        assert_eq!(at(text, "int selected").unwrap(), ["a"]);
     }
 
     #[test]
@@ -256,6 +264,15 @@ mod tests {
         // Uncertain scans may declare.
         let anonymous = "namespace { int selected(int x); }";
         assert!(header_may_declare(source, def, anonymous, "selected"));
+        // The issue's fixture: the brace of `L'}'` must not close `namespace a` (#1552).
+        let api = "namespace a { int selected(int x); }\n";
+        let compute = "#include \"api.hpp\"\nnamespace a {\nconst wchar_t marker = L'}';\nint selected(int x) { return x; }\n}\n";
+        assert!(header_may_declare(
+            compute,
+            compute.find("int selected").unwrap() + 4,
+            api,
+            "selected"
+        ));
         // One of several same-named declarations may be it: the first is not the only one.
         let both = "namespace other { int selected(int x); }\nint selected(int x);\n";
         assert!(header_may_declare(source, def, both, "selected"));
