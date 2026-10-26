@@ -19,7 +19,7 @@ use super::compile::{
 use super::lsp::offset_at;
 use super::parser::function_at;
 use super::sources::{
-    display, inspect_source, module_marker, project_snapshot, refuse_linked_path,
+    bind_original, display, inspect_source, module_marker, project_snapshot, refuse_linked_path,
     regular_unlinked_inside, unchanged,
 };
 use super::types::DeletedFunction;
@@ -69,6 +69,7 @@ pub async fn delete_function(
     })?;
 
     let observed = project_snapshot(&project.root)?;
+    bind_original(&project.root, &observed, &file, &original)?;
     let uri = url::Url::from_file_path(&file)
         .map_err(|_| anyhow!("invalid TypeScript source path {}", file.display()))?
         .to_string();
