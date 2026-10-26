@@ -123,19 +123,12 @@ async fn unresolved_symbols_leave_every_access_unmatched() {
         false,
     )
     .await;
-    assert_eq!(by_failure.unmatched.len(), 3, "{:?}", by_failure.unmatched);
-    assert!(by_failure.unmatched[0].starts_with("box.py: field symbols could not be resolved: "));
-    assert_eq!(
-        by_failure.unmatched[1..],
-        [
-            "use.py:3: possible `count` access could not be matched to `Box`".to_string(),
-            "use.py:4: possible `count` access could not be matched to `Box`".to_string(),
-        ]
-    );
+    assert_eq!(by_failure.unmatched.len(), 1, "{:?}", by_failure.unmatched);
+    assert!(by_failure.unmatched[0].starts_with("field symbols could not be resolved: "));
     assert!(!by_failure.applied);
 
     let silent = run(&ws, gateway(Value::Null, Value::Null).await, false).await;
-    assert_eq!(silent.unmatched, by_failure.unmatched[1..]);
+    assert_eq!(silent.unmatched, ["field symbols could not be resolved"]);
     assert_eq!(ws.read("use.py"), USE, "nothing is written");
 
     let no_refs = run(
@@ -145,33 +138,20 @@ async fn unresolved_symbols_leave_every_access_unmatched() {
     )
     .await;
     assert!(
-        no_refs.unmatched[0].starts_with("box.py: analyzer references could not be verified: "),
+        no_refs.unmatched[0].starts_with("analyzer references could not be verified: "),
         "{:?}",
         no_refs.unmatched
     );
 }
 
 #[tokio::test]
-async fn references_that_do_not_add_up_are_named() {
+async fn invalid_semantic_references_are_named() {
     let ws = workspace(USE);
     #[allow(clippy::type_complexity)]
     let table: Vec<(Vec<(&str, u32, u32)>, Vec<&str>)> = vec![
         (
-            vec![("use.py", 3, 9), ("use.py", 4, 3)],
-            vec![
-                "box.py: analyzer found 0 field reference(s) in the declaring file, but only 1 could be rewritten",
-            ],
-        ),
-        (
-            vec![("box.py", 3, 14), ("use.py", 3, 9)],
-            vec![
-                "use.py:4: possible `count` access is absent from analyzer references",
-                "use.py:4: possible `count` access could not be matched to `Box`",
-            ],
-        ),
-        (
             vec![("box.py", 3, 14), ("use.py", 3, 1), ("use.py", 4, 3)],
-            vec!["use.py:3: analyzer reference does not point at `count`"],
+            vec!["use.py:3:1: analyzer reference does not point at executable `count`"],
         ),
         (
             vec![
@@ -180,7 +160,7 @@ async fn references_that_do_not_add_up_are_named() {
                 ("use.py", 4, 3),
                 ("use.py", 50, 1),
             ],
-            vec!["use.py: analyzer reference points beyond end of file"],
+            vec!["use.py:50:1: analyzer reference does not point at executable `count`"],
         ),
         (
             vec![
@@ -219,14 +199,14 @@ async fn references_that_do_not_add_up_are_named() {
 }
 
 #[tokio::test]
-async fn a_line_with_more_accesses_than_references_is_not_rewritten() {
+async fn same_line_unrelated_access_is_preserved() {
     let ws = workspace(USE_TWO);
     let spots = refs(&ws, &[("box.py", 3, 14), ("use.py", 3, 9)]);
     let done = run(&ws, gateway(symbols(), spots).await, true).await;
-    assert!(!done.applied);
+    assert!(done.applied);
+    assert!(done.unmatched.is_empty());
     assert_eq!(
-        done.unmatched,
-        vec!["use.py:3: only 2 of 1 analyzer reference(s) could be rewritten".to_string()]
+        ws.read("use.py"),
+        "from box import Box\nb = Box()\nprint(b.get_count(), c.count)\n"
     );
-    assert_eq!(ws.read("use.py"), USE_TWO);
 }

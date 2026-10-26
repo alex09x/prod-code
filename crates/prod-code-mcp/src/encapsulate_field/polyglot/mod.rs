@@ -9,19 +9,24 @@
  */
 
 pub mod cpp;
+mod cpp_statement;
+mod expressions;
 pub mod go;
 pub mod lsp;
 pub mod py;
+pub(super) mod python_rhs;
 pub mod replace;
+mod semantic;
 pub mod swift;
 pub mod ts_js;
 
+use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-
+use super::case::{display, is_ident};
+use super::types::{EncapsulatedField, Language};
 pub use cpp::{encapsulate_field_cpp, rewrite_external_cpp};
 pub use go::{encapsulate_field_go, rewrite_external_go};
 pub(crate) use lsp::field_position_in_lsp;
@@ -33,30 +38,23 @@ pub use replace::{
 pub use swift::{encapsulate_field_swift, rewrite_external_swift};
 pub use ts_js::{encapsulate_field_js, encapsulate_field_ts, rewrite_external_ts};
 
-use super::case::{display, field_at_line_col, is_ident};
-use super::types::{EncapsulatedField, Language};
-
+#[cfg(test)]
 fn has_ambiguous_property_use(text: &str, field: &str) -> bool {
-    let needles = [format!(".{field}"), format!("->{field}")];
-    text.lines().any(|line| {
-        needles.iter().any(|needle| {
-            let mut rest = line;
-            while let Some(pos) = rest.find(needle) {
-                let before = rest[..pos].trim_end();
+    [format!(".{field}"), format!("->{field}")]
+        .iter()
+        .any(|needle| {
+            text.match_indices(needle).any(|(at, _)| {
+                let before = text[..at].trim_end();
                 let receiver = before
                     .rsplit(|c: char| !is_ident(c))
                     .next()
                     .unwrap_or_default();
-                if receiver != "this" && receiver != "self" {
-                    return true;
-                }
-                rest = &rest[pos + needle.len()..];
-            }
-            false
+                receiver != "this" && receiver != "self"
+            })
         })
-    })
 }
 
+#[cfg(test)]
 fn rewrite_external_line(lang: Language, line: &str, field: &str) -> (String, usize, usize) {
     match lang {
         Language::TypeScript | Language::JavaScript => rewrite_external_ts(line, field),
@@ -80,224 +78,84 @@ pub async fn encapsulate_polyglot(
 ) -> Result<EncapsulatedField> {
     let content = std::fs::read_to_string(file_path)
         .with_context(|| format!("Cannot read {}", file_path.display()))?;
-    let lang = Language::from_path(file_path)
-        .with_context(|| format!("Unsupported language for file: {}", file_path.display()))?;
-
-    let (owner, ty, new_content, file_reads, file_writes, left_in_file) = match lang {
-        Language::TypeScript => encapsulate_field_ts(&content, class_name, field_name)?,
-        Language::JavaScript => encapsulate_field_js(&content, class_name, field_name)?,
-        Language::Python => encapsulate_field_py(&content, class_name, field_name)?,
-        Language::Cpp => encapsulate_field_cpp(&content, class_name, field_name, by_value)?,
-        Language::Swift => encapsulate_field_swift(&content, class_name, field_name)?,
-        Language::Go => encapsulate_field_go(&content, class_name, field_name)?,
-    };
-
-    let mut rewritten = vec![(file_path.to_string_lossy().to_string(), new_content)];
-    let mut total_reads = file_reads;
-    let mut total_writes = file_writes;
+    let lang = Language::from_path(file_path).context("unsupported encapsulation language")?;
+    // Only metadata is taken from this draft. Generated text is discarded until semantic
+    // discovery supplies the declaration and the selected references.
+    let (owner, ty, _, _, _, _) =
+        semantic::generate(lang, &content, class_name, field_name, by_value)?;
+    let canonical_root = std::fs::canonicalize(workspace_root)?;
+    let canonical_file = std::fs::canonicalize(file_path)?;
     let mut unmatched = Vec::new();
-    let dot_access = format!(".{field_name}");
-    let quoted_or_commented_access = content.lines().any(|line| {
-        line.contains(&dot_access)
-            && (line.contains('\"')
-                || line.contains('\'')
-                || line.contains("//")
-                || line.contains("/*"))
-    });
-    let canonical_root =
-        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
-    let canonical_file =
-        std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
-    let mut references_by_file: BTreeMap<PathBuf, BTreeMap<u32, Vec<u32>>> = BTreeMap::new();
-    let references_available =
-        match field_position_in_lsp(remote, workspace_root, file_path, &owner, field_name).await {
-            Ok(Some((line, col))) => {
-                match crate::signature::references(remote, workspace_root, file_path, line, col)
-                    .await
-                {
-                    Ok(references) => {
-                        for (path, line, col) in references {
-                            let path = std::fs::canonicalize(&path).unwrap_or(path);
-                            references_by_file
-                                .entry(path)
-                                .or_default()
-                                .entry(line)
-                                .or_default()
-                                .push(col);
-                        }
-                        true
-                    }
-                    Err(err) => {
-                        unmatched.push(format!(
-                            "{}: analyzer references could not be verified: {err:#}",
-                            display(workspace_root, file_path)
-                        ));
-                        false
+    let mut references_by_file: BTreeMap<PathBuf, Vec<(u32, u32)>> = BTreeMap::new();
+    let mut declaration = None;
+    match field_position_in_lsp(remote, workspace_root, file_path, &owner, field_name).await {
+        Ok(Some((line, col))) => {
+            declaration = crate::signature::offset_of(&content, line, col).filter(|at| {
+                content[*at..].starts_with(field_name)
+                    && (*at == 0 || !content[..*at].ends_with(is_ident))
+                    && !content[*at + field_name.len()..].starts_with(is_ident)
+            });
+            if declaration.is_none() {
+                unmatched.push("field symbol does not point at the selected declaration".into());
+            }
+            match crate::signature::references(remote, workspace_root, file_path, line, col).await {
+                Ok(refs) => {
+                    for (path, line, col) in refs {
+                        let path = std::fs::canonicalize(&path).unwrap_or(path);
+                        references_by_file
+                            .entry(path)
+                            .or_default()
+                            .push((line, col));
                     }
                 }
+                Err(err) => unmatched.push(format!(
+                    "analyzer references could not be verified: {err:#}"
+                )),
             }
-            Ok(None) => false,
-            Err(err) => {
-                unmatched.push(format!(
-                    "{}: field symbols could not be resolved: {err:#}",
-                    display(workspace_root, file_path)
-                ));
-                false
-            }
-        };
-
-    if !references_available && quoted_or_commented_access {
-        unmatched.push(format!(
-            "{}: possible `{field_name}` references occur in string or comment text and need semantic resolution",
-            display(workspace_root, file_path)
-        ));
-    }
-
-    let target_reference_count: usize = references_by_file
-        .get(&canonical_file)
-        .into_iter()
-        .flat_map(|lines| lines.values())
-        .map(Vec::len)
-        .sum();
-    if references_available && target_reference_count != file_reads + file_writes + left_in_file {
-        unmatched.push(format!(
-            "{}: analyzer found {target_reference_count} field reference(s) in the declaring file, but only {} could be rewritten",
-            display(workspace_root, file_path),
-            file_reads + file_writes + left_in_file
-        ));
-    }
-
-    if !references_available && has_ambiguous_property_use(&content, field_name) {
-        unmatched.push(format!(
-            "{}: property accesses cannot be proven to belong to `{owner}`",
-            display(workspace_root, file_path)
-        ));
-    }
-
-    for (path, ref_lines) in &references_by_file {
-        if path == &canonical_file {
-            continue;
         }
-        if !path.starts_with(&canonical_root) || !lang.matches_extension(path) {
-            unmatched.push(format!(
-                "{}: analyzer reference is outside the supported workspace language",
-                display(workspace_root, path)
-            ));
-            continue;
-        }
-        let other_content = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(err) => {
+        Ok(None) => unmatched.push("field symbols could not be resolved".into()),
+        Err(err) => unmatched.push(format!("field symbols could not be resolved: {err:#}")),
+    }
+    let (mut reads, mut writes, mut left_in_file) = (0, 0, 0);
+    let mut rewritten = Vec::new();
+    if let Some(decl) = declaration {
+        references_by_file
+            .entry(canonical_file.clone())
+            .or_default();
+        for (path, positions) in &references_by_file {
+            if !path.starts_with(&canonical_root) || !lang.matches_extension(path) {
                 unmatched.push(format!(
-                    "{}: referenced source could not be read: {err}",
+                    "{}: analyzer reference is outside the supported workspace language",
                     display(workspace_root, path)
                 ));
                 continue;
             }
-        };
-        let mut output = String::with_capacity(other_content.len());
-        let mut file_reads = 0;
-        let mut file_writes = 0;
-        let mut rewrite_failed = false;
-        for (index, source_line) in other_content.split_inclusive('\n').enumerate() {
-            let line_number = index as u32 + 1;
-            let Some(columns) = ref_lines.get(&line_number) else {
-                if source_line.contains(&format!(".{field_name}"))
-                    || (lang == Language::Cpp && source_line.contains(&format!("->{field_name}")))
-                {
+            let original = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(err) => {
                     unmatched.push(format!(
-                        "{}:{}: possible `{field_name}` access is absent from analyzer references",
-                        display(workspace_root, path),
-                        line_number
+                        "{}: referenced source could not be read: {err}",
+                        display(workspace_root, path)
                     ));
-                    rewrite_failed = true;
+                    continue;
                 }
-                output.push_str(source_line);
-                continue;
             };
-            let (body, ending) = if let Some(body) = source_line.strip_suffix("\r\n") {
-                (body, "\r\n")
-            } else if let Some(body) = source_line.strip_suffix('\n') {
-                (body, "\n")
-            } else {
-                (source_line, "")
-            };
-            if columns
-                .iter()
-                .any(|col| field_at_line_col(body, 1, *col).as_deref() != Some(field_name))
-            {
-                unmatched.push(format!(
-                    "{}:{}: analyzer reference does not point at `{field_name}`",
-                    display(workspace_root, path),
-                    line_number
-                ));
-                rewrite_failed = true;
-                output.push_str(source_line);
-                continue;
-            }
-            let (changed, reads, writes) = rewrite_external_line(lang, body, field_name);
-            if reads + writes != columns.len() {
-                unmatched.push(format!(
-                    "{}:{}: only {} of {} analyzer reference(s) could be rewritten",
-                    display(workspace_root, path),
-                    line_number,
-                    reads + writes,
-                    columns.len()
-                ));
-                rewrite_failed = true;
-                output.push_str(source_line);
-                continue;
-            }
-            file_reads += reads;
-            file_writes += writes;
-            output.push_str(&changed);
-            output.push_str(ending);
-        }
-        if ref_lines
-            .keys()
-            .any(|line| *line as usize > other_content.lines().count())
-        {
-            unmatched.push(format!(
-                "{}: analyzer reference points beyond end of file",
-                display(workspace_root, path)
-            ));
-            rewrite_failed = true;
-        }
-        if !rewrite_failed {
-            total_reads += file_reads;
-            total_writes += file_writes;
-            rewritten.push((path.to_string_lossy().into_owned(), output));
-        }
-    }
-
-    for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
-        let path = entry.path();
-        if !path.is_file() || !lang.matches_extension(path) {
-            continue;
-        }
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        if canonical == canonical_file {
-            continue;
-        }
-        let Ok(other_content) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let ref_lines = references_by_file.get(&canonical);
-        for (index, line) in other_content.lines().enumerate() {
-            if line.contains(&format!(".{field_name}"))
-                || (lang == Language::Cpp && line.contains(&format!("->{field_name}")))
-            {
-                if ref_lines.is_none_or(|lines| !lines.contains_key(&(index as u32 + 1))) {
-                    unmatched.push(format!(
-                        "{}:{}: possible `{field_name}` access could not be matched to `{owner}`",
-                        display(workspace_root, path),
-                        index + 1
-                    ));
-                }
+            let own = (path == &canonical_file).then_some((decl, owner.as_str()));
+            let (changed, r, w, i, failures) =
+                semantic::rewrite(&original, path, lang, field_name, positions, own, by_value)?;
+            unmatched.extend(
+                failures
+                    .into_iter()
+                    .map(|why| format!("{}:{why}", display(workspace_root, path))),
+            );
+            reads += r;
+            writes += w;
+            left_in_file += i;
+            if changed != original {
+                rewritten.push((path.to_string_lossy().into_owned(), changed));
             }
         }
     }
-
     let to_check: Vec<(PathBuf, String)> = rewritten
         .iter()
         .map(|(p, t)| (PathBuf::from(p), t.clone()))
@@ -321,28 +179,27 @@ pub async fn encapsulate_polyglot(
             )
         })
         .collect();
-
     let mut applied = false;
     if apply && unmatched.is_empty() && (diagnostics.is_empty() || force) {
-        let rewritten_map: BTreeMap<PathBuf, String> = rewritten
+        let map = rewritten
             .iter()
             .map(|(p, t)| (PathBuf::from(p), t.clone()))
             .collect();
-        let edit = crate::signature::whole_file_edit(&rewritten_map);
-        crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+        crate::refactor::apply_workspace_edit(
+            workspace_root,
+            &crate::signature::whole_file_edit(&map),
+        )?;
         applied = true;
     }
-
-    let rel_file = display(workspace_root, file_path);
     Ok(EncapsulatedField {
         owner,
         root: workspace_root.to_path_buf(),
-        file: rel_file,
-        field: field_name.to_string(),
+        file: display(workspace_root, file_path),
+        field: field_name.into(),
         ty,
         by_value: by_value.unwrap_or(false),
-        reads: total_reads,
-        writes: total_writes,
+        reads,
+        writes,
         chained_reads: 0,
         left_in_file,
         blocked: vec![],

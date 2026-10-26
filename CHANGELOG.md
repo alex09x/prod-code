@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Encapsulate-Field Nested Edits and Privacy** (`crates/prod-code-mcp`, #1326):
+  Nested assignments such as `cfg.retries = cfg.retries + 1` compose into one setter call, accesses from other modules of the declaring file are rewritten while the actual privacy scope keeps direct access, and polyglot rewrites follow the analyzer's references instead of spelling. Plain Rust and Python assignments keep a direct setter call.
 - **Convert-to-Method Promoted Parameter Uses** (`crates/prod-code-mcp`, #1317):
   Promoting a parameter to the receiver rewrites every direct use of it in TypeScript, Python, Swift and C++ bodies, including comparisons, indexing, arguments and one-line bodies, and keeps defaults, Unicode comment boundaries and signature suffixes in their scope.
 - **Rust Extract-Field Boundaries** (`crates/prod-code-mcp`, #1342):

@@ -10,6 +10,8 @@
 
 use crate::parameter_object::Language;
 
+#[path = "mask_cpp.rs"]
+mod cpp;
 #[path = "mask_js.rs"]
 mod js;
 
@@ -133,13 +135,13 @@ fn scan_code_into_mask(
             continue;
         }
 
-        let is_quote = if matches!(lang, Language::TypeScript | Language::JavaScript) {
-            bytes[i] == b'"' || bytes[i] == b'\''
-        } else if lang == Language::Go {
-            bytes[i] == b'"' || bytes[i] == b'`'
-        } else {
-            bytes[i] == b'"'
-        };
+        let is_quote = bytes[i] == b'"'
+            || match lang {
+                Language::TypeScript | Language::JavaScript => bytes[i] == b'\'',
+                Language::Cpp => cpp::character_quote(bytes, i),
+                Language::Go => bytes[i] == b'`',
+                _ => false,
+            };
 
         if is_quote {
             let quote = bytes[i];

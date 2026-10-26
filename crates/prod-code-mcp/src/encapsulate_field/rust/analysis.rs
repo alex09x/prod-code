@@ -12,6 +12,7 @@ use anyhow::Result;
 
 use super::super::case::is_ident;
 use super::super::types::{Access, COPY, FieldDecl};
+use super::rhs::expression_end;
 
 /// The field declared at `offset`, which may be anywhere in its name.
 pub fn field_at(text: &str, offset: usize) -> Result<FieldDecl> {
@@ -173,7 +174,13 @@ pub fn access_at(text: &str, at: usize, len: usize) -> Access {
     if !before.ends_with('.') || before.ends_with("..") {
         return Access::Blocked("a struct literal or pattern names the field");
     }
-    let rest = text[at + len..].trim_start();
+    let mask =
+        crate::caller_migration::lexical_code_mask(text, crate::parameter_object::Language::Rust);
+    let next = text[at + len..]
+        .char_indices()
+        .find(|(off, ch)| mask[at + len + off] && !ch.is_whitespace())
+        .map_or(text.len(), |(off, _)| at + len + off);
+    let rest = &text[next..];
     if rest.starts_with('(') {
         return Access::NotAccess;
     }
@@ -203,47 +210,17 @@ pub fn access_at(text: &str, at: usize, len: usize) -> Access {
     }
 }
 
-/// Where the expression starting at `from` ends: the `;`, `,` or closing bracket that is not
-/// inside it.
-fn expression_end(text: &str, from: usize) -> usize {
-    let bytes = text.as_bytes();
-    let mut i = from;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' | b'{' => {
-                match crate::parameter_object::matching_bracket(text, i) {
-                    Some(close) => i = close + 1,
-                    None => return bytes.len(),
-                }
-                continue;
-            }
-            b'"' => {
-                let mut j = i + 1;
-                while j < bytes.len() && bytes[j] != b'"' {
-                    j += if bytes[j] == b'\\' { 2 } else { 1 };
-                }
-                i = j + 1;
-                continue;
-            }
-            b'\'' if bytes.get(i + 2) == Some(&b'\'') => {
-                i += 3;
-                continue;
-            }
-            b';' | b',' | b')' | b']' | b'}' => return i,
-            _ => {}
-        }
-        i += 1;
-    }
-    bytes.len()
-}
-
 /// Where the receiver of the `.` at `dot` starts: `a.b().c[0]` for the dot before a field.
 pub(crate) fn chain_start(text: &str, dot: usize) -> usize {
     let bytes = text.as_bytes();
     let mut i = dot;
     loop {
-        while i > 0 && (bytes[i - 1] as char).is_whitespace() {
-            i -= 1;
+        while let Some(ch) = text[..i]
+            .chars()
+            .next_back()
+            .filter(|ch| ch.is_whitespace())
+        {
+            i -= ch.len_utf8();
         }
         if i > 0 && matches!(bytes[i - 1], b')' | b']') {
             let mut depth = 0i32;
@@ -269,17 +246,26 @@ pub(crate) fn chain_start(text: &str, dot: usize) -> usize {
             continue;
         }
         let ident_end = i;
-        while i > 0 && is_ident(bytes[i - 1] as char) {
-            i -= 1;
+        while let Some(ch) = text[..i].chars().next_back().filter(|ch| is_ident(*ch)) {
+            i -= ch.len_utf8();
         }
         if i == ident_end {
             return i;
+        }
+        // Raw identifiers are one token, including their r# prefix. Leaving that
+        // prefix outside a receiver replacement would turn r#type into r#{...}.
+        if text[..i].ends_with("r#") && !text[..i - 2].chars().next_back().is_some_and(is_ident) {
+            i -= 2;
         }
         if i > 0 && bytes[i - 1] == b'.' && !(i > 1 && bytes[i - 2] == b'.') {
             i -= 1;
             continue;
         }
-        if i > 1 && &text[i - 2..i] == "::" {
+        if text[..i].ends_with("::") {
+            i -= 2;
+            continue;
+        }
+        if text[..i].ends_with("->") {
             i -= 2;
             continue;
         }

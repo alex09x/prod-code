@@ -10,7 +10,11 @@
 
 pub mod accessors;
 pub mod analysis;
+mod collisions;
+pub(crate) mod edits;
 pub mod execute;
+mod privacy;
+mod rhs;
 
 pub use accessors::accessors;
 pub(crate) use analysis::chain_start;
