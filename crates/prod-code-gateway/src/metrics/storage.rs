@@ -32,6 +32,8 @@ pub(crate) fn for_each_stored(dir: &Path, from_ms: u64, to_ms: u64, mut f: impl 
         let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
+        #[cfg(test)]
+        scan_hook::reached(dir);
         for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
             // First try parsing as TelemetryRecord (operation)
             if let Ok(rec) = serde_json::from_str::<TelemetryRecord>(&line) {
@@ -284,5 +286,32 @@ mod tests {
         assert_eq!(pruned, 1);
         assert!(!old_file.exists());
         assert!(fresh_file.exists());
+    }
+}
+
+/// A test's hold on a historical scan: [`for_each_stored`] calls the hook set for its
+/// directory once it has a daily file open, so a test can keep the scan in progress (#1416).
+#[cfg(test)]
+pub(crate) mod scan_hook {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    type Hook = Box<dyn Fn() + Send + Sync>;
+    static HOOK: Mutex<Option<(PathBuf, Hook)>> = Mutex::new(None);
+
+    pub(crate) fn set(dir: &Path, hook: impl Fn() + Send + Sync + 'static) {
+        *HOOK.lock().unwrap() = Some((dir.to_path_buf(), Box::new(hook)));
+    }
+
+    pub(crate) fn clear() {
+        *HOOK.lock().unwrap() = None;
+    }
+
+    pub(super) fn reached(dir: &Path) {
+        if let Some((for_dir, hook)) = HOOK.lock().unwrap().as_ref()
+            && for_dir == dir
+        {
+            hook();
+        }
     }
 }

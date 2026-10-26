@@ -152,7 +152,12 @@ pub async fn handle_client(
             WireMessage::MetricsRequest(req) => {
                 let start = std::time::Instant::now();
                 let node = state.advertise.read().await.clone();
-                let resp = state.metrics.summary(&node, req.since_secs);
+                // Reading a historical window is file I/O: off the async worker (#1416).
+                let recorder = state.metrics.clone();
+                let since = req.since_secs;
+                let resp = tokio::task::spawn_blocking(move || recorder.summary(&node, since))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("the metrics summary task failed: {e}"))?;
                 let mut ev = metrics::Event::blank("metrics");
                 ev.method = "metrics_summary".to_string();
                 ev.duration_ms = start.elapsed().as_millis() as u64;
