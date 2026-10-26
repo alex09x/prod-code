@@ -19,6 +19,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+mod deletion;
+
 /// The files a patch touches, as they would read after it.
 #[derive(Debug, Default, PartialEq)]
 pub struct Patched {
@@ -44,6 +46,7 @@ struct FilePatch {
     old: Option<String>,
     new: Option<String>,
     hunks: Vec<Hunk>,
+    old_ends_without_newline: bool,
 }
 
 /// `a/src/x.rs` → `src/x.rs`; `/dev/null` → `None`.
@@ -81,19 +84,35 @@ fn old_start(header: &str) -> Option<usize> {
     number.parse().ok()
 }
 
+/// Match `str::lines` for ordinary patch lines; deletion bodies use raw CR bytes.
+fn diff_line(raw: &str) -> &str {
+    raw.strip_suffix('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .unwrap_or(raw)
+}
+
 fn parse(diff: &str) -> Result<Vec<FilePatch>> {
     let mut files: Vec<FilePatch> = Vec::new();
-    let mut lines = diff.lines().peekable();
-    while let Some(line) = lines.next() {
+    let mut lines = diff.split_inclusive('\n').peekable();
+    while let Some(raw) = lines.next() {
+        let line = diff_line(raw);
         if let Some(old) = line.strip_prefix("--- ") {
             let new_line = lines
                 .next()
+                .map(diff_line)
                 .filter(|l| l.starts_with("+++ "))
                 .with_context(|| format!("`{line}` is not followed by a `+++` line"))?;
+            let new = diff_path(&new_line[4..]);
+            let (hunks, old_ends_without_newline) = if new.is_none() {
+                deletion::parse_hunks(&mut lines)?
+            } else {
+                (Vec::new(), false)
+            };
             files.push(FilePatch {
                 old: diff_path(old),
-                new: diff_path(&new_line[4..]),
-                hunks: Vec::new(),
+                new,
+                hunks,
+                old_ends_without_newline,
             });
             continue;
         }
@@ -110,7 +129,8 @@ fn parse(diff: &str) -> Result<Vec<FilePatch>> {
             };
             let counts = hunk_counts(line);
             let (mut old_lines, mut new_lines) = (0, 0);
-            while let Some(next) = lines.peek() {
+            while let Some(&raw) = lines.peek() {
+                let next = diff_line(raw);
                 if counts == Some((old_lines, new_lines)) && !next.starts_with('\\') {
                     break;
                 }
@@ -237,7 +257,11 @@ pub fn apply(root: &Path, diff: &str) -> Result<Patched> {
     let mut out = Patched::default();
     for file in parse(diff)? {
         match (&file.old, &file.new) {
-            (Some(old), None) => out.deleted.push(root.join(old)),
+            (Some(old), None) => {
+                let path = root.join(old);
+                deletion::validate(&path, old, &file.hunks, file.old_ends_without_newline)?;
+                out.deleted.push(path);
+            }
             (old, Some(new)) => {
                 let current = match old {
                     Some(old) => std::fs::read_to_string(root.join(old))
@@ -266,124 +290,4 @@ pub fn apply(root: &Path, diff: &str) -> Result<Patched> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_hunk_is_applied_where_it_says_or_where_its_lines_moved() {
-        let text = "a\nb\nc\nd\ne\n";
-        let diff = "--- a/f.rs\n+++ b/f.rs\n@@ -2,2 +2,2 @@\n b\n-c\n+C\n";
-        let files = parse(diff).unwrap();
-        assert_eq!(
-            apply_hunks(text, &files[0].hunks, "f.rs").unwrap(),
-            "a\nb\nC\nd\ne\n"
-        );
-        // Two lines were added at the top since the diff was made.
-        let moved = "x\ny\na\nb\nc\nd\ne\n";
-        assert_eq!(
-            apply_hunks(moved, &files[0].hunks, "f.rs").unwrap(),
-            "x\ny\na\nb\nC\nd\ne\n"
-        );
-        let err = apply_hunks("a\nb\nq\n", &files[0].hunks, "f.rs").unwrap_err();
-        assert!(
-            format!("{err}").contains("hunk 1 of f.rs does not apply"),
-            "{err}"
-        );
-    }
-
-    /// A blank line after the diff, as a shell or an editor adds it, is not a context line of
-    /// the last hunk (#322): it made the parser panic, and would have made the hunk miss. An
-    /// empty context line inside a hunk stays one.
-    #[test]
-    fn blank_lines_after_the_diff_are_not_the_last_hunks() {
-        let text = "a\n\nb\nc\n";
-        let diff = "--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n a\n\n-b\n+B\n\n\n";
-        let files = parse(diff).unwrap();
-        assert_eq!(
-            files[0].hunks[0].lines.len(),
-            4,
-            "{:?}",
-            files[0].hunks[0].lines
-        );
-        assert_eq!(
-            apply_hunks(text, &files[0].hunks, "f.rs").unwrap(),
-            "a\n\nB\nc\n"
-        );
-    }
-
-    #[test]
-    fn several_hunks_follow_each_other_and_the_last_newline_is_kept_or_dropped() {
-        let text = "1\n2\n3\n4\n5\n6\n";
-        let diff = "--- a/f\n+++ b/f\n@@ -1,1 +1,2 @@\n 1\n+1.5\n@@ -5,2 +6,2 @@\n 5\n-6\n+six\n\\ No newline at end of file\n";
-        let files = parse(diff).unwrap();
-        assert_eq!(
-            apply_hunks(text, &files[0].hunks, "f").unwrap(),
-            "1\n1.5\n2\n3\n4\n5\nsix"
-        );
-    }
-
-    #[test]
-    fn a_new_file_and_a_deleted_one_are_named_and_paths_lose_their_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("gone.rs"), "x\n").unwrap();
-        std::fs::write(dir.path().join("kept.rs"), "fn a() {}\n").unwrap();
-        let diff = "diff --git a/new.rs b/new.rs\n--- /dev/null\n+++ b/new.rs\n@@ -0,0 +1,2 @@\n+pub fn n() {}\n+\n--- a/gone.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n--- a/kept.rs\t2026-09-23\n+++ b/kept.rs\n@@ -1 +1 @@\n-fn a() {}\n+fn a() -> u8 { 1 }\n";
-        let patched = apply(dir.path(), diff).unwrap();
-        assert_eq!(
-            patched.texts,
-            vec![
-                (dir.path().join("new.rs"), "pub fn n() {}\n\n".to_string()),
-                (
-                    dir.path().join("kept.rs"),
-                    "fn a() -> u8 { 1 }\n".to_string()
-                ),
-            ]
-        );
-        assert_eq!(patched.deleted, vec![dir.path().join("gone.rs")]);
-        assert!(apply(dir.path(), "no diff here").is_err());
-        assert!(parse("@@ -1 +1 @@\n-a\n+b\n").is_err());
-        assert!(parse("--- a/x\nnot plus\n").is_err());
-        assert_eq!(diff_path("/dev/null"), None);
-        assert_eq!(old_start("@@ -12,5 +12,6 @@ fn x"), Some(12));
-        assert_eq!(hunk_counts("@@ -12,5 +12,6 @@ fn x"), Some((5, 6)));
-        assert_eq!(hunk_counts("@@ -1 +0,0 @@"), Some((1, 0)));
-        assert_eq!(hunk_counts("@@ -1 +1 @@"), Some((1, 1)));
-    }
-
-    #[test]
-    fn git_pre_image_fallback_when_working_tree_already_has_hunk() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path();
-        let _ = std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(repo)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(repo)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.email", "test@test.codes"])
-            .current_dir(repo)
-            .output();
-        std::fs::write(repo.join("file.txt"), "line 1\nline 2 (old)\nline 3\n").unwrap();
-        let _ = std::process::Command::new("git")
-            .args(["add", "file.txt"])
-            .current_dir(repo)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(repo)
-            .output();
-        std::fs::write(repo.join("file.txt"), "line 1\nline 2 (new)\nline 3\n").unwrap();
-        let diff = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line 1\n-line 2 (old)\n+line 2 (new)\n line 3\n";
-        let patched = apply(repo, diff).unwrap();
-        assert_eq!(
-            patched.texts,
-            vec![(
-                repo.join("file.txt"),
-                "line 1\nline 2 (new)\nline 3\n".to_string()
-            )]
-        );
-    }
-}
+mod tests;
