@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Trait Parameter Removal Keeps Assigning Arguments** (`crates/prod-code-mcp`, #1396):
+  Removing a trait method's parameter reads each dropped argument as a Rust expression. An assignment such as `{ counter += 1; value }` blocks the write like a call does, and so do `return`, `break` and `continue`. Before, only text with a call, macro, `?` or `.await` counted, so the increment silently disappeared. `force` still writes; pure arguments are still removed.
 - **Accessor Rename Finds the Field's Own Struct** (`crates/prod-code-mcp`, #1383):
   - `code_rename` with `accessors` renames an accessor only when the analyzer resolves its `impl`'s self type to the field's own struct. Before, `a::Conn` and `b::Conn` with the same accessor name were both renamed.
   - Accessors are searched in the index of the project that declares the field, not the checkout root's.
