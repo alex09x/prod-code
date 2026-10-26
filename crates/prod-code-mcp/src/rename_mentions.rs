@@ -105,13 +105,52 @@ fn is_test(lines: &[&str], at: usize) -> bool {
         let Some(attr) = l.strip_prefix("#[") else {
             return false;
         };
-        let path = attr.split(['(', ']']).next().unwrap_or("").trim();
-        if path == "test" || path.ends_with("::test") || path.ends_with("_test") || path == "rstest"
-        {
+        if is_test_path(attr.split(['(', ']']).next().unwrap_or("").trim()) {
             return true;
         }
     }
     false
+}
+
+/// An attribute path that marks a test: `test`, `tokio::test`, `*_test`, `rstest`.
+fn is_test_path(path: &str) -> bool {
+    path == "test" || path.ends_with("::test") || path.ends_with("_test") || path == "rstest"
+}
+
+/// The test functions of Rust source whose names carry `old_snake`: each name's byte range,
+/// the name and its new spelling. They come from the syntax tree, so `#[test] fn …` spelled
+/// inside a string or a comment is no test (#1550).
+fn rust_test_renames(
+    text: &str,
+    old_snake: &str,
+    new_snake: &str,
+) -> Vec<(usize, usize, String, String)> {
+    use ra_ap_syntax::AstNode;
+    use ra_ap_syntax::ast::{self, HasAttrs, HasName};
+    ra_ap_syntax::SourceFile::parse(text, ra_ap_syntax::Edition::CURRENT)
+        .tree()
+        .syntax()
+        .descendants()
+        .filter_map(ast::Fn::cast)
+        .filter(|function| {
+            function.attrs().any(|attr| {
+                attr.path()
+                    .is_some_and(|path| is_test_path(&path.syntax().text().to_string()))
+            })
+        })
+        .filter_map(|function| {
+            let name = function.name()?;
+            let spelled = name.text().to_string();
+            let renamed = test_name(&spelled, old_snake, new_snake)?;
+            let range = name.syntax().text_range();
+            Some((
+                usize::from(range.start()),
+                usize::from(range.end()),
+                spelled,
+                renamed,
+            ))
+        })
+        .collect()
 }
 
 /// The byte ranges of the comments in `text`. Rust source is read by Rust's lexer: line and
@@ -179,8 +218,20 @@ pub fn rewrite(text: &str, old: &str, new: &str, rust: bool) -> (String, Mention
         commented.replace_range(start..end, &rest);
     }
     let text = commented.as_str();
-    let in_comment = comment_ranges(text, rust);
     let (old_snake, new_snake) = (snake(old), snake(new));
+    if rust {
+        let mut renamed = text.to_string();
+        for (start, end, name, new_name) in rust_test_renames(text, &old_snake, &new_snake)
+            .into_iter()
+            .rev()
+        {
+            renamed.replace_range(start..end, &new_name);
+            found.tests.push((name, new_name));
+        }
+        found.tests.reverse();
+        return (renamed, found);
+    }
+    let in_comment = comment_ranges(text, rust);
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut line_start = 0;
@@ -275,6 +326,20 @@ mod tests {
         assert!(out.contains("fn order_total() {}"), "{out}");
         assert!(out.contains("fn trade_count() {}"), "{out}");
         assert_eq!(found.tests.len(), 1);
+    }
+
+    /// A test spelled inside a string is data, not a test (#1550).
+    #[test]
+    fn a_test_spelled_inside_a_string_is_not_renamed() {
+        let text = "const SRC: &str = r#\"\n#[test]\nfn order_total() {}\n\"#;\nconst S: &str = \"\n#[test]\nfn order_sum() {}\n\";\n#[test]\nfn order_count() {}\n";
+        let (out, found) = rewrite(text, "Order", "Trade", true);
+        assert!(out.contains("fn order_total() {}\n\"#;"), "{out}");
+        assert!(out.contains("fn order_sum() {}"), "{out}");
+        assert!(out.contains("fn trade_count() {}"), "{out}");
+        assert_eq!(
+            found.tests,
+            [("order_count".to_string(), "trade_count".to_string())]
+        );
     }
 
     /// Files that are not Rust keep the line scan: `//` outside a string.

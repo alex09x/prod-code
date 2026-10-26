@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rename Test Names Only in Real Tests** (`crates/prod-code-mcp`, #1550):
+  `code_rename` with `comments` takes a Rust file's test functions from its syntax tree. `#[test] fn order_total()` spelled inside a string or raw string is data and keeps its bytes. Real tests under `#[test]`, `#[tokio::test]`, `*_test` and `rstest` are still renamed.
 - **Process-Group Signals Stay with Their Own Group** (`crates/prod-code-gateway`, #1545):
   A remote command's exited leader is no longer reaped while its stream may still signal the group. It stays a zombie that holds its PID, and so the group's number, until the stream has finished, timed out or been cancelled and killed the group. A late kill can therefore never reach a newer group that reused the number. Descendants that outlive the leader are still killed on timeout, departure and cancellation.
 - **Generify C++ Header Safety** (`crates/prod-code-mcp`, #1546, #1547):
