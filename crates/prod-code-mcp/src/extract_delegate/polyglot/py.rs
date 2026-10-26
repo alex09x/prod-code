@@ -24,6 +24,31 @@ pub fn restructure_py(
     helper: &str,
     field: &str,
 ) -> Result<(String, String)> {
+    let mut source =
+        super::semantic::Source::new(text, crate::parameter_object::Language::Python, field);
+    restructure_py_semantic(
+        text,
+        symbol_opt,
+        line_opt,
+        fields,
+        methods,
+        helper,
+        field,
+        &mut source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restructure_py_semantic(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    source: &mut super::semantic::Source<'_>,
+) -> Result<(String, String)> {
     let lines: Vec<&str> = text.lines().collect();
     let mut class_idx = None;
     let mut owner_name = String::new();
@@ -133,7 +158,8 @@ pub fn restructure_py(
                                 let fname = lhs.trim().trim_start_matches("self.").trim();
                                 if is_ident_str(fname) {
                                     ctor_assigned_fields
-                                        .insert(fname.to_string(), rhs.trim().to_string());
+                                        .entry(fname.to_string())
+                                        .or_insert_with(|| rhs.trim().to_string());
                                 }
                             }
                         }
@@ -164,9 +190,7 @@ pub fn restructure_py(
 
     for f in fields {
         anyhow::ensure!(
-            class_fields.contains_key(f)
-                || ctor_assigned_fields.contains_key(f)
-                || text.contains(&format!("self.{f}")),
+            class_fields.contains_key(f) || ctor_assigned_fields.contains_key(f),
             "`{owner_name}` has no field `{f}`"
         );
     }
@@ -248,11 +272,25 @@ pub fn restructure_py(
                         || trimmed.starts_with(&format!("self.{f}="))
                 });
                 if is_moved_assign {
+                    let name = fields
+                        .iter()
+                        .find(|f| trimmed.starts_with(&format!("self.{f}")))
+                        .unwrap();
+                    let lhs = line.find(&format!("self.{name}")).unwrap() + 5;
+                    source.consumed(&line[lhs..lhs + name.len()]);
+                    anyhow::ensure!(
+                        source.positions(line).is_empty(),
+                        "constructor initializer refers to a moved field; evaluation semantics are unproved"
+                    );
                     if !init_replaced {
                         new_class_lines.push(format!(
                             "        self.{field} = {helper}({owner_init_args})"
                         ));
                         init_replaced = true;
+                    } else if fields.len() == 1 {
+                        let mut assignment = line.to_string();
+                        assignment.insert_str(lhs, &format!("{field}."));
+                        new_class_lines.push(assignment);
                     }
                     k += 1;
                     continue;
@@ -264,6 +302,7 @@ pub fn restructure_py(
             .values()
             .any(|minfo| minfo.start_line <= k && k < minfo.end_line);
         if is_in_moved_method {
+            source.moved_method(line, "self")?;
             k += 1;
             continue;
         }
@@ -272,11 +311,12 @@ pub fn restructure_py(
             trimmed.starts_with(&format!("{f} =")) || trimmed.starts_with(&format!("{f}:"))
         });
         if is_moved_class_field {
+            source.consumed(line);
             k += 1;
             continue;
         }
 
-        new_class_lines.push(line.to_string());
+        new_class_lines.push(source.rewrite(line)?);
         k += 1;
     }
 
@@ -319,7 +359,7 @@ pub fn restructure_py(
         } else if i > c_idx && i < end_class_idx {
             continue;
         } else {
-            final_lines.push(line.to_string());
+            final_lines.push(source.rewrite(line)?);
         }
     }
 

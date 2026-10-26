@@ -11,10 +11,17 @@
 pub mod cpp;
 pub mod execute;
 pub mod go;
+mod go_literals;
+mod go_text;
+mod invocation;
+mod js_code;
+mod lexical;
 pub mod params;
 pub mod py;
 pub mod rewrite;
+mod semantic;
 pub mod swift;
+mod swift_code;
 pub mod ts;
 
 pub use cpp::restructure_cpp;

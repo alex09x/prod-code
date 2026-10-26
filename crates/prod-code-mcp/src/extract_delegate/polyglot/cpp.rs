@@ -28,6 +28,30 @@ pub fn restructure_cpp(
     helper: &str,
     field: &str,
 ) -> Result<(String, String)> {
+    let mut source = super::semantic::Source::new(text, Language::Cpp, field);
+    restructure_cpp_semantic(
+        text,
+        symbol_opt,
+        line_opt,
+        fields,
+        methods,
+        helper,
+        field,
+        &mut source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restructure_cpp_semantic(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    source: &mut super::semantic::Source<'_>,
+) -> Result<(String, String)> {
     let (owner_start, open_brace, close_brace, owner) = {
         let mut found = None;
         for keyword in ["class ", "struct "] {
@@ -215,8 +239,7 @@ pub fn restructure_cpp(
     helper_lines.push(format!("class {helper} {{"));
     helper_lines.push("public:".to_string());
     for f in fields {
-        let ty = field_types.get(f).map(|s| s.as_str()).unwrap_or("auto");
-        helper_lines.push(format!("    {ty} {f};"));
+        helper_lines.push(field_decls[f].trim_end_matches('\n').to_string());
     }
     helper_lines.push(String::new());
     helper_lines.push(format!("    {helper}() = default;"));
@@ -250,6 +273,7 @@ pub fn restructure_cpp(
             .values()
             .any(|minfo| minfo.start_line <= line_index && line_index <= minfo.end_line)
         {
+            source.moved_method(line, "this")?;
             continue;
         }
         let trimmed = line.trim();
@@ -261,6 +285,7 @@ pub fn restructure_cpp(
             }
         });
         if is_moved_field {
+            source.consumed(line);
             if !delegate_placed {
                 new_body_lines.push(format!("    {helper} {field};"));
                 delegate_placed = true;
@@ -269,7 +294,7 @@ pub fn restructure_cpp(
         }
 
         if trimmed.starts_with(':') || (trimmed.contains(':') && trimmed.contains('(')) {
-            let mut updated_line = line.to_string();
+            let mut updated_line = source.rewrite(line)?;
             let mut init_args = Vec::new();
             for f in fields {
                 if let Some(pos) = updated_line.find(&format!("{f}(")) {
@@ -306,7 +331,7 @@ pub fn restructure_cpp(
             continue;
         }
 
-        new_body_lines.push(line.to_string());
+        new_body_lines.push(source.rewrite(line)?);
     }
 
     if !delegate_placed {
@@ -325,8 +350,11 @@ pub fn restructure_cpp(
     }
 
     let new_body = new_body_lines.join("\n");
-    let mut out = text.to_string();
-    out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
-    out.insert_str(owner_start, &format!("{helper_text}\n\n"));
+    let out = format!(
+        "{}{helper_text}\n\n{}\n{new_body}\n{}",
+        source.rewrite(&text[..owner_start])?,
+        source.rewrite(&text[owner_start..open_brace + 1])?,
+        source.rewrite(&text[close_brace..])?
+    );
     Ok((out, owner))
 }

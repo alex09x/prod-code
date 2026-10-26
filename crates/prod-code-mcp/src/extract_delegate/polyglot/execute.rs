@@ -8,25 +8,61 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::{
+    cpp::restructure_cpp_semantic, go::restructure_go_semantic, py::restructure_py_semantic,
+    semantic::Source, swift::restructure_swift_semantic, ts::restructure_ts_semantic,
+};
+use crate::extract_delegate::{
+    Extracted,
+    common::{display, is_ident},
+    rust::extract_delegate_rust,
+};
+use crate::parameter_object::Language;
+use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+#[allow(clippy::too_many_arguments)]
+fn restructure(
+    source: &mut Source<'_>,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+) -> Result<(String, String)> {
+    let text = source.text;
+    let field = source.field;
+    match source.lang {
+        Language::TypeScript | Language::JavaScript => restructure_ts_semantic(
+            text,
+            symbol,
+            line,
+            fields,
+            methods,
+            helper,
+            field,
+            source.lang == Language::JavaScript,
+            source,
+        ),
+        Language::Python => {
+            restructure_py_semantic(text, symbol, line, fields, methods, helper, field, source)
+        }
+        Language::Go => {
+            restructure_go_semantic(text, symbol, line, fields, methods, helper, field, source)
+        }
+        Language::Cpp | Language::C => {
+            restructure_cpp_semantic(text, symbol, line, fields, methods, helper, field, source)
+        }
+        Language::Swift => {
+            restructure_swift_semantic(text, symbol, line, fields, methods, helper, field, source)
+        }
+        _ => unreachable!(),
+    }
+}
 
-use super::cpp::restructure_cpp;
-use super::go::restructure_go;
-use super::py::restructure_py;
-use super::rewrite::{owner_region, rewrite_external_file};
-use super::swift::restructure_swift;
-use super::ts::restructure_ts;
-use crate::extract_delegate::Extracted;
-use crate::extract_delegate::common::{display, is_ident};
-use crate::extract_delegate::rust::extract_delegate_rust;
-use crate::parameter_object::Language;
-
-/// Extracts `fields` and `methods` of a struct or class across languages into `helper`, held
-/// in the new field `field`.
+/// Extract fields and methods using identities from the analyzer's original positions.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_delegate_polyglot(
     remote: SocketAddr,
@@ -50,7 +86,6 @@ pub async fn extract_delegate_polyglot(
         );
     }
     anyhow::ensure!(!fields.is_empty(), "name at least one field");
-
     let lang = Language::of(file)
         .with_context(|| format!("unsupported language for {}", file.display()))?;
     if lang == Language::Rust {
@@ -59,193 +94,121 @@ pub async fn extract_delegate_polyglot(
         )
         .await;
     }
-    if lang == Language::Java {
-        anyhow::bail!("extract_delegate does not support Java yet");
-    }
-
+    anyhow::ensure!(
+        lang != Language::Java,
+        "extract_delegate does not support Java yet"
+    );
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-
-    let (restructured, owner) = match lang {
-        Language::TypeScript => {
-            restructure_ts(&text, symbol, line, fields, methods, helper, field, false)?
-        }
-        Language::JavaScript => {
-            restructure_ts(&text, symbol, line, fields, methods, helper, field, true)?
-        }
-        Language::Python => restructure_py(&text, symbol, line, fields, methods, helper, field)?,
-        Language::Cpp | Language::C => {
-            restructure_cpp(&text, symbol, line, fields, methods, helper, field)?
-        }
-        Language::Swift => restructure_swift(&text, symbol, line, fields, methods, helper, field)?,
-        Language::Go => restructure_go(&text, symbol, line, fields, methods, helper, field)?,
-        Language::Rust | Language::Java => unreachable!(),
-    };
-
-    let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut accesses = 0;
+    let (_, owner) = restructure(
+        &mut Source::new(&text, lang, field),
+        symbol,
+        line,
+        fields,
+        methods,
+        helper,
+    )?;
+    let canonical_root = std::fs::canonicalize(root)?;
+    let canonical_file = std::fs::canonicalize(file)?;
+    let mut references: BTreeMap<PathBuf, Vec<(u32, u32, String)>> = BTreeMap::new();
     let mut unmatched = Vec::new();
-    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let canonical_owner_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    let mut references_by_file_line: BTreeMap<PathBuf, BTreeMap<u32, usize>> = BTreeMap::new();
-    for moved_field in fields {
-        let position = match crate::encapsulate_field::field_position_in_lsp(
-            remote,
-            root,
-            file,
-            &owner,
-            moved_field,
-        )
-        .await
-        {
-            Ok(position) => position,
-            Err(err) => {
+    for moved in fields {
+        let position =
+            crate::encapsulate_field::field_position_in_lsp(remote, root, file, &owner, moved)
+                .await;
+        let (l, c) = match position {
+            Ok(Some(p)) => p,
+            Ok(None) => {
                 unmatched.push(format!(
-                    "{}: references for moved field `{moved_field}` could not be resolved: {err:#}",
+                    "{}: field `{moved}` has no analyzer identity",
                     display(root, file)
                 ));
                 continue;
             }
+            Err(e) => {
+                unmatched.push(format!("field `{moved}` identity: {e:#}"));
+                continue;
+            }
         };
-        let Some((line, col)) = position else {
-            continue;
-        };
-        match crate::signature::references(remote, root, file, line, col).await {
-            Ok(references) => {
-                for (path, line, _) in references {
+        match crate::signature::references(remote, root, file, l, c).await {
+            Ok(refs) => {
+                for (path, l, c) in refs {
                     let path = std::fs::canonicalize(&path).unwrap_or(path);
                     if !path.starts_with(&canonical_root) || Language::of(&path) != Some(lang) {
                         unmatched.push(format!(
                             "{}: moved-field reference is outside the supported workspace language",
                             display(root, &path)
                         ));
-                        continue;
-                    }
-                    if path != canonical_owner_file {
-                        *references_by_file_line
+                    } else {
+                        references
                             .entry(path)
                             .or_default()
-                            .entry(line)
-                            .or_default() += 1;
+                            .push((l, c, moved.clone()));
                     }
                 }
             }
-            Err(err) => unmatched.push(format!(
-                "{}: references for moved field `{moved_field}` could not be resolved: {err:#}",
-                display(root, file)
-            )),
+            Err(e) => unmatched.push(format!("field `{moved}` references: {e:#}")),
         }
     }
-
-    let owner_body = owner_region(&restructured, lang, &owner).unwrap_or(&restructured);
-    let (owner_probe, _) = rewrite_external_file(owner_body, lang, &owner, field, fields, helper);
-    if owner_probe != owner_body {
-        unmatched.push(format!(
-            "{}: remaining owner methods contain moved-field accesses that need semantic resolution",
-            display(root, file)
-        ));
-    }
-    if matches!(lang, Language::Cpp | Language::C)
-        && fields.iter().any(|moved| owner_body.contains(moved))
-    {
-        unmatched.push(format!(
-            "{}: unqualified moved-field uses need semantic resolution",
-            display(root, file)
-        ));
-    }
-    files.insert(file.to_path_buf(), restructured);
-
-    let mut processed = std::collections::BTreeSet::new();
-    for entry in ignore::WalkBuilder::new(root).build().flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && path != file
-            && Language::of(path) == Some(lang)
-            && let Ok(content) = std::fs::read_to_string(path)
-            && fields.iter().any(|f| content.contains(f))
-        {
-            let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            processed.insert(canonical.clone());
-            if lang == Language::Go {
-                let (rewritten, _) =
-                    rewrite_external_file(&content, lang, &owner, field, fields, helper);
+    references.entry(canonical_file.clone()).or_default();
+    let mut files = BTreeMap::new();
+    let mut accesses = 0;
+    for (path, refs) in references {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                unmatched.push(format!("{}: cannot read source: {e}", display(root, &path)));
+                continue;
+            }
+        };
+        let mut source = Source::new(&content, lang, field);
+        let planned = (|| -> Result<String> {
+            for (l, c, name) in refs {
+                source.add(l, c, &name)?;
+            }
+            let result = if path == canonical_file {
+                restructure(&mut source, Some(&owner), line, fields, methods, helper)?.0
+            } else if lang == Language::Go {
+                if path.parent() != canonical_file.parent() {
+                    for name in [helper, field] {
+                        anyhow::ensure!(
+                            name.chars().next().is_some_and(char::is_uppercase),
+                            "Go cross-package extraction requires exported requested name `{name}`"
+                        );
+                    }
+                }
+                let mut edits = super::go_literals::literal_edits(&mut source, &owner, helper)?;
+                edits.sort_by_key(|e| e.0);
+                let mut out = String::new();
+                let mut cursor = 0;
+                for (s, e, replacement) in edits {
+                    anyhow::ensure!(
+                        s >= cursor,
+                        "overlapping Go literals have unproved evaluation semantics"
+                    );
+                    out.push_str(&source.rewrite(&content[cursor..s])?);
+                    out.push_str(&replacement);
+                    cursor = e;
+                }
+                out.push_str(&source.rewrite(&content[cursor..])?);
+                out
+            } else {
+                source.rewrite(&content)?
+            };
+            source.finish()?;
+            Ok(result)
+        })();
+        match planned {
+            Ok(rewritten) => {
+                accesses += source.accesses;
                 if rewritten != content {
-                    unmatched.push(format!(
-                            "{}: Go literals need package-aware semantic resolution before they can be rewritten",
-                            display(root, path)
-                        ));
+                    files.insert(path, rewritten);
                 }
-                continue;
             }
-            let refs = references_by_file_line.get(&canonical);
-            let mut rewritten = String::with_capacity(content.len());
-            let mut rewrite_failed = false;
-            let mut file_accesses = 0usize;
-            for (index, raw_line) in content.split_inclusive('\n').enumerate() {
-                let line_number = index as u32 + 1;
-                let expected = refs
-                    .and_then(|by_line| by_line.get(&line_number))
-                    .copied()
-                    .unwrap_or(0);
-                let (body, ending) = if let Some(body) = raw_line.strip_suffix("\r\n") {
-                    (body, "\r\n")
-                } else if let Some(body) = raw_line.strip_suffix('\n') {
-                    (body, "\n")
-                } else {
-                    (raw_line, "")
-                };
-                let (line, actual) =
-                    rewrite_external_file(body, lang, &owner, field, fields, helper);
-                if actual != expected {
-                    if actual > 0 || expected > 0 {
-                        unmatched.push(format!(
-                                "{}:{}: {actual} textual moved-field access(es) do not match {expected} analyzer reference(s)",
-                                display(root, path),
-                                line_number
-                            ));
-                        rewrite_failed = true;
-                        rewritten.push_str(raw_line);
-                        continue;
-                    }
-                }
-                file_accesses += actual;
-                rewritten.push_str(&line);
-                rewritten.push_str(ending);
-            }
-            if refs.is_some_and(|by_line| {
-                by_line
-                    .keys()
-                    .any(|line| *line as usize > content.lines().count())
-            }) {
-                unmatched.push(format!(
-                    "{}: analyzer reference points beyond end of file",
-                    display(root, path)
-                ));
-                rewrite_failed = true;
-            }
-            if rewrite_failed {
-                continue;
-            }
-            if rewritten != content {
-                accesses += file_accesses;
-                files.insert(path.to_path_buf(), rewritten);
-            } else if file_accesses > 0 {
-                accesses += file_accesses;
-            }
+            Err(e) => unmatched.push(format!("{}: {e:#}", display(root, &path))),
         }
     }
-    for path in references_by_file_line.keys() {
-        if !processed.contains(path) {
-            unmatched.push(format!(
-                "{}: analyzer reference did not resolve to a readable workspace source file",
-                display(root, path)
-            ));
-        }
-    }
-
-    files.retain(|p, t| std::fs::read_to_string(p).map(|o| o != *t).unwrap_or(true));
-
-    let edits: Vec<(PathBuf, String)> = files.iter().map(|(p, t)| (p.clone(), t.clone())).collect();
+    let edits: Vec<_> = files.iter().map(|(p, t)| (p.clone(), t.clone())).collect();
     let reports = crate::diagnostics::validate_texts(remote, root, &edits, &[]).await?;
     let diagnostics: Vec<String> = reports
         .iter()
@@ -264,7 +227,6 @@ pub async fn extract_delegate_polyglot(
             )
         })
         .collect();
-
     let mut applied = false;
     if apply {
         anyhow::ensure!(
@@ -282,10 +244,9 @@ pub async fn extract_delegate_polyglot(
         crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files))?;
         applied = true;
     }
-
     Ok(Extracted {
-        helper: helper.to_string(),
-        field: field.to_string(),
+        helper: helper.into(),
+        field: field.into(),
         fields: fields.to_vec(),
         methods: methods.to_vec(),
         root: root.to_path_buf(),

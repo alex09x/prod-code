@@ -43,6 +43,7 @@ pub fn parse_ts_methods(
         let before_paren = body[offset..paren_pos].trim();
         let last_word = before_paren.split_whitespace().last().unwrap_or("");
         if is_ident_str(last_word)
+            && !before_paren.rsplit('\n').next().unwrap_or("").contains('=')
             && last_word != "constructor"
             && last_word != "if"
             && last_word != "while"
@@ -57,9 +58,11 @@ pub fn parse_ts_methods(
                 let open_b = close_paren + 1 + open_b_rel;
                 let between = body[close_paren + 1..open_b].trim();
                 let ret_type = between.strip_prefix(':').map(|s| s.trim().to_string());
-                if let Some(close_b_rel) =
-                    crate::parameter_object::matching_bracket(&body[open_b..], 0)
-                {
+                if let Some(close_b_rel) = crate::parameter_object::syntax::close_in(
+                    &body[open_b..],
+                    0,
+                    crate::parameter_object::Language::TypeScript,
+                ) {
                     let close_b = open_b + close_b_rel;
                     let line_start = body
                         [..offset + slice[..paren_rel].rfind('\n').map_or(0, |x| x + 1)]

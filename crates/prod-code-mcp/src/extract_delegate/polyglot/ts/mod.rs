@@ -8,17 +8,16 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod fields;
 pub mod methods;
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::params::extract_param_names_ts;
-use crate::extract_delegate::common::{is_ident, is_ident_str, reindent};
+use crate::extract_delegate::common::reindent;
 pub use methods::{TsMethod, parse_ts_methods};
 
 #[allow(clippy::too_many_arguments)]
@@ -32,103 +31,54 @@ pub fn restructure_ts(
     field: &str,
     is_js: bool,
 ) -> Result<(String, String)> {
-    let (open_brace, close_brace, owner, is_export) = {
-        let mut found = None;
-        for (i, _) in text.match_indices("class ") {
-            if i > 0 && text[..i].chars().next_back().is_some_and(is_ident) {
-                continue;
-            }
-            let after = &text[i + 6..];
-            let name: String = after.chars().take_while(|c| is_ident(*c)).collect();
-            if name.is_empty() {
-                continue;
-            }
-            if let Some(sym) = symbol_opt
-                && sym != name
-            {
-                continue;
-            }
-            let Some(open_rel) = after.find('{') else {
-                continue;
-            };
-            let open = i + 6 + open_rel;
-            let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
-                continue;
-            };
-            if let Some(line) = line_opt
-                && line > 0
-            {
-                let (sl, _) = crate::signature::position_at(text, i)?;
-                let (el, _) = crate::signature::position_at(text, close)?;
-                if line < sl || line > el {
-                    continue;
-                }
-            }
-            let before_class = text[..i].trim_end();
-            let is_export =
-                before_class.ends_with("export") || before_class.ends_with("export default");
-            found = Some((open, close, name, is_export));
-            break;
-        }
-        found.with_context(|| {
-            if let Some(sym) = symbol_opt {
-                format!("class `{sym}` not found")
-            } else {
-                "no class found at the specified location".to_string()
-            }
-        })?
+    let lang = if is_js {
+        crate::parameter_object::Language::JavaScript
+    } else {
+        crate::parameter_object::Language::TypeScript
     };
+    let mut source = super::semantic::Source::new(text, lang, field);
+    restructure_ts_semantic(
+        text,
+        symbol_opt,
+        line_opt,
+        fields,
+        methods,
+        helper,
+        field,
+        is_js,
+        &mut source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restructure_ts_semantic(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    is_js: bool,
+    source: &mut super::semantic::Source<'_>,
+) -> Result<(String, String)> {
+    let (open_brace, close_brace, owner, is_export, insertion_start) =
+        super::js_code::selected_class(text, symbol_opt, line_opt, source.lang)?;
 
     let body = &text[open_brace + 1..close_brace];
 
-    let mut field_decls: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
-            continue;
-        }
-        if let Some(semi) = trimmed.strip_suffix(';') {
-            let decl = semi.trim();
-            let without_init = decl.split('=').next().unwrap_or(decl).trim();
-            if let Some((lhs, ty)) = without_init.split_once(':') {
-                let fname = lhs.split_whitespace().last().unwrap_or("").trim();
-                if is_ident_str(fname) && !fname.starts_with("return") {
-                    field_decls.insert(
-                        fname.to_string(),
-                        (line.to_string(), Some(ty.trim().to_string())),
-                    );
-                }
-            } else {
-                let fname = without_init.split_whitespace().last().unwrap_or("").trim();
-                if is_ident_str(fname)
-                    && !fname.starts_with("constructor")
-                    && !fname.starts_with("return")
-                {
-                    field_decls.insert(fname.to_string(), (line.to_string(), None));
-                }
-            }
-        }
-    }
-
-    let mut ctor_assigned_fields: BTreeMap<String, String> = BTreeMap::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("this.") && trimmed.contains('=') && trimmed.ends_with(';') {
-            let without_semi = &trimmed[..trimmed.len() - 1];
-            if let Some((lhs, rhs)) = without_semi.split_once('=') {
-                let fname = lhs.trim().trim_start_matches("this.").trim();
-                if is_ident_str(fname) {
-                    ctor_assigned_fields.insert(fname.to_string(), rhs.trim().to_string());
-                }
-            }
-        }
-    }
+    let field_decls = fields::declarations(body, source.lang);
+    let ctor_assigned_fields = fields::constructor_assignments(body, source.lang);
 
     for f in fields {
         anyhow::ensure!(
-            field_decls.contains_key(f)
-                || ctor_assigned_fields.contains_key(f)
-                || body.contains(&format!("this.{f}")),
+            !field_decls
+                .get(f)
+                .is_some_and(|(decl, _)| decl.split_whitespace().any(|word| word == "static")),
+            "static field `{f}` has unproved delegate initialization semantics"
+        );
+        anyhow::ensure!(
+            field_decls.contains_key(f) || ctor_assigned_fields.contains_key(f),
             "`{owner}` has no field `{f}`"
         );
     }
@@ -138,13 +88,47 @@ pub fn restructure_ts(
     );
 
     let moved_methods = parse_ts_methods(body, methods, &owner, fields, helper)?;
+    // Evaluate declaration initializers in source order, regardless of request ordering.
+    let mut ordered_fields = fields.to_vec();
+    ordered_fields.sort_by_key(|f| {
+        field_decls
+            .get(f)
+            .and_then(|(decl, _)| body.find(decl))
+            .unwrap_or(usize::MAX)
+    });
+    let fields = &ordered_fields;
+    let readonly_deferred =
+        fields::readonly_deferred(body, fields, &field_decls, &ctor_assigned_fields)?;
+    let deferred = readonly_deferred
+        || (fields.len() == 1
+            && !field_decls.contains_key(&fields[0])
+            && ctor_assigned_fields.contains_key(&fields[0])
+            && fields::can_defer(body, &fields[0]));
 
     // Build Helper class
     let export_kw = if is_export { "export " } else { "" };
     let mut helper_lines = Vec::new();
     helper_lines.push(format!("{export_kw}class {helper} {{"));
     for f in fields {
-        if is_js {
+        if let Some((decl, _)) = field_decls.get(f) {
+            let head = decl
+                .split_once('=')
+                .map_or(decl.trim_end_matches(';'), |(head, _)| head)
+                .trim();
+            let head = head
+                .replacen("private ", "public ", 1)
+                .replacen("protected ", "public ", 1);
+            let vis = if is_js
+                || ["public ", "readonly ", "static "]
+                    .iter()
+                    .any(|v| head.starts_with(v))
+            {
+                ""
+            } else {
+                "public "
+            };
+            helper_lines.push(format!("    {vis}{head};"));
+        } else if is_js {
             helper_lines.push(format!("    {f};"));
         } else if let Some((_, Some(ty))) = field_decls.get(f) {
             helper_lines.push(format!("    public {f}: {ty};"));
@@ -195,38 +179,13 @@ pub fn restructure_ts(
     // Rewrite Owner class
     let mut new_body_lines = Vec::new();
     let mut delegate_field_placed = false;
-    let mut inside_ctor = false;
-    let mut ctor_replaced = false;
+    let ctor_range = fields::constructor_range(body, source.lang);
 
-    let helper_init_args = fields
-        .iter()
-        .map(|f| {
-            if let Some(rhs) = ctor_assigned_fields.get(f) {
-                rhs.clone()
-            } else if let Some((decl, _)) = field_decls.get(f) {
-                decl.split_once('=')
-                    .map(|(_, rhs)| rhs.trim().trim_end_matches(';').trim().to_string())
-                    .unwrap_or_else(|| {
-                        if is_js {
-                            "undefined".to_string()
-                        } else {
-                            "undefined as any".to_string()
-                        }
-                    })
-            } else {
-                if is_js {
-                    "undefined".to_string()
-                } else {
-                    "undefined as any".to_string()
-                }
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let delegate_initializer = if ctor_assigned_fields.is_empty() {
-        format!(" = new {helper}({helper_init_args})")
-    } else {
+    let helper_init_args = fields::initializer_args(body, fields, &field_decls, is_js)?;
+    let delegate_initializer = if deferred {
         String::new()
+    } else {
+        format!(" = new {helper}({helper_init_args})")
     };
 
     for (line_index, line) in body.lines().enumerate() {
@@ -240,6 +199,14 @@ pub fn restructure_ts(
         });
 
         if is_moved_field_decl {
+            let initializer = line.find('=');
+            if let Some(eq) = initializer {
+                anyhow::ensure!(
+                    source.positions(&line[eq + 1..]).is_empty(),
+                    "field initializer refers to a moved field; evaluation semantics are unproved"
+                );
+            }
+            source.consumed(line);
             if !delegate_field_placed {
                 let vis = if is_js { "" } else { "public " };
                 let type_ann = if is_js { "" } else { ": " };
@@ -252,26 +219,44 @@ pub fn restructure_ts(
             continue;
         }
 
-        if trimmed.starts_with("constructor") && trimmed.contains('{') {
-            inside_ctor = true;
-        }
-
-        if inside_ctor {
+        let line_start = line.as_ptr() as usize - body.as_ptr() as usize;
+        if ctor_range
+            .as_ref()
+            .is_some_and(|range| range.contains(&line_start))
+        {
             let is_moved_field_assign = fields.iter().any(|f| {
                 trimmed.starts_with(&format!("this.{f} ="))
                     || trimmed.starts_with(&format!("this.{f}="))
             });
             if is_moved_field_assign {
-                if !ctor_replaced {
-                    new_body_lines.push(format!(
-                        "        this.{field} = new {helper}({helper_init_args});"
-                    ));
-                    ctor_replaced = true;
+                // Keep each assignment at its original evaluation point. Declaration
+                // initializers still run before the constructor, even when overwritten.
+                let name = fields
+                    .iter()
+                    .find(|f| trimmed.starts_with(&format!("this.{f}")))
+                    .unwrap();
+                let lhs = line.find(&format!("this.{name}")).unwrap() + 5;
+                let deferred_rhs = if deferred {
+                    let eq = line.find('=').unwrap();
+                    anyhow::ensure!(
+                        source.positions(&line[eq + 1..]).is_empty(),
+                        "deferred initializer reads a moved field before its helper exists"
+                    );
+                    Some(fields::deferred_rhs(line, source.lang)?)
+                } else {
+                    None
+                };
+                source.consumed(&line[lhs..lhs + name.len()]);
+                if let Some(rhs) = deferred_rhs {
+                    new_body_lines.push(format!("        this.{field} = new {helper}({rhs});"));
+                    continue;
                 }
+                let rewritten = source.rewrite(line)?;
+                let insertion = rewritten.find(&format!("this.{name}")).unwrap() + 5;
+                let mut rewritten = rewritten;
+                rewritten.insert_str(insertion, &format!("{field}."));
+                new_body_lines.push(rewritten);
                 continue;
-            }
-            if trimmed.contains('}') {
-                inside_ctor = false;
             }
         }
 
@@ -279,10 +264,11 @@ pub fn restructure_ts(
             .values()
             .any(|minfo| minfo.start_line <= line_index && line_index <= minfo.end_line);
         if is_moved_method {
+            source.moved_method(line, "this")?;
             continue;
         }
 
-        new_body_lines.push(line.to_string());
+        new_body_lines.push(source.rewrite(line)?);
     }
 
     if !delegate_field_placed {
@@ -323,15 +309,11 @@ pub fn restructure_ts(
     }
 
     let new_body = new_body_lines.join("\n");
-    let mut out = text.to_string();
-    out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
-    let owner_marker = format!("class {owner}");
-    let struct_marker = format!("struct {owner}");
-    let owner_start = text[..open_brace]
-        .rfind(&owner_marker)
-        .or_else(|| text[..open_brace].rfind(&struct_marker))
-        .context("cannot locate the selected class declaration for helper insertion")?;
-    out.insert_str(owner_start, &format!("{helper_text}\n\n"));
-    let final_text = out;
+    let final_text = format!(
+        "{}{helper_text}\n\n{}\n{new_body}\n{}",
+        source.rewrite(&text[..insertion_start])?,
+        source.rewrite(&text[insertion_start..open_brace + 1])?,
+        source.rewrite(&text[close_brace..])?
+    );
     Ok((final_text, owner))
 }
