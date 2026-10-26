@@ -23,10 +23,39 @@ pub fn call_args_span(text: &str, after_name: usize) -> Option<(usize, usize)> {
     while i < bytes.len() && (bytes[i] as char).is_whitespace() {
         i += 1;
     }
+    // A Rust turbofish, `clamp::<u32>(…)`, comes between the name and the list (#1381).
+    if bytes[i..].starts_with(b"::<") {
+        i = turbofish_end(bytes, i + 2)?;
+        while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+            i += 1;
+        }
+    }
     if bytes.get(i) != Some(&b'(') {
         return None;
     }
     matching_bracket(text, i).map(|close| (i + 1, close))
+}
+
+/// The byte after the `>` that closes the generic list opened at `open`; `None` when the list
+/// is not balanced on one statement. The `>` of a `->` inside it does not close it.
+fn turbofish_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for i in open..bytes.len() {
+        match bytes[i] {
+            b'<' => depth += 1,
+            b'>' if i > 0 && bytes[i - 1] == b'-' => {}
+            b'>' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            // `Fn() -> u8` puts parentheses inside the list; a statement or block end does not.
+            b';' | b'{' | b'}' => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The arguments of a call whose callee name ends at `after_name`, as a byte range inside the

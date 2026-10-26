@@ -96,6 +96,21 @@ fn an_argument_list_survives_closures_strings_and_chains() {
         call_args_span("let g = f;", 8).is_none(),
         "a use that is not a call has no argument list"
     );
+    // A turbofish between the name and the list is still a call (#1381).
+    let call = "clamp::<u32>(v, 100)";
+    let (start, end) = call_args_span(call, 5).expect("a call with a turbofish");
+    assert_eq!(&call[start..end], "v, 100");
+    let nested = "make::<Vec<Box<dyn Fn() -> u8>>>(a)";
+    let (start, end) = call_args_span(nested, 4).expect("nested generics and an arrow");
+    assert_eq!(&nested[start..end], "a");
+    assert!(
+        call_args_span("let g = f::<u8>;", 9).is_none(),
+        "a function value"
+    );
+    assert!(
+        call_args_span("f::<u8(x)", 1).is_none(),
+        "an unclosed generic list"
+    );
 }
 
 #[test]

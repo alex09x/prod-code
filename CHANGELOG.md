@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Inline-Parameter Literals and Turbofish Calls** (`crates/prod-code-mcp`, #1381):
+  A string argument counts as caller-independent only as one whole literal, so `"yes" if flag else "no"` is no longer copied into the callee. A Rust call with a turbofish, such as `clamp::<u32>(v, 100)`, is a call rather than a function value. Same-named constants from different caller scopes are tracked in #1508.
 - **Call Tree Depth on Shorter Paths** (`crates/prod-code-mcp`, #1389):
   `code_callers`/`code_callees` expand a function again when a later path reaches it higher up than where it was first shown, so a callee within the requested depth is no longer dropped as "shown above". Cycles and repeats at the same or a deeper level are still marked.
 - **Codemod Receiver Boundaries** (`crates/prod-code-mcp`, #1432):
