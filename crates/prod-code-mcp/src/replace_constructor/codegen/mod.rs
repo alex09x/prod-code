@@ -9,7 +9,9 @@
  */
 
 pub mod builder;
+pub(crate) mod cpp;
 pub mod factory;
+pub(crate) mod members;
 
 pub use builder::generate_builder_code;
 pub use factory::generate_factory_code;

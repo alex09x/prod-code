@@ -8,136 +8,197 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::super::parse::{is_ident, is_ident_str, split_balanced_commas};
 use super::super::types::InstantiationSite;
+use ra_ap_syntax::{AstNode, Edition, SourceFile, ast};
 use std::collections::BTreeMap;
 
-/// Finds raw struct instantiations of `type_name` in `text` for Rust.
+/// Cargo projects keep their declared edition (and manifest errors). Standalone
+/// files use the same 2021 fallback as the manifest-free discovery API below.
+pub(crate) fn consumer_edition(path: &std::path::Path) -> anyhow::Result<Edition> {
+    let mut edition = 2021;
+    for directory in path.ancestors().skip(1) {
+        if directory.join("Cargo.toml").try_exists()? {
+            edition = crate::parameter_object::rust_edition(path).map_err(anyhow::Error::msg)?;
+            break;
+        }
+    }
+    Ok(match edition {
+        2015 => Edition::Edition2015,
+        2018 => Edition::Edition2018,
+        2021 => Edition::Edition2021,
+        2024 => Edition::Edition2024,
+        _ => anyhow::bail!("unsupported Rust consumer edition {edition}"),
+    })
+}
+
+/// Finds Rust struct expressions in source without a manifest (edition 2021).
+/// Crate-qualified paths require file context; this API cannot assume a crate root.
+/// Workspace refactoring uses the consumer's manifest edition and crate identity.
 pub fn find_rust_instantiations(
     text: &str,
     type_name: &str,
     decl_start: usize,
     decl_end: usize,
 ) -> (Vec<InstantiationSite>, Vec<String>) {
+    find_with_edition(
+        text,
+        type_name,
+        decl_start,
+        decl_end,
+        Edition::Edition2021,
+        &[],
+        &super::rust_crate::CrateRoot::Unknown,
+    )
+}
+
+pub(crate) fn find_in_file(
+    path: &std::path::Path,
+    text: &str,
+    type_name: &str,
+    decl_start: usize,
+    decl_end: usize,
+    references: &[(u32, u32)],
+) -> anyhow::Result<(Vec<InstantiationSite>, Vec<String>)> {
+    let edition = consumer_edition(path)?;
+    let crate_root = super::rust_crate::CrateRoot::for_file(path, edition)?;
+    Ok(find_with_edition(
+        text,
+        type_name,
+        decl_start,
+        decl_end,
+        edition,
+        references,
+        &crate_root,
+    ))
+}
+
+fn find_with_edition(
+    text: &str,
+    type_name: &str,
+    decl_start: usize,
+    decl_end: usize,
+    edition: Edition,
+    reference_positions: &[(u32, u32)],
+    crate_root: &super::rust_crate::CrateRoot,
+) -> (Vec<InstantiationSite>, Vec<String>) {
+    let parse = SourceFile::parse(text, edition);
+    if !parse.errors().is_empty() {
+        return (
+            Vec::new(),
+            vec![format!(
+                "cannot parse Rust constructor source: {}",
+                parse.errors()[0]
+            )],
+        );
+    }
+    let root = parse.tree();
+    let selected = super::rust_identity::selected_declaration(root.syntax(), decl_start, decl_end);
     let mut sites = Vec::new();
-    let mut blocked = Vec::new();
-    let target_self_ranges = crate::extract_field::impl_blocks(text)
-        .into_iter()
-        .filter_map(|(impl_type, _, open, close)| {
-            let base = impl_type.split('<').next().unwrap_or(&impl_type).trim();
-            let base = base.rsplit("::").next().unwrap_or(base).trim();
-            (base == type_name).then_some((open, close))
-        })
-        .collect::<Vec<_>>();
-
-    let matches: Vec<(usize, &str)> = text
-        .match_indices(type_name)
-        .chain(text.match_indices("Self"))
-        .collect();
-
-    for (at, name) in matches {
-        if crate::extract_field::is_in_literal_or_comment(
-            text,
-            at,
-            crate::parameter_object::Language::Rust,
-        ) {
-            continue;
-        }
-        if at >= decl_start && at < decl_end {
-            continue;
-        }
-        if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
-            continue;
-        }
-        if text[at + name.len()..].chars().next().is_some_and(is_ident) {
-            continue;
-        }
-        if name == "Self"
-            && !target_self_ranges
-                .iter()
-                .any(|(open, close)| *open < at && at < *close)
-        {
-            continue;
-        }
-        let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-        let before = text[line_start..at].trim();
-        if before.starts_with("struct")
-            || before.starts_with("enum")
-            || before.starts_with("impl")
-            || before.starts_with("type ")
-            || before.ends_with("->")
-            || before.ends_with("for")
-        {
-            continue;
-        }
-
-        // Check if there is an opening brace following `name`
-        let Some(brace) = crate::extract_field::constructor_brace(text, at, name) else {
+    let mut blocked = super::rust_macros::blocked_references(
+        root.syntax(),
+        text,
+        type_name,
+        selected.as_ref(),
+        reference_positions,
+        crate_root,
+    );
+    for literal in root
+        .syntax()
+        .descendants()
+        .filter_map(ast::RecordExpr::cast)
+    {
+        let Some(path) = literal.path() else { continue };
+        let Some(segment) = path.segment() else {
             continue;
         };
-        let Some(close) = crate::parameter_object::matching_bracket(text, brace) else {
+        let Some(name) = segment.name_ref() else {
             continue;
         };
-
-        // Check if it is a pattern rather than an expression
-        if matches!(
-            crate::extract_field::braces_kind(text, brace, close),
-            crate::extract_field::Braces::Pattern { .. }
-        ) {
+        let name = name.text();
+        if name != type_name && name != "Self" {
             continue;
         }
-
-        let inner = &text[brace + 1..close];
-        let has_rest = inner.contains("..");
-        if has_rest {
-            let (l, c) = crate::signature::position_at(text, at).unwrap_or((0, 0));
+        let identity = super::rust_identity::is_selected(
+            &path,
+            selected.as_ref(),
+            type_name,
+            crate_root,
+            |owner| {
+                owner
+                    .segment()
+                    .and_then(|s| s.name_ref())
+                    .is_some_and(|name| {
+                        crate::signature::line_col_at(
+                            text,
+                            usize::from(name.syntax().text_range().start()),
+                        )
+                        .is_some_and(|position| reference_positions.contains(&position))
+                    })
+            },
+        );
+        match identity {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(()) => {
+                let offset = usize::from(path.syntax().text_range().start());
+                let (line, col) = crate::signature::position_at(text, offset).unwrap_or((0, 0));
+                blocked.push(format!(
+                    "{line}:{col} cannot resolve Rust constructor owner through ambiguous or unavailable imports or crate identity"
+                ));
+                continue;
+            }
+        }
+        let range = literal.syntax().text_range();
+        let start = usize::from(range.start());
+        if start >= decl_start && start < decl_end {
+            continue;
+        }
+        let Some(fields) = literal.record_expr_field_list() else {
+            continue;
+        };
+        if fields.dotdot_token().is_some() {
+            let (l, c) = crate::signature::position_at(text, start).unwrap_or((0, 0));
             blocked.push(format!(
                 "{l}:{c} instantiation uses struct update syntax `..` which cannot be mapped to positional constructor arguments"
             ));
             continue;
         }
-
         let mut field_values = BTreeMap::new();
         let mut field_order = Vec::new();
-        let chunks = split_balanced_commas(inner);
-        for chunk in chunks {
-            let trimmed = chunk.trim();
-            if trimmed.is_empty() || trimmed.starts_with("//") {
+        for field in fields.fields() {
+            // Use the expression grammar, never the generic-declaration comma splitter.
+            // Slice original byte ranges so comments and literal spelling survive.
+            let Some(key) = field.field_name() else {
                 continue;
-            }
-            if let Some((f, val)) = trimmed.split_once(':') {
-                field_values.insert(f.trim().to_string(), val.trim().to_string());
-                field_order.push(f.trim().to_string());
-            } else if is_ident_str(trimmed) {
-                // Shorthand field: `name` is `name: name`
-                field_values.insert(trimmed.to_string(), trimmed.to_string());
-                field_order.push(trimmed.to_string());
-            }
+            };
+            let key = key.text().to_string();
+            let value = if let Some(colon) = field.colon_token() {
+                let from = usize::from(colon.text_range().end());
+                let to = usize::from(field.syntax().text_range().end());
+                text[from..to].trim().to_string()
+            } else {
+                key.clone()
+            };
+            field_order.push(key.clone());
+            field_values.insert(key, value);
         }
-
-        // Determine path prefix before `name`, e.g. `crate::models::`
-        let mut prefix_start = at;
-        let bytes = text.as_bytes();
-        while prefix_start >= 2 && &text[prefix_start - 2..prefix_start] == "::" {
-            let mut j = prefix_start - 2;
-            while j > 0 && is_ident(bytes[j - 1] as char) {
-                j -= 1;
-            }
-            prefix_start = j;
-        }
-        let prefix = text[prefix_start..at].to_string();
-
+        let rust_type_args =
+            ra_ap_syntax::ast::HasGenericArgs::generic_arg_list(&segment).map(|arguments| {
+                let range = arguments.syntax().text_range();
+                let arguments = &text[usize::from(range.start())..usize::from(range.end())];
+                arguments.to_string()
+            });
+        let prefix_end = usize::from(segment.syntax().text_range().start());
         sites.push(InstantiationSite {
-            start: prefix_start,
-            end: close + 1,
+            start,
+            end: usize::from(range.end()),
             field_values,
             field_order,
-            prefix,
+            prefix: text[start..prefix_end].to_string(),
             has_rest_pattern: false,
+            rust_self: name == "Self",
+            rust_type_args,
         });
     }
-
-    sites.sort_by_key(|s| s.start);
-    sites.dedup_by_key(|s| s.start);
     (sites, blocked)
 }

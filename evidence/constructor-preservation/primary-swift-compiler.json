@@ -1,0 +1,91 @@
+{
+  "node_kind": "macOS aarch64",
+  "compiler": "Apple Swift5.10",
+  "invocation": "prod-code exec --remote <macOS-build-node> --timeout-secs120 --no-pull -- python3 verify.py",
+  "source_origin": "final/swift-factory.json and final/swift-builder.json input/output UTF8 fields, exported without alteration",
+  "runner_source": "# prod-code \u2014 Remote code intelligence\n# Copyright (c) 2026 Alexander Panasenko\n# Contact: alex@prod.codes\n# Author: https://prod.codes/about/\n# Project: https://github.com/alex09x/prod-code\n# SPDX-License-Identifier: MIT OR Apache-2.0\n\nimport hashlib\nimport json\nimport pathlib\nimport subprocess\nimport tempfile\n\nrecords = []\nfor mode in (\"factory\", \"builder\"):\n    for phase in (\"before\", \"after\"):\n        source = pathlib.Path(f\"{phase}-{mode}.swift\")\n        with tempfile.TemporaryDirectory(prefix=\"constructor-swift-\") as scratch:\n            binary = pathlib.Path(scratch) / \"program\"\n            command = [\"xcrun\", \"swiftc\", str(source), \"-o\", str(binary)]\n            compiled = subprocess.run(command, capture_output=True, text=True)\n            record = {\n                \"mode\": mode,\n                \"phase\": phase,\n                \"source\": str(source),\n                \"source_sha256\": hashlib.sha256(source.read_bytes()).hexdigest(),\n                \"compiler_argv\": command[:-1] + [\"<swift-run>/program\"],\n                \"compiler_exit\": compiled.returncode,\n                \"compiler_stdout\": compiled.stdout.replace(scratch, \"<swift-run>\"),\n                \"compiler_stderr\": compiled.stderr.replace(scratch, \"<swift-run>\"),\n            }\n            if compiled.returncode == 0:\n                ran = subprocess.run([str(binary)], capture_output=True, text=True)\n                record.update(runtime_exit=ran.returncode, stdout=ran.stdout, stderr=ran.stderr)\n            records.append(record)\n            print(json.dumps(record), flush=True)\n\nvalid = all(r[\"compiler_exit\"] == 0 and r.get(\"runtime_exit\") == 0 for r in records)\nfor mode in (\"factory\", \"builder\"):\n    pair = [r for r in records if r[\"mode\"] == mode]\n    valid = valid and pair[0].get(\"stdout\") == pair[1].get(\"stdout\")\nraise SystemExit(0 if valid else 1)\n",
+  "records": [
+    {
+      "mode": "factory",
+      "phase": "before",
+      "source": "before-factory.swift",
+      "source_sha256": "e1ff05bb5bb06c80e56c892038fc3aa58d80fbe06467c23e4e6f1962988b05d8",
+      "compiler_argv": [
+        "xcrun",
+        "swiftc",
+        "before-factory.swift",
+        "-o",
+        "<swift-run>/program"
+      ],
+      "compiler_exit": 0,
+      "compiler_stdout": "",
+      "compiler_stderr": "",
+      "runtime_exit": 0,
+      "stdout": "1 2\n",
+      "stderr": ""
+    },
+    {
+      "mode": "factory",
+      "phase": "after",
+      "source": "after-factory.swift",
+      "source_sha256": "df48616aab2d517ae259f1bc1971475d7354b0eb4582df54d4d55d2fc517c1b8",
+      "compiler_argv": [
+        "xcrun",
+        "swiftc",
+        "after-factory.swift",
+        "-o",
+        "<swift-run>/program"
+      ],
+      "compiler_exit": 0,
+      "compiler_stdout": "",
+      "compiler_stderr": "",
+      "runtime_exit": 0,
+      "stdout": "1 2\n",
+      "stderr": ""
+    },
+    {
+      "mode": "builder",
+      "phase": "before",
+      "source": "before-builder.swift",
+      "source_sha256": "e1ff05bb5bb06c80e56c892038fc3aa58d80fbe06467c23e4e6f1962988b05d8",
+      "compiler_argv": [
+        "xcrun",
+        "swiftc",
+        "before-builder.swift",
+        "-o",
+        "<swift-run>/program"
+      ],
+      "compiler_exit": 0,
+      "compiler_stdout": "",
+      "compiler_stderr": "",
+      "runtime_exit": 0,
+      "stdout": "1 2\n",
+      "stderr": ""
+    },
+    {
+      "mode": "builder",
+      "phase": "after",
+      "source": "after-builder.swift",
+      "source_sha256": "936b1d683ec3c01af9161fb4534fc4d5d3c59c0335cc188958c1db2115bdd430",
+      "compiler_argv": [
+        "xcrun",
+        "swiftc",
+        "after-builder.swift",
+        "-o",
+        "<swift-run>/program"
+      ],
+      "compiler_exit": 0,
+      "compiler_stdout": "",
+      "compiler_stderr": "",
+      "runtime_exit": 0,
+      "stdout": "1 2\n",
+      "stderr": ""
+    }
+  ],
+  "terminal_exit": 0,
+  "wall_seconds": 1.9,
+  "limits": [
+    "Only the two recorded factory/builder Swift source pairs were compiled and executed.",
+    "This does not establish live analyzer reference discovery or approve the rest of the candidate."
+  ]
+}

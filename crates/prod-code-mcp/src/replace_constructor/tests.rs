@@ -78,7 +78,10 @@ fn run() {
 
     // Reordered fields mapped to declared parameter order:
     let r2 = rewrite_instantiation(&sites[1], &decl, ReplaceMode::Factory, "new").unwrap();
-    assert_eq!(r2, "Config::new(\"0.0.0.0\".into(), 9000)");
+    assert_eq!(
+        r2,
+        "match (9000, \"0.0.0.0\".into(),) { (__prod_constructor_0, __prod_constructor_1,) => Config::new(__prod_constructor_1, __prod_constructor_0) }"
+    );
 
     // Shorthand fields:
     let r3 = rewrite_instantiation(&sites[2], &decl, ReplaceMode::Factory, "new").unwrap();

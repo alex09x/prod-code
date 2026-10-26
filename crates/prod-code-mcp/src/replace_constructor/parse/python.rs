@@ -83,21 +83,14 @@ pub fn parse_python_struct_decl(text: &str, type_name: &str) -> Result<StructDec
         let before = text[..at].trim_end();
         if before.ends_with("class") {
             let class_start = text[..at].rfind("class").unwrap_or(at);
-            let fields = parse_python_fields(&text[at..]);
             let (line, col) = crate::signature::position_at(text, at)?;
-            let lines: Vec<&str> = text.lines().collect();
-            let mut class_indent = 0;
-            let mut class_line_idx = 0;
-            for (idx, l) in lines.iter().enumerate() {
-                let trimmed = l.trim_start();
-                if trimmed.starts_with("class ") && trimmed.contains(type_name) {
-                    class_indent = l.len() - trimmed.len();
-                    class_line_idx = idx;
-                    break;
-                }
-            }
+            // The matched declaration owns the range, not an earlier name that
+            // happens to contain this one (BaseConfig before Config, for example).
+            let line_start = text[..class_start].rfind('\n').map_or(0, |i| i + 1);
+            let class_indent = class_start - line_start;
+            let header_end = text[at..].find('\n').map_or(text.len(), |i| at + i + 1);
             let mut end_offset = text.len();
-            for l in lines.iter().skip(class_line_idx + 1) {
+            for l in text[header_end..].lines() {
                 let trimmed = l.trim_start();
                 if !trimmed.is_empty() && !trimmed.starts_with('#') {
                     let indent = l.len() - trimmed.len();
@@ -109,6 +102,11 @@ pub fn parse_python_struct_decl(text: &str, type_name: &str) -> Result<StructDec
                     }
                 }
             }
+            let body = text.get(header_end..end_offset).ok_or_else(|| {
+                anyhow::anyhow!("invalid Python class bounds; nothing was written")
+            })?;
+            let fields = super::parameters::constructor_parameters(body, true)?
+                .unwrap_or_else(|| parse_annotation_fields(body));
             return Ok(StructDecl {
                 name: type_name.to_string(),
                 language: "python".to_string(),
@@ -123,4 +121,35 @@ pub fn parse_python_struct_decl(text: &str, type_name: &str) -> Result<StructDec
         }
     }
     anyhow::bail!("cannot find declaration of class `{type_name}` in Python file")
+}
+
+/// Only direct annotation members belong to a dataclass constructor. Keep the
+/// initializer at the original declaration; omission must reach the dataclass.
+fn parse_annotation_fields(body: &str) -> Vec<FieldDecl> {
+    let mask =
+        crate::caller_migration::lexical_code_mask(body, crate::parameter_object::Language::Python);
+    let member_indent = super::parameters::python_member_indent(body, &mask);
+    body.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            let at = line.as_ptr() as usize - body.as_ptr() as usize + indent;
+            if Some(indent) != member_indent || !mask.get(at).copied().unwrap_or(false) {
+                return None;
+            }
+            let (name, annotation) = trimmed.split_once(':')?;
+            if !is_ident_str(name.trim()) {
+                return None;
+            }
+            let (ty, default) = crate::parameter_object::split_default(
+                annotation,
+                crate::parameter_object::Language::Python,
+            );
+            Some(FieldDecl {
+                name: name.trim().into(),
+                ty: ty.trim().into(),
+                vis: if default.is_some() { "default" } else { "" }.into(),
+            })
+        })
+        .collect()
 }

@@ -30,10 +30,10 @@ fn pure_reorder_values() {
         ("`t`", true),
         ("\"a${b}\"", false),
         ("`a${b}`", false),
-        ("x.into()", true),
-        ("name.to_string()", true),
-        ("\"a\".to_owned()", true),
-        ("v.clone()", true),
+        ("x.into()", false),
+        ("name.to_string()", false),
+        ("\"a\".to_owned()", false),
+        ("v.clone()", false),
         ("foo().clone()", false),
         ("42", true),
         ("-3.5", true),
@@ -69,9 +69,9 @@ fn go_zero_values() {
         ("interface {}", "nil"),
         ("any", "nil"),
         ("error", "nil"),
-        ("Point", "Point{}"),
-        ("pkg.T", "pkg.T{}"),
-        ("[3]int", "[3]int{}"),
+        ("Point", "*new(Point)"),
+        ("pkg.T", "*new(pkg.T)"),
+        ("[3]int", "*new([3]int)"),
     ];
     for (ty, expected) in cases {
         assert_eq!(go_zero_value(ty), *expected, "{ty:?}");
@@ -110,6 +110,8 @@ fn site(values: &[(&str, &str)]) -> InstantiationSite {
         field_order: vec![],
         prefix: String::new(),
         has_rest_pattern: false,
+        rust_self: false,
+        rust_type_args: None,
     }
 }
 

@@ -9,92 +9,94 @@
  */
 
 use super::super::types::{FieldDecl, StructDecl};
-use super::{extract_generics, is_ident, is_ident_str, split_balanced_commas};
 use anyhow::{Context, Result};
+use ra_ap_syntax::{
+    AstNode, Edition, SourceFile, ast,
+    ast::{HasGenericParams, HasName, HasVisibility},
+};
 
 /// Parses Rust struct field declarations inside the struct body `{ ... }`.
-pub fn parse_rust_struct_fields(inner: &str) -> Vec<FieldDecl> {
-    let mut fields = Vec::new();
-    let chunks = split_balanced_commas(inner);
-    for raw in chunks {
-        let lines: Vec<&str> = raw
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("#["))
-            .collect();
-        let cleaned = lines.join(" ");
-        let Some((left, right)) = cleaned.split_once(':') else {
-            continue;
-        };
-        let ty = right.trim().to_string();
-        let mut words = left.split_whitespace();
-        let mut vis = String::new();
-        let mut name = String::new();
-        for word in words.by_ref() {
-            if word.starts_with("pub") {
-                vis = word.to_string();
-            } else if is_ident_str(word) {
-                name = word.to_string();
-            }
-        }
-        if !name.is_empty() && !ty.is_empty() {
-            fields.push(FieldDecl { name, ty, vis });
-        }
-    }
-    fields
+pub fn parse_rust_struct_fields(inner: &str) -> Result<Vec<FieldDecl>> {
+    Ok(parse_rust_struct_decl(&format!("struct __Fields {{ {inner} }}"), "__Fields")?.fields)
 }
 
 pub fn parse_rust_struct_decl(text: &str, type_name: &str) -> Result<StructDecl> {
-    let mut candidate = None;
-    for (at, _) in text.match_indices(type_name) {
-        if at > 0 && text[..at].chars().next_back().is_some_and(is_ident) {
-            continue;
-        }
-        if text[at + type_name.len()..]
-            .chars()
-            .next()
-            .is_some_and(is_ident)
-        {
-            continue;
-        }
-        let before = text[..at].trim_end();
-        let is_struct = before.ends_with("struct")
-            || before.ends_with("struct ")
-            || before.contains("struct ")
-                && before[before.rfind("struct ").unwrap()..]
-                    .chars()
-                    .all(|c| c.is_whitespace() || is_ident(c) || c == '(' || c == ')');
-        if !is_struct {
-            continue;
-        }
-        let struct_kw = before.rfind("struct").unwrap_or(at);
-        let line_start = text[..struct_kw].rfind('\n').map_or(0, |i| i + 1);
-        let is_pub = text[line_start..struct_kw].contains("pub");
-        let generics = extract_generics(text, at + type_name.len());
-        let open_from = generics
-            .as_ref()
-            .map_or(at + type_name.len(), |(_, end)| *end);
-        let Some(open_rel) = text[open_from..].find('{') else {
-            continue;
-        };
-        let open = open_from + open_rel;
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
-            continue;
-        };
-        let fields = parse_rust_struct_fields(&text[open + 1..close]);
-        let (line, col) = crate::signature::position_at(text, at)?;
-        candidate = Some(StructDecl {
-            name: type_name.to_string(),
-            language: "rust".to_string(),
-            fields,
-            generics: generics.map(|(g, _)| g),
-            is_pub,
-            decl_start: struct_kw,
-            decl_end: close + 1,
-            line,
-            col,
-        });
-        break;
-    }
-    candidate.with_context(|| format!("cannot find declaration of struct `{type_name}` in file"))
+    parse_with_edition(text, type_name, Edition::Edition2021)
+}
+
+pub(crate) fn parse_with_edition(
+    text: &str,
+    type_name: &str,
+    edition: Edition,
+) -> Result<StructDecl> {
+    let parsed = SourceFile::parse(text, edition);
+    anyhow::ensure!(
+        parsed.errors().is_empty(),
+        "cannot parse Rust constructor source: {}",
+        parsed
+            .errors()
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_default()
+    );
+    let item = parsed
+        .tree()
+        .syntax()
+        .descendants()
+        .filter_map(ast::Struct::cast)
+        .find(|item| item.name().is_some_and(|n| n.text() == type_name))
+        .with_context(|| format!("cannot find declaration of struct `{type_name}` in file"))?;
+    let Some(ast::FieldList::RecordFieldList(list)) = item.field_list() else {
+        anyhow::bail!("constructor replacement requires a Rust record struct");
+    };
+    let fields = list
+        .fields()
+        .map(|field| {
+            Ok(FieldDecl {
+                name: field
+                    .name()
+                    .context("Rust field name is missing")?
+                    .text()
+                    .to_string(),
+                ty: field
+                    .ty()
+                    .context("Rust field type is missing")?
+                    .syntax()
+                    .text()
+                    .to_string(),
+                vis: field
+                    .visibility()
+                    .map(|v| v.syntax().text().to_string())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let name = item.name().context("Rust struct name is missing")?;
+    let at = usize::from(name.syntax().text_range().start());
+    let (line, col) = crate::signature::position_at(text, at)?;
+    let generics = [
+        item.generic_param_list()
+            .map(|g| g.syntax().text().to_string()),
+        item.where_clause().map(|w| w.syntax().text().to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    Ok(StructDecl {
+        name: type_name.into(),
+        language: "rust".into(),
+        fields,
+        generics: (!generics.is_empty()).then_some(generics),
+        is_pub: item.visibility().is_some(),
+        decl_start: usize::from(
+            item.struct_token()
+                .context("Rust struct keyword is missing")?
+                .text_range()
+                .start(),
+        ),
+        decl_end: usize::from(item.syntax().text_range().end()),
+        line,
+        col,
+    })
 }

@@ -16,12 +16,9 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
     match decl.language.as_str() {
         "rust" => {
             let vis = if decl.is_pub { "pub " } else { "" };
-            let generics_header = decl
-                .generics
-                .as_deref()
-                .map(|g| format!("{g} "))
-                .unwrap_or_default();
-            let generics_name = decl.generics.as_deref().unwrap_or_default();
+            let (generics_decl, where_clause) = super::factory::rust_declaration_parts(decl);
+            let (generics_header, generics_name) =
+                super::factory::rust_impl_generics(generics_decl);
 
             let builder_fields = decl
                 .fields
@@ -38,6 +35,12 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
                 ));
             }
             let setters_text = setters.join("\n\n");
+            let empty_fields = decl
+                .fields
+                .iter()
+                .map(|f| format!("            {}: None,", f.name))
+                .collect::<Vec<_>>()
+                .join("\n");
 
             let build_fields = decl
                 .fields
@@ -52,21 +55,21 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
                 .join("\n");
 
             format!(
-                "\n\n#[derive(Default)]\n{vis}struct {builder_name}{generics_name} {{\n{builder_fields}\n}}\n\nimpl {generics_header}{builder_name}{generics_name} {{\n    {vis}fn new() -> Self {{\n        Self::default()\n    }}\n\n{setters_text}\n\n    {vis}fn build(self) -> {name}{generics_name} {{\n        {name} {{\n{build_fields}\n        }}\n    }}\n}}\n\nimpl {generics_header}{name}{generics_name} {{\n    {vis}fn builder() -> {builder_name}{generics_name} {{\n        {builder_name}::default()\n    }}\n}}"
+                "\n\n{vis}struct {builder_name}{generics_decl}{where_clause} {{\n{builder_fields}\n}}\n\nimpl {generics_header}Default for {builder_name}{generics_name}{where_clause} {{\n    fn default() -> Self {{\n        Self {{\n{empty_fields}\n        }}\n    }}\n}}\n\nimpl {generics_header}{builder_name}{generics_name}{where_clause} {{\n    {vis}fn new() -> Self {{\n        Self::default()\n    }}\n\n{setters_text}\n\n    {vis}fn build(self) -> {name}{generics_name} {{\n        {name} {{\n{build_fields}\n        }}\n    }}\n}}\n\nimpl {generics_header}{name}{generics_name}{where_clause} {{\n    {vis}fn builder() -> {builder_name}{generics_name} {{\n        {builder_name}::default()\n    }}\n}}"
             )
         }
         "go" => {
             let builder_fields = decl
                 .fields
                 .iter()
-                .map(|f| format!("    {} {}", f.name, f.ty))
+                .map(|f| format!("    _{} {}", f.name, f.ty))
                 .collect::<Vec<_>>()
                 .join("\n");
 
             let mut setters = Vec::new();
             for f in &decl.fields {
                 setters.push(format!(
-                    "func (b *{builder_name}) {}(v {}) *{builder_name} {{\n    b.{} = v\n    return b\n}}",
+                    "func (b *{builder_name}) {}(v {}) *{builder_name} {{\n    b._{} = v\n    return b\n}}",
                     f.name, f.ty, f.name
                 ));
             }
@@ -75,7 +78,7 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
             let build_fields = decl
                 .fields
                 .iter()
-                .map(|f| format!("        {}: b.{},", f.name, f.name))
+                .map(|f| format!("        {}: b._{},", f.name, f.name))
                 .collect::<Vec<_>>()
                 .join("\n");
 
@@ -84,10 +87,18 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
             )
         }
         "typescript" | "typescriptreact" => {
+            let helper = super::members::argument_helper(decl);
+            let storage = super::members::fresh_member(decl, "_arguments");
             let builder_fields = decl
                 .fields
                 .iter()
-                .map(|f| format!("    private _{}?: {};", f.name, f.ty))
+                .map(|f| {
+                    format!(
+                        "    private _{}?: {};",
+                        f.name,
+                        if f.ty.is_empty() { "any" } else { &f.ty }
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
 
@@ -95,7 +106,7 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
             for f in &decl.fields {
                 setters.push(format!(
                     "    {}(value: {}): this {{\n        this._{} = value;\n        return this;\n    }}",
-                    f.name, f.ty, f.name
+                    f.name, if f.ty.is_empty() { "any" } else { &f.ty }, f.name
                 ));
             }
             let setters_text = setters.join("\n\n");
@@ -103,15 +114,23 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
             let build_args = decl
                 .fields
                 .iter()
-                .map(|f| format!("this._{}!", f.name))
+                .map(|f| {
+                    if f.vis == "rest" {
+                        format!("...(this._{} ?? [])", f.name)
+                    } else {
+                        format!("this._{}!", f.name)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
 
             format!(
-                "\n\nexport class {builder_name} {{\n{builder_fields}\n\n{setters_text}\n\n    build(): {name} {{\n        return new {name}({build_args});\n    }}\n}}\n"
+                "\n\nexport class {builder_name} {{\n{builder_fields}\n    private {storage}?: any[];\n\n    {helper}(...values: any[]): this {{\n        this.{storage} = values;\n        return this;\n    }}\n\n{setters_text}\n\n    build(): {name} {{\n        if (this.{storage}) return new {name}(...this.{storage} as ConstructorParameters<typeof {name}>);\n        return new {name}({build_args});\n    }}\n}}\n"
             )
         }
         "javascript" | "javascriptreact" => {
+            let helper = super::members::argument_helper(decl);
+            let storage = super::members::fresh_member(decl, "_arguments");
             let initializers = decl
                 .fields
                 .iter()
@@ -129,14 +148,22 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
             let build_args = decl
                 .fields
                 .iter()
-                .map(|field| format!("this._{}", field.name))
+                .map(|field| {
+                    if field.vis == "rest" {
+                        format!("...(this._{} ?? [])", field.name)
+                    } else {
+                        format!("this._{}", field.name)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "\n\nexport class {builder_name} {{\n    constructor() {{\n{initializers}\n    }}\n\n{setters_text}\n\n    build() {{\n        return new {name}({build_args});\n    }}\n}}\n"
+                "\n\nexport class {builder_name} {{\n    constructor() {{\n{initializers}\n    }}\n\n    {helper}(...values) {{\n        this.{storage} = values;\n        return this;\n    }}\n\n{setters_text}\n\n    build() {{\n        if (this.{storage}) return new {name}(...this.{storage});\n        return new {name}({build_args});\n    }}\n}}\n"
             )
         }
         "python" => {
+            let optional = decl.fields.iter().any(|f| f.vis == "default");
+            let provided_member = super::members::fresh_member(decl, "_provided");
             let inits = decl
                 .fields
                 .iter()
@@ -146,8 +173,13 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
 
             let mut setters = Vec::new();
             for f in &decl.fields {
+                let provided = if optional {
+                    format!("\n        self.{provided_member}[\"{}\"] = True", f.name)
+                } else {
+                    String::new()
+                };
                 setters.push(format!(
-                    "    def {}(self, value):\n        self._{} = value\n        return self",
+                    "    def {}(self, value):\n        self._{} = value{provided}\n        return self",
                     f.name, f.name
                 ));
             }
@@ -159,6 +191,26 @@ pub fn generate_builder_code(decl: &StructDecl, builder_name: &str) -> String {
                 .map(|f| format!("{}=self._{}", f.name, f.name))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let inits = if optional {
+                format!("        self.{provided_member} = {{}}\n{inits}")
+            } else if inits.is_empty() {
+                "        pass".into()
+            } else {
+                inits
+            };
+            let build_args = if optional {
+                let saved = decl
+                    .fields
+                    .iter()
+                    .map(|f| format!("(\"{}\", self._{})", f.name, f.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "**{{field: value for field, value in [{saved}] if field in self.{provided_member}}}"
+                )
+            } else {
+                build_args
+            };
 
             format!(
                 "\n\nclass {builder_name}:\n    def __init__(self):\n{inits}\n\n{setters_text}\n\n    def build(self) -> \"{name}\":\n        return {name}({build_args})\n"

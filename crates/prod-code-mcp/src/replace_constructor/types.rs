@@ -62,6 +62,9 @@ pub struct InstantiationSite {
     pub field_order: Vec<String>,
     pub prefix: String,
     pub has_rest_pattern: bool,
+    /// Rust receiver syntax is independent of legal user field names.
+    pub rust_self: bool,
+    pub rust_type_args: Option<String>,
 }
 
 /// Result of replacing constructors with factory methods or builders.

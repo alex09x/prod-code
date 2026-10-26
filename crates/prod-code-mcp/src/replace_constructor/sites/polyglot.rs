@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::super::parse::{is_ident, split_balanced_commas};
+use super::super::parse::{is_ident, is_ident_str, split_balanced_commas};
 use super::super::types::InstantiationSite;
 use std::collections::BTreeMap;
 
@@ -47,7 +47,11 @@ pub fn find_go_instantiations(
             continue;
         }
         let open = at + type_name.len() + after.len() - trimmed_after.len();
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+        let Some(close) = super::super::parse::matching_arguments(
+            text,
+            open,
+            crate::parameter_object::Language::Go,
+        ) else {
             continue;
         };
 
@@ -66,7 +70,10 @@ pub fn find_go_instantiations(
             if trimmed.is_empty() {
                 continue;
             }
-            if let Some((k, v)) = trimmed.split_once(':') {
+            if let Some((k, v)) = trimmed
+                .split_once(':')
+                .filter(|(k, _)| is_ident_str(k.trim()))
+            {
                 field_values.insert(k.trim().to_string(), v.trim().to_string());
                 field_order.push(k.trim().to_string());
             } else {
@@ -84,6 +91,8 @@ pub fn find_go_instantiations(
             field_order,
             prefix: String::new(),
             has_rest_pattern: false,
+            rust_self: false,
+            rust_type_args: None,
         });
     }
     sites
@@ -115,7 +124,11 @@ pub fn find_ts_instantiations(
             continue;
         }
         let open = at + pat.len() + after.len() - trimmed_after.len();
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+        let Some(close) = super::super::parse::matching_arguments(
+            text,
+            open,
+            crate::parameter_object::Language::TypeScript,
+        ) else {
             continue;
         };
         let mut field_values = BTreeMap::new();
@@ -130,6 +143,8 @@ pub fn find_ts_instantiations(
             field_order: Vec::new(),
             prefix: String::new(),
             has_rest_pattern: false,
+            rust_self: false,
+            rust_type_args: None,
         });
     }
     sites
@@ -159,14 +174,38 @@ pub fn find_cpp_instantiations(
         }
         let after = &text[at + type_name.len()..];
         let trimmed = after.trim_start();
-        let Some(_) = trimmed.chars().next().filter(|c| matches!(c, '{' | '(')) else {
-            continue;
+        let variable_len = trimmed
+            .chars()
+            .take_while(|c| is_ident(*c))
+            .map(char::len_utf8)
+            .sum::<usize>();
+        let variable = &trimmed[..variable_len];
+        let initializer = if is_ident_str(variable) {
+            let rest = trimmed[variable_len..].trim_start();
+            rest.strip_prefix('=').unwrap_or(rest).trim_start()
+        } else {
+            trimmed
         };
-        let open = at + type_name.len() + after.len() - trimmed.len();
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+        if !initializer.starts_with('{') && !initializer.starts_with('(') {
+            continue;
+        }
+        // Parenthesized named declarations can be function declarations (the most
+        // vexing parse). Braced variable declarations are unambiguous.
+        if !variable.is_empty() && !initializer.starts_with('{') {
+            continue;
+        }
+        let open = at + type_name.len() + after.len() - initializer.len();
+        let Some(close) = super::super::parse::matching_arguments(
+            text,
+            open,
+            crate::parameter_object::Language::Cpp,
+        ) else {
             continue;
         };
         let mut field_values = BTreeMap::new();
+        if !variable.is_empty() {
+            field_values.insert("__variable__".into(), variable.into());
+        }
         field_values.insert(
             "__raw_args__".to_string(),
             text[open + 1..close].trim().to_string(),
@@ -178,6 +217,8 @@ pub fn find_cpp_instantiations(
             field_order: Vec::new(),
             prefix: String::new(),
             has_rest_pattern: false,
+            rust_self: false,
+            rust_type_args: None,
         });
     }
     sites
@@ -207,11 +248,19 @@ pub fn find_swift_instantiations(
         }
         let after = &text[at + type_name.len()..];
         let trimmed = after.trim_start();
+        let trimmed = trimmed
+            .strip_prefix(".init")
+            .unwrap_or(trimmed)
+            .trim_start();
         if !trimmed.starts_with('(') {
             continue;
         }
         let open = at + type_name.len() + after.len() - trimmed.len();
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+        let Some(close) = super::super::parse::matching_arguments(
+            text,
+            open,
+            crate::parameter_object::Language::Swift,
+        ) else {
             continue;
         };
         let mut field_values = BTreeMap::new();
@@ -226,6 +275,8 @@ pub fn find_swift_instantiations(
             field_order: Vec::new(),
             prefix: String::new(),
             has_rest_pattern: false,
+            rust_self: false,
+            rust_type_args: None,
         });
     }
     sites
@@ -270,7 +321,11 @@ pub fn find_python_instantiations(
             continue;
         }
         let open = at + type_name.len() + after.len() - trimmed_after.len();
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+        let Some(close) = super::super::parse::matching_arguments(
+            text,
+            open,
+            crate::parameter_object::Language::Python,
+        ) else {
             continue;
         };
         let mut field_values = BTreeMap::new();
@@ -285,6 +340,8 @@ pub fn find_python_instantiations(
             field_order: Vec::new(),
             prefix: String::new(),
             has_rest_pattern: false,
+            rust_self: false,
+            rust_type_args: None,
         });
     }
     sites

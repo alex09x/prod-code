@@ -134,7 +134,7 @@ fn main() {
 #[test]
 fn test_polyglot_helpers() {
     // Rust fields
-    let r_fields = parse_rust_struct_fields("pub a: u32, b: String");
+    let r_fields = parse_rust_struct_fields("pub a: u32, b: String").unwrap();
     assert_eq!(r_fields.len(), 2);
 
     // Go fields & instantiations
@@ -340,7 +340,7 @@ fn test() {
 }
 
 #[test]
-fn rust_constructor_rewrite_refuses_side_effect_reordering() {
+fn rust_constructor_rewrite_preserves_side_effect_reordering() {
     let source = r#"struct Pair {
     second: i32,
     first: i32,
@@ -350,8 +350,15 @@ fn make() -> Pair { Pair { first: observe(), second: mutate() } }
     let decl = parse_rust_struct_decl(source, "Pair").unwrap();
     let (sites, blocked) = find_rust_instantiations(source, "Pair", decl.decl_start, decl.decl_end);
     assert!(blocked.is_empty());
-    let err = rewrite_instantiation(&sites[0], &decl, ReplaceMode::Factory, "new").unwrap_err();
-    assert!(err.to_string().contains("ordered differently"), "{err:#}");
+    let rewritten = rewrite_instantiation(&sites[0], &decl, ReplaceMode::Factory, "new").unwrap();
+    assert!(
+        rewritten.starts_with("match (observe(), mutate(),)"),
+        "{rewritten}"
+    );
+    assert!(
+        rewritten.contains("Pair::new(__prod_constructor_1, __prod_constructor_0)"),
+        "{rewritten}"
+    );
 }
 
 #[test]
