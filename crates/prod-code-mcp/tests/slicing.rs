@@ -1581,13 +1581,21 @@ async fn validate_compile_metadata_warmup_case(
         None => {
             let (errors, report) = result.expect("the validator's compiler check runs");
             assert_eq!(errors, 0, "{report}");
-            assert!(report.contains(
-                "compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"
-            ));
+            assert!(
+                report.contains(
+                    "argv=[\"cargo\",\"check\",\"--workspace\",\"--all-targets\",\"--message-format=json\"]"
+                ) && report.contains("exit=0 error=null timed_out=false: 0 error(s)"),
+                "{report}"
+            );
         }
         Some(expected) => {
-            let error = result.expect_err("the metadata warm-up failure is reported");
-            assert!(error.to_string().contains(expected), "{error:#}");
+            // The failed warm-up is the compiler line of the report, not a lost request (#1322).
+            let report = match result {
+                Ok((_, report)) => report,
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(report.contains(expected), "{report}");
+            assert!(!report.contains("0 error(s)\n"), "{report}");
         }
     }
     server.await.expect("all gateway requests are handled");
@@ -1638,9 +1646,13 @@ async fn slice_fetches_dependency_source_from_remote_gateway_when_not_on_local_d
                 .and_then(|u| u.as_str())
                 .unwrap_or("");
             if uri.ends_with("sig.rs") {
-                serde_json::json!([
-                    answers::document_symbol("recover_address_from_prehash", 12, 1, 3, 8)
-                ])
+                serde_json::json!([answers::document_symbol(
+                    "recover_address_from_prehash",
+                    12,
+                    1,
+                    3,
+                    8
+                )])
             } else {
                 serde_json::Value::Null
             }
@@ -1667,6 +1679,9 @@ async fn slice_fetches_dependency_source_from_remote_gateway_when_not_on_local_d
 
     assert_eq!(report.items.len(), 1);
     assert_eq!(report.items[0].name, "recover_address_from_prehash");
-    assert!(report.items[0].text.contains("pub fn recover_address_from_prehash"));
+    assert!(
+        report.items[0]
+            .text
+            .contains("pub fn recover_address_from_prehash")
+    );
 }
-

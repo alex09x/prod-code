@@ -23,6 +23,23 @@ async fn fake_gateway() -> ScriptedGateway {
     .await
 }
 
+/// The first occurrence of `word` at or after `from` that is not part of a longer identifier.
+fn word_at(text: &str, word: &str, from: usize) -> Option<usize> {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(word).map(|(at, _)| at).find(|&at| {
+        at >= from && !text[..at].ends_with(ident) && !text[at + word.len()..].starts_with(ident)
+    })
+}
+
+/// Zero-based line and UTF-16 column of a byte offset.
+fn lsp_position(text: &str, at: usize) -> (usize, usize) {
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    (
+        text[..at].matches('\n').count(),
+        text[line_start..at].encode_utf16().count(),
+    )
+}
+
 async fn semantic_gateway(
     owner_file: &Path,
     owner: &str,
@@ -30,14 +47,28 @@ async fn semantic_gateway(
     sources: &[(&Path, &str)],
 ) -> ScriptedGateway {
     let owner_uri = url::Url::from_file_path(owner_file).unwrap().to_string();
+    // Symbols point where the analyzer would: the owner's name, then the field's first
+    // whole-word occurrence after it.
+    let owner_text = sources
+        .iter()
+        .find(|(path, _)| *path == owner_file)
+        .map(|(_, text)| *text)
+        .unwrap_or_default();
+    let owner_at = word_at(owner_text, owner, 0).unwrap_or(0);
+    let field_at = word_at(owner_text, field, owner_at + owner.len()).unwrap_or(0);
+    let range = |at: usize, len: usize| {
+        let (line, character) = lsp_position(owner_text, at);
+        serde_json::json!({ "start": { "line": line, "character": character },
+                            "end": { "line": line, "character": character + len } })
+    };
     let symbols = serde_json::json!([{
         "name": owner,
         "kind": 5,
-        "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": owner.len() } },
+        "selectionRange": range(owner_at, owner.len()),
         "children": [{
             "name": field,
             "kind": 8,
-            "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": field.len() } }
+            "selectionRange": range(field_at, field.len())
         }]
     }]);
     let mut locations = Vec::new();
@@ -234,7 +265,8 @@ async fn test_encapsulate_field_javascript_emits_valid_private_accessors() {
     ]);
     let root = ws.root().to_path_buf();
     let user_file = root.join("user.js");
-    let gw = fake_gateway().await;
+    let user_text = fs::read_to_string(&user_file).unwrap();
+    let gw = semantic_gateway(&user_file, "User", "name", &[(&user_file, &user_text)]).await;
     let res = encapsulate_polyglot(
         gw.addr(),
         &root,
@@ -259,7 +291,7 @@ async fn test_encapsulate_field_javascript_emits_valid_private_accessors() {
 }
 
 #[tokio::test]
-async fn test_encapsulate_field_refuses_ambiguous_same_name_accesses() {
+async fn test_encapsulate_field_rewrites_only_the_referenced_same_name_access() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         ("user.ts", "export class User {\n    name: string;\n}\n"),
@@ -317,10 +349,13 @@ async fn test_encapsulate_field_refuses_ambiguous_same_name_accesses() {
     .await
     .unwrap();
 
-    assert!(!res.applied);
-    assert!(!res.unmatched.is_empty());
-    assert_eq!(fs::read_to_string(&user_file).unwrap(), user_before);
-    assert_eq!(fs::read_to_string(&client_file).unwrap(), client_before);
+    // Only the analyzer's reference is rewritten: the unrelated receiver and the string stay.
+    assert!(res.applied, "{:?}", res.unmatched);
+    assert_ne!(fs::read_to_string(&user_file).unwrap(), user_before);
+    assert_eq!(
+        fs::read_to_string(&client_file).unwrap(),
+        client_before.replace("user.name,", "user.getName(),")
+    );
 }
 
 #[tokio::test]
@@ -598,7 +633,14 @@ async fn test_encapsulate_field_via_execute_tool() {
     ]);
     let root = ws.root().to_path_buf();
     let service_file = root.join("service.ts");
-    let gw = fake_gateway().await;
+    let service_text = fs::read_to_string(&service_file).unwrap();
+    let gw = semantic_gateway(
+        &service_file,
+        "Server",
+        "port",
+        &[(&service_file, &service_text)],
+    )
+    .await;
 
     let args = serde_json::json!({
         "path": "service.ts",

@@ -10,10 +10,8 @@
 
 #![cfg(unix)]
 
-use prod_code_engine_rust::proc_macro_farm::{
-    prepare_sandboxed_srv, ProcMacroWorkerFarm,
-};
-use prod_code_engine_rust::{ProdCodeConfig, ProcMacroServerKind, RustEngine};
+use prod_code_engine_rust::proc_macro_farm::{ProcMacroWorkerFarm, prepare_sandboxed_srv};
+use prod_code_engine_rust::{ProcMacroServerKind, ProdCodeConfig, RustEngine};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -66,7 +64,11 @@ fn test_proc_macro_farm_shared_concurrency_and_permit_lifecycle() {
     let (w6, permit6) = farm.allocate_workers(&ws6, 2);
     assert_eq!(w6, 0, "Must be rejected when farm is at full capacity");
     assert_eq!(permit6.worker_count(), 0);
-    assert_eq!(farm.active_workers(), 10, "Total active workers must not exceed capacity");
+    assert_eq!(
+        farm.active_workers(),
+        10,
+        "Total active workers must not exceed capacity"
+    );
     assert_eq!(farm.active_workspaces(), 5);
 
     // When Workspace 1 finishes / is evicted, its 2 workers are returned
@@ -117,7 +119,9 @@ echo "TMPDIR='$TMPDIR'"
     .unwrap();
 
     use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(&mock_proc_macro_srv).unwrap().permissions();
+    let mut perms = std::fs::metadata(&mock_proc_macro_srv)
+        .unwrap()
+        .permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&mock_proc_macro_srv, perms).unwrap();
 
@@ -148,16 +152,46 @@ echo "TMPDIR='$TMPDIR'"
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(stdout.contains("AUTH_TOKEN=''"), "PROD_CODE_AUTH_TOKEN must be scrubbed: {stdout}");
-    assert!(stdout.contains("AUTH_FILE=''"), "PROD_CODE_AUTH_TOKEN_FILE must be scrubbed: {stdout}");
-    assert!(stdout.contains("TOKEN=''"), "PROD_CODE_TOKEN must be scrubbed: {stdout}");
-    assert!(stdout.contains("SECRET=''"), "PROD_CODE_SECRET must be scrubbed: {stdout}");
-    assert!(stdout.contains("TLS_KEY=''"), "PROD_CODE_TLS_KEY must be scrubbed: {stdout}");
-    assert!(stdout.contains("AWS=''"), "AWS_SECRET_ACCESS_KEY must be scrubbed: {stdout}");
-    assert!(stdout.contains("GITHUB=''"), "GITHUB_TOKEN must be scrubbed: {stdout}");
-    assert!(stdout.contains("SSH=''"), "SSH_AUTH_SOCK must be scrubbed: {stdout}");
-    assert!(stdout.contains("INTERNAL='this is unstable'"), "Internal authorization must be set: {stdout}");
-    assert!(stdout.contains("/scratch"), "Isolated scratch dir must be set: {stdout}");
+    assert!(
+        stdout.contains("AUTH_TOKEN=''"),
+        "PROD_CODE_AUTH_TOKEN must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("AUTH_FILE=''"),
+        "PROD_CODE_AUTH_TOKEN_FILE must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("TOKEN=''"),
+        "PROD_CODE_TOKEN must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("SECRET=''"),
+        "PROD_CODE_SECRET must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("TLS_KEY=''"),
+        "PROD_CODE_TLS_KEY must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("AWS=''"),
+        "AWS_SECRET_ACCESS_KEY must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("GITHUB=''"),
+        "GITHUB_TOKEN must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("SSH=''"),
+        "SSH_AUTH_SOCK must be scrubbed: {stdout}"
+    );
+    assert!(
+        stdout.contains("INTERNAL='this is unstable'"),
+        "Internal authorization must be set: {stdout}"
+    );
+    assert!(
+        stdout.contains("/scratch"),
+        "Isolated scratch dir must be set: {stdout}"
+    );
 }
 
 #[test]
@@ -224,14 +258,24 @@ impl WorkerItem {
     let engine = RustEngine::load(temp.path()).expect("Must load workspace with sandboxed farm");
 
     let metrics = RustEngine::proc_macro_farm_metrics();
-    assert!(metrics.active_workers >= 1, "Farm must track active worker allocation");
-    assert!(metrics.active_workspaces >= 1, "Farm must track active workspace");
+    assert!(
+        metrics.active_workers >= 1,
+        "Farm must track active worker allocation"
+    );
+    assert!(
+        metrics.active_workspaces >= 1,
+        "Farm must track active workspace"
+    );
 
-    let syms = engine.document_symbols(&lib_rs).expect("Must get document symbols");
+    let syms = engine
+        .document_symbols(&lib_rs)
+        .expect("Must get document symbols");
     assert!(syms.iter().any(|s| s.name == "WorkerItem"));
     assert!(syms.iter().any(|s| s.name == "new"));
 
-    let hover = engine.hover(&lib_rs, 2, 12).expect("Hover query must succeed");
+    let hover = engine
+        .hover(&lib_rs, 2, 12)
+        .expect("Hover query must succeed");
     assert!(hover.is_some(), "Must resolve hover for WorkerItem");
 
     drop(engine);

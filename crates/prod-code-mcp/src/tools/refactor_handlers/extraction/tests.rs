@@ -38,6 +38,62 @@ async fn gateway(diagnostics: Value) -> ScriptedGateway {
     .await
 }
 
+/// What `rust-analyzer/viewSyntaxTree` answers for `text`: the CST as a JSON string of
+/// `{kind, start, end, children}` nodes with `[byte, line, column]` positions.
+fn syntax_tree(text: &str) -> Value {
+    use ra_ap_syntax::{NodeOrToken, SyntaxElement};
+    fn position(text: &str, at: usize) -> Value {
+        let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+        json!([at, text[..at].matches('\n').count(), at - line_start])
+    }
+    fn node(text: &str, element: SyntaxElement) -> Value {
+        let range = element.text_range();
+        let children: Vec<Value> = match &element {
+            NodeOrToken::Node(n) => n.children_with_tokens().map(|c| node(text, c)).collect(),
+            NodeOrToken::Token(_) => Vec::new(),
+        };
+        json!({
+            "kind": format!("{:?}", element.kind()),
+            "start": position(text, usize::from(range.start())),
+            "end": position(text, usize::from(range.end())),
+            "children": children,
+        })
+    }
+    let file = ra_ap_syntax::SourceFile::parse(text, ra_ap_syntax::Edition::CURRENT);
+    Value::String(node(text, NodeOrToken::Node(file.syntax_node())).to_string())
+}
+
+/// A gateway that also names `Service`'s fields where `SERVICE_PY` assigns them: the delegate
+/// needs each moved field's analyzer identity before it plans anything.
+async fn service_gateway(diagnostics: Value) -> ScriptedGateway {
+    let at = |line: u32, start: u32, len: u32| json!({"start": {"line": line, "character": start}, "end": {"line": line, "character": start + len}});
+    let symbols = json!([{
+        "name": "Service", "kind": 5, "selectionRange": at(0, 6, 7),
+        "children": [
+            {"name": "host", "kind": 8, "selectionRange": at(2, 13, 4)},
+            {"name": "port", "kind": 8, "selectionRange": at(3, 13, 4)},
+            {"name": "name", "kind": 8, "selectionRange": at(4, 13, 4)}
+        ]
+    }]);
+    ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/diagnostic" => diagnostics.clone(),
+        "textDocument/documentSymbol" => symbols.clone(),
+        _ => Value::Null,
+    })
+    .await
+}
+
+/// A gateway that also answers the syntax tree of `text`, as the native Rust engine does.
+async fn syntax_gateway(diagnostics: Value, text: &'static str) -> ScriptedGateway {
+    let tree = syntax_tree(text);
+    ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/diagnostic" => diagnostics.clone(),
+        "rust-analyzer/viewSyntaxTree" => tree.clone(),
+        _ => Value::Null,
+    })
+    .await
+}
+
 fn nowhere() -> SocketAddr {
     "127.0.0.1:1".parse().unwrap()
 }
@@ -131,7 +187,7 @@ async fn extract_interface_previews_then_writes_the_interface() {
 async fn extract_delegate_previews_writes_and_reports_an_objecting_analyzer() {
     let ws = Workspace::new(&[("service.py", SERVICE_PY)]);
     let root = ws.root();
-    let gw = gateway(answers::no_diagnostics()).await;
+    let gw = service_gateway(answers::no_diagnostics()).await;
     let args = |extra: Value| {
         let mut args = json!({ "path": "service.py", "fields": ["host", "port"],
             "methods": ["url"], "name": "Endpoint", "field": "endpoint" });
@@ -160,7 +216,7 @@ async fn extract_delegate_previews_writes_and_reports_an_objecting_analyzer() {
         assert_eq!(text(&again), text(&preview), "{named}");
     }
 
-    let objecting = gateway(answers::error_at(1, 1, "E1", "the analyzer objects")).await;
+    let objecting = service_gateway(answers::error_at(1, 1, "E1", "the analyzer objects")).await;
     let refused = handle_extract_delegate(
         objecting.addr(),
         &root,
@@ -281,8 +337,9 @@ async fn extract_function_asks_the_compiler_when_it_replaced_a_duplicate() {
     assert_eq!(alone.read("src/lib.rs"), TWICE, "a dry run writes nothing");
 }
 
-const MULTIPLY: &str =
-    "pub fn f(a: u32, b: u32) -> u32 {\n    let x = a * b + 1;\n    x + a * b\n}\n";
+// Literals only: binding identity, which needs a real analyzer's definitions, is exercised by
+// `tests/introduce_variable_preservation`; this checks the handler around it.
+const MULTIPLY: &str = "pub fn f() -> u32 {\n    let y = 3 * 4 + 3 * 4;\n    y\n}\n";
 
 #[tokio::test]
 async fn introduce_variable_previews_writes_and_reports_an_objecting_analyzer() {
@@ -291,7 +348,8 @@ async fn introduce_variable_previews_writes_and_reports_an_objecting_analyzer() 
             "end_character": 18, "name": "product", "apply": apply })
     };
     let ws = Workspace::new(&[("src/lib.rs", MULTIPLY)]);
-    let gw = gateway(answers::no_diagnostics()).await;
+    // Occurrence identity comes from the syntax tree, which the native engine serves (#1355).
+    let gw = syntax_gateway(answers::no_diagnostics(), MULTIPLY).await;
     let preview = handle_introduce_variable(gw.addr(), &ws.root(), &args(false))
         .await
         .unwrap();
@@ -303,11 +361,15 @@ async fn introduce_variable_previews_writes_and_reports_an_objecting_analyzer() 
     assert!(!written.is_error, "{}", text(&written));
     assert_eq!(
         ws.read("src/lib.rs"),
-        "pub fn f(a: u32, b: u32) -> u32 {\n    let product = a * b;\n    let x = product + 1;\n    x + product\n}\n"
+        "pub fn f() -> u32 {\n    let product = 3 * 4;\n    let y = product + product;\n    y\n}\n"
     );
 
     let objecting = Workspace::new(&[("src/lib.rs", MULTIPLY)]);
-    let gw = gateway(answers::error_at(2, 5, "E0425", "cannot find value")).await;
+    let gw = syntax_gateway(
+        answers::error_at(2, 5, "E0425", "cannot find value"),
+        MULTIPLY,
+    )
+    .await;
     let refused = handle_introduce_variable(gw.addr(), &objecting.root(), &args(false))
         .await
         .unwrap();

@@ -290,7 +290,8 @@ async fn a_body_over_the_name_limit_is_reported() {
     let text = report.render();
     assert!(text.starts_with("INCOMPLETE"), "{text}");
     assert!(
-        text.contains("71 distinct names; only the first 64 were resolved"),
+        // Occurrences are resolved before deduplication (#1292).
+        text.contains("71 identifier occurrences; only the first 64 were resolved"),
         "{text}"
     );
     assert_eq!(gateway.calls(), 1 + 64, "one symbols query, 64 definitions");
@@ -792,4 +793,3 @@ async fn inverted_document_symbol_ranges_are_normalized_gracefully() {
     let text = report.render();
     assert!(text.contains("seed"), "{text}");
 }
-

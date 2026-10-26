@@ -80,7 +80,9 @@ pub(crate) async fn handle_change_signature(
             .map(str::to_string),
         asyncness: args.get("async").and_then(|v| v.as_bool()),
     };
-    let mut change = crate::signature::change_with(
+    // Boxed: the per-language planners make this future deep enough to overflow a 2 MB thread
+    // stack in a debug build (the Go reorder path did, in `signature_go`).
+    let mut change = Box::pin(crate::signature::change_with(
         remote,
         workspace_root,
         &file_path,
@@ -90,7 +92,7 @@ pub(crate) async fn handle_change_signature(
         &modifiers,
         apply && !verify,
         force,
-    )
+    ))
     .await?;
     // With `verify` the planner ran as a dry run and the compile gate writes; a reorder that
     // compiles can still run differently through a reference it did not rewrite (#446).

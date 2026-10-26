@@ -93,38 +93,24 @@ async fn convert_to_method_reads_the_target_from_any_spelling_and_leaves_a_dry_r
     assert!(reference.contains("helper"), "{reference}");
 }
 
+/// `cargo check` proves nothing about TypeScript, so a compile-verified conversion of a TS
+/// method is refused before anything is written, whatever the compiler would say (#1303).
 #[tokio::test]
-async fn convert_to_method_applies_after_the_compiler_accepts_and_refuses_when_it_rejects() {
-    let rejected = Workspace::new(&[("util.ts", UTIL_STATIC)]);
-    let gw = gateway(Vec::new(), 1).await;
-    let args = json!({ "path": "util.ts", "method": "helper", "apply": true, "verify": "compile" });
-    let (is_error, text) = call(
-        &gw,
-        &rejected.root(),
-        "code_convert_to_method",
-        args.clone(),
-    )
-    .await;
-    assert!(is_error, "{text}");
-    assert!(text.contains("the compiler rejects the result"), "{text}");
-    assert!(
-        text.contains("nothing was written: the compiler rejects it"),
-        "{text}"
-    );
-    assert_eq!(rejected.read("util.ts"), UTIL_STATIC);
-
-    let accepted = Workspace::new(&[("util.ts", UTIL_STATIC)]);
-    let gw = gateway(Vec::new(), 0).await;
-    let (is_error, text) = call(&gw, &accepted.root(), "code_convert_to_method", args).await;
-    assert!(!is_error, "{text}");
-    assert!(
-        text.contains("the compiler accepts the result too"),
-        "{text}"
-    );
-    let written = accepted.read("util.ts");
-    assert!(written.contains("helper(x: number): number {"), "{written}");
-    assert!(written.contains("return this.factor * x;"), "{written}");
-    assert!(written.contains("u.helper(21)"), "{written}");
+async fn convert_to_method_refuses_compile_verification_outside_rust() {
+    for exit in [0, 1] {
+        let ws = Workspace::new(&[("util.ts", UTIL_STATIC)]);
+        let gw = gateway(Vec::new(), exit).await;
+        let args =
+            json!({ "path": "util.ts", "method": "helper", "apply": true, "verify": "compile" });
+        let err = execute_tool(gw.addr(), &ws.root(), "code_convert_to_method", args)
+            .await
+            .expect_err("compile verification of TypeScript is refused");
+        assert!(
+            format!("{err:#}").contains("verify: compile is only supported for Rust"),
+            "{err:#}"
+        );
+        assert_eq!(ws.read("util.ts"), UTIL_STATIC);
+    }
 }
 
 #[tokio::test]

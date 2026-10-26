@@ -160,3 +160,46 @@ async fn python_multiple_true_references_share_a_line_with_unrelated_text() {
     assert!(ws.read("main.py").contains("c.count == 9"));
     assert!(ws.read("main.py").contains("'b.count'"));
 }
+
+/// A Python attribute read on the right can run a property getter that rebinds the receiver
+/// before the assignment resolves its target, so it keeps the staged form; a literal keeps the
+/// direct setter call (#1406).
+#[tokio::test]
+async fn python_attribute_values_keep_their_evaluation_order() {
+    let source = "class Box:\n    def __init__(self):\n        self.count = 0\nold = Box()\nnew = Box()\nb = old\nclass Trigger:\n    @property\n    def value(self):\n        global b\n        b = new\n        return 7\ntrigger = Trigger()\nb.count = trigger.value\nb.count = 3\nprint(old.count, new.count)\n";
+    let ws = Workspace::new(&[("main.py", source)]);
+    let before = run(&ws, "python3", &["main.py"]);
+    assert_eq!(String::from_utf8_lossy(&before.stdout), "0 3\n");
+    let decl = spot(source, "self.count =", "count");
+    let refs = [
+        ("main.py", decl),
+        ("main.py", spot(source, "count = trigger", "count")),
+        ("main.py", spot(source, "count = 3", "count")),
+        ("main.py", spot(source, "count, new", "count")),
+        ("main.py", spot(source, "count)\n", "count")),
+    ];
+    let gw = gateway(&ws, "Box", "count", ("main.py", decl), &refs).await;
+    let done = encapsulate_polyglot(
+        gw.addr(),
+        &ws.root(),
+        &ws.path("main.py"),
+        Some("Box"),
+        "count",
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(done.applied, "{:?}", done.unmatched);
+    let after = run(&ws, "python3", &["main.py"]);
+    assert_eq!(
+        String::from_utf8_lossy(&after.stdout),
+        "0 3\n",
+        "{}",
+        ws.read("main.py")
+    );
+    let text = ws.read("main.py");
+    assert!(!text.contains("b.set_count(trigger.value)"), "{text}");
+    assert!(text.contains("b.set_count(3)"), "{text}");
+}

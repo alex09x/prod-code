@@ -645,7 +645,7 @@ async fn code_validate_edits_requires_a_non_empty_edits_list_with_path_and_new_t
     )
     .await
     .expect_err("an edit without a path is refused");
-    assert!(format!("{err:#}").contains("edit without 'path'"));
+    assert!(format!("{err:#}").contains("edit without path"), "{err:#}");
 
     let err = execute_tool(
         nowhere(),
@@ -655,7 +655,10 @@ async fn code_validate_edits_requires_a_non_empty_edits_list_with_path_and_new_t
     )
     .await
     .expect_err("an edit without new_text is refused");
-    assert!(format!("{err:#}").contains("without 'new_text'"));
+    assert!(
+        format!("{err:#}").contains("edit without new_text"),
+        "{err:#}"
+    );
 }
 
 #[tokio::test]
@@ -4314,10 +4317,11 @@ async fn code_validate_edits_opens_a_changed_header_before_the_sources_that_incl
     );
 }
 
-/// A new file has nothing on disk to compare with; the analyzer's "type annotations needed" on
-/// its `#[derive(Deserialize)]` line is still not an error of the edit (#159).
+/// The analyzer's "type annotations needed" on a new file's `#[derive(Deserialize)]` line stays
+/// an error: a custom derive can produce a genuine E0282, so it is counted with a note pointing
+/// at the compiler check (#1286, which replaced the #159 exemption).
 #[tokio::test]
-async fn a_new_file_is_not_refused_for_the_analyzers_derive_expansion() {
+async fn a_derive_line_error_in_a_new_file_is_counted_with_a_note() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub mod probe;\n");
     commit(&ws);
@@ -4343,10 +4347,15 @@ async fn a_new_file_is_not_refused_for_the_analyzers_derive_expansion() {
     .await
     .expect("validation runs");
     let text = text_of(&result);
-    assert!(!result.is_error, "{text}");
-    assert!(text.contains("src/probe.rs: 0 error(s)"), "{text}");
+    assert!(text.contains("src/probe.rs: 1 error(s)"), "{text}");
     assert!(
-        text.contains("1 \"type annotations needed\" on a #[derive(...)] line are not counted"),
+        text.contains("type annotations needed [E0282] (src/probe.rs:3:3)"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "This diagnostic remains counted; an explicit compiler check can distinguish them."
+        ),
         "{text}"
     );
 }
@@ -6175,7 +6184,13 @@ async fn validate_edits_takes_a_diff_or_a_workspace_edit() {
         text.contains("2 file(s) checked together: 1 error(s)"),
         "{text}"
     );
-    assert!(text.contains("src/old.rs is deleted by the diff"), "{text}");
+    // The deletion goes into the compiler's shadow; the analyzer says it cannot check it (#1322).
+    assert!(
+        text.contains(
+            "analyzer: file deletions and their effects on remaining files are not checked"
+        ),
+        "{text}"
+    );
     assert_eq!(ws.read("src/lib.rs"), "pub fn a() -> u8 {\n    1\n}\n");
 
     let stale = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn b() {}\n+pub fn c() {}\n";
@@ -6333,16 +6348,15 @@ async fn lint_fix_runs_the_linters_own_fix_mode_for_python() {
         "code_lint",
         serde_json::json!({ "fix": true }),
     )
-    .await
-    .expect("lint runs");
-    let text = text_of(&result);
+    .await;
+    // ruff exits 1 here. That status fails the tool instead of hiding behind the file it
+    // rewrote (#1349), and the rewritten file is still pulled into the checkout.
+    let text = format!("{:#}", result.expect_err("the failed fix run is reported"));
     assert!(text.contains("F401"), "{text}");
     assert!(
-        text.contains("fixes: `ruff check . --fix --output-format concise` rewrote 1 file(s)"),
+        text.contains("fixes: `ruff check . --fix --output-format concise` failed with exit code 1; 1 changed file(s) already pulled: shop/pricing.py"),
         "{text}"
     );
-    assert!(text.contains("  fixed shop/pricing.py\n"), "{text}");
-    assert!(text.contains("after the fixes:"), "{text}");
     assert_eq!(
         ws.read("shop/pricing.py"),
         "def price(q: int) -> int:\n    return q\n"
@@ -7902,7 +7916,8 @@ async fn code_callers_returns_partial_tree_when_server_time_budget_expires() {
                       "fromRanges": [ { "start": { "line": 2, "character": 20 }, "end": { "line": 2, "character": 24 } } ] }
                 ])
             } else {
-                std::thread::sleep(std::time::Duration::from_millis(250));
+                // Well past the budget below, which a loaded node still needs for the first level.
+                std::thread::sleep(std::time::Duration::from_millis(1000));
                 serde_json::json!([
                     { "from": { "name": "top", "uri": format!("file://{}", path.display()),
                                 "selectionRange": { "start": { "line": 3, "character": 7 }, "end": { "line": 3, "character": 10 } } },
@@ -7923,7 +7938,7 @@ async fn code_callers_returns_partial_tree_when_server_time_budget_expires() {
             "line": 1,
             "character": 8,
             "depth": 3,
-            "budget_ms": 80
+            "budget_ms": 400
         }),
     )
     .await

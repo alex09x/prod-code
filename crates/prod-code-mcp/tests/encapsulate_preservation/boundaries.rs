@@ -77,8 +77,9 @@ async fn cpp_character_literals_keep_assignment_boundaries() {
     );
     assert!(run(&ws, "./probe", &[]).status.success());
     assert!(plan.applied, "{:?}", plan.unmatched);
-    assert!(ws.read("main.cpp").contains("))(',');"));
-    assert!(ws.read("main.cpp").contains("))(1'000);"));
+    // The whole literal reaches the setter, through the long form or a direct call.
+    assert!(ws.read("main.cpp").contains("(',');"));
+    assert!(ws.read("main.cpp").contains("(1'000);"));
 }
 
 #[tokio::test]

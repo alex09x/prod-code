@@ -589,7 +589,12 @@ export function handle(action) {
 
     assert_eq!(reports.len(), 2);
     assert_eq!(reports[0].errors, 0);
-    assert_eq!(reports[0].warnings, 0, "service.js must have 0 warnings: {}", reports[0].render());
+    assert_eq!(
+        reports[0].warnings,
+        0,
+        "service.js must have 0 warnings: {}",
+        reports[0].render()
+    );
     assert_eq!(reports[1].errors, 0);
     assert_eq!(
         reports[1].warnings,
@@ -603,10 +608,7 @@ export function handle(action) {
 async fn non_rust_unresolved_removed_symbol_is_flagged_as_stale_reference() {
     let ws = Workspace::new(&[
         ("package.json", r#"{"name":"test-pkg","version":"1.0.0"}"#),
-        (
-            "src/utils.js",
-            "export function oldHelper() {}\n",
-        ),
+        ("src/utils.js", "export function oldHelper() {}\n"),
         (
             "src/app.js",
             "import { oldHelper } from './utils.js';\noldHelper();\n",
@@ -626,7 +628,9 @@ async fn non_rust_unresolved_removed_symbol_is_flagged_as_stale_reference() {
                         .and_then(|changes| changes.first())
                         .and_then(|change| change["text"].as_str())
                 };
-                if uri.ends_with("/src/utils.js") && let Some(text) = text {
+                if uri.ends_with("/src/utils.js")
+                    && let Some(text) = text
+                {
                     flag.store(text.contains("oldHelper"), Ordering::SeqCst);
                 }
                 Value::Null
@@ -650,7 +654,10 @@ async fn non_rust_unresolved_removed_symbol_is_flagged_as_stale_reference() {
     let reports = prod_code_mcp::diagnostics::validate_texts(
         remote,
         &ws.root(),
-        &[(ws.path("src/utils.js"), "export function newHelper() {}\n".to_string())],
+        &[(
+            ws.path("src/utils.js"),
+            "export function newHelper() {}\n".to_string(),
+        )],
         &[ws.path("src/app.js")],
     )
     .await

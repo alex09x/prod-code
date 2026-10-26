@@ -1920,17 +1920,20 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
     assert_eq!(done.symbol, "timeout_secs");
     assert_eq!(done.was, "u64");
     assert_eq!(done.now, "std::time::Duration");
-    assert_eq!(
-        done.sites.len(),
-        1,
-        "warnings are not sites: {:?}",
-        done.sites
-    );
-    assert_eq!(
-        done.in_attributes, 1,
-        "the repeated derive diagnostic is one position, set aside"
-    );
-    let site = &done.sites[0];
+    // Warnings are not sites. The repeated derive error is one position, and it stays a site:
+    // attribute diagnostics keep blocking a migration (#1310).
+    assert_eq!(done.sites.len(), 2, "{:?}", done.sites);
+    let derive = done
+        .sites
+        .iter()
+        .find(|s| s.code.as_deref() == Some("E0282"))
+        .expect("the derive error is a site");
+    assert_eq!(derive.source, "#[derive(Debug, Clone)]");
+    let site = done
+        .sites
+        .iter()
+        .find(|s| s.code.as_deref() == Some("E0308"))
+        .expect("the type error is a site");
     assert_eq!(site.line, 7);
     assert_eq!(site.source, "r.timeout_secs");
     assert_eq!(
@@ -1941,9 +1944,8 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
     );
 
     let text = done.render(40);
-    assert!(text.contains("1 site(s) in 1 file(s)"), "{text}");
+    assert!(text.contains("2 site(s) in 1 file(s)"), "{text}");
     assert!(text.contains("they are the migration"), "{text}");
-    assert!(text.contains("landed on a `#[derive(…)]` line"), "{text}");
 
     let new_text = done
         .rewritten
@@ -1971,7 +1973,7 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
     .await
     .expect_err("apply refuses while a site does not fit");
     assert!(
-        format!("{err:#}").contains("1 site(s) do not fit"),
+        format!("{err:#}").contains("2 site(s) do not fit"),
         "{err:#}"
     );
 

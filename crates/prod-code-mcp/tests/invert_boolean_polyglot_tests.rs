@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::invert_boolean::invert_polyglot;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -22,7 +22,12 @@ async fn fake_gateway() -> ScriptedGateway {
     .await
 }
 
-fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: usize) -> serde_json::Value {
+fn reference_at(
+    file: &std::path::Path,
+    source: &str,
+    name: &str,
+    occurrence: usize,
+) -> serde_json::Value {
     let at = source
         .match_indices(name)
         .nth(occurrence)
@@ -30,7 +35,12 @@ fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: us
         .0;
     let before = &source[..at];
     let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
-    let character = before.rsplit('\n').next().unwrap_or_default().encode_utf16().count() as u32;
+    let character = before
+        .rsplit('\n')
+        .next()
+        .unwrap_or_default()
+        .encode_utf16()
+        .count() as u32;
     serde_json::json!({
         "uri": url::Url::from_file_path(file).unwrap().to_string(),
         "range": { "start": { "line": line, "character": character } }
@@ -137,8 +147,9 @@ async fn test_invert_boolean_refuses_unresolved_import_alias_calls() {
     let client_file = root.join("client.ts");
     let math_before = fs::read_to_string(&math_file).unwrap();
     let client_text = fs::read_to_string(&client_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "check", 0)])
-        .await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "check", 0)])
+            .await;
 
     let error = invert_polyglot(
         gw.addr(),
@@ -289,8 +300,9 @@ int run() {
     let math_file = root.join("math.cpp");
     let client_file = root.join("client.cpp");
     let client_text = fs::read_to_string(&client_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
-        .await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
+            .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -316,7 +328,10 @@ int run() {
     assert!(math_content.contains("return !(x > 0);"));
 
     let client_content = fs::read_to_string(&client_file).unwrap();
-    assert!(client_content.contains("bool isInvalid(int x);"), "{client_content}");
+    assert!(
+        client_content.contains("bool isInvalid(int x);"),
+        "{client_content}"
+    );
     assert!(client_content.contains("!isInvalid(10)"));
 }
 
@@ -343,8 +358,9 @@ async fn test_invert_boolean_swift_multi_file() {
     let math_file = root.join("math.swift");
     let client_file = root.join("client.swift");
     let client_text = fs::read_to_string(&client_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 0)])
-        .await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 0)])
+            .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -402,8 +418,9 @@ func run() bool {
     let math_file = root.join("math.go");
     let client_file = root.join("client.go");
     let client_text = fs::read_to_string(&client_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "IsValid", 0)])
-        .await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "IsValid", 0)])
+            .await;
 
     let res = invert_polyglot(
         gw.addr(),
@@ -498,8 +515,9 @@ export function check() {
     let math_file = root.join("math.ts");
     let client_file = root.join("client.ts");
     let client_text = fs::read_to_string(&client_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
-        .await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
+            .await;
 
     let res = invert_polyglot(
         gw.addr(),

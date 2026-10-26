@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::type_migration::migrate_ext;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -69,15 +69,28 @@ export function run() {
     assert_eq!(res.symbol, "val");
     assert_eq!(res.was, "number");
     assert_eq!(res.now, "string");
-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
+    assert!(
+        res.transitive_count >= 3,
+        "expected >= 3 transitive migrations, got {}",
+        res.transitive_count
+    );
     assert!(res.applied);
 
     let calc_content = fs::read_to_string(&calc_file).unwrap();
-    assert!(calc_content.contains("function compute(val: string): string"), "{calc_content}");
-    assert!(calc_content.contains("const doubled: string = val * 2;"), "{calc_content}");
+    assert!(
+        calc_content.contains("function compute(val: string): string"),
+        "{calc_content}"
+    );
+    assert!(
+        calc_content.contains("const doubled: string = val * 2;"),
+        "{calc_content}"
+    );
 
     let main_content = fs::read_to_string(&main_file).unwrap();
-    assert!(main_content.contains("const result: string = compute(10);"), "{main_content}");
+    assert!(
+        main_content.contains("const result: string = compute(10);"),
+        "{main_content}"
+    );
 }
 
 #[tokio::test]
@@ -125,15 +138,28 @@ def run():
     assert_eq!(res.symbol, "balance");
     assert_eq!(res.was, "int");
     assert_eq!(res.now, "float");
-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
+    assert!(
+        res.transitive_count >= 3,
+        "expected >= 3 transitive migrations, got {}",
+        res.transitive_count
+    );
     assert!(res.applied);
 
     let service_content = fs::read_to_string(&service_file).unwrap();
-    assert!(service_content.contains("def calculate_fee(balance: float) -> float:"), "{service_content}");
-    assert!(service_content.contains("fee: float = balance * 2"), "{service_content}");
+    assert!(
+        service_content.contains("def calculate_fee(balance: float) -> float:"),
+        "{service_content}"
+    );
+    assert!(
+        service_content.contains("fee: float = balance * 2"),
+        "{service_content}"
+    );
 
     let app_content = fs::read_to_string(&app_file).unwrap();
-    assert!(app_content.contains("total: float = calculate_fee(100)"), "{app_content}");
+    assert!(
+        app_content.contains("total: float = calculate_fee(100)"),
+        "{app_content}"
+    );
 }
 
 #[tokio::test]
@@ -185,15 +211,28 @@ func Execute() {
     assert_eq!(res.symbol, "count");
     assert_eq!(res.was, "int32");
     assert_eq!(res.now, "int64");
-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
+    assert!(
+        res.transitive_count >= 3,
+        "expected >= 3 transitive migrations, got {}",
+        res.transitive_count
+    );
     assert!(res.applied);
 
     let service_content = fs::read_to_string(&service_file).unwrap();
-    assert!(service_content.contains("func Compute(count int64) int64 {"), "{service_content}");
-    assert!(service_content.contains("var doubled int64 = count * 2"), "{service_content}");
+    assert!(
+        service_content.contains("func Compute(count int64) int64 {"),
+        "{service_content}"
+    );
+    assert!(
+        service_content.contains("var doubled int64 = count * 2"),
+        "{service_content}"
+    );
 
     let caller_content = fs::read_to_string(&caller_file).unwrap();
-    assert!(caller_content.contains("var res int64 = Compute(10)"), "{caller_content}");
+    assert!(
+        caller_content.contains("var res int64 = Compute(10)"),
+        "{caller_content}"
+    );
 }
 
 #[tokio::test]
@@ -248,11 +287,20 @@ int calculate(int count) {
     assert!(res.applied);
 
     let cpp_content = fs::read_to_string(&cpp_file).unwrap();
-    assert!(cpp_content.contains("int64_t calculate(int64_t count)"), "{cpp_content}");
-    assert!(cpp_content.contains("int64_t result = count * 2;"), "{cpp_content}");
+    assert!(
+        cpp_content.contains("int64_t calculate(int64_t count)"),
+        "{cpp_content}"
+    );
+    assert!(
+        cpp_content.contains("int64_t result = count * 2;"),
+        "{cpp_content}"
+    );
 
     let header_content = fs::read_to_string(&header_file).unwrap();
-    assert!(header_content.contains("int64_t calculate(int64_t count);"), "{header_content}");
+    assert!(
+        header_content.contains("int64_t calculate(int64_t count);"),
+        "{header_content}"
+    );
 }
 
 #[tokio::test]
@@ -300,15 +348,28 @@ async fn test_migrate_type_swift_transitive() {
     assert_eq!(res.symbol, "amount");
     assert_eq!(res.was, "Int");
     assert_eq!(res.now, "Double");
-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
+    assert!(
+        res.transitive_count >= 3,
+        "expected >= 3 transitive migrations, got {}",
+        res.transitive_count
+    );
     assert!(res.applied);
 
     let account_content = fs::read_to_string(&account_file).unwrap();
-    assert!(account_content.contains("func getBalance(amount: Double) -> Double {"), "{account_content}");
-    assert!(account_content.contains("let updated: Double = amount + 50"), "{account_content}");
+    assert!(
+        account_content.contains("func getBalance(amount: Double) -> Double {"),
+        "{account_content}"
+    );
+    assert!(
+        account_content.contains("let updated: Double = amount + 50"),
+        "{account_content}"
+    );
 
     let main_content = fs::read_to_string(&main_file).unwrap();
-    assert!(main_content.contains("let finalBalance: Double = getBalance(amount: 100)"), "{main_content}");
+    assert!(
+        main_content.contains("let finalBalance: Double = getBalance(amount: 100)"),
+        "{main_content}"
+    );
 }
 
 #[tokio::test]
@@ -436,5 +497,8 @@ pub fn use_it(r: &Limiter) -> u64 {
 
     assert!(forced.applied);
     let content = fs::read_to_string(&lib_file).unwrap();
-    assert!(content.contains("pub timeout_secs: std::time::Duration,"), "{content}");
+    assert!(
+        content.contains("pub timeout_secs: std::time::Duration,"),
+        "{content}"
+    );
 }

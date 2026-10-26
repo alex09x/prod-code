@@ -166,7 +166,12 @@ async fn incoming_text_fields_are_neither_fetched_nor_rewritten() {
         0,
         "source/documentation caused a remote file read"
     );
-    assert!(!files.mirror_path(Path::new("/node/source.rs")).unwrap().exists());
+    assert!(
+        !files
+            .mirror_path(Path::new("/node/source.rs"))
+            .unwrap()
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -265,8 +270,16 @@ async fn mirror_rejects_path_traversal_locations() {
         cache.path(),
     );
 
-    assert!(files.mirror_path(Path::new("/node/../../etc/passwd")).is_none());
-    assert!(files.mirror_path(Path::new("../../../../etc/shadow")).is_none());
+    assert!(
+        files
+            .mirror_path(Path::new("/node/../../etc/passwd"))
+            .is_none()
+    );
+    assert!(
+        files
+            .mirror_path(Path::new("../../../../etc/shadow"))
+            .is_none()
+    );
 
     let traversal_uris = [
         "file:///node/../../etc/passwd",
@@ -294,11 +307,8 @@ fn mirror_write_rejects_symlinks() {
     std::fs::create_dir_all(cache.path().join("sub")).unwrap();
     std::os::unix::fs::symlink(&outside_file, &target).unwrap();
 
-    let res = prod_code_client::editor_files::write_read_only(
-        cache.path(),
-        &target,
-        b"overwritten",
-    );
+    let res =
+        prod_code_client::editor_files::write_read_only(cache.path(), &target, b"overwritten");
     assert!(res.is_err());
     assert_eq!(std::fs::read(&outside_file).unwrap(), b"initial");
 }
@@ -312,11 +322,8 @@ fn mirror_write_rejects_symlink_parent_directory() {
     std::os::unix::fs::symlink(outside.path(), &escaped_parent).unwrap();
 
     let target = escaped_parent.join("file.txt");
-    let res = prod_code_client::editor_files::write_read_only(
-        cache.path(),
-        &target,
-        b"overwritten",
-    );
+    let res =
+        prod_code_client::editor_files::write_read_only(cache.path(), &target, b"overwritten");
     assert!(res.is_err());
     assert!(!outside.path().join("file.txt").exists());
 }

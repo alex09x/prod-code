@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::extract_field::extract_polyglot;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -45,7 +45,10 @@ async fn extract_field_rejects_compile_verification_for_non_rust() {
     .await
     .expect_err("unsupported compile verification must be rejected");
     assert!(format!("{err:#}").contains("only supported for Rust"));
-    assert_eq!(ws.read("src/main.ts"), "export function f() { return 42; }\n");
+    assert_eq!(
+        ws.read("src/main.ts"),
+        "export function f() { return 42; }\n"
+    );
 }
 
 #[tokio::test]
@@ -103,7 +106,10 @@ export function run() {
 
     let content = fs::read_to_string(&calc_file).unwrap();
     assert!(content.contains("baseVal: number = 100;"), "{content}");
-    assert!(content.contains("return this.baseVal * factor;"), "{content}");
+    assert!(
+        content.contains("return this.baseVal * factor;"),
+        "{content}"
+    );
 }
 
 #[tokio::test]
@@ -134,7 +140,10 @@ async fn test_extract_field_in_static_method_creates_static_field() {
     .await
     .unwrap();
     let rewritten = &result.rewritten[0].1;
-    assert!(rewritten.contains("static MAGIC: number = 42;"), "{rewritten}");
+    assert!(
+        rewritten.contains("static MAGIC: number = 42;"),
+        "{rewritten}"
+    );
     assert!(rewritten.contains("return this.MAGIC;"), "{rewritten}");
 }
 
@@ -191,7 +200,10 @@ print(w.work())
 
     let content = fs::read_to_string(&worker_file).unwrap();
     assert!(content.contains("self.task = \"heavy task\""), "{content}");
-    assert!(content.contains("self.task = \"heavy task\"\n    def work("), "{content}");
+    assert!(
+        content.contains("self.task = \"heavy task\"\n    def work("),
+        "{content}"
+    );
     assert!(content.contains("return self.task"), "{content}");
 }
 
@@ -427,7 +439,10 @@ async fn test_extract_field_refuse_parameter_mention() {
     .unwrap_err();
 
     let msg = err.to_string();
-    assert!(msg.contains("mentions parameter `x`"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("mentions parameter `x`"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -465,7 +480,10 @@ async fn test_extract_field_refuse_local_mention() {
     .unwrap_err();
 
     let msg = err.to_string();
-    assert!(msg.contains("mentions local `factor`"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("mentions local `factor`"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -505,7 +523,10 @@ async fn test_extract_field_refuse_collision() {
     .unwrap_err();
 
     let msg = err.to_string();
-    assert!(msg.contains("already has a field `cap`"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("already has a field `cap`"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]

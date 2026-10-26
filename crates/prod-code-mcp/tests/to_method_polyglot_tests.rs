@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::to_method::convert_to_method_polyglot;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -343,14 +343,10 @@ export function test() {
         "apply": true,
     });
 
-    let tool_res = prod_code_mcp::tools::execute_tool(
-        gw.addr(),
-        &root,
-        "code_convert_to_method",
-        args,
-    )
-    .await
-    .unwrap();
+    let tool_res =
+        prod_code_mcp::tools::execute_tool(gw.addr(), &root, "code_convert_to_method", args)
+            .await
+            .unwrap();
 
     assert!(!tool_res.is_error);
     let content = fs::read_to_string(&util_file).unwrap();

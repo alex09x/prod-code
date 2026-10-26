@@ -41,12 +41,10 @@ async fn cli(ws: &Workspace, remote: SocketAddr, args: &[&str]) -> Output {
 
 #[tokio::test]
 async fn polyglot_codemod_go_api_migration() {
-    let ws = Workspace::new(&[
-        (
-            "pkg/server/handler.go",
-            "package server\n\nimport \"errors\"\n\nfunc HandleRequest() error {\n\terr := fetch()\n\tif err != nil {\n\t\treturn errors.Wrap(err, \"fetch failed\")\n\t}\n\treturn nil\n}\n",
-        ),
-    ]);
+    let ws = Workspace::new(&[(
+        "pkg/server/handler.go",
+        "package server\n\nimport \"errors\"\n\nfunc HandleRequest() error {\n\terr := fetch()\n\tif err != nil {\n\t\treturn errors.Wrap(err, \"fetch failed\")\n\t}\n\treturn nil\n}\n",
+    )]);
     let gw = ScriptedGateway::start(|_, _| json!(null)).await;
 
     // 1. Dry run preview via CLI
@@ -134,12 +132,10 @@ async fn polyglot_codemod_typescript_api_upgrade() {
 
 #[tokio::test]
 async fn polyglot_codemod_python_library_modernization() {
-    let ws = Workspace::new(&[
-        (
-            "app/config.py",
-            "import os\n\ndef load():\n    cfg = os.path.join(base_dir, \"settings.yaml\")\n    return cfg\n",
-        ),
-    ]);
+    let ws = Workspace::new(&[(
+        "app/config.py",
+        "import os\n\ndef load():\n    cfg = os.path.join(base_dir, \"settings.yaml\")\n    return cfg\n",
+    )]);
     let gw = ScriptedGateway::start(|_, _| json!(null)).await;
 
     let result = prod_code_mcp::tools::execute_tool(
