@@ -41,6 +41,27 @@ const KEYWORDS: &[&str] = &[
     "val",
 ];
 
+/// The declarations of `name` in `text`, the file at `path`, as (0-based line, 0-based char
+/// column), read with comments and string literals blanked out: `// fn Ghost()` and
+/// `"fn Ghost()"` declare nothing (#1421).
+pub(crate) fn code_declarations(text: &str, path: &Path, name: &str) -> Vec<(usize, usize)> {
+    use crate::tools::references::across::{mask_executable_code, masked_code_string};
+    // Blanking keeps every byte and line break where it was.
+    let code = masked_code_string(text, &mask_executable_code(text, path));
+    code.lines()
+        .zip(text.lines())
+        .enumerate()
+        .filter_map(|(index, (code_line, line))| {
+            let col = declared_at(code_line, name)?;
+            let byte = code_line
+                .char_indices()
+                .nth(col)
+                .map_or(code_line.len(), |(at, _)| at);
+            Some((index, line.get(..byte)?.chars().count()))
+        })
+        .collect()
+}
+
 /// The 0-based column where `line` declares `name`: the name right after a declaring keyword
 /// (`fn`, `struct`, `func`, `class`, `def`, ...) or after a Go method's receiver
 /// (`func (s *T) name`). `None` for a line that only uses it.

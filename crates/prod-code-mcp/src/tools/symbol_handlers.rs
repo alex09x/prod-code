@@ -69,22 +69,21 @@ pub(crate) async fn handle_symbols(
             hits.retain(under_hint);
         }
     }
+    // A declaration the index omits is looked for when nothing of exactly that name was found,
+    // fuzzy matches such as `LostBuilder` for `Lost` or not (#1421).
+    let exact = hits.iter().any(|h| bare_symbol_name(&h.name) == name);
+    let unindexed = if !exact && started.elapsed() < std::time::Duration::from_secs(6) {
+        unindexed_declarations(remote, workspace_root, name).await
+    } else {
+        String::new()
+    };
     if hits.is_empty() {
-        let unindexed = if started.elapsed() < std::time::Duration::from_secs(6) {
-            unindexed_declarations(remote, workspace_root, name).await
-        } else {
-            String::new()
-        };
         return Ok(McpToolCallResult::text(format!(
             "No symbols match `{query}`.{unindexed}"
         )));
     }
-    Ok(McpToolCallResult::text(render_symbol_hits(
-        workspace_root,
-        query,
-        &mut hits,
-        limit,
-    )))
+    let listed = render_symbol_hits(workspace_root, query, &mut hits, limit);
+    Ok(McpToolCallResult::text(format!("{listed}{unindexed}")))
 }
 
 /// How many hits `code_symbols` asks the server for before ranking them.
