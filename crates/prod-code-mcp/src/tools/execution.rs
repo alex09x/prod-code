@@ -115,6 +115,19 @@ enum WorkspaceMutationGuard {
     Write(#[allow(dead_code)] tokio::sync::OwnedRwLockWriteGuard<()>),
 }
 
+/// A `verify` mode is `compile` or absent. A typo such as `compiler` used to read as "no
+/// compiler gate" and let an apply write unchecked (#1453); it is refused before planning.
+/// `code_generate_fixture` takes a boolean `verify`, which is left to its handler.
+fn validate_verify_mode(args: &serde_json::Value) -> Result<()> {
+    match args.get("verify") {
+        Some(serde_json::Value::String(mode)) if mode != "compile" => anyhow::bail!(
+            "`verify: {mode:?}` is not a verification mode: the only one is \"compile\"; omit \
+             `verify` for the analyzer check alone. Nothing was planned or written"
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// Execute an MCP tool call against the remote gateway. Keep dispatch state on the heap so
 /// callers can compose many tool calls without growing their own future by every dispatch.
 pub fn execute_tool<'a>(
@@ -126,6 +139,7 @@ pub fn execute_tool<'a>(
     Box::pin(async move {
         // Invalid explicit positions are refused before symbol lookup, routing or any write.
         validate_position_arguments(tool_name, &args)?;
+        validate_verify_mode(&args)?;
         let mut args = args;
         if SYMBOL_ADDRESSABLE.contains(&tool_name) {
             let batch_symbols = super::batch::extract_batch_symbols(&args);

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Unknown Verify Modes Refused** (`crates/prod-code-mcp`, #1453):
+  A `verify` value other than `compile`, such as the typo `compiler`, is refused before any planning, analyzer query or write, for MCP tools and for the CLI, which goes through the same entry point. It used to read as "no compiler gate", so an apply went through unchecked. Omitting `verify` keeps the analyzer check, and `code_generate_fixture` keeps its boolean `verify`.
 - **Running Commands Without Secrets** (`crates/prod-code-gateway`, #1484):
   Status answers and cluster gossip list each running command in a redacted, bounded form. Values after `--token`/`--password`-style flags, `KEY=value` pairs whose key names a secret, `Authorization`/`Bearer` values and URL userinfo read as `<redacted>`, and the line is capped at 240 bytes. The command still runs with its real arguments.
 - **Inline-Parameter Literals and Turbofish Calls** (`crates/prod-code-mcp`, #1381):
