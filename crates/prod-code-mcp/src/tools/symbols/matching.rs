@@ -180,22 +180,31 @@ pub(crate) fn owner_path_matches(
 
 /// Whether the module path `path`'s file gives it ends with `qualifiers`:
 /// `crates/prod-code-mcp/src/report.rs` is `crates::prod_code_mcp::report`, which ends with
-/// `prod_code_mcp::report` and with `report`. `src`, `lib`, `main`, `mod`, `__init__` and
-/// `index` name no module of their own, and `-` is `_`.
+/// `prod_code_mcp::report` and with `report`, and `-` is `_`. A file named `lib`, `main`, `mod`,
+/// `__init__` or `index` names no module of its own, and neither does a source-root directory:
+/// `src`, or `lib` where it is not a module inside `src`. Any other directory is a module, so
+/// `src/main/foo.rs` is `main::foo` (#1417).
 pub(crate) fn module_path_ends_with(root: &Path, path: &Path, qualifiers: &[&str]) -> bool {
     if qualifiers.is_empty() {
         return false;
     }
     let rel = path.strip_prefix(root).unwrap_or(path).with_extension("");
-    let segments: Vec<String> = rel
+    let names: Vec<String> = rel
         .components()
         .map(|c| c.as_os_str().to_string_lossy().replace('-', "_"))
-        .filter(|s| {
-            !matches!(
-                s.as_str(),
-                "src" | "lib" | "main" | "mod" | "__init__" | "index"
-            )
+        .collect();
+    let last = names.len().saturating_sub(1);
+    let segments: Vec<String> = names
+        .iter()
+        .enumerate()
+        .filter(|(i, s)| {
+            let source_root =
+                s.as_str() == "src" || (s.as_str() == "lib" && (*i == 0 || names[i - 1] != "src"));
+            let module_file =
+                *i == last && matches!(s.as_str(), "lib" | "main" | "mod" | "__init__" | "index");
+            !(source_root || module_file)
         })
+        .map(|(_, s)| s.clone())
         .collect();
     let ends_with = |qualifiers: &[&str]| {
         (qualifiers.is_empty() && segments.is_empty())

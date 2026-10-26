@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Qualified Lookups Keep Directories Named main, mod or index** (`crates/prod-code-mcp`, #1417):
+  A module path read from a file path drops `lib`, `main`, `mod`, `__init__` and `index` only as the file's own name, and drops `src`, or `lib` outside `src`, as source-root directories. `src/main/foo.rs` is `main::foo`, so `crate::main::foo::record` resolves to it. Before, every component with one of those names was removed, and the lookup reported `no symbol named crate::main::foo::record`.
 - **The Grep Guard Suggests Patterns prod-code grep Reads** (`scripts/hooks`, #1581):
   When the guard hook blocks a source `grep` and suggests `code_grep` / `prod-code grep` instead, it converts a basic regular expression (grep and git grep without `-E`) to ripgrep's syntax. `ctx\|cancel` becomes `ctx|cancel`, `\{2\}` becomes `{2}`, and a literal `(ms)` becomes `\(ms\)`. A `-F` string is escaped. Before, the pattern was passed on as written, so `\|` searched for a literal `|` and the suggestion silently found nothing.
 - **Mixed-Language Directory Outlines Ask Each File's Own Engine** (`crates/prod-code-mcp`, #1415):
