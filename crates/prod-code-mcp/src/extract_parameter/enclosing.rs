@@ -168,11 +168,70 @@ pub fn with_parameter(list: &str, param: &str) -> String {
 
 /// The argument list with `argument` added at the end.
 pub fn with_argument(args: &str, argument: &str) -> String {
-    let trimmed = args.trim();
-    if trimmed.is_empty() {
-        return argument.to_string();
+    with_argument_in(args, argument, super::Syntax::Rust).unwrap_or_else(|_| args.to_string())
+}
+
+/// Insert adjacent to real argument tokens, retaining every byte of existing trivia. A
+/// trailing line comment needs its newline before the new expression, not after it.
+pub(super) fn with_argument_in(
+    args: &str,
+    argument: &str,
+    syntax: super::Syntax,
+) -> anyhow::Result<String> {
+    let ts = super::tokens::argument_tokens(args, syntax)?;
+    let Some(last) = ts.last() else {
+        return Ok(format!("{args}{argument}"));
+    };
+    let end = last.end;
+    let tail = &args[end..];
+    let trailing_comma = last.text == ",";
+    let mut list = args.to_string();
+    if !trailing_comma {
+        list.insert(end, ',');
     }
-    format!("{trimmed}, {argument}")
+    // Only split on a newline in trailing whitespace. A newline inside a block
+    // comment would put the new argument inside that comment instead of the call.
+    if tail[tail.trim_end().len()..].contains('\n') {
+        let token = ts.iter().rev().find(|t| t.text != ",").unwrap_or(last);
+        let start = args[..token.start].rfind('\n').map_or(0, |i| i + 1);
+        let line = &args[start..token.start];
+        let indent: String = line
+            .chars()
+            .take_while(|c| matches!(c, ' ' | '\t'))
+            .collect();
+        let split = list.rfind('\n').unwrap() + 1;
+        let comma = if trailing_comma { "," } else { "" };
+        return Ok(format!(
+            "{}{indent}{argument}{comma}\n{}",
+            &list[..split],
+            &list[split..]
+        ));
+    }
+    if trailing_comma {
+        let separator = if tail.is_empty() { " " } else { "" };
+        Ok(format!("{args}{separator}{argument},"))
+    } else {
+        Ok(format!("{list} {argument}"))
+    }
+}
+
+pub(super) fn argument_edit(
+    args: &str,
+    argument: &str,
+    syntax: super::Syntax,
+) -> anyhow::Result<(usize, usize, String)> {
+    let new = with_argument_in(args, argument, syntax)?;
+    // Retain original value tokens: replace-all inside a recursive call's existing
+    // arguments must stay disjoint from the call-list edit.
+    let mut prefix = args
+        .bytes()
+        .zip(new.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !args.is_char_boundary(prefix) || !new.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+    Ok((prefix, args.len() - prefix, new[prefix..].to_string()))
 }
 
 /// Where the function named at `file:line:col` is declared, as (file, line, column), 1-based.

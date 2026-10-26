@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::enclosing::{
-    declarations, enclosing_declaration, name_offset, parameter_list, with_argument,
+    argument_edit, declarations, enclosing_declaration, name_offset, parameter_list,
 };
 use super::hover::{hover_type, type_from_hover};
 use super::syntax::{Syntax, swift_labeled};
@@ -68,7 +68,9 @@ pub async fn extract(
     .await?;
     let declaration = enclosing_declaration(&symbols, start.0)
         .context("the selection is not inside a function")?;
-    let (callee, fn_start, fn_end) = (declaration.name, declaration.start, declaration.end);
+    let declaration_end = crate::signature::offset_of(&text, declaration.end, declaration.end_col)
+        .context("the declaration's end is not in the file")?;
+    let (callee, fn_start) = (declaration.name, declaration.start);
     // What a call site spells: gopls names a method `(*Store).Limit`, its callers write `Limit`.
     let bare = syntax.bare_name(&callee).to_string();
     let (fn_offset, open, close) = if syntax == Syntax::Rust {
@@ -170,34 +172,44 @@ pub async fn extract(
 
     // Every edit against the file as it is, applied from the last offset backwards.
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
-    // A Rust function ends on a line of its own, `}`. A Python one ends with its last
-    // statement, which is still body, so elsewhere the range ends exactly where the analyzer
-    // says.
-    let body_end = if syntax == Syntax::Rust {
-        crate::signature::offset_of(&text, fn_end, 1)
-    } else {
-        crate::signature::offset_of(&text, fn_end, declaration.end_col)
-    };
-    let body_range = close..body_end.unwrap_or(text.len());
-    let mut replaced = 0usize;
-    if replace_all {
-        let mut at = body_range.start;
-        while let Some(i) = text[at..body_range.end.min(text.len())].find(&expression) {
-            let hit = at + i;
-            edits.entry(file.to_path_buf()).or_default().push((
-                hit,
-                expression.len(),
-                name.to_string(),
-            ));
-            replaced += 1;
-            at = hit + expression.len();
-        }
-    } else {
+    let selected = from + text[from..to].len() - text[from..to].trim_start().len();
+    let casts = super::c_templates::casts(
+        remote,
+        root,
+        file,
+        &text,
+        syntax,
+        close + 1..declaration_end,
+    )
+    .await?;
+    let occurrences = super::occurrences::occurrences(
+        &text,
+        syntax,
+        close,
+        declaration_end,
+        selected..selected + expression.len(),
+        replace_all,
+        name,
+        &casts,
+    )?;
+    let occurrences = super::c_bindings::preserve(
+        remote,
+        root,
+        file,
+        &text,
+        syntax,
+        open - 1..declaration_end,
+        selected,
+        name,
+        occurrences,
+    )
+    .await?;
+    let replaced = occurrences.len();
+    for hit in occurrences {
         edits
             .entry(file.to_path_buf())
             .or_default()
-            .push((from, to - from, name.to_string()));
-        replaced = 1;
+            .push((hit.start, hit.len(), name.to_string()));
     }
     edits.entry(file.to_path_buf()).or_default().push((
         open,
@@ -295,11 +307,12 @@ pub async fn extract(
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             continue;
         };
-        edits.entry(path).or_default().push((
-            args_start,
-            args_end - args_start,
-            with_argument(&body[args_start..args_end], &argument),
-        ));
+        let (prefix, removed, replacement) =
+            argument_edit(&body[args_start..args_end], &argument, syntax)?;
+        edits
+            .entry(path)
+            .or_default()
+            .push((args_start + prefix, removed, replacement));
         call_sites += 1;
     }
 
