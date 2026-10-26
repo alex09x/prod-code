@@ -101,6 +101,7 @@ pub(crate) async fn collect_multi_target_references(
     let language = crate::sync::engine_for_file(declaration)?;
     let declared = declaration.to_string_lossy().into_owned();
     let wanted: Vec<char> = name.chars().collect();
+    let wanted_units = name.encode_utf16().count();
     let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
     let mut asked = 0usize;
     let mut checkout_use_note = None;
@@ -161,14 +162,16 @@ pub(crate) async fn collect_multi_target_references(
                 {
                     continue;
                 }
+                // LSP columns count UTF-16 code units, not chars (#1419).
+                let col16 = text_line[..chars[c].0].encode_utf16().count();
                 if is_declaration_line {
-                    let match_start = c as u32 + 1;
-                    let match_end = match_start + wanted_len as u32;
+                    let match_start = col16 as u32 + 1;
+                    let match_end = match_start + wanted_units as u32;
                     if match_start <= decl_col && decl_col <= match_end {
                         continue;
                     }
                 }
-                file_uses.push((index, c, byte_off));
+                file_uses.push((index, col16, byte_off));
             }
             line_byte_start += raw_line.len() + 1;
         }
@@ -195,7 +198,13 @@ pub(crate) async fn collect_multi_target_references(
                 ImportMatch::Proven => {
                     if !non_shadowed.is_empty() {
                         seen_files.insert(norm_path);
-                        record_file_uses(&uri_str, &non_shadowed, wanted_len, seen_locs, all_locs);
+                        record_file_uses(
+                            &uri_str,
+                            &non_shadowed,
+                            wanted_units,
+                            seen_locs,
+                            all_locs,
+                        );
                     }
                 }
                 ImportMatch::Uncertain => {
@@ -277,7 +286,7 @@ pub(crate) async fn collect_multi_target_references(
                 } else {
                     &[(index, col)]
                 };
-                record_file_uses(&uri_str, uses_to_record, wanted_len, seen_locs, all_locs);
+                record_file_uses(&uri_str, uses_to_record, wanted_units, seen_locs, all_locs);
 
                 // Same-file Swift uses are the declaration target's own (#1135); a Rust use in
                 // the declaring file (a recursive call) is still where the answer came from.
@@ -321,15 +330,23 @@ pub(crate) async fn collect_multi_target_references(
                     }
                     if !non_shadowed.is_empty() {
                         seen_files.insert(norm_path.clone());
-                        record_file_uses(&uri_str, &non_shadowed, wanted_len, seen_locs, all_locs);
+                        record_file_uses(
+                            &uri_str,
+                            &non_shadowed,
+                            wanted_units,
+                            seen_locs,
+                            all_locs,
+                        );
                     }
                     break;
                 }
                 if let Some(ref found) = found_def
                     && (found.as_array().is_some_and(|a| !a.is_empty()) || found.is_object())
                 {
-                    // The name means another item in this file.
-                    break;
+                    // This use means another item, a local of the same name for one. A later
+                    // use in the file can still be the declaration's, `dep::Widget` after a
+                    // local `Widget`: the next one is asked, within the budget (#1419).
+                    continue;
                 }
                 if !is_declaration_file
                     && has_no_def
@@ -348,7 +365,7 @@ pub(crate) async fn collect_multi_target_references(
                         record_file_uses(
                             &uri_str,
                             &[(index, col)],
-                            wanted_len,
+                            wanted_units,
                             seen_locs,
                             all_locs,
                         );
@@ -363,7 +380,8 @@ pub(crate) async fn collect_multi_target_references(
 fn record_file_uses(
     uri_str: &str,
     uses: &[(usize, usize)],
-    wanted_len: usize,
+    // The name's length in UTF-16 code units, as the columns of `uses` are counted.
+    units: usize,
     seen_locs: &mut HashSet<(String, u64, u64)>,
     all_locs: &mut Vec<serde_json::Value>,
 ) {
@@ -375,7 +393,7 @@ fn record_file_uses(
                 "uri": uri_str,
                 "range": {
                     "start": { "line": u_idx, "character": u_col },
-                    "end": { "line": u_idx, "character": u_col + wanted_len }
+                    "end": { "line": u_idx, "character": u_col + units }
                 }
             }));
         }

@@ -117,25 +117,40 @@ pub(crate) async fn position_line(
 }
 
 /// The name a 1-based `character` of a line stands on, or just after (where an editor's cursor
-/// sits at the end of a word). `None` for a position on no name.
+/// sits at the end of a word). `None` for a position on no name. `character` is an LSP column,
+/// in UTF-16 code units. A name is an identifier, `$` included (`$value` in TypeScript), or a
+/// run of operator characters, as a Swift operator is named (#1419).
 pub(crate) fn name_at(line: &str, character: u32) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
-    let is_name = |c: &char| c.is_alphanumeric() || *c == '_';
-    let at = (character as usize).checked_sub(1)?;
-    let at = if chars.get(at).is_some_and(is_name) {
+    let target = character.checked_sub(1)? as usize;
+    let mut units = 0usize;
+    let at = chars
+        .iter()
+        .position(|c| {
+            let here = units >= target;
+            units += c.len_utf16();
+            here
+        })
+        .unwrap_or(chars.len());
+    let word = |c: &char| c.is_alphanumeric() || *c == '_' || *c == '$';
+    let operator = |c: &char| "+-*/%<>=!&|^~?".contains(*c);
+    let class: &dyn Fn(&char) -> bool = [&word as &dyn Fn(&char) -> bool, &operator]
+        .into_iter()
+        .find(|is| {
+            chars.get(at).is_some_and(is) || (at > 0 && chars.get(at - 1).is_some_and(is))
+        })?;
+    let at = if chars.get(at).is_some_and(class) {
         at
-    } else if at > 0 && chars.get(at - 1).is_some_and(is_name) {
-        at - 1
     } else {
-        return None;
+        at - 1
     };
     let start = chars[..at]
         .iter()
-        .rposition(|c| !is_name(c))
+        .rposition(|c| !class(c))
         .map_or(0, |i| i + 1);
     let end = chars[at..]
         .iter()
-        .position(|c| !is_name(c))
+        .position(|c| !class(c))
         .map_or(chars.len(), |i| at + i);
     Some(chars[start..end].iter().collect())
 }

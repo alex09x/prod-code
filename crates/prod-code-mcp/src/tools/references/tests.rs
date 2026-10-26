@@ -221,3 +221,24 @@ extension Tako.CrabView {
     assert_eq!(find_non_shadowed_lines("CrabView", 4), vec![7, 8, 12, 16]);
     assert_eq!(find_non_shadowed_lines("CrabPainter", 11), vec![18]);
 }
+
+/// A name at an LSP column, counted in UTF-16 code units: `$value`, a Swift operator, and a name
+/// after supplementary characters; a position on punctuation is still on no name (#1419).
+#[test]
+fn name_at_reads_utf16_columns_and_names_that_start_with_punctuation() {
+    use super::across::name_at;
+    assert_eq!(name_at("const $value = 1;", 7).as_deref(), Some("$value"));
+    assert_eq!(
+        name_at("static func <~> (a: A, b: A) -> A", 13).as_deref(),
+        Some("<~>")
+    );
+    let line = "let s = \"😀😀\"; ab";
+    let col = line[..line.find("ab").unwrap()].encode_utf16().count() as u32 + 1;
+    assert_eq!(name_at(line, col).as_deref(), Some("ab"));
+    assert_eq!(
+        name_at("f(a, b);", 2),
+        Some("f".to_string()),
+        "just after a name"
+    );
+    assert_eq!(name_at("f( a);", 3), None);
+}
