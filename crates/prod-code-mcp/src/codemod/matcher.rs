@@ -59,6 +59,54 @@ pub fn is_boundary_token(kind: &TokenKind, next_expected: &TokenKind) -> bool {
     }
 }
 
+/// Whether `tokens[at]`, outside every delimiter, is a binary operator, which no receiver of
+/// a member access contains. The angles of a turbofish (`::<A, B>`) are not operators.
+fn ends_receiver(tokens: &[SourceToken], at: usize, turbofish: &mut usize) -> bool {
+    let TokenKind::Punct(p) = &tokens[at].kind else {
+        return false;
+    };
+    match p.as_str() {
+        "<" if opens_turbofish(tokens, at) || *turbofish > 0 => {
+            *turbofish += 1;
+            false
+        }
+        ">" if *turbofish > 0 => {
+            *turbofish -= 1;
+            false
+        }
+        _ if *turbofish > 0 => false,
+        op => matches!(
+            op,
+            "+" | "-"
+                | "*"
+                | "/"
+                | "%"
+                | "=="
+                | "!="
+                | "<"
+                | ">"
+                | "<="
+                | ">="
+                | "&&"
+                | "||"
+                | "&"
+                | "|"
+                | "^"
+                | "<<"
+                | ">>"
+                | "**"
+                | "??"
+        ),
+    }
+}
+
+/// `<` right after `::`: the start of a turbofish's generic arguments.
+fn opens_turbofish(tokens: &[SourceToken], at: usize) -> bool {
+    at > 0
+        && matches!(&tokens[at].kind, TokenKind::Punct(p) if p == "<")
+        && matches!(&tokens[at - 1].kind, TokenKind::Punct(q) if q == "::")
+}
+
 /// Attempt to match pattern tokens starting at `start_idx` in `tokens`.
 /// Returns `(start_byte, end_byte, end_token_idx, bindings)` on success.
 pub fn match_pattern_tokens(
@@ -101,6 +149,21 @@ pub fn match_pattern_tokens(
                         let mut depth = 0;
                         let mut found = None;
                         let mut cur = code_idx;
+                        // Before `.`/`->`/`?.` the metavariable is a receiver, which a binary
+                        // operator outside any delimiter ends: in `1 + obj.unwrap()` the
+                        // receiver is `obj`, found from a later start (#1432).
+                        let receiver = matches!(
+                            next_expected,
+                            TokenKind::Punct(p) if matches!(p.as_str(), "." | "->" | "?.")
+                        );
+                        let mut turbofish = 0usize;
+                        // Nor does a receiver start with a path separator or an infix operator.
+                        if receiver
+                            && let TokenKind::Punct(p) = &tokens[code_idx].kind
+                            && !matches!(p.as_str(), "&" | "*" | "!" | "-")
+                        {
+                            return None;
+                        }
 
                         while cur < tokens.len() {
                             if depth == 0
@@ -127,8 +190,20 @@ pub fn match_pattern_tokens(
                                             found = Some(cur);
                                             break;
                                         }
-                                        if is_boundary_token(&tokens[cur].kind, next_expected) {
-                                            return None;
+                                        let generics = receiver
+                                            && (turbofish > 0 || opens_turbofish(tokens, cur));
+                                        if generics {
+                                            // `::<A, B>`: its comma and angles are no boundary.
+                                            ends_receiver(tokens, cur, &mut turbofish);
+                                        } else {
+                                            if is_boundary_token(&tokens[cur].kind, next_expected) {
+                                                return None;
+                                            }
+                                            if receiver
+                                                && ends_receiver(tokens, cur, &mut turbofish)
+                                            {
+                                                return None;
+                                            }
                                         }
                                     }
                                 }
