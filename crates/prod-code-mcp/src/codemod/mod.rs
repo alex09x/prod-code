@@ -19,6 +19,7 @@ pub mod scope;
 pub mod source;
 pub mod types;
 
+pub mod boundaries;
 #[cfg(test)]
 mod tests;
 
