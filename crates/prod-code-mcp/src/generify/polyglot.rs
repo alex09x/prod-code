@@ -209,6 +209,14 @@ pub async fn generify_polyglot(
 
             if let Ok(proto_decl) =
                 find_polyglot_func_decl(&proto_content, lang, Some(&decl.name), None)
+                && super::cpp_headers::header_may_declare(
+                    file,
+                    &text,
+                    decl.decl_start,
+                    p,
+                    &proto_content,
+                    proto_decl.decl_start,
+                )
             {
                 let proto_list = &proto_content[proto_decl.open_paren + 1..proto_decl.close_paren];
                 let (_, proto_params) = crate::parameter_object::parse_params(proto_list, lang);

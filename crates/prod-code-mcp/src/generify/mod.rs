@@ -12,6 +12,7 @@ use anyhow::Result;
 use std::net::SocketAddr;
 use std::path::Path;
 
+mod cpp_headers;
 mod decl;
 mod param;
 mod polyglot;
