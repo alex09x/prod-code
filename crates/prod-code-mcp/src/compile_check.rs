@@ -17,6 +17,8 @@
 //! check` runs there against the warm target directory, and nothing in the checkout is touched
 //! unless it passes.
 
+mod projects;
+
 use crate::shadow::{HypothesisEdit, HypothesisSpec, relative_edit_path, run_shadow};
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -62,7 +64,8 @@ impl CompileVerdict {
 pub fn short_errors(output: &str) -> Vec<String> {
     output
         .lines()
-        .map(str::trim)
+        .map(projects::strip_ansi_codes)
+        .map(|line| line.trim().to_string())
         .filter(|line| {
             let Some((position, rest)) = line.split_once(": error") else {
                 return false;
@@ -77,11 +80,11 @@ pub fn short_errors(output: &str) -> Vec<String> {
                 && !row.is_empty()
                 && row.chars().all(|c| c.is_ascii_digit())
         })
-        .map(str::to_string)
         .collect()
 }
 
-/// Runs `cargo check` against the workspace with `files` in place of what is on disk.
+/// Runs `cargo check` against every affected Rust package group in the workspace with `files`
+/// in place of what is on disk.
 pub async fn check(
     remote: SocketAddr,
     root: &Path,
@@ -94,11 +97,12 @@ pub async fn check(
             text: Some(text.clone()),
         });
     }
+    let plan = projects::affected_package_groups(root, &edits);
     let spec = HypothesisSpec {
         name: "proposed".to_string(),
         edits,
     };
-    let command = [
+    let command: Vec<String> = [
         "cargo",
         "check",
         "--workspace",
@@ -108,27 +112,47 @@ pub async fn check(
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let outcome = run_shadow(
-        remote,
-        root,
-        None,
-        &[spec],
-        command,
-        Vec::new(),
-        600,
-        1,
-        64 * 1024,
-        false,
-    )
-    .await?;
-    let result = outcome
-        .results
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("the shadow run returned no result"))?;
+
+    let mut passed = plan.incomplete.is_empty();
+    let mut errors: Vec<String> = plan.incomplete;
+    let mut duration_ms = 0u64;
+
+    for subdir in plan.groups {
+        let outcome = run_shadow(
+            remote,
+            root,
+            subdir.as_deref(),
+            std::slice::from_ref(&spec),
+            command.clone(),
+            Vec::new(),
+            600,
+            1,
+            64 * 1024,
+            false,
+        )
+        .await?;
+        let result = outcome
+            .results
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("the shadow run returned no result"))?;
+        passed &= result.passed();
+        duration_ms = duration_ms.saturating_add(result.duration_ms);
+        for err in short_errors(&result.output) {
+            let qualified = projects::qualify_short_error(
+                Path::new(&outcome.server_workspace_root),
+                subdir.as_deref(),
+                err,
+            );
+            if !errors.contains(&qualified) {
+                errors.push(qualified);
+            }
+        }
+    }
+
     Ok(CompileVerdict {
-        passed: result.passed(),
-        errors: short_errors(&result.output),
-        duration_ms: result.duration_ms,
+        passed,
+        errors,
+        duration_ms,
     })
 }
 
@@ -152,6 +176,19 @@ crates/x/src/other.rs:40:1: error: expected item, found `}`
             ]
         );
         assert!(short_errors("").is_empty());
+        let colored = "\x1b[1mcrate/src/lib.rs:4:9: \x1b[31merror[E0308]\x1b[0m: mismatched types";
+        assert_eq!(
+            short_errors(colored),
+            vec!["crate/src/lib.rs:4:9: error[E0308]: mismatched types"]
+        );
+        assert_eq!(
+            projects::qualify_short_error(
+                Path::new("/workspace"),
+                Some("crates/excluded"),
+                "src/lib.rs:4:9: error[E0308]: mismatched types".to_string()
+            ),
+            "crates/excluded/src/lib.rs:4:9: error[E0308]: mismatched types"
+        );
     }
 
     #[test]
