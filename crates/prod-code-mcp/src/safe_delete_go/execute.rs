@@ -67,6 +67,11 @@ pub async fn delete_function(
         )
     })?;
 
+    // A caller in a Git-ignored file of the package is synced nowhere: refuse before evidence.
+    if let Some(name) = super::ignored::word_at(&original, requested) {
+        super::ignored::refuse_ignored_callers(&canonical_file, name)?;
+    }
+
     let uri = url::Url::from_file_path(&canonical_file)
         .map_err(|_| anyhow!("invalid Go source path {}", canonical_file.display()))?
         .to_string();
