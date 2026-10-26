@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Generify Bounds and C++ Headers** (`crates/prod-code-mcp`, #1382):
+  The new type parameter goes after a complete `F: Fn() -> i32` bound instead of inside its return arrow. A C/C++ header whose same-named prototype sits in another namespace, or that the source neither includes nor shares a stem with, no longer blocks the conversion. A header that may declare the function is still refused.
 - **Cancelled Exec Streams Kill Their Process Group** (`crates/prod-code-gateway`, #1536):
   When a running command's stream is dropped or cancelled before it finishes, without a Disconnect, its process group is killed and still reaped. It used to keep running past its deadline. Normal exit, timeout and disconnect handling are unchanged.
 - **URL Query Secrets in Running Commands** (`crates/prod-code-gateway`, #1535):

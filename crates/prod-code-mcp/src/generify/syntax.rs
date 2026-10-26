@@ -57,31 +57,21 @@ pub fn generics_span(text: &str, name_end: usize) -> Option<(usize, usize)> {
         return None;
     }
     let open = name_end + lead;
-    let mut depth = 0i32;
-    for (i, c) in text[open..].char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((open + 1, open + i));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    matching_angle_bracket(text, open).map(|close| (open + 1, close))
 }
 
-/// The offset of the matching `>` for the `<` at `open`.
+/// The offset of the matching `>` for the `<` at `open`. The `>` of a return arrow, as in
+/// `F: Fn() -> i32`, closes nothing (#1382).
 pub fn matching_angle_bracket(text: &str, open: usize) -> Option<usize> {
     if text.as_bytes().get(open) != Some(&b'<') {
         return None;
     }
     let mut depth = 0i32;
+    let mut previous = '\0';
     for (i, c) in text[open..].char_indices() {
         match c {
             '<' => depth += 1,
+            '>' if previous == '-' => {}
             '>' => {
                 depth -= 1;
                 if depth == 0 {
@@ -90,6 +80,7 @@ pub fn matching_angle_bracket(text: &str, open: usize) -> Option<usize> {
             }
             _ => {}
         }
+        previous = c;
     }
     None
 }

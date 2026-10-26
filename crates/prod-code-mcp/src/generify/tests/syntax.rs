@@ -212,6 +212,13 @@ fn angle_brackets_nest_and_must_close() {
     assert_eq!(matching_angle_bracket("x<A>", 0), None);
     assert_eq!(matching_angle_bracket("<A<B>", 0), None);
     assert_eq!(matching_angle_bracket("<A>", 9), None);
+    // A return arrow in a bound closes nothing (#1382).
+    let t = "fn run<F: Fn() -> i32>(f: F, value: String) -> i32 {";
+    let (s, e) = generics_span(t, 6).unwrap();
+    assert_eq!(&t[s..e], "F: Fn() -> i32");
+    let t = "fn g<F: Fn(Vec<u8>) -> Option<u8>, G>(f: F) {}";
+    let (s, e) = generics_span(t, 4).unwrap();
+    assert_eq!(&t[s..e], "F: Fn(Vec<u8>) -> Option<u8>, G");
     let t = "fn f <T>(x: T) {}";
     let (s, e) = generics_span(t, 4).unwrap();
     assert_eq!(&t[s..e], "T");
