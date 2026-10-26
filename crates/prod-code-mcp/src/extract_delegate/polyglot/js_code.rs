@@ -17,7 +17,8 @@ use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::{GetSpan, SourceType};
 
-use crate::{extract_delegate::common::is_ident, parameter_object::Language};
+use super::js_header::class_header_bounds;
+use crate::parameter_object::Language;
 
 const CTOR_WRAP: (&str, &str) = ("class __O extends __B {\nconstructor() {\n", "\n}\n}\n");
 const EXPR_WRAP: (&str, &str) = (
@@ -38,7 +39,7 @@ thread_local! {
     static PARSED_CACHE: RefCell<Option<(String, Option<ParsedSource>)>> = const { RefCell::new(None) };
 }
 
-fn source_types() -> [SourceType; 6] {
+pub(super) fn source_types() -> [SourceType; 6] {
     let (mjs, cjs) = (SourceType::mjs(), SourceType::cjs());
     [
         SourceType::ts(),
@@ -60,39 +61,6 @@ fn parse_program(text: &str) -> Option<ParsedSource> {
         [("const __prod_code_expr = (\n", "\n);\n"), CTOR_WRAP]
             .into_iter()
             .find_map(|(p, s)| try_parse(&format!("{p}{text}{s}"), p.len(), false))
-    })
-}
-
-fn strip_kw<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
-    s.strip_suffix(kw)
-        .filter(|r| !r.chars().next_back().is_some_and(is_ident))
-}
-
-fn class_header_bounds(
-    src: &str,
-    (span_start, after_dec, id_start, exp): (usize, usize, usize, Option<usize>),
-    non_code: &[Range<usize>],
-) -> (bool, usize) {
-    if let Some(exp) = exp {
-        return (true, exp.min(span_start));
-    }
-    let class_kw = src.get(after_dec..id_start).map_or(span_start, |s| {
-        s.match_indices("class")
-            .map(|(rel, _)| after_dec + rel)
-            .find(|&p| {
-                !non_code.iter().any(|r| r.contains(&p))
-                    && !src[..p].chars().next_back().is_some_and(is_ident)
-                    && !src[p + 5..].chars().next().is_some_and(is_ident)
-            })
-            .unwrap_or(span_start)
-    });
-    let mut h = src[..class_kw].trim_end();
-    while let Some(r) = strip_kw(h, "abstract").or_else(|| strip_kw(h, "declare")) {
-        h = r.trim_end();
-    }
-    let h = strip_kw(h, "default").map_or(h, str::trim_end);
-    strip_kw(h, "export").map_or((false, span_start.min(class_kw)), |p| {
-        (true, p.len().min(span_start))
     })
 }
 
@@ -146,6 +114,7 @@ fn parse_with_type(
         if (span.start as usize) >= off
             && (span.end as usize) <= end
             && matches!(node.kind(), AstKind::ThisExpression(_) | AstKind::Super(_))
+            && !super::js_scopes::receiver_is_nested(&built.semantic, node.id(), span, off)
         {
             has_owner_ref = true;
         }

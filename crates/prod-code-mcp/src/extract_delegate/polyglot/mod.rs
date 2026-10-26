@@ -15,6 +15,8 @@ mod go_literals;
 mod go_text;
 mod invocation;
 mod js_code;
+mod js_header;
+mod js_scopes;
 mod lexical;
 pub mod params;
 pub mod py;
