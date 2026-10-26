@@ -39,11 +39,24 @@ pub(crate) async fn handle_rename(
         .context("Missing 'new_name' argument")?
         .to_string();
     let file_path = resolve_file_path(workspace_root, path_str);
+    let comments = args
+        .get("comments")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if args
         .get("accessors")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
+        // The accessor rename does not update comments or test names; asked for both, it would
+        // silently drop one (#1384).
+        if comments {
+            return Ok(McpToolCallResult::error(
+                "`accessors` and `comments` cannot be combined: the accessor rename does not \
+                 update comments or test names. Run it with one of them; nothing was written"
+                    .to_string(),
+            ));
+        }
         let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
         return rename_with_accessors(
             remote,
@@ -87,10 +100,6 @@ pub(crate) async fn handle_rename(
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let (mut planned, moves_files) = crate::refactor::planned_texts(workspace_root, &edit)?;
     // The old name in comments and test names, in every file the rename touches.
-    let comments = args
-        .get("comments")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let mut mentioned = crate::rename_mentions::Mentions::default();
     if comments {
         if moves_files {
@@ -118,8 +127,9 @@ pub(crate) async fn handle_rename(
         if !planned.iter().any(|(p, _)| *p == file_path) {
             planned.push((file_path.clone(), text.clone()));
         }
-        for (_, t) in planned.iter_mut() {
-            let (rewritten, found) = crate::rename_mentions::rewrite(t, &old, &new_name);
+        for (p, t) in planned.iter_mut() {
+            let rust = p.extension().is_some_and(|e| e == "rs");
+            let (rewritten, found) = crate::rename_mentions::rewrite(t, &old, &new_name, rust);
             mentioned.comments += found.comments;
             mentioned.tests.extend(found.tests);
             *t = rewritten;
