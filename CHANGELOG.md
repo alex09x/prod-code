@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Extract-Delegate Literals, Receivers and Await** (`crates/prod-code-mcp`, #1334):
+  Files that use the moved fields only in struct literals or patterns are rewritten too, `other.city` on another owner inside a moved method becomes `other.address.city` while `self` stays with the helper, and async forwarding awaits. Moved literal fields join as `address: Address { street, city }` on one line when nothing but code sits between them.
 - **Constructor Replacement Values and Coverage** (`crates/prod-code-mcp`, #1345):
   Factory and builder replacements keep argument evaluation order for user-defined clone/into calls, ignore constructors inside nested block comments, keep `Self` bound to the nearest impl, keep spread arguments and Python defaults, cover C++ brace and Swift `init` construction, and generate valid Go scalars and generic arguments.
 - **Rust Trait Extraction Conditions and Syntax** (`crates/prod-code-mcp`, #1359):

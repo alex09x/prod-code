@@ -8,7 +8,14 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod binding_imports;
+mod binding_path;
 pub mod execute;
+mod helper_path;
+mod method_syntax;
+mod module_attributes;
+mod occurrence_path;
+mod occurrences;
 pub mod parse;
 pub mod restructure;
 pub mod types;

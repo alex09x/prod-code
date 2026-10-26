@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::parse::{impl_blocks, parse_struct};
-use super::restructure::{restructure, rewrite_literals};
+use super::restructure::restructure;
 use super::types::Extracted;
 use crate::extract_delegate::common::is_ident;
 
@@ -61,14 +61,16 @@ pub async fn extract_delegate_rust(
     // Check the struct side first, so a wrong name fails before any analyzer query.
     restructure(&text, at, fields, methods, helper, field)?;
 
-    // The moved methods keep `self.city`; every other access gets the new field in front.
+    // Self receivers and their local aliases in moved methods belong to the helper. Other owner
+    // instances in the same method still need their delegate field.
     let moved_ranges: Vec<(usize, usize)> = impl_blocks(&text, &decl.name)
         .into_iter()
         .flat_map(|(_, open, close)| crate::extract_trait::items(&text, open, close))
         .filter(|i| i.name.as_ref().is_some_and(|n| methods.contains(n)))
         .map(|i| (i.start, i.end))
         .collect();
-    let mut inserts: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
+    let mut occurrences: BTreeMap<PathBuf, Vec<(usize, String)>> = BTreeMap::new();
+    let mut files = BTreeMap::from([(file.to_path_buf(), text.clone())]);
     let body = &text[decl.open + 1..decl.close];
     for f in fields {
         let Some(rel_at) = body.match_indices(f.as_str()).map(|(i, _)| i).find(|i| {
@@ -104,35 +106,42 @@ pub async fn extract_delegate_rust(
             // A stale position names something else, and a prefix there would break it.
             anyhow::ensure!(
                 other[off..].starts_with(f.as_str())
-                    && !other[off + f.len()..].starts_with(is_ident),
+                    && !other[off + f.len()..].starts_with(is_ident)
+                    && !other[..off].chars().next_back().is_some_and(is_ident),
                 "the analyzer places a use of `{f}` at {}:{rl}:{rc}, but the file says otherwise; \
                  nothing was planned",
                 path.display()
             );
-            if path == file && moved_ranges.iter().any(|(s, e)| *s <= off && off < *e) {
-                continue;
-            }
-            // A field access (`a.city`); a literal or pattern entry is left to the literal pass.
-            if other[..off].ends_with('.') {
-                inserts.entry(path).or_default().push(off);
-            }
+            files.entry(path.clone()).or_insert(other);
+            occurrences.entry(path).or_default().push((off, f.clone()));
         }
     }
-    let accesses: usize = inserts.values().map(|v| v.len()).sum();
-    let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
-    files.insert(file.to_path_buf(), text.clone());
-    for (path, mut offs) in inserts {
-        let mut t = match files.get(&path) {
-            Some(t) => t.clone(),
-            None => std::fs::read_to_string(&path)
-                .with_context(|| format!("cannot read {}", path.display()))?,
+    let mut accesses = 0;
+    for (path, mut refs) in occurrences {
+        refs.sort_unstable();
+        refs.dedup();
+        let ranges = if path == file {
+            moved_ranges.as_slice()
+        } else {
+            &[]
         };
-        offs.sort_unstable();
-        offs.dedup();
-        for off in offs.into_iter().rev() {
-            t.insert_str(off, &format!("{field}."));
-        }
-        files.insert(path, t);
+        let (rewritten, count) =
+            super::occurrences::rewrite(&files[&path], &refs, ranges, fields, field, |off| {
+                super::helper_path::spelling(
+                    remote,
+                    root,
+                    file,
+                    &text,
+                    &decl,
+                    &path,
+                    &files[&path],
+                    off,
+                    helper,
+                )
+            })
+            .await?;
+        accesses += count;
+        files.insert(path, rewritten);
     }
     // The declaring file: the struct, the helper and the methods.
     let declaring = files.get(file).cloned().unwrap_or_default();
@@ -141,17 +150,6 @@ pub async fn extract_delegate_rust(
         .unwrap_or(at);
     let restructured = restructure(&declaring, at_now, fields, methods, helper, field)?;
     files.insert(file.to_path_buf(), restructured);
-    // Struct literals, in every file that touches the fields.
-    let paths: Vec<PathBuf> = files.keys().cloned().collect();
-    for path in paths {
-        let t = files[&path].clone();
-        let self_ranges: Vec<(usize, usize)> = impl_blocks(&t, &decl.name)
-            .into_iter()
-            .map(|(s, _, e)| (s, e))
-            .collect();
-        let rewritten = rewrite_literals(&t, &decl.name, &self_ranges, fields, field, helper)?;
-        files.insert(path, rewritten);
-    }
     files.retain(|p, t| std::fs::read_to_string(p).map(|o| o != *t).unwrap_or(true));
 
     let edits: Vec<(PathBuf, String)> = files.iter().map(|(p, t)| (p.clone(), t.clone())).collect();
