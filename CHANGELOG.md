@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Accessor Rename Finds the Field's Own Struct** (`crates/prod-code-mcp`, #1383):
+  - `code_rename` with `accessors` renames an accessor only when the analyzer resolves its `impl`'s self type to the field's own struct. Before, `a::Conn` and `b::Conn` with the same accessor name were both renamed.
+  - Accessors are searched in the index of the project that declares the field, not the checkout root's.
+  - A struct whose `where` clause stands on a line of its own is recognised as the field's owner.
 - **Go Mocks with Three or More Grouped Names** (`crates/prod-code-mcp`, #1391):
   `code_generate_fixture` reads `Copy(dst, src, mode string)` as three `string` parameters, and `(x, y, z int)` results as three `int`s. Before, the first name became a parameter type, and the mock declared `arg0 dst`, a type that does not exist. A list of unnamed types such as `(int, string, error)` stays unnamed.
 - **Generify Reads Every C++ Digit Separator** (`crates/prod-code-mcp`, #1556):
