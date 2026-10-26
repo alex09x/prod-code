@@ -4440,6 +4440,52 @@ async fn a_rename_with_comments_follows_the_old_name_into_prose_and_tests() {
     );
 }
 
+/// `comments` renames inside block comments and leaves raw-string data byte for byte; asked
+/// together with `accessors`, which does not update comments, it is refused unwritten (#1384).
+#[tokio::test]
+async fn a_rename_with_comments_reads_block_comments_and_raw_strings() {
+    let ws = workspace();
+    let before = "/* An Order,\n   priced once. */\npub struct Order;\npub const LINK: &str = r#\"<a href=\"//Order\">\"#;\n";
+    let renamed = before.replace("pub struct Order;", "pub struct Trade;");
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let (path, renamed_text) = (lib.clone(), renamed.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/rename" => answers::whole_file(&path, before, &renamed_text),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let both = execute_tool(
+        remote,
+        &ws.root(),
+        "code_rename",
+        serde_json::json!({ "path": "src/lib.rs", "line": 3, "character": 12, "new_name": "Trade", "comments": true, "accessors": true }),
+    )
+    .await
+    .expect("the rename answers");
+    assert!(both.is_error, "{}", text_of(&both));
+    assert!(
+        text_of(&both).contains("cannot be combined"),
+        "{}",
+        text_of(&both)
+    );
+    assert_eq!(std::fs::read_to_string(&lib).unwrap(), before);
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_rename",
+        serde_json::json!({ "path": "src/lib.rs", "line": 3, "character": 12, "new_name": "Trade", "comments": true }),
+    )
+    .await
+    .expect("the rename runs");
+    assert!(!result.is_error, "{}", text_of(&result));
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "/* An Trade,\n   priced once. */\npub struct Trade;\npub const LINK: &str = r#\"<a href=\"//Order\">\"#;\n"
+    );
+}
+
 /// A rename to a name already declared in the same scope is a second definition, not a
 /// rename, and the analyzer computes it without complaint (#98). The result is checked before
 /// it is written: refused with the error, and written only with `force`, which says so.

@@ -114,18 +114,82 @@ fn is_test(lines: &[&str], at: usize) -> bool {
     false
 }
 
-/// `text` with the old name replaced in its comments and in its test names.
-pub fn rewrite(text: &str, old: &str, new: &str) -> (String, Mentions) {
+/// The byte ranges of the comments in `text`. Rust source is read by Rust's lexer: line and
+/// block comments, nested ones whole, and nothing inside a string or raw string such as
+/// `r#"<a href="//x">"#` (#1384). Other files keep the line scan for `//` outside `"…"`.
+fn comment_ranges(text: &str, rust: bool) -> Vec<(usize, usize)> {
+    use ra_ap_syntax::{NodeOrToken, SyntaxKind};
+    if !rust {
+        let mut ranges = Vec::new();
+        let mut line_start = 0;
+        for line in text.split('\n') {
+            if let Some(c) = comment_start(line) {
+                ranges.push((line_start + c, line_start + line.len()));
+            }
+            line_start += line.len() + 1;
+        }
+        return ranges;
+    }
+    ra_ap_syntax::SourceFile::parse(text, ra_ap_syntax::Edition::CURRENT)
+        .syntax_node()
+        .descendants_with_tokens()
+        .filter_map(|element| match element {
+            NodeOrToken::Token(token)
+                if matches!(
+                    token.kind(),
+                    SyntaxKind::COMMENT
+                        | SyntaxKind::OUTER_DOC_COMMENT
+                        | SyntaxKind::INNER_DOC_COMMENT
+                ) =>
+            {
+                let range = token.text_range();
+                Some((usize::from(range.start()), usize::from(range.end())))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Where the comment on `line` starts, outside a string literal.
+fn comment_start(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_str => i += 1,
+            b'"' => in_str = !in_str,
+            b'/' if !in_str && bytes[i + 1] == b'/' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `text` with the old name replaced in its comments and in its test names. `rust` says the
+/// text is Rust source, read with Rust's lexer.
+pub fn rewrite(text: &str, old: &str, new: &str, rust: bool) -> (String, Mentions) {
     let mut found = Mentions::default();
+    // Comments first, each as one span however many lines it covers.
+    let mut commented = text.to_string();
+    for (start, end) in comment_ranges(text, rust).into_iter().rev() {
+        let (rest, k) = replace_word(&text[start..end], old, new);
+        found.comments += k;
+        commented.replace_range(start..end, &rest);
+    }
+    let text = commented.as_str();
+    let in_comment = comment_ranges(text, rust);
     let (old_snake, new_snake) = (snake(old), snake(new));
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut line_start = 0;
     for (n, line) in lines.iter().enumerate() {
-        // A comment: `//`, `///`, `//!` after the code on the line, or the whole line.
-        if let Some(c) = comment_start(line) {
-            let (rest, k) = replace_word(&line[c..], old, new);
-            found.comments += k;
-            out.push(format!("{}{rest}", &line[..c]));
+        let at = line_start;
+        line_start += line.len() + 1;
+        // A declaration that is itself commented out is not renamed.
+        if in_comment.iter().any(|(s, e)| *s <= at && at < *e) {
+            out.push(line.to_string());
             continue;
         }
         let mut decl = line.trim_start();
@@ -155,23 +219,6 @@ pub fn rewrite(text: &str, old: &str, new: &str) -> (String, Mentions) {
     (out.join("\n"), found)
 }
 
-/// Where the comment on `line` starts, outside a string literal.
-fn comment_start(line: &str) -> Option<usize> {
-    let bytes = line.as_bytes();
-    let mut in_str = false;
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_str => i += 1,
-            b'"' => in_str = !in_str,
-            b'/' if !in_str && bytes[i + 1] == b'/' => return Some(i),
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,7 +226,7 @@ mod tests {
     #[test]
     fn comments_and_test_names_follow_a_rename() {
         let text = "/// An `Order` is written once; `Orders` are not.\npub struct Order;\n\nfn f() -> &'static str {\n    \"// Order in a string\" // Order here\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn order_total_rounds() {}\n\n    /// Doc.\n    #[tokio::test]\n    async fn reorders_order() {}\n\n    fn order_helper() {}\n}\n";
-        let (out, found) = rewrite(text, "Order", "Trade");
+        let (out, found) = rewrite(text, "Order", "Trade", true);
         assert!(
             out.starts_with("/// An `Trade` is written once; `Orders` are not.\npub struct Order;"),
             "{out}"
@@ -202,6 +249,44 @@ mod tests {
                 ("reorders_order".to_string(), "reorders_trade".to_string()),
             ]
         );
+    }
+
+    /// Raw strings keep their bytes; block comments, doc block comments, nested and multiline
+    /// ones, are renamed in (#1384).
+    #[test]
+    fn raw_strings_are_data_and_block_comments_are_comments() {
+        let text = "fn link() -> &'static str {\n    r#\"<a href=\"//Order\">\"#\n}\n/* An Order here, /* a nested Order */ and\n   another Order line */\n/** Doc for Order. */\npub struct Order;\nconst S: &str = \"/* Order */\";\n";
+        let (out, found) = rewrite(text, "Order", "Trade", true);
+        assert!(out.contains("r#\"<a href=\"//Order\">\"#"), "{out}");
+        assert!(
+            out.contains("/* An Trade here, /* a nested Trade */ and\n   another Trade line */"),
+            "{out}"
+        );
+        assert!(out.contains("/** Doc for Trade. */"), "{out}");
+        assert!(out.contains("pub struct Order;"), "{out}");
+        assert!(out.contains("\"/* Order */\""), "strings stay: {out}");
+        assert_eq!(found.comments, 4);
+    }
+
+    #[test]
+    fn a_commented_out_test_is_not_renamed() {
+        let text = "/*\n#[test]\nfn order_total() {}\n*/\n#[test]\nfn order_count() {}\n";
+        let (out, found) = rewrite(text, "Order", "Trade", true);
+        assert!(out.contains("fn order_total() {}"), "{out}");
+        assert!(out.contains("fn trade_count() {}"), "{out}");
+        assert_eq!(found.tests.len(), 1);
+    }
+
+    /// Files that are not Rust keep the line scan: `//` outside a string.
+    #[test]
+    fn other_languages_keep_their_line_comments() {
+        let text = "const s = \"// Order\"; // Order here\nlet order = 1;\n";
+        let (out, found) = rewrite(text, "Order", "Trade", false);
+        assert_eq!(
+            out,
+            "const s = \"// Order\"; // Trade here\nlet order = 1;\n"
+        );
+        assert_eq!(found.comments, 1);
     }
 
     #[test]
