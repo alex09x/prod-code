@@ -106,16 +106,28 @@ async fn tool_fix(
     } else {
         None
     };
+    // A file whose local copy changed or could not be verified while the fixer ran keeps the
+    // local edit; the node's fix of it was not written, and the report says so (#1414).
+    let kept = if outcome.kept_files.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; {} file(s) kept with their local state, the fix not written: {}",
+            outcome.kept_files.len(),
+            outcome.kept_files.join(", ")
+        )
+    };
     if let Some(failure) = failure {
         anyhow::bail!(
-            "fixes: `{}` {failure}; {} changed file(s) already pulled: {}\n{}",
+            "fixes: `{}` {failure}; {} changed file(s) already pulled: {}{kept}\n{}",
             command.join(" "),
             outcome.pulled_files.len(),
             outcome.pulled_files.join(", "),
             tail.text()
         );
     }
-    let outcomes: Vec<Outcome> = outcome
+    let rewritten = outcome.pulled_files.len();
+    let mut outcomes: Vec<Outcome> = outcome
         .pulled_files
         .iter()
         .map(|file| Outcome {
@@ -125,12 +137,19 @@ async fn tool_fix(
             skipped: None,
         })
         .collect();
+    let why = "the local file changed or could not be verified while the fixer ran; it was kept \
+               and the fix was not written";
+    outcomes.extend(outcome.kept_files.iter().map(|file| Outcome {
+        file: file.clone(),
+        line: 0,
+        message: format!("fixed by `{}` on the node", command.join(" ")),
+        skipped: Some(why.to_string()),
+    }));
     let note = format!(
-        "fixes: `{}` rewrote {} file(s)",
-        command.join(" "),
-        outcomes.len()
+        "fixes: `{}` rewrote {rewritten} file(s){kept}",
+        command.join(" ")
     );
-    let after = if outcomes.is_empty() {
+    let after = if rewritten == 0 {
         None
     } else {
         Some(crate::verify::run_verify(remote, root, hint, kind, None, timeout_secs).await?)

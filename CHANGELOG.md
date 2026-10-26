@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Linter Fix Reports Name the Files Kept for Local Edits** (`crates/prod-code-mcp`, #1414):
+  `lint --fix` lists a file whose local copy changed while the fixer ran as skipped, with the reason, and its note says how many files were kept and which. The local edit stays and the node's fix of that file is not written. Before, the report said only `rewrote 1 file(s)` and did not mention the file whose fix was discarded. A failing fixer's error names kept files too.
 - **Symbol Resolution Bounds Its Remote Reads** (`crates/prod-code-mcp`, #1413):
   A symbol lookup asks the gateway for at most 16 distinct dependency files, counting reads that fail, and never asks for a failed path twice. Before, only successful reads counted: an answer with 40 unreadable paths, each listed twice, made 80 sequential round trips.
 - **Go Result Replacement Knows Its Boundaries** (`crates/prod-code-mcp`, #1411):
