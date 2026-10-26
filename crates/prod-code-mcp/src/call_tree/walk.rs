@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -35,7 +35,9 @@ struct Walk<'a> {
     generation: u64,
     started: Instant,
     deadline: tokio::time::Instant,
-    seen: HashSet<(String, u64, u64)>,
+    /// Every function shown, with the shallowest level it was shown at: a later path that
+    /// reaches it higher up still has depth left to expand it (#1389).
+    seen: HashMap<(String, u64, u64), usize>,
     shown: usize,
     truncated: bool,
     timed_out_at_depth: Option<usize>,
@@ -168,10 +170,15 @@ impl Walk<'_> {
                 }
                 self.shown += 1;
                 let mut node = node_of(edge, other);
-                if !self.seen.insert(key_of(other)) {
+                let shallowest = self.seen.entry(key_of(other)).or_insert(usize::MAX);
+                if *shallowest <= level {
+                    // Shown already with at least as much depth left; a cycle lands here too.
                     node.repeated = true;
-                } else if level < self.depth {
-                    to_expand.push((nodes.len(), other.clone()));
+                } else {
+                    *shallowest = level;
+                    if level < self.depth {
+                        to_expand.push((nodes.len(), other.clone()));
+                    }
                 }
                 nodes.push(node);
             }
@@ -323,7 +330,7 @@ pub async fn call_tree_with_budget(
         generation,
         started,
         deadline,
-        seen: HashSet::from([key_of(&item)]),
+        seen: HashMap::from([(key_of(&item), 0)]),
         shown: 0,
         truncated: false,
         timed_out_at_depth: None,
