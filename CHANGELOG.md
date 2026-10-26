@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **The Grep Guard Suggests Patterns prod-code grep Reads** (`scripts/hooks`, #1581):
+  When the guard hook blocks a source `grep` and suggests `code_grep` / `prod-code grep` instead, it converts a basic regular expression (grep and git grep without `-E`) to ripgrep's syntax. `ctx\|cancel` becomes `ctx|cancel`, `\{2\}` becomes `{2}`, and a literal `(ms)` becomes `\(ms\)`. A `-F` string is escaped. Before, the pattern was passed on as written, so `\|` searched for a literal `|` and the suggestion silently found nothing.
 - **Mixed-Language Directory Outlines Ask Each File's Own Engine** (`crates/prod-code-mcp`, #1415):
   `code_outline` on a directory that holds files of several languages opens one session per language, on that language's first file, the way a single-file outline routes it. In a Rust checkout, `scripts/a.py` and `scripts/b.ts` are outlined by the Python and the TypeScript server. Before, both went through the one session the directory chose, so `b.ts` was asked of the Python engine. A directory of one language still uses one session. The scripted test gateway now shows a session's `preferred_engine` to its script (`crates/prod-code-testkit`).
 - **Linter Fix Reports Name the Files Kept for Local Edits** (`crates/prod-code-mcp`, #1414):

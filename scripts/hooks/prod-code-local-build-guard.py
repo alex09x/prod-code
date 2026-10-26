@@ -462,8 +462,50 @@ def is_filename_or_fixture_pattern(pat, cwd, fixed_strings):
     return False
 
 
+def bre_to_ripgrep(pattern):
+    """A basic regular expression (what grep and git grep read without -E) in ripgrep's syntax,
+    which `prod-code grep` reads: `\\|`, `\\(`, `\\)`, `\\{`, `\\}`, `\\+` and `\\?` are operators there
+    and lose their backslash, and the same characters unescaped are literals and gain one (#1581)."""
+    out, i = [], 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "[":
+            # A bracket expression is copied as it is, a leading `]` or `^]` included.
+            end = i + 1
+            if pattern[end:end + 1] == "^":
+                end += 1
+            if pattern[end:end + 1] == "]":
+                end += 1
+            end = pattern.find("]", end)
+            if end < 0:
+                out.append(pattern[i:])
+                break
+            out.append(pattern[i:end + 1])
+            i = end + 1
+            continue
+        if c == "\\" and i + 1 < len(pattern):
+            nxt = pattern[i + 1]
+            out.append(nxt if nxt in "|(){}+?" else c + nxt)
+            i += 2
+            continue
+        out.append("\\" + c if c in "|(){}+?" else c)
+        i += 1
+    return "".join(out)
+
+
+def ripgrep_pattern(command, cwd, pat):
+    """`pat`, from a grep in `command`, written the way `prod-code grep` reads it (#1581)."""
+    for patterns, _paths, _recursive, fixed_strings, basic in _iter_grep_invocations(command, cwd):
+        if pat in patterns:
+            if fixed_strings:
+                return re.sub(r"([\\.+*?()|\[\]{}^$])", r"\\\1", pat)
+            return bre_to_ripgrep(pat) if basic else pat
+    return pat
+
+
 def _iter_grep_invocations(command, cwd):
-    """Yields (patterns, paths, recursive, fixed_strings) for grep/rg/git-grep over source files in `command`."""
+    """Yields (patterns, paths, recursive, fixed_strings, basic) for grep/rg/git-grep over source
+    files in `command`; `basic` when the patterns are basic regular expressions."""
     preceded_by_script = False
     for pipeline in split_pipelines(command):
         if "<<heredoc" in pipeline:
@@ -494,6 +536,7 @@ def _iter_grep_invocations(command, cwd):
             continue
         recursive = tool != "grep" and tool != "egrep"
         fixed_strings = tool == "fgrep"
+        basic = tool in ("grep", "git-grep")
         patterns, rest, i = [], [], 0
         while i < len(args):
             a = args[i]
@@ -509,6 +552,10 @@ def _iter_grep_invocations(command, cwd):
                     recursive = True
                 if "F" in a or a == "--fixed-strings":
                     fixed_strings = True
+                if a in ("--extended-regexp", "--perl-regexp") or (
+                    not a.startswith("--") and re.search(r"[EP]", a)
+                ):
+                    basic = False
                 i += 1; continue
             rest.append(a); i += 1
         if not patterns and rest:
@@ -532,14 +579,14 @@ def _iter_grep_invocations(command, cwd):
             continue
         if not in_git_repo(cwd):
             continue
-        yield patterns, paths, recursive, fixed_strings
+        yield patterns, paths, recursive, fixed_strings, basic
 
 
 def symbol_grep(command, cwd):
     """(symbol, pattern) when the command looks a symbol up over source files with grep/rg."""
     if "PROD_CODE_GREP=1" in command:
         return None
-    for patterns, _paths, _recursive, fixed_strings in _iter_grep_invocations(command, cwd):
+    for patterns, _paths, _recursive, fixed_strings, _basic in _iter_grep_invocations(command, cwd):
         for pat in patterns:
             if is_filename_or_fixture_pattern(pat, cwd, fixed_strings):
                 continue
@@ -554,7 +601,7 @@ def text_grep(command, cwd):
     over source files with grep/rg that should be routed to `code_grep` / `prod-code grep` (#1119)."""
     if "PROD_CODE_GREP=1" in command:
         return None
-    for patterns, paths, _recursive, fixed_strings in _iter_grep_invocations(command, cwd):
+    for patterns, paths, _recursive, fixed_strings, _basic in _iter_grep_invocations(command, cwd):
         target_path = None
         for p in paths:
             if p != "." and not p.startswith("*.") and not re.fullmatch(r"\.[a-z0-9]+", p, re.I):
@@ -1025,10 +1072,11 @@ def main():
         if found:
             sym, pat = found
             log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "deny", "cwd": cwd, "symbol": sym, "pattern": pat, "cmd": command[:300]})
+            rg = ripgrep_pattern(command, cwd, pat)
             reason = (
                 f"Grep for code symbol `{sym}` is blocked (`{pat}`). Use prod-code AST tools: "
                 f"code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}}, or code_symbols {{query: \"{sym}\"}} "
-                f"(or for literal/regex text search, use code_grep {{pattern: \"{pat}\"}} / `prod-code grep \"{pat}\"`). "
+                f"(or for literal/regex text search, use code_grep {{pattern: \"{rg}\"}} / `prod-code grep \"{rg}\"`). "
                 f"If prod-code returns empty or errors, file a bug: code_report_issue {{title: \"Symbol not found: {sym}\", body: \"...\"}}."
             )
         else:
@@ -1036,12 +1084,14 @@ def main():
             if found_text is not None:
                 pat, target_path = found_text
                 log({"ts": int(time.time()), "agent": agent, "rule": "text-grep", "decision": "deny", "cwd": cwd, "pattern": pat, "cmd": command[:300]})
+                # `prod-code grep` reads ripgrep's syntax, not grep's basic one (#1581).
+                rg = ripgrep_pattern(command, cwd, pat)
                 if target_path:
-                    mcp_call = f'code_grep {{pattern: "{pat}", path: "{target_path}"}}'
-                    cli_call = f'prod-code grep "{pat}" {target_path}'
+                    mcp_call = f'code_grep {{pattern: "{rg}", path: "{target_path}"}}'
+                    cli_call = f'prod-code grep "{rg}" {target_path}'
                 else:
-                    mcp_call = f'code_grep {{pattern: "{pat}"}}'
-                    cli_call = f'prod-code grep "{pat}"'
+                    mcp_call = f'code_grep {{pattern: "{rg}"}}'
+                    cli_call = f'prod-code grep "{rg}"'
                 reason = (
                     f"Grep for text pattern `{pat}` over source files is blocked. "
                     f"Use prod-code literal/regex text search instead: {mcp_call} (CLI: `{cli_call}`). "

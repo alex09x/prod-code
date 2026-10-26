@@ -986,13 +986,20 @@ class ProdCodeGuardSymbolGrepPolicyTests(unittest.TestCase):
 
     def test_text_grep_routes_non_symbol_patterns_to_code_grep_issue_1119(self) -> None:
         repo_root = str(Path(__file__).parent.parent)
+        lib = "crates/prod-code-mcp/src/lib.rs"
+        # (command, pattern as grep read it, path, the same pattern for `prod-code grep`). A basic
+        # grep pattern is converted to ripgrep's syntax: `\\|` alternates there only as `|` (#1581).
         cases = [
-            ('rg "fn test_" crates/', "fn test_", "crates/"),
-            ('rg "reserve_" crates/', "reserve_", "crates/"),
-            ("grep -n 'ctx\\|cancel' crates/prod-code-mcp/src/lib.rs", "ctx\\|cancel", "crates/prod-code-mcp/src/lib.rs"),
-            ('rg "TODO|FIXME" crates/', "TODO|FIXME", "crates/"),
+            ('rg "fn test_" crates/', "fn test_", "crates/", "fn test_"),
+            ('rg "reserve_" crates/', "reserve_", "crates/", "reserve_"),
+            (f"grep -n 'ctx\\|cancel' {lib}", "ctx\\|cancel", lib, "ctx|cancel"),
+            ('rg "TODO|FIXME" crates/', "TODO|FIXME", "crates/", "TODO|FIXME"),
+            (f"grep -En 'TODO|FIXME' {lib}", "TODO|FIXME", lib, "TODO|FIXME"),
+            (f"grep -n 'wait (ms)' {lib}", "wait (ms)", lib, "wait \\(ms\\)"),
+            (f"grep -n 'x\\{{2\\}}[|]' {lib}", "x\\{2\\}[|]", lib, "x{2}[|]"),
+            (f"grep -nF 'a+b' {lib}", "a+b", lib, "a\\+b"),
         ]
-        for cmd, expected_pat, expected_path in cases:
+        for cmd, expected_pat, expected_path, suggested in cases:
             with self.subTest(command=cmd):
                 self.assertIsNone(guard.symbol_grep(cmd, repo_root))
                 res = guard.text_grep(cmd, repo_root)
@@ -1015,8 +1022,8 @@ class ProdCodeGuardSymbolGrepPolicyTests(unittest.TestCase):
 
                 out = json.loads(stdout.getvalue().strip())
                 reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-                self.assertIn(f'code_grep {{pattern: "{expected_pat}", path: "{expected_path}"}}', reason)
-                self.assertIn(f'prod-code grep "{expected_pat}" {expected_path}', reason)
+                self.assertIn(f'code_grep {{pattern: "{suggested}", path: "{expected_path}"}}', reason)
+                self.assertIn(f'prod-code grep "{suggested}" {expected_path}', reason)
 
 
 if __name__ == "__main__":
