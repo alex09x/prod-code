@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **Exported-Only Outlines Count Each Member's Owners** (`crates/prod-code-mcp`, #1418):
+  `code_outline` with `exported_only` judges a member together with its owners.
+  - A public Rust trait keeps its required methods, and a public enum its variants, without a `pub` of their own.
+  - A member of an owner that is not exported is left out, such as a method of a TypeScript class that is not exported.
+  - A Rust `impl` and a Swift `extension` pass their owner's visibility on.
+  Before, each symbol was judged alone: `pub trait Reader { fn read(&self); }` listed `Reader` without `read`, and `class Hidden { run() {} }` listed `run`.
 - **Qualified Lookups Keep Directories Named main, mod or index** (`crates/prod-code-mcp`, #1417):
   A module path read from a file path drops `lib`, `main`, `mod`, `__init__` and `index` only as the file's own name, and drops `src`, or `lib` outside `src`, as source-root directories. `src/main/foo.rs` is `main::foo`, so `crate::main::foo::record` resolves to it. Before, every component with one of those names was removed, and the lookup reported `no symbol named crate::main::foo::record`.
 - **The Grep Guard Suggests Patterns prod-code grep Reads** (`scripts/hooks`, #1581):

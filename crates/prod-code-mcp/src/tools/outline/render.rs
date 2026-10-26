@@ -88,13 +88,19 @@ pub fn render_outline_with(
             .map(symbol_span)
             .collect();
         let mut skipped_locals = 0usize;
+        // Whether each enclosing symbol is exported, and its kind, by depth (#1418).
+        let mut owners: Vec<(bool, u64)> = Vec::new();
         for (depth, sym, in_body) in entries {
             let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
             let name = crate::tools::symbols::bindings::binding_name(Path::new(path), kind, name);
+            let (line, _) = symbol_lines(sym);
+            let declaration = source_lines.get(line as usize).copied().unwrap_or("");
+            owners.truncate(depth.saturating_sub(1));
+            let exported = exported_with_owners(language, name, declaration, depth, &owners);
+            owners.push((exported, kind));
             // Locals (LSP kind 13, Variable, inside a body) are noise for a structural
             // outline: a 2000-line file lists hundreds of them.
-            let (line, _) = symbol_lines(sym);
             // A flat answer has no nesting: a variable is a local when it starts inside a
             // function's range, on the function's own line too.
             let (at, _) = symbol_span(sym);
@@ -127,8 +133,7 @@ pub fn render_outline_with(
             {
                 continue;
             }
-            let declaration = source_lines.get(line as usize).copied().unwrap_or("");
-            if options.exported_only && !is_exported(language, name, declaration, depth) {
+            if options.exported_only && !exported {
                 continue;
             }
             listed += 1;
@@ -146,6 +151,32 @@ pub fn render_outline_with(
         out.push_str("No outline symbols available.");
     }
     (out.trim_end().to_string(), listed)
+}
+
+/// Whether a symbol is exported once its owners are counted (#1418): a member of an owner that
+/// is not exported is not, and in Rust a trait's items and an enum's variants are as visible as
+/// their owner without a `pub` of their own. `owners` holds each enclosing symbol's verdict and
+/// kind. A Rust `impl` and a Swift `extension` have no visibility of their own and pass their
+/// owners' on.
+fn exported_with_owners(
+    language: Option<&str>,
+    name: &str,
+    declaration: &str,
+    depth: usize,
+    owners: &[(bool, u64)],
+) -> bool {
+    let owners_exported = owners.iter().all(|(exported, _)| *exported);
+    let head = declaration.trim_start();
+    let transparent = match language {
+        Some("rust") => name.starts_with("impl ") || head.starts_with("impl"),
+        Some("swift") => head.split_whitespace().any(|w| w == "extension"),
+        _ => false,
+    };
+    if transparent {
+        return owners_exported;
+    }
+    let inherited = language == Some("rust") && matches!(owners.last(), Some((true, 10 | 11)));
+    owners_exported && (inherited || is_exported(language, name, declaration, depth))
 }
 
 /// Whether a symbol is part of what its file exports, by its language's rule (#368): Go's
