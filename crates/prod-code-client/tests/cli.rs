@@ -2610,6 +2610,15 @@ async fn cli_encapsulate_field_resolves_class_name_without_path() {
         "workspace/symbol" => {
             serde_json::Value::Array(vec![answers::symbol("User", 5, &symbol_file, 1, 13)])
         }
+        // The field's own symbol: encapsulation needs its analyzer identity (#1326).
+        "textDocument/documentSymbol" => serde_json::json!([{
+            "name": "User", "kind": 5,
+            "selectionRange": {"start": {"line": 0, "character": 13}, "end": {"line": 0, "character": 17}},
+            "children": [{
+                "name": "name", "kind": 8,
+                "selectionRange": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 8}}
+            }]
+        }]),
         "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
         _ => serde_json::Value::Null,
     })
@@ -2703,8 +2712,11 @@ async fn cli_validate_compile_runs_the_check_command_on_the_proposal() {
     );
     let text = stdout_of(&out);
     assert!(out.status.success(), "{text}{}", stderr_of(&out));
+    // The compiler line is the full command record (#1322).
     assert!(
-        text.contains("compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"),
+        text.contains(
+            "argv=[\"cargo\",\"check\",\"--workspace\",\"--all-targets\",\"--message-format=json\"]"
+        ) && text.contains("exit=0 error=null timed_out=false: 0 error(s)"),
         "{text}"
     );
 
@@ -3322,7 +3334,15 @@ async fn cli_converts_a_function_to_a_method_and_rewrites_its_call() {
     let text = stdout_of(&out);
     assert!(text.contains("+    pub fn one(&self) -> u32 {"), "{text}");
     assert!(text.contains("+        let _ = self;"), "{text}");
-    assert!(text.contains("+    s.one()"), "{text}");
+    // `S::one(s)` stays valid for a `&self` method and keeps receiver coercion and dispatch,
+    // so the qualified call is left as it is.
+    assert!(
+        text.contains(
+            "src/lib.rs:11:8 (qualified call retained to preserve receiver coercion and dispatch)"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("+    s.one()"), "{text}");
     assert!(text.contains("nothing was written"), "{text}");
 }
 

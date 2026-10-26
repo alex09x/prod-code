@@ -540,7 +540,8 @@ fn proposed_integration_test_uses_the_seeded_dependencies() {
     .expect("the newly seeded linked worktree compiles the complete proposed integration test");
     assert!(
         accepted.contains("0 error(s), 0 warning(s)")
-            && accepted.contains("compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"),
+            && accepted.contains("argv=[\"cargo\",\"check\",\"--workspace\",\"--all-targets\",\"--message-format=json\"]")
+            && accepted.contains("exit=0 error=null timed_out=false: 0 error(s)"),
         "{accepted}"
     );
 }
@@ -706,8 +707,9 @@ pub fn external_types() -> ExternalTypes {
     assert!(
         accepted.contains("3 file(s) checked together: 0 error(s), 0 warning(s)")
             && accepted.contains(
-                "compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"
-            ),
+                "argv=[\"cargo\",\"check\",\"--workspace\",\"--all-targets\",\"--message-format=json\"]"
+            )
+            && accepted.contains("exit=0 error=null timed_out=false: 0 error(s)"),
         "the compiler accepted all three linked proposals: {accepted}"
     );
     assert_snapshot(&root, &before);
@@ -733,8 +735,9 @@ pub fn external_types() -> ExternalTypes {
     assert!(
         refused.starts_with("3 file(s) checked together: 0 error(s), 0 warning(s)")
             && refused.contains(
-                "compiler: `cargo check --workspace --all-targets --message-format=json`"
+                "argv=[\"cargo\",\"check\",\"--workspace\",\"--all-targets\",\"--message-format=json\"]"
             )
+            && refused.contains("exit=101")
             && refused.contains("E0515"),
         "rust-analyzer accepts the borrow but cargo rejects it: {refused}"
     );

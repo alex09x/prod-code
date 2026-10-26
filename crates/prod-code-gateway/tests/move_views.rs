@@ -242,8 +242,19 @@ async fn move_views_match_disk() {
             &expected[..insert],
             &expected[insert..]
         );
-        assert_eq!(std::fs::read_to_string(&source).unwrap(), expected);
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), ITEM);
+        // The source keeps its own line endings (#1354), which may be mixed: compare the text,
+        // and check that CRLF lines stayed CRLF.
+        let source_now = std::fs::read_to_string(&source).unwrap();
+        assert_eq!(source_now.replace("\r\n", "\n"), expected);
+        if original.contains("\r\n") {
+            assert!(source_now.contains("\r\n"), "{source_now:?}");
+        }
+        // The new module takes its line endings from the file the item came from.
+        let target_now = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(target_now.replace("\r\n", "\n"), ITEM);
+        if original.contains("\r\n") {
+            assert!(target_now.contains("\r\n"), "{target_now:?}");
+        }
         assert_eq!(
             std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
             "pub mod quote_feed;\npub mod quote_feed_types;\n"
