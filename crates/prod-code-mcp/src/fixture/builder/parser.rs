@@ -243,12 +243,16 @@ pub(crate) fn read_field(
     if ty_from >= to {
         bail!("field `{name}` of `{owner}` has no type");
     }
-    let mut depth = 0i32;
+    // Generic angles count too: the `=` of `Iterator<Item = u8>` binds an associated type and
+    // is no default (#1390). The lexer keeps `->` one token, so its `>` closes nothing.
+    let (mut depth, mut angles) = (0i32, 0i32);
     for j in ty_from..to {
         match src.t(j) {
             "(" | "[" | "{" if src.tokens[j].kind == Kind::Punct => depth += 1,
             ")" | "]" | "}" if src.tokens[j].kind == Kind::Punct => depth -= 1,
-            "=" if src.tokens[j].kind == Kind::Punct && depth == 0 => bail!(
+            "<" if src.tokens[j].kind == Kind::Punct && depth == 0 => angles += 1,
+            ">" if src.tokens[j].kind == Kind::Punct && depth == 0 => angles -= 1,
+            "=" if src.tokens[j].kind == Kind::Punct && depth == 0 && angles == 0 => bail!(
                 "field `{name}` of `{owner}` has a default value (line {}); a builder that requires every field would not honour it",
                 src.line(j)
             ),
