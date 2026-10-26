@@ -166,15 +166,20 @@ pub fn parse_ts_struct_decl(text: &str, type_name: &str, language: &str) -> Resu
             continue;
         };
         let open = at + type_name.len() + open_rel;
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+        let Some(close) =
+            super::matching_arguments(text, open, crate::parameter_object::Language::TypeScript)
+        else {
             continue;
         };
         let body = &text[open + 1..close];
-        let fields = if matches!(language, "javascript" | "javascriptreact") {
-            parse_javascript_fields(body)
-        } else {
-            parse_ts_fields(body)
-        };
+        let fields =
+            if let Some(parameters) = super::parameters::constructor_parameters(body, false)? {
+                parameters
+            } else if matches!(language, "javascript" | "javascriptreact") {
+                parse_javascript_fields(body)
+            } else {
+                parse_ts_fields(body)
+            };
         let (line, col) = crate::signature::position_at(text, at)?;
         return Ok(StructDecl {
             name: type_name.to_string(),

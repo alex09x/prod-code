@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Constructor Replacement Values and Coverage** (`crates/prod-code-mcp`, #1345):
+  Factory and builder replacements keep argument evaluation order for user-defined clone/into calls, ignore constructors inside nested block comments, keep `Self` bound to the nearest impl, keep spread arguments and Python defaults, cover C++ brace and Swift `init` construction, and generate valid Go scalars and generic arguments.
 - **Rust Trait Extraction Conditions and Syntax** (`crates/prod-code-mcp`, #1359):
   Conditional method and impl attributes are carried onto the generated trait and implementation instead of refused, the widest selected visibility is used, const-expression comparisons are no longer read as generic angles, and Boolean negation in an impl header is no longer taken for a macro.
 - **Rust Item and Module Moves** (`crates/prod-code-mcp`, #1354):

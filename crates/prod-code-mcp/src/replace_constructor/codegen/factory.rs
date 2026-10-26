@@ -8,7 +8,6 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::super::parse::split_balanced_commas;
 use super::super::types::StructDecl;
 
 #[cfg(test)]
@@ -20,11 +19,8 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
     match decl.language.as_str() {
         "rust" => {
             let vis = if decl.is_pub { "pub " } else { "" };
-            let (generics_header, generics_name) = decl
-                .generics
-                .as_deref()
-                .map(rust_impl_generics)
-                .unwrap_or_default();
+            let (parameters, where_clause) = rust_declaration_parts(decl);
+            let (generics_header, generics_name) = rust_impl_generics(parameters);
             let params = decl
                 .fields
                 .iter()
@@ -38,7 +34,7 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
                 .collect::<Vec<_>>()
                 .join(",\n            ");
             format!(
-                "\n\nimpl {generics_header}{name}{generics_name} {{\n    {vis}fn {factory_name}({params}) -> Self {{\n        Self {{\n            {field_inits},\n        }}\n    }}\n}}"
+                "\n\nimpl {generics_header}{name}{generics_name}{where_clause} {{\n    {vis}fn {factory_name}({params}) -> Self {{\n        Self {{\n            {field_inits},\n        }}\n    }}\n}}"
             )
         }
         "go" => {
@@ -59,6 +55,19 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
             )
         }
         "typescript" | "typescriptreact" => {
+            // Forward the argument vector without relocating defaults or changing
+            // arguments.length. A signature tuple also works for private and
+            // protected constructors, unlike ConstructorParameters<typeof Class>.
+            if decl
+                .fields
+                .iter()
+                .any(|f| !f.vis.is_empty() || f.ty.is_empty())
+            {
+                let tuple = super::members::typescript_argument_tuple(decl);
+                return format!(
+                    "\n    static {factory_name}(...args: [{tuple}]): {name} {{\n        return new {name}(...args);\n    }}\n"
+                );
+            }
             let params = decl
                 .fields
                 .iter()
@@ -76,10 +85,21 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
             )
         }
         "javascript" | "javascriptreact" => {
+            if decl.fields.iter().any(|f| f.vis == "default") {
+                return format!(
+                    "\n    static {factory_name}(...args) {{\n        return new {name}(...args);\n    }}\n"
+                );
+            }
             let params = decl
                 .fields
                 .iter()
-                .map(|f| f.name.clone())
+                .map(|f| {
+                    if f.vis == "rest" {
+                        format!("...{}", f.name)
+                    } else {
+                        f.name.clone()
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let args = params.clone();
@@ -88,6 +108,15 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
             )
         }
         "python" => {
+            if decl
+                .fields
+                .iter()
+                .any(|f| f.vis == "default" || f.ty == "Any")
+            {
+                return format!(
+                    "\n    @classmethod\n    def {factory_name}(cls, *args, **kwargs) -> \"{name}\":\n        return cls(*args, **kwargs)\n"
+                );
+            }
             let params = decl
                 .fields
                 .iter()
@@ -142,6 +171,24 @@ pub fn generate_factory_code(decl: &StructDecl, factory_name: &str) -> String {
     }
 }
 
+pub(super) fn rust_declaration_parts(decl: &StructDecl) -> (&str, String) {
+    let generics = decl.generics.as_deref().unwrap_or("");
+    let end = if generics.starts_with('<') {
+        crate::extract_trait::generics::matching_angle(generics).map_or(0, |i| i + 1)
+    } else {
+        0
+    };
+    let where_clause = generics[end..].trim();
+    (
+        &generics[..end],
+        if where_clause.is_empty() {
+            String::new()
+        } else {
+            format!(" {where_clause}")
+        },
+    )
+}
+
 /// Split a Rust generic declaration into impl parameters and type arguments.
 /// Defaults belong on the type declaration, not on an `impl` parameter list.
 pub(crate) fn rust_impl_generics(generics: &str) -> (String, String) {
@@ -149,7 +196,7 @@ pub(crate) fn rust_impl_generics(generics: &str) -> (String, String) {
         .strip_prefix('<')
         .and_then(|s| s.strip_suffix('>'))
         .unwrap_or(generics);
-    let params = split_balanced_commas(inner);
+    let params = crate::extract_trait::generics::split_top_level(inner).unwrap_or_default();
     let mut impl_params = Vec::new();
     let mut args = Vec::new();
     for param in params {
@@ -189,7 +236,7 @@ pub(crate) fn strip_rust_generic_default(param: &str) -> &str {
     for (i, ch) in param.char_indices() {
         match ch {
             '<' => angle += 1,
-            '>' => angle = angle.saturating_sub(1),
+            '>' if !param[..i].ends_with('-') => angle = angle.saturating_sub(1),
             '(' => paren += 1,
             ')' => paren = paren.saturating_sub(1),
             '[' => bracket += 1,

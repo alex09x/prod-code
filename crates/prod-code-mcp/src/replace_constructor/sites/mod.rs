@@ -11,6 +11,10 @@
 pub mod helpers;
 pub mod polyglot;
 pub mod rust;
+mod rust_crate;
+mod rust_identity;
+mod rust_lookup;
+mod rust_macros;
 
 pub use polyglot::{
     find_cpp_instantiations, find_go_instantiations, find_python_instantiations,

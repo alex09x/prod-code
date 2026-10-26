@@ -10,6 +10,7 @@
 
 pub mod cpp_swift;
 pub mod go;
+mod parameters;
 pub mod python;
 pub mod rust;
 pub mod ts;
@@ -40,6 +41,23 @@ pub(crate) fn is_ident_str(s: &str) -> bool {
         && s.chars().all(is_ident)
 }
 
+/// Balance structure after masking language-specific literal/comment data with the
+/// existing scanner. The shared Rust-oriented bracket helper cannot parse `'text'`.
+pub(crate) fn matching_arguments(
+    text: &str,
+    open: usize,
+    language: crate::parameter_object::Language,
+) -> Option<usize> {
+    let mask = crate::caller_migration::lexical_code_mask(text, language);
+    let structural = text
+        .bytes()
+        .enumerate()
+        .map(|(i, b)| if mask[i] { b } else { b' ' })
+        .collect::<Vec<_>>();
+    let structural = String::from_utf8(structural).ok()?;
+    crate::parameter_object::matching_bracket(&structural, open)
+}
+
 /// Extracts generic parameters `<T, U>` starting at or after `from`.
 pub fn extract_generics(text: &str, from: usize) -> Option<(String, usize)> {
     let rest = text[from..].trim_start();
@@ -48,26 +66,9 @@ pub fn extract_generics(text: &str, from: usize) -> Option<(String, usize)> {
     }
     let offset = text[from..].len() - rest.len();
     let open = from + offset;
-    let mut depth = 0i32;
-    let mut end = open;
-    for (i, c) in text[open..].char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = open + i + 1;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    if depth == 0 {
-        Some((text[open..end].to_string(), end))
-    } else {
-        None
-    }
+    let close = crate::extract_trait::generics::matching_angle(&text[open..])?;
+    let end = open + close + 1;
+    Some((text[open..end].to_string(), end))
 }
 
 /// Splits comma-separated items while respecting brackets and string literals.

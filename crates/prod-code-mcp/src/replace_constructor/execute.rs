@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,7 @@ use super::parse::parse_struct_declaration;
 use super::rewrite::rewrite_instantiation;
 use super::sites::{
     find_cpp_instantiations, find_go_instantiations, find_python_instantiations,
-    find_rust_instantiations, find_swift_instantiations, find_ts_instantiations,
+    find_swift_instantiations, find_ts_instantiations,
 };
 use super::types::{ReplaceConstructorResult, ReplaceMode, display};
 
@@ -40,7 +40,15 @@ pub async fn replace_constructor_impl(
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     let language = crate::lang::language_id_for_path(file).to_string();
 
-    let decl = parse_struct_declaration(&decl_text, type_name, &language)?;
+    let decl = if language == "rust" {
+        super::parse::rust::parse_with_edition(
+            &decl_text,
+            type_name,
+            super::sites::rust::consumer_edition(file)?,
+        )?
+    } else {
+        parse_struct_declaration(&decl_text, type_name, &language)?
+    };
     let target_name = match target_name_opt {
         Some(n) => n.to_string(),
         None => match mode {
@@ -53,7 +61,7 @@ pub async fn replace_constructor_impl(
         },
     };
 
-    let generated_code = match mode {
+    let mut generated_code = match mode {
         ReplaceMode::Factory => generate_factory_code(&decl, &target_name),
         ReplaceMode::Builder => generate_builder_code(&decl, &target_name),
     };
@@ -64,7 +72,7 @@ pub async fn replace_constructor_impl(
     // Edits per file: (byte_offset, replace_len, replacement)
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
 
-    // 1. Add generated factory / builder declaration to the defining file
+    // 1. Locate the generated factory / builder declaration in the defining file
     let insert_at = if mode == ReplaceMode::Factory
         && matches!(
             language.as_str(),
@@ -85,36 +93,39 @@ pub async fn replace_constructor_impl(
     } else {
         decl.decl_end
     };
-    edits
-        .entry(file.to_path_buf())
-        .or_default()
-        .push((insert_at, 0, generated_code));
-
     let mut all_blocked = Vec::new();
     let mut instantiations_rewritten = 0usize;
+    let mut cpp_partial_arities = BTreeSet::new();
 
     // 2. Discover references to `type_name` across workspace
     let lsp_refs = crate::signature::references(remote, root, file, decl.line, decl.col)
         .await
-        .unwrap_or_default();
+        .with_context(|| {
+            format!(
+                "reference discovery incomplete for `{type_name}` ({}); nothing was written",
+                display(root, file)
+            )
+        })?;
 
     let mut target_files = BTreeMap::new();
-    target_files.insert(file.to_path_buf(), ());
-    for (ref_path, _, _) in lsp_refs {
-        target_files.insert(ref_path, ());
+    target_files.insert(file.to_path_buf(), Vec::new());
+    for (ref_path, line, col) in lsp_refs {
+        target_files.entry(ref_path).or_default().push((line, col));
     }
 
     // 3. Find and rewrite instantiations in all candidate files
-    for (path, _) in target_files {
+    for (path, reference_positions) in target_files {
         let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let (sites, blocked) = match language.as_str() {
             "rust" => {
-                let (s, b) = find_rust_instantiations(
+                let (s, b) = super::sites::rust::find_in_file(
+                    &path,
                     &body,
                     type_name,
                     if path == file { decl.decl_start } else { 0 },
                     if path == file { decl.decl_end } else { 0 },
-                );
+                    &reference_positions,
+                )?;
                 (s, b)
             }
             "go" => (find_go_instantiations(&body, type_name, 0, 0), Vec::new()),
@@ -155,6 +166,17 @@ pub async fn replace_constructor_impl(
         for site in sites {
             match rewrite_instantiation(&site, &decl, mode, &target_name) {
                 Ok(replacement) => {
+                    if matches!(language.as_str(), "cpp" | "c") {
+                        let arity = super::parse::split_balanced_commas(
+                            site.field_values
+                                .get("__raw_args__")
+                                .map_or("", String::as_str),
+                        )
+                        .len();
+                        if arity < decl.fields.len() {
+                            cpp_partial_arities.insert(arity);
+                        }
+                    }
                     edits.entry(path.clone()).or_default().push((
                         site.start,
                         site.end - site.start,
@@ -168,6 +190,20 @@ pub async fn replace_constructor_impl(
             }
         }
     }
+
+    if !cpp_partial_arities.is_empty() {
+        super::codegen::cpp::add_partial_members(
+            &mut generated_code,
+            &decl,
+            mode,
+            &target_name,
+            &cpp_partial_arities,
+        );
+    }
+    edits
+        .entry(file.to_path_buf())
+        .or_default()
+        .push((insert_at, 0, generated_code));
 
     // 4. Materialize rewritten texts in memory
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();

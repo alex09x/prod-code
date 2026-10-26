@@ -32,17 +32,15 @@ pub(crate) fn is_pure_reorder_value(value: &str) -> bool {
         && value.ends_with(value.chars().next().unwrap())
         && !value.contains("${")
     {
-        return true;
-    }
-    if let Some(prefix) = value
-        .strip_suffix(".into()")
-        .or_else(|| value.strip_suffix(".to_string()"))
-        .or_else(|| value.strip_suffix(".to_owned()"))
-        .or_else(|| value.strip_suffix(".clone()"))
-    {
-        if is_pure_reorder_value(prefix) {
-            return true;
-        }
+        let mask = if value.starts_with('\'') {
+            crate::extract_trait::lex::lexical_code(value)
+        } else {
+            crate::caller_migration::lexical_code_mask(value, crate::parameter_object::Language::Go)
+        };
+        return value
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| !mask[i] || b.is_ascii_whitespace());
     }
     value.trim_start_matches(['+', '-']).chars().all(|c| {
         c.is_ascii_digit() || matches!(c, '.' | '_' | 'x' | 'X' | 'u' | 'U' | 'i' | 'I' | 'f' | 'F')
@@ -69,7 +67,8 @@ pub(crate) fn go_zero_value(ty: &str) -> String {
         {
             "nil".into()
         }
-        _ => format!("{ty}{{}}"),
+        // This works for named scalars, composites, aliases and type parameters.
+        _ => format!("*new({ty})"),
     }
 }
 
