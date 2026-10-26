@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Return Wrapping Callers and C++ Prototypes** (`crates/prod-code-mcp`, #1347):
+  Swift callers in the same SwiftPM target and real calls after a Python import on the same line are no longer skipped. A C++ prototype is rewritten only when its header is actually included by the definition, so an unrelated same-named prototype stays untouched, and attributes on the declaration survive.
 - **Encapsulate-Field Nested Edits and Privacy** (`crates/prod-code-mcp`, #1326):
   Nested assignments such as `cfg.retries = cfg.retries + 1` compose into one setter call, accesses from other modules of the declaring file are rewritten while the actual privacy scope keeps direct access, and polyglot rewrites follow the analyzer's references instead of spelling. Plain Rust and Python assignments keep a direct setter call.
 - **Convert-to-Method Promoted Parameter Uses** (`crates/prod-code-mcp`, #1317):

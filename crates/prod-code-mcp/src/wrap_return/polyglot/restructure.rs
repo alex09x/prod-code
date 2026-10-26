@@ -198,7 +198,7 @@ pub fn restructure_declaring_file(
             Wrapper::Option => {
                 let now = format!("std::optional<{was}>");
                 if let Some((s, e)) = decl.ret_span {
-                    out.replace_range(s..e, &now);
+                    replace_cpp_type(&mut out, text, s, e, &now);
                 }
                 now
             }
@@ -206,7 +206,7 @@ pub fn restructure_declaring_file(
                 let err_ty = error.unwrap_or("std::string");
                 let now = format!("std::expected<{was}, {err_ty}>");
                 if let Some((s, e)) = decl.ret_span {
-                    out.replace_range(s..e, &now);
+                    replace_cpp_type(&mut out, text, s, e, &now);
                 }
                 now
             }
@@ -222,7 +222,7 @@ pub fn restructure_declaring_file(
                     format!("{base}<{was}>")
                 };
                 if let Some((s, e)) = decl.ret_span {
-                    out.replace_range(s..e, &now);
+                    replace_cpp_type(&mut out, text, s, e, &now);
                 }
                 now
             }
@@ -351,4 +351,12 @@ pub fn restructure_declaring_file(
     out.replace_range(new_body_open + 1..new_body_close, &rewritten_body);
 
     Ok((out, now))
+}
+
+fn replace_cpp_type(out: &mut String, text: &str, start: usize, end: usize, now: &str) {
+    let mut edits = Vec::new();
+    super::cpp_boundary::replace_type(text, start, end, now, &mut edits);
+    for (start, len, replacement) in edits.into_iter().rev() {
+        out.replace_range(start..start + len, &replacement);
+    }
 }

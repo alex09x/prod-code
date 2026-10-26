@@ -159,6 +159,7 @@ fn test_c_cpp_proves_import_via_header() {
 
     let api_h = root.join("api.h");
     let api_content = "int calculate(int x);\n";
+    std::fs::write(&api_h, api_content).unwrap();
     assert!(proves_cross_file_import(
         api_content,
         &api_h,

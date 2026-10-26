@@ -43,7 +43,7 @@ pub(crate) fn collect_and_rewrite_callers(
     decl: &PolyglotFuncDecl,
     wrapper: &Wrapper,
     now: &str,
-    was: &str,
+    _was: &str,
     constructor: Option<&str>,
     error: Option<&str>,
     semantic_references: &mut HashSet<(PathBuf, u32, u32)>,
@@ -55,6 +55,8 @@ pub(crate) fn collect_and_rewrite_callers(
     let name = &decl.name;
     let canonical_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let has_semantic_references = !semantic_references.is_empty();
+    let cpp = matches!(lang, Language::C | Language::Cpp)
+        .then(|| super::cpp_boundary::Boundary::new(root, file, text, decl));
 
     // Traverse workspace files for callers
     for entry in ignore::WalkBuilder::new(root).build().flatten() {
@@ -70,9 +72,24 @@ pub(crate) fn collect_and_rewrite_callers(
         let rel_path = display(root, path);
         // Keep byte offsets while ignoring trivia in JS callee/await/postfix syntax.
         let syntax = syntax::SyntaxView::new(&other_content, lang);
-        let code = &syntax.code;
+        let cpp_code = cpp
+            .as_ref()
+            .map(|_| std::borrow::Cow::Owned(super::cpp_boundary::code(&other_content)));
+        let code = cpp_code.as_ref().unwrap_or(&syntax.code);
+        if !super::swift_scope::admit(
+            (root, path, file),
+            lang,
+            (&other_content, name),
+            is_decl_file || has_semantic_references,
+            unmatched,
+        ) {
+            continue;
+        }
 
-        let symbols_to_search: Vec<String> = if is_decl_file || has_semantic_references {
+        let symbols_to_search: Vec<String> = if is_decl_file
+            || has_semantic_references
+            || matches!(lang, Language::Swift | Language::Cpp | Language::C)
+        {
             if !other_content.contains(name.as_str()) {
                 continue;
             }
@@ -105,8 +122,12 @@ pub(crate) fn collect_and_rewrite_callers(
                 let js = matches!(lang, Language::TypeScript | Language::JavaScript);
                 if (js && !syntax.is_code(at) && !syntax.is_uncertain(at))
                     || (!js
-                        && (crate::inline_parameter::is_in_comment(&other_content, at, lang)
-                            || crate::inline_parameter::is_in_string(&other_content, at, lang)))
+                        && if let Some(code) = &cpp_code {
+                            code.as_bytes()[at].is_ascii_whitespace()
+                        } else {
+                            crate::inline_parameter::is_in_comment(&other_content, at, lang)
+                                || crate::inline_parameter::is_in_string(&other_content, at, lang)
+                        })
                 {
                     continue;
                 }
@@ -152,25 +173,20 @@ pub(crate) fn collect_and_rewrite_callers(
                     continue;
                 }
 
-                // C++ prototype in header
-                let proto_close_paren = other_content[at + search_symbol.len()..]
-                    .find('(')
-                    .and_then(|open| {
-                        crate::parameter_object::matching_bracket(
-                            &other_content,
-                            at + search_symbol.len() + open,
-                        )
-                    });
-                if matches!(lang, Language::Cpp | Language::C)
-                    && let Some(cp) = proto_close_paren
-                    && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, cp)
+                if let Some(boundary) = &cpp
+                    && !boundary.visit(
+                        path,
+                        &other_content,
+                        at,
+                        now,
+                        has_semantic_references,
+                        semantic_references,
+                        &reference_key,
+                        &site,
+                        &mut file_edits,
+                        unmatched,
+                    )
                 {
-                    if has_semantic_references {
-                        semantic_references.remove(&reference_key);
-                    }
-                    if let Some(ret_start) = other_content[..at].rfind(was) {
-                        file_edits.push((ret_start, was.len(), now.to_string()));
-                    }
                     continue;
                 }
 

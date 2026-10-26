@@ -9,15 +9,24 @@
  */
 
 mod callers;
+pub(super) mod cpp_attributes;
+mod cpp_boundary;
+mod cpp_includes;
+mod cpp_search;
+mod cpp_signature;
+mod cpp_types;
 mod enclosing;
 mod find;
 mod import;
+mod python_context;
 mod restructure;
 mod returns;
 pub(crate) mod shadow;
+mod swift_scope;
 
 pub use enclosing::enclosing_polyglot_info;
 pub use find::find_polyglot_decl;
+pub(crate) use python_context::is_import as python_import_context;
 pub use restructure::restructure_declaring_file;
 
 use anyhow::{Context, Result};

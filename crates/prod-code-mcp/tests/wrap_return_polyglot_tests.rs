@@ -360,7 +360,8 @@ async fn test_wrap_return_cpp_optional() {
         ),
         (
             "calc.cpp",
-            r#"int calculate(int x) {
+            r#"#include "calc.hpp"
+int calculate(int x) {
     return x * 2;
 }
 "#,
@@ -990,14 +991,18 @@ async fn test_wrap_return_swift_custom_envelope() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
-            "calc.swift",
+            "Package.swift",
+            "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"App\", targets: [.target(name: \"App\")])\n",
+        ),
+        (
+            "Sources/App/calc.swift",
             r#"func compute(x: Int) -> Int {
     return x * 2
 }
 "#,
         ),
         (
-            "client.swift",
+            "Sources/App/client.swift",
             r#"func run() -> Response<Int> {
     return compute(x: 5)
 }
@@ -1005,7 +1010,7 @@ async fn test_wrap_return_swift_custom_envelope() {
         ),
     ]);
     let root = ws.root().to_path_buf();
-    let calc_file = root.join("calc.swift");
+    let calc_file = root.join("Sources/App/calc.swift");
     let gw = fake_gateway().await;
 
     let res = wrap_polyglot_ext(

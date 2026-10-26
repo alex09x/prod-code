@@ -216,7 +216,8 @@ fn coverage_w2_cpp_prototype_is_rewritten_without_counting_as_a_caller() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("value.cpp");
     let header = dir.path().join("value.h");
-    let source = "int selected() { return 1; }\n";
+    // The definition includes its header, so the prototype there is its own.
+    let source = "#include \"value.h\"\nint selected() { return 1; }\n";
     std::fs::write(&file, source).unwrap();
     std::fs::write(&header, "int selected();\n").unwrap();
     let decl = find_polyglot_decl(source, Language::Cpp, Some("selected"), None).unwrap();
