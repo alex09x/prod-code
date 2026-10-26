@@ -170,13 +170,19 @@ async fn symbol_and_outline_queries() {
             "Running the remote compiler check for the proposed diff (with borrow-checker proof)...\n",
         ),
     ] {
+        // The scripted gateway answers shadow runs with exit 0, so the check passes and the
+        // report names the exact command it ran.
         let out = at!(&root, &["validate", "--diff", &patch, flag]).await;
-        assert_eq!(out.status.code(), Some(1), "{flag}");
-        let err = stderr(&out);
+        let (stdout, err) = (String::from_utf8_lossy(&out.stdout), stderr(&out));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{flag}\nstdout:\n{stdout}\nstderr:\n{err}"
+        );
         assert!(err.contains(announced), "{flag}: {err}");
         assert!(
-            err.contains("shadow run refused: shadow run not supported by scripted gateway"),
-            "{flag}: {err}"
+            stdout.contains("argv=[\"cargo\",\"check\"") && stdout.contains("exit=0"),
+            "{flag}: {stdout}"
         );
     }
 }

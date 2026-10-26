@@ -1235,7 +1235,10 @@ async fn the_gateway_supervises_a_generic_language_server() {
             gateway.addr,
             &root,
             "code_rename",
-            serde_json::json!({ "path": "src/quantity.ts", "line": 7, "character": 17, "new_name": "sumAll" }),
+            // `force`: fixable.ts, which the rename also rewrites, keeps its deliberate type
+            // error, and a TypeScript error without a proven owner is not subtracted as
+            // pre-existing (#1314; tracked in #1491).
+            serde_json::json!({ "path": "src/quantity.ts", "line": 7, "character": 17, "new_name": "sumAll", "force": true }),
         )
         .await,
     );
@@ -3576,22 +3579,38 @@ fn main() {
     compile_library("src/self_inline.rs");
     compile_library("src/self_where.rs");
 
-    for (relative, source, why) in [
-        (
-            "src/conditional_impl.rs",
-            CONDITIONAL_IMPL,
-            "attributes on impl blocks",
-        ),
+    // Conditional impls and methods are extracted with their `cfg` now (#1359): a preview names
+    // the new trait and writes nothing.
+    for (relative, source) in [
+        ("src/conditional_impl.rs", CONDITIONAL_IMPL),
         (
             "src/commented_conditional_impl.rs",
             COMMENTED_CONDITIONAL_IMPL,
-            "attributes on impl blocks",
         ),
-        (
-            "src/conditional_method.rs",
-            CONDITIONAL_METHOD,
-            "conditional methods",
-        ),
+        ("src/conditional_method.rs", CONDITIONAL_METHOD),
+    ] {
+        let impl_at = source.find("impl").unwrap();
+        let line_start = source[..impl_at].rfind('\n').map_or(0, |i| i + 1);
+        let args = serde_json::json!({
+            "path": relative,
+            "line": source[..impl_at].matches('\n').count() + 1,
+            "character": impl_at - line_start + 1,
+            "methods": ["selected"],
+            "name": "Selected",
+        });
+        let preview =
+            prod_code_mcp::tools::execute_tool(gateway.addr, &root, "code_extract_trait", args)
+                .await
+                .unwrap_or_else(|err| panic!("{relative}: {err:#}"));
+        assert!(text_of(&preview).contains("trait Selected"), "{relative}");
+        assert_eq!(
+            std::fs::read_to_string(checkout.path(relative)).unwrap(),
+            source,
+            "a preview writes nothing"
+        );
+    }
+
+    for (relative, source, why) in [
         ("src/self_inline.rs", SELF_INLINE, "depend on `Self`"),
         ("src/self_where.rs", SELF_WHERE, "depend on `Self`"),
     ] {
