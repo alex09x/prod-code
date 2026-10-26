@@ -9,6 +9,7 @@
  */
 
 use super::across_projects::{names_word, read_name_scan_text};
+use super::declared_at::code_declarations;
 pub(crate) use super::declared_at::declared_at;
 use super::matching::{bare_symbol_name, owner_segments};
 use super::nested_projects::{MAX_SCANNED_FILES, source_files};
@@ -200,19 +201,17 @@ pub(crate) async fn find_unindexed_declarations(
         if !names_word(&text, name) {
             continue;
         }
-        for (index, line) in text.lines().enumerate() {
-            if let Some(col) = declared_at(line, name) {
-                hits.push(SymbolHit {
-                    path: path.clone(),
-                    name: name.to_string(),
-                    kind: "Declaration",
-                    container: None,
-                    line: index as u32 + 1,
-                    col: col as u32 + 1,
-                });
-                if hits.len() >= 10 {
-                    return hits;
-                }
+        for (index, col) in code_declarations(&text, &path, name) {
+            hits.push(SymbolHit {
+                path: path.clone(),
+                name: name.to_string(),
+                kind: "Declaration",
+                container: None,
+                line: index as u32 + 1,
+                col: col as u32 + 1,
+            });
+            if hits.len() >= 10 {
+                return hits;
             }
         }
     }
@@ -242,13 +241,10 @@ pub(crate) async fn find_loaded_unindexed_declarations(
         if !names_word(&text, name) {
             continue;
         }
-        for (index, line) in text.lines().enumerate() {
+        for (index, col) in code_declarations(&text, &path, name) {
             if tokio::time::Instant::now() >= deadline {
                 break;
             }
-            let Some(col) = declared_at(line, name) else {
-                continue;
-            };
             let Ok(uri) = Url::from_file_path(&path) else {
                 continue;
             };
@@ -307,13 +303,12 @@ pub(crate) async fn unindexed_declarations(remote: SocketAddr, root: &Path, name
         if !names_word(&text, name) {
             continue;
         }
-        for (index, line) in text.lines().enumerate() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (index, col) in code_declarations(&text, &path, name) {
             if tokio::time::Instant::now() >= deadline {
                 break;
             }
-            let Some(col) = declared_at(line, name) else {
-                continue;
-            };
+            let line = lines[index];
             let Ok(uri) = Url::from_file_path(&path) else {
                 continue;
             };

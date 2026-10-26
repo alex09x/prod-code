@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **Unindexed Declarations Are Reported Beside Fuzzy Matches, Not From Comments** (`crates/prod-code-mcp`, #1421):
+  - `code_symbols` looks for a declaration the index omits whenever no result has exactly the asked name, and lists it under the fuzzy matches. Before, `Lost` with an indexed `LostBuilder` showed only `LostBuilder`, and the unindexed `struct Lost` went unreported.
+  - The declaration scans read source with comments and string literals blanked out, so `// fn Ghost()` and `"fn Ghost()"` are no longer reported as declarations and no longer use up the three-result report.
 - **Reference Discovery Keeps Searching Past Locals and Reads UTF-16 Columns** (`crates/prod-code-mcp`, #1419):
   - When `code_references` asks a dependency's declaration for its uses in the checkout, a use that means another item, such as a local `Widget`, no longer ends the search of its file. A later `dep::Widget` in that file is still asked, within the same budget.
   - A position on `$value` (TypeScript) or a Swift operator such as `<~>` is a name, and is asked of the language server instead of being refused as "on no name".
