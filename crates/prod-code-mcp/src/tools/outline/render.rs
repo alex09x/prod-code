@@ -27,6 +27,24 @@ pub(crate) fn symbol_lines(sym: &serde_json::Value) -> (u64, u64) {
     (start, at("end").unwrap_or(start).max(start))
 }
 
+/// The start and end (line, character) of a symbol, 0-based. Lines alone cannot tell
+/// `fn f() { let x = 1; }`'s local from the function that holds it (#1403).
+fn symbol_span(sym: &serde_json::Value) -> ((u64, u64), (u64, u64)) {
+    let range = sym
+        .get("range")
+        .or_else(|| sym.get("location").and_then(|l| l.get("range")));
+    let at = |edge: &str| {
+        let point = range.and_then(|r| r.get(edge))?;
+        let line = point.get("line").and_then(|l| l.as_u64())?;
+        Some((
+            line,
+            point.get("character").and_then(|c| c.as_u64()).unwrap_or(0),
+        ))
+    };
+    let start = at("start").unwrap_or((0, 0));
+    (start, at("end").unwrap_or(start).max(start))
+}
+
 /// A file's outline from its `textDocument/documentSymbol` answer, for the MCP tool and the
 /// CLI alike. A variable inside a function or method is a local and is left out unless
 /// `include_locals`; a top-level `static`, which the analyzer reports with the same kind, is not
@@ -63,11 +81,11 @@ pub fn render_outline_with(
         out.push_str(&format!("Outline for {path}:\n"));
         let mut entries = Vec::new();
         outline_entries(arr, 1, false, &mut entries);
-        let bodies: Vec<(u64, u64)> = entries
+        let bodies: Vec<_> = entries
             .iter()
             .map(|(_, sym, _)| *sym)
             .filter(|s| matches!(s.get("kind").and_then(|k| k.as_u64()), Some(6 | 12)))
-            .map(symbol_lines)
+            .map(symbol_span)
             .collect();
         let mut skipped_locals = 0usize;
         for (depth, sym, in_body) in entries {
@@ -77,8 +95,10 @@ pub fn render_outline_with(
             // Locals (LSP kind 13, Variable, inside a body) are noise for a structural
             // outline: a 2000-line file lists hundreds of them.
             let (line, _) = symbol_lines(sym);
-            let local =
-                kind == 13 && (in_body || bodies.iter().any(|(s, e)| *s < line && line <= *e));
+            // A flat answer has no nesting: a variable is a local when it starts inside a
+            // function's range, on the function's own line too.
+            let (at, _) = symbol_span(sym);
+            let local = kind == 13 && (in_body || bodies.iter().any(|(s, e)| *s < at && at <= *e));
             if local && !options.include_locals {
                 skipped_locals += 1;
                 continue;

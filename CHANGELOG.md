@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Flat Outlines Hide Locals on the Function's Own Line** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1403):
+  `code_outline` and `prod-code outline` tell a local from a top-level item by line and character when the analyzer answers with a flat symbol list. In `fn f() { let x = 1; } static S: u8 = 0;`, `x` is hidden and counted as a hidden local, while `S` after the function stays listed. Before, a variable on the function's starting line was always shown. Nested answers are unchanged.
 - **Re-Exports Never Outrank Their Definition** (`crates/prod-code-mcp`, #1402):
   - A symbol lookup drops `pub use` re-exports before it takes the best-scored hit. Before, a path hint at `lib.rs` gave only `pub use sync::scan;` the bonus, and `scan` resolved to the re-export instead of `fn scan` in `sync.rs`. Between two real definitions the hint still decides.
   - A grouped `use` ends at the `;` that closes it. Before, a `;` inside a comment such as `pub use m::{ // public API; keep sorted` ended it, so the imported names below were taken as second declarations and the lookup reported ambiguity.
