@@ -42,23 +42,58 @@ fn programs_are_found_on_the_path_only_when_they_are_files() {
 }
 
 #[test]
-fn a_group_is_killed_unless_its_leader_was_already_reaped() {
+fn a_live_leader_is_killed_with_its_group() {
     let mut child = std::process::Command::new("sh")
         .args(["-c", "sleep 30 & wait"])
         .process_group(0)
         .spawn()
         .unwrap();
-    let pid = child.id();
-    // Reaped already: nothing is signalled.
-    kill_exec_group(pid, &std::sync::Mutex::new(true));
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "the child must still run"
-    );
-    kill_exec_group(pid, &std::sync::Mutex::new(false));
+    kill_exec_group(child.id(), &std::sync::Mutex::new(false));
     let status = child.wait().unwrap();
     assert_eq!(status.signal(), Some(9));
+}
+
+/// After the leader exited and was reaped, its descendants are still in its group, and that
+/// group is what is signalled; the leader's own PID is not (#1541).
+#[test]
+fn descendants_that_outlive_a_reaped_leader_are_killed_with_the_group() {
+    let marks = tempfile::tempdir().unwrap();
+    let pid_file = marks.path().join("descendant");
+    let mut leader = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("sleep 30 & echo $! > {}; exit 0", pid_file.display()),
+        ])
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let pgid = leader.id();
+    assert!(
+        leader.wait().unwrap().success(),
+        "the leader exits and is reaped"
+    );
+    let descendant: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = |pid: i32| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    assert!(alive(descendant), "the descendant outlives its leader");
+    kill_exec_group(pgid, &std::sync::Mutex::new(true));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while alive(descendant) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "descendant {descendant} survived the group kill"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 #[test]

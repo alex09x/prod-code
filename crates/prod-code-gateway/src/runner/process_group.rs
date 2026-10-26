@@ -47,14 +47,21 @@ pub fn wait_with_usage(
     exec_shim::reap_with_usage(pid)
 }
 
+/// Kills the command's process group, and the leader itself while it has not exited.
+///
+/// Once the leader has exited it may already be reaped, so its PID is never signalled alone
+/// again: another process could have it. The group is still signalled, because descendants
+/// that outlived the leader (and may hold its pipes) are what is left to stop (#1541). Linux
+/// and macOS do not hand out a number that is still in use as a live process group's ID.
 pub fn kill_exec_group(pid: u32, exited: &std::sync::Mutex<bool>) {
     let done = exited.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::process::Command::new("kill")
+        .args(["-9", "--", &format!("-{pid}")])
+        .stderr(std::process::Stdio::null())
+        .status();
     if *done {
         return;
     }
-    let _ = std::process::Command::new("kill")
-        .args(["-9", "--", &format!("-{pid}")])
-        .status();
     let _ = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
         .status();

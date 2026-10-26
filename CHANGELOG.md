@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Descendants Outliving the Command** (`crates/prod-code-gateway`, #1541):
+  When a remote command times out, its client leaves or its stream is cancelled after the command itself already exited, the descendants still in its process group are killed too. The exited command's PID is no longer signalled on its own, so a reused PID is never hit.
 - **Encoded Query Keys in Running Commands** (`crates/prod-code-gateway`, #1539):
   A URL query key is percent-decoded before the secret-name check, so `?p%61ssword=…` and `?%74oken=…` read `<redacted>` in status and gossip like their plain forms.
 - **Generify Bounds and C++ Headers** (`crates/prod-code-mcp`, #1382):
