@@ -1,0 +1,198 @@
+{
+  "typescript": [
+    {
+      "name": "escaped_arguments_body_js",
+      "extension": "js",
+      "refuse": true,
+      "expected_error": "unsupported existing receiver or dynamic binding/capture semantics",
+      "before": "class C {\n    constructor() { this.value = 7; }\n    static same(c, other) { return \\u0061rguments[0].value; }\n}\nconsole.log(C.same(new C(), { value: 99 }));\n",
+      "expected_stdout": "7\n",
+      "line": 3,
+      "column": 5,
+      "before_sha256": "c6d05cff96141e89d7e6b8584eac12d55e862806b7046a4c703dae4a7a23ecf8"
+    },
+    {
+      "name": "escaped_arguments_body_ts",
+      "extension": "ts",
+      "refuse": true,
+      "expected_error": "unsupported existing receiver or dynamic binding/capture semantics",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other: C): number { return \\u0061rguments.length + c.value + other.value; }\n}\nconsole.log(C.same(new C(), new C()));\n",
+      "expected_stdout": "16\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "79242e294ad6acf0428c0847ffa87eb20dd32d50d370d839087e5e4040b244ff"
+    },
+    {
+      "name": "escaped_eval_body",
+      "extension": "ts",
+      "refuse": true,
+      "expected_error": "unsupported existing receiver or dynamic binding/capture semantics",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other: number): number { return Number(\\u0065val('other')) + c.value; }\n}\nconsole.log(typeof C.same);\n",
+      "expected_stdout": "function\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "de5bffe90ee1fc0774192f7b0abac52e980318cf7c6a76a8fdde711344baf206"
+    },
+    {
+      "name": "escaped_arguments_index_ts",
+      "extension": "ts",
+      "refuse": true,
+      "expected_error": "unsupported existing receiver or dynamic binding/capture semantics",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other: C): number { return (\\u0061rguments[0] as C).value; }\n}\nconsole.log(C.same(new C(), { value: 99 } as C));\n",
+      "expected_stdout": "7\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "14915da16d50b28b03ba6303e2191cd0cdb0debbadd8274f93b9414b6d84a49d"
+    },
+    {
+      "name": "escaped_function_hoist_body",
+      "extension": "ts",
+      "refuse": true,
+      "expected_error": "unsupported promoted binding sharing a function name",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): number { function \\u0063() { return 4; } return \\u0063(); }\n}\nconsole.log(C.same(new C()));\n",
+      "expected_stdout": "4\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "ba4a8ec14a3bf2defeaca956a29d7e2424c4a79affbd4735c611d575730ec5b1"
+    },
+    {
+      "name": "escaped_remaining_param_default",
+      "extension": "ts",
+      "refuse": true,
+      "expected_error": "unsupported promoted binding in remaining parameter scope",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = \\u0063): number { return other.value; }\n}\nconsole.log(C.same(new C()));\n",
+      "expected_stdout": "7\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "3526ae2ecae9424ed80f8621898bc328ba107217ec4449603aa888a8089ebae6"
+    },
+    {
+      "name": "escaped_remaining_param_braced",
+      "extension": "ts",
+      "refuse": true,
+      "expected_error": "unsupported promoted binding in remaining parameter scope",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = \\u{0063}.value): number { return other; }\n}\nconsole.log(C.same(new C()));\n",
+      "expected_stdout": "7\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "8797e73f369304cade8d6074e44b7f91d38a761fa8df05f09242aa7130c28e1b"
+    },
+    {
+      "name": "escaped_receiver_simple_body_ts",
+      "extension": "ts",
+      "refuse": false,
+      "expected_fragment": "same(other: number): number { return this.value + other; }",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other: number): number { return \\u0063.value + other; }\n}\nconsole.log(C.same(new C(), 5));\n",
+      "expected_stdout": "12\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "d60974926a9d2f4038f4789064ad4fa5ccd6f18e6bd16154441ce302a5010f7f"
+    },
+    {
+      "name": "escaped_receiver_simple_body_js",
+      "extension": "js",
+      "refuse": false,
+      "expected_fragment": "same(other) { return this.value + other; }",
+      "before": "class C {\n    constructor() { this.value = 7; }\n    static same(c, other) { return \\u0063.value + other; }\n}\nconsole.log(C.same(new C(), 5));\n",
+      "expected_stdout": "12\n",
+      "line": 3,
+      "column": 5,
+      "before_sha256": "239665c92ce99be64b432cc71bc6f98fc1b05eea3bcd65ee7cc3e9579a56fce5"
+    },
+    {
+      "name": "escaped_receiver_braced_simple_body",
+      "extension": "ts",
+      "refuse": false,
+      "expected_fragment": "same(other: number): number { return this.value + this.value + other; }",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other: number): number { return \\u{0063}.value + \\u0063.value + other; }\n}\nconsole.log(C.same(new C(), 5));\n",
+      "expected_stdout": "19\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "e75ff5fde1cee005c6a9faea7688f100462072681094e152e817f4a8a2788673"
+    },
+    {
+      "name": "escaped_receiver_non_member_body",
+      "extension": "ts",
+      "refuse": false,
+      "expected_fragment": "var c: C = this; return \\u0063 instanceof C;",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): boolean { return \\u0063 instanceof C; }\n}\nconsole.log(C.same(new C()));\n",
+      "expected_stdout": "true\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "323a238d271d132e632b1efb8957148d5930fb657aa99af63366ef80a5277b96"
+    },
+    {
+      "name": "escaped_literal_comment_preserved",
+      "extension": "ts",
+      "refuse": false,
+      "expected_fragment": "same(other = \"\\u0063-\\u0061rguments\"): string { return /* \\u0061rguments[0] \\u0063.value */ this.value + \":\" + other; }",
+      "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = \"\\u0063-\\u0061rguments\"): string { return /* \\u0061rguments[0] \\u0063.value */ \\u0063.value + \":\" + other; }\n}\nconsole.log(C.same(new C()));\n",
+      "expected_stdout": "7:c-arguments\n",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "1781b54935ae882783fc56a600153c52ca43b2b2c50fc1aaeae3ea2d43791ff1"
+    }
+  ],
+  "swift": [
+    {
+      "name": "unbalanced_paren_division",
+      "extension": "swift",
+      "before": "func apply(_ f: (Int, Int) -> Int, _ x: Int) -> Int { f(x, 2) }\nclass C {\n    var value = 8\n    static func same(c: C) -> Int { return apply(/, c.value)/2 }\n}\nprint(C.same(c: C()))\n",
+      "expected": "2\n",
+      "expected_fragment": "func same() -> Int { return apply(/, self.value)/2 }",
+      "expected_caller": "print(C().same())",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "543cfaede2c215bdb285e4783bd3a4f9a7ff38002870397d8f314e47bee028af",
+      "auxiliary": ""
+    },
+    {
+      "name": "unbalanced_paren_caller",
+      "extension": "swift",
+      "before": "func apply(_ f: (Int, Int) -> Int, _ x: Int) -> Int { f(x, 2) }\nclass C {\n    var value = 16\n    static func same(c: C) -> Int { return apply(/, c.value)/2 }\n}\nprint(apply(/, C.same(c: C()))/2)\n",
+      "expected": "1\n",
+      "expected_fragment": "func same() -> Int { return apply(/, self.value)/2 }",
+      "expected_caller": "print(apply(/, C().same())/2)",
+      "line": 4,
+      "column": 5,
+      "before_sha256": "b944a5e3e09b2f50e42ae72c549dcb3cc1dedb8bbd625ec2278221d840a3c910",
+      "auxiliary": ""
+    },
+    {
+      "name": "bare_escaped_close_paren",
+      "extension": "swift",
+      "before": "class C {\n    static func same(c: C) -> Regex<Substring> { return /c.value\\)/ }\n}\nprint(\"c.value)\".wholeMatch(of: C.same(c: C())) != nil)\n",
+      "expected": "true\n",
+      "expected_fragment": "func same() -> Regex<Substring> { return /c.value\\)/ }",
+      "expected_caller": "C().same()",
+      "line": 2,
+      "column": 5,
+      "before_sha256": "d1c2cad9ca41e57088c9e47bff1b974abf9fe1d9fa6db7de4c221fbedfac2faa",
+      "auxiliary": ""
+    },
+    {
+      "name": "bare_close_paren_class",
+      "extension": "swift",
+      "before": "class C {\n    static func same(c: C) -> Regex<Substring> { return /c.value[)]/ }\n}\nprint(\"c.value)\".wholeMatch(of: C.same(c: C())) != nil)\n",
+      "expected": "true\n",
+      "expected_fragment": "func same() -> Regex<Substring> { return /c.value[)]/ }",
+      "expected_caller": "C().same()",
+      "line": 2,
+      "column": 5,
+      "before_sha256": "26e26e4f658821a6464361d7c0b5b270cce633912773961918ee71c1521a5a56",
+      "auxiliary": ""
+    },
+    {
+      "name": "bare_balanced_group",
+      "extension": "swift",
+      "before": "class C {\n    static func same(c: C) -> Regex<(Substring, Substring)> { return /c.value(1)/ }\n}\nprint(\"c.value1\".wholeMatch(of: C.same(c: C())) != nil)\n",
+      "expected": "true\n",
+      "expected_fragment": "func same() -> Regex<(Substring, Substring)> { return /c.value(1)/ }",
+      "expected_caller": "C().same()",
+      "line": 2,
+      "column": 5,
+      "before_sha256": "e25f58c3f52554360f65f5eb89085cbccc6c39f254f30aa9550031efc50a943d",
+      "auxiliary": ""
+    }
+  ]
+}

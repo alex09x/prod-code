@@ -1,0 +1,86 @@
+[
+  {
+    "name": "escaped_dollar_literal",
+    "annotation": "`\\u0024{typeof c.value}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `\\u0024{typeof c.value}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "escaped_dollar_before_query",
+    "annotation": "{ tag: `\\u0024{`; value: typeof c.value }",
+    "refuse": true,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): { tag: `\\u0024{`; value: typeof c.value } { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_call_signature",
+    "annotation": "`${ReturnType<{ (c: string): typeof c } >}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `${ReturnType<{ (c: string): typeof c } >}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_method_signature",
+    "annotation": "`${ReturnType<{ read(c: string): typeof c }['read']>}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `${ReturnType<{ read(c: string): typeof c }['read']>}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_quoted_method",
+    "annotation": "`${ReturnType<{ 'read'(c: string): typeof c }['read']>}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `${ReturnType<{ 'read'(c: string): typeof c }['read']>}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_prior_literal",
+    "annotation": "`${ReturnType<{ 'tag': 'text'; (c: string): typeof c } >}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `${ReturnType<{ 'tag': 'text'; (c: string): typeof c } >}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_nested_template",
+    "annotation": "`outer-${`${ReturnType<{ (c: string): typeof c } >}`}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `outer-${`${ReturnType<{ (c: string): typeof c } >}`}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_arrow",
+    "annotation": "`${ReturnType<(c: string) => typeof c>}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `${ReturnType<(c: string) => typeof c>}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_local_then_receiver",
+    "annotation": "{ tag: `${ReturnType<{ (c: string): typeof c } >}`; value: typeof c.value }",
+    "refuse": true,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): { tag: `${ReturnType<{ (c: string): typeof c } >}`; value: typeof c.value } { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "interpolation_receiver",
+    "annotation": "`${typeof c.value}`",
+    "refuse": true,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `${typeof c.value}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "comment_escape_before_query",
+    "annotation": "{ /* \\u0024{ ` */ value: typeof c.value }",
+    "refuse": true,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): { /* \\u0024{ ` */ value: typeof c.value } { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "quoted_escape_before_query",
+    "annotation": "{ tag: '\\u0024{'; value: typeof c.value }",
+    "refuse": true,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): { tag: '\\u0024{'; value: typeof c.value } { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "escaped_local_identifier",
+    "annotation": "`${ReturnType<{ (\\u0063: string): typeof \\u0063 } >}`",
+    "refuse": false,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): `${ReturnType<{ (\\u0063: string): typeof \\u0063 } >}` { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  },
+  {
+    "name": "escaped_receiver_identifier",
+    "annotation": "{ tag: `\\u0024{`; value: typeof \\u0063.value }",
+    "refuse": true,
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C): { tag: `\\u0024{`; value: typeof \\u0063.value } { throw Error('stop'); }\n}\nconsole.log('ok');\n"
+  }
+]

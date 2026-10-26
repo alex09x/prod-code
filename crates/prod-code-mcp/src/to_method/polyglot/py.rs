@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 
 use super::rewrite::rewrite_static_calls_in_code;
 use crate::make_static::Language;
-use crate::to_method::helpers::{is_ident, split_call_arguments};
+use crate::to_method::helpers::split_call_arguments;
 
 pub fn to_method_py(
     code: &str,
@@ -20,12 +20,16 @@ pub fn to_method_py(
     target_method: &str,
 ) -> Result<(String, String, String, String, String, usize, usize)> {
     let lines: Vec<&str> = code.lines().collect();
+    let suite_lines = logical_starts(code)?;
     let mut class_start = None;
     let mut class_end = None;
     let mut class_name = String::new();
     let mut class_indent = 0;
 
     for (idx, line) in lines.iter().enumerate() {
+        if !suite_lines[idx] {
+            continue;
+        }
         let trimmed = line.trim_start();
         if let Some(after_class_raw) = trimmed.strip_prefix("class ") {
             let indent = line.len() - trimmed.len();
@@ -51,6 +55,9 @@ pub fn to_method_py(
 
     let mut method_line_idx = None;
     for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        if !suite_lines[idx] {
+            continue;
+        }
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
             continue;
@@ -68,9 +75,7 @@ pub fn to_method_py(
 
     let m_trimmed = lines[m_idx].trim_start();
     let open_p = m_trimmed.find('(').context("Missing parameter list")?;
-    let close_p = m_trimmed
-        .find(')')
-        .context("Parameter list does not close")?;
+    let close_p = super::binding::parameter_close(m_trimmed, Language::Python)?;
     let params_str = &m_trimmed[open_p + 1..close_p];
     let params = split_call_arguments(params_str);
     let first_param = params
@@ -93,6 +98,12 @@ pub fn to_method_py(
         "self".to_string()
     };
 
+    super::binding::parameters(
+        &first_param,
+        &param_name,
+        &params[1..].join(", "),
+        Language::Python,
+    )?;
     let before_p = &m_trimmed[..open_p + 1];
     let after_p = &m_trimmed[close_p..];
     let indent_str = &lines[m_idx][..lines[m_idx].len() - m_trimmed.len()];
@@ -102,6 +113,10 @@ pub fn to_method_py(
     let m_indent = m_line.len() - m_line.trim_start().len();
     let mut m_body_end = m_idx;
     for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx + 1) {
+        if !suite_lines[idx] {
+            m_body_end = idx;
+            continue;
+        }
         let trimmed = line.trim_start();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -113,35 +128,14 @@ pub fn to_method_py(
         m_body_end = idx;
     }
 
-    let needle_param_dot = format!("{param_name}.");
-    let mut renamed_uses = 0;
-    let mut new_lines = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        if m_idx > 0 && idx == m_idx - 1 && line.trim() == "@staticmethod" {
-            continue;
-        }
-        if idx == m_idx {
-            new_lines.push(new_m_line.clone());
-        } else if idx > m_idx && idx <= m_body_end {
-            let mut cur = line.to_string();
-            let mut search_idx = 0;
-            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
-                let pos = search_idx + rel;
-                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
-                    search_idx = pos + needle_param_dot.len();
-                    continue;
-                }
-                cur.replace_range(pos..pos + needle_param_dot.len(), "self.");
-                renamed_uses += 1;
-                search_idx = pos + "self.".len();
-            }
-            new_lines.push(cur);
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-
-    let intermediate = new_lines.join("\n");
+    let (intermediate, renamed_uses) = super::body::python(
+        code,
+        m_idx,
+        &new_m_line,
+        &param_name,
+        &first_param,
+        m_body_end,
+    )?;
     let (final_code, rewritten_calls) =
         rewrite_static_calls_in_code(&intermediate, target_method, &class_name, Language::Python);
 
@@ -154,4 +148,42 @@ pub fn to_method_py(
         renamed_uses,
         rewritten_calls,
     ))
+}
+
+/// Only a new logical statement can end a class or method suite. A physical
+/// line inside brackets, an explicit continuation, or a multiline literal has
+/// no indentation significance. Compute this once on the complete source.
+fn logical_starts(code: &str) -> Result<Vec<bool>> {
+    let syntax = super::binding::mask(code, Language::Python);
+    let mut stack = Vec::new();
+    let mut continuation = false;
+    let mut offset = 0;
+    let mut starts = Vec::new();
+    for line in code.split_inclusive('\n') {
+        starts.push(stack.is_empty() && !continuation && (offset == 0 || syntax[offset - 1]));
+        let mut last_code = None;
+        for (i, byte) in line.bytes().enumerate() {
+            if !syntax[offset + i] || byte.is_ascii_whitespace() {
+                continue;
+            }
+            last_code = Some(byte);
+            match byte {
+                b'(' => stack.push(b')'),
+                b'[' => stack.push(b']'),
+                b'{' => stack.push(b'}'),
+                b')' | b']' | b'}' => anyhow::ensure!(
+                    stack.pop() == Some(byte),
+                    "unsupported Python logical statement delimiter"
+                ),
+                _ => {}
+            }
+        }
+        continuation = last_code == Some(b'\\');
+        offset += line.len();
+    }
+    anyhow::ensure!(
+        stack.is_empty() && !continuation,
+        "unsupported incomplete Python logical statement"
+    );
+    Ok(starts)
 }
