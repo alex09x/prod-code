@@ -1,0 +1,230 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 1 test
+equivalent type original: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(c:&S< &'static u8>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(c:&S</* reference */ &'static u8>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<*const u8> { fn f(c:&S< /* pointer */ *const u8>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< /* pointer */ *const u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:154 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< /* pointer */ *const u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:154 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< /* pointer */ *const u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:154 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S< /* pointer */ *const u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:154 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<(u8,&'static u8)> { fn f(c:&S<(u8, /* second */ &'static u8)>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<(u8, /* second */ &'static u8)>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:157 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<(u8, /* second */ &'static u8)>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:157 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<(u8, /* second */ &'static u8)>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:157 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<(u8, /* second */ &'static u8)>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:157 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<(u8,&'static u8)> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((0, &7));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<fn()->&'static u8> { fn f(c:&S<fn() -> /* result */ &'static u8>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<fn() -> /* result */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:183 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<fn() -> /* result */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:183 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<fn() -> /* result */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:183 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<fn() -> /* result */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:183 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn()->&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S((|| &7u8) as fn()->&'static u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+test type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 2.69s
+
+[prod-code exec] exit 0 in 3.7s (server 3.3s, cpu 1.8s user 2.5s sys, peak 509 MB) on node <build-node>, copy <remote-workspace> (linux x86_64)

@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 
 use super::edits::{cut_from_impl, errors_of, insertion, item_span};
 use super::rewrite::{CallRewriteOutcome, rewrite_call_site};
-use super::syntax::{base_name, display, is_ident, receiver_as_type, snake_case, swap_names};
+use super::syntax::{
+    base_name, display, is_ident, receiver_as_type, referent, snake_case, swap_names,
+};
 use super::types::MovedMethod;
 
 /// Makes the method whose name is at `line`:`col` of `file` a method of the type of its
@@ -91,15 +93,15 @@ pub async fn move_method(
         .first()
         .and_then(|p| p.split_once(':').map(|(_, t)| t.trim().to_string()))
         .context("the parameter has no type")?;
-    let target_name =
-        base_name(target_ty.trim_start_matches('&').trim_start_matches("mut ")).to_string();
+    let target_self_type = referent(&target_ty).context("the reference type has no referent")?;
+    let target_name = base_name(target_self_type).to_string();
     anyhow::ensure!(
         target_name.chars().next().is_some_and(char::is_uppercase)
             && !target_ty.contains("impl ")
             && !target_ty.contains("dyn "),
         "`{to_param}: {target_ty}` is not a named type a method can move to"
     );
-    let (new_receiver, _) = crate::to_method::receiver_for(&target.raw, &target_name)
+    let (new_receiver, _) = crate::to_method::receiver_for(&target.raw, target_self_type)
         .with_context(|| format!("`{target_ty}` cannot become a receiver"))?;
     let (old_as_type, old_mut) = receiver_as_type(&receiver, "{owner}")
         .with_context(|| format!("the receiver `{receiver}` has a type of its own; not handled"))?;
@@ -111,7 +113,9 @@ pub async fn move_method(
         .with_context(|| format!("`{name}` has no body"))?;
     let body_close = crate::parameter_object::matching_bracket(&text, body_open)
         .context("the method's body does not close")?;
+    super::syntax::ensure_owner_context(&text[name_at..=body_close])?;
     let body = &text[body_open..=body_close];
+    super::captures::ensure_capture_identity(body, &["self", to_param])?;
     let new_param = snake_case(&owner);
     anyhow::ensure!(
         !declared.iter().any(|d| d.name == new_param)
@@ -121,15 +125,11 @@ pub async fn move_method(
     );
 
     // Where the target type is declared, and how each file spells the two types.
-    let ty_offset = open
-        + list
-            .find(&format!("{to_param}:"))
-            .map(|i| i + to_param.len() + 1)
-            .unwrap_or(0);
-    let ty_at = ty_offset
-        + text[ty_offset..]
-            .find(target_name.as_str())
-            .context("the parameter's type is not in the list")?;
+    // The receiver occupies index zero; declared contains only ordinary parameters.
+    let (binding_offset, type_offset) =
+        super::parameters::selected_cursors(&list, index + 1, to_param, &target_name)?;
+    let param_at = open + binding_offset;
+    let ty_at = open + type_offset;
     let (tl, tc) = crate::signature::position_at(&text, ty_at)?;
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
@@ -186,23 +186,11 @@ pub async fn move_method(
         if i == index {
             params.push(format!("{binding}: {old_as_type}"));
         } else {
-            params.push(d.raw.trim().to_string());
+            params.push(swap_names(d.raw.trim(), &[("Self", &owner_in_target)]));
         }
     }
     // The body's uses of the parameter, as the analyzer resolves them: another binding of the
     // same name (`if let Some(tax)`, `for tax in`, a match arm) keeps its own uses (#207).
-    let param_at = open
-        + list
-            .match_indices(to_param)
-            .map(|(i, _)| i)
-            .find(|i| {
-                !list[..*i].chars().next_back().is_some_and(is_ident)
-                    && !list[i + to_param.len()..]
-                        .chars()
-                        .next()
-                        .is_some_and(is_ident)
-            })
-            .context("the parameter's name is not in the list")?;
     let (pl, pc) = crate::signature::position_at(&text, param_at)?;
     let uses = crate::signature::references(remote, root, file, pl, pc)
         .await
@@ -247,7 +235,10 @@ pub async fn move_method(
         item_start
     };
     let head = &text[item_start..name_at];
-    let generics = &text[name_at + name.len()..open - 1];
+    let generics = swap_names(
+        &text[name_at + name.len()..open - 1],
+        &[("Self", &owner_in_target)],
+    );
     let between = swap_names(&text[close + 1..body_open], &map);
     const MARK: &str = "\u{1}\u{2}\u{1}";
     let mut marked = body.to_string();

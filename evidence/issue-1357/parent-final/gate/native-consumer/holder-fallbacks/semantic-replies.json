@@ -1,0 +1,3924 @@
+[
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpUK5IlR/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpUK5IlR/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 101,
+    "validation": true
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 31,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 29,
+              "line": 2
+            },
+            "start": {
+              "character": 29,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 101,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpUK5IlR/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpUK5IlR/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 11,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 11,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<Config>"
+        },
+        {
+          "containerName": "impl Holder<Config>",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 29,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 11,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 6,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Intercept"
+        },
+        {
+          "containerName": "Intercept",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 21,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 11
+              },
+              "start": {
+                "character": 4,
+                "line": 4
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "shadow_head"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 5
+              },
+              "start": {
+                "character": 15,
+                "line": 5
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 12,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 31,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 10
+              },
+              "start": {
+                "character": 32,
+                "line": 7
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 8
+              },
+              "start": {
+                "character": 13,
+                "line": 8
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 9
+              },
+              "start": {
+                "character": 11,
+                "line": 9
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 4,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "other"
+        },
+        {
+          "containerName": "other",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 23,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 13
+              },
+              "start": {
+                "character": 19,
+                "line": 13
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Intercept for Holder<other::Config>"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 17
+              },
+              "start": {
+                "character": 25,
+                "line": 14
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<other::Config>"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 15
+              },
+              "start": {
+                "character": 9,
+                "line": 15
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 16
+              },
+              "start": {
+                "character": 7,
+                "line": 16
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 33
+              },
+              "start": {
+                "character": 3,
+                "line": 18
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 19
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "exact"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 25
+              },
+              "start": {
+                "character": 8,
+                "line": 20
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "head_val"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 22
+              },
+              "start": {
+                "character": 12,
+                "line": 22
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_head"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 23
+              },
+              "start": {
+                "character": 12,
+                "line": 23
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 31
+              },
+              "start": {
+                "character": 8,
+                "line": 26
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "arg_val"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 28
+              },
+              "start": {
+                "character": 12,
+                "line": 28
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_arg"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 29
+              },
+              "start": {
+                "character": 12,
+                "line": 29
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        }
+      ]
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpUK5IlR/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpUK5IlR/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 11,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 11,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<Config>"
+        },
+        {
+          "containerName": "impl Holder<Config>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 29,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 11,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 6,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Intercept"
+        },
+        {
+          "containerName": "Intercept",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 21,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 11
+              },
+              "start": {
+                "character": 4,
+                "line": 4
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "shadow_head"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 5
+              },
+              "start": {
+                "character": 15,
+                "line": 5
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 12,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 31,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 10
+              },
+              "start": {
+                "character": 32,
+                "line": 7
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 8
+              },
+              "start": {
+                "character": 13,
+                "line": 8
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 9
+              },
+              "start": {
+                "character": 11,
+                "line": 9
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 4,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "other"
+        },
+        {
+          "containerName": "other",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 23,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 13
+              },
+              "start": {
+                "character": 19,
+                "line": 13
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Intercept for Holder<other::Config>"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 17
+              },
+              "start": {
+                "character": 25,
+                "line": 14
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<other::Config>"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 15
+              },
+              "start": {
+                "character": 9,
+                "line": 15
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 16
+              },
+              "start": {
+                "character": 7,
+                "line": 16
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 33
+              },
+              "start": {
+                "character": 3,
+                "line": 18
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 19
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "exact"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 25
+              },
+              "start": {
+                "character": 8,
+                "line": 20
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "head_val"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 22
+              },
+              "start": {
+                "character": 12,
+                "line": 22
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_head"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 23
+              },
+              "start": {
+                "character": 12,
+                "line": 23
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 31
+              },
+              "start": {
+                "character": 8,
+                "line": 26
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "arg_val"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 28
+              },
+              "start": {
+                "character": 12,
+                "line": 28
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_arg"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 29
+              },
+              "start": {
+                "character": 12,
+                "line": 29
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        }
+      ]
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpUK5IlR/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpUK5IlR/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 104,
+    "validation": true
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 31,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 29,
+              "line": 2
+            },
+            "start": {
+              "character": 29,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 104,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpUK5IlR/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpUK5IlR/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 105,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 105,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 11,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 11,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<Config>"
+        },
+        {
+          "containerName": "impl Holder<Config>",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 29,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 11,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 6,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Intercept"
+        },
+        {
+          "containerName": "Intercept",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 21,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 11
+              },
+              "start": {
+                "character": 4,
+                "line": 4
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "shadow_head"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 5
+              },
+              "start": {
+                "character": 15,
+                "line": 5
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 12,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 31,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 10
+              },
+              "start": {
+                "character": 32,
+                "line": 7
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 8
+              },
+              "start": {
+                "character": 13,
+                "line": 8
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 9
+              },
+              "start": {
+                "character": 11,
+                "line": 9
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 4,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "other"
+        },
+        {
+          "containerName": "other",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 23,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 13
+              },
+              "start": {
+                "character": 19,
+                "line": 13
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Intercept for Holder<other::Config>"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 17
+              },
+              "start": {
+                "character": 25,
+                "line": 14
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<other::Config>"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 15
+              },
+              "start": {
+                "character": 9,
+                "line": 15
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 16
+              },
+              "start": {
+                "character": 7,
+                "line": 16
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 33
+              },
+              "start": {
+                "character": 3,
+                "line": 18
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 19
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "exact"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 25
+              },
+              "start": {
+                "character": 8,
+                "line": 20
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "head_val"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 22
+              },
+              "start": {
+                "character": 12,
+                "line": 22
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_head"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 23
+              },
+              "start": {
+                "character": 12,
+                "line": 23
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 31
+              },
+              "start": {
+                "character": 8,
+                "line": 26
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "arg_val"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 28
+              },
+              "start": {
+                "character": 12,
+                "line": 28
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_arg"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 29
+              },
+              "start": {
+                "character": 12,
+                "line": 29
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        }
+      ]
+    },
+    "session": 105,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpUK5IlR/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpUK5IlR/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 31,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 61,
+              "line": 2
+            },
+            "start": {
+              "character": 61,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 11,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 12,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 11,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 29,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 24
+            },
+            "start": {
+              "character": 23,
+              "line": 24
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 30
+            },
+            "start": {
+              "character": 23,
+              "line": 30
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 33,
+              "line": 32
+            },
+            "start": {
+              "character": 33,
+              "line": 32
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/hover",
+    "request": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "method": "textDocument/hover",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 24
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nlet bad_head: Holder<Config>\n```"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 8,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 24
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 8,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 21,
+              "line": 5
+            },
+            "start": {
+              "character": 15,
+              "line": 5
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/hover",
+    "request": {
+      "id": 9,
+      "jsonrpc": "2.0",
+      "method": "textDocument/hover",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 30
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 9,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nlet bad_arg: Holder<Config>\n```"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 10,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 30
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 10,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 29,
+              "line": 12
+            },
+            "start": {
+              "character": 23,
+              "line": 12
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/hover",
+    "request": {
+      "id": 11,
+      "jsonrpc": "2.0",
+      "method": "textDocument/hover",
+      "params": {
+        "position": {
+          "character": 36,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 11,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nlet exact: Holder<Config>\n```"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 12,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 36,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 12,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 13,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 36,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 13,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 8,
+              "line": 19
+            },
+            "start": {
+              "character": 8,
+              "line": 19
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 14,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 16,
+          "line": 19
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 14,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 11,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 15,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 31,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 15,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 61,
+              "line": 2
+            },
+            "start": {
+              "character": 61,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 16,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 16,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 17,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 17,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 11,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 18,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 12,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 18,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 11,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 19,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 29,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 19,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 24
+            },
+            "start": {
+              "character": 23,
+              "line": 24
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 30
+            },
+            "start": {
+              "character": 23,
+              "line": 30
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 33,
+              "line": 32
+            },
+            "start": {
+              "character": 33,
+              "line": 32
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/hover",
+    "request": {
+      "id": 20,
+      "jsonrpc": "2.0",
+      "method": "textDocument/hover",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 24
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 20,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nlet bad_head: Holder<Config>\n```"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 21,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 24
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 21,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 21,
+              "line": 5
+            },
+            "start": {
+              "character": 15,
+              "line": 5
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/hover",
+    "request": {
+      "id": 22,
+      "jsonrpc": "2.0",
+      "method": "textDocument/hover",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 30
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 22,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nlet bad_arg: Holder<Config>\n```"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 23,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 26,
+          "line": 30
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 23,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 29,
+              "line": 12
+            },
+            "start": {
+              "character": 23,
+              "line": 12
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/hover",
+    "request": {
+      "id": 24,
+      "jsonrpc": "2.0",
+      "method": "textDocument/hover",
+      "params": {
+        "position": {
+          "character": 36,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 24,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nlet exact: Holder<Config>\n```"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 25,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 36,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 25,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 11,
+              "line": 0
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 26,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 36,
+          "line": 32
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 26,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 8,
+              "line": 19
+            },
+            "start": {
+              "character": 8,
+              "line": 19
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/definition",
+    "request": {
+      "id": 27,
+      "jsonrpc": "2.0",
+      "method": "textDocument/definition",
+      "params": {
+        "position": {
+          "character": 16,
+          "line": 19
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 27,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 11,
+              "line": 1
+            },
+            "start": {
+              "character": 11,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpUK5IlR/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpUK5IlR/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 106,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 11,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 11,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<Config>"
+        },
+        {
+          "containerName": "impl Holder<Config>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 29,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 11,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 6,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Intercept"
+        },
+        {
+          "containerName": "Intercept",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 21,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 11
+              },
+              "start": {
+                "character": 4,
+                "line": 4
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "shadow_head"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 5
+              },
+              "start": {
+                "character": 15,
+                "line": 5
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Holder"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 12,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 6
+              },
+              "start": {
+                "character": 31,
+                "line": 6
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "shadow_head",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 10
+              },
+              "start": {
+                "character": 32,
+                "line": 7
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<T>"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 8
+              },
+              "start": {
+                "character": 13,
+                "line": 8
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "shadow_head > impl std::ops::Deref for Holder<T>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 9
+              },
+              "start": {
+                "character": 11,
+                "line": 9
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": null,
+          "kind": 2,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 4,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "other"
+        },
+        {
+          "containerName": "other",
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 12
+              },
+              "start": {
+                "character": 23,
+                "line": 12
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Config"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 13
+              },
+              "start": {
+                "character": 19,
+                "line": 13
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl Intercept for Holder<other::Config>"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 17
+              },
+              "start": {
+                "character": 25,
+                "line": 14
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "impl std::ops::Deref for Holder<other::Config>"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 15
+              },
+              "start": {
+                "character": 9,
+                "line": 15
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "Target"
+        },
+        {
+          "containerName": "impl std::ops::Deref for Holder<other::Config>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 16
+              },
+              "start": {
+                "character": 7,
+                "line": 16
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "deref"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 33
+              },
+              "start": {
+                "character": 3,
+                "line": 18
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 19
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "exact"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 25
+              },
+              "start": {
+                "character": 8,
+                "line": 20
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "head_val"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 22
+              },
+              "start": {
+                "character": 12,
+                "line": 22
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_head"
+        },
+        {
+          "containerName": "main > head_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 23
+              },
+              "start": {
+                "character": 12,
+                "line": 23
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 31
+              },
+              "start": {
+                "character": 8,
+                "line": 26
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "arg_val"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 28
+              },
+              "start": {
+                "character": 12,
+                "line": 28
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "bad_arg"
+        },
+        {
+          "containerName": "main > arg_val",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 29
+              },
+              "start": {
+                "character": 12,
+                "line": 29
+              }
+            },
+            "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+          },
+          "name": "_"
+        }
+      ]
+    },
+    "session": 106,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 106,
+    "validation": true
+  }
+]

@@ -1,0 +1,24 @@
+Ok(
+    MadeMethod {
+        owner: "S",
+        method: "f",
+        root: "/tmp/.tmp3W7hnC/fixture",
+        file: "src/lib.rs",
+        parameter: "c: &S<fixed!()>",
+        receiver: "&self",
+        renamed_uses: 1,
+        rewritten_calls: 0,
+        unchanged: [
+            "src/lib.rs:4:31 (the function used as a value: a method is still reachable by its path)",
+        ],
+        unmatched: [],
+        rewritten: [
+            (
+                "/tmp/.tmp3W7hnC/fixture/src/lib.rs",
+                "macro_rules! fixed { () => { [u8; { let U = 1; U }] }; }\nstruct S<T>(T);\nimpl S<fixed!()> { fn f<U>(&self) -> u8 { self.0[0] } }\nfn main() { println!(\"{}\", S::f::<()>(&S([7]))); }\n",
+            ),
+        ],
+        diagnostics: [],
+        applied: true,
+    },
+)

@@ -1,0 +1,18 @@
+COMMAND prod-code status --remote <build-node>
+⚡ prod-code Remote Code Intelligence Gateway
+────────────────────────────────────────────────────
+Remote Address:    <build-node> (650.50µs RTT)
+Gateway Version:   0.3.41 (commit 9a21810)
+Server PID:        67056
+Uptime:            15h 48m 31s
+Memory RSS:        18438.44 MB
+Active Sessions:   0
+Running Commands:  1
+[unrelated workspace command redacted]
+Loaded Workspaces: 0
+Queries Handled:   1050 (in-flight: 0)
+Engines Available: rust (ra_ap_ide), go (gopls), cpp (clangd), python (basedpyright-langserver), typescript (tsc --lsp), java (jdtls), kotlin (kotlin-language-server), csharp (omnisharp), zig (zls), scala (metals), generic-lsp
+Host Resources:    memory 99% used, disk 46% free
+Status:            SHORT (memory 99% used): new workspaces go to other nodes
+
+TERMINAL_EXIT=0

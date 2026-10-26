@@ -1,0 +1,84 @@
+{
+  "base_sha": "86b8f87e6c48e37871046196f6c0880a961abc41",
+  "issue": "https://github.com/alex09x/prod-code/issues/1316",
+  "node_kind": "Linux x86_64 build node",
+  "reproductions": {
+    "generic_owner_shadow": {
+      "original": "trait T { fn value(&self)->u8; }\nstruct S;\nimpl T for S { fn value(&self)->u8 {2} }\nimpl S { fn value(&self)->u8 {1} fn f<S:T>(c:&S)->u8 {c.value()} }\nfn main(){println!(\"{}\",S::f::<S>(&S));}\n",
+      "original_rustc_exit": 0,
+      "original_runtime_exit": 0,
+      "original_stdout": "2\n",
+      "actual_public_returned_before_repair": "trait T { fn value(&self)->u8; }\nstruct S;\nimpl T for S { fn value(&self)->u8 {2} }\nimpl S { fn value(&self)->u8 {1} fn f<S:T>(&self)->u8 {self.value()} }\nfn main(){println!(\"{}\",S::f::<S>(&S));}\n",
+      "returned_rustc_exit": 0,
+      "returned_runtime_exit": 0,
+      "returned_stdout": "1\n",
+      "repaired": "Refuses before planning declaration/body edits in all four apply/force combinations; source, manifest and sentinel bytes preserved.",
+      "evidence": [
+        "before.txt",
+        "focused.txt"
+      ]
+    },
+    "selected_parameter": {
+      "original": "struct Tax(u32);\nstruct Order(u32);\nimpl Order {\n    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }\n}\nfn helper(_: &Tax) {}\nfn main() { let o = Order(1); let t = Tax(2); println!(\"{}\", o.f(helper, &t)); }\n",
+      "original_rustc_exit": 0,
+      "original_runtime_exit": 0,
+      "original_stdout": "3\n",
+      "actual_public_returned_before_repair": "struct Tax(u32);\n\nimpl Tax {\n    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }\n}\nstruct Order(u32);\nfn helper(_: &Tax) {}\nfn main() { let o = Order(1); let t = Tax(2); println!(\"{}\", t.f(helper, &o)); }\n",
+      "before_returned_rustc_exit": 1,
+      "before_errors": [
+        "E0425 for both tax uses"
+      ],
+      "actual_public_returned_after_repair": "struct Tax(u32);\n\nimpl Tax {\n    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }\n}\nstruct Order(u32);\nfn helper(_: &Tax) {}\nfn main() { let o = Order(1); let t = Tax(2); println!(\"{}\", t.f(helper, &o)); }\n",
+      "after_returned_rustc_exit": 0,
+      "after_returned_runtime_exit": 0,
+      "after_returned_stdout": "3\n",
+      "wrong_binding_cursor_1_based": [
+        4,
+        28
+      ],
+      "selected_binding_cursor_1_based": [
+        4,
+        40
+      ],
+      "wrong_type_cursor_1_based": [
+        4,
+        34
+      ],
+      "selected_type_cursor_1_based": [
+        4,
+        46
+      ],
+      "gateway_contract": "Wrong nested label returns no references; selected binding returns both uses. Type query must exactly match selected type cursor.",
+      "modes": "Preview/apply with force false/true all compile and run; preview checks original source, manifest and sentinel bytes; apply source equals preview bytes.",
+      "evidence": [
+        "before-move-isolated.txt",
+        "focused.txt"
+      ]
+    }
+  },
+  "controls": "Four ordinary method-generic/Self/lifetime/const forms compile and print 7 in all apply/force modes. Existing exact nominal dot-call, impl/path generic, dyn token boundary, short mutable binding, module word, lifetime, literal/capture/owner/recursive controls all pass the final 47-test gate.",
+  "preservation": {
+    "inherited_evidence_files_verified_byte_identical": 148,
+    "manifest": "preserved-evidence.sha256",
+    "historical_dyn_failure": "../1316-type-token-boundary/before.txt:159-196 (actual runtime 1 to 2)",
+    "historical_dot_call_positive": "../1316-aggregate-repair/acceptance.txt:201-266 (actual c.f(2), items[0].f(3), runtime 3 7)"
+  },
+  "checks": {
+    "focused_exit": 0,
+    "focused_passed": 3,
+    "format_exit": 0,
+    "lint_exit": 101,
+    "lint_diagnostic_count": 103,
+    "lint_diagnostics_in_changed_files": 0,
+    "acceptance_exit": 0,
+    "acceptance_passed": 47,
+    "git_diff_check_exit": 0
+  },
+  "limitations": [
+    "Semantic responses are scripted cursor-specific LSP responses, not a live analyzer end-to-end run.",
+    "Guard establishes method-generic root shadowing; this is not a general Rust type-resolution implementation.",
+    "Scoped clippy failed with 103 diagnostics in unchanged files; no lint fixes or broader gates were added.",
+    "The original single-line move probe encountered an existing cut_from_impl slice panic (before.txt). Multiline layout and pure caller arguments isolate the assigned declaration-identity defect; the separate layout panic remains outside this repair.",
+    "No publication, messages, installs, dependencies, commit, other-worktree edits or delegation. Parent owns aggregate review and integration."
+  ]
+}

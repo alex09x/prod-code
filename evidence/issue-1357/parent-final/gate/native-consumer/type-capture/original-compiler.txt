@@ -1,0 +1,7 @@
+exit=0
+stdout=
+stderr=/tmp/.tmprCQZBd/main.rs:5:13: warning: method `value` is never used
+/tmp/.tmprCQZBd/main.rs:1:56: warning: variable `A` should have a snake case name: help: convert the identifier to snake case: `a`
+/tmp/.tmprCQZBd/main.rs:1:56: warning: variable `A` should have a snake case name: help: convert the identifier to snake case: `a`
+warning: 3 warnings emitted
+

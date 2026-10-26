@@ -1,0 +1,120 @@
+{
+  "base": "0db89d215af8e7c8dca97eaa6e68dc0ba01d42e0",
+  "files": [
+    {
+      "path": "crates/prod-code-gateway/tests/common/native_rust.rs",
+      "sha256": "6946488ad245fab3cd8dcb7f9363f0914c553054e4895380e022875334e36173",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/common/native_rust/bridge.rs",
+      "sha256": "6bd9dc876c31941cae66f03dec42df74425909a5eeb5144d7ad30c59172d6973",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/native_rust_extensions.rs",
+      "sha256": "412064ab7a50335b5c4bfaa265d235d515614200d8e5ce614f40131f7d80ff39",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/native_rust_extensions/consumer.rs",
+      "sha256": "0d338ca8aa9347741cd0d403320059369b75380bec4adf4d4c8041f933d02895",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-gateway/tests/native_rust_extensions/views.rs",
+      "sha256": "76f1f77fdeb568d4a3a4553f60c2e554a1db0544cc69401011a81fd9d89eef6a",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/orchestration.rs",
+      "sha256": "792cdd7692f44df2ea00188c18578a9c8fba947435a6954e3235c0eaec8381f2",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation.rs",
+      "sha256": "c48cf8db57dd778090fcc0588207d0a2920b0562383fc6a850e783f516300aaf",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/aggregate.rs",
+      "sha256": "25562d265f798eb8efa5e1132594259508ea5c0e068cdb19de53a9999062f991",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/associated.rs",
+      "sha256": "62dd02d9d0c888e555b9b909d23a5fc86292314547808521ee4345b8473a5a3f",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/call_trivia.rs",
+      "sha256": "47f3027dba0f8ad196735e1ee64ca706df14ca4409eb04ae3a149d53f6b38180",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/conversion.rs",
+      "sha256": "6b4598c58e6241be1965c73e04a5190772718fd9811a0808819648e019ea042f",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs",
+      "sha256": "1a9aea73623306c536630a3afc91df83fe470d4150dcd7f2fcebcb6f2f76abfb",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/guards.rs",
+      "sha256": "5c25ebdff4e08a268f9a280dcb67f12c4b299c5d82c4edcb8195c0ab5db80e6b",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/macro_inputs.rs",
+      "sha256": "9a1a9c937aa099a44dec1bca998ab3a8958b6bbf9a8070afa5307de84d1e6f15",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/namespace_values.rs",
+      "sha256": "ab5f04cfdd7ffa23a94aa00c440e1d746414ae0fd25ad7662092d77ead2fd1a2",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/owner_boundary_regressions.rs",
+      "sha256": "34acbd13924ab094295ca4375326d141b96372bce8e050fda308ff7f027232e6",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/owner_capture.rs",
+      "sha256": "5785f8d50b8b1cdfdb04fa187ed547467e8f0d7409b509a725c583797abc2365",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs",
+      "sha256": "decdf1cbf27db8d18a1a087ea5da0ea4403a1390d5cf85ff451166b143ffaf8b",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/receiver.rs",
+      "sha256": "78598d4ede9dd49bd879172b718c1af3a9d2caf26422a4d70a30fdd6b870d140",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs",
+      "sha256": "b398f6995747c7f8bd7cd758d190b4cf83dd7782c7f7c835f432bfe22bce860e",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/review_regressions.rs",
+      "sha256": "060f47ad2ad2aa7b4d33b5311c7204cb6c64f28ba53c61d26afd444879e567ab",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/support.rs",
+      "sha256": "89815860b28113289480b84c648ade6e335d80d96a19cfc5a996fbeb96996088",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs",
+      "sha256": "cba75613bccaff10b45c5758fe3e9c3c48c75d35085cf15a4dec29feb3aa2070",
+      "identical_to_base": true
+    }
+  ]
+}

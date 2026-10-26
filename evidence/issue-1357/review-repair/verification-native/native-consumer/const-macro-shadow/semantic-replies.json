@@ -1,0 +1,198 @@
+[
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp07XdeB/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp07XdeB/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "rust-analyzer/expandMacro",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/expandMacro",
+      "params": {
+        "position": {
+          "character": 45,
+          "line": 3
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp07XdeB/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "expansion": "[usize; N]",
+        "name": "cap!"
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "rust-analyzer/expandMacro",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/expandMacro",
+      "params": {
+        "position": {
+          "character": 45,
+          "line": 3
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp07XdeB/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "expansion": "[usize; N]",
+        "name": "cap!"
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "rust-analyzer/expandMacro",
+    "request": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/expandMacro",
+      "params": {
+        "position": {
+          "character": 45,
+          "line": 3
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp07XdeB/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "expansion": "[usize; N]",
+        "name": "cap!"
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "rust-analyzer/expandMacro",
+    "request": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/expandMacro",
+      "params": {
+        "position": {
+          "character": 45,
+          "line": 3
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp07XdeB/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "expansion": "[usize; N]",
+        "name": "cap!"
+      }
+    },
+    "session": 100,
+    "validation": false
+  }
+]

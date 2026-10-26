@@ -3098,9 +3098,8 @@ async fn a_migration_converts_what_type_checks_and_reports_the_rest() {
 const COUNTER: &str = "pub struct Counter {\n    pub n: u32,\n}\n\nimpl Counter {\n    pub fn bump(c: &mut Counter, by: u32) -> u32 {\n        c.n += by;\n        if by > 10 {\n            return Counter::bump(c, by - 10);\n        }\n        c.n\n    }\n}\n\npub fn run(items: &mut [Counter]) -> u32 {\n    let mut c = Counter { n: 1 };\n    Counter::bump(&mut c, 2);\n    let f = Counter::bump;\n    f(&mut c, 1) + crate::Counter::bump(&mut items[0], 3)\n}\n";
 
 /// An associated function becomes a method: the first parameter becomes the receiver and its uses
-/// in the body `self`, a path call becomes a method call on its first argument with the borrow
-/// dropped, and the function used as a value and the call inside the function itself are left
-/// alone, both still valid. A trait's function and a free function are refused.
+/// in the body `self`. Exact-owner calls become dot calls; recursive calls and function values
+/// retain qualified dispatch. A trait's function and a free function are refused.
 #[tokio::test]
 async fn an_associated_function_becomes_a_method_with_every_call() {
     let ws = workspace();
@@ -3121,6 +3120,17 @@ async fn an_associated_function_becomes_a_method_with_every_call() {
             // The function `bump`: the recursive call, two path calls and one use as a value.
             "textDocument/references" => {
                 answers::locations(&l, &[(9, 29), (17, 14), (18, 22), (19, 36)])
+            }
+            "textDocument/typeDefinition" => answers::locations(&l, &[(1, 12)]),
+            "textDocument/definition" => answers::locations(&l, &[(6, 12)]),
+            "textDocument/hover" => {
+                let line = params.pointer("/position/line").and_then(|v| v.as_u64());
+                let value = if line == Some(16) {
+                    "let mut c: Counter"
+                } else {
+                    "items: &mut [Counter]"
+                };
+                serde_json::json!({"contents": {"kind": "markdown", "value": format!("```rust\n{value}\n```")}})
             }
             "textDocument/diagnostic" => answers::no_diagnostics(),
             _ => serde_json::Value::Null,

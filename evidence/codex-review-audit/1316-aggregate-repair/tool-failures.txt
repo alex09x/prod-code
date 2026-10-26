@@ -1,0 +1,42 @@
+Sanitized tool failures; no issue publication was authorized. These are navigation or
+patch-planning failures, not passing verification. Private skill/worktree paths below
+are represented by <skill-root> / <assigned-worktree>.
+
+1. exec_command (rejected before execution):
+sed -n '1,180p' <skill-root>/prod-core/SKILL.md && sed -n '1,230p' evidence/codex-review-audit/review-rust-method-3997.json && rg --files crates/prod-code-mcp/src/to_method crates/prod-code-mcp/src/move_method crates/prod-code-mcp/tests | head -100
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes
+through prod-code: grep, rg, find and recursive scans over source are blocked.
+Fallback: bounded named-file reads and prod-code outline; git ls-files for inventory.
+
+2. code_outline({"path":"crates/prod-code-mcp/src/to_method"})
+Error (isError=true): MCP tool call requires approval, but approval policy is never
+Fallback: prod-code outline crates/prod-code-mcp/src/to_method (terminal exit 0).
+
+3. prod-code outline crates/prod-code-mcp/src/hover.rs
+Error: cannot outline: file does not exist: crates/prod-code-mcp/src/hover.rs
+(did you mean `crates/prod-code-mcp/src/extract_parameter/hover.rs`?)
+Fallback: inspected the tool-suggested named file and used prod-code grep in that directory.
+
+4. prod-code grep 'hover_text|pub async fn request|pub fn contents|pub.*hover' crates/prod-code-mcp/src/gateway*
+Error: zsh:1: no matches found: crates/prod-code-mcp/src/gateway*
+Fallback: existing execute_lsp_query usage in the explicitly named hover source.
+
+5. prod-code grep 'query_with_text|pub async fn.*open|struct.*Session' crates/prod-code-mcp/src/lsp*
+Error: zsh:1: no matches found: crates/prod-code-mcp/src/lsp*
+Fallback: the inspected validation source imports crate::session::LspSession;
+prod-code outline crates/prod-code-mcp/src/session returned its methods and locations.
+
+6. apply_patch: coherent overlay proof patch, including rust.rs call-edit replacement
+Error: apply_patch verification failed: Failed to find expected lines in
+<assigned-worktree>/crates/prod-code-mcp/src/to_method/rust.rs:
+            let receiver = super::helpers::receiver_of(first_arg);
+            let new_call = format!("{receiver}.{name}({})", args[1..].join(", "));
+            edits.entry(path.clone()).or_default().push((
+                from,
+                args_end + 1 - from,
+                new_call,
+            ));
+            rewritten_calls += 1;
+            continue;
+Fallback: read the exact formatted windows, confirmed the patch was atomic, then
+applied matching hunks. No compile/test was run against a partial patch.

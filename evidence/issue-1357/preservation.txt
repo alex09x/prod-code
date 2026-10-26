@@ -1,0 +1,9 @@
+$ git diff --exit-code 7503df742797f6e1a26dc8cc3ab7f610a20d2e17 -- crates/prod-code-mcp crates/prod-code-gateway/src/lsp_handlers/native_extensions.rs crates/prod-code-engine-rust/src/editor/extensions.rs crates/prod-code-gateway/tests/common crates/prod-code-gateway/tests/native_rust_extensions.rs crates/prod-code-gateway/tests/native_rust_extensions evidence/issue-1316 Cargo.toml Cargo.lock
+stdout=
+stderr=
+exit=0
+
+$ git diff --check
+stdout=
+stderr=
+exit=0

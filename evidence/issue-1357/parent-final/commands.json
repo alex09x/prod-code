@@ -1,0 +1,105 @@
+[
+  {
+    "step": "format",
+    "argv": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--check",
+      "crates/prod-code-engine-rust/src/editor/mod.rs",
+      "crates/prod-code-engine-rust/src/editor/navigation.rs",
+      "crates/prod-code-engine-rust/src/editor/snapshot.rs",
+      "crates/prod-code-gateway/src/lsp_handlers/editor.rs",
+      "crates/prod-code-gateway/src/session/lsp_intercept.rs",
+      "crates/prod-code-gateway/src/session/position.rs",
+      "crates/prod-code-gateway/tests/rust_method_native.rs",
+      "crates/prod-code-gateway/tests/rust_method_native/cases.rs",
+      "crates/prod-code-gateway/tests/rust_method_native/navigation.rs",
+      "crates/prod-code-gateway/tests/rust_method_native/support.rs",
+      "crates/prod-code-mcp/src/move_method/associated.rs",
+      "crates/prod-code-mcp/src/move_method/captures.rs",
+      "crates/prod-code-mcp/src/move_method/context.rs",
+      "crates/prod-code-mcp/src/move_method/method.rs",
+      "crates/prod-code-mcp/src/move_method/mod.rs",
+      "crates/prod-code-mcp/src/move_method/parameters.rs",
+      "crates/prod-code-mcp/src/move_method/syntax.rs",
+      "crates/prod-code-mcp/src/to_method/declaration.rs",
+      "crates/prod-code-mcp/src/to_method/dispatch.rs",
+      "crates/prod-code-mcp/src/to_method/expansion.rs",
+      "crates/prod-code-mcp/src/to_method/helpers.rs",
+      "crates/prod-code-mcp/src/to_method/mod.rs",
+      "crates/prod-code-mcp/src/to_method/rust.rs",
+      "crates/prod-code-mcp/tests/orchestration.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/aggregate.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/associated.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/call_trivia.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/conversion.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/guards.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/macro_inputs.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/namespace_values.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/owner_boundary_regressions.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/owner_capture.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/receiver.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/review_regressions.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/support.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.587
+  },
+  {
+    "step": "lint-mcp",
+    "argv": [
+      "cargo",
+      "clippy",
+      "-p",
+      "prod-code-mcp",
+      "--lib",
+      "--test",
+      "rust_method_preservation"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 17.954
+  },
+  {
+    "step": "lint-gateway",
+    "argv": [
+      "cargo",
+      "clippy",
+      "-p",
+      "prod-code-gateway",
+      "--lib",
+      "--test",
+      "rust_method_native"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 23.244
+  },
+  {
+    "step": "lint-engine",
+    "argv": [
+      "cargo",
+      "clippy",
+      "-p",
+      "prod-code-engine-rust",
+      "--lib"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 14.228
+  },
+  {
+    "step": "gate",
+    "argv": [
+      "python3",
+      "evidence/issue-1357/run-final.py",
+      "--output-dir",
+      "evidence/issue-1357/parent-final/gate"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 556.559
+  }
+]

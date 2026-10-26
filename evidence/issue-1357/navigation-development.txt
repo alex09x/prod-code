@@ -1,0 +1,17 @@
+$ prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-gateway --test rust_method_native native_type_navigation_has_strict_positions_and_session_identity
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/rust_method_native.rs (target/debug/deps/rust_method_native-048929475172f020)
+
+running 1 test
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (40s elapsed)
+test navigation::native_type_navigation_has_strict_positions_and_session_identity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 48.86s
+
+[prod-code exec] 1 file(s) changed by the command written back: evidence/issue-1357/native-consumer/navigation/replies.json
+[prod-code exec] exit 0 in 49.6s (server 49.1s, cpu 49.1s user 1.1s sys, peak 936 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)
+
+client_exit=0

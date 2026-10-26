@@ -1,0 +1,182 @@
+[
+  {
+    "label": "nominal",
+    "phase": "preview",
+    "session": 101,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 61,
+      "line": 2
+    },
+    "target_declaration_zero_based": {
+      "line": 1,
+      "character": 12
+    },
+    "uri": "file:///tmp/.tmpnMbclc/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/semantic-replies.json"
+  },
+  {
+    "label": "nominal",
+    "phase": "preview",
+    "session": 102,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 68,
+      "line": 2
+    },
+    "target_declaration_zero_based": {
+      "line": 1,
+      "character": 12
+    },
+    "uri": "file:///tmp/.tmpnMbclc/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/semantic-replies.json"
+  },
+  {
+    "label": "nominal",
+    "phase": "apply",
+    "session": 105,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 61,
+      "line": 2
+    },
+    "target_declaration_zero_based": {
+      "line": 1,
+      "character": 12
+    },
+    "uri": "file:///tmp/.tmpnMbclc/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/semantic-replies.json"
+  },
+  {
+    "label": "nominal",
+    "phase": "apply",
+    "session": 106,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 68,
+      "line": 2
+    },
+    "target_declaration_zero_based": {
+      "line": 1,
+      "character": 12
+    },
+    "uri": "file:///tmp/.tmpnMbclc/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/semantic-replies.json"
+  },
+  {
+    "label": "holder-config",
+    "phase": "preview",
+    "session": 101,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 103,
+      "line": 3
+    },
+    "target_declaration_zero_based": {
+      "line": 2,
+      "character": 25
+    },
+    "uri": "file:///tmp/.tmphnN1wd/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/semantic-replies.json"
+  },
+  {
+    "label": "holder-config",
+    "phase": "preview",
+    "session": 102,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 110,
+      "line": 3
+    },
+    "target_declaration_zero_based": {
+      "line": 2,
+      "character": 25
+    },
+    "uri": "file:///tmp/.tmphnN1wd/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/semantic-replies.json"
+  },
+  {
+    "label": "holder-config",
+    "phase": "apply",
+    "session": 105,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 103,
+      "line": 3
+    },
+    "target_declaration_zero_based": {
+      "line": 2,
+      "character": 25
+    },
+    "uri": "file:///tmp/.tmphnN1wd/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/semantic-replies.json"
+  },
+  {
+    "label": "holder-config",
+    "phase": "apply",
+    "session": 106,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 110,
+      "line": 3
+    },
+    "target_declaration_zero_based": {
+      "line": 2,
+      "character": 25
+    },
+    "uri": "file:///tmp/.tmphnN1wd/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/semantic-replies.json"
+  },
+  {
+    "label": "holder-fallbacks",
+    "phase": "preview",
+    "session": 101,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 31,
+      "line": 32
+    },
+    "target_declaration_zero_based": {
+      "line": 2,
+      "character": 29
+    },
+    "uri": "file:///tmp/.tmptkbFR8/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/semantic-replies.json"
+  },
+  {
+    "label": "holder-fallbacks",
+    "phase": "apply",
+    "session": 104,
+    "validation": true,
+    "call_position_zero_based": {
+      "character": 31,
+      "line": 32
+    },
+    "target_declaration_zero_based": {
+      "line": 2,
+      "character": 29
+    },
+    "uri": "file:///tmp/.tmptkbFR8/fixture/src/lib.rs",
+    "request_id": 2,
+    "response_id": 2,
+    "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/semantic-replies.json"
+  }
+]

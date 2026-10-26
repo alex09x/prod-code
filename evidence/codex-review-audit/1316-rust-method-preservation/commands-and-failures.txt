@@ -1,0 +1,51 @@
+Commands use <linux-build-node> in place of the supplied remote address; no other argv arguments are changed. These are execution failures as well as successful evidence, not claims that every check passed.
+
+Initial test-fixture compilation:
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation -- --nocapture
+Exit 101. Exact diagnostic excerpt:
+error[E0277]: the trait bound `Url: serde::Serialize` is not satisfied
+   --> crates/prod-code-mcp/tests/rust_method_preservation/support.rs:67:31
+Correction: serialize the URL string rather than Url. No dependency change. The same focused command then ran before any production edit, producing before.txt (exit 101; 3 passed, 7 failed).
+
+First completed production batch, same focused command:
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation -- --nocapture
+Exit 101. Exact diagnostic excerpt:
+error[E0599]: no method named `trim` found for enum `std::option::Option<T>` in the current scope
+    --> crates/prod-code-mcp/src/to_method/helpers.rs:80:27
+     |
+  80 |     let mut rest = header.trim().strip_prefix("impl")?.trim_start();
+     |                           ^^^^ method not found in `std::option::Option<std::string::String>`
+Correction: propagate blank_comments' Option with ?. The complete returned compiler diagnostic set contained only this error. The next focused run passed 12 tests; after-runtime.txt records its source/output.
+
+Final formatting command (exit 0):
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/to_method/helpers.rs crates/prod-code-mcp/src/to_method/rust.rs crates/prod-code-mcp/src/move_method/syntax.rs crates/prod-code-mcp/src/move_method/method.rs crates/prod-code-mcp/src/move_method/associated.rs crates/prod-code-mcp/tests/orchestration.rs crates/prod-code-mcp/tests/rust_method_preservation.rs crates/prod-code-mcp/tests/rust_method_preservation/associated.rs crates/prod-code-mcp/tests/rust_method_preservation/conversion.rs crates/prod-code-mcp/tests/rust_method_preservation/guards.rs crates/prod-code-mcp/tests/rust_method_preservation/receiver.rs crates/prod-code-mcp/tests/rust_method_preservation/support.rs
+
+Navigation failures and bounded fallbacks (no builds or tests in these commands):
+
+rg --files crates/prod-code-mcp/tests | rg '(method|orchestration)'
+Blocked before execution by the source-discovery hook: "Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked."
+Fallback: directory listing followed by prod-code outline/grep and explicit bounded file reads.
+
+prod-code def crates/prod-code-mcp/src/extract_field/syntax.rs --symbol impl_blocks
+Error: failed to read <worktree>/crates/prod-code-mcp/src/extract_field/syntax.rs (did you mean `crates/prod-code-mcp/src/dead_code/syntax.rs`, `crates/prod-code-mcp/src/diagnostics/syntax.rs`, `crates/prod-code-mcp/src/extract_parameter/syntax.rs`?): No such file or directory (os error 2)
+Fallback: prod-code def --symbol impl_blocks, which returned both actual candidates:
+`impl_blocks` is ambiguous (2 candidates); qualify it (Type::name) or pass `path`:
+  1. [Declaration] impl_blocks — crates/prod-code-mcp/src/extract_delegate/rust/parse.rs:82:8 — `pub fn impl_blocks(text: &str, name: &str) -> Vec<(usize, usize, usize)> {`
+  2. [Declaration] impl_blocks — crates/prod-code-mcp/src/extract_field/rust/locate.rs:15:8 — `pub fn impl_blocks(text: &str) -> Vec<(String, usize, usize, usize)> {`
+Then used the returned extract_field/rust/locate.rs path successfully.
+
+prod-code outline crates/prod-code-mcp/src/rust_syntax
+Error: cannot outline: file does not exist: crates/prod-code-mcp/src/rust_syntax
+Fallback: prod-code outline crates/prod-code-mcp/src/signature returned the actual opaque_at helper; prod-code def on that returned path succeeded.
+
+sed -n '1,105p' crates/prod-code-testkit/src/scripted.rs
+sed: crates/prod-code-testkit/src/scripted.rs: No such file or directory
+Fallback: existing preservation fixtures already demonstrated the public ScriptedGateway interface; no guessed replacement path was used.
+
+ls evidence/codex-review-audit
+ls: evidence/codex-review-audit: No such file or directory
+Created the requested new evidence directory within this worktree.
+
+Default login shell initially printed "(eval):5: parse error near `end'" before successful inspection commands. Subsequent commands used login=false. It did not affect any test process.
+
+The first evidence privacy scan (python3 stdin script checking home/worktree paths and private addresses before generating hashes) failed its assertion on format-check.txt because unrelated existing formatting diffs contain private-address fixture strings. No hashes were written by that failed scan. The sanitizer was extended to redact all private addresses and .local host strings in captured logs, then the same privacy conditions and hash generation were run successfully. Task fixture source/runtime text contained no such private-address values.

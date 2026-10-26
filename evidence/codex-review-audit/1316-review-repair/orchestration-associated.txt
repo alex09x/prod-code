@@ -1,0 +1,11 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running tests/orchestration.rs (target/debug/deps/orchestration-177e3fd65f94e01b)
+
+running 2 tests
+test an_associated_function_moves_to_a_named_type ... ok
+test an_associated_function_becomes_a_method_with_every_call ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 0.11s
+
+[prod-code exec] exit 0 in 2.1s (server 1.8s, cpu 2.1s user 0.9s sys, peak 567 MB) on node <private-address>, copy <remote-workspace> (linux x86_64)

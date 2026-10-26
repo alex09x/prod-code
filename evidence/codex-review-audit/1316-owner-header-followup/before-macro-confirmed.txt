@@ -1,0 +1,314 @@
+   Compiling prod-code-mcp v0.3.41 (<workspace>
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 1 test
+macro owner original: source
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } });
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro owner original: rustc exit status: 0
+
+macro owner original: runtime exit status: 0
+0
+
+macro owner prefix="tag:", apply=false, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpgmke3J", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpgmke3J/src/main.rs", "macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="tag:", apply=true, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmp3QhsiV", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmp3QhsiV/src/main.rs", "macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="tag:", apply=false, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpc5j6K8", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpc5j6K8/src/main.rs", "macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="tag:", apply=true, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpGOK66Y", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpGOK66Y/src/main.rs", "macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner original: source
+macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } });
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro owner original: rustc exit status: 0
+
+macro owner original: runtime exit status: 0
+0
+
+macro owner prefix="tag ->", apply=false, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpPY3XLl", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpPY3XLl/src/main.rs", "macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="tag ->", apply=true, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpMj5vR7", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpMj5vR7/src/main.rs", "macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="tag ->", apply=false, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmp3qUION", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmp3qUION/src/main.rs", "macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="tag ->", apply=true, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpw6qGi6", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpw6qGi6/src/main.rs", "macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+macro owner incorrectly permitted: source
+macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner original: source
+macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner;
+        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } });
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro owner original: rustc exit status: 0
+
+macro owner original: runtime exit status: 0
+0
+
+macro owner prefix="fn tag:", apply=false, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpknSj21", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpknSj21/src/main.rs", "macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+macro owner incorrectly permitted: source
+macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="fn tag:", apply=true, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpVEhV7N", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpVEhV7N/src/main.rs", "macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+macro owner incorrectly permitted: source
+macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="fn tag:", apply=false, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpqHhgMD", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpqHhgMD/src/main.rs", "macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+macro owner incorrectly permitted: source
+macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+macro owner prefix="fn tag:", apply=true, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpRx9Uye", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpRx9Uye/src/main.rs", "macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nstruct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+macro owner incorrectly permitted: source
+macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro owner incorrectly permitted: rustc exit status: 0
+
+macro owner incorrectly permitted: runtime exit status: 0
+8
+
+
+thread 'owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context' (1716988) panicked at crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs:67:5:
+ambiguous macro owners must refuse: ["tag:, apply=false, force=false: \"8\\n\"", "tag:, apply=true, force=false: \"8\\n\"", "tag:, apply=false, force=true: \"8\\n\"", "tag:, apply=true, force=true: \"8\\n\"", "tag ->, apply=false, force=false: \"8\\n\"", "tag ->, apply=true, force=false: \"8\\n\"", "tag ->, apply=false, force=true: \"8\\n\"", "tag ->, apply=true, force=true: \"8\\n\"", "fn tag:, apply=false, force=false: \"8\\n\"", "fn tag:, apply=true, force=false: \"8\\n\"", "fn tag:, apply=false, force=true: \"8\\n\"", "fn tag:, apply=true, force=true: \"8\\n\""]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context ... FAILED
+
+failures:
+
+failures:
+    owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 1.41s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 2.4s (server 2.0s, cpu 1.1s user 1.6s sys, peak 507 MB) on node <build-node>, copy <workspace> (linux x86_64)

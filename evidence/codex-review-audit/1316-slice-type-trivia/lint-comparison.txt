@@ -1,0 +1,4 @@
+Previous displayed diagnostics: 175
+Current displayed diagnostics: 175
+Displayed diagnostics equal ignoring source coordinates: True
+Both summaries report 210 errors; the CLI omits 35 bodies. No claim about those omitted bodies.

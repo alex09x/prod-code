@@ -1,0 +1,9 @@
+[
+  {
+    "command": "sed -n '1,220p' evidence/codex-review-audit/recovery-4282.json; sed -n '1,240p' evidence/issue-1357/aggregate-review.json; git show --stat --oneline HEAD; rg --files -g '*rust_method_native*' -g '*1357*' -g '*rust_method*' -g '*native*' crates scripts evidence/issue-1357",
+    "error": "Command blocked by PreToolUse hook: Grep for text pattern `crates` over source files is blocked. Use prod-code literal/regex text search instead: code_grep {pattern: \"crates\", path: \"scripts\"} (CLI: `prod-code grep \"crates\" scripts`). It runs ripgrep on the build node and returns file:line:col with the enclosing AST symbol (`[in Type::method]`). For AST symbol lookups use code_symbols / code_definition / code_references; for concept search use code_search.. Command: sed -n '1,220p' evidence/codex-review-audit/recovery-4282.json; sed -n '1,240p' evidence/issue-1357/aggregate-review.json; git show --stat --oneline HEAD; rg --files -g '*rust_method_native*' -g '*1357*' -g '*rust_method*' -g '*native*' crates scripts evidence/issue-1357",
+    "execution": "rejected before command execution",
+    "fallback": "Read the two specified evidence files and git summary directly; no guessed source location or repeated blocked query.",
+    "external_report": "Not published: task prohibits publication and messages."
+  }
+]

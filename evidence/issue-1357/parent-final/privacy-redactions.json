@@ -1,0 +1,7 @@
+{
+  "artifact": "evidence/issue-1357/review-repair/verification-native/native-command.txt",
+  "original_sha256": "2e0bd4973892d97f03a4d5791336feadebaa6ce47e3bb7ee8a6da0d24d696364",
+  "published_sha256": "6ac251ff3fb43c8628965348f555e03915d3a0c78639fb9f3f57aba307b918c8",
+  "redaction": "Developer home prefix replaced with <developer-home>; all commands, diagnostics, counts and statuses otherwise preserved. Original bytes and original artifact manifest retained privately. Published artifact manifest updated only for this representation.",
+  "replacement_count": 6
+}

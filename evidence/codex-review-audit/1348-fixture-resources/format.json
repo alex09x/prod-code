@@ -1,0 +1,20 @@
+{
+  "command": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "crates/prod-code-mcp/tests/rust_method_preservation/aggregate.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/call_trivia.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/conversion.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/guards.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/owner_boundary_regressions.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/owner_capture.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/review_regressions.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/support.rs",
+    "crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs"
+  ],
+  "exit": 0
+}

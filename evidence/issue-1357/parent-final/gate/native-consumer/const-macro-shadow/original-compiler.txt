@@ -1,0 +1,5 @@
+exit=0
+stdout=
+stderr=/tmp/.tmprMdo8b/main.rs:2:7: warning: constant `N` is never used
+warning: 1 warning emitted
+

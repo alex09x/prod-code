@@ -1,0 +1,4 @@
+Formatting diagnostic bodies identical after normalizing paths, addresses and terminal footer: True
+Inherited/current displayed lint diagnostics: 175/175
+Displayed lint diagnostics identical: True
+Lint reports 210 errors; 35 diagnostic bodies omitted by CLI. No exhaustive clean-lint claim.

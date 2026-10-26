@@ -1,0 +1,243 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 2 tests
+test call_trivia::line_comment_argument_retains_its_newline ... call trivia original: source
+struct Counter(u32);
+impl Counter { fn f(c: &Counter, by: u32) -> u32 { c.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, 2 // note
+); println!("{}", result); }
+
+call trivia original: rustc exit status: 0
+
+call trivia original: runtime exit status: 0
+3
+
+call trivia apply=false force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(2 // note\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(2 // note
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+call trivia apply=true force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(2 // note\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(2 // note
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+call trivia apply=false force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(2 // note\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(2 // note
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+call trivia apply=true force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(2 // note\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(2 // note
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+call trivia original: source
+struct Counter(u32);
+impl Counter { fn f(c: &Counter, by: u32) -> u32 { c.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, // before value, keep this comment
+ 2 // final value
+); println!("{}", result); }
+
+call trivia original: rustc exit status: 0
+
+call trivia original: runtime exit status: 0
+3
+
+call trivia apply=false force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(// before value, keep this comment\n 2 // final value\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(// before value, keep this comment
+ 2 // final value
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+call trivia apply=true force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(// before value, keep this comment\n 2 // final value\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(// before value, keep this comment
+ 2 // final value
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+call trivia apply=false force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(// before value, keep this comment\n 2 // final value\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(// before value, keep this comment
+ 2 // final value
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+call trivia apply=true force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: [], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(// before value, keep this comment\n 2 // final value\n); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(// before value, keep this comment
+ 2 // final value
+); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+3
+
+ok
+test call_trivia::nested_exact_owner_calls_do_not_overlap ... call trivia original: source
+struct Counter(u32);
+impl Counter { fn f(c: &Counter, by: u32) -> u32 { c.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, Counter::f(&c, 2)); println!("{}", result); }
+
+call trivia original: rustc exit status: 0
+
+call trivia original: runtime exit status: 0
+4
+
+call trivia apply=false force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:70 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+call trivia apply=true force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:70 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+call trivia apply=false force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:70 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+call trivia apply=true force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:70 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = c.f(Counter::f(&c, 2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+call trivia original: source
+struct Counter(u32);
+impl Counter { fn f(c: &Counter, by: u32) -> u32 { c.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, Counter::f(&c, 2)); println!("{}", result); }
+
+call trivia original: rustc exit status: 0
+
+call trivia original: runtime exit status: 0
+4
+
+call trivia apply=false force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:55 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+call trivia apply=true force=false: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:55 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+call trivia apply=false force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:55 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: false }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+call trivia apply=true force=true: MadeMethod { owner: "Counter", method: "f", root: "<temporary>", file: "src/main.rs", parameter: "c: &Counter", receiver: "&self", renamed_uses: 1, rewritten_calls: 1, unchanged: ["src/main.rs:3:55 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temporary>", "struct Counter(u32);\nimpl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }\nfn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!(\"{}\", result); }\n")], diagnostics: [], applied: true }
+call trivia transformed: source
+struct Counter(u32);
+impl Counter { fn f(&self, by: u32) -> u32 { self.0 + by } }
+fn main() { let c = Counter(1); let result = Counter::f(&c, c.f(2)); println!("{}", result); }
+
+call trivia transformed: rustc exit status: 0
+
+call trivia transformed: runtime exit status: 0
+4
+
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 2.54s
+
+[prod-code exec] exit 0 in 3.1s (server 2.7s, cpu 1.1s user 1.9s sys, peak 90 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)
+
+TERMINAL EXIT: 0

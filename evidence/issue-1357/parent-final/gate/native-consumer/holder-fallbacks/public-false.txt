@@ -1,0 +1,25 @@
+Ok(
+    MadeMethod {
+        owner: "Holder",
+        method: "f",
+        root: "/tmp/.tmpUK5IlR/fixture",
+        file: "src/lib.rs",
+        parameter: "h: &Holder<Config>",
+        receiver: "&self",
+        renamed_uses: 1,
+        rewritten_calls: 1,
+        unchanged: [
+            "src/lib.rs:25:24 (qualified call retained to preserve receiver coercion and dispatch)",
+            "src/lib.rs:31:24 (qualified call retained to preserve receiver coercion and dispatch)",
+        ],
+        unmatched: [],
+        rewritten: [
+            (
+                "/tmp/.tmpUK5IlR/fixture/src/lib.rs",
+                "pub struct Config(pub u32);\npub struct Holder<T>(pub T);\nimpl Holder<Config> { pub fn f(&self) -> u32 { (self.0).0 + 1 } }\ntrait Intercept { fn f(&self) -> u32 { 999 } }\nmod shadow_head {\n    pub struct Holder<T>(pub crate::Holder<T>);\n    impl<T> Holder<T> { pub fn f(&self) -> u32 { 888 } }\n    impl<T> std::ops::Deref for Holder<T> {\n        type Target = crate::Holder<T>;\n        fn deref(&self) -> &Self::Target { &self.0 }\n    }\n}\nmod other { pub struct Config(pub crate::Holder<crate::Config>); }\nimpl Intercept for Holder<other::Config> {}\nimpl std::ops::Deref for Holder<other::Config> {\n    type Target = Holder<Config>;\n    fn deref(&self) -> &Self::Target { &(self.0).0 }\n}\nfn main() {\n    let exact = Holder(Config(6));\n    let head_val = {\n        use shadow_head::Holder;\n        let bad_head: Holder<Config> = Holder(crate::Holder(Config(10)));\n        let _ = bad_head.f();\n        crate::Holder::f(&bad_head)\n    };\n    let arg_val = {\n        use other::Config;\n        let bad_arg: Holder<Config> = Holder(Config(Holder(crate::Config(20))));\n        let _ = bad_arg.f();\n        crate::Holder::f(&bad_arg)\n    };\n    println!(\"{} {} {}\", exact.f(), head_val, arg_val);\n}\n",
+            ),
+        ],
+        diagnostics: [],
+        applied: false,
+    },
+)

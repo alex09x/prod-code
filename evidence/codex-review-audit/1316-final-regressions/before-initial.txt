@@ -1,0 +1,315 @@
+   Compiling unicode-ident v1.0.22
+   Compiling memchr v2.8.3
+   Compiling cfg-if v1.0.5
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.1
+   Compiling serde_core v1.0.229
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling log v0.4.34
+   Compiling powerfmt v0.2.0
+   Compiling minimal-lexical v0.2.1
+   Compiling litemap v0.8.3
+   Compiling writeable v0.6.4
+   Compiling deranged v0.5.8
+   Compiling utf8_iter v1.0.4
+   Compiling typenum v1.20.1
+   Compiling zeroize v1.9.0
+   Compiling untrusted v0.9.0
+   Compiling once_cell v1.21.4
+   Compiling scopeguard v1.2.0
+   Compiling subtle v2.6.1
+   Compiling pin-project-lite v0.2.17
+   Compiling libc v0.2.189
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling bitflags v2.13.2
+   Compiling serde_json v1.0.151
+   Compiling num-traits v0.2.19
+   Compiling bytes v1.12.1
+   Compiling proc-macro2 v1.0.107
+   Compiling serde v1.0.229
+   Compiling crossbeam-utils v0.8.23
+   Compiling zmij v1.0.23
+   Compiling itoa v1.0.18
+   Compiling lazy_static v1.5.0
+   Compiling futures-core v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling base64 v0.22.1
+   Compiling regex-syntax v0.8.11
+   Compiling percent-encoding v2.3.2
+   Compiling data-encoding v2.11.1
+   Compiling bitflags v1.3.2
+   Compiling time-macros v0.2.32
+   Compiling cpufeatures v0.2.17
+   Compiling same-file v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling tracing-core v0.1.36
+   Compiling rustls-pki-types v1.15.1
+   Compiling nom v7.1.3
+   Compiling aho-corasick v1.1.5
+   Compiling prod-code-protocol v0.3.41 (<remote-checkout>/crates/prod-code-protocol)
+   Compiling bstr v1.13.1
+   Compiling anyhow v1.0.104
+   Compiling slab v0.4.12
+   Compiling winnow v1.0.4
+   Compiling futures-task v0.3.34
+   Compiling linux-raw-sys v0.12.1
+   Compiling notify-types v2.1.0
+   Compiling quote v1.0.47
+   Compiling fastrand v2.5.0
+   Compiling form_urlencoded v1.2.2
+   Compiling winnow v0.7.15
+   Compiling fluent-uri v0.1.4
+   Compiling pem v3.0.6
+   Compiling walkdir v2.5.0
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling similar v2.7.0
+   Compiling glob v0.3.4
+   Compiling rustls-pemfile v2.2.0
+   Compiling generic-array v0.14.7
+   Compiling num-integer v0.1.47
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling crossbeam-epoch v0.9.21
+   Compiling rustix v1.1.5
+   Compiling num-bigint v0.4.8
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling mio v1.2.3
+   Compiling parking_lot_core v0.9.12
+   Compiling socket2 v0.6.5
+   Compiling inotify-sys v0.1.8
+   Compiling getrandom v0.4.3
+   Compiling block-buffer v0.<private-address>
+   Compiling crypto-common v0.1.7
+   Compiling rusticata-macros v4.1.0
+   Compiling signal-hook-registry v1.4.8
+   Compiling ring v0.17.14
+   Compiling crossbeam-deque v0.8.8
+   Compiling parking_lot v0.12.5
+   Compiling regex-automata v0.4.18
+   Compiling inotify v0.11.5
+   Compiling digest v0.<private-address>
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.<private-address>
+   Compiling notify v8.2.0
+   Compiling rustls-webpki v0.103.15
+   Compiling tempfile v3.27.0
+   Compiling time v0.3.55
+   Compiling synstructure v0.14.0
+   Compiling displaydoc v0.2.7
+   Compiling zerovec-derive v0.11.6
+   Compiling tokio-macros v2.7.2
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling serde_repr v0.1.21
+   Compiling futures-macro v0.3.34
+   Compiling synstructure v0.13.2
+   Compiling globset v0.4.20
+   Compiling regex v1.13.1
+   Compiling thiserror-impl v1.0.69
+   Compiling asn1-rs-impl v0.2.0
+   Compiling tracing-attributes v0.1.31
+   Compiling rustls v0.23.45
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling asn1-rs-derive v0.5.1
+   Compiling ignore v0.4.33
+   Compiling yasna v0.5.2
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling zerofrom v0.1.8
+   Compiling thiserror v2.0.20
+   Compiling tracing v0.1.44
+   Compiling thiserror v1.0.69
+   Compiling yoke v0.8.3
+   Compiling asn1-rs v0.6.2
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling der-parser v9.0.0
+   Compiling oid-registry v0.7.1
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling tokio-rustls v0.26.6
+   Compiling tokio-util v0.7.19
+   Compiling icu_provider v2.3.1
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling x509-parser v0.16.0
+   Compiling idna_adapter v1.2.2
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling lsp-types v0.97.0
+   Compiling rcgen v0.13.2
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+   Compiling prod-code-testkit v0.3.41 (<remote-checkout>/crates/prod-code-testkit)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.28s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 3 tests
+mutable binding original: source
+struct Tax(u32);
+mod t { pub struct Helper; }
+struct Order(u32);
+impl Order {
+    fn f(&self, helper: t::Helper, mut t: Tax) -> u32 {
+        let _ = helper; t.0 += 1; self.0 + t.0
+    }
+}
+fn main() { println!("{}", Order(2).f(t::Helper, Tax(3))); }
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+fn main() { let n = { Order::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+negation original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax, flag: bool) -> &'static str {
+        let _ = tax;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", o.f(&t, false), o.f(&t, true)); }
+
+nested impl type original: rustc exit status: 0
+
+mutable binding original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+mutable binding original: runtime exit status: 0
+6
+
+negation original: rustc exit status: 0
+
+negation original: runtime exit status: 0
+{self:?}|{self:?}
+
+
+thread 'remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros' (1680152) panicked at crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs:64:25:
+called `Result::unwrap()` on an `Err` value: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+negation force=false: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... FAILED
+binding gateway queried (5, 38); binding=(5, 40); mut-keyword=(5, 38)
+binding gateway queried (5, 8); binding=(5, 40); mut-keyword=(5, 38)
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, helper: t::Helper, order: &Order) -> u32 {
+        let _ = helper; t.0 += 1; order.0 + t.0
+    }
+}
+mod t { pub struct Helper; }
+struct Order(u32);
+fn main() { println!("{}", Order(2).f(t::Helper, Tax(3))); }
+
+mutable binding preview: rustc exit status: 1
+error[E0423]: expected value, found module `t`
+ --> <scratch>/main.rs:5:25
+  |
+5 |         let _ = helper; t.0 += 1; order.0 + t.0
+  |                         ^
+  |
+help: use the path separator to refer to an item
+  |
+5 -         let _ = helper; t.0 += 1; order.0 + t.0
+5 +         let _ = helper; t::0 += 1; order.0 + t.0
+  |
+
+error[E0423]: expected value, found module `t`
+ --> <scratch>/main.rs:5:45
+  |
+5 |         let _ = helper; t.0 += 1; order.0 + t.0
+  |                                             ^
+  |
+help: use the path separator to refer to an item
+  |
+5 -         let _ = helper; t.0 += 1; order.0 + t.0
+5 +         let _ = helper; t.0 += 1; order.0 + t::0
+  |
+
+error[E0599]: no method named `f` found for struct `Order` in the current scope
+  --> <scratch>/main.rs:10:37
+   |
+ 9 | struct Order(u32);
+   | ------------ method `f` not found for this struct
+10 | fn main() { println!("{}", Order(2).f(t::Helper, Tax(3))); }
+   |                                     ^ method not found in `Order`
+
+error: aborting due to 3 previous errors
+
+Some errors have detailed explanations: E0423, E0599.
+For more information about an error, try `rustc --explain E0423`.
+
+
+thread 'remaining_regressions::mutable_short_binding_uses_its_token_cursor' (1680151) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:175:5:
+rustc failed for mutable binding preview
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... FAILED
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+0
+
+
+thread 'remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self' (1680153) panicked at crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs:31:13:
+assertion `left == right` failed
+  left: "0\n"
+ right: "8\n"
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... FAILED
+
+failures:
+
+failures:
+    remaining_regressions::mutable_short_binding_uses_its_token_cursor
+    remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros
+    remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 25.0s (server 24.5s, cpu 33.1s user 6.6s sys, peak 1896 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)
+
+Terminal exit: 101

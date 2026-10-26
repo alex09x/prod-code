@@ -1,0 +1,3 @@
+[prod-code exec] exit 0 in 0.4s (server 0.1s, cpu 0.0s user 0.0s sys, peak 39 MB) on node <build-node>, copy <remote-path> (linux x86_64)
+
+client_exit=0

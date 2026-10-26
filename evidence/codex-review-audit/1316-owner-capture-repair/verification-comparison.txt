@@ -1,0 +1,4 @@
+Workspace formatting diagnostic bodies equal inherited evidence after path/address normalization: True
+Displayed lint diagnostic lists equal inherited evidence: True
+Displayed diagnostics: old=175, new=175
+Both lint runs report 210 errors; CLI omits 35 diagnostics.

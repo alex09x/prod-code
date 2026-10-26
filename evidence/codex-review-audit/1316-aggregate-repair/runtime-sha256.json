@@ -1,0 +1,1422 @@
+[
+  {
+    "log": "before-owner.txt",
+    "line": 6,
+    "label": "aggregate original",
+    "source_sha256": "a57a3438faaf9829494539c311a1686847eb17cd955f83b2871ccacd17c1ed56",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 25,
+    "label": "aggregate transformed",
+    "source_sha256": "654121f34a95d3e73ca1ca92e858d65839f82b5725f279983788378e61978992",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 45,
+    "label": "aggregate transformed",
+    "source_sha256": "654121f34a95d3e73ca1ca92e858d65839f82b5725f279983788378e61978992",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 65,
+    "label": "aggregate transformed",
+    "source_sha256": "654121f34a95d3e73ca1ca92e858d65839f82b5725f279983788378e61978992",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 85,
+    "label": "aggregate transformed",
+    "source_sha256": "654121f34a95d3e73ca1ca92e858d65839f82b5725f279983788378e61978992",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 104,
+    "label": "aggregate original",
+    "source_sha256": "40242ebf059ec51c32939009c5a956e555452ff067b91ecf0e346508e541bb82",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 123,
+    "label": "aggregate transformed",
+    "source_sha256": "2d518000b77a942d82f5de475e6d0b68c0a5621ad7719d2cca19ce91e1a13109",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 143,
+    "label": "aggregate transformed",
+    "source_sha256": "2d518000b77a942d82f5de475e6d0b68c0a5621ad7719d2cca19ce91e1a13109",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 163,
+    "label": "aggregate transformed",
+    "source_sha256": "2d518000b77a942d82f5de475e6d0b68c0a5621ad7719d2cca19ce91e1a13109",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 183,
+    "label": "aggregate transformed",
+    "source_sha256": "2d518000b77a942d82f5de475e6d0b68c0a5621ad7719d2cca19ce91e1a13109",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 202,
+    "label": "aggregate original",
+    "source_sha256": "5876525d308ea2e685d9255894e87e8d705fe48f0a0754cbd50e0c2dcf760391",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 221,
+    "label": "aggregate transformed",
+    "source_sha256": "3476e29ad841b8d5f5957745dea963e30d8d977434f6f5cfc78586b9f8c5d9ed",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 241,
+    "label": "aggregate transformed",
+    "source_sha256": "3476e29ad841b8d5f5957745dea963e30d8d977434f6f5cfc78586b9f8c5d9ed",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 261,
+    "label": "aggregate transformed",
+    "source_sha256": "3476e29ad841b8d5f5957745dea963e30d8d977434f6f5cfc78586b9f8c5d9ed",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 281,
+    "label": "aggregate transformed",
+    "source_sha256": "3476e29ad841b8d5f5957745dea963e30d8d977434f6f5cfc78586b9f8c5d9ed",
+    "stdout": "0\n",
+    "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 300,
+    "label": "aggregate original",
+    "source_sha256": "02b176c32998ddff982d0ab6542bc6e9c17615f5cd80e70c9178498d15d12900",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 319,
+    "label": "aggregate transformed",
+    "source_sha256": "90cd6f158b76943d3ef91f2d7bfd2faecf1745dbea8cea3fa29bd494bdf68069",
+    "stdout": "16\n",
+    "stdout_sha256": "e6c21e8d260fe71882debdb339d2402a2ca7648529bc2303f48649bce0380017",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 339,
+    "label": "aggregate transformed",
+    "source_sha256": "90cd6f158b76943d3ef91f2d7bfd2faecf1745dbea8cea3fa29bd494bdf68069",
+    "stdout": "16\n",
+    "stdout_sha256": "e6c21e8d260fe71882debdb339d2402a2ca7648529bc2303f48649bce0380017",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 359,
+    "label": "aggregate transformed",
+    "source_sha256": "90cd6f158b76943d3ef91f2d7bfd2faecf1745dbea8cea3fa29bd494bdf68069",
+    "stdout": "16\n",
+    "stdout_sha256": "e6c21e8d260fe71882debdb339d2402a2ca7648529bc2303f48649bce0380017",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "before-owner.txt",
+    "line": 379,
+    "label": "aggregate transformed",
+    "source_sha256": "90cd6f158b76943d3ef91f2d7bfd2faecf1745dbea8cea3fa29bd494bdf68069",
+    "stdout": "16\n",
+    "stdout_sha256": "e6c21e8d260fe71882debdb339d2402a2ca7648529bc2303f48649bce0380017",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 7,
+    "label": "trait dispatch original",
+    "source_sha256": "d24763b55638ea28f188552f2a64beeecbadd47302cadf8414721d23f35bc274",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 20,
+    "label": "blind exact-owner dot counterexample",
+    "source_sha256": "d16bc1e2e185d1133547f8ef3b1e57a7a11ac0d0f155264941c1ccaaaa950993",
+    "stdout": "99\n",
+    "stdout_sha256": "7e332bcee418f7d700927c946d36341f0651d6d90997b58d3d5441dec96b2e74",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 38,
+    "label": "exact calls original",
+    "source_sha256": "e7c04b5a84e5ae19c2f715f0c56f419a10cc1b664e6297e0f12369b8a9625610",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 52,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 66,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 80,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 94,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 106,
+    "label": "raw capture original",
+    "source_sha256": "c8e464fc8b40e530fd47134e2bd4a01062195807b540ae1cf06e293284d82723",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 128,
+    "label": "aggregate original",
+    "source_sha256": "a57a3438faaf9829494539c311a1686847eb17cd955f83b2871ccacd17c1ed56",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 147,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 167,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 187,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 207,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 226,
+    "label": "aggregate original",
+    "source_sha256": "40242ebf059ec51c32939009c5a956e555452ff067b91ecf0e346508e541bb82",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 245,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 265,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 285,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 305,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 324,
+    "label": "aggregate original",
+    "source_sha256": "5876525d308ea2e685d9255894e87e8d705fe48f0a0754cbd50e0c2dcf760391",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 343,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 363,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 383,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 403,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 422,
+    "label": "aggregate original",
+    "source_sha256": "02b176c32998ddff982d0ab6542bc6e9c17615f5cd80e70c9178498d15d12900",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 441,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 461,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 481,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 501,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 521,
+    "label": "receiver owner original",
+    "source_sha256": "eadad7b0a0210fbc6a027543f3c4dde6cf8c6a4322c1b9fa999120ed3817cf57",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 537,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 554,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 571,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 588,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 605,
+    "label": "receiver owner original",
+    "source_sha256": "7dd856e76f0e14a48b3efd4cecc40618972f5d5ec89997e7d7e5bad1f195eca2",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 621,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 638,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 655,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 672,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 690,
+    "label": "semantic wrapper original",
+    "source_sha256": "eb35252df27edfb349bcdecc8fb8c7fdb8dc7bf389b214fbd472550cb2089c49",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 705,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 721,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 736,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 751,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 766,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 781,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 796,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 811,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 826,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 841,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 856,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 871,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 886,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 901,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 916,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance-initial.txt",
+    "line": 931,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 6,
+    "label": "trait dispatch original",
+    "source_sha256": "d24763b55638ea28f188552f2a64beeecbadd47302cadf8414721d23f35bc274",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 19,
+    "label": "blind exact-owner dot counterexample",
+    "source_sha256": "d16bc1e2e185d1133547f8ef3b1e57a7a11ac0d0f155264941c1ccaaaa950993",
+    "stdout": "99\n",
+    "stdout_sha256": "7e332bcee418f7d700927c946d36341f0651d6d90997b58d3d5441dec96b2e74",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 33,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 47,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 61,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 75,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 89,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 103,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 117,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 131,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 145,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 159,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 173,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 187,
+    "label": "trait dispatch retained",
+    "source_sha256": "03e069db4b062a94cf82db5b969ae58441cac5a71dc3457b537a27a000abf461",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 201,
+    "label": "exact calls original",
+    "source_sha256": "e7c04b5a84e5ae19c2f715f0c56f419a10cc1b664e6297e0f12369b8a9625610",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 215,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 229,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 243,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 257,
+    "label": "exact calls transformed",
+    "source_sha256": "96516be3986a38af299e6afa8378a39c08157280262e72b6cf44a22ec00f0cfe",
+    "stdout": "3 7\n",
+    "stdout_sha256": "c3ae8e12d0891aa8d4363f1c26baa0226806566f16fce94852d176e7976cfa8c",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 269,
+    "label": "raw capture original",
+    "source_sha256": "c8e464fc8b40e530fd47134e2bd4a01062195807b540ae1cf06e293284d82723",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 291,
+    "label": "aggregate original",
+    "source_sha256": "a57a3438faaf9829494539c311a1686847eb17cd955f83b2871ccacd17c1ed56",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 310,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 330,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 350,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 370,
+    "label": "aggregate transformed",
+    "source_sha256": "1d24678009ebc109165cff0ebbed90cc5c35470ca07c19e01d65cce7a2d79569",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 389,
+    "label": "aggregate original",
+    "source_sha256": "40242ebf059ec51c32939009c5a956e555452ff067b91ecf0e346508e541bb82",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 408,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 428,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 448,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 468,
+    "label": "aggregate transformed",
+    "source_sha256": "792d80e9a8c0393c77c02b789b5a10958c69f0480b3525d472f2f07d00aa5774",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 487,
+    "label": "aggregate original",
+    "source_sha256": "5876525d308ea2e685d9255894e87e8d705fe48f0a0754cbd50e0c2dcf760391",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 506,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 526,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 546,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 566,
+    "label": "aggregate transformed",
+    "source_sha256": "68464fc4cf406ea4beb09229522abe829c2618b552b5d1b8c74e4de2cbfc1929",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 585,
+    "label": "aggregate original",
+    "source_sha256": "02b176c32998ddff982d0ab6542bc6e9c17615f5cd80e70c9178498d15d12900",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 604,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 624,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 644,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 664,
+    "label": "aggregate transformed",
+    "source_sha256": "d2c8b77543e48f82e996d29232f3fb44d8f15c201f423b93ff8cd351a8300c35",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 684,
+    "label": "receiver owner original",
+    "source_sha256": "eadad7b0a0210fbc6a027543f3c4dde6cf8c6a4322c1b9fa999120ed3817cf57",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 700,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 717,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 734,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 751,
+    "label": "receiver owner transformed",
+    "source_sha256": "a7cf360212d2b61151e1cfffda410afe40238235a6941016c693cd48343be675",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 768,
+    "label": "receiver owner original",
+    "source_sha256": "7dd856e76f0e14a48b3efd4cecc40618972f5d5ec89997e7d7e5bad1f195eca2",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 784,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 802,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 819,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 836,
+    "label": "receiver owner transformed",
+    "source_sha256": "1586fae6078e2a944ac1fd752c9ecf1adca40d0d7d0b48d206ca92431e29818c",
+    "stdout": "8\n",
+    "stdout_sha256": "aa67a169b0bba217aa0aa88a65346920c84c42447c36ba5f7ea65f422c1fe5d8",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 854,
+    "label": "semantic wrapper original",
+    "source_sha256": "eb35252df27edfb349bcdecc8fb8c7fdb8dc7bf389b214fbd472550cb2089c49",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 869,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 884,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 899,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 914,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 929,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 944,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 959,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 974,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 989,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 1004,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 1019,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 1034,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 1049,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 1064,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 1079,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  },
+  {
+    "log": "acceptance.txt",
+    "line": 1094,
+    "label": "semantic wrapper transformed",
+    "source_sha256": "338ff36bc9ba8f25f151fd723e2deefca3c305f4614c85d16a95fd8d20ec30b6",
+    "stdout": "3\n",
+    "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "rustc_exit": 0,
+    "runtime_exit": 0
+  }
+]

@@ -1,0 +1,9 @@
+72ce8133b9226eb06f9dfc43d5f35d4fe70c5f0997685dd0ec5e7c3f3ec43f7a  crates/prod-code-mcp/src/move_method/method.rs
+02385e9b196039ceae5faa0897601d639878a5f0bf09ba44fb1165e13dc3f8a4  crates/prod-code-mcp/src/move_method/mod.rs
+a3d0b5fa11c888c629b63c8b16df86b3dbb109df5705e87244c9a344a74d2aa6  crates/prod-code-mcp/src/move_method/parameters.rs
+7d97aed34fc4540bd94d5c2ca63baed50af99cbd25d8a1a04eac6db93fcc5f08  crates/prod-code-mcp/src/to_method/declaration.rs
+39551163f67b521051fe8d1769916ea944721415b55134074eae6dd5790bb73b  crates/prod-code-mcp/src/to_method/mod.rs
+d6a16f49a61e4c660038b8c4574bf0ec8f8ea01c256705eb00f4f2b3b7808986  crates/prod-code-mcp/src/to_method/rust.rs
+2a7bcf951d583f56576c376eb5f6070264ac7401d58dd766bc3605edfb05d1a0  crates/prod-code-mcp/tests/rust_method_preservation.rs
+30933875caa0780f38b57c1df22a8ecb4d380732c58573fe7fd1ee85b9dc4bc1  crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs
+57b7f7bab3c732f3059b91ea491c894ace64230f8dd439386574114d861af946  crates/prod-code-mcp/tests/rust_method_preservation/macro_inputs.rs

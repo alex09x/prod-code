@@ -1,0 +1,3 @@
+git diff --exit-code HEAD -- evidence/codex-review-audit
+terminal exit: 0
+Previously tracked audit evidence is unchanged. This new untracked evidence directory is not part of that comparison.

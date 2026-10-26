@@ -54,6 +54,7 @@ pub fn native_position_params(
         Some(
             "textDocument/hover"
             | "textDocument/definition"
+            | "textDocument/typeDefinition"
             | "textDocument/references"
             | "textDocument/implementation"
             | "textDocument/prepareCallHierarchy"

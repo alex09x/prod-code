@@ -1,0 +1,688 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.45s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 3 tests
+mutable binding original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, mut t: Tax) -> u32 {
+        t.0 += 1; self.0 + t.0
+    }
+}
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", o.f(tax)); }
+
+negation original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax, flag: bool) -> &'static str {
+        let _ = tax;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", o.f(&t, false), o.f(&t, true)); }
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+fn main() { let n = { Order::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding original: rustc exit status: 0
+
+negation original: rustc exit status: 0
+
+nested impl type original: rustc exit status: 0
+
+mutable binding original: runtime exit status: 0
+6
+
+negation original: runtime exit status: 0
+{self:?}|{self:?}
+
+nested impl type original: runtime exit status: 0
+8
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+negation force=false: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type preview: rustc exit status: 0
+
+mutable binding preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+mutable binding preview: runtime exit status: 0
+6
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+mutable binding applied: rustc exit status: 0
+
+mutable binding applied: runtime exit status: 0
+6
+
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+negation force=true: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+mutable binding preview: rustc exit status: 0
+
+mutable binding preview: runtime exit status: 0
+6
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+fn main() { let n = { Order::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding applied: rustc exit status: 0
+
+mutable binding applied: runtime exit status: 0
+6
+
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... ok
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+negation force=false: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+negation force=true: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... ok
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+fn main() { let n = { Order::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+fn main() { let n = { Order::f(); 8 }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 1.87s
+
+[prod-code exec] exit 0 in 14.9s (server 14.4s, cpu 16.6s user 4.7s sys, peak 2219 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)
+
+Terminal exit: 0

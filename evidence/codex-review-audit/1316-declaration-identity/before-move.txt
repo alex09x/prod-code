@@ -1,0 +1,115 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.62s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 1 test
+function pointer original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
+}
+fn helper(_: &Tax) {}
+fn main() { println!("{}", Order(1).f(helper, &Tax(2))); }
+
+function pointer original: rustc exit status: 0
+
+function pointer original: runtime exit status: 0
+3
+
+definition cursor (4, 34), wrong=(4, 34), selected=(4, 46)
+references cursor (4, 28), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+function pointer apply=false force=false: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 0 call(s) rewritten
+
+nothing may be written while:
+  src/main.rs:7: `Order(1)` and `&Tax(2)` would be evaluated in the other order
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,6 +1,7 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+
+the analyzer accepts the result: 0 errors
+
+nothing was written; pass `apply: true` to make these edits
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { println!("{}", Order(1).f(helper, &Tax(2))); }
+
+
+thread 'declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter' (3103567) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:175:5:
+rustc failed for function pointer returned
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+function pointer returned: rustc exit status: 1
+error[E0425]: cannot find value `tax` in this scope
+ --> <fixture>/main.rs:4:71
+  |
+1 | struct Tax(u32);
+  | ---------------- similarly named tuple struct `Tax` defined here
+...
+4 |     fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }
+  |                                                                       ^^^
+  |
+help: a tuple struct with a similar name exists
+  |
+4 -     fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }
+4 +     fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(Tax); order.0 + tax.0 }
+  |
+
+error[E0425]: cannot find value `tax` in this scope
+ --> <fixture>/main.rs:4:87
+  |
+1 | struct Tax(u32);
+  | ---------------- similarly named tuple struct `Tax` defined here
+...
+4 |     fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }
+  |                                                                                       ^^^
+  |
+help: a tuple struct with a similar name exists
+  |
+4 -     fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }
+4 +     fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + Tax.0 }
+  |
+
+error[E0599]: no method named `f` found for struct `Order` in the current scope
+ --> <fixture>/main.rs:8:37
+  |
+6 | struct Order(u32);
+  | ------------ method `f` not found for this struct
+7 | fn helper(_: &Tax) {}
+8 | fn main() { println!("{}", Order(1).f(helper, &Tax(2))); }
+  |                                     ^ method not found in `Order`
+
+error: aborting due to 3 previous errors
+
+Some errors have detailed explanations: E0425, E0599.
+For more information about an error, try `rustc --explain E0425`.
+
+test declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter ... FAILED
+
+failures:
+
+failures:
+    declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 1.3s (server 0.8s, cpu 0.7s user 0.7s sys, peak 510 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)

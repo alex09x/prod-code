@@ -1,0 +1,7 @@
+{
+  "crates/prod-code-mcp/src/to_method/rust.rs": "e1c82b6ede1e9e9685a574b511df99a38629632869826e70cd1350b057b8be6e",
+  "crates/prod-code-mcp/src/move_method/syntax.rs": "828cfe98ec2003dc27824b87681e164b65912c06a127168fc079de2e727609fd",
+  "crates/prod-code-mcp/src/move_method/context.rs": "84f90f1cfdc58c5497d5d59be425c2cac7d2dff9efc2bcac109686cccc763215",
+  "crates/prod-code-mcp/src/move_method/captures.rs": "ce8b565ec79aa2578d2549e125b96aae1d852c1fc900de70d9e3d1678f2bf5a3",
+  "crates/prod-code-mcp/tests/rust_method_preservation/aggregate.rs": "940c110ed42e058960139c0486c1db809b31bc0060c55b8d3db999826f344102"
+}

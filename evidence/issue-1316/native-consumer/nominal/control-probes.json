@@ -1,0 +1,75 @@
+[
+  {
+    "method": "textDocument/definition",
+    "params": {
+      "position": {
+        "character": 7,
+        "line": 0
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "id": "textDocument/definition",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 7,
+              "line": 0
+            },
+            "start": {
+              "character": 7,
+              "line": 0
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "method": "textDocument/hover",
+    "params": {
+      "position": {
+        "character": 7,
+        "line": 0
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "id": "textDocument/hover",
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nnative_extensions\n```\n\n```rust\nstruct S(u32)\n```\n\n---\n\nno Drop"
+        }
+      }
+    }
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "params": {
+      "position": {
+        "character": 7,
+        "line": 0
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32601,
+        "message": "textDocument/typeDefinition is not supported by prod-code for Rust"
+      },
+      "id": "textDocument/typeDefinition",
+      "jsonrpc": "2.0"
+    }
+  }
+]

@@ -1,0 +1,84 @@
+All project commands ran in the assigned worktree. Remote execution was observed
+to terminal completion. <build-node>, <workspace> and <assigned-worktree> replace
+private addresses and paths. Historical logs were not modified.
+
+Read-only issue verification, exit 0:
+gh issue view 1316 --json title,labels,body
+
+Fresh reproductions BEFORE production edits, exit 101 (before.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation header_leak -- --nocapture
+0 passed, 2 failed; 28 filtered out. Both originals compile/print 8; every
+preview/application in both force modes compiles/prints 16. No refusal occurred;
+preview checks source, manifest and sentinel bytes. The first array case fails
+before the additional nested array/impl Trait control is reached.
+
+Completed changed-source formatting, exit 0 (format.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/move_method/context.rs crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs
+
+Strict workspace formatting check, exit 1 (format-check.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo fmt --all -- --check
+Normalized diagnostic bodies match retained evidence.
+
+Final crate lint, CLI exit 1 / underlying clippy exit 101 (lint.txt):
+prod-code lint --remote <build-node> --path crates/prod-code-mcp --timeout-secs 900
+210 errors; all 175 displayed bodies match retained evidence; 35 omitted.
+
+One final requested Cargo target, exit 0 (acceptance.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 --env RUST_TEST_NOCAPTURE=1 --env RUST_TEST_THREADS=1 -- cargo test -p prod-code-mcp --test rust_method_preservation
+30 passed, 0 failed. Environment settings retain successful source/runtime
+stdout in serial order; the requested Cargo command and target are unchanged.
+
+Read-only whitespace verification, exit 0:
+git diff --check
+
+Tool failures and bounded fallbacks:
+
+MCP navigation calls:
+code_outline({path:"crates/prod-code-mcp/src/move_method/context.rs"})
+code_outline({path:"crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs"})
+Both returned: MCP tool call requires approval, but approval policy is never
+Fallback: CLI prod-code outline for the named context, syntax and support files,
+exit 0, followed by file-qualified prod-code def calls (exit 0).
+
+Initial combined navigation command:
+prod-code refs --symbol type_header && prod-code def crates/prod-code-mcp/src/move_method/syntax.rs --symbol opaque_token && prod-code outline crates/prod-code-mcp/src/rust_lex.rs && gh issue view 1316 --json title,labels,body
+Exit 1 after successful refs/def: Error: cannot outline: file does not exist:
+crates/prod-code-mcp/src/rust_lex.rs
+This was an incorrect guessed path, not a reported tool bug. The final gh call
+did not execute in that chain; it subsequently ran separately, exit 0.
+
+Incorrect-path follow-up:
+ls crates/prod-code-mcp/src/rust_lex && sed -n '1,160p' crates/prod-code-mcp/src/rust_lex.rs && prod-code exec --help
+Exit 1: ls: crates/prod-code-mcp/src/rust_lex: No such file or directory
+
+Named directory inventory and incorrect flat-module read:
+ls crates/prod-code-mcp/src/signature && sed -n '1,110p' crates/prod-code-mcp/src/signature.rs && sed -n '1,90p' evidence/codex-review-audit/1316-owner-header-followup/verification-comparison.txt
+Exit 1: sed: crates/prod-code-mcp/src/signature.rs: No such file or directory
+Fallback: read the observed signature/mod.rs and signature/util.rs paths, exit 0;
+prod-code def crates/prod-code-mcp/src/signature/call_sites.rs --symbol opaque_at,
+exit 0, confirmed the existing opaque lexical facility.
+
+Directory outline did not return during independent work:
+prod-code outline crates/prod-code-mcp/src/signature && prod-code exec --help && gh issue view 1316 --json title,labels,body
+Interrupted with Ctrl-C; terminal exit 130, no output. The remaining chained
+commands did not execute there. Named-file semantic calls worked. No public
+issue was filed because this task explicitly excludes publication.
+
+Attempted inspection of the primary-started stalled command:
+ps -axo pid,etime,command | python3 -c 'import sys; print("".join(l for l in sys.stdin if "prod-code outline crates/prod-code-mcp/src/signature" in l))'
+ps reported: zsh:1: operation not permitted: ps
+The pipeline's final command exited 0; process inspection did not succeed.
+Fallback: Ctrl-C through the original session, observed exit 130 as above.
+
+Read-only temporary-log search rejected before execution:
+rg -n 'panicked|raw identifier.*runtime|array length.*runtime|rustc exit|16|failures' /tmp/1316-owner-expression-before.txt | tail -42 && git diff --stat && git status --short
+Exact rejection: Recursive grep/find outside the workspace is always blocked:
+it walks huge trees (home directories, caches, logs) for minutes or hours. Search
+inside the project with `prod-code grep`, or read the one file you need by its path.
+Fallback: Python read that exact named log, sanitized it into before.txt and
+printed selected evidence lines, exit 0. No source file was edited by script.
+
+All primary-started command sessions finished; no detached process or worker
+was launched. Logs were sanitized with IPv4/address and private-path replacement;
+format comparisons omit Diff-in labels and execution footers; lint comparisons
+compare the displayed error lines only.

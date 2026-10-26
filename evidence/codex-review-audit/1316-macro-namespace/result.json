@@ -1,0 +1,43 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1316",
+  "effective_base_sha": "86b8f87e6c48e37871046196f6c0880a961abc41",
+  "inherited_candidate_sha": "ebf71cd21e17ef3ec5924cf00b790fe37ee01fbc",
+  "change": "Exclude macro invocation names from type-namespace shadow detection; retain both inherited declaration-identity repairs.",
+  "implementation": "crates/prod-code-mcp/src/to_method/declaration.rs:49",
+  "regression": "crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs:16",
+  "actual_before": {
+    "artifact": "before.txt",
+    "original_rustc_exit": 0,
+    "original_runtime_exit": 0,
+    "stdout": "7\n",
+    "public_conversion": "All four apply/force combinations incorrectly refuse macro U as shadowed by method type parameter U."
+  },
+  "actual_after": {
+    "artifact": "focused.txt:156",
+    "returned_source": "macro_rules! U { () => { u8 }; }\nstruct Tax;\nstruct S<T>(T);\nimpl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }\nfn main() { println!(\"{}\", S::f::<()>(&S(7))); }\n",
+    "rustc_exit": 0,
+    "runtime_exit": 0,
+    "stdout": "7\n",
+    "modes": "All four apply/force combinations; preview preserves bytes, applied bytes equal returned source."
+  },
+  "original_defects": "Inherited owner shadow 2-to-1 and nested-label E0425 public reproductions remain in ../1316-declaration-identity/result.json. Repaired cases re-executed in focused.txt and final gate.",
+  "checks": {
+    "focused_exit": 0,
+    "focused_passed": 6,
+    "format_exit": 0,
+    "lint_exit": 101,
+    "lint_errors": 103,
+    "lint_locations_in_edited_files": 0,
+    "acceptance_exit": 0,
+    "acceptance_passed": 50,
+    "git_diff_check_exit": 0,
+    "inherited_evidence_verified": 172
+  },
+  "limitations": [
+    "Scripted cursor-specific semantic responses and real compiler/runtime execution; not live-analyzer end-to-end proof.",
+    "Narrow method-generic shadowing guard, not a general Rust resolver.",
+    "Scoped lint fails in unchanged library files before completing test-target lint.",
+    "Inherited single-line move layout panic remains outside this repair.",
+    "Parent owns aggregate review, integration and result commit."
+  ]
+}

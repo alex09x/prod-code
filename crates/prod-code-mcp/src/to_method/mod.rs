@@ -8,6 +8,9 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod declaration;
+mod dispatch;
+mod expansion;
 pub mod helpers;
 pub mod polyglot;
 pub mod rust;

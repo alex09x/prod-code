@@ -1,0 +1,44 @@
+{
+  "decision": "reject",
+  "confidence": 0.86,
+  "summary": "Aggregate review of 8242a7edf2f84fd6385a8a3f4759ec0502d3f847..e5eb7a0535e75a399c8ebb57d983295c7c685f41. The merge-base is main itself, so there are no main-only changes to exclude. I read 40 changed crate files (4766+/85-) and the committed evidence. This is a static review: no tests, builds, compilers or formatters were run. Supported: native textDocument/typeDefinition (engine editor/navigation.rs, gateway editor.rs, lsp_intercept.rs, position.rs). It validates file URIs and exact UTF-16/CRLF positions, returns -32602 for bad params, keeps numeric/string IDs, sends no reply when the ID is missing or null, uses the same bounded snapshot path as other native requests, keeps empty and multiple results as they are, and maps paths per view like goto_definition. Also supported: to_method keeps qualified calls unless a hover/typeDefinition receiver proof and a private-overlay definition proof both pass, and it plans all edits before writing anything. The type-capture refusal holds with force, the local-value positive holds, and move_method's owner-context and capture refusals happen before planning. Nominal evidence: preview and apply both turn 2/2 calls into a.f()/b.f(). Validation definitions at 2:61 and 2:68 in validation sessions 101/102/105/106 each resolve to the converted declaration at 1:12. The original and returned programs compile with exit 0 and print '7 41'. The 55/55 preservation and 4/4 native logs show exit 0. 97/97 source hashes and 14/14 recovered log hashes match; 14 entries in artifact-hashes.json are stale, as primary-recovery.json says. Findings: P2 const generics are skipped by the method-local identity guard (declaration.rs:48). P2 the acceptance runner and native test write tracked evidence (support.rs:15, run-final.py:75). P3 owner identity requires exactly one typeDefinition target, so workspace ADT generic arguments always collapse it (dispatch.rs:57).",
+  "violations": [],
+  "findings": [
+    {
+      "priority": "P2",
+      "code": "method-const-generic-shadow-unguarded",
+      "title": "Refuse method const generics that shadow const arguments of the impl self type",
+      "detail": "ensure_receiver_identity collects only non-const generic names: it continues on `const` at declaration.rs:48 and returns Ok when no names remain (declaration.rs:54-56). Rust resolves a bare generic-argument path in the type namespace first and falls back to the value namespace, so in `const N: usize = 1; impl S<N> { fn f<const N: usize>(c: &S<N>) -> usize { N } }` the parameter type `S<N>` names the method's const N, while the impl's `S<N>` names the item. receiver_for (rust.rs:73) compares spellings only, and the guard has no names, so the planner turns the declaration into `&self` with receiver type S<1> instead of S<N_method>. If no workspace caller exists, validation is clean and apply writes this API narrowing without force. If callers exist, rustc errors block apply, but force still writes them. This is the value-namespace counterpart of the type-capture refusal, which the native test requires to hold even with force. Prediction from static source reading; no reproducer was executed.",
+      "path": "crates/prod-code-mcp/src/to_method/declaration.rs",
+      "line": 48,
+      "evidence": "declaration.rs:47-56 skips `const` params, then returns Ok when names is empty. No preservation test covers a const param shadowing a const argument of the self type: the only const-generic case, declaration_identity.rs:184, uses a non-generic owner S.",
+      "suggested_fix": "Collect const generic names too, and run the same shadow check on them over value-namespace tokens in the receiver type and its macro expansions. Refuse before planning, regardless of force."
+    },
+    {
+      "priority": "P2",
+      "code": "acceptance-overwrites-tracked-evidence",
+      "title": "Write native test artifacts and gate logs to opt-in or temporary output",
+      "detail": "The native test helper artifact() always writes into the tracked evidence/issue-1357/native-consumer tree under CARGO_MANIFEST_DIR. run-final.py rewrites the tracked logs, gate-results.json, source-hashes.json and preserved-input-hashes.json. Any acceptance run of `cargo test -p prod-code-gateway --test rust_method_native` therefore dirties the worktree and replaces the 14 byte-recovered logs with new temporary paths, which breaks their recorded hashes. This is the known delivery limitation; it still blocks reusable acceptance and must not be treated as a completed original task.",
+      "path": "crates/prod-code-gateway/tests/rust_method_native/support.rs",
+      "line": 15,
+      "evidence": "support.rs:15-21 does create_dir_all + fs::write into ../../evidence/issue-1357/native-consumer. run-final.py:56,60,75,82 writes tracked evidence files. primary-recovery.json limits[2] records the same limitation.",
+      "suggested_fix": "Write artifacts only when an explicit environment variable names an output directory, defaulting to a tempdir. Have the runner write to a caller-supplied directory and never overwrite committed evidence."
+    },
+    {
+      "priority": "P3",
+      "code": "owner-identity-multi-target-collapse",
+      "title": "Take the receiver's nominal identity from the head ADT, not a single-target typeDefinition reply",
+      "detail": "location_identity accepts only a one-element array (dispatch.rs:57). Native typeDefinition walks generic arguments: the retained navigation reply for Pair<left::S> returns two locations (navigation.rs:85; replies.json 'multiple' = Pair at 3:7 and S at 1:22). For an inherent impl on an instantiation with a workspace ADT argument, such as `impl Holder<Config>`, owner_identity at the impl header therefore returns None. exact_receiver then returns false at dispatch.rs:201-203 for every call, including exactly typed bindings, so all of them stay qualified. This is safe but silently loses the useful ordinary positive the change promises.",
+      "path": "crates/prod-code-mcp/src/to_method/dispatch.rs",
+      "line": 57,
+      "evidence": "dispatch.rs:55-59 rejects multi-element arrays. The navigation test asserts len()==2 for Pair<left::S> at navigation.rs:85, and the replies.json evidence confirms it.",
+      "suggested_fix": "Get the head nominal identity from textDocument/definition on the self-type path segment, or match the typeDefinition target whose name equals the nominal head. Keep the spelling and overlay-dispatch proofs."
+    }
+  ],
+  "deviations": [
+    "Evidence limit: static review only. No tests, compilers, builds or formatters were run, as instructed. Findings 1 and 3 are source and recorded-reply predictions, not executed reproducers.",
+    "Evidence limit: artifact-hashes.json no longer matches 14 recovered logs (byte-identical recovery is recorded separately in primary-recovery.json). The original task 4269 remains capture_failed and is not treated as completed.",
+    "Evidence limit: dispatch_identity in the native support helper counts matching validation definitions across preview and apply (>= calls) and does not require distinct call positions. The retained semantic-replies.json independently shows both distinct calls (2:61, 2:68) resolved in both phases.",
+    "Not reported as a defect: generic-impl calls from concrete contexts (hover W<i32> vs owner W<T>) stay qualified by design, and turbofish calls are retained under the 'used as a value' label. Both are conservative and pre-existing or intentional."
+  ]
+}

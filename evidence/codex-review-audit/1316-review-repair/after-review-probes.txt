@@ -1,0 +1,228 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.24s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 4 tests
+macro receiver original: source
+struct Tax(u32);
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Self) + self.0 as usize;
+        let _ = tax;
+        n
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+shadow recursion original: source
+struct Tax;
+struct Order;
+struct Decoy;
+impl Order {
+    fn f(n: u32) -> u32 {
+        use crate::Decoy as Tax;
+        let recur = Self::f;
+        if n == 0 { 1 } else { recur(n - 1) + 1 }
+    }
+}
+impl Decoy { fn f(_: u32) -> u32 { 99 } }
+fn main() { println!("{}", Order::f(1)); }
+
+impl trait original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> impl Iterator<Item = usize> {
+        std::iter::once(std::mem::size_of::<Self>())
+    }
+}
+fn main() { println!("{}", Order::f().next().unwrap()); }
+
+macro associated original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Self);
+        n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+shadow recursion original: rustc exit status: 0
+
+macro associated original: rustc exit status: 0
+
+macro receiver original: rustc exit status: 0
+
+macro associated original: runtime exit status: 0
+8
+
+shadow recursion original: runtime exit status: 0
+2
+
+macro receiver original: runtime exit status: 0
+10
+
+impl trait original: rustc exit status: 0
+
+impl trait original: runtime exit status: 0
+8
+
+macro associated preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order);
+        n
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+impl trait preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> impl Iterator<Item = usize> {
+        std::iter::once(std::mem::size_of::<Order>())
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f().next().unwrap()); }
+
+macro receiver preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order) + order.0 as usize;
+        let _ = self;
+        n
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+shadow recursion preview: source
+struct Tax;
+
+impl Tax {
+    fn f(n: u32) -> u32 {
+        use crate::Decoy as Tax;
+        let recur = crate::Tax::f;
+        if n == 0 { 1 } else { recur(n - 1) + 1 }
+    }
+}
+struct Order;
+struct Decoy;
+impl Decoy { fn f(_: u32) -> u32 { 99 } }
+fn main() { println!("{}", Tax::f(1)); }
+
+macro associated preview: rustc exit status: 0
+
+macro associated preview: runtime exit status: 0
+8
+
+macro receiver preview: rustc exit status: 0
+
+macro receiver preview: runtime exit status: 0
+10
+
+impl trait preview: rustc exit status: 0
+
+impl trait preview: runtime exit status: 0
+8
+
+shadow recursion preview: rustc exit status: 0
+
+shadow recursion preview: runtime exit status: 0
+2
+
+macro associated applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order);
+        n
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro receiver applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order) + order.0 as usize;
+        let _ = self;
+        n
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+impl trait applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> impl Iterator<Item = usize> {
+        std::iter::once(std::mem::size_of::<Order>())
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f().next().unwrap()); }
+
+shadow recursion applied: source
+struct Tax;
+
+impl Tax {
+    fn f(n: u32) -> u32 {
+        use crate::Decoy as Tax;
+        let recur = crate::Tax::f;
+        if n == 0 { 1 } else { recur(n - 1) + 1 }
+    }
+}
+struct Order;
+struct Decoy;
+impl Decoy { fn f(_: u32) -> u32 { 99 } }
+fn main() { println!("{}", Tax::f(1)); }
+
+macro associated applied: rustc exit status: 0
+
+macro associated applied: runtime exit status: 0
+8
+
+macro receiver applied: rustc exit status: 0
+
+test review_regressions::macro_owner_tokens_keep_outer_self_in_associated_move ... ok
+macro receiver applied: runtime exit status: 0
+10
+
+test review_regressions::macro_owner_tokens_keep_outer_receiver_and_self_type ... ok
+shadow recursion applied: rustc exit status: 0
+
+shadow recursion applied: runtime exit status: 0
+2
+
+impl trait applied: rustc exit status: 0
+
+impl trait applied: runtime exit status: 0
+8
+
+test review_regressions::recursive_destination_cannot_be_captured_by_local_imports ... ok
+test review_regressions::return_position_impl_trait_does_not_introduce_a_self_owner ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.27s
+
+[prod-code exec] exit 0 in 5.9s (server 5.6s, cpu 8.4s user 2.5s sys, peak 1410 MB) on node <private-address>, copy <remote-workspace> (linux x86_64)

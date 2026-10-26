@@ -1,0 +1,1048 @@
+COMMAND prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-gateway --test rust_method_native --no-deps
+warning: this function has too many arguments (13/7)
+  --> crates/prod-code-gateway/src/backend/reader.rs:25:1
+   |
+25 | / pub(crate) fn spawn_reader_loop(
+26 | |     stdout: ChildStdout,
+27 | |     tx: broadcast::Sender<String>,
+28 | |     is_alive: Arc<AtomicBool>,
+...  |
+38 | |     writer: FrameWriter,
+39 | | ) -> OwnedTask {
+   | |______________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+   = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: stripping a prefix manually
+  --> crates/prod-code-gateway/src/cpp_index/relocate.rs:21:25
+   |
+21 |         let remainder = &path_str[clean_root.len()..];
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the prefix was tested here
+  --> crates/prod-code-gateway/src/cpp_index/relocate.rs:20:5
+   |
+20 |     if path_str.starts_with(clean_root) {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+   = note: `#[warn(clippy::manual_strip)]` on by default
+help: try using the `strip_prefix` method
+   |
+20 ~     if let Some(remainder) = path_str.strip_prefix(clean_root) {
+21 ~         return remainder.starts_with('/') || remainder.starts_with('\\');
+   |
+
+warning: stripping a prefix manually
+  --> crates/prod-code-gateway/src/cpp_index/relocate.rs:47:25
+   |
+47 |         let remainder = &s[from_clean.len()..];
+   |                         ^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the prefix was tested here
+  --> crates/prod-code-gateway/src/cpp_index/relocate.rs:46:5
+   |
+46 |     if s.starts_with(from_clean) {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+help: try using the `strip_prefix` method
+   |
+46 ~     if let Some(remainder) = s.strip_prefix(from_clean) {
+47 ~         if remainder.starts_with('/') || remainder.starts_with('\\') {
+   |
+
+warning: stripping a prefix manually
+  --> crates/prod-code-gateway/src/cpp_index/relocate.rs:65:29
+   |
+65 |             let remainder = &uri_rest[from_clean.len()..];
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the prefix was tested here
+  --> crates/prod-code-gateway/src/cpp_index/relocate.rs:64:9
+   |
+64 |         if uri_rest.starts_with(from_clean) {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+help: try using the `strip_prefix` method
+   |
+64 ~         if let Some(remainder) = uri_rest.strip_prefix(from_clean) {
+65 ~             if remainder.starts_with('/') || remainder.starts_with('\\') {
+   |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/cpp_index/relocate.rs:138:9
+    |
+138 | /         if let Some(rest) = token.strip_prefix(flag) {
+139 | |             if let Some((old_part, new_part)) = rest.split_once('=') {
+140 | |                 let relocated_old = relocate_arg_token(old_part, from_str, to_str);
+141 | |                 let relocated_new = relocate_arg_token(new_part, from_str, to_str);
+...   |
+144 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+138 ~         if let Some(rest) = token.strip_prefix(flag)
+139 ~             && let Some((old_part, new_part)) = rest.split_once('=') {
+140 |                 let relocated_old = relocate_arg_token(old_part, from_str, to_str);
+141 |                 let relocated_new = relocate_arg_token(new_part, from_str, to_str);
+142 |                 return format!("{flag}{relocated_old}={relocated_new}");
+143 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/cpp_index/relocate.rs:224:5
+    |
+224 | /     if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(content) {
+225 | |         if let Some(arr) = json_val.as_array_mut() {
+226 | |             for entry in arr {
+227 | |                 if let Some(obj) = entry.as_object_mut() {
+...   |
+273 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+224 ~     if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(content)
+225 ~         && let Some(arr) = json_val.as_array_mut() {
+226 |             for entry in arr {
+...
+271 |             });
+272 ~         }
+    |
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/prod-code-gateway/src/cpp_index/shard.rs:134:12
+    |
+134 |         if length % 2 != 0 && offset < shard_data.len() {
+    |            ^^^^^^^^^^^^^^^ help: replace with: `!length.is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+    = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/prod-code-gateway/src/cpp_index/shard.rs:174:12
+    |
+174 |         if len % 2 != 0 {
+    |            ^^^^^^^^^^^^ help: replace with: `!len.is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: doc list item without indentation
+  --> crates/prod-code-gateway/src/detect/primary.rs:26:5
+   |
+26 | /// Structured and language-specific project markers take priority over generic Markdown files.
+   |     ^
+   |
+   = help: if this is supposed to be its own paragraph, add a blank line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+   = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+   |
+26 | ///    Structured and language-specific project markers take priority over generic Markdown files.
+   |     +++
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/editor_proxy/command.rs:121:13
+    |
+121 | /             if let Some(opts) = cfg
+122 | |                 .initialization_options
+123 | |                 .as_mut()
+124 | |                 .and_then(|o| o.as_object_mut())
+...   |
+134 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+124 ~                 .and_then(|o| o.as_object_mut())
+125 ~                 && let Some(py) = opts.get_mut("python").and_then(|p| p.as_object_mut()) {
+126 |                     if let Some(an) = py.get_mut("analysis").and_then(|a| a.as_object_mut()) {
+...
+131 |                     }
+132 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/editor_proxy/command.rs:126:17
+    |
+126 | /                 if let Some(py) = opts.get_mut("python").and_then(|p| p.as_object_mut()) {
+127 | |                     if let Some(an) = py.get_mut("analysis").and_then(|a| a.as_object_mut()) {
+128 | |                         an.insert(
+129 | |                             "stubPath".to_string(),
+...   |
+133 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+126 ~                 if let Some(py) = opts.get_mut("python").and_then(|p| p.as_object_mut())
+127 ~                     && let Some(an) = py.get_mut("analysis").and_then(|a| a.as_object_mut()) {
+128 |                         an.insert(
+...
+131 |                         );
+132 ~                     }
+    |
+
+warning: this function has too many arguments (14/7)
+  --> crates/prod-code-gateway/src/editor_proxy/probe_task.rs:20:1
+   |
+20 | / pub(crate) fn spawn_probe_task(
+21 | |     interval: Duration,
+22 | |     response_timeout: Duration,
+23 | |     session_id: u64,
+...  |
+34 | |     retire_tx: tokio::sync::watch::Sender<bool>,
+35 | | ) -> tokio::task::JoinHandle<()> {
+   | |________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/metrics/snapshot.rs:54:9
+   |
+54 | /         if let Some(load) = memory::load_average_1m() {
+55 | |             if cpu_count > 0 {
+56 | |                 let share = (load / cpu_count as f64).clamp(0.0, 1.0);
+57 | |                 return Some((share * 100_000.0).round() as u32);
+58 | |             }
+59 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+54 ~         if let Some(load) = memory::load_average_1m()
+55 ~             && cpu_count > 0 {
+56 |                 let share = (load / cpu_count as f64).clamp(0.0, 1.0);
+57 |                 return Some((share * 100_000.0).round() as u32);
+58 ~             }
+   |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/metrics/snapshot.rs:66:13
+   |
+66 | /             if let Ok(text) = std::fs::read_to_string("/proc/stat") {
+67 | |                 if let Some(first_line) = text.lines().next() {
+68 | |                     let parts: Vec<&str> = first_line.split_whitespace().collect();
+69 | |                     if parts.len() >= 5 && parts[0] == "cpu" {
+...  |
+84 | |             }
+   | |_____________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+66 ~             if let Ok(text) = std::fs::read_to_string("/proc/stat")
+67 ~                 && let Some(first_line) = text.lines().next() {
+68 |                     let parts: Vec<&str> = first_line.split_whitespace().collect();
+...
+82 |                     }
+83 ~                 }
+   |
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> crates/prod-code-gateway/src/metrics/snapshot.rs:226:22
+    |
+226 |         let bavail = s.f_bavail as u64;
+    |                      ^^^^^^^^^^^^^^^^^ help: try: `s.f_bavail`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_cast
+    = note: `#[warn(clippy::unnecessary_cast)]` on by default
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> crates/prod-code-gateway/src/metrics/snapshot.rs:227:22
+    |
+227 |         let blocks = s.f_blocks as u64;
+    |                      ^^^^^^^^^^^^^^^^^ help: try: `s.f_blocks`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_cast
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> crates/prod-code-gateway/src/metrics/snapshot.rs:229:13
+    |
+229 |             s.f_frsize as u64
+    |             ^^^^^^^^^^^^^^^^^ help: try: `s.f_frsize`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_cast
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> crates/prod-code-gateway/src/metrics/snapshot.rs:231:13
+    |
+231 |             s.f_bsize as u64
+    |             ^^^^^^^^^^^^^^^^ help: try: `s.f_bsize`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_cast
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/metrics/storage.rs:184:9
+    |
+184 | /         if *day > 0 && *day < cutoff_day {
+185 | |             if std::fs::remove_file(path).is_ok() {
+186 | |                 pruned += 1;
+187 | |                 total_bytes = total_bytes.saturating_sub(*size);
+...   |
+191 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+184 ~         if *day > 0 && *day < cutoff_day
+185 ~             && std::fs::remove_file(path).is_ok() {
+186 |                 pruned += 1;
+...
+189 |                 return false;
+190 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/python_cache/env.rs:31:5
+   |
+31 | /     if let Some(custom) = std::env::var_os(PYTHON_STUB_CACHE_ENV) {
+32 | |         if let Some(path) = resolve_python_cache_dir(PathBuf::from(custom)) {
+33 | |             return path;
+34 | |         }
+35 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+31 ~     if let Some(custom) = std::env::var_os(PYTHON_STUB_CACHE_ENV)
+32 ~         && let Some(path) = resolve_python_cache_dir(PathBuf::from(custom)) {
+33 |             return path;
+34 ~         }
+   |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/env.rs:201:5
+    |
+201 | /     if has_stub_packages(dir) {
+202 | |         if let Ok(view) = ensure_mypypath_view(dir) {
+203 | |             if is_mypypath_view_ready(&view) {
+204 | |                 return view;
+...   |
+207 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+201 ~     if has_stub_packages(dir)
+202 ~         && let Ok(view) = ensure_mypypath_view(dir) {
+203 |             if is_mypypath_view_ready(&view) {
+204 |                 return view;
+205 |             }
+206 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/env.rs:202:9
+    |
+202 | /         if let Ok(view) = ensure_mypypath_view(dir) {
+203 | |             if is_mypypath_view_ready(&view) {
+204 | |                 return view;
+205 | |             }
+206 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+202 ~         if let Ok(view) = ensure_mypypath_view(dir)
+203 ~             && is_mypypath_view_ready(&view) {
+204 |                 return view;
+205 ~             }
+    |
+
+warning: this `match` expression can be replaced with `?`
+   --> crates/prod-code-gateway/src/python_cache/fs_ops.rs:92:24
+    |
+ 92 |       let mut tmp_file = match fs::OpenOptions::new()
+    |  ________________________^
+ 93 | |         .read(true)
+ 94 | |         .write(true)
+ 95 | |         .create_new(true)
+...   |
+ 99 | |         Err(e) => return Err(e),
+100 | |     };
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#question_mark
+    = note: `#[warn(clippy::question_mark)]` on by default
+help: try instead
+    |
+ 92 ~     let mut tmp_file = fs::OpenOptions::new()
+ 93 +         .read(true)
+ 94 +         .write(true)
+ 95 +         .create_new(true)
+ 96 ~         .open(&tmp_path)?;
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/merge.rs:148:20
+    |
+148 |               } else if file_type.is_file() {
+    |  ____________________^
+149 | |                 if let Ok(meta) = entry.metadata() {
+150 | |                     total += meta.len();
+151 | |                 }
+152 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+148 ~             } else if file_type.is_file()
+149 ~                 && let Ok(meta) = entry.metadata() {
+150 |                     total += meta.len();
+151 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/prune/unix.rs:104:9
+    |
+104 | /         if let Ok(age) = now.duration_since(f.modified) {
+105 | |             if age > max_age {
+106 | |                 if remove_entry(root_fd, f) {
+107 | |                     total_size = total_size.saturating_sub(f.size);
+...   |
+112 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+104 ~         if let Ok(age) = now.duration_since(f.modified)
+105 ~             && age > max_age {
+106 |                 if remove_entry(root_fd, f) {
+...
+110 |                 }
+111 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/prune/unix.rs:105:13
+    |
+105 | /             if age > max_age {
+106 | |                 if remove_entry(root_fd, f) {
+107 | |                     total_size = total_size.saturating_sub(f.size);
+108 | |                     removed += 1;
+...   |
+111 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+105 ~             if age > max_age
+106 ~                 && remove_entry(root_fd, f) {
+107 |                     total_size = total_size.saturating_sub(f.size);
+108 |                     removed += 1;
+109 |                     return false;
+110 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/python_cache/seed.rs:94:9
+   |
+94 | /         if let Some(source_typings) = source_typings {
+95 | |             if typings_size > 0 {
+96 | |                 let merged = merge_stubs(source_typings, &cache_dir)?;
+97 | |                 total_bytes += merged;
+98 | |             }
+99 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+94 ~         if let Some(source_typings) = source_typings
+95 ~             && typings_size > 0 {
+96 |                 let merged = merge_stubs(source_typings, &cache_dir)?;
+97 |                 total_bytes += merged;
+98 ~             }
+   |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/seed.rs:155:5
+    |
+155 | /     if to_pyright_config.is_file() {
+156 | |         if let Ok(content) = fs::read_to_string(&to_pyright_config) {
+157 | |             if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+158 | |                 if let Some(obj) = val.as_object_mut() {
+...   |
+171 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+155 ~     if to_pyright_config.is_file()
+156 ~         && let Ok(content) = fs::read_to_string(&to_pyright_config) {
+157 |             if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+...
+169 |             }
+170 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/seed.rs:156:9
+    |
+156 | /         if let Ok(content) = fs::read_to_string(&to_pyright_config) {
+157 | |             if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+158 | |                 if let Some(obj) = val.as_object_mut() {
+159 | |                     if !obj.contains_key("stubPath") {
+...   |
+170 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+156 ~         if let Ok(content) = fs::read_to_string(&to_pyright_config)
+157 ~             && let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+158 |                 if let Some(obj) = val.as_object_mut() {
+...
+168 |                 }
+169 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/seed.rs:157:13
+    |
+157 | /             if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+158 | |                 if let Some(obj) = val.as_object_mut() {
+159 | |                     if !obj.contains_key("stubPath") {
+160 | |                         obj.insert(
+...   |
+169 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+157 ~             if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content)
+158 ~                 && let Some(obj) = val.as_object_mut() {
+159 |                     if !obj.contains_key("stubPath") {
+...
+167 |                     }
+168 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/python_cache/seed.rs:158:17
+    |
+158 | /                 if let Some(obj) = val.as_object_mut() {
+159 | |                     if !obj.contains_key("stubPath") {
+160 | |                         obj.insert(
+161 | |                             "stubPath".to_string(),
+...   |
+168 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+158 ~                 if let Some(obj) = val.as_object_mut()
+159 ~                     && !obj.contains_key("stubPath") {
+160 |                         obj.insert(
+...
+166 |                         }
+167 ~                     }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/shadow/overlay.rs:130:5
+    |
+130 | /     if !mount_succeeded {
+131 | |         if let Some(fallback_root) = fallback_root {
+132 | |             tracing::warn!(
+133 | |                 hypothesis = %job.name,
+...   |
+149 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+130 ~     if !mount_succeeded
+131 ~         && let Some(fallback_root) = fallback_root {
+132 |             tracing::warn!(
+...
+147 |             return Box::pin(run_overlay(fallback_job, cancel)).await;
+148 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/shadow/root.rs:50:5
+   |
+50 | /     if let Ok(ram_env) = std::env::var("PROD_CODE_SHADOW_RAM")
+51 | |         && (ram_env == "1" || ram_env.eq_ignore_ascii_case("true"))
+52 | |     {
+53 | |         if let Some(ram_root) = ram_shadow_root(storage_root) {
+...  |
+56 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+51 ~         && (ram_env == "1" || ram_env.eq_ignore_ascii_case("true"))
+52 ~         && let Some(ram_root) = ram_shadow_root(storage_root) {
+53 |             return ram_root;
+54 ~         }
+   |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/swift_cache/env.rs:54:5
+   |
+54 | /     if let Some(custom) = std::env::var_os(SWIFT_MODULE_CACHE_ENV) {
+55 | |         if let Some(dir) = resolve_cache_dir(PathBuf::from(custom)) {
+56 | |             return dir;
+57 | |         }
+58 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+54 ~     if let Some(custom) = std::env::var_os(SWIFT_MODULE_CACHE_ENV)
+55 ~         && let Some(dir) = resolve_cache_dir(PathBuf::from(custom)) {
+56 |             return dir;
+57 ~         }
+   |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/swift_cache/env.rs:60:5
+   |
+60 | /     if let Some(override_path) = std::env::var_os("SWIFTPM_MODULECACHE_OVERRIDE") {
+61 | |         if let Some(dir) = resolve_cache_dir(PathBuf::from(override_path)) {
+62 | |             return dir;
+63 | |         }
+64 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+60 ~     if let Some(override_path) = std::env::var_os("SWIFTPM_MODULECACHE_OVERRIDE")
+61 ~         && let Some(dir) = resolve_cache_dir(PathBuf::from(override_path)) {
+62 |             return dir;
+63 ~         }
+   |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/swift_cache/prune.rs:140:13
+    |
+140 | /             if let Ok(age) = now.duration_since(f.modified) {
+141 | |                 if age > max_age {
+142 | |                     if remove_entry(root_fd, f) {
+143 | |                         total_size = total_size.saturating_sub(f.size);
+...   |
+148 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+140 ~             if let Ok(age) = now.duration_since(f.modified)
+141 ~                 && age > max_age {
+142 |                     if remove_entry(root_fd, f) {
+...
+146 |                     }
+147 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/swift_cache/prune.rs:141:17
+    |
+141 | /                 if age > max_age {
+142 | |                     if remove_entry(root_fd, f) {
+143 | |                         total_size = total_size.saturating_sub(f.size);
+144 | |                         removed += 1;
+...   |
+147 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+141 ~                 if age > max_age
+142 ~                     && remove_entry(root_fd, f) {
+143 |                         total_size = total_size.saturating_sub(f.size);
+144 |                         removed += 1;
+145 |                         return false;
+146 ~                     }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/swift_cache/seed.rs:165:13
+    |
+165 | /             if from_state.is_file() {
+166 | |                 if let Ok(state_content) = fs::read_to_string(&from_state) {
+167 | |                     if let Ok(relocated_state) =
+168 | |                         relocate_swiftpm_workspace_state(&state_content, from_str, to_str)
+...   |
+175 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+165 ~             if from_state.is_file()
+166 ~                 && let Ok(state_content) = fs::read_to_string(&from_state) {
+167 |                     if let Ok(relocated_state) =
+...
+173 |                     }
+174 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/swift_cache/seed.rs:166:17
+    |
+166 | /                 if let Ok(state_content) = fs::read_to_string(&from_state) {
+167 | |                     if let Ok(relocated_state) =
+168 | |                         relocate_swiftpm_workspace_state(&state_content, from_str, to_str)
+...   |
+174 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+166 ~                 if let Ok(state_content) = fs::read_to_string(&from_state)
+167 ~                     && let Ok(relocated_state) =
+168 |                         relocate_swiftpm_workspace_state(&state_content, from_str, to_str)
+...
+172 |                         any_seeded = true;
+173 ~                     }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/swift_cache/seed.rs:208:9
+    |
+208 | /         if let Ok(meta) = fs::symlink_metadata(&from_module_cache) {
+209 | |             if !meta.file_type().is_symlink() {
+210 | |                 merge_cache_files(&from_module_cache, shared_module_cache)?;
+211 | |             }
+212 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+208 ~         if let Ok(meta) = fs::symlink_metadata(&from_module_cache)
+209 ~             && !meta.file_type().is_symlink() {
+210 |                 merge_cache_files(&from_module_cache, shared_module_cache)?;
+211 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/swift_cache/seed.rs:218:13
+    |
+218 | /             if let Ok(target) = fs::read_link(to_module_cache) {
+219 | |                 if target == shared_module_cache {
+220 | |                     return Ok(());
+221 | |                 }
+222 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+218 ~             if let Ok(target) = fs::read_link(to_module_cache)
+219 ~                 && target == shared_module_cache {
+220 |                     return Ok(());
+221 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/swift_cache/workspace.rs:101:5
+    |
+101 | /     if has_package {
+102 | |         if let Ok(rel) = dir.strip_prefix(root) {
+103 | |             packages.push(rel.to_path_buf());
+104 | |         }
+105 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+101 ~     if has_package
+102 ~         && let Ok(rel) = dir.strip_prefix(root) {
+103 |             packages.push(rel.to_path_buf());
+104 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/ts_cache/detect.rs:47:17
+   |
+47 | /                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+48 | |                     if matches!(
+49 | |                         ext,
+50 | |                         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts"
+...  |
+54 | |                 }
+   | |_________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+47 ~                 if let Some(ext) = path.extension().and_then(|e| e.to_str())
+48 ~                     && matches!(
+49 |                         ext,
+...
+52 |                         return true;
+53 ~                     }
+   |
+
+warning: doc list item without indentation
+  --> crates/prod-code-gateway/src/ts_cache/detect.rs:68:5
+   |
+68 | /// Constrains candidate discovery to approved roots and avoids symlink cycles (#836).
+   |     ^
+   |
+   = help: if this is supposed to be its own paragraph, add a blank line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+help: indent this line
+   |
+68 | ///    Constrains candidate discovery to approved roots and avoids symlink cycles (#836).
+   |     +++
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/ts_cache/prune/unix.rs:100:9
+    |
+100 | /         if let Ok(age) = now.duration_since(f.modified) {
+101 | |             if age > max_age {
+102 | |                 if remove_entry(root_fd, f) {
+103 | |                     total_size = total_size.saturating_sub(f.size);
+...   |
+108 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+100 ~         if let Ok(age) = now.duration_since(f.modified)
+101 ~             && age > max_age {
+102 |                 if remove_entry(root_fd, f) {
+...
+106 |                 }
+107 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/ts_cache/prune/unix.rs:101:13
+    |
+101 | /             if age > max_age {
+102 | |                 if remove_entry(root_fd, f) {
+103 | |                     total_size = total_size.saturating_sub(f.size);
+104 | |                     removed += 1;
+...   |
+107 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+101 ~             if age > max_age
+102 ~                 && remove_entry(root_fd, f) {
+103 |                     total_size = total_size.saturating_sub(f.size);
+104 |                     removed += 1;
+105 |                     return false;
+106 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+  --> crates/prod-code-gateway/src/ts_cache/roots.rs:73:13
+   |
+73 | /             if candidate.is_dir() {
+74 | |                 if let Ok(c) = candidate.canonicalize() {
+75 | |                     approved.push(c);
+76 | |                 }
+77 | |             }
+   | |_____________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+73 ~             if candidate.is_dir()
+74 ~                 && let Ok(c) = candidate.canonicalize() {
+75 |                     approved.push(c);
+76 ~                 }
+   |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/gossip.rs:243:9
+    |
+243 | /         if entry.last_seen.elapsed() < std::time::Duration::from_secs(30) {
+244 | |             if let Ok(addr) = entry.gossip.addr.parse::<SocketAddr>() {
+245 | |                 let eng: Vec<String> = entry
+246 | |                     .gossip
+...   |
+282 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+243 ~         if entry.last_seen.elapsed() < std::time::Duration::from_secs(30)
+244 ~             && let Ok(addr) = entry.gossip.addr.parse::<SocketAddr>() {
+245 |                 let eng: Vec<String> = entry
+...
+280 |                 });
+281 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/janitor_task.rs:187:21
+    |
+187 | /                     if let Some(target) = place_resp.node {
+188 | |                         if target != own_addr && target != view.this_node {
+189 | |                             let notified = ws.trigger_rebalance(
+190 | |                                 target.clone(),
+...   |
+203 | |                     }
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+187 ~                     if let Some(target) = place_resp.node
+188 ~                         && target != own_addr && target != view.this_node {
+189 |                             let notified = ws.trigger_rebalance(
+...
+201 |                             }
+202 ~                         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/runner/ram_cache.rs:258:25
+    |
+258 | /                         if name_str.starts_with(".active_") {
+259 | |                             if is_ram_lease_active(&child.path()) {
+260 | |                                 has_active_lease = true;
+261 | |                             }
+262 | |                         }
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+258 ~                         if name_str.starts_with(".active_")
+259 ~                             && is_ram_lease_active(&child.path()) {
+260 |                                 has_active_lease = true;
+261 ~                             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/runner/ram_cache.rs:281:21
+    |
+281 | /                     if is_old {
+282 | |                         if let Ok(()) = std::fs::remove_dir_all(&path) {
+283 | |                             removed += 1;
+284 | |                         }
+285 | |                     }
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+281 ~                     if is_old
+282 ~                         && let Ok(()) = std::fs::remove_dir_all(&path) {
+283 |                             removed += 1;
+284 ~                         }
+    |
+
+warning: this `let...else` may be rewritten with the `?` operator
+  --> crates/prod-code-gateway/src/session/lsp_managed.rs:27:5
+   |
+27 | /     let Some(ref go) = view.workspace.go_engine else {
+28 | |         return None;
+29 | |     };
+   | |______^ help: replace it with: `let go = view.workspace.go_engine.as_ref()?;`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#question_mark
+
+warning: this `let...else` may be rewritten with the `?` operator
+   --> crates/prod-code-gateway/src/session/lsp_managed.rs:172:5
+    |
+172 | /     let Some(ref generic_eng) = view.workspace.generic_engine else {
+173 | |         return None;
+174 | |     };
+    | |______^ help: replace it with: `let generic_eng = view.workspace.generic_engine.as_ref()?;`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#question_mark
+
+warning: this function has too many arguments (8/7)
+  --> crates/prod-code-gateway/src/session/lsp_rust.rs:17:1
+   |
+17 | / pub async fn handle_rust_lsp(
+18 | |     out_tx: &SharedOutputSender,
+19 | |     translator: &PathTranslator,
+20 | |     view: &SessionView,
+...  |
+25 | |     engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+26 | | ) -> Option<Flow> {
+   | |_________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/session/message_dispatch.rs:105:17
+    |
+105 | /                 if let Some(ref engine_lock) = view.workspace.rust_engine {
+106 | |                     if let Some(flow) = handle_rust_lsp(
+107 | |                         out_tx,
+108 | |                         translator,
+...   |
+120 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+105 ~                 if let Some(ref engine_lock) = view.workspace.rust_engine
+106 ~                     && let Some(flow) = handle_rust_lsp(
+107 |                         out_tx,
+...
+118 |                         return flow;
+119 ~                     }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/prod-code-gateway/src/session/redirect.rs:78:9
+    |
+ 78 | /         if !is_loaded_locally && req.redirect_count == 0 {
+ 79 | |             if let Some(holder) = view.nodes.iter().find(|n| {
+ 80 | |                 n.alive
+ 81 | |                     && n.addr != own_addr
+...   |
+103 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+ 78 ~         if !is_loaded_locally && req.redirect_count == 0
+ 79 ~             && let Some(holder) = view.nodes.iter().find(|n| {
+ 80 |                 n.alive
+...
+101 |                 return Ok(Some(()));
+102 ~             }
+    |
+
+warning: `prod-code-gateway` (lib) generated 56 warnings (run `cargo clippy --fix --lib -p prod-code-gateway -- --no-deps` to apply 49 suggestions)
+    Checking prod-code-gateway v0.3.41 (<remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09/crates/prod-code-gateway)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.62s
+[prod-code exec] exit 0 in 1.2s (server 0.7s, cpu 0.2s user 0.2s sys, peak 330 MB) on node <build-node>, copy <remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09 (linux x86_64)
+
+TERMINAL_EXIT=0

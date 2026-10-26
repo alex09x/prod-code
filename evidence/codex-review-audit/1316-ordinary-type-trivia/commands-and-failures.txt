@@ -1,0 +1,48 @@
+All project commands ran in the assigned worktree and reached terminal
+completion. Endpoint and absolute worktree identity are sanitized.
+
+First discovery tool call, blocked before execution:
+git diff --stat ec35bc59b2a3d5b38ff0f448c805757f691d1ea0 HEAD && sed -n '1,230p' crates/prod-code-mcp/src/to_method/helpers.rs && rg --files crates/prod-code-mcp/tests/rust_method_preservation* evidence/codex-review-audit
+Exact error: Command blocked by PreToolUse hook: Grep for text pattern `crates/prod-code-mcp/tests/rust_method_preservation*` over source files is blocked.
+
+Second discovery tool call, blocked before execution:
+git diff --stat ec35bc59b2a3d5b38ff0f448c805757f691d1ea0 HEAD && sed -n '1,230p' crates/prod-code-mcp/src/to_method/helpers.rs && find crates/prod-code-mcp/tests/rust_method_preservation evidence/codex-review-audit -maxdepth 2 -type f
+Exact error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.
+Bounded fallback: git ls-files for known test/evidence paths and targeted reads.
+
+Default-endpoint navigation:
+prod-code def --symbol type_spelling crates/prod-code-mcp/src/to_method/helpers.rs
+No output for approximately 40 seconds; interrupted, terminal exit 130.
+Bounded fallback, terminal exit 0:
+prod-code def --remote <build-node> --symbol type_spelling crates/prod-code-mcp/src/to_method/helpers.rs
+Returned helpers.rs:107 with full type_spelling body. No issue/message was
+published because this bounded task explicitly prohibits messages/publications.
+
+Public reproduction, before.txt, terminal exit 101:
+prod-code exec --remote <build-node> --timeout-secs 900 -- env RUST_TEST_NOCAPTURE=1 cargo test -p prod-code-mcp --test rust_method_preservation type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert
+Exact error: called `Result::unwrap()` on an `Err` value: the first parameter of `f`, `c:&S< &'static u8>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver
+
+First post-repair run, after.txt, same command, terminal exit 101:
+Exact error: error[E0606]: casting `&i32` as `*const u8` is invalid
+The pointer fixture was corrected to use &7u8; the function-pointer fixture
+also received an explicit u8 suffix. No production change for that failure.
+
+Corrected focused run, after-repaired.txt, same command, terminal exit 0:
+1 passed; 0 failed; 43 filtered out. Five fixture shapes, each in four modes,
+compile and execute actual returned source, preserving runtime 7.
+
+Scoped formatting, format.txt, terminal exit 0:
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/to_method/helpers.rs crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs
+
+Scoped lint, lint.txt, terminal exit 1 (underlying cargo exit 101):
+prod-code lint --remote <build-node> --path crates/prod-code-mcp --timeout-secs 900
+rust lint: FAILED (exit 101); 210 error(s), 0 warning(s)
+175 displayed diagnostic bodies equal prior evidence after source-coordinate
+normalization; 35 omitted bodies were not compared. No lint fixes in scope.
+
+Final required acceptance, acceptance.txt, terminal exit 0:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation
+44 passed; 0 failed; 0 filtered out; Linux x86_64 build node.
+
+Read-only final whitespace verification, terminal exit 0:
+git diff --check

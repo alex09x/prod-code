@@ -112,6 +112,7 @@ pub async fn move_associated_function(
         .with_context(|| format!("`{name}` has no body"))?;
     let body_close = crate::parameter_object::matching_bracket(&text, body_open)
         .context("the function's body does not close")?;
+    super::syntax::ensure_owner_context(&text[name_at..=body_close])?;
     let (item_start, span_end) = item_span(&text, name_at, body_close);
     let span_start = if text[..item_start].ends_with("\n\n") {
         item_start - 1
@@ -119,11 +120,6 @@ pub async fn move_associated_function(
         item_start
     };
     let map = [("Self", owner_in_target.as_str())];
-    let method_text = format!(
-        "{}{}\n",
-        &text[item_start..name_at],
-        swap_names(&text[name_at..=body_close], &map)
-    );
     let signature = format!(
         "fn {}",
         swap_names(&text[name_at..body_open], &map).trim_end()
@@ -148,14 +144,10 @@ pub async fn move_associated_function(
         .entry(file.clone())
         .or_default()
         .push((cut_start, cut_end, String::new()));
-    let (insert_at, inserted) = insertion(&texts[&target_file], to_type, def_line, &method_text)?;
-    edits
-        .entry(target_file.clone())
-        .or_default()
-        .push((insert_at, insert_at, inserted));
 
     // Every path to it names the new type.
     let mut unmatched = Vec::new();
+    let mut internal_edits = Vec::new();
     let mut calls = 0;
     let (nl, nc) = crate::signature::position_at(&text, name_at)?;
     let refs = crate::signature::references(remote, root, file, nl, nc)
@@ -188,6 +180,12 @@ pub async fn move_associated_function(
             .take_while(|(_, c)| is_ident(*c) || *c == ':')
             .last()
             .map_or(qualifier.len(), |(i, _)| i);
+        if path_start == qualifier.len() {
+            unmatched.push(format!(
+                "{site}: the qualified path to `{name}` is not handled"
+            ));
+            continue;
+        }
         let (_, caller_module) = crate::move_item::module_of(&path)?;
         let target_path = if caller_module.segments == target_module.segments {
             to_type.to_string()
@@ -197,8 +195,24 @@ pub async fn move_associated_function(
                 target_module.spelled_from(&caller_module.krate)
             )
         };
-        // Inside the moved function itself the path moves with it.
+        // Internal references are read from the destination's perspective. Patch their
+        // original spans before replacing nonrecursive Self occurrences with the old owner.
         if path == *file && span_start <= at && at < span_end {
+            if path_start < name_at || at > body_close {
+                unmatched.push(format!(
+                    "{site}: the recursive path is outside the function"
+                ));
+                continue;
+            }
+            // A local import or type alias may shadow the destination's bare name.
+            // Anchor recursion to its module rather than to the moved body's scope.
+            let destination = target_module.spelled_from(&target_module.krate);
+            internal_edits.push((
+                path_start - name_at,
+                at - name_at,
+                format!("{destination}::{to_type}::"),
+            ));
+            calls += 1;
             continue;
         }
         edits
@@ -207,6 +221,23 @@ pub async fn move_associated_function(
             .push((path_start, at, format!("{target_path}::")));
         calls += 1;
     }
+
+    let mut moved = text[name_at..=body_close].to_string();
+    internal_edits.sort_by_key(|(from, _, _)| std::cmp::Reverse(*from));
+    internal_edits.dedup();
+    for (from, to, replacement) in internal_edits {
+        moved.replace_range(from..to, &replacement);
+    }
+    let method_text = format!(
+        "{}{}\n",
+        &text[item_start..name_at],
+        swap_names(&moved, &map)
+    );
+    let (insert_at, inserted) = insertion(&texts[&target_file], to_type, def_line, &method_text)?;
+    edits
+        .entry(target_file.clone())
+        .or_default()
+        .push((insert_at, insert_at, inserted));
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {

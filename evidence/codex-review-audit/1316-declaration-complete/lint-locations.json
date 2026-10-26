@@ -1,0 +1,620 @@
+[
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/config/mod.rs",
+    "line": 52,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/config/mod.rs",
+    "line": 53,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/config/mod.rs",
+    "line": 63,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/config/mod.rs",
+    "line": 64,
+    "column": 9
+  },
+  {
+    "message": "this function has too many arguments (9/7)",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+    "line": 31,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+    "line": 110,
+    "column": 25
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+    "line": 111,
+    "column": 29
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/feed.rs",
+    "line": 139,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+    "line": 69,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+    "line": 123,
+    "column": 17
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+    "line": 124,
+    "column": 21
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+    "line": 125,
+    "column": 25
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/diagnostics/stream/manager.rs",
+    "line": 126,
+    "column": 29
+  },
+  {
+    "message": "the loop variable `i` is used to index `stripped`",
+    "path": "crates/prod-code-mcp/src/dossier/assertions/cpp.rs",
+    "line": 29,
+    "column": 18
+  },
+  {
+    "message": "the loop variable `i` is used to index `stripped`",
+    "path": "crates/prod-code-mcp/src/dossier/assertions/cpp.rs",
+    "line": 60,
+    "column": 18
+  },
+  {
+    "message": "this block may be rewritten with the `?` operator",
+    "path": "crates/prod-code-mcp/src/dossier/assertions/cpp.rs",
+    "line": 94,
+    "column": 20
+  },
+  {
+    "message": "the loop variable `i` is used to index `stripped`",
+    "path": "crates/prod-code-mcp/src/dossier/assertions/go.rs",
+    "line": 29,
+    "column": 14
+  },
+  {
+    "message": "this block may be rewritten with the `?` operator",
+    "path": "crates/prod-code-mcp/src/dossier/assertions/python.rs",
+    "line": 39,
+    "column": 16
+  },
+  {
+    "message": "the loop variable `i` is used to index `stripped`",
+    "path": "crates/prod-code-mcp/src/dossier/assertions/python.rs",
+    "line": 53,
+    "column": 14
+  },
+  {
+    "message": "the loop variable `i` is used to index `stripped`",
+    "path": "crates/prod-code-mcp/src/dossier/assertions/python.rs",
+    "line": 130,
+    "column": 14
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/dossier/locations.rs",
+    "line": 98,
+    "column": 13
+  },
+  {
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "path": "crates/prod-code-mcp/src/dossier/locations.rs",
+    "line": 126,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/encapsulate_field/polyglot/lsp.rs",
+    "line": 44,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/encapsulate_field/polyglot/mod.rs",
+    "line": 287,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/extract_delegate/polyglot/execute.rs",
+    "line": 199,
+    "column": 17
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/extract_function/binding.rs",
+    "line": 103,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/extract_function/binding.rs",
+    "line": 137,
+    "column": 5
+  },
+  {
+    "message": "this function has too many arguments (9/7)",
+    "path": "crates/prod-code-mcp/src/extract_function/duplicates/search.rs",
+    "line": 96,
+    "column": 1
+  },
+  {
+    "message": "match expression looks like `matches!` macro",
+    "path": "crates/prod-code-mcp/src/fixture/builder/lexer.rs",
+    "line": 240,
+    "column": 24
+  },
+  {
+    "message": "draining all elements of a collection into a new collection of the same type",
+    "path": "crates/prod-code-mcp/src/fixture/polyglot/parsers_go_ts.rs",
+    "line": 113,
+    "column": 29
+  },
+  {
+    "message": "the loop variable `index` is used to index `params`",
+    "path": "crates/prod-code-mcp/src/generify/polyglot.rs",
+    "line": 125,
+    "column": 26
+  },
+  {
+    "message": "this function has too many arguments (9/7)",
+    "path": "crates/prod-code-mcp/src/impact/signatures.rs",
+    "line": 361,
+    "column": 1
+  },
+  {
+    "message": "derefed type is same as origin",
+    "path": "crates/prod-code-mcp/src/impact/test_cmd.rs",
+    "line": 339,
+    "column": 16
+  },
+  {
+    "message": "derefed type is same as origin",
+    "path": "crates/prod-code-mcp/src/impact/test_cmd.rs",
+    "line": 339,
+    "column": 39
+  },
+  {
+    "message": "derefed type is same as origin",
+    "path": "crates/prod-code-mcp/src/impact/test_cmd.rs",
+    "line": 340,
+    "column": 29
+  },
+  {
+    "message": "this function has too many arguments (8/7)",
+    "path": "crates/prod-code-mcp/src/move_item/item.rs",
+    "line": 189,
+    "column": 1
+  },
+  {
+    "message": "the following explicit lifetimes could be elided: 'a",
+    "path": "crates/prod-code-mcp/src/parameter_object/binding.rs",
+    "line": 243,
+    "column": 30
+  },
+  {
+    "message": "this function has too many arguments (12/7)",
+    "path": "crates/prod-code-mcp/src/parameter_object/polyglot_callers.rs",
+    "line": 35,
+    "column": 1
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/prune/execute.rs",
+    "line": 216,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/remote_fs/mod.rs",
+    "line": 267,
+    "column": 21
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/remote_fs/mod.rs",
+    "line": 268,
+    "column": 25
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/replace_constructor/sites/helpers.rs",
+    "line": 37,
+    "column": 5
+  },
+  {
+    "message": "called `Iterator::last` on a `DoubleEndedIterator`; this will needlessly iterate the entire iterator",
+    "path": "crates/prod-code-mcp/src/replace_inheritance/languages/cpp.rs",
+    "line": 175,
+    "column": 16
+  },
+  {
+    "message": "found call to `str::trim` before `str::split_whitespace`",
+    "path": "crates/prod-code-mcp/src/replace_inheritance/languages/swift.rs",
+    "line": 196,
+    "column": 35
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/server/failover.rs",
+    "line": 131,
+    "column": 17
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/session/pool.rs",
+    "line": 178,
+    "column": 13
+  },
+  {
+    "message": "this returns a `Result<_, ()>`",
+    "path": "crates/prod-code-mcp/src/signature/call_sites.rs",
+    "line": 111,
+    "column": 1
+  },
+  {
+    "message": "this function has too many arguments (9/7)",
+    "path": "crates/prod-code-mcp/src/signature/modifiers.rs",
+    "line": 110,
+    "column": 1
+  },
+  {
+    "message": "this function has too many arguments (12/7)",
+    "path": "crates/prod-code-mcp/src/signature_go/reorder_verify.rs",
+    "line": 27,
+    "column": 1
+  },
+  {
+    "message": "this function has too many arguments (10/7)",
+    "path": "crates/prod-code-mcp/src/supertypes/rust.rs",
+    "line": 24,
+    "column": 1
+  },
+  {
+    "message": "parameter is only used in recursion",
+    "path": "crates/prod-code-mcp/src/supertypes/rust.rs",
+    "line": 27,
+    "column": 5
+  },
+  {
+    "message": "very complex type used. Consider factoring parts into `type` definitions",
+    "path": "crates/prod-code-mcp/src/sync/cache.rs",
+    "line": 133,
+    "column": 20
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/sync/read.rs",
+    "line": 128,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/sync/read.rs",
+    "line": 129,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/sync/scan.rs",
+    "line": 65,
+    "column": 9
+  },
+  {
+    "message": "the following explicit lifetimes could be elided: 'a",
+    "path": "crates/prod-code-mcp/src/to_method/helpers.rs",
+    "line": 314,
+    "column": 33
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/tools/execution.rs",
+    "line": 141,
+    "column": 20
+  },
+  {
+    "message": "redundant redefinition of a binding `args`",
+    "path": "crates/prod-code-mcp/src/tools/execution.rs",
+    "line": 173,
+    "column": 9
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/tools/symbols/alias.rs",
+    "line": 56,
+    "column": 31
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/tools/symbols/alias.rs",
+    "line": 74,
+    "column": 31
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/tools/symbols/resolve.rs",
+    "line": 354,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/tools/symbols/type_members.rs",
+    "line": 234,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/tools/symbols/type_members.rs",
+    "line": 240,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+    "line": 64,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+    "line": 65,
+    "column": 13
+  },
+  {
+    "message": "this loop could be written as a `for` loop",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+    "line": 143,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_python.rs",
+    "line": 266,
+    "column": 16
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs",
+    "line": 191,
+    "column": 16
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_reexport.rs",
+    "line": 219,
+    "column": 20
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "line": 38,
+    "column": 25
+  },
+  {
+    "message": "this manual char comparison can be written more succinctly",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "line": 67,
+    "column": 33
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "line": 78,
+    "column": 25
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "line": 142,
+    "column": 25
+  },
+  {
+    "message": "this manual char comparison can be written more succinctly",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "line": 171,
+    "column": 33
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts_cjs.rs",
+    "line": 176,
+    "column": 21
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 108,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 149,
+    "column": 5
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 214,
+    "column": 31
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 216,
+    "column": 32
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 242,
+    "column": 13
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 248,
+    "column": 24
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 306,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 311,
+    "column": 5
+  },
+  {
+    "message": "this `if` can be collapsed into the outer `match`",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import_ts.rs",
+    "line": 324,
+    "column": 25
+  },
+  {
+    "message": "the following explicit lifetimes could be elided: 'a",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import.rs",
+    "line": 108,
+    "column": 41
+  },
+  {
+    "message": "this `if` has identical blocks",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/import.rs",
+    "line": 128,
+    "column": 55
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/restructure.rs",
+    "line": 47,
+    "column": 21
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 27,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 28,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 31,
+    "column": 17
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 77,
+    "column": 17
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 177,
+    "column": 16
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 196,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 197,
+    "column": 13
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 232,
+    "column": 17
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 259,
+    "column": 21
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 290,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow.rs",
+    "line": 291,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs",
+    "line": 28,
+    "column": 5
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs",
+    "line": 45,
+    "column": 9
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/wrap_return/polyglot/shadow_js.rs",
+    "line": 46,
+    "column": 13
+  },
+  {
+    "message": "this `map_or` can be simplified",
+    "path": "crates/prod-code-mcp/src/wrap_return/utils.rs",
+    "line": 68,
+    "column": 25
+  },
+  {
+    "message": "this `if` statement can be collapsed",
+    "path": "crates/prod-code-mcp/src/xml_svg/lexer.rs",
+    "line": 113,
+    "column": 9
+  }
+]

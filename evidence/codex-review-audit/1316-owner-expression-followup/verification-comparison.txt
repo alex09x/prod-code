@@ -1,0 +1,4 @@
+Format diagnostic bodies match retained evidence after normalizing file labels, addresses and footer: True
+Displayed lint diagnostic bodies match retained evidence: True
+Displayed lint errors retained/current: 175/175
+Current crate lint reports 210 errors; 35 additional diagnostics are omitted by the CLI. No exhaustive clean-lint claim.

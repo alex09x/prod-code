@@ -1,0 +1,51 @@
+Issue #1316; retry of inherited candidate ebf71cd21e17ef3ec5924cf00b790fe37ee01fbc.
+Effective base: 86b8f87e6c48e37871046196f6c0880a961abc41.
+Build-node address, remote checkout path and fixture temporary paths sanitized.
+All started commands reached terminal completion. No delegation, publication,
+messages, installs, dependencies, other-worktree edits or commit.
+
+Public reproduction before production edits:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation method_type_parameter_does_not_shadow_macro_namespace -- --nocapture
+Exit 101, before.txt: original compiles and prints 7, but all four apply/force
+combinations incorrectly refuse U!() as a shadowed type name. Original fixture
+bytes, Cargo manifest and sentinel are checked after each refusal.
+
+Production change: exclude macro invocation names from type-parameter shadow
+checks. Keep type roots and generic arguments checked. No shared parser edits.
+
+Focused repair verification:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation declaration_identity -- --nocapture
+Exit 0, focused.txt: six tests passed. Actual returned macro programs compile
+and print 7 in all four apply/force modes. Preview preserves original bytes;
+applied source equals returned source. Original owner-shadow and generic-argument
+refusals, exact top-level selected binding/type cursors and ordinary generic,
+absolute-path and qualified-argument positives pass.
+
+One final scoped formatter:
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/to_method/declaration.rs crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs
+Exit 0, format.txt. No formatting changes.
+
+One scoped lint:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --test rust_method_preservation -- -D warnings
+Exit 101, lint.txt: library fails with 103 errors, matching inherited reported
+count. Parsed all 107 primary/secondary locations; none in either edited file.
+Test target lint does not complete. No unrelated fixes or retries.
+
+One final required gate:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation
+Exit 0, acceptance.txt: 50 passed, zero failed/ignored, Linux x86_64 build node.
+No source changes after the gate. git diff --check exits 0.
+
+Evidence integrity: all 172 inherited evidence files verified identical to HEAD,
+including full review, actual dyn Trait/dynTrait 1-to-2 failure, original owner
+shadow 2-to-1 failure, selected-label E0425 failure and successful dot-call output.
+See preserved-evidence.sha256, source-hashes.sha256 and artifact-hashes.sha256.
+
+Navigation failure before fallback, exact blocked command:
+git diff --stat 86b8f87e6c48e37871046196f6c0880a961abc41 && rg --files evidence/codex-review-audit crates/prod-code-mcp/src/to_method crates/prod-code-mcp/src/move_method crates/prod-code-mcp/tests | head -100
+Exact error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.. Command: git diff --stat 86b8f87e6c48e37871046196f6c0880a961abc41 && rg --files evidence/codex-review-audit crates/prod-code-mcp/src/to_method crates/prod-code-mcp/src/move_method crates/prod-code-mcp/tests | head -100
+Fallback: separate git diff --stat, explicit named file slices, then
+prod-code outline crates/prod-code-mcp/tests/rust_method_preservation.rs
+and prod-code def --symbol ensure_receiver_identity crates/prod-code-mcp/src/to_method/declaration.rs
+Both semantic commands reached terminal exit 0.

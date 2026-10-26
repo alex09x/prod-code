@@ -1,0 +1,58 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 50 tests
+test aggregate::aggregate_raw_literal_cannot_hide_an_implicit_capture ... ok
+test declaration_identity::method_generic_owner_shadowing_refuses_before_any_edits ... ok
+test conversion::full_owner_paths_and_generic_arguments_are_required ... ok
+test declaration_identity::generic_argument_shadowing_refuses_before_any_edits ... ok
+test associated::associated_recursion_and_function_values_follow_the_destination ... ok
+test associated::cross_module_recursion_uses_the_destination_module_perspective ... ok
+test receiver::module_word_before_plain_destination_binding_does_not_steal_cursor ... ok
+test owner_capture::implicit_receiver_captures_refuse_without_writing_even_with_force ... ok
+test receiver::selected_binding_cursor_and_explicit_reference_lifetime_work ... ok
+test associated::associated_move_preserves_literal_bytes_and_nested_self_owner ... ok
+test guards::effectful_calls_refuse_normally_but_force_constructs_the_rewrite ... ok
+test conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value ... ok
+test review_regressions::ambiguous_macro_owner_declarations_refuse_without_writing_even_with_force ... ok
+test type_identity::array_element_trivia_preserves_length_expression_token_boundaries ... ok
+test guards::unsupported_references_remain_accounted_and_block_forced_writes ... ok
+test receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings ... ok
+test owner_capture::explicit_arguments_literal_data_and_nested_captures_remain_supported ... ok
+test owner_header_regressions::raw_identifier_header_leak_preserves_independent_owner ... ok
+test review_regressions::macro_owner_tokens_keep_outer_receiver_and_self_type ... ok
+test type_identity::distinct_type_token_boundaries_refuse_before_writes ... ok
+test declaration_identity::method_type_parameter_does_not_shadow_macro_namespace ... ok
+test review_regressions::macro_owner_tokens_keep_outer_self_in_associated_move ... ok
+test conversion::exact_generic_and_path_owners_still_convert_and_run ... ok
+test review_regressions::recursive_destination_cannot_be_captured_by_local_imports ... ok
+test owner_capture::comparisons_inside_nested_owners_keep_their_self_identity ... ok
+test review_regressions::return_position_impl_trait_does_not_introduce_a_self_owner ... ok
+test owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context ... ok
+test declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter ... ok
+test guards::failed_reference_queries_refuse_even_force_and_preserve_all_bytes ... ok
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... ok
+test review_regressions::keyword_macro_arguments_respect_each_token_tree_delimiter ... ok
+test aggregate::aggregate_exact_receiver_calls_convert_with_semantic_identity ... ok
+test owner_header_regressions::array_length_header_leak_preserves_independent_owner ... ok
+test aggregate::aggregate_receiver_move_uses_the_same_owner_identity ... ok
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... ok
+test call_trivia::line_comment_argument_retains_its_newline ... ok
+test type_identity::equivalent_slice_element_type_trivia_still_convert ... ok
+test call_trivia::nested_exact_owner_calls_do_not_overlap ... ok
+test type_identity::macro_type_literal_and_punctuation_boundaries_are_not_trivia ... ok
+test owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics ... ok
+test owner_header_regressions::const_expression_operators_keep_independent_owner_self ... ok
+test aggregate::aggregate_raw_owner_and_array_shift_runtime ... ok
+test aggregate::aggregate_exact_owner_trait_dispatch_needs_overlay_proof ... ok
+test owner_boundary_regressions::field_initializer_comparisons_do_not_hide_independent_owners ... ok
+test declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity ... ok
+test aggregate::aggregate_semantic_wrapper_and_uncertain_identity_stay_qualified ... ok
+test type_identity::equivalent_trait_objects_and_generic_type_trivia_still_convert ... ok
+test declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing ... ok
+test type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert ... ok
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.70s
+
+[prod-code exec] exit 0 in 5.3s (server 4.9s, cpu 24.5s user 41.6s sys, peak 111 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)

@@ -1,0 +1,10 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.72s
+     Running tests/orchestration.rs (target/debug/deps/orchestration-177e3fd65f94e01b)
+
+running 1 test
+test an_associated_function_becomes_a_method_with_every_call ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.17s
+
+[prod-code exec] exit 0 in 2.4s (server 2.0s, cpu 2.0s user 1.0s sys, peak 569 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)

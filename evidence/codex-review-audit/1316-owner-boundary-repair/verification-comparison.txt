@@ -1,0 +1,3 @@
+Workspace format diagnostic bodies equal inherited evidence: True
+Lint displayed diagnostics equal inherited evidence: True
+Inherited displayed diagnostics: 175; current: 175

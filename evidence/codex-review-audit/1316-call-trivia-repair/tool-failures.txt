@@ -1,0 +1,5 @@
+Call: mcp__prod_code__code_outline({"path":"crates/prod-code-mcp/src/to_method","max_depth":2})
+Result: MCP tool call requires approval, but approval policy is never
+Fallback: prod-code outline crates/prod-code-mcp/src/to_method
+Observed terminal exit: 0; six files outlined, 66 symbols listed.
+No publication or messages were authorized; the failure is retained here.

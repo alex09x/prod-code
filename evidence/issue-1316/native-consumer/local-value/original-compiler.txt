@@ -1,0 +1,6 @@
+exit=0
+stdout=
+stderr=/tmp/.tmp1mkMr4/main.rs:1:41: warning: variable `U` should have a snake case name: help: convert the identifier to snake case (notice the capitalization): `u`
+/tmp/.tmp1mkMr4/main.rs:1:41: warning: variable `U` should have a snake case name: help: convert the identifier to snake case (notice the capitalization): `u`
+warning: 2 warnings emitted
+

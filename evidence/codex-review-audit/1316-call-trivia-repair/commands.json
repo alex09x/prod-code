@@ -1,0 +1,135 @@
+[
+  {
+    "log": "before.txt",
+    "argv": [
+      "prod-code",
+      "exec",
+      "--remote",
+      "<build-node>",
+      "--timeout-secs",
+      "900",
+      "--",
+      "cargo",
+      "test",
+      "-p",
+      "prod-code-mcp",
+      "--test",
+      "rust_method_preservation",
+      "call_trivia",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "terminal_exit": 101
+  },
+  {
+    "log": "format.txt",
+    "argv": [
+      "prod-code",
+      "exec",
+      "--remote",
+      "<build-node>",
+      "--timeout-secs",
+      "900",
+      "--",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config",
+      "skip_children=true",
+      "crates/prod-code-mcp/src/to_method/rust.rs",
+      "crates/prod-code-mcp/src/to_method/dispatch.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation.rs",
+      "crates/prod-code-mcp/tests/rust_method_preservation/call_trivia.rs"
+    ],
+    "terminal_exit": 0
+  },
+  {
+    "log": "lint.txt",
+    "argv": [
+      "prod-code",
+      "exec",
+      "--remote",
+      "<build-node>",
+      "--timeout-secs",
+      "900",
+      "--",
+      "cargo",
+      "clippy",
+      "-p",
+      "prod-code-mcp",
+      "--lib",
+      "--test",
+      "rust_method_preservation",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "terminal_exit": 101
+  },
+  {
+    "log": "acceptance.txt",
+    "argv": [
+      "prod-code",
+      "exec",
+      "--remote",
+      "<build-node>",
+      "--timeout-secs",
+      "900",
+      "--",
+      "cargo",
+      "test",
+      "-p",
+      "prod-code-mcp",
+      "--test",
+      "rust_method_preservation"
+    ],
+    "terminal_exit": 0
+  },
+  {
+    "log": "runtime.txt",
+    "argv": [
+      "prod-code",
+      "exec",
+      "--remote",
+      "<build-node>",
+      "--timeout-secs",
+      "900",
+      "--",
+      "cargo",
+      "test",
+      "-p",
+      "prod-code-mcp",
+      "--test",
+      "rust_method_preservation",
+      "call_trivia",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "terminal_exit": 0
+  },
+  {
+    "log": "orchestration.txt",
+    "argv": [
+      "prod-code",
+      "exec",
+      "--remote",
+      "<build-node>",
+      "--timeout-secs",
+      "900",
+      "--",
+      "cargo",
+      "test",
+      "-p",
+      "prod-code-mcp",
+      "--test",
+      "orchestration",
+      "an_associated_function_becomes_a_method_with_every_call",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "terminal_exit": 0
+  }
+]

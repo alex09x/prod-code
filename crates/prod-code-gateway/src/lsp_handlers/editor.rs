@@ -24,7 +24,9 @@ pub(crate) fn lsp_editor_request(
 ) {
     if matches!(
         method,
-        "rust-analyzer/viewSyntaxTree" | "rust-analyzer/expandMacro"
+        "rust-analyzer/viewSyntaxTree"
+            | "rust-analyzer/expandMacro"
+            | "textDocument/typeDefinition"
     ) {
         super::native_extensions::lsp_native_extension(
             out_tx,

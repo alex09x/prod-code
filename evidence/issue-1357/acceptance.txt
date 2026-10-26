@@ -1,0 +1,174 @@
+$ prod-code exec --remote <build-node> --timeout-secs 900 -- python3 evidence/issue-1357/run-final.py
+$ cargo test -p prod-code-mcp --test rust_method_preservation
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+   Compiling smallvec v1.16.1
+   Compiling serde_core v1.0.229
+   Compiling log v0.4.34
+   Compiling crossbeam-utils v0.8.23
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling syn v3.0.6
+   Compiling time v0.3.55
+   Compiling tracing-core v0.1.36
+   Compiling regex-automata v0.4.18
+   Compiling parking_lot_core v0.9.12
+   Compiling mio v1.2.3
+   Compiling tracing v0.1.44
+   Compiling parking_lot v0.12.5
+   Compiling notify v8.2.0
+   Compiling crossbeam-epoch v0.9.21
+   Compiling globset v0.4.20
+   Compiling regex v1.13.1
+   Compiling yasna v0.5.2
+   Compiling crossbeam-deque v0.8.8
+   Compiling ignore v0.4.33
+   Compiling synstructure v0.14.0
+   Compiling displaydoc v0.2.7
+   Compiling zerovec-derive v0.11.6
+   Compiling tokio-macros v2.7.2
+   Compiling serde_derive v1.0.229
+   Compiling serde_repr v0.1.21
+   Compiling thiserror-impl v2.0.20
+   Compiling futures-macro v0.3.34
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling tokio v1.53.1
+   Compiling asn1-rs v0.6.2
+   Compiling futures-util v0.3.34
+   Compiling oid-registry v0.7.1
+   Compiling der-parser v9.0.0
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling thiserror v2.0.20
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling x509-parser v0.16.0
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling tokio-rustls v0.26.6
+   Compiling tokio-util v0.7.19
+   Compiling icu_provider v2.3.1
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling rcgen v0.13.2
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling lsp-types v0.97.0
+   Compiling prod-code-protocol v0.3.41 (<checkout>/crates/prod-code-protocol)
+   Compiling prod-code-testkit v0.3.41 (<checkout>/crates/prod-code-testkit)
+   Compiling prod-code-mcp v0.3.41 (<checkout>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.77s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 55 tests
+test declaration_identity::method_generic_owner_shadowing_refuses_before_any_edits ... ok
+test aggregate::aggregate_raw_literal_cannot_hide_an_implicit_capture ... ok
+test declaration_identity::generic_argument_shadowing_refuses_before_any_edits ... ok
+test conversion::full_owner_paths_and_generic_arguments_are_required ... ok
+test associated::associated_recursion_and_function_values_follow_the_destination ... ok
+test associated::cross_module_recursion_uses_the_destination_module_perspective ... ok
+test owner_capture::implicit_receiver_captures_refuse_without_writing_even_with_force ... ok
+test guards::effectful_calls_refuse_normally_but_force_constructs_the_rewrite ... ok
+test namespace_values::expanded_receiver_requires_namespace_syntax_before_editing ... ok
+test conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value ... ok
+test owner_capture::explicit_arguments_literal_data_and_nested_captures_remain_supported ... ok
+test associated::associated_move_preserves_literal_bytes_and_nested_self_owner ... ok
+test receiver::module_word_before_plain_destination_binding_does_not_steal_cursor ... ok
+test guards::failed_reference_queries_refuse_even_force_and_preserve_all_bytes ... ok
+test owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context ... ok
+test guards::unsupported_references_remain_accounted_and_block_forced_writes ... ok
+test review_regressions::ambiguous_macro_owner_declarations_refuse_without_writing_even_with_force ... ok
+test receiver::selected_binding_cursor_and_explicit_reference_lifetime_work ... ok
+test type_identity::array_element_trivia_preserves_length_expression_token_boundaries ... ok
+test declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter ... ok
+test conversion::exact_generic_and_path_owners_still_convert_and_run ... ok
+test receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings ... ok
+test owner_capture::comparisons_inside_nested_owners_keep_their_self_identity ... ok
+test type_identity::distinct_type_token_boundaries_refuse_before_writes ... ok
+test owner_header_regressions::raw_identifier_header_leak_preserves_independent_owner ... ok
+test review_regressions::return_position_impl_trait_does_not_introduce_a_self_owner ... ok
+test review_regressions::macro_owner_tokens_keep_outer_self_in_associated_move ... ok
+test review_regressions::recursive_destination_cannot_be_captured_by_local_imports ... ok
+test review_regressions::macro_owner_tokens_keep_outer_receiver_and_self_type ... ok
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... ok
+test aggregate::aggregate_exact_receiver_calls_convert_with_semantic_identity ... ok
+test review_regressions::keyword_macro_arguments_respect_each_token_tree_delimiter ... ok
+test aggregate::aggregate_receiver_move_uses_the_same_owner_identity ... ok
+test owner_header_regressions::array_length_header_leak_preserves_independent_owner ... ok
+test call_trivia::line_comment_argument_retains_its_newline ... ok
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... ok
+test namespace_values::expanded_receiver_keeps_type_captures_beside_local_values ... ok
+test call_trivia::nested_exact_owner_calls_do_not_overlap ... ok
+test type_identity::macro_type_literal_and_punctuation_boundaries_are_not_trivia ... ok
+test type_identity::equivalent_slice_element_type_trivia_still_convert ... ok
+test macro_inputs::ignored_macro_inputs_preserve_supported_conversion ... ok
+test declaration_identity::method_type_parameter_does_not_shadow_macro_namespace ... ok
+test owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics ... ok
+test aggregate::aggregate_raw_owner_and_array_shift_runtime ... ok
+test owner_boundary_regressions::field_initializer_comparisons_do_not_hide_independent_owners ... ok
+test namespace_values::expanded_receiver_local_value_does_not_capture_method_type_parameter ... ok
+test aggregate::aggregate_exact_owner_trait_dispatch_needs_overlay_proof ... ok
+test owner_header_regressions::const_expression_operators_keep_independent_owner_self ... ok
+test aggregate::aggregate_semantic_wrapper_and_uncertain_identity_stay_qualified ... ok
+test declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity ... ok
+test type_identity::equivalent_trait_objects_and_generic_type_trivia_still_convert ... ok
+test declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing ... ok
+test type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert ... ok
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... ok
+test macro_inputs::macro_expansion_resolving_method_generic_refuses_before_edits ... ok
+
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.68s
+
+exit=0
+$ cargo test -p prod-code-gateway --test rust_method_native
+[prod-code exec] waiting for command output or exit; checking gateway connection (40s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (50s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (60s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (70s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (80s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (90s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (100s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (110s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (120s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (130s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (140s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (150s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (160s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (170s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (180s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (190s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (200s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (210s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (220s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (230s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (240s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (250s elapsed)
+   Compiling prod-code-engine-rust v0.3.41 (<checkout>/crates/prod-code-engine-rust)
+   Compiling prod-code-gateway v0.3.41 (<checkout>/crates/prod-code-gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.26s
+     Running tests/rust_method_native.rs (target/debug/deps/rust_method_native-048929475172f020)
+
+running 4 tests
+test navigation::native_type_navigation_has_strict_positions_and_session_identity ... ok
+test exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity has been running for over 60 seconds
+test expanded_method_type_capture_refuses_before_writes_including_force has been running for over 60 seconds
+test macro_local_value_keeps_unrelated_method_type_parameter_and_output has been running for over 60 seconds
+test exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity ... ok
+test macro_local_value_keeps_unrelated_method_type_parameter_and_output ... ok
+test expanded_method_type_capture_refuses_before_writes_including_force ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 214.89s
+
+exit=0
+[prod-code exec] 31 file(s) changed by the command written back: evidence/issue-1357/gate-results.json, evidence/issue-1357/native-consumer/local-value/control-probes.json, evidence/issue-1357/native-consumer/local-value/original-compiler.txt, evidence/issue-1357/native-consumer/local-value/original-runtime.txt, evidence/issue-1357/native-consumer/local-value/original.rs, evidence/issue-1357/native-consumer/local-value/public-false.txt, evidence/issue-1357/native-consumer/local-value/public-true.txt, evidence/issue-1357/native-consumer/local-value/returned-false-compiler.txt, evidence/issue-1357/native-consumer/local-value/returned-false-runtime.txt, evidence/issue-1357/native-consumer/local-value/returned-false.rs, evidence/issue-1357/native-consumer/local-value/returned-true-compiler.txt, evidence/issue-1357/native-consumer/local-value/returned-true-runtime.txt, evidence/issue-1357/native-consumer/local-value/returned-true.rs, evidence/issue-1357/native-consumer/local-value/semantic-replies.json, evidence/issue-1357/native-consumer/navigation/replies.json, evidence/issue-1357/native-consumer/nominal/public-false.txt, evidence/issue-1357/native-consumer/nominal/public-true.txt, evidence/issue-1357/native-consumer/nominal/semantic-replies.json, evidence/issue-1357/native-consumer/type-capture/control-probes.json, evidence/issue-1357/native-consumer/type-capture/original-compiler.txt, evidence/issue-1357/native-consumer/type-capture/original-runtime.txt, evidence/issue-1357/native-consumer/type-capture/original.rs, evidence/issue-1357/native-consumer/type-capture/public-false-false.txt, evidence/issue-1357/native-consumer/type-capture/public-false-true.txt, evidence/issue-1357/native-consumer/type-capture/public-true-false.txt, evidence/issue-1357/native-consumer/type-capture/public-true-true.txt, evidence/issue-1357/native-consumer/type-capture/semantic-replies.json, evidence/issue-1357/preserved-input-hashes.json, evidence/issue-1357/rust_method_native.txt, evidence/issue-1357/rust_method_preservation.txt, evidence/issue-1357/source-hashes.json
+[prod-code exec] exit 0 in 252.4s (server 251.9s, cpu 305.6s user 67.0s sys, peak 2416 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)
+
+client_exit=0

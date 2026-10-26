@@ -1,0 +1,22 @@
+Ok(
+    MadeMethod {
+        owner: "Holder",
+        method: "f",
+        root: "/tmp/.tmpwRwbzQ/fixture",
+        file: "src/lib.rs",
+        parameter: "h: &Holder<Config>",
+        receiver: "&self",
+        renamed_uses: 1,
+        rewritten_calls: 2,
+        unchanged: [],
+        unmatched: [],
+        rewritten: [
+            (
+                "/tmp/.tmpwRwbzQ/fixture/src/lib.rs",
+                "struct Config(u32);\nstruct Holder<T>(T);\nimpl Holder<Config> { fn f(&self) -> u32 { (self.0).0 + 1 } }\nfn main() { let a = Holder(Config(6)); let b: Holder<Config> = Holder(Config(40)); println!(\"{} {}\", a.f(), b.f()); }\n",
+            ),
+        ],
+        diagnostics: [],
+        applied: true,
+    },
+)

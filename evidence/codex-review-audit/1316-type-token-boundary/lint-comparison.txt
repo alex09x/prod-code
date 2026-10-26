@@ -1,0 +1,4 @@
+Previous displayed diagnostics: 175
+Current displayed diagnostics: 175
+Diagnostic bodies and relative file paths, ignoring line/column shifts, equal: True
+Both logs report 210 errors; the CLI omits 35 diagnostic bodies. No claim is made about the omitted bodies. The displayed helpers.rs needless_lifetimes finding is in unchanged receiver_argument code.

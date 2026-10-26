@@ -1,0 +1,331 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-path>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.25s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 3 tests
+explicit and nested capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax;
+        #[derive(Debug)]
+        struct Inner(u32);
+        impl Inner {
+            fn label(&self) -> String {
+                if 1 < 2 { format!("{self:?}") } else { unreachable!() }
+            }
+        }
+        // These braces are data, rather than implicit captures.
+        let data = "{self:?}";
+        let bytes = std::str::from_utf8(b"{self:?}").unwrap();
+        format!(r#"{:?}|{}|{{self:?}}|{}|{}"#, self, Inner(4).label(), data, bytes)
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("{self:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+nested comparison original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Self>()
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}", Order::f()); }
+
+nested comparison original: rustc exit status: 0
+
+implicit capture original: rustc exit status: 0
+
+nested comparison original: runtime exit status: 0
+8
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+explicit and nested capture original: rustc exit status: 0
+
+explicit and nested capture original: runtime exit status: 0
+Order(2)|Inner(4)|{self:?}|{self:?}|{self:?}
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!(r#"{self:?}"#)
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+nested comparison preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", Tax::f()); }
+
+explicit and nested capture preview: source
+#[derive(Debug)]
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> String {
+        let _ = self;
+        #[derive(Debug)]
+        struct Inner(u32);
+        impl Inner {
+            fn label(&self) -> String {
+                if 1 < 2 { format!("{self:?}") } else { unreachable!() }
+            }
+        }
+        // These braces are data, rather than implicit captures.
+        let data = "{self:?}";
+        let bytes = std::str::from_utf8(b"{self:?}").unwrap();
+        format!(r#"{:?}|{}|{{self:?}}|{}|{}"#, order, Inner(4).label(), data, bytes)
+    }
+}
+#[derive(Debug)]
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+nested comparison preview: rustc exit status: 0
+
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+nested comparison preview: runtime exit status: 0
+8
+
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("\x7bself:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+explicit and nested capture preview: rustc exit status: 0
+
+explicit and nested capture preview: runtime exit status: 0
+Order(2)|Inner(4)|{self:?}|{self:?}|{self:?}
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("{\u{73}elf:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+nested comparison applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", Tax::f()); }
+
+explicit and nested capture applied: source
+#[derive(Debug)]
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> String {
+        let _ = self;
+        #[derive(Debug)]
+        struct Inner(u32);
+        impl Inner {
+            fn label(&self) -> String {
+                if 1 < 2 { format!("{self:?}") } else { unreachable!() }
+            }
+        }
+        // These braces are data, rather than implicit captures.
+        let data = "{self:?}";
+        let bytes = std::str::from_utf8(b"{self:?}").unwrap();
+        format!(r#"{:?}|{}|{{self:?}}|{}|{}"#, order, Inner(4).label(), data, bytes)
+    }
+}
+#[derive(Debug)]
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+nested comparison applied: rustc exit status: 0
+
+nested comparison applied: runtime exit status: 0
+8
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+nested comparison original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        let _ = tax;
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Self>()
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}", o.f(&t)); }
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("{tax:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+explicit and nested capture applied: rustc exit status: 0
+
+explicit and nested capture applied: runtime exit status: 0
+Order(2)|Inner(4)|{self:?}|{self:?}|{self:?}
+
+test owner_capture::explicit_arguments_literal_data_and_nested_captures_remain_supported ... ok
+nested comparison original: rustc exit status: 0
+
+nested comparison original: runtime exit status: 0
+8
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Tax(3)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+test owner_capture::implicit_receiver_captures_refuse_without_writing_even_with_force ... ok
+nested comparison preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let _ = self;
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", t.f(&o)); }
+
+nested comparison preview: rustc exit status: 0
+
+nested comparison preview: runtime exit status: 0
+8
+
+nested comparison applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let _ = self;
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", t.f(&o)); }
+
+nested comparison applied: rustc exit status: 0
+
+nested comparison applied: runtime exit status: 0
+8
+
+test owner_capture::comparisons_inside_nested_owners_keep_their_self_identity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.53s
+
+[prod-code exec] exit 0 in 7.2s (server 6.9s, cpu 10.5s user 3.1s sys, peak 1451 MB) on node <linux-build-node>, copy <remote-path> (linux x86_64)
+
+Terminal exit: 0

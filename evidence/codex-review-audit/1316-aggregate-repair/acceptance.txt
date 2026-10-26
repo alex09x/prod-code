@@ -1,0 +1,4799 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.68s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 36 tests
+test aggregate::aggregate_exact_owner_trait_dispatch_needs_overlay_proof ... trait dispatch original: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(c: &mut Counter, by: u32) -> u32 { c.0 += by; c.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch original: rustc exit status: 0
+
+trait dispatch original: runtime exit status: 0
+3
+
+blind exact-owner dot counterexample: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", c.f(2)); }
+
+blind exact-owner dot counterexample: rustc exit status: 0
+
+blind exact-owner dot counterexample: runtime exit status: 0
+99
+
+trait dot definition answer=0: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=0: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=0: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=0: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=1: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=1: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=1: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=1: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=2: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=2: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=2: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+trait dot definition answer=2: {"position":{"character":53,"line":5},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+trait dispatch retained: source
+struct Tax;
+struct Counter(u32);
+trait Take { fn f(self, by: u32) -> u32; }
+impl Take for Counter { fn f(self, _: u32) -> u32 { 99 } }
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); println!("{}", Counter::f(&mut c, 2)); }
+
+trait dispatch retained: rustc exit status: 0
+
+trait dispatch retained: runtime exit status: 0
+3
+
+ok
+test aggregate::aggregate_exact_receiver_calls_convert_with_semantic_identity ... exact calls original: source
+struct Tax;
+struct Counter(u32);
+impl Counter { fn f(c: &mut Counter, by: u32) -> u32 { c.0 += by; c.0 } }
+fn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!("{} {}", Counter::f(&mut c, 2), crate::Counter::f(&mut items[0], 3)); }
+
+exact calls original: rustc exit status: 0
+
+exact calls original: runtime exit status: 0
+3 7
+
+exact dot definition query: {"position":{"character":86,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact dot definition query: {"position":{"character":101,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact calls apply=false force=false: MadeMethod { owner: "Counter", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &mut Counter", receiver: "&mut self", renamed_uses: 2, rewritten_calls: 2, unchanged: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\nstruct Counter(u32);\nimpl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }\nfn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!(\"{} {}\", c.f(2), items[0].f(3)); }\n")], diagnostics: [], applied: false }
+exact calls transformed: source
+struct Tax;
+struct Counter(u32);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!("{} {}", c.f(2), items[0].f(3)); }
+
+exact calls transformed: rustc exit status: 0
+
+exact calls transformed: runtime exit status: 0
+3 7
+
+exact dot definition query: {"position":{"character":86,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact dot definition query: {"position":{"character":101,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact calls apply=true force=false: MadeMethod { owner: "Counter", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &mut Counter", receiver: "&mut self", renamed_uses: 2, rewritten_calls: 2, unchanged: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\nstruct Counter(u32);\nimpl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }\nfn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!(\"{} {}\", c.f(2), items[0].f(3)); }\n")], diagnostics: [], applied: true }
+exact calls transformed: source
+struct Tax;
+struct Counter(u32);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!("{} {}", c.f(2), items[0].f(3)); }
+
+exact calls transformed: rustc exit status: 0
+
+exact calls transformed: runtime exit status: 0
+3 7
+
+exact dot definition query: {"position":{"character":86,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact dot definition query: {"position":{"character":101,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact calls apply=false force=true: MadeMethod { owner: "Counter", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &mut Counter", receiver: "&mut self", renamed_uses: 2, rewritten_calls: 2, unchanged: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\nstruct Counter(u32);\nimpl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }\nfn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!(\"{} {}\", c.f(2), items[0].f(3)); }\n")], diagnostics: [], applied: false }
+exact calls transformed: source
+struct Tax;
+struct Counter(u32);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!("{} {}", c.f(2), items[0].f(3)); }
+
+exact calls transformed: rustc exit status: 0
+
+exact calls transformed: runtime exit status: 0
+3 7
+
+exact dot definition query: {"position":{"character":86,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact dot definition query: {"position":{"character":101,"line":3},"textDocument":{"uri":"file://<fixture>/src/main.rs"}}
+exact calls apply=true force=true: MadeMethod { owner: "Counter", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &mut Counter", receiver: "&mut self", renamed_uses: 2, rewritten_calls: 2, unchanged: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\nstruct Counter(u32);\nimpl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }\nfn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!(\"{} {}\", c.f(2), items[0].f(3)); }\n")], diagnostics: [], applied: true }
+exact calls transformed: source
+struct Tax;
+struct Counter(u32);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+fn main() { let mut c = Counter(1); let mut items = [Counter(4)]; println!("{} {}", c.f(2), items[0].f(3)); }
+
+exact calls transformed: rustc exit status: 0
+
+exact calls transformed: runtime exit status: 0
+3 7
+
+ok
+test aggregate::aggregate_raw_literal_cannot_hide_an_implicit_capture ... raw capture original: source
+#[derive(Debug)]
+struct Tax;
+struct Order;
+struct r#impl { n: String }
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        let value = r#impl { n: format!("{tax:?}") }; value.n.len()
+    }
+}
+fn main() { println!("{}", Order.f(&Tax)); }
+
+raw capture original: rustc exit status: 0
+
+raw capture original: runtime exit status: 0
+3
+
+raw capture apply=false force=false: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+raw capture apply=true force=false: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+raw capture apply=false force=true: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+raw capture apply=true force=true: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+ok
+test aggregate::aggregate_raw_owner_and_array_shift_runtime ... aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Self>() + Inner::<[u8; 4]>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+8
+
+ok
+test aggregate::aggregate_receiver_move_uses_the_same_owner_identity ... receiver owner original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+fn main() { let order = Order(1); println!("{}", order.f(&Tax)); }
+
+receiver owner original: rustc exit status: 0
+
+receiver owner original: runtime exit status: 0
+8
+
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let value = r#impl { n: std::mem::size_of::<Order>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+receiver owner original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Self>() + Inner::<[u8; 4]>::size()
+    }
+}
+fn main() { let order = Order(1); println!("{}", order.f(&Tax)); }
+
+receiver owner original: rustc exit status: 0
+
+receiver owner original: runtime exit status: 0
+8
+
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+receiver owner transformed: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+fn main() { let order = Order(1); println!("{}", Tax.f(&order)); }
+
+receiver owner transformed: rustc exit status: 0
+
+receiver owner transformed: runtime exit status: 0
+8
+
+ok
+test aggregate::aggregate_semantic_wrapper_and_uncertain_identity_stay_qualified ... semantic wrapper original: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(c: &mut Counter, by: u32) -> u32 { c.0 += by; c.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper original: rustc exit status: 0
+
+semantic wrapper original: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+semantic wrapper transformed: source
+struct Tax;
+struct Counter(u32);
+struct Wrapper(Counter);
+impl Counter { fn f(&mut self, by: u32) -> u32 { self.0 += by; self.0 } }
+impl Wrapper { fn f(&mut self, _: u32) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = Counter; fn deref(&self) -> &Counter { &self.0 } }
+impl std::ops::DerefMut for Wrapper { fn deref_mut(&mut self) -> &mut Counter { &mut self.0 } }
+fn main() { let mut c = Wrapper(Counter(1)); println!("{}", Counter::f(&mut c, 2)); }
+
+semantic wrapper transformed: rustc exit status: 0
+
+semantic wrapper transformed: runtime exit status: 0
+3
+
+ok
+test associated::associated_move_preserves_literal_bytes_and_nested_self_owner ... associated original: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f() -> &'static str {
+        // Self self tax
+        struct Inner;
+        impl Inner { fn label() -> &'static str { let _ = Self; "inner" } }
+        let _ = Inner::label();
+        let _ = Self;
+        let _ = b"Self self tax";
+        let _ = br##"Self self tax"##;
+        let _ = "Self self tax";
+        r##"Self self tax"##
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+associated original: rustc exit status: 0
+
+associated original: runtime exit status: 0
+Self self tax
+
+associated preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static str {
+        // Self self tax
+        struct Inner;
+        impl Inner { fn label() -> &'static str { let _ = Self; "inner" } }
+        let _ = Inner::label();
+        let _ = Order;
+        let _ = b"Self self tax";
+        let _ = br##"Self self tax"##;
+        let _ = "Self self tax";
+        r##"Self self tax"##
+    }
+}
+struct Order;
+fn main() { println!("{}", Tax::f()); }
+
+associated preview: rustc exit status: 0
+
+associated preview: runtime exit status: 0
+Self self tax
+
+associated applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static str {
+        // Self self tax
+        struct Inner;
+        impl Inner { fn label() -> &'static str { let _ = Self; "inner" } }
+        let _ = Inner::label();
+        let _ = Order;
+        let _ = b"Self self tax";
+        let _ = br##"Self self tax"##;
+        let _ = "Self self tax";
+        r##"Self self tax"##
+    }
+}
+struct Order;
+fn main() { println!("{}", Tax::f()); }
+
+associated applied: rustc exit status: 0
+
+associated applied: runtime exit status: 0
+Self self tax
+
+ok
+test associated::associated_recursion_and_function_values_follow_the_destination ... recursion original: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f(n: u32) -> u32 {
+        let recur = Self::f;
+        if n == 0 { 1 } else if n % 2 == 0 { recur(n - 1) + 1 } else { Order::f(n - 1) + 1 }
+    }
+}
+fn main() { println!("{}", Order::f(4)); }
+
+recursion original: rustc exit status: 0
+
+recursion original: runtime exit status: 0
+5
+
+recursion applied: source
+struct Tax;
+
+impl Tax {
+    fn f(n: u32) -> u32 {
+        let recur = crate::Tax::f;
+        if n == 0 { 1 } else if n % 2 == 0 { recur(n - 1) + 1 } else { crate::Tax::f(n - 1) + 1 }
+    }
+}
+struct Order;
+fn main() { println!("{}", Tax::f(4)); }
+
+recursion applied: rustc exit status: 0
+
+recursion applied: runtime exit status: 0
+5
+
+ok
+test associated::cross_module_recursion_uses_the_destination_module_perspective ... cross-module original: source
+mod origin;
+mod destination;
+fn main() { println!("{}", origin::Old::f(4)); }
+
+cross-module original: origin.rs
+pub struct Old;
+impl Old {
+    pub fn f(n: u32) -> u32 {
+        let recurse = Self::f;
+        let _: Self = Self;
+        if n == 0 { 1 } else if n % 2 == 0 { recurse(n - 1) + 1 } else { Old::f(n - 1) + 1 }
+    }
+}
+
+cross-module original: destination.rs
+pub struct Tax;
+
+cross-module original: rustc exit status: 0
+
+cross-module original: runtime exit status: 0
+5
+
+cross-module applied: source
+mod origin;
+mod destination;
+fn main() { println!("{}", crate::destination::Tax::f(4)); }
+
+cross-module applied: origin.rs
+pub struct Old;
+
+cross-module applied: destination.rs
+pub struct Tax;
+
+impl Tax {
+    pub fn f(n: u32) -> u32 {
+        let recurse = crate::destination::Tax::f;
+        let _: crate::origin::Old = crate::origin::Old;
+        if n == 0 { 1 } else if n % 2 == 0 { recurse(n - 1) + 1 } else { crate::destination::Tax::f(n - 1) + 1 }
+    }
+}
+
+cross-module applied: rustc exit status: 0
+
+cross-module applied: runtime exit status: 0
+5
+
+ok
+test conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value ... dispatch original: source
+struct Tax;
+struct S;
+struct Wrapper(S);
+impl S {
+    fn f(s: &S) -> u32 { let _ = s; 7 }
+}
+impl Wrapper { fn f(&self) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = S; fn deref(&self) -> &S { &self.0 } }
+fn main() { let wrapper = &Wrapper(S); println!("{}", S::f(wrapper)); }
+
+dispatch original: rustc exit status: 0
+
+dispatch original: runtime exit status: 0
+7
+
+dispatch preview: source
+struct Tax;
+struct S;
+struct Wrapper(S);
+impl S {
+    fn f(&self) -> u32 { let _ = self; 7 }
+}
+impl Wrapper { fn f(&self) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = S; fn deref(&self) -> &S { &self.0 } }
+fn main() { let wrapper = &Wrapper(S); println!("{}", S::f(wrapper)); }
+
+dispatch preview: rustc exit status: 0
+
+dispatch preview: runtime exit status: 0
+7
+
+dispatch applied: source
+struct Tax;
+struct S;
+struct Wrapper(S);
+impl S {
+    fn f(&self) -> u32 { let _ = self; 7 }
+}
+impl Wrapper { fn f(&self) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = S; fn deref(&self) -> &S { &self.0 } }
+fn main() { let wrapper = &Wrapper(S); println!("{}", S::f(wrapper)); }
+
+dispatch applied: rustc exit status: 0
+
+dispatch applied: runtime exit status: 0
+7
+
+ok
+test conversion::exact_generic_and_path_owners_still_convert_and_run ... exact owner original: source
+struct Tax;
+struct S(u32);
+impl S {
+    fn f(s: &S) -> u32 { s.0 }
+}
+fn main() { println!("{}", S::f(&S(7))); }
+
+exact owner original: rustc exit status: 0
+
+exact owner original: runtime exit status: 0
+7
+
+exact owner applied: source
+struct Tax;
+struct S(u32);
+impl S {
+    fn f(&self) -> u32 { self.0 }
+}
+fn main() { println!("{}", S::f(&S(7))); }
+
+exact owner applied: rustc exit status: 0
+
+exact owner applied: runtime exit status: 0
+7
+
+exact owner original: source
+struct Tax;
+struct Wrapper<T>(T);
+impl<T: Copy> Wrapper<T> {
+    fn f(s: &Wrapper<T>) -> T { s.0 }
+}
+fn main() { println!("{}", Wrapper::f(&Wrapper(7))); }
+
+exact owner original: rustc exit status: 0
+
+exact owner original: runtime exit status: 0
+7
+
+exact owner applied: source
+struct Tax;
+struct Wrapper<T>(T);
+impl<T: Copy> Wrapper<T> {
+    fn f(&self) -> T { self.0 }
+}
+fn main() { println!("{}", Wrapper::f(&Wrapper(7))); }
+
+exact owner applied: rustc exit status: 0
+
+exact owner applied: runtime exit status: 0
+7
+
+exact owner original: source
+struct Tax;
+mod model { pub struct S(pub u32); }
+impl model::S {
+    fn f(s: &model::S) -> u32 { s.0 }
+}
+fn main() { println!("{}", model::S::f(&model::S(7))); }
+
+exact owner original: rustc exit status: 0
+
+exact owner original: runtime exit status: 0
+7
+
+exact owner applied: source
+struct Tax;
+mod model { pub struct S(pub u32); }
+impl model::S {
+    fn f(&self) -> u32 { self.0 }
+}
+fn main() { println!("{}", model::S::f(&model::S(7))); }
+
+exact owner applied: rustc exit status: 0
+
+exact owner applied: runtime exit status: 0
+7
+
+ok
+test conversion::full_owner_paths_and_generic_arguments_are_required ... wrong owner original: source
+struct Tax;
+struct S;
+mod other { pub struct S; }
+impl S {
+    fn f(s: &other::S) -> u32 { let _ = s; 7 }
+}
+fn main() { println!("{}", S::f(&other::S)); }
+
+wrong owner original: rustc exit status: 0
+
+wrong owner original: runtime exit status: 0
+7
+
+wrong owner original: source
+struct Tax;
+struct Wrapper<T>(T);
+impl<T> Wrapper<T> {
+    fn f(s: &Wrapper<u32>) -> u32 { s.0 }
+}
+fn main() { println!("{}", Wrapper::<u8>::f(&Wrapper(7))); }
+
+wrong owner original: rustc exit status: 0
+
+wrong owner original: runtime exit status: 0
+7
+
+ok
+test guards::effectful_calls_refuse_normally_but_force_constructs_the_rewrite ... effectful original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, tax: &Tax) -> u32 { self.0 + tax.0 }
+}
+fn order() -> Order { println!("order"); Order(1) }
+fn tax() -> Tax { println!("tax"); Tax(2) }
+fn main() { println!("{}", order().f(&tax())); }
+
+effectful original: rustc exit status: 0
+
+effectful original: runtime exit status: 0
+order
+tax
+3
+
+effectful forced: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> u32 { order.0 + self.0 }
+}
+struct Order(u32);
+fn order() -> Order { println!("order"); Order(1) }
+fn tax() -> Tax { println!("tax"); Tax(2) }
+fn main() { println!("{}", tax().f(&order())); }
+
+effectful forced: rustc exit status: 0
+
+effectful forced: runtime exit status: 0
+tax
+order
+3
+
+ok
+test guards::failed_reference_queries_refuse_even_force_and_preserve_all_bytes ... failed references kind=0 force=false: cannot find the uses of `s`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=0 force=true: cannot find the uses of `s`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=0 force=false: cannot find the calls to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=0 force=true: cannot find the calls to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=1 force=false: cannot find the uses of `tax`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=1 force=true: cannot find the uses of `tax`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=1 force=false: cannot find the calls to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=1 force=true: cannot find the calls to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=2 force=false: cannot find the paths to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+failed references kind=2 force=true: cannot find the paths to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+ok
+test guards::unsupported_references_remain_accounted_and_block_forced_writes ... receiver value refused: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f(&self, tax: &Tax) -> u32 { let _ = tax; 7 }
+}
+fn main() { let value = Order::f; println!("{}", value(&Order, &Tax)); }
+
+receiver value refused: rustc exit status: 0
+
+receiver value refused: runtime exit status: 0
+7
+
+qualified reference refused: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f() -> u32 { 7 }
+}
+fn main() { println!("{}", <Order>::f()); }
+
+qualified reference refused: rustc exit status: 0
+
+qualified reference refused: runtime exit status: 0
+7
+
+receiver value refused: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f(&self, tax: &Tax) -> u32 { let _ = tax; 7 }
+}
+fn main() { let value = Order::f; println!("{}", value(&Order, &Tax)); }
+
+receiver value refused: rustc exit status: 0
+
+receiver value refused: runtime exit status: 0
+7
+
+qualified reference refused: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f() -> u32 { 7 }
+}
+fn main() { println!("{}", <Order>::f()); }
+
+qualified reference refused: rustc exit status: 0
+
+qualified reference refused: runtime exit status: 0
+7
+
+ok
+test owner_boundary_regressions::field_initializer_comparisons_do_not_hide_independent_owners ... field initializer owner original: source
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 1 < 2 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+field initializer owner original: rustc exit status: 0
+
+field initializer owner original: runtime exit status: 0
+8
+
+field initializer owner preview force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 1 < 2 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=false: rustc exit status: 0
+
+field initializer owner preview force=false: runtime exit status: 0
+8
+
+field initializer owner applied force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 1 < 2 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=false: rustc exit status: 0
+
+field initializer owner applied force=false: runtime exit status: 0
+8
+
+field initializer owner preview force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 1 < 2 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=true: rustc exit status: 0
+
+field initializer owner preview force=true: runtime exit status: 0
+8
+
+field initializer owner applied force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 1 < 2 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=true: rustc exit status: 0
+
+field initializer owner applied force=true: runtime exit status: 0
+8
+
+field initializer owner original: source
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 2 > 1 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+field initializer owner original: rustc exit status: 0
+
+field initializer owner original: runtime exit status: 0
+8
+
+field initializer owner preview force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 2 > 1 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=false: rustc exit status: 0
+
+field initializer owner preview force=false: runtime exit status: 0
+8
+
+field initializer owner applied force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 2 > 1 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=false: rustc exit status: 0
+
+field initializer owner applied force=false: runtime exit status: 0
+8
+
+field initializer owner preview force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 2 > 1 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=true: rustc exit status: 0
+
+field initializer owner preview force=true: runtime exit status: 0
+8
+
+field initializer owner applied force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: 2 > 1 };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=true: rustc exit status: 0
+
+field initializer owner applied force=true: runtime exit status: 0
+8
+
+field initializer owner original: source
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: (1 < 2) && (3 > 2) };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+field initializer owner original: rustc exit status: 0
+
+field initializer owner original: runtime exit status: 0
+8
+
+field initializer owner preview force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: (1 < 2) && (3 > 2) };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=false: rustc exit status: 0
+
+field initializer owner preview force=false: runtime exit status: 0
+8
+
+field initializer owner applied force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: (1 < 2) && (3 > 2) };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=false: rustc exit status: 0
+
+field initializer owner applied force=false: runtime exit status: 0
+8
+
+field initializer owner preview force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: (1 < 2) && (3 > 2) };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=true: rustc exit status: 0
+
+field initializer owner preview force=true: runtime exit status: 0
+8
+
+field initializer owner applied force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: (1 < 2) && (3 > 2) };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=true: rustc exit status: 0
+
+field initializer owner applied force=true: runtime exit status: 0
+8
+
+field initializer owner original: source
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: { 1 < 2 } };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+field initializer owner original: rustc exit status: 0
+
+field initializer owner original: runtime exit status: 0
+8
+
+field initializer owner preview force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: { 1 < 2 } };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=false: rustc exit status: 0
+
+field initializer owner preview force=false: runtime exit status: 0
+8
+
+field initializer owner applied force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: { 1 < 2 } };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=false: rustc exit status: 0
+
+field initializer owner applied force=false: runtime exit status: 0
+8
+
+field initializer owner preview force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: { 1 < 2 } };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner preview force=true: rustc exit status: 0
+
+field initializer owner preview force=true: runtime exit status: 0
+8
+
+field initializer owner applied force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { flag: bool }
+        let _ = Check { flag: { 1 < 2 } };
+        struct Inner(u64);
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+field initializer owner applied force=true: rustc exit status: 0
+
+field initializer owner applied force=true: runtime exit status: 0
+8
+
+ok
+test owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics ... type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=false: rustc exit status: 0
+
+type macro owner applied force=false: runtime exit status: 0
+9
+
+type macro owner preview force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=true: rustc exit status: 0
+
+type macro owner preview force=true: runtime exit status: 0
+9
+
+type macro owner applied force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=true: rustc exit status: 0
+
+type macro owner applied force=true: runtime exit status: 0
+9
+
+type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=false: rustc exit status: 0
+
+type macro owner applied force=false: runtime exit status: 0
+9
+
+type macro owner preview force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=true: rustc exit status: 0
+
+type macro owner preview force=true: runtime exit status: 0
+9
+
+type macro owner applied force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=true: rustc exit status: 0
+
+type macro owner applied force=true: runtime exit status: 0
+9
+
+type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=false: rustc exit status: 0
+
+type macro owner applied force=false: runtime exit status: 0
+9
+
+type macro owner preview force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=true: rustc exit status: 0
+
+type macro owner preview force=true: runtime exit status: 0
+9
+
+type macro owner applied force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=true: rustc exit status: 0
+
+type macro owner applied force=true: runtime exit status: 0
+9
+
+type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=false: rustc exit status: 0
+
+type macro owner applied force=false: runtime exit status: 0
+9
+
+type macro owner preview force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=true: rustc exit status: 0
+
+type macro owner preview force=true: runtime exit status: 0
+9
+
+type macro owner applied force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=true: rustc exit status: 0
+
+type macro owner applied force=true: runtime exit status: 0
+9
+
+ok
+test owner_capture::comparisons_inside_nested_owners_keep_their_self_identity ... nested comparison original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Self>()
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}", Order::f()); }
+
+nested comparison original: rustc exit status: 0
+
+nested comparison original: runtime exit status: 0
+8
+
+nested comparison preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", Tax::f()); }
+
+nested comparison preview: rustc exit status: 0
+
+nested comparison preview: runtime exit status: 0
+8
+
+nested comparison applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", Tax::f()); }
+
+nested comparison applied: rustc exit status: 0
+
+nested comparison applied: runtime exit status: 0
+8
+
+nested comparison original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        let _ = tax;
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Self>()
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}", o.f(&t)); }
+
+nested comparison original: rustc exit status: 0
+
+nested comparison original: runtime exit status: 0
+8
+
+nested comparison preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let _ = self;
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", t.f(&o)); }
+
+nested comparison preview: rustc exit status: 0
+
+nested comparison preview: runtime exit status: 0
+8
+
+nested comparison applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        let _ = self;
+        struct Inner;
+        impl Inner {
+            fn size() -> usize {
+                if 1 < 2 { std::mem::size_of::<Self>() } else { 99 }
+            }
+        }
+        Inner::size() + std::mem::size_of::<Order>()
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}", t.f(&o)); }
+
+nested comparison applied: rustc exit status: 0
+
+nested comparison applied: runtime exit status: 0
+8
+
+ok
+test owner_capture::explicit_arguments_literal_data_and_nested_captures_remain_supported ... explicit and nested capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax;
+        #[derive(Debug)]
+        struct Inner(u32);
+        impl Inner {
+            fn label(&self) -> String {
+                if 1 < 2 { format!("{self:?}") } else { unreachable!() }
+            }
+        }
+        // These braces are data, rather than implicit captures.
+        let data = "{self:?}";
+        let bytes = std::str::from_utf8(b"{self:?}").unwrap();
+        format!(r#"{:?}|{}|{{self:?}}|{}|{}"#, self, Inner(4).label(), data, bytes)
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+explicit and nested capture original: rustc exit status: 0
+
+explicit and nested capture original: runtime exit status: 0
+Order(2)|Inner(4)|{self:?}|{self:?}|{self:?}
+
+explicit and nested capture preview: source
+#[derive(Debug)]
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> String {
+        let _ = self;
+        #[derive(Debug)]
+        struct Inner(u32);
+        impl Inner {
+            fn label(&self) -> String {
+                if 1 < 2 { format!("{self:?}") } else { unreachable!() }
+            }
+        }
+        // These braces are data, rather than implicit captures.
+        let data = "{self:?}";
+        let bytes = std::str::from_utf8(b"{self:?}").unwrap();
+        format!(r#"{:?}|{}|{{self:?}}|{}|{}"#, order, Inner(4).label(), data, bytes)
+    }
+}
+#[derive(Debug)]
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+explicit and nested capture preview: rustc exit status: 0
+
+explicit and nested capture preview: runtime exit status: 0
+Order(2)|Inner(4)|{self:?}|{self:?}|{self:?}
+
+explicit and nested capture applied: source
+#[derive(Debug)]
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> String {
+        let _ = self;
+        #[derive(Debug)]
+        struct Inner(u32);
+        impl Inner {
+            fn label(&self) -> String {
+                if 1 < 2 { format!("{self:?}") } else { unreachable!() }
+            }
+        }
+        // These braces are data, rather than implicit captures.
+        let data = "{self:?}";
+        let bytes = std::str::from_utf8(b"{self:?}").unwrap();
+        format!(r#"{:?}|{}|{{self:?}}|{}|{}"#, order, Inner(4).label(), data, bytes)
+    }
+}
+#[derive(Debug)]
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+explicit and nested capture applied: rustc exit status: 0
+
+explicit and nested capture applied: runtime exit status: 0
+Order(2)|Inner(4)|{self:?}|{self:?}|{self:?}
+
+ok
+test owner_capture::implicit_receiver_captures_refuse_without_writing_even_with_force ... implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("{self:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!(r#"{self:?}"#)
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("\x7bself:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("{\u{73}elf:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Order(2)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+implicit capture original: source
+#[derive(Debug)]
+struct Tax(u32);
+#[derive(Debug)]
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> String {
+        let _ = tax; format!("{tax:?}")
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+implicit capture original: rustc exit status: 0
+
+implicit capture original: runtime exit status: 0
+Tax(3)
+
+implicit capture force=false: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+implicit capture force=true: cannot establish binding identity for implicit format capture `tax` in macro literal; nothing was planned
+ok
+test owner_header_regressions::array_length_header_leak_preserves_independent_owner ... array length original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        fn helper() -> [u8; 1 << 2] { [0; 4] }
+        assert_eq!(helper().len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+array length original: rustc exit status: 0
+
+array length original: runtime exit status: 0
+8
+
+array length, apply=false, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> [u8; 1 << 2] { [0; 4] }\n        assert_eq!(helper().len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+array length, apply=false, force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> [u8; 1 << 2] { [0; 4] }
+        assert_eq!(helper().len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+array length, apply=false, force=false: rustc exit status: 0
+
+array length, apply=false, force=false: runtime exit status: 0
+8
+
+array length, apply=true, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> [u8; 1 << 2] { [0; 4] }\n        assert_eq!(helper().len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+array length, apply=true, force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> [u8; 1 << 2] { [0; 4] }
+        assert_eq!(helper().len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+array length, apply=true, force=false: rustc exit status: 0
+
+array length, apply=true, force=false: runtime exit status: 0
+8
+
+array length, apply=false, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> [u8; 1 << 2] { [0; 4] }\n        assert_eq!(helper().len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+array length, apply=false, force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> [u8; 1 << 2] { [0; 4] }
+        assert_eq!(helper().len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+array length, apply=false, force=true: rustc exit status: 0
+
+array length, apply=false, force=true: runtime exit status: 0
+8
+
+array length, apply=true, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> [u8; 1 << 2] { [0; 4] }\n        assert_eq!(helper().len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+array length, apply=true, force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> [u8; 1 << 2] { [0; 4] }
+        assert_eq!(helper().len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+array length, apply=true, force=true: rustc exit status: 0
+
+array length, apply=true, force=true: runtime exit status: 0
+8
+
+array length original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }
+        assert_eq!(helper().unwrap().0.len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+array length original: rustc exit status: 0
+
+array length original: runtime exit status: 0
+8
+
+array length, apply=false, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }\n        assert_eq!(helper().unwrap().0.len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+array length, apply=false, force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }
+        assert_eq!(helper().unwrap().0.len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+array length, apply=false, force=false: rustc exit status: 0
+
+array length, apply=false, force=false: runtime exit status: 0
+8
+
+array length, apply=true, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }\n        assert_eq!(helper().unwrap().0.len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+array length, apply=true, force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }
+        assert_eq!(helper().unwrap().0.len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+array length, apply=true, force=false: rustc exit status: 0
+
+array length, apply=true, force=false: runtime exit status: 0
+8
+
+array length, apply=false, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }\n        assert_eq!(helper().unwrap().0.len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+array length, apply=false, force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }
+        assert_eq!(helper().unwrap().0.len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+array length, apply=false, force=true: rustc exit status: 0
+
+array length, apply=false, force=true: runtime exit status: 0
+8
+
+array length, apply=true, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }\n        assert_eq!(helper().unwrap().0.len(), 4);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+array length, apply=true, force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        fn helper() -> Option<([u8; 1 << 2], impl Iterator<Item = u8>)> { Some(([0; 4], std::iter::once(0))) }
+        assert_eq!(helper().unwrap().0.len(), 4);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+array length, apply=true, force=true: rustc exit status: 0
+
+array length, apply=true, force=true: runtime exit status: 0
+8
+
+ok
+test owner_header_regressions::const_expression_operators_keep_independent_owner_self ... const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+const owner original: rustc exit status: 0
+
+const owner original: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+const owner original: rustc exit status: 0
+
+const owner original: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+const owner original: rustc exit status: 0
+
+const owner original: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ { 2 > 1 } }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+const owner original: rustc exit status: 0
+
+const owner original: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ { 2 > 1 } }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ { 2 > 1 } }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ { 2 > 1 } }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ { 2 > 1 } }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+ok
+test owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context ... macro owner original: source
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } });
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro owner original: rustc exit status: 0
+
+macro owner original: runtime exit status: 0
+0
+
+macro owner prefix="tag:", apply=false, force=false: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="tag:", apply=true, force=false: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="tag:", apply=false, force=true: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="tag:", apply=true, force=true: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner original: source
+macro_rules! make { (tag -> impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag -> impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } });
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro owner original: rustc exit status: 0
+
+macro owner original: runtime exit status: 0
+0
+
+macro owner prefix="tag ->", apply=false, force=false: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="tag ->", apply=true, force=false: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="tag ->", apply=false, force=true: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="tag ->", apply=true, force=true: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner original: source
+macro_rules! make { (fn tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner;
+        make!(fn tag: impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } });
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro owner original: rustc exit status: 0
+
+macro owner original: runtime exit status: 0
+0
+
+macro owner prefix="fn tag:", apply=false, force=false: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="fn tag:", apply=true, force=false: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="fn tag:", apply=false, force=true: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+macro owner prefix="fn tag:", apply=true, force=true: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+ok
+test owner_header_regressions::raw_identifier_header_leak_preserves_independent_owner ... raw identifier original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Check { r#fn: bool }
+        let check = Check { r#fn: 1 < 2 };
+        assert!(check.r#fn);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+raw identifier original: rustc exit status: 0
+
+raw identifier original: runtime exit status: 0
+8
+
+raw identifier, apply=false, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Check { r#fn: bool }\n        let check = Check { r#fn: 1 < 2 };\n        assert!(check.r#fn);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+raw identifier, apply=false, force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { r#fn: bool }
+        let check = Check { r#fn: 1 < 2 };
+        assert!(check.r#fn);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+raw identifier, apply=false, force=false: rustc exit status: 0
+
+raw identifier, apply=false, force=false: runtime exit status: 0
+8
+
+raw identifier, apply=true, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Check { r#fn: bool }\n        let check = Check { r#fn: 1 < 2 };\n        assert!(check.r#fn);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+raw identifier, apply=true, force=false: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { r#fn: bool }
+        let check = Check { r#fn: 1 < 2 };
+        assert!(check.r#fn);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+raw identifier, apply=true, force=false: rustc exit status: 0
+
+raw identifier, apply=true, force=false: runtime exit status: 0
+8
+
+raw identifier, apply=false, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Check { r#fn: bool }\n        let check = Check { r#fn: 1 < 2 };\n        assert!(check.r#fn);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+raw identifier, apply=false, force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { r#fn: bool }
+        let check = Check { r#fn: 1 < 2 };
+        assert!(check.r#fn);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+raw identifier, apply=false, force=true: rustc exit status: 0
+
+raw identifier, apply=false, force=true: runtime exit status: 0
+8
+
+raw identifier, apply=true, force=true: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Check { r#fn: bool }\n        let check = Check { r#fn: 1 < 2 };\n        assert!(check.r#fn);\n        struct Inner;\n        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }\n        std::mem::size_of::<Order>() + Inner::size()\n    }\n}\nstruct Order(u64);\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true })
+raw identifier, apply=true, force=true: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Check { r#fn: bool }
+        let check = Check { r#fn: 1 < 2 };
+        assert!(check.r#fn);
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+raw identifier, apply=true, force=true: rustc exit status: 0
+
+raw identifier, apply=true, force=true: runtime exit status: 0
+8
+
+ok
+test receiver::module_word_before_plain_destination_binding_does_not_steal_cursor ... cursor applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: tax::Helper, order: &Order) -> u32 {
+        let _ = helper; order.0 + self.0
+    }
+}
+mod tax { pub struct Helper; }
+struct Order(u32);
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(tax::Helper, &o)); }
+
+cursor applied: rustc exit status: 0
+
+cursor applied: runtime exit status: 0
+3
+
+ok
+test receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings ... receiver original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, tax: &Tax) -> u32 {
+        // self Self tax
+        /* Self /* self */ tax */
+        println!("self Self tax");
+        println!(r##"self Self tax"##);
+        println!(r##"self "Self" tax"##);
+        println!("{}", std::str::from_utf8(b"self Self tax").unwrap());
+        println!("{}", std::str::from_utf8(br##"self Self tax"##).unwrap());
+        println!("{}", std::str::from_utf8(br##"self "Self" tax"##).unwrap());
+        struct Inner(u32);
+        impl Inner {
+            fn read(&self) -> u32 { let _: &Self = self; self.0 }
+        }
+        let outer = tax.0;
+        let nested = { let tax = Tax(3); tax.0 };
+        self.0 + outer + nested + Inner(4).read()
+    }
+}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(&t)); }
+
+receiver original: rustc exit status: 0
+
+receiver original: runtime exit status: 0
+self Self tax
+self Self tax
+self "Self" tax
+self Self tax
+self Self tax
+self "Self" tax
+10
+
+receiver preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> u32 {
+        // self Self tax
+        /* Self /* self */ tax */
+        println!("self Self tax");
+        println!(r##"self Self tax"##);
+        println!(r##"self "Self" tax"##);
+        println!("{}", std::str::from_utf8(b"self Self tax").unwrap());
+        println!("{}", std::str::from_utf8(br##"self Self tax"##).unwrap());
+        println!("{}", std::str::from_utf8(br##"self "Self" tax"##).unwrap());
+        struct Inner(u32);
+        impl Inner {
+            fn read(&self) -> u32 { let _: &Self = self; self.0 }
+        }
+        let outer = self.0;
+        let nested = { let tax = Tax(3); tax.0 };
+        order.0 + outer + nested + Inner(4).read()
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(&o)); }
+
+receiver preview: rustc exit status: 0
+
+receiver preview: runtime exit status: 0
+self Self tax
+self Self tax
+self "Self" tax
+self Self tax
+self Self tax
+self "Self" tax
+10
+
+receiver applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> u32 {
+        // self Self tax
+        /* Self /* self */ tax */
+        println!("self Self tax");
+        println!(r##"self Self tax"##);
+        println!(r##"self "Self" tax"##);
+        println!("{}", std::str::from_utf8(b"self Self tax").unwrap());
+        println!("{}", std::str::from_utf8(br##"self Self tax"##).unwrap());
+        println!("{}", std::str::from_utf8(br##"self "Self" tax"##).unwrap());
+        struct Inner(u32);
+        impl Inner {
+            fn read(&self) -> u32 { let _: &Self = self; self.0 }
+        }
+        let outer = self.0;
+        let nested = { let tax = Tax(3); tax.0 };
+        order.0 + outer + nested + Inner(4).read()
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(&o)); }
+
+receiver applied: rustc exit status: 0
+
+receiver applied: runtime exit status: 0
+self Self tax
+self Self tax
+self "Self" tax
+self Self tax
+self Self tax
+self "Self" tax
+10
+
+ok
+test receiver::selected_binding_cursor_and_explicit_reference_lifetime_work ... lifetime cursor original: source
+struct Tax(u32);
+mod tax { pub struct Helper; }
+struct Order(u32);
+impl Order {
+    fn f<'a>(&self, helper: tax::Helper, tax: &'a Tax) -> u32 {
+        let _ = helper; self.0 + tax.0
+    }
+}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(tax::Helper, &t)); }
+
+lifetime cursor original: rustc exit status: 0
+
+lifetime cursor original: runtime exit status: 0
+3
+
+lifetime cursor applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f<'a>(&'a self, helper: tax::Helper, order: &Order) -> u32 {
+        let _ = helper; order.0 + self.0
+    }
+}
+mod tax { pub struct Helper; }
+struct Order(u32);
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(tax::Helper, &o)); }
+
+lifetime cursor applied: rustc exit status: 0
+
+lifetime cursor applied: runtime exit status: 0
+3
+
+ok
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... mutable binding original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, mut t: Tax) -> u32 {
+        t.0 += 1; self.0 + t.0
+    }
+}
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", o.f(tax)); }
+
+mutable binding original: rustc exit status: 0
+
+mutable binding original: runtime exit status: 0
+6
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+mutable binding preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+mutable binding preview: rustc exit status: 0
+
+mutable binding preview: runtime exit status: 0
+6
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+mutable binding applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+mutable binding applied: rustc exit status: 0
+
+mutable binding applied: runtime exit status: 0
+6
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+mutable binding preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+mutable binding preview: rustc exit status: 0
+
+mutable binding preview: runtime exit status: 0
+6
+
+binding gateway queried (4, 21); binding=(4, 21); mut-keyword=(4, 19)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+mutable binding applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        self.0 += 1; order.0 + self.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+mutable binding applied: rustc exit status: 0
+
+mutable binding applied: runtime exit status: 0
+6
+
+ok
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... negation original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax, flag: bool) -> &'static str {
+        let _ = tax;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", o.f(&t, false), o.f(&t, true)); }
+
+negation original: rustc exit status: 0
+
+negation original: runtime exit status: 0
+{self:?}|{self:?}
+
+negation force=false: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+negation force=true: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+negation force=false: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+negation force=true: planned
+negation preview: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation preview: rustc exit status: 0
+
+negation preview: runtime exit status: 0
+{self:?}|{self:?}
+
+negation applied: source
+struct Tax;
+
+impl Tax {
+    fn f(&self, order: &Order, flag: bool) -> &'static str {
+        let _ = self;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+
+
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", t.f(&o, false), t.f(&o, true)); }
+
+negation applied: rustc exit status: 0
+
+negation applied: runtime exit status: 0
+{self:?}|{self:?}
+
+ok
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+fn main() { let n = { Order::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+fn main() { let n = { Order::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Result<Option<impl Iterator<Item = usize>>, ()> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        Ok(Some(std::iter::once(n)))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().unwrap().next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+fn main() { let n = { Order::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> (impl Iterator<Item = usize>,) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        (std::iter::once(n),)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().0.next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> ([u8; 1], impl Iterator<Item = usize>) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        ([0], std::iter::once(n))
+    }
+}
+fn main() { let n = { Order::f().1.next().unwrap() }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> ([u8; 1], impl Iterator<Item = usize>) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        ([0], std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().1.next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> ([u8; 1], impl Iterator<Item = usize>) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        ([0], std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().1.next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> ([u8; 1], impl Iterator<Item = usize>) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        ([0], std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().1.next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> ([u8; 1], impl Iterator<Item = usize>) {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        ([0], std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().1.next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> impl Iterator<Item = impl std::fmt::Display> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        std::iter::once(n)
+    }
+}
+fn main() { let n = { Order::f().next().unwrap() }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> impl Iterator<Item = impl std::fmt::Display> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        std::iter::once(n)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> impl Iterator<Item = impl std::fmt::Display> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        std::iter::once(n)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> impl Iterator<Item = impl std::fmt::Display> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        std::iter::once(n)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().next().unwrap() }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> impl Iterator<Item = impl std::fmt::Display> {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        std::iter::once(n)
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().next().unwrap() }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+fn main() { let n = { Order::f(); 8 }; println!("{}", n); }
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+8
+
+nested impl type applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static impl Send {
+        struct Inner;
+        let compare: bool = 1 < 2;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        assert!(compare);
+        let n = std::mem::size_of::<Order>() + Inner::size();
+        { static VALUE: usize = 8; assert_eq!(n, VALUE); &VALUE }
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f(); 8 }; println!("{}", n); }
+
+nested impl type applied: rustc exit status: 0
+
+nested impl type applied: runtime exit status: 0
+8
+
+ok
+test review_regressions::ambiguous_macro_owner_declarations_refuse_without_writing_even_with_force ... ambiguous macro original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        macro_rules! size { (impl $t:ty {}) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Self {}); n
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}", Order::f()); }
+
+ambiguous macro original: rustc exit status: 0
+
+ambiguous macro original: runtime exit status: 0
+8
+
+ambiguous macro receiver=false force=false: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+ambiguous macro receiver=false force=true: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+ambiguous macro original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        macro_rules! size { (impl $t:ty {}) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Self {}); n
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}", o.f(&t)); }
+
+ambiguous macro original: rustc exit status: 0
+
+ambiguous macro original: runtime exit status: 0
+8
+
+ambiguous macro receiver=true force=false: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+ambiguous macro receiver=true force=true: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+ok
+test review_regressions::keyword_macro_arguments_respect_each_token_tree_delimiter ... macro delimiters original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        macro_rules! size { ($tag:ident $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Self); n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro delimiters original: rustc exit status: 0
+
+macro delimiters original: runtime exit status: 0
+8
+
+macro delimiters applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        macro_rules! size { ($tag:ident $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order); n
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro delimiters applied: rustc exit status: 0
+
+macro delimiters applied: runtime exit status: 0
+8
+
+macro delimiters original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        macro_rules! size { ($tag:ident $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size![trait Self]; n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro delimiters original: rustc exit status: 0
+
+macro delimiters original: runtime exit status: 0
+8
+
+macro delimiters applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        macro_rules! size { ($tag:ident $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size![trait Order]; n
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro delimiters applied: rustc exit status: 0
+
+macro delimiters applied: runtime exit status: 0
+8
+
+macro delimiters original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        macro_rules! size { ($tag:ident $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!{mod Self}; n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro delimiters original: rustc exit status: 0
+
+macro delimiters original: runtime exit status: 0
+8
+
+macro delimiters applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        macro_rules! size { ($tag:ident $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!{mod Order}; n
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro delimiters applied: rustc exit status: 0
+
+macro delimiters applied: runtime exit status: 0
+8
+
+ok
+test review_regressions::macro_owner_tokens_keep_outer_receiver_and_self_type ... macro receiver original: source
+struct Tax(u32);
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax) -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Self) + self.0 as usize;
+        let _ = tax;
+        n
+    }
+}
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", o.f(&t)); }
+
+macro receiver original: rustc exit status: 0
+
+macro receiver original: runtime exit status: 0
+10
+
+macro receiver preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order) + order.0 as usize;
+        let _ = self;
+        n
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+macro receiver preview: rustc exit status: 0
+
+macro receiver preview: runtime exit status: 0
+10
+
+macro receiver applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order) + order.0 as usize;
+        let _ = self;
+        n
+    }
+}
+struct Order(u64);
+fn main() { let o = Order(2); let t = Tax(3); println!("{}", t.f(&o)); }
+
+macro receiver applied: rustc exit status: 0
+
+macro receiver applied: runtime exit status: 0
+10
+
+ok
+test review_regressions::macro_owner_tokens_keep_outer_self_in_associated_move ... macro associated original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Self);
+        n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro associated original: rustc exit status: 0
+
+macro associated original: runtime exit status: 0
+8
+
+macro associated preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order);
+        n
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro associated preview: rustc exit status: 0
+
+macro associated preview: runtime exit status: 0
+8
+
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+macro associated applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        macro_rules! size { (impl $t:ty) => { std::mem::size_of::<$t>() }; }
+        let n = size!(impl Order);
+        n
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+macro associated applied: rustc exit status: 0
+
+macro associated applied: runtime exit status: 0
+8
+
+ok
+test review_regressions::recursive_destination_cannot_be_captured_by_local_imports ... shadow recursion original: source
+struct Tax;
+struct Order;
+struct Decoy;
+impl Order {
+    fn f(n: u32) -> u32 {
+        use crate::Decoy as Tax;
+        let recur = Self::f;
+        if n == 0 { 1 } else { recur(n - 1) + 1 }
+    }
+}
+impl Decoy { fn f(_: u32) -> u32 { 99 } }
+fn main() { println!("{}", Order::f(1)); }
+
+shadow recursion original: rustc exit status: 0
+
+shadow recursion original: runtime exit status: 0
+2
+
+shadow recursion preview: source
+struct Tax;
+
+impl Tax {
+    fn f(n: u32) -> u32 {
+        use crate::Decoy as Tax;
+        let recur = crate::Tax::f;
+        if n == 0 { 1 } else { recur(n - 1) + 1 }
+    }
+}
+struct Order;
+struct Decoy;
+impl Decoy { fn f(_: u32) -> u32 { 99 } }
+fn main() { println!("{}", Tax::f(1)); }
+
+shadow recursion preview: rustc exit status: 0
+
+shadow recursion preview: runtime exit status: 0
+2
+
+shadow recursion applied: source
+struct Tax;
+
+impl Tax {
+    fn f(n: u32) -> u32 {
+        use crate::Decoy as Tax;
+        let recur = crate::Tax::f;
+        if n == 0 { 1 } else { recur(n - 1) + 1 }
+    }
+}
+struct Order;
+struct Decoy;
+impl Decoy { fn f(_: u32) -> u32 { 99 } }
+fn main() { println!("{}", Tax::f(1)); }
+
+shadow recursion applied: rustc exit status: 0
+
+shadow recursion applied: runtime exit status: 0
+2
+
+ok
+test review_regressions::return_position_impl_trait_does_not_introduce_a_self_owner ... impl trait original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> /* impl Self */ impl Iterator<Item = usize> {
+        std::iter::once(std::mem::size_of::<Self>())
+    }
+}
+fn main() { println!("{}", Order::f().next().unwrap()); }
+
+impl trait original: rustc exit status: 0
+
+impl trait original: runtime exit status: 0
+8
+
+impl trait preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> /* impl Self */ impl Iterator<Item = usize> {
+        std::iter::once(std::mem::size_of::<Order>())
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f().next().unwrap()); }
+
+impl trait preview: rustc exit status: 0
+
+impl trait preview: runtime exit status: 0
+8
+
+impl trait applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> /* impl Self */ impl Iterator<Item = usize> {
+        std::iter::once(std::mem::size_of::<Order>())
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f().next().unwrap()); }
+
+impl trait applied: rustc exit status: 0
+
+impl trait applied: runtime exit status: 0
+8
+
+ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.83s
+
+[prod-code exec] exit 0 in 31.0s (server 30.6s, cpu 16.4s user 21.3s sys, peak 1269 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)

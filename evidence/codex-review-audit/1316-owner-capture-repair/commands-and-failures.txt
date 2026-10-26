@@ -1,0 +1,50 @@
+All project commands ran in the assigned worktree, without changing cwd. Remote
+commands ran in the foreground to terminal completion. Addresses and environment
+paths below are sanitized; <linux-build-node> denotes the assigned remote.
+
+Read issue and originals (exit 0):
+gh issue view 1316 --repo alex09x/prod-code --json body,comments,title
+gh api repos/alex09x/prod-code/pulls/comments/ID --jq .body
+IDs: 4079089180 4079089186 4087082287 4087082300 4087257719 4087257728 4088035140
+Initial full JSON comment responses were truncated; all seven bodies were then
+read in full with --jq .body. No issue or comment was published.
+
+Common test prefix:
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp
+
+Suffix -> observed terminal exit -> evidence:
+--test rust_method_preservation owner_capture -- --nocapture
+  -> 101 -> before.txt (2 failed, 18 filtered; before production changes)
+--test rust_method_preservation owner_capture -- --nocapture
+  -> 0 -> after.txt (3 passed, 18 filtered; complete coherent repair)
+--test rust_method_preservation
+  -> 0 -> acceptance.txt (21 passed; final formatted source state)
+
+Final changed-file formatting (exit 0, format.txt):
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/move_method/captures.rs crates/prod-code-mcp/src/move_method/method.rs crates/prod-code-mcp/src/move_method/mod.rs crates/prod-code-mcp/src/move_method/syntax.rs crates/prod-code-mcp/tests/rust_method_preservation.rs crates/prod-code-mcp/tests/rust_method_preservation/owner_capture.rs
+
+Final repository formatting check:
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo fmt --all -- --check
+  -> 1 -> format-check.txt (same diagnostic bodies as inherited evidence)
+
+Final crate lint:
+prod-code lint --remote <linux-build-node> --path crates/prod-code-mcp --timeout-secs 900
+  -> CLI 1, clippy 101 -> lint.txt (210 errors, 35 omitted by CLI; displayed
+     diagnostics identical to inherited evidence)
+
+Read-only discovery failures, before their bounded fallbacks:
+
+Exact command (blocked before execution):
+gh issue view 1316 --repo alex09x/prod-code --json body,comments,title && git diff --stat 4f2943bc1bcf6312aa81b393d97827cb5cca449b && rg --files evidence/codex-review-audit crates/prod-code-mcp/tests/rust_method_preservation crates/prod-code-mcp/src/move_method
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.
+Fallback: same issue/diff queries plus git ls-files for the named task paths;
+then prod-code outline/def on the returned paths. Exit 0. No source changed.
+
+Exact command (exit 1 at the incorrectly guessed lexical.rs path):
+sed -n '125,150p' crates/prod-code-mcp/src/move_method/syntax.rs && sed -n '140,205p' crates/prod-code-mcp/src/move_method/method.rs && prod-code outline crates/prod-code-mcp/src/lexical.rs && prod-code def crates/prod-code-mcp/src/lexical.rs --symbol opaque_end && sed -n '1,100p' evidence/codex-review-audit/1316-review-repair/commands-and-failures.txt
+Error: cannot outline: file does not exist: crates/prod-code-mcp/src/lexical.rs (did you mean `crates/prod-code-mcp/src/tools/references/lexical.rs`?)
+The commands after the failed outline did not execute. The suggested path was
+not assumed correct. Fallback: inspected the already-used opaque_token helper
+at syntax.rs:133, then prod-code def crates/prod-code-mcp/src/signature/mod.rs
+--symbol opaque_at; exit 0, returned signature/call_sites.rs:111. This was an
+incorrect requested path, not a gateway malfunction. No issue was published.

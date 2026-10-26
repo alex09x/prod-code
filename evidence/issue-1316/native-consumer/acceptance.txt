@@ -1,0 +1,177 @@
+COMMAND prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-gateway --test rust_method_native
+[prod-code exec] waiting for sync probe response (10s elapsed)
+[prod-code exec] waiting for sync probe response (20s elapsed)
+[prod-code exec] uploading workspace sync batch (25s elapsed)
+[prod-code exec] waiting for workspace sync acknowledgement (25s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (40s elapsed)
+    Blocking waiting for file lock on package cache
+[prod-code exec] waiting for command output or exit; checking gateway connection (50s elapsed)
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling hir-ty v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09/crates/prod-code-mcp)
+[prod-code exec] waiting for command output or exit; checking gateway connection (60s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (70s elapsed)
+   Compiling hir v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-db v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-assists v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-completion v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-ssr v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-diagnostics v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling load-cargo v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+[prod-code exec] waiting for command output or exit; checking gateway connection (80s elapsed)
+   Compiling ide v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling prod-code-engine-rust v0.3.41 (<remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09/crates/prod-code-engine-rust)
+   Compiling prod-code-gateway v0.3.41 (<remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09/crates/prod-code-gateway)
+[prod-code exec] waiting for command output or exit; checking gateway connection (90s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 30s
+     Running tests/rust_method_native.rs (target/debug/deps/rust_method_native-048929475172f020)
+
+running 3 tests
+[prod-code exec] waiting for command output or exit; checking gateway connection (100s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (110s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (120s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (130s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (140s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (150s elapsed)
+test exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity ... FAILED
+test expanded_method_type_capture_refuses_before_writes_including_force has been running for over 60 seconds
+test macro_local_value_keeps_unrelated_method_type_parameter_and_output has been running for over 60 seconds
+[prod-code exec] waiting for command output or exit; checking gateway connection (160s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (170s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (180s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (190s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (200s elapsed)
+test expanded_method_type_capture_refuses_before_writes_including_force ... ok
+[prod-code exec] waiting for command output or exit; checking gateway connection (210s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (220s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (230s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (240s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (250s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (260s elapsed)
+test macro_local_value_keeps_unrelated_method_type_parameter_and_output ... ok
+
+failures:
+
+---- exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity stdout ----
+REQUEST session=1 {"id":"textDocument/definition","jsonrpc":"2.0","method":"textDocument/definition","params":{"position":{"character":7,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 elapsed_ms=21818 {"id":"textDocument/definition","jsonrpc":"2.0","result":[{"range":{"end":{"character":7,"line":0},"start":{"character":7,"line":0}},"uri":"file:///client/src/lib.rs"}]}
+REQUEST session=1 {"id":"textDocument/hover","jsonrpc":"2.0","method":"textDocument/hover","params":{"position":{"character":7,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 elapsed_ms=3555 {"id":"textDocument/hover","jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"\n```rust\nnative_extensions\n```\n\n```rust\nstruct S(u32)\n```\n\n---\n\nno Drop"}}}
+REQUEST session=1 {"id":"textDocument/typeDefinition","jsonrpc":"2.0","method":"textDocument/typeDefinition","params":{"position":{"character":7,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 elapsed_ms=0 {"error":{"code":-32601,"message":"textDocument/typeDefinition is not supported by prod-code for Rust"},"id":"textDocument/typeDefinition","jsonrpc":"2.0"}
+BOUNDARY probe session=100 verified_files=4
+BOUNDARY handshake session=100 validation=false native=true backend=false
+REQUEST session=100 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpTUcQgu/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpTUcQgu/fixture"}]}}
+RESPONSE session=100 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=100 {"jsonrpc":"2.0","method":"initialized","params":{}}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(s: &S) -> u32 { s.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs","version":1}}}
+REQUEST session=100 {"id":2,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":14,"line":1},"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=4 {"id":2,"jsonrpc":"2.0","result":[{"range":{"end":{"character":30,"line":1},"start":{"character":30,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}]}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":3,"jsonrpc":"2.0","method":"textDocument/typeDefinition","params":{"position":{"character":5,"line":1},"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=0 {"error":{"code":-32601,"message":"textDocument/typeDefinition is not supported by prod-code for Rust"},"id":3,"jsonrpc":"2.0"}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":4,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":12,"line":1},"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=104 {"id":4,"jsonrpc":"2.0","result":[{"range":{"end":{"character":62,"line":2},"start":{"character":62,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},{"range":{"end":{"character":72,"line":2},"start":{"character":72,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}]}
+BOUNDARY probe session=101 verified_files=4
+BOUNDARY handshake session=101 validation=true native=true backend=false
+REQUEST session=101 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpTUcQgu/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpTUcQgu/fixture"}]}}
+RESPONSE session=101 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=101 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=101 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(s: &S) -> u32 { s.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs","version":1}}}
+REQUEST session=101 {"id":2,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=101 elapsed_ms=25611 {"id":2,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+REQUEST session=101 {"id":3,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=101 elapsed_ms=0 {"id":3,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":12,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=101 {"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+BOUNDARY unregister session=101
+BOUNDARY probe session=102 verified_files=4
+BOUNDARY handshake session=102 validation=true native=true backend=false
+REQUEST session=102 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpTUcQgu/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpTUcQgu/fixture"}]}}
+RESPONSE session=102 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=102 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=102 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs","version":1}}}
+REQUEST session=102 {"id":2,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=102 elapsed_ms=1 {"id":2,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":6,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=102 {"id":3,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=102 elapsed_ms=18 {"id":3,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+REQUEST session=102 {"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+BOUNDARY probe session=100 verified_files=4
+BOUNDARY unregister session=102
+REQUEST session=100 {"id":5,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":14,"line":1},"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=1 {"id":5,"jsonrpc":"2.0","result":[{"range":{"end":{"character":30,"line":1},"start":{"character":30,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}]}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":6,"jsonrpc":"2.0","method":"textDocument/typeDefinition","params":{"position":{"character":5,"line":1},"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=0 {"error":{"code":-32601,"message":"textDocument/typeDefinition is not supported by prod-code for Rust"},"id":6,"jsonrpc":"2.0"}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":7,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":12,"line":1},"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=1 {"id":7,"jsonrpc":"2.0","result":[{"range":{"end":{"character":62,"line":2},"start":{"character":62,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},{"range":{"end":{"character":72,"line":2},"start":{"character":72,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}]}
+BOUNDARY probe session=103 verified_files=4
+BOUNDARY handshake session=103 validation=true native=true backend=false
+REQUEST session=103 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpTUcQgu/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpTUcQgu/fixture"}]}}
+RESPONSE session=103 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=103 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=103 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(s: &S) -> u32 { s.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs","version":1}}}
+REQUEST session=103 {"id":2,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=103 elapsed_ms=20 {"id":2,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+REQUEST session=103 {"id":3,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=103 elapsed_ms=0 {"id":3,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":12,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=103 {"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+BOUNDARY unregister session=103
+BOUNDARY probe session=104 verified_files=4
+BOUNDARY handshake session=104 validation=true native=true backend=false
+REQUEST session=104 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpTUcQgu/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpTUcQgu/fixture"}]}}
+RESPONSE session=104 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=104 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=104 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs","version":1}}}
+REQUEST session=104 {"id":2,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=104 elapsed_ms=0 {"id":2,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":6,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=104 {"id":3,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpTUcQgu/fixture/src/lib.rs"}}}
+RESPONSE session=104 elapsed_ms=18 {"id":3,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+BOUNDARY unregister session=100
+BOUNDARY unregister session=104
+
+thread 'exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity' (2874871) panicked at crates/prod-code-gateway/tests/rust_method_native.rs:111:13:
+assertion `left == right` failed: exact nominal calls must become useful dot calls: MadeMethod {
+    owner: "S",
+    method: "f",
+    root: "/tmp/.tmpTUcQgu/fixture",
+    file: "src/lib.rs",
+    parameter: "s: &S",
+    receiver: "&self",
+    renamed_uses: 1,
+    rewritten_calls: 0,
+    unchanged: [
+        "src/lib.rs:3:63 (qualified call retained to preserve receiver coercion and dispatch)",
+        "src/lib.rs:3:73 (qualified call retained to preserve receiver coercion and dispatch)",
+    ],
+    unmatched: [],
+    rewritten: [
+        (
+            "/tmp/.tmpTUcQgu/fixture/src/lib.rs",
+            "struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n",
+        ),
+    ],
+    diagnostics: [],
+    applied: false,
+}
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 173.72s
+
+error: test failed, to rerun pass `-p prod-code-gateway --test rust_method_native`
+[prod-code exec] 35 file(s) changed by the command written back: evidence/issue-1316/native-consumer/local-value/control-probes.json, evidence/issue-1316/native-consumer/local-value/original-compiler.txt, evidence/issue-1316/native-consumer/local-value/original-runtime.txt, evidence/issue-1316/native-consumer/local-value/original.rs, evidence/issue-1316/native-consumer/local-value/public-false.txt, evidence/issue-1316/native-consumer/local-value/public-true.txt, evidence/issue-1316/native-consumer/local-value/returned-false-compiler.txt, evidence/issue-1316/native-consumer/local-value/returned-false-runtime.txt, evidence/issue-1316/native-consumer/local-value/returned-false.rs, evidence/issue-1316/native-consumer/local-value/returned-true-compiler.txt, evidence/issue-1316/native-consumer/local-value/returned-true-runtime.txt, evidence/issue-1316/native-consumer/local-value/returned-true.rs, evidence/issue-1316/native-consumer/local-value/semantic-replies.json, evidence/issue-1316/native-consumer/nominal/control-probes.json, evidence/issue-1316/native-consumer/nominal/original-compiler.txt, evidence/issue-1316/native-consumer/nominal/original-runtime.txt, evidence/issue-1316/native-consumer/nominal/original.rs, evidence/issue-1316/native-consumer/nominal/public-false.txt, evidence/issue-1316/native-consumer/nominal/public-true.txt, evidence/issue-1316/native-consumer/nominal/returned-false-compiler.txt, evidence/issue-1316/native-consumer/nominal/returned-false-runtime.txt, evidence/issue-1316/native-consumer/nominal/returned-false.rs, evidence/issue-1316/native-consumer/nominal/returned-true-compiler.txt, evidence/issue-1316/native-consumer/nominal/returned-true-runtime.txt, evidence/issue-1316/native-consumer/nominal/returned-true.rs, evidence/issue-1316/native-consumer/nominal/semantic-replies.json, evidence/issue-1316/native-consumer/type-capture/control-probes.json, evidence/issue-1316/native-consumer/type-capture/original-compiler.txt, evidence/issue-1316/native-consumer/type-capture/original-runtime.txt, evidence/issue-1316/native-consumer/type-capture/original.rs, evidence/issue-1316/native-consumer/type-capture/public-false-false.txt, evidence/issue-1316/native-consumer/type-capture/public-false-true.txt, evidence/issue-1316/native-consumer/type-capture/public-true-false.txt, evidence/issue-1316/native-consumer/type-capture/public-true-true.txt, evidence/issue-1316/native-consumer/type-capture/semantic-replies.json
+[prod-code exec] exit 101 in 297.9s (server 268.4s, cpu 219.3s user 24.6s sys, peak 1916 MB) on node <build-node>, copy <remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09 (linux x86_64)
+
+TERMINAL_EXIT=101

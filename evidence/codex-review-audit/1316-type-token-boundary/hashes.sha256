@@ -1,0 +1,13 @@
+ba1791c31d3afafcab5053720b5c578643f1aac98bf0ff3b70a582edc639d02a  crates/prod-code-mcp/src/to_method/dispatch.rs
+d3e30e697efab649b05a8744eaa761959b6a28fda2c12a74dfc0874fc308040b  crates/prod-code-mcp/src/to_method/helpers.rs
+4d99b6c95479cb4503a07f18b7599cfa3b8602c9905ef470df526c8860404815  crates/prod-code-mcp/tests/rust_method_preservation.rs
+9eae5873157336eb543621135e43ce56254a4ef35daa9e9bff32b9316bc22e15  crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs
+8abb129d1b3c9b6afbf8752e309d26a5eacf92bc2490143b8214be2b80d756f9  evidence/codex-review-audit/1316-type-token-boundary/README.md
+c4f4cffa9e9b24e786de15eda696161c4c13d108791d64c00bd818f4e3c2cc47  evidence/codex-review-audit/1316-type-token-boundary/acceptance.txt
+952bcffc4a2f9ba12af8ee10d3f372e57de8584966ce137e2e4b6d8070a3fbaa  evidence/codex-review-audit/1316-type-token-boundary/before.txt
+5d644d774d0cc997bf4e19f1a85b56b4c70729c834b4d1c938821b64d734c33e  evidence/codex-review-audit/1316-type-token-boundary/commands-and-failures.txt
+fe6e04fb97971b0dcd2751524ea5ee48b7318583bf460f6770a30bc66e582f1a  evidence/codex-review-audit/1316-type-token-boundary/format.txt
+2e3fe0d123e3a0036412ad8f6ec54f1896b3e66d72f7571dfa35ee62686cbb37  evidence/codex-review-audit/1316-type-token-boundary/lint-comparison.txt
+b8e769a359317b7b0035f0d7ab930ac14042ed3239f0c81a076c2ff9288c6cf8  evidence/codex-review-audit/1316-type-token-boundary/lint.txt
+f9566f2616e1ac6bd14ca324058d8125effbe17e5a188f02cf8ab953c27a3735  evidence/codex-review-audit/1316-type-token-boundary/targeted-repaired.txt
+0f7bfa105a61ec875ce2f92d1fb0921c0f9b153a48e10fc5117c63c29b47600c  evidence/codex-review-audit/1316-type-token-boundary/targeted.txt

@@ -1,0 +1,181 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-path>
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.77s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 52 tests
+test aggregate::aggregate_raw_literal_cannot_hide_an_implicit_capture ... ok
+test declaration_identity::method_generic_owner_shadowing_refuses_before_any_edits ... ok
+test conversion::full_owner_paths_and_generic_arguments_are_required ... ok
+test declaration_identity::generic_argument_shadowing_refuses_before_any_edits ... ok
+test associated::associated_recursion_and_function_values_follow_the_destination ... ok
+test associated::cross_module_recursion_uses_the_destination_module_perspective ... ok
+test owner_capture::implicit_receiver_captures_refuse_without_writing_even_with_force ... ok
+test associated::associated_move_preserves_literal_bytes_and_nested_self_owner ... ok
+test receiver::module_word_before_plain_destination_binding_does_not_steal_cursor ... ok
+test guards::effectful_calls_refuse_normally_but_force_constructs_the_rewrite ... ok
+test owner_capture::explicit_arguments_literal_data_and_nested_captures_remain_supported ... ok
+test receiver::selected_binding_cursor_and_explicit_reference_lifetime_work ... ok
+test conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value ... ok
+test receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings ... ok
+test guards::unsupported_references_remain_accounted_and_block_forced_writes ... ok
+test type_identity::array_element_trivia_preserves_length_expression_token_boundaries ... ok
+test review_regressions::ambiguous_macro_owner_declarations_refuse_without_writing_even_with_force ... ok
+test guards::failed_reference_queries_refuse_even_force_and_preserve_all_bytes ... ok
+test declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter ... ok
+test conversion::exact_generic_and_path_owners_still_convert_and_run ... ok
+test review_regressions::macro_owner_tokens_keep_outer_self_in_associated_move ... ok
+test review_regressions::recursive_destination_cannot_be_captured_by_local_imports ... ok
+test review_regressions::return_position_impl_trait_does_not_introduce_a_self_owner ... ok
+test owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context ... ok
+test type_identity::distinct_type_token_boundaries_refuse_before_writes ... ok
+test owner_header_regressions::raw_identifier_header_leak_preserves_independent_owner ... ok
+test owner_capture::comparisons_inside_nested_owners_keep_their_self_identity ... ok
+test review_regressions::macro_owner_tokens_keep_outer_receiver_and_self_type ... ok
+test macro_inputs::ignored_macro_inputs_preserve_supported_conversion ... ok
+test declaration_identity::method_type_parameter_does_not_shadow_macro_namespace ... ok
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... ok
+test macro_inputs::macro_expansion_resolving_method_generic_refuses_before_edits ... ok
+test review_regressions::keyword_macro_arguments_respect_each_token_tree_delimiter ... ok
+test aggregate::aggregate_exact_receiver_calls_convert_with_semantic_identity ... ok
+test owner_header_regressions::array_length_header_leak_preserves_independent_owner ... ok
+test aggregate::aggregate_receiver_move_uses_the_same_owner_identity ... ok
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... ok
+test call_trivia::line_comment_argument_retains_its_newline ... ok
+test type_identity::equivalent_slice_element_type_trivia_still_convert ... ok
+test type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert ... FAILED
+test type_identity::macro_type_literal_and_punctuation_boundaries_are_not_trivia ... ok
+test call_trivia::nested_exact_owner_calls_do_not_overlap ... ok
+test owner_boundary_regressions::field_initializer_comparisons_do_not_hide_independent_owners ... ok
+test owner_header_regressions::const_expression_operators_keep_independent_owner_self ... ok
+test aggregate::aggregate_raw_owner_and_array_shift_runtime ... ok
+test owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics ... ok
+test aggregate::aggregate_exact_owner_trait_dispatch_needs_overlay_proof ... ok
+test declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity ... ok
+test aggregate::aggregate_semantic_wrapper_and_uncertain_identity_stay_qualified ... ok
+test type_identity::equivalent_trait_objects_and_generic_type_trivia_still_convert ... ok
+test declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing ... ok
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... ok
+
+failures:
+
+---- type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert stdout ----
+equivalent type original: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(c:&S< &'static u8>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S< &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:129 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(c:&S</* reference */ &'static u8>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S</* reference */ &'static u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:144 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<&'static u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<*const u8> { fn f(c:&S< /* pointer */ *const u8>)->u8 {c.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<temp-path> file: "src/main.rs", parameter: "c:&S< /* pointer */ *const u8>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:154 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<temp-path> "struct S<T>(T);\nimpl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<*const u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {7} } fn main(){let x=S(&7u8 as *const u8);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+
+thread 'type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert' (3526919) panicked at crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs:201:65:
+called `Result::unwrap()` on an `Err` value: src/main.rs was not validated: pre-flight workspace sync failed. Other files retain their results; retry this file or request an explicit compiler check
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert
+
+test result: FAILED. 51 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.63s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 9.9s (server 9.5s, cpu 27.0s user 41.2s sys, peak 1332 MB) on node <build-node>, copy <remote-path> (linux x86_64)
+
+client_exit=101

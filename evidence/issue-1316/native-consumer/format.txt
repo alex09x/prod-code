@@ -1,0 +1,4 @@
+COMMAND prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-gateway/tests/rust_method_native.rs crates/prod-code-gateway/tests/rust_method_native/support.rs
+[prod-code exec] 2 file(s) changed by the command written back: crates/prod-code-gateway/tests/rust_method_native.rs, crates/prod-code-gateway/tests/rust_method_native/support.rs
+[prod-code exec] exit 0 in 1.7s (server 0.1s, cpu 0.0s user 0.0s sys, peak 39 MB) on <Linux build node>
+TERMINAL_EXIT=0

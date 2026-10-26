@@ -23,13 +23,6 @@ pub(crate) fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// The base name of a type: `Wrapper` for `Wrapper<T>` and for `crate::m::Wrapper`.
-pub(crate) fn base_name(ty: &str) -> &str {
-    let ty = ty.trim();
-    let ty = ty.split('<').next().unwrap_or(ty);
-    ty.rsplit("::").next().unwrap_or(ty).trim()
-}
-
 /// The receiver a first parameter becomes, when its type is the `impl`'s own type: `c: &mut
 /// Counter` → `&mut self`, `c: &'a Self` → `&'a self`, `mut c: Counter` → `mut self`. The binding's
 /// name comes back with it.
@@ -60,7 +53,10 @@ pub fn receiver_for(param: &str, owner: &str) -> Option<(String, String)> {
             }
         }
     };
-    let is_own = rest == "Self" || base_name(rest) == base_name(owner);
+    // Paths and all generic arguments are part of the receiver's identity.
+    let referent = type_spelling(rest)?;
+    let is_own = Some(&referent) == type_spelling("Self").as_ref()
+        || Some(&referent) == type_spelling(owner).as_ref();
     if !is_own {
         return None;
     }
@@ -70,6 +66,138 @@ pub fn receiver_for(param: &str, owner: &str) -> Option<(String, String)> {
         format!("{reference}self")
     };
     Some((receiver, name.to_string()))
+}
+
+/// The complete self type of an inherent impl, rather than its display/base name.
+pub(crate) fn impl_self_type(header: &str) -> Option<String> {
+    let original = header;
+    let header = crate::signature::blank_comments(header)?;
+    let mut rest = header.trim().strip_prefix("impl")?.trim_start();
+    if rest.starts_with('<') {
+        let mut depth = 0;
+        let end = rest.char_indices().find_map(|(i, c)| {
+            match c {
+                '<' => depth += 1,
+                '>' if !rest[..i].ends_with('-') => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(i + c.len_utf8())
+        })?;
+        rest = rest[end..].trim_start();
+    }
+    let end = rest
+        .match_indices("where")
+        .find_map(|(i, _)| {
+            (!rest[..i].chars().next_back().is_some_and(is_ident)
+                && !rest[i + 5..].chars().next().is_some_and(is_ident))
+            .then_some(i)
+        })
+        .unwrap_or(rest.len());
+    let ty = rest[..end].trim();
+    let start = ty.as_ptr() as usize - header.as_ptr() as usize;
+    // Blanking is only for locating the header. Preserve its original tokens,
+    // especially doc comments that are attributes in const-argument macros.
+    (!ty.is_empty()).then(|| original[start..start + ty.len()].to_string())
+}
+
+/// Compare token spellings, never concatenated text: `dyn Trait` is not `dynTrait`.
+/// The shared lexer keeps raw identifiers, lifetimes and prefixed literals whole.
+/// Retain jointness where its intentionally split tokens could change Rust meaning
+/// (literal suffixes/exponents, Unicode continuations and macro punctuation).
+pub(super) fn type_spelling(text: &str) -> Option<Vec<(&str, bool)>> {
+    use crate::fixture::builder::lexer::{Kind, lex};
+
+    let tokens = lex(text).ok()?;
+    let mut out = Vec::new();
+    let mut end = 0;
+    let mut groups: Vec<(&str, bool)> = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        safe_type_trivia(&text[end..token.start])?;
+        let spelling = &text[token.start..token.end];
+        let joint = if i == 0 {
+            false
+        } else {
+            let prev = &text[tokens[i - 1].start..end];
+            let last = prev.chars().next_back()?;
+            let first = spelling.chars().next()?;
+            let xid = unicode_ident::is_xid_continue;
+            let punct = |kind, c: char| kind == Kind::Punct && !"()[]{}".contains(c);
+            let numeric = tokens[i - 1].kind == Kind::Literal
+                && prev.starts_with(|c: char| c.is_ascii_digit());
+            let exponent_sign = matches!(prev, "+" | "-")
+                && i >= 2
+                && tokens[i - 2].kind == Kind::Literal
+                && text[tokens[i - 2].start..tokens[i - 2].end].ends_with(['e', 'E']);
+            // Ordinary type grammar consumes punctuation separately, including
+            // generic brackets and references (`<&T`, `>>`, `&&T`). Only path
+            // separators, function arrows and variadics need compound punctuation.
+            // Macros and expressions can observe every punctuation joint.
+            let punct_sensitive = groups.last().is_some_and(|(_, expression)| *expression)
+                || matches!((prev, spelling), (":", ":") | ("-", ">") | (".", "."));
+            let sensitive = (xid(last) && (xid(first) || matches!(first, '\"' | '\'')))
+                || (matches!(last, '\"' | '\'' | '#') && xid(first))
+                || (punct(tokens[i - 1].kind, last) && punct(token.kind, first) && punct_sensitive)
+                || (numeric && prev.ends_with(['e', 'E']) && matches!(first, '+' | '-'))
+                || (numeric && first == '.')
+                || (exponent_sign && first.is_ascii_digit());
+            sensitive && end == token.start
+        };
+        out.push((spelling, joint));
+        if token.kind == Kind::Punct {
+            match spelling {
+                "(" | "[" | "{" => {
+                    let expression = groups.last().is_some_and(|(_, expression)| *expression)
+                        || spelling == "{"
+                        || (i > 0 && &text[tokens[i - 1].start..end] == "!");
+                    groups.push((spelling, expression));
+                }
+                // Brackets begin with a slice/array element type. Only an array's
+                // length after `;` is an expression; macros inherit token context.
+                ";" => {
+                    if let Some(("[", expression)) = groups.last_mut() {
+                        *expression = true;
+                    }
+                }
+                ")" | "]" | "}" => {
+                    groups.pop()?;
+                }
+                _ => {}
+            }
+        }
+        end = token.end;
+    }
+    if !groups.is_empty() {
+        return None;
+    }
+    safe_type_trivia(&text[end..])?;
+    Some(out)
+}
+
+/// Doc comments expand into attributes, including inside const-argument macros.
+/// The shared lexer drops comments; refuse those rather than mistake them for trivia.
+fn safe_type_trivia(text: &str) -> Option<()> {
+    let mut at = 0;
+    while at < text.len() {
+        if let Some((end, comment)) = crate::signature::opaque_at(text, at, 0).ok()? {
+            let rest = &text[at..];
+            if !comment
+                || rest.starts_with("//!")
+                || rest.starts_with("/*!")
+                || (rest.starts_with("///") && !rest.starts_with("////"))
+                || (rest.starts_with("/**") && !rest.starts_with("/***"))
+            {
+                return None;
+            }
+            at = end;
+        } else {
+            let c = text[at..].chars().next()?;
+            if !c.is_whitespace() {
+                return None;
+            }
+            at += c.len_utf8();
+        }
+    }
+    Some(())
 }
 
 /// The receiver a first argument becomes: `&mut c` and `&c` lose the borrow, which method-call

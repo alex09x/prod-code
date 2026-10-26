@@ -1,0 +1,33 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 1 test
+type and local value original: source
+macro_rules! identity { ($ty:ty) => { ($ty, [u8; { let A = 1; A }]) }; }
+trait T { fn value(&self)->u8; }
+struct A {}
+impl T for A { fn value(&self)->u8 {2} }
+impl A { fn value(&self)->u8 {1} }
+struct S<U>(U);
+impl S<identity!(A)> { fn f<A:T>(c:&S<identity!(A)>)->u8 {c.0.0.value()} }
+fn main(){println!("{}",S::<(A,[u8;1])>::f::<A>(&S((A {},[7]))));}
+
+type and local value original: rustc exit status: 0
+
+type and local value original: runtime exit status: 0
+2
+
+macro expansion cursor (7, 39): Some("(A, [u8; { let A = 1; A }])")
+type and local value apply=false force=false: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+macro expansion cursor (7, 39): Some("(A, [u8; { let A = 1; A }])")
+type and local value apply=false force=true: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+macro expansion cursor (7, 39): Some("(A, [u8; { let A = 1; A }])")
+type and local value apply=true force=false: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+macro expansion cursor (7, 39): Some("(A, [u8; { let A = 1; A }])")
+type and local value apply=true force=true: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+test namespace_values::expanded_receiver_keeps_type_captures_beside_local_values ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out; finished in 1.86s
+
+[prod-code exec] exit 0 in 2.9s (server 2.5s, cpu 2.6s user 1.5s sys, peak 571 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)
