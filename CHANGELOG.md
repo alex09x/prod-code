@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Compile Verification of Every Affected Rust Project** (`crates/prod-code-mcp`, #1365):
+  `verify: "compile"` checks each Cargo package group that owns an edited Rust file, including crates the root workspace excludes, in the same proposed shadow; any failing group fails the verdict, and a Rust file no Cargo target owns is reported as incomplete verification instead of passing. Edits outside Rust and trees without any `Cargo.toml` keep the single root check.
 - **Polyglot Extract-Delegate Identity and Initialization** (`crates/prod-code-mcp`, #1335):
   JavaScript and TypeScript sources are parsed with Oxc, so a delegate keeps its declaration initializer when the constructor assigns other fields, and only the analyzer's references are rewritten, never a same-named property of another receiver. Declaring-file references and callers before the class are rewritten, and Go keeps package qualification in nested literals.
 - **Polyglot Signature Identity, Effects and Awaits** (`crates/prod-code-mcp`, #1333):
