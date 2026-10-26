@@ -208,7 +208,11 @@ pub fn restructure(
             );
             // It may use only the moved fields and the other moved methods.
             let body = &decl_text[sig.len()..];
+            let code = crate::extract_trait::lex::lexical_code(body);
             for (i, _) in body.match_indices("self.") {
+                if !code[i] || body[..i].chars().next_back().is_some_and(is_ident) {
+                    continue;
+                }
                 let used: String = body[i + 5..].chars().take_while(|c| is_ident(*c)).collect();
                 anyhow::ensure!(
                     fields.contains(&used) || methods.contains(&used),
@@ -229,8 +233,13 @@ pub fn restructure(
                 .iter()
                 .map(|l| format!("{l}\n{item_indent}"))
                 .collect();
+            let await_call = if super::method_syntax::is_async(sig) {
+                ".await"
+            } else {
+                ""
+            };
             let stub = format!(
-                "{attrs}{sig} {{\n{item_indent}    self.{field}.{mname}({})\n{item_indent}}}",
+                "{attrs}{sig} {{\n{item_indent}    self.{field}.{mname}({}){await_call}\n{item_indent}}}",
                 names.join(", ")
             );
             out.replace_range(item.start..item.end, &stub);

@@ -48,3 +48,9 @@ pub use type_render::{aggregate_text, hover_parameter_type, literal_text, type_t
 pub use types::{
     CDeclaration, Field, Kind, Language, Param, ParameterObject, Spelled, default_binding,
 };
+
+// Share the existing lexical module reader with Rust delegate qualification without
+// exposing its insertion/edit machinery or changing parameter-object behavior.
+pub(crate) fn rust_modules(text: &str, at: usize) -> Vec<String> {
+    rust_scope::scope(text, at).modules
+}
