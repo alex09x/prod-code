@@ -18,6 +18,8 @@ mod lexical_bypasses;
 mod methods;
 #[path = "extract_delegate_polyglot_preservation/parsed_boundaries.rs"]
 mod parsed_boundaries;
+#[path = "extract_delegate_polyglot_preservation/projection_scopes.rs"]
+mod projection_scopes;
 #[path = "extract_delegate_polyglot_preservation/python_go.rs"]
 mod python_go;
 #[path = "extract_delegate_polyglot_preservation/readonly_paths.rs"]

@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS Delegate Extraction Reads Initializers, Exports and Receivers from Syntax** (`crates/prod-code-mcp`, #1409):
+  - Before deferring a readonly field into the helper's constructor, `code_extract_delegate` checks every instance field initializer of the class as parsed. Before, only one-line `name = value;` declarations were checked, so `metadata =` with `of / this.current();` on the next line, or with no semicolon, called `current()` before the delegate existed.
+  - A modifier inside a comment is not a modifier: `// export` above a plain class no longer exports the helper and inserts it inside the comment, which broke the program.
+  - A `this` owned by a nested object method, function or class, such as `{ value: 1, read() { return this.value; } }`, no longer counts as the owner's, so such an initializer is no longer refused. A `this` in an arrow function is still the owner's.
 - **C-Family Parameter Extraction Lexes Continued Comments and Increments** (`crates/prod-code-mcp`, #1408):
   - In C and C++, a `//` comment ending in a backslash runs on to the next physical line, with LF or CRLF. `code_extract_parameter` with `replace_all` no longer rewrites a value on that line, and selecting it is refused before anything is written. Before, `int a=80; // keep \` followed by `80` gave three replacements instead of two.
   - `++` and `--` are single tokens in C and C++. Selecting `+value` starting at the second plus of `return ++value;` is refused. Before, it was extracted and the rewrite `return +limit;` dropped the increment, so the program printed `80 80` instead of `81 81`.

@@ -156,13 +156,16 @@ pub(super) fn readonly_deferred(
         fields.len() == 1 && !decls[name].0.contains('='),
         "readonly constructor initialization requires one field without a declaration initializer"
     );
-    for (decl, _) in decls.values() {
-        if let Some((_, rhs)) = decl.split_once('=') {
-            ensure!(
-                !owner_dependent(rhs, Language::TypeScript, true),
-                "readonly initialization has unproved owner field-initializer effects"
-            );
-        }
+    // Every instance initializer runs before the constructor body, however it is laid out
+    // (#1409); a body that does not parse fails closed.
+    let initializers = super::super::js_scopes::instance_initializers(body).ok_or_else(|| {
+        anyhow::anyhow!("readonly initialization has unproved owner field-initializer effects")
+    })?;
+    for rhs in &initializers {
+        ensure!(
+            !owner_dependent(rhs, Language::TypeScript, true),
+            "readonly initialization has unproved owner field-initializer effects"
+        );
     }
     let range = constructor_range(body, Language::TypeScript)
         .ok_or_else(|| anyhow::anyhow!("readonly constructor not found"))?;
