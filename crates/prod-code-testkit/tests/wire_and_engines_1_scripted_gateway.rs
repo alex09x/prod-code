@@ -142,7 +142,7 @@ async fn handshake_shows_the_purpose_to_the_script_and_reads_its_hints() {
     }
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![json!({"purpose": "validation"})]
+        vec![json!({"purpose": "validation", "preferred_engine": null})]
     );
 
     // A script that says nothing leaves the hints unset.

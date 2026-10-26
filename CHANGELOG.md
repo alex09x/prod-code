@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Mixed-Language Directory Outlines Ask Each File's Own Engine** (`crates/prod-code-mcp`, #1415):
+  `code_outline` on a directory that holds files of several languages opens one session per language, on that language's first file, the way a single-file outline routes it. In a Rust checkout, `scripts/a.py` and `scripts/b.ts` are outlined by the Python and the TypeScript server. Before, both went through the one session the directory chose, so `b.ts` was asked of the Python engine. A directory of one language still uses one session. The scripted test gateway now shows a session's `preferred_engine` to its script (`crates/prod-code-testkit`).
 - **Linter Fix Reports Name the Files Kept for Local Edits** (`crates/prod-code-mcp`, #1414):
   `lint --fix` lists a file whose local copy changed while the fixer ran as skipped, with the reason, and its note says how many files were kept and which. The local edit stays and the node's fix of that file is not written. Before, the report said only `rewrote 1 file(s)` and did not mention the file whose fix was discarded. A failing fixer's error names kept files too.
 - **Symbol Resolution Bounds Its Remote Reads** (`crates/prod-code-mcp`, #1413):

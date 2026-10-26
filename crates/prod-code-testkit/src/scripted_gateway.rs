@@ -120,12 +120,15 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         return Ok(());
                     }
                 };
-                // Shown to the script as `prod-code/handshake`, so a test can see which engine
-                // a session asked for (`purpose`); an answer with `engine_age_ms` says how long
-                // ago the engine was loaded (#381), any other answer leaves it unsaid.
+                // Shown to the script as `prod-code/handshake`, so a test can see what a session
+                // asked for (`purpose`, `preferred_engine`); an answer with `engine_age_ms` says
+                // how long ago the engine was loaded (#381), any other answer leaves it unsaid.
                 let said = answer(
                     "prod-code/handshake",
-                    &serde_json::json!({ "purpose": req.purpose.clone() }),
+                    &serde_json::json!({
+                        "purpose": req.purpose.clone(),
+                        "preferred_engine": req.preferred_engine.clone(),
+                    }),
                 );
                 framed
                     .send(WireMessage::HandshakeResponse(HandshakeResponse {

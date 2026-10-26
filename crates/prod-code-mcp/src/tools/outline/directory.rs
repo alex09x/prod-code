@@ -59,8 +59,15 @@ pub async fn outline_directory(
         return Ok(subdirectory_listing(dir_path, path_display_prefix, skipped));
     }
     entries.sort_by_key(|e| e.file_name());
-    let mut session =
-        crate::session::LspSession::open(remote, workspace_root, Some(dir_path)).await?;
+    // Files of several languages are each their own engine's (#1415): one session per engine,
+    // opened on that engine's first file, as a file outline would route it. A directory of one
+    // language keeps one session opened on the directory.
+    let engine_of = |path: &Path| crate::sync::engine_for_file(path).unwrap_or_default();
+    let engines: std::collections::BTreeSet<&str> =
+        entries.iter().map(|e| engine_of(&e.path())).collect();
+    let mixed = engines.len() > 1;
+    let mut sessions: std::collections::HashMap<&str, crate::session::LspSession> =
+        std::collections::HashMap::new();
 
     let max_bytes = options.max_bytes.unwrap_or(usize::MAX);
     let max_items = options.max_items.unwrap_or(usize::MAX);
@@ -87,6 +94,14 @@ pub async fn outline_directory(
         let params = serde_json::json!({
             "textDocument": { "uri": file_uri }
         });
+        let key = if mixed { engine_of(&entry_file) } else { "" };
+        if !sessions.contains_key(key) {
+            let hint = if mixed { &entry_file } else { dir_path };
+            let opened =
+                crate::session::LspSession::open(remote, workspace_root, Some(hint)).await?;
+            sessions.insert(key, opened);
+        }
+        let session = sessions.get_mut(key).expect("opened above");
         match session
             .query(&entry_file, "textDocument/documentSymbol", params)
             .await
