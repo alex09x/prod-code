@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Trait Extraction Conditions and Syntax** (`crates/prod-code-mcp`, #1359):
+  Conditional method and impl attributes are carried onto the generated trait and implementation instead of refused, the widest selected visibility is used, const-expression comparisons are no longer read as generic angles, and Boolean negation in an impl header is no longer taken for a macro.
 - **Rust Item and Module Moves** (`crates/prod-code-mcp`, #1354):
   Moves keep multiline attribute and doc preambles, give a public item a public new module, pick the new module's parent from the item's own crate root, and refuse targets owned by a different library/binary crate. Whole-module moves rewrite `super::` paths by syntax, do not follow links, and update every root that declares a shared file.
 - **Return Wrapping Callers and C++ Prototypes** (`crates/prod-code-mcp`, #1347):

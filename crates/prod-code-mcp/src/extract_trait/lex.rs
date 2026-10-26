@@ -177,14 +177,28 @@ pub fn matching_close_brace(text: &str, open: usize) -> Option<usize> {
 }
 
 pub fn has_outer_attribute_before(text: &str, at: usize) -> bool {
+    !outer_attributes_before(text, at).is_empty()
+}
+
+pub fn outer_attributes_before(text: &str, at: usize) -> Vec<(usize, usize)> {
     let code = lexical_code(text);
-    let Some(close) = previous_code(text, &code, at).filter(|i| text.as_bytes()[*i] == b']') else {
-        return false;
-    };
-    let Some(open) = matching_open_square(text, &code, close) else {
-        return false;
-    };
-    previous_code(text, &code, open).is_some_and(|i| text.as_bytes()[i] == b'#')
+    let mut spans = Vec::new();
+    let mut cursor = at;
+    while let Some(close) =
+        previous_code(text, &code, cursor).filter(|i| text.as_bytes()[*i] == b']')
+    {
+        let Some(open) = matching_open_square(text, &code, close) else {
+            break;
+        };
+        let Some(hash) = previous_code(text, &code, open).filter(|i| text.as_bytes()[*i] == b'#')
+        else {
+            break;
+        };
+        spans.push((hash, close + 1));
+        cursor = hash;
+    }
+    spans.reverse();
+    spans
 }
 
 pub fn attribute_end(text: &str) -> Option<usize> {
@@ -223,6 +237,10 @@ pub fn attribute_name(attribute: &str) -> Option<&str> {
     (end > start).then_some(&attribute[start..end])
 }
 
+pub fn is_conditional_attribute(attribute: &str) -> bool {
+    matches!(attribute_name(attribute), Some("cfg" | "cfg_attr"))
+}
+
 pub fn contains_code_word(text: &str, wanted: &str) -> bool {
     let code = lexical_code(text);
     text.match_indices(wanted).any(|(i, _)| {
@@ -233,4 +251,69 @@ pub fn contains_code_word(text: &str, wanted: &str) -> bool {
                 .next()
                 .is_some_and(is_ident)
     })
+}
+
+pub fn is_macro_bang(text: &str, code: &[bool], bang: usize) -> bool {
+    if !code.get(bang).copied().unwrap_or(false) || text.as_bytes().get(bang) != Some(&b'!') {
+        return false;
+    }
+    let Some(after) = next_code(text, code, bang + 1) else {
+        return false;
+    };
+    let Some(before_end) = previous_code(text, code, bang) else {
+        return false;
+    };
+    let prefix = &text[..=before_end];
+    let Some(last_char) = prefix.chars().next_back() else {
+        return false;
+    };
+    if !is_ident(last_char) {
+        return false;
+    }
+    let ident_len: usize = prefix
+        .chars()
+        .rev()
+        .take_while(|c| is_ident(*c))
+        .map(char::len_utf8)
+        .sum();
+    let ident_start = prefix.len() - ident_len;
+    if !code[ident_start..=before_end]
+        .iter()
+        .all(|is_code| *is_code)
+    {
+        return false;
+    }
+    let ident = &prefix[ident_start..];
+    if ident == "macro_rules" {
+        return true;
+    }
+    if !matches!(text.as_bytes()[after], b'(' | b'[' | b'{') {
+        return false;
+    }
+    let first = ident.chars().next().unwrap();
+    (unicode_ident::is_xid_start(first) || first == '_')
+        && !matches!(
+            ident,
+            "if" | "while"
+                | "match"
+                | "return"
+                | "break"
+                | "yield"
+                | "let"
+                | "in"
+                | "else"
+                | "const"
+                | "async"
+                | "move"
+                | "ref"
+                | "mut"
+                | "unsafe"
+                | "box"
+        )
+}
+
+pub fn contains_macro_invocation(text: &str) -> bool {
+    let code = lexical_code(text);
+    text.match_indices('!')
+        .any(|(i, _)| is_macro_bang(text, &code, i))
 }

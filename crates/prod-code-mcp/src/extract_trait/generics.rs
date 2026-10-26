@@ -10,24 +10,24 @@
 
 use anyhow::{Context, Result};
 
-use super::lex::lexical_code;
+use super::lex::{contains_macro_invocation, lexical_code, next_code};
 use super::types::{is_ident, valid_ident};
+
+#[path = "delimiters.rs"]
+mod delimiters;
+pub(crate) use delimiters::Delimiters;
 
 pub fn matching_angle(text: &str) -> Option<usize> {
     let code = lexical_code(text);
-    let mut depth = 0usize;
-    let mut previous = None;
-    for (i, c) in text.char_indices() {
+    let mut nesting = Delimiters::default();
+    for (i, _) in text.char_indices() {
         if !code[i] {
             continue;
         }
-        match c {
-            '<' => depth += 1,
-            '>' if previous != Some('-') && depth == 1 => return Some(i),
-            '>' if previous != Some('-') && depth > 1 => depth -= 1,
-            _ => {}
+        nesting.advance(text, i)?;
+        if nesting.top_level() {
+            return Some(i);
         }
-        previous = Some(c);
     }
     None
 }
@@ -35,28 +35,16 @@ pub fn matching_angle(text: &str) -> Option<usize> {
 pub fn top_level_word(text: &str, wanted: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let code = lexical_code(text);
-    let mut angle = 0i32;
-    let mut paren = 0i32;
-    let mut square = 0i32;
+    let mut nesting = Delimiters::default();
     let mut i = 0usize;
     while i < bytes.len() {
         if !code[i] {
             i += 1;
             continue;
         }
-        match bytes[i] {
-            b'<' => angle += 1,
-            b'>' if angle > 0 && bytes.get(i.wrapping_sub(1)) != Some(&b'-') => angle -= 1,
-            b'(' => paren += 1,
-            b')' if paren > 0 => paren -= 1,
-            b'[' => square += 1,
-            b']' if square > 0 => square -= 1,
-            _ => {}
-        }
+        nesting.advance(text, i)?;
         if text.is_char_boundary(i)
-            && angle == 0
-            && paren == 0
-            && square == 0
+            && nesting.top_level()
             && text[i..].starts_with(wanted)
             && !text[..i].chars().next_back().is_some_and(is_ident)
             && !text[i + wanted.len()..]
@@ -74,37 +62,22 @@ pub fn top_level_word(text: &str, wanted: &str) -> Option<usize> {
 pub fn split_top_level(text: &str) -> Result<Vec<&str>> {
     let code = lexical_code(text);
     let mut parts = Vec::new();
-    let mut angle = 0i32;
-    let mut paren = 0i32;
-    let mut square = 0i32;
-    let mut brace = 0i32;
+    let mut nesting = Delimiters::default();
     let mut start = 0usize;
     for (i, c) in text.char_indices() {
         if !code[i] {
             continue;
         }
-        match c {
-            '<' => angle += 1,
-            '>' if !text[..i].ends_with('-') => angle -= 1,
-            '(' => paren += 1,
-            ')' => paren -= 1,
-            '[' => square += 1,
-            ']' => square -= 1,
-            '{' => brace += 1,
-            '}' => brace -= 1,
-            ',' if angle == 0 && paren == 0 && square == 0 && brace == 0 => {
-                parts.push(text[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
+        nesting
+            .advance(text, i)
+            .context("unbalanced generic parameter declaration")?;
+        if c == ',' && nesting.top_level() {
+            parts.push(text[start..i].trim());
+            start = i + 1;
         }
-        anyhow::ensure!(
-            angle >= 0 && paren >= 0 && square >= 0 && brace >= 0,
-            "unbalanced generic parameter declaration"
-        );
     }
     anyhow::ensure!(
-        angle == 0 && paren == 0 && square == 0 && brace == 0,
+        nesting.top_level(),
         "unbalanced generic parameter declaration"
     );
     let tail = text[start..].trim();
@@ -116,25 +89,16 @@ pub fn split_top_level(text: &str) -> Result<Vec<&str>> {
 
 pub fn has_top_level_equals(text: &str) -> bool {
     let code = lexical_code(text);
-    let mut angle = 0i32;
-    let mut paren = 0i32;
-    let mut square = 0i32;
-    let mut brace = 0i32;
+    let mut nesting = Delimiters::default();
     for (i, c) in text.char_indices() {
         if !code[i] {
             continue;
         }
-        match c {
-            '<' => angle += 1,
-            '>' if !text[..i].ends_with('-') && angle > 0 => angle -= 1,
-            '(' => paren += 1,
-            ')' if paren > 0 => paren -= 1,
-            '[' => square += 1,
-            ']' if square > 0 => square -= 1,
-            '{' => brace += 1,
-            '}' if brace > 0 => brace -= 1,
-            '=' if angle == 0 && paren == 0 && square == 0 && brace == 0 => return true,
-            _ => {}
+        if c == '=' && nesting.top_level() {
+            return true;
+        }
+        if nesting.advance(text, i).is_none() {
+            return false;
         }
     }
     false
@@ -155,7 +119,7 @@ pub fn generic_arguments(generics: &str) -> Result<Vec<String>> {
             "attributes on generic parameters are not supported"
         );
         anyhow::ensure!(
-            !parameter.contains('!'),
+            !contains_macro_invocation(parameter),
             "macros in generic parameters are not supported"
         );
         anyhow::ensure!(
@@ -170,13 +134,13 @@ pub fn generic_arguments(generics: &str) -> Result<Vec<String>> {
                 "`{parameter}` has a malformed lifetime parameter"
             );
             format!("'{name}")
-        } else if let Some(constant) = parameter.strip_prefix("const ") {
-            let name: String = constant
-                .trim_start()
-                .chars()
-                .take_while(|c| is_ident(*c))
-                .collect();
-            let rest = constant.trim_start()[name.len()..].trim_start();
+        } else if let Some(constant) = parameter
+            .strip_prefix("const")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+        {
+            let trimmed = constant.trim_start();
+            let name: String = trimmed.chars().take_while(|c| is_ident(*c)).collect();
+            let rest = trimmed[name.len()..].trim_start();
             anyhow::ensure!(
                 valid_ident(&name) && rest.starts_with(':'),
                 "`{parameter}` has a malformed const parameter"
@@ -197,6 +161,46 @@ pub fn generic_arguments(generics: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
+pub(crate) fn method_param_span(decl: &str, name_at: usize) -> Option<(usize, usize)> {
+    let code = lexical_code(decl);
+    let name_len: usize = decl[name_at..]
+        .chars()
+        .take_while(|c| is_ident(*c))
+        .map(char::len_utf8)
+        .sum();
+    if name_len == 0 {
+        return None;
+    }
+    let next = next_code(decl, &code, name_at + name_len)?;
+    let open_paren = if decl.as_bytes()[next] == b'<' {
+        let close_angle = next + matching_angle(&decl[next..])?;
+        next_code(decl, &code, close_angle + 1)?
+    } else {
+        next
+    };
+    if decl.as_bytes().get(open_paren) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (offset, c) in decl[open_paren..].char_indices() {
+        let idx = open_paren + offset;
+        if !code[idx] {
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open_paren + 1, idx));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub fn impl_body_open(text: &str, impl_at: usize) -> Result<usize> {
     impl_body_open_in_code(text, impl_at, &lexical_code(text))
 }
@@ -204,26 +208,21 @@ pub fn impl_body_open(text: &str, impl_at: usize) -> Result<usize> {
 /// Scan a header using the lexical mask of `text`, shared across impl candidates.
 pub(crate) fn impl_body_open_in_code(text: &str, impl_at: usize, code: &[bool]) -> Result<usize> {
     let bytes = text.as_bytes();
-    let mut angle = 0i32;
-    let mut paren = 0i32;
-    let mut square = 0i32;
+    let mut nesting = Delimiters::default();
     let mut i = impl_at + 4;
     while i < bytes.len() {
         if !code[i] {
             i += 1;
             continue;
         }
-        match bytes[i] {
-            b'<' => angle += 1,
-            b'>' if angle > 0 && bytes.get(i.wrapping_sub(1)) != Some(&b'-') => angle -= 1,
-            b'(' => paren += 1,
-            b')' if paren > 0 => paren -= 1,
-            b'[' => square += 1,
-            b']' if square > 0 => square -= 1,
-            b'{' if angle == 0 && paren == 0 && square == 0 => return Ok(i),
-            b';' if angle == 0 && paren == 0 && square == 0 => break,
-            _ => {}
+        if nesting.top_level() {
+            match bytes[i] {
+                b'{' => return Ok(i),
+                b';' => break,
+                _ => {}
+            }
         }
+        nesting.advance(text, i).context("unbalanced impl header")?;
         i += 1;
     }
     anyhow::bail!("the `impl` has no body")

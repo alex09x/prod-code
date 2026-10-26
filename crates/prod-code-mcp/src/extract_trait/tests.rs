@@ -74,17 +74,12 @@ fn generic_refusals_and_exact_replacement_are_explicit() {
             "impl<T> Trait<T> for Name<T> {}",
             "already implements a trait",
         ),
-        ("#[cfg(test)]\nimpl Name {}", "attributes on impl blocks"),
         (
-            "#[cfg(any())] impl<T> Name<T> { fn selected(&self) {} fn kept(&self) {} }",
+            "#[allow(dead_code)]\nimpl Name {}",
             "attributes on impl blocks",
         ),
         (
-            "#[cfg(\n    any()\n)]\n// the condition remains attached\n\nimpl<T> Name<T> { fn selected(&self) {} fn kept(&self) {} }",
-            "attributes on impl blocks",
-        ),
-        (
-            "const NOTE: &str = \"} ] #[cfg]\"; /* ] /* } */ [ */ #[cfg(any())] /* [ */ impl Name {}",
+            "const NOTE: &str = \"} ] #[cfg]\"; /* ] /* } */ [ */ #[allow(dead_code)] /* [ */ impl Name {}",
             "attributes on impl blocks",
         ),
         ("impl<T> Name<make!{T}> {}", "macros in an impl header"),
@@ -96,6 +91,30 @@ fn generic_refusals_and_exact_replacement_are_explicit() {
     ] {
         let err = impl_block(source, source.find("impl").unwrap()).unwrap_err();
         assert!(format!("{err:#}").contains(expected), "{source}: {err:#}");
+    }
+
+    for (source, attr) in [
+        (
+            "#[cfg(test)]\nimpl Name { fn selected(&self) {} }",
+            "#[cfg(test)]",
+        ),
+        (
+            "#[cfg(any())] impl<T> Name<T> { fn selected(&self) {} fn kept(&self) {} }",
+            "#[cfg(any())]",
+        ),
+        (
+            "#[cfg(\n    any()\n)]\n// the condition remains attached\n\nimpl<T> Name<T> { fn selected(&self) {} fn kept(&self) {} }",
+            "#[cfg(\n    any()\n)]",
+        ),
+        (
+            "const NOTE: &str = \"} ] #[cfg]\"; /* ] /* } */ [ */ #[cfg(any())] /* [ */ impl Name { fn selected(&self) {} }",
+            "#[cfg(any())]",
+        ),
+    ] {
+        let imp = impl_block(source, source.rfind("impl").unwrap()).unwrap();
+        let (out, kept) = rewrite(source, &imp, &["selected".into()], "Selected").unwrap();
+        let expected_blocks = if kept.is_empty() { 2 } else { 3 };
+        assert_eq!(out.matches(attr).count(), expected_blocks, "{out}");
     }
 
     let sibling = "#[cfg(any())]\nstruct Disabled;\n\nimpl Name { fn value(&self) {} }";
@@ -130,17 +149,23 @@ fn generic_refusals_and_exact_replacement_are_explicit() {
     let err = rewrite(inline, &imp, &["value".into()], "2Value").unwrap_err();
     assert!(format!("{err:#}").contains("valid Rust identifier"));
 
-    for conditional in [
-        "impl Name { #[cfg(test)]\nfn value(&self) {} }",
-        "impl Name { #[cfg(any())] fn value(&self) {} }",
-        "impl Name { #[cfg_attr(\n    any(),\n    allow(dead_code)\n)] fn value(&self) {} }",
+    for (conditional, attr) in [
+        (
+            "impl Name { #[cfg(test)]\nfn value(&self) {} }",
+            "#[cfg(test)]",
+        ),
+        (
+            "impl Name { #[cfg(any())] fn value(&self) {} }",
+            "#[cfg(any())]",
+        ),
+        (
+            "impl Name { #[cfg_attr(\n    any(),\n    allow(dead_code)\n)] fn value(&self) {} }",
+            "#[cfg_attr(\n    any(),\n    allow(dead_code)\n)]",
+        ),
     ] {
         let imp = impl_block(conditional, 0).unwrap();
-        let err = rewrite(conditional, &imp, &["value".into()], "Value").unwrap_err();
-        assert!(
-            format!("{err:#}").contains("conditional"),
-            "{conditional}: {err:#}"
-        );
+        let (out, _) = rewrite(conditional, &imp, &["value".into()], "Value").unwrap();
+        assert_eq!(out.matches(attr).count(), 2, "{out}");
     }
 }
 
