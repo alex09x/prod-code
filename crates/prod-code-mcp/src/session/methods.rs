@@ -33,6 +33,14 @@ impl LspSession {
         self.engine_loaded.map(|at| at.elapsed())
     }
 
+    /// How long the server has had to index what it now holds: since its engine was loaded, or
+    /// since a refresh last synced changed files, whichever is later; `None` when the gateway
+    /// does not say when the engine was loaded (#1422).
+    pub fn index_age(&self) -> Option<std::time::Duration> {
+        let loaded = self.engine_age()?;
+        Some(self.refreshed.map_or(loaded, |at| loaded.min(at.elapsed())))
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -249,6 +257,9 @@ impl LspSession {
         let outcome = push_workspace_sync(&mut self.framed, &self.root, &identity, None)
             .await
             .context("workspace sync on the open session failed")?;
+        if !outcome.changed_paths.is_empty() {
+            self.refreshed = Some(std::time::Instant::now());
+        }
         let pushed: HashSet<String> = outcome
             .changed_paths
             .iter()

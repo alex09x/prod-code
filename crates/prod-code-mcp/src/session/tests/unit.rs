@@ -50,6 +50,7 @@ async fn raw_session(reply: serde_json::Value) -> LspSession {
         next_id: 1,
         engine: "test".to_string(),
         engine_loaded: None,
+        refreshed: None,
         index_gated: false,
     }
 }

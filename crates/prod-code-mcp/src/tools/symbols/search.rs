@@ -59,7 +59,8 @@ pub(crate) async fn workspace_symbol_search_with_retry_policy(
     let asked = std::time::Instant::now();
     let mut res =
         execute_lsp_query(remote, root, &anchor, "workspace/symbol", params.clone()).await?;
-    let age = crate::session::pooled_engine_age(remote, root, &anchor)
+    // Since the engine loaded or its files last changed: a refresh restarts indexing (#1422).
+    let age = crate::session::pooled_index_age(remote, root, &anchor)
         .await
         .map(|age| age.saturating_sub(asked.elapsed()));
     let gated = crate::session::pooled_index_gated(remote, root, &anchor).await;

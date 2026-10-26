@@ -21,5 +21,5 @@ mod pool;
 mod tests;
 mod types;
 
-pub use pool::{pooled_engine_age, pooled_index_gated, pooled_query};
+pub use pool::{pooled_engine_age, pooled_index_age, pooled_index_gated, pooled_query};
 pub use types::{INDEXING_GRACE, LspSession, take_indexing_notes};

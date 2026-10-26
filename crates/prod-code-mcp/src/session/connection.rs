@@ -186,6 +186,7 @@ impl LspSession {
             engine_loaded: handshake.engine_age_ms.and_then(|ms| {
                 std::time::Instant::now().checked_sub(std::time::Duration::from_millis(ms))
             }),
+            refreshed: None,
             index_gated: handshake.index_gated,
         };
         // Files the gateway lost from its copy (#262) that the sync above did not carry: the

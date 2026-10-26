@@ -180,6 +180,7 @@ async fn validate_batch_per_file_deadline_does_not_mistake_a_late_reply_for_the_
         next_id: 1,
         engine: "rust".into(),
         engine_loaded: None,
+        refreshed: None,
         index_gated: false,
     };
     let budget = ValidationBudget::new();
