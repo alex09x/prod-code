@@ -11,6 +11,7 @@
 #[derive(Debug, Clone)]
 pub struct PolyglotDecl {
     pub fn_name: String,
+    pub name_start: usize,
     pub open_paren: usize,
     pub close_paren: usize,
     pub body_open: usize,

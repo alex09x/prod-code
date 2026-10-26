@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Polyglot Signature Identity, Effects and Awaits** (`crates/prod-code-mcp`, #1333):
+  Signature changes rewrite a C/C++ prototype only when the analyzer ties it to the changed function, treat `1+i++` and concatenations with calls as effectful arguments, and remove only the `await` that belongs to the changed call, including `await obj.f()` and parenthesized operands. Rust literals such as `0x1F_u8` and CommonJS `require` bindings keep their earlier handling.
 - **Extract-Parameter Tokens and One-Line Bodies** (`crates/prod-code-mcp`, #1309):
   `replace_all` replaces the selected expression as tokens, so `80` no longer rewrites `"80px"`, comments or longer numbers; one-line Rust functions no longer panic; `f(existing_arg,)` gains the new argument without a doubled comma; C-family casts keep their comparison precedence and comments their boundaries.
 - **Rust Extract-Delegate Literals, Receivers and Await** (`crates/prod-code-mcp`, #1334):

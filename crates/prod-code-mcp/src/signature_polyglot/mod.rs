@@ -8,9 +8,17 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod await_jsx;
+mod await_operand;
+mod await_regex;
+mod await_template;
 pub mod call_sites;
+mod cpp_declarations;
 pub mod declaration;
 pub mod execute;
+mod js_syntax;
+mod numeric_literal;
+mod semantic;
 pub mod sources;
 pub mod syntax;
 pub mod types;

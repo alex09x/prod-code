@@ -11,13 +11,13 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::parameter_object::{Language, call_args_span, split_args};
+use crate::parameter_object::{Language, split_args};
 use crate::signature::{Modifiers, Param};
 
 use super::sources::is_c_cpp_prototype;
 use super::syntax::{
-    display, is_ident, is_import_or_export_context, is_in_comment, is_side_effect_free_argument,
-    one_based_lsp_position,
+    call_args_span, display, is_ident, is_import_or_export_context_with_jsx, is_in_comment,
+    is_side_effect_free_argument, one_based_lsp_position, python_keyword,
 };
 use super::types::PolyglotDecl;
 
@@ -28,15 +28,19 @@ pub fn rewrite_file_calls(
     content: &str,
     is_decl_file: bool,
     decl: &PolyglotDecl,
-    old_signature: &str,
-    new_signature: &str,
     decl_edits: &[(usize, usize, String)],
     request: &[Param],
     modifiers: &Modifiers,
     lang: Language,
+    force: bool,
     semantic_references: &mut HashSet<(PathBuf, u32, u32)>,
     unmatched: &mut Vec<String>,
 ) -> Option<String> {
+    let jsx = lang == Language::JavaScript
+        || matches!(
+            src_path.extension().and_then(|s| s.to_str()),
+            Some("jsx" | "tsx")
+        );
     let mut file_edits: Vec<(usize, usize, String)> = if is_decl_file {
         decl_edits.to_vec()
     } else {
@@ -44,6 +48,7 @@ pub fn rewrite_file_calls(
     };
 
     let fn_name = &decl.fn_name;
+    let mut matched_calls = Vec::new();
     for (at, _) in content.match_indices(fn_name) {
         if at > 0 {
             let prev = content[..at].chars().next_back().unwrap();
@@ -60,64 +65,75 @@ pub fn rewrite_file_calls(
             std::fs::canonicalize(src_path).unwrap_or_else(|_| src_path.to_path_buf());
         let (line_num, col_num) = one_based_lsp_position(content, at);
         let reference_key = (source_path, line_num, col_num);
-        if is_import_or_export_context(content, at, lang) {
+        if is_import_or_export_context_with_jsx(content, at, lang, jsx) {
             semantic_references.remove(&reference_key);
             continue;
         }
-        // Skip comments and strings.
-        if is_in_comment(content, at, lang)
-            || crate::inline_parameter::is_in_string(content, at, lang)
+        // Semantic JS/TS references can be inside JSX or template substitutions.
+        // The expression lexer below understands those executable regions;
+        // whole-line string/comment heuristics must not hide them.
+        if !matches!(lang, Language::JavaScript | Language::TypeScript)
+            && (is_in_comment(content, at, lang)
+                || crate::inline_parameter::is_in_string(content, at, lang))
         {
             continue;
         }
 
-        // Skip declaration itself in declaration file
+        // Only the selected declaration token denotes the declaration itself.
+        if is_decl_file && at == decl.name_start {
+            semantic_references.remove(&reference_key);
+            continue;
+        }
+        // A call in a replaced parameter/default span cannot be applied as an
+        // independent edit. Retain its reference for the atomic unmatched guard.
         if is_decl_file
-            && at >= decl.open_paren.saturating_sub(fn_name.len() + 20)
-            && at <= decl.close_paren
+            && decl_edits
+                .iter()
+                .any(|(start, end, _)| *start <= at && at < *end)
         {
             continue;
         }
 
         // Check if call args follow
-        let Some((args_start, args_end)) = call_args_span(content, at + fn_name.len()) else {
+        let Some((args_start, args_end, _)) =
+            call_arguments_at(content, at + fn_name.len(), lang, jsx)
+        else {
             continue;
         };
         let site = format!("{}:{line_num}:{col_num}", display(root, src_path));
 
-        // Check if C/C++ prototype
-        if matches!(lang, Language::Cpp | Language::C)
-            && is_c_cpp_prototype(content, at, args_start, args_end)
-        {
-            if content[args_start..args_end].trim() != old_signature.trim() {
-                continue;
-            }
-            let after_paren = content[args_end + 1..].trim_start();
-            if after_paren.starts_with(';') {
-                // It's a prototype: rewrite prototype parameter list and return type
-                file_edits.push((args_start, args_end, new_signature.to_string()));
-                if let Some(new_ret) = &modifiers.returns {
-                    let line_start = content[..at].rfind('\n').map_or(0, |p| p + 1);
-                    let before_fn = &content[line_start..at];
-                    let indent = before_fn
-                        .chars()
-                        .take_while(|c| c.is_whitespace())
-                        .collect::<String>();
-                    file_edits.push((line_start, at, format!("{indent}{new_ret} ")));
-                }
-                continue;
-            }
-        }
-
+        // Every declaration and call must first belong to the selected symbol.
         if !semantic_references.remove(&reference_key) {
             continue;
         }
 
+        if matches!(lang, Language::Cpp | Language::C)
+            && (is_c_cpp_prototype(content, at, args_start, args_end)
+                || content[args_end + 1..].trim_start().starts_with('{'))
+        {
+            match super::cpp_declarations::edits(
+                content, line_num, col_num, args_start, decl, request, modifiers, lang, force,
+            ) {
+                Ok(edits) => file_edits.extend(edits),
+                Err(error) => unmatched.push(format!("{site}: {error}")),
+            }
+            continue;
+        }
+
+        matched_calls.push((at, line_num, col_num, args_start, args_end));
+    }
+
+    for (at, line_num, col_num, args_start, args_end) in matched_calls.into_iter().rev() {
+        let site = format!("{}:{line_num}:{col_num}", display(root, src_path));
+        let Some((_, _, mut old_args)) = call_arguments_at(content, at + fn_name.len(), lang, jsx)
+        else {
+            unmatched.push(format!("{site} call arguments could not be parsed safely"));
+            continue;
+        };
+
         // Call site rewriting
-        let old_args_str = &content[args_start..args_end];
-        let old_args = split_args(old_args_str);
         let is_python_keyword_call =
-            lang == Language::Python && old_args.iter().any(|a| a.split_once('=').is_some());
+            lang == Language::Python && old_args.iter().any(|a| python_keyword(a).is_some());
         let kept_indices = request
             .iter()
             .filter_map(|r| match r {
@@ -140,6 +156,42 @@ pub fn rewrite_file_calls(
             continue;
         }
 
+        let unchanged_params = request.len() == decl.params.len()
+            && request
+                .iter()
+                .zip(&decl.params)
+                .all(|(r, p)| matches!(r, Param::Keep(name) if *name == p.name));
+        if !unchanged_params {
+            if file_edits.iter().any(|(s, e, _)| {
+                !(*e <= args_start || *s >= args_end) && !(args_start <= *s && *e <= args_end)
+            }) {
+                unmatched.push(format!("{site} has overlapping call edits"));
+                continue;
+            }
+            let mut inner_edits = Vec::new();
+            file_edits.retain(|edit| {
+                if args_start <= edit.0 && edit.1 <= args_end {
+                    inner_edits.push(edit.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            if !inner_edits.is_empty() {
+                inner_edits.sort_by_key(|(s, e, _)| std::cmp::Reverse((*s, *e)));
+                let mut inner_content = content.to_string();
+                for (s, e, replacement) in inner_edits {
+                    inner_content.replace_range(s..e, &replacement);
+                }
+                let Some((_, _, composed_args)) =
+                    call_arguments_at(&inner_content, at + fn_name.len(), lang, jsx)
+                else {
+                    unmatched.push(format!("{site} has overlapping call edits"));
+                    continue;
+                };
+                old_args = composed_args;
+            }
+        }
         let mut new_args = Vec::new();
         for r in request {
             match r {
@@ -153,8 +205,8 @@ pub fn rewrite_file_calls(
                         // First check keyword arguments
                         for a in &old_args {
                             let a_trimmed = a.trim();
-                            if let Some((k, _v)) = a_trimmed.split_once('=')
-                                && k.trim() == name
+                            if let Some((k, _v)) = python_keyword(a_trimmed)
+                                && k == name
                             {
                                 arg_val = Some(a_trimmed.to_string());
                                 break;
@@ -170,7 +222,11 @@ pub fn rewrite_file_calls(
                             } else {
                                 idx
                             };
-                            if let Some(a) = old_args.get(pos) {
+                            if let Some(a) = old_args
+                                .iter()
+                                .filter(|a| python_keyword(a).is_none())
+                                .nth(pos)
+                            {
                                 let a_trimmed = a.trim();
                                 if is_python_keyword_call {
                                     arg_val = Some(format!("{name}={a_trimmed}"));
@@ -234,30 +290,23 @@ pub fn rewrite_file_calls(
         }
 
         let new_call_args = new_args.join(", ");
-        file_edits.push((args_start, args_end, new_call_args));
+        if !unchanged_params {
+            file_edits.push((args_start, args_end, new_call_args));
+        }
 
         // Check if call needs `await`
-        if modifiers.asyncness == Some(true) {
-            let before_call = content[..at].trim_end();
-            if !before_call.ends_with("await") {
-                let after_call = content[args_end + 1..].trim_start();
-                if after_call.starts_with('.') || after_call.starts_with('[') {
-                    // Parenthesize
-                    file_edits.push((at, at, "(await ".to_string()));
-                    file_edits.push((args_end + 1, args_end + 1, ")".to_string()));
-                } else {
-                    file_edits.push((at, at, "await ".to_string()));
-                }
-            }
-        } else if modifiers.asyncness == Some(false) {
-            let before_call = content[..at].trim_end();
-            if let Some(await_start) = before_call.strip_suffix("await").map(str::len)
-                && !content[..await_start]
-                    .chars()
-                    .next_back()
-                    .is_some_and(is_ident)
-            {
-                file_edits.push((await_start, at, String::new()));
+        if let Some(want_async) = modifiers.asyncness {
+            match super::await_operand::edits(
+                content,
+                at,
+                args_start,
+                args_end + 1,
+                lang,
+                want_async,
+                jsx,
+            ) {
+                Some(edits) => file_edits.extend(edits),
+                None => unmatched.push(format!("{site} has an unresolved await operand")),
             }
         }
     }
@@ -266,8 +315,21 @@ pub fn rewrite_file_calls(
         return None;
     }
 
-    // Sort edits in descending order of start offset to avoid shifting
-    file_edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    for (i, (s1, e1, _)) in file_edits.iter().enumerate() {
+        if file_edits[i + 1..]
+            .iter()
+            .any(|(s2, e2, _)| edits_overlap(*s1, *e1, *s2, *e2))
+        {
+            unmatched.push(format!(
+                "{}: overlapping edits could not be applied safely",
+                display(root, src_path)
+            ));
+            return None;
+        }
+    }
+
+    // Sort edits in descending order of (start, end) to avoid shifting
+    file_edits.sort_by_key(|e| std::cmp::Reverse((e.0, e.1)));
     let mut new_content = content.to_string();
     for (start, end, replacement) in file_edits {
         if start <= end && end <= new_content.len() {
@@ -275,4 +337,24 @@ pub fn rewrite_file_calls(
         }
     }
     Some(new_content)
+}
+
+fn call_arguments_at(
+    content: &str,
+    after_name: usize,
+    lang: Language,
+    jsx: bool,
+) -> Option<(usize, usize, Vec<String>)> {
+    if matches!(lang, Language::JavaScript | Language::TypeScript) {
+        super::js_syntax::call_arguments(content, after_name, lang, jsx)
+    } else {
+        call_args_span(content, after_name, lang)
+            .map(|(start, end)| (start, end, split_args(&content[start..end])))
+    }
+}
+
+fn edits_overlap(s1: usize, e1: usize, s2: usize, e2: usize) -> bool {
+    (s1 < e1 && s2 < e2 && s1.max(s2) < e1.min(e2))
+        || (s1 < e1 && ((s1 < s2 && s2 < e1) || (s1 < e2 && e2 < e1)))
+        || (s2 < e2 && ((s2 < s1 && s1 < e2) || (s2 < e1 && e1 < e2)))
 }
