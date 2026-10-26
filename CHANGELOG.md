@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **Re-Exports Never Outrank Their Definition** (`crates/prod-code-mcp`, #1402):
+  - A symbol lookup drops `pub use` re-exports before it takes the best-scored hit. Before, a path hint at `lib.rs` gave only `pub use sync::scan;` the bonus, and `scan` resolved to the re-export instead of `fn scan` in `sync.rs`. Between two real definitions the hint still decides.
+  - A grouped `use` ends at the `;` that closes it. Before, a `;` inside a comment such as `pub use m::{ // public API; keep sorted` ended it, so the imported names below were taken as second declarations and the lookup reported ambiguity.
 - **Assist Prelude Shortening Keeps Literals and Comments** (`crates/prod-code-mcp`, #1400):
   `code_assist` drops `std::prelude::v1::` only from paths in code on the lines the assist wrote. The same text inside a string literal such as `println!("std::prelude::v1::")`, or inside a comment, keeps its bytes; before, it was cut and the program printed something else. A file that already spells the path in code keeps the analyzer's spelling, because which occurrence is new cannot be told.
 - **TypeScript Safe Delete Binds Its Snapshot to the Text It Cuts** (`crates/prod-code-mcp`, #1398):

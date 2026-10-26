@@ -235,6 +235,23 @@ pub(crate) async fn resolve_symbol_ties(
             (score, hit)
         })
         .collect();
+    // A re-export (`pub use sync::scan;`) is listed by the index next to the definition it
+    // names. It is the same symbol, not a second candidate, and the answer is the definition.
+    // It leaves before the best score is taken, so a path hint that only the re-export's file
+    // matches cannot outrank the definition (#1402). It stays when no definition the source
+    // confirms is left.
+    let is_use: Vec<bool> = scored
+        .iter()
+        .map(|(_, h)| is_use_declaration(&h.path, &remote_texts, h.line))
+        .collect();
+    if scored
+        .iter()
+        .zip(&is_use)
+        .any(|((score, _), is_use)| !is_use && *score > -500)
+    {
+        let mut is_use = is_use.into_iter();
+        scored.retain(|_| !is_use.next().unwrap_or(false));
+    }
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| a.1.path.cmp(&b.1.path))
@@ -249,18 +266,6 @@ pub(crate) async fn resolve_symbol_ties(
         .filter(|(s, _)| *s == best)
         .map(|(_, h)| h)
         .collect();
-    // A re-export (`pub use sync::scan;`) is listed by the index next to the definition it
-    // names. It is the same symbol, not a second candidate, and the answer is the definition.
-    let definitions: Vec<&SymbolHit> = ties
-        .iter()
-        .copied()
-        .filter(|h| !is_use_declaration(&h.path, &remote_texts, h.line))
-        .collect();
-    let ties = if definitions.is_empty() {
-        ties
-    } else {
-        definitions
-    };
     // So is a Swift `extension` of a type, listed under the type's name: the type's own
     // declaration is the answer (#358).
     let declarations: Vec<&SymbolHit> = ties
