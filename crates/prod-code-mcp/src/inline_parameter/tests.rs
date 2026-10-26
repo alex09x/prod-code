@@ -55,8 +55,15 @@ fn only_a_value_that_means_the_same_in_the_body_is_inlined() {
         "Mode::from(x)",
         "self.MAX",
         "this.LIMIT",
+        // Starts and ends with a quote, but reads the caller's `flag` (#1381).
+        "\"yes\" if flag else \"no\"",
+        "'a' + name + 'b'",
     ] {
         assert!(!is_caller_independent(no), "{no}");
+    }
+    // A whole literal, escapes included, still is one.
+    for ok in ["\"say \\\"hi\\\"\"", "'it\\'s'", "'\\''", "\"\""] {
+        assert!(is_caller_independent(ok), "{ok}");
     }
 }
 

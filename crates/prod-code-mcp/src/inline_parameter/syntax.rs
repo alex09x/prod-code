@@ -70,13 +70,13 @@ pub fn is_caller_independent(arg: &str) -> bool {
     ) {
         return true;
     }
-    // Strings & Chars
-    if ((a.starts_with('"') && a.ends_with('"'))
-        || (a.starts_with('\'') && a.ends_with('\''))
-        || (a.starts_with("b\"") && a.ends_with('"')))
-        && !a.contains('{')
-    {
+    // Strings & Chars: one whole literal. `"yes" if flag else "no"` starts and ends with a
+    // quote too, but reads `flag` (#1381).
+    if is_one_string_literal(a.strip_prefix('b').unwrap_or(a)) && !a.contains('{') {
         return true;
+    }
+    if a.starts_with(['"', '\'']) {
+        return false;
     }
     // Path / Qualified names: separated by `::` or `.`
     let segments: Vec<&str> = if a.contains("::") {
@@ -103,6 +103,24 @@ pub fn is_caller_independent(arg: &str) -> bool {
         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
 
     all_caps || first_char_upper
+}
+
+/// `"…"` or `'…'` whose closing quote, past every escape, is the last character.
+fn is_one_string_literal(a: &str) -> bool {
+    let Some(quote) = a.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
+        return false;
+    };
+    let mut escaped = false;
+    for (at, c) in a.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == quote {
+            return at + c.len_utf8() == a.len();
+        }
+    }
+    false
 }
 
 pub fn keyword_arg(arg: &str) -> Option<(&str, &str)> {
