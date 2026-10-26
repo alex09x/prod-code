@@ -54,6 +54,8 @@ pub(crate) async fn run_reachability_scan(
             }
         };
         let lines: Vec<&str> = text.lines().collect();
+        let attributes =
+            (language == "rust").then(|| super::rust_attributes::RustAttributes::new(&text));
         let uri = session.uri_for(&abs)?;
         let symbols = match session
             .query(
@@ -91,7 +93,7 @@ pub(crate) async fn run_reachability_scan(
             let bare = cand.name.split('(').next().unwrap_or(&cand.name);
             let source_line = lines.get(cand.line as usize - 1).copied().unwrap_or("");
             let exported = is_exported(language, bare, source_line);
-            let (is_root, root_reason) = crate::reachability::is_root_entry_point(
+            let (mut is_root, mut root_reason) = crate::reachability::is_root_entry_point(
                 language,
                 rel,
                 &cand.name,
@@ -99,6 +101,20 @@ pub(crate) async fn run_reachability_scan(
                 exported,
                 options.include_exported,
             );
+            if let Some(reason) = attributes
+                .as_ref()
+                .and_then(|a| a.retention_reason(cand.line, cand.col))
+            {
+                is_root = true;
+                root_reason = Some(reason.clone());
+                report.unverified.push(Unverified {
+                    file: rel.clone(),
+                    name: Some(cand.name.clone()),
+                    line: cand.line,
+                    col: cand.col,
+                    reason,
+                });
+            }
 
             let decl = crate::reachability::SymbolDecl {
                 key: crate::reachability::SymbolKey::new(rel, &cand.name, cand.line, cand.col),

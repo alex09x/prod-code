@@ -2025,7 +2025,8 @@ async fn prune_commit_isolates_index_and_preserves_ambient_staged_work() {
     assert!(!status_text.contains("src/lib.rs"), "{status_text}");
 
     // Now test that dirty touched files are refused before applying
-    std::fs::write(&lib_rs, "pub fn keep() {}\n// dirty edit\n").unwrap();
+    // Keep the scripted candidate a real declaration, rather than pointing into a comment.
+    std::fs::write(&lib_rs, "pub fn keep() {}\nfn dead() {}\n// dirty edit\n").unwrap();
     let err = prod_code_mcp::prune::prune_orphans_opts(
         gateway.addr(),
         root,
