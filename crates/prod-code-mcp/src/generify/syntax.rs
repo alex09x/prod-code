@@ -265,7 +265,7 @@ pub fn find_polyglot_func_decl(
         return Ok(PolyglotFuncDecl {
             name: clean_name,
             decl_start,
-            _name_start: name_idx,
+            name_start: name_idx,
             name_end,
             open_paren: open_p,
             close_paren: close_p,

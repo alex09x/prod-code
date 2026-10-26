@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **Generify C++ Header Safety** (`crates/prod-code-mcp`, #1546, #1547):
+  - A same-named prototype in a header no longer has to share the source's stem or be included directly to count. Generify refuses the split layout unless every such prototype provably sits in another namespace, so a header reached through another header or named differently is refused again instead of left out of sync with a template definition.
+  - `namespace a::b` and `namespace a { namespace b` are the same namespace.
+  - Comments and string or character literals no longer affect the namespace scan. Anonymous and inline namespaces, namespace macros, raw strings, conditional blocks and qualified names count as uncertain, so the refusal stays.
+  - A non-ASCII character before the definition, as in `// café`, no longer panics the scan.
 - **Builder Fields with Associated-Type Bindings** (`crates/prod-code-mcp`, #1390):
   `code_generate_fixture` with `builder` accepts a field such as `values: Box<dyn Iterator<Item = u8>>` and keeps its whole type. The `=` inside generic angles binds an associated type and is no longer read as a field default. A real default such as `max: Vec<u8> = Vec::new()` is still refused.
 - **Rename Comments in Rust Block Comments and Raw Strings** (`crates/prod-code-mcp`, #1384):

@@ -336,6 +336,60 @@ void send_item(const std::string& item) {
     assert_eq!(fs::read_to_string(hpp_file).unwrap(), hpp_before);
 }
 
+/// A header reached only through another header, with another name, still declares the
+/// function: the split layout is refused before any write (#1546). A Unicode comment before
+/// the definition is read, not sliced through (#1547).
+#[tokio::test]
+async fn test_generify_cpp_refuses_a_transitively_included_header() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "api.hpp",
+            "#ifndef API_HPP\n#define API_HPP\nint selected(int x);\n#endif\n",
+        ),
+        ("public.hpp", "#include \"api.hpp\"\n"),
+        (
+            "compute.cpp",
+            "#include \"public.hpp\"\n// café\nint selected(int x) { return x; }\n",
+        ),
+        (
+            "caller.cpp",
+            "#include \"api.hpp\"\nint use() { return selected(1); }\n",
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let cpp_file = root.join("compute.cpp");
+    let before: Vec<String> = ["compute.cpp", "api.hpp", "caller.cpp"]
+        .iter()
+        .map(|f| fs::read_to_string(root.join(f)).unwrap())
+        .collect();
+    let gw = fake_gateway().await;
+    let error = generify_polyglot(
+        gw.addr(),
+        &root,
+        &cpp_file,
+        Some("selected"),
+        None,
+        None,
+        "x",
+        "typename",
+        "T",
+        true,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("cannot safely synchronize"),
+        "{error:#}"
+    );
+    let after: Vec<String> = ["compute.cpp", "api.hpp", "caller.cpp"]
+        .iter()
+        .map(|f| fs::read_to_string(root.join(f)).unwrap())
+        .collect();
+    assert_eq!(after, before);
+}
+
 #[tokio::test]
 async fn test_generify_cpp_existing_template() {
     let ws = Workspace::new(&[
