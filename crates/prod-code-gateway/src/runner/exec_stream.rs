@@ -17,6 +17,24 @@ pub(crate) struct ExecCompletion {
     pub accumulator: JsonStreamAccumulator,
 }
 
+/// Owns the command's process group while its stream runs: when the stream's future is
+/// dropped or cancelled before it finishes, the group is killed, and the blocking reaper still
+/// reaps it (#1536). `kill_exec_group` does nothing once the reaper has seen the exit, so a
+/// reused PID is never signalled.
+struct GroupGuard {
+    pid: u32,
+    exited: Arc<std::sync::Mutex<bool>>,
+    armed: bool,
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            kill_exec_group(self.pid, &self.exited);
+        }
+    }
+}
+
 /// Shared process/connection lifecycle for plain and structured execution.
 pub(crate) async fn stream_exec(
     mut child: std::process::Child,
@@ -30,6 +48,11 @@ pub(crate) async fn stream_exec(
     drop(tx);
     let pid = child.id();
     let exited = Arc::new(std::sync::Mutex::new(false));
+    let mut group = GroupGuard {
+        pid,
+        exited: exited.clone(),
+        armed: true,
+    };
     let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
     {
         let exited = exited.clone();
@@ -110,6 +133,8 @@ pub(crate) async fn stream_exec(
     for reader in readers {
         let _ = reader.await;
     }
+    // Finished on its own terms: exit, timeout or a departed client already handled the group.
+    group.armed = false;
     Ok(ExecCompletion {
         timed_out,
         client_left,
