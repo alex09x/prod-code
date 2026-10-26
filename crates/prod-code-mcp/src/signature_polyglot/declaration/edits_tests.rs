@@ -13,6 +13,7 @@ use super::*;
 fn decl(text: &str) -> PolyglotDecl {
     PolyglotDecl {
         fn_name: "f".into(),
+        name_start: text.find('f').unwrap(),
         open_paren: text.find('(').unwrap(),
         close_paren: text.find(')').unwrap(),
         body_open: text.find('{').unwrap_or(text.len()),

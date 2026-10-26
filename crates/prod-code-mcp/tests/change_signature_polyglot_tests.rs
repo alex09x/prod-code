@@ -8,8 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use prod_code_mcp::signature::{change_with, Modifiers, Param};
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_mcp::signature::{Modifiers, Param, change_with};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -22,7 +22,12 @@ async fn fake_gateway() -> ScriptedGateway {
     .await
 }
 
-fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: usize) -> serde_json::Value {
+fn reference_at(
+    file: &std::path::Path,
+    source: &str,
+    name: &str,
+    occurrence: usize,
+) -> serde_json::Value {
     let at = source
         .match_indices(name)
         .nth(occurrence)
@@ -30,7 +35,12 @@ fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: us
         .0;
     let before = &source[..at];
     let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
-    let character = before.rsplit('\n').next().unwrap_or_default().encode_utf16().count() as u32;
+    let character = before
+        .rsplit('\n')
+        .next()
+        .unwrap_or_default()
+        .encode_utf16()
+        .count() as u32;
     serde_json::json!({
         "uri": url::Url::from_file_path(file).unwrap().to_string(),
         "range": { "start": { "line": line, "character": character } }
@@ -219,8 +229,12 @@ int run() {
     let math_h = root.join("math.h");
     let app_cpp = root.join("app.cpp");
     let app_text = fs::read_to_string(&app_cpp).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&app_cpp, &app_text, "multiply", 0)])
-        .await;
+    let header_text = fs::read_to_string(&math_h).unwrap();
+    let gw = fake_gateway_with_references(vec![
+        reference_at(&app_cpp, &app_text, "multiply", 0),
+        reference_at(&math_h, &header_text, "multiply", 0),
+    ])
+    .await;
 
     let params = vec![
         Param::Keep("b".to_string()),
@@ -326,7 +340,8 @@ async fn test_change_signature_rewrites_only_analyzer_resolved_same_named_calls(
     let other_file = root.join("other.ts");
     let main_text = fs::read_to_string(&main_file).unwrap();
     let other_before = fs::read_to_string(&other_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&main_file, &main_text, "add", 1)]).await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&main_file, &main_text, "add", 1)]).await;
     let params = vec![Param::Keep("b".to_string()), Param::Keep("a".to_string())];
 
     let change = change_with(
@@ -367,8 +382,9 @@ func test() {
     let root = ws.root().to_path_buf();
     let swift_file = root.join("formatter.swift");
     let swift_text = fs::read_to_string(&swift_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&swift_file, &swift_text, "format", 1)])
-        .await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&swift_file, &swift_text, "format", 1)])
+            .await;
 
     let params = vec![
         Param::Keep("code".to_string()),
@@ -404,7 +420,10 @@ func test() {
     assert!(change.applied);
 
     let content = fs::read_to_string(&swift_file).unwrap();
-    assert!(content.contains("func format(code: Int, title: String, prefix: String = \"LOG\") -> String"));
+    assert!(
+        content
+            .contains("func format(code: Int, title: String, prefix: String = \"LOG\") -> String")
+    );
     assert!(content.contains("format(code: 404, title: \"Error\", prefix: \"LOG\")"));
 }
 
@@ -471,7 +490,8 @@ async fn test_change_signature_python_removes_await_when_async_disabled() {
     let root = ws.root().to_path_buf();
     let api_file = root.join("api.py");
     let api_text = fs::read_to_string(&api_file).unwrap();
-    let gw = fake_gateway_with_references(vec![reference_at(&api_file, &api_text, "fetch", 1)]).await;
+    let gw =
+        fake_gateway_with_references(vec![reference_at(&api_file, &api_text, "fetch", 1)]).await;
     let params = vec![Param::Keep("id".to_string())];
     let modifiers = Modifiers {
         returns: None,
@@ -533,7 +553,10 @@ async fn test_change_signature_refuses_dropped_param_used_in_body() {
     .await
     .unwrap_err();
 
-    assert!(err.to_string().contains("parameter `secret` is still used in the function body"));
+    assert!(
+        err.to_string()
+            .contains("parameter `secret` is still used in the function body")
+    );
 }
 
 #[tokio::test]
@@ -572,7 +595,10 @@ async fn test_change_signature_refuses_unknown_param() {
     .await
     .unwrap_err();
 
-    assert!(err.to_string().contains("`non_existent` is not a declared parameter"));
+    assert!(
+        err.to_string()
+            .contains("`non_existent` is not a declared parameter")
+    );
 }
 
 #[tokio::test]

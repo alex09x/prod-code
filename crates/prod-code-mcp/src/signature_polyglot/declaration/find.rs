@@ -17,8 +17,8 @@ mod tests;
 use crate::parameter_object::{Language, matching_bracket};
 
 use crate::signature_polyglot::syntax::{
-    extract_decl_name_from_line, find_python_body_close, is_ident, is_import_or_export_context,
-    is_in_comment,
+    extract_decl_name_from_line, find_python_body_close, is_ident,
+    is_import_or_export_context_with_jsx, is_in_comment,
 };
 use crate::signature_polyglot::types::PolyglotDecl;
 
@@ -27,6 +27,16 @@ pub fn find_polyglot_declaration(
     lang: Language,
     line: u32,
     _col: u32,
+) -> Result<PolyglotDecl> {
+    find_polyglot_declaration_with_jsx(text, lang, line, _col, false)
+}
+
+pub fn find_polyglot_declaration_with_jsx(
+    text: &str,
+    lang: Language,
+    line: u32,
+    _col: u32,
+    jsx: bool,
 ) -> Result<PolyglotDecl> {
     let lines: Vec<&str> = text.lines().collect();
     anyhow::ensure!(
@@ -84,7 +94,9 @@ pub fn find_polyglot_declaration(
         }
         let line_start = text[..pos].rfind('\n').map_or(0, |p| p + 1);
         let header_prefix = &text[line_start..pos];
-        if is_in_comment(text, pos, lang) || is_import_or_export_context(text, pos, lang) {
+        if is_in_comment(text, pos, lang)
+            || is_import_or_export_context_with_jsx(text, pos, lang, jsx)
+        {
             continue;
         }
 
@@ -129,6 +141,11 @@ pub fn find_polyglot_declaration(
             let b_close = find_python_body_close(text, pos, colon);
             let ret = (close_paren < colon).then_some((close_paren + 1, colon));
             (colon, b_close, ret)
+        } else if matches!(lang, Language::Cpp | Language::C)
+            && text[close_paren + 1..].trim_start().starts_with(';')
+        {
+            // A prototype has no body; do not borrow the next unrelated function's.
+            (close_paren, close_paren, Some((line_start, pos)))
         } else {
             let b_open = match text[close_paren..].find('{') {
                 Some(b) => close_paren + b,
@@ -176,6 +193,7 @@ pub fn find_polyglot_declaration(
             dist,
             PolyglotDecl {
                 fn_name: clean_name.clone(),
+                name_start: pos,
                 open_paren,
                 close_paren,
                 body_open,

@@ -16,10 +16,64 @@ pub fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Python's floor division is not a C-style line comment. Keep the shared
+/// parser for other languages, but use Python trivia rules for Python calls.
+pub fn call_args_span(content: &str, after_name: usize, lang: Language) -> Option<(usize, usize)> {
+    if lang != Language::Python {
+        return crate::parameter_object::call_args_span(content, after_name);
+    }
+    let open = after_name + content[after_name..].len() - content[after_name..].trim_start().len();
+    let bytes = content.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut stack = Vec::new();
+    let mut at = open;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        if byte == b'#' {
+            at += content[at..].find('\n').unwrap_or(bytes.len() - at);
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            let triple = bytes.get(at..at + 3) == Some(&[byte; 3]);
+            at += if triple { 3 } else { 1 };
+            loop {
+                let next = *bytes.get(at)?;
+                if next == b'\\' {
+                    at += 2;
+                } else if next == byte && (!triple || bytes.get(at..at + 3) == Some(&[byte; 3])) {
+                    at += if triple { 3 } else { 1 };
+                    break;
+                } else {
+                    at += 1;
+                }
+            }
+            continue;
+        }
+        match byte {
+            b'(' | b'[' | b'{' => stack.push(byte),
+            b')' | b']' | b'}' => {
+                if !matches!(
+                    (stack.pop()?, byte),
+                    (b'(', b')') | (b'[', b']') | (b'{', b'}')
+                ) {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some((open + 1, at));
+                }
+            }
+            _ => {}
+        }
+        at += content[at..].chars().next()?.len_utf8();
+    }
+    None
+}
+
 pub fn is_side_effect_free_argument(argument: &str, lang: Language) -> bool {
     let argument = if lang == Language::Python {
-        argument
-            .split_once('=')
+        python_keyword(argument)
             .map(|(_, value)| value.trim())
             .unwrap_or(argument.trim())
     } else if lang == Language::Swift {
@@ -34,7 +88,13 @@ pub fn is_side_effect_free_argument(argument: &str, lang: Language) -> bool {
     if argument.is_empty() {
         return false;
     }
-    if argument.chars().all(is_ident) {
+    if argument
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && argument.chars().all(is_ident)
+        && !matches!(argument, "await" | "yield")
+    {
         return true;
     }
     if matches!(
@@ -43,22 +103,46 @@ pub fn is_side_effect_free_argument(argument: &str, lang: Language) -> bool {
     ) {
         return true;
     }
-    let first = argument.chars().next().unwrap_or_default();
-    if first.is_ascii_digit()
-        || ((first == '-' || first == '+')
-            && argument.chars().nth(1).is_some_and(|c| c.is_ascii_digit()))
-    {
-        return argument
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'));
+    if super::numeric_literal::is_literal(argument, lang) {
+        return true;
     }
     if let Some(quote) = argument.chars().next().filter(|c| matches!(c, '\'' | '"')) {
-        // A lone quote opens a string that nothing closes.
-        return argument.len() >= 2
-            && argument.ends_with(quote)
-            && !argument[1..argument.len() - 1].contains('\n');
+        let mut escaped = false;
+        for (offset, c) in argument.char_indices().skip(1) {
+            if escaped {
+                // Swift interpolation evaluates an expression inside a quoted token.
+                if lang == Language::Swift && c == '(' {
+                    return false;
+                }
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == quote {
+                return offset + c.len_utf8() == argument.len();
+            } else if c == '\n' {
+                return false;
+            }
+        }
+        return false;
     }
     false
+}
+
+/// A keyword starts with a complete identifier followed by a single `=`.
+/// Comparisons, walrus expressions, strings and nested expressions are values.
+pub fn python_keyword(argument: &str) -> Option<(&str, &str)> {
+    let argument = argument.trim();
+    let first = argument.chars().next()?;
+    if !(first.is_alphabetic() || first == '_') {
+        return None;
+    }
+    let end = argument.find(|c| !is_ident(c)).unwrap_or(argument.len());
+    let name = &argument[..end];
+    let value = argument[end..].trim_start().strip_prefix('=')?;
+    if value.starts_with('=') || value.trim().is_empty() {
+        return None;
+    }
+    Some((name, value.trim()))
 }
 
 pub fn one_based_lsp_position(text: &str, byte_offset: usize) -> (u32, u32) {
@@ -91,6 +175,15 @@ pub fn is_in_comment(content: &str, at: usize, lang: Language) -> bool {
 }
 
 pub fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> bool {
+    is_import_or_export_context_with_jsx(content, at, lang, false)
+}
+
+pub fn is_import_or_export_context_with_jsx(
+    content: &str,
+    at: usize,
+    lang: Language,
+    jsx: bool,
+) -> bool {
     let line_start = content[..at].rfind('\n').map_or(0, |p| p + 1);
     let line_end = content[at..].find('\n').map_or(content.len(), |p| at + p);
     let line = content[line_start..line_end].trim();
@@ -98,26 +191,7 @@ pub fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> 
     match lang {
         Language::Python => line.starts_with("import ") || line.starts_with("from "),
         Language::TypeScript | Language::JavaScript => {
-            if line.starts_with("import ")
-                || line.starts_with("import{")
-                || line.contains(" from ")
-                || line.contains("require(")
-            {
-                return true;
-            }
-            let search_start = at.saturating_sub(300);
-            let before = &content[search_start..at];
-            if let Some(imp_pos) = before.rfind("import ") {
-                let between = &before[imp_pos..];
-                if between.contains('{') && !between.contains('}') {
-                    let search_end = content.len().min(at + 300);
-                    let after = &content[at..search_end];
-                    if after.contains('}') {
-                        return true;
-                    }
-                }
-            }
-            false
+            super::js_syntax::module_reference(content, at, lang, jsx)
         }
         Language::Cpp | Language::C => line.starts_with("#include") || line.starts_with("using "),
         Language::Swift => line.starts_with("import "),
@@ -200,7 +274,7 @@ pub fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String>
                 let before = trimmed[..paren].trim();
                 if let Some(name) = before.split_whitespace().last() {
                     let clean = name.trim_end_matches('<');
-                    if clean.chars().all(is_ident)
+                    if clean.chars().all(|c| is_ident(c) || c == '$')
                         && !clean.is_empty()
                         && !matches!(clean, "if" | "while" | "for" | "switch" | "catch")
                     {
