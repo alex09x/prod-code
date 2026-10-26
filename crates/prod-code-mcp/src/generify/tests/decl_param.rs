@@ -180,7 +180,7 @@ fn java_puts_the_type_parameter_in_front_of_the_declaration() {
     let mut decl = PolyglotFuncDecl {
         name: "frob".into(),
         decl_start: 0,
-        _name_start: 4,
+        name_start: 4,
         name_end: 8,
         open_paren: 8,
         close_paren: 14,

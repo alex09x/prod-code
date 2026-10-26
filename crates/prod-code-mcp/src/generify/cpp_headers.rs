@@ -9,141 +9,255 @@
  */
 
 //! Whether a C/C++ header's same-named prototype may declare the function being generified.
-//! A header that may is still refused (no semantic declaration identity); one that provably
-//! cannot no longer blocks the change (#1382).
+//! A header that may is still refused (no semantic declaration identity); only one proven to
+//! declare a function of another namespace no longer blocks the change (#1382). Anything this
+//! scan cannot read with certainty counts as "may declare" (#1546).
 
-use std::path::Path;
-
-/// The namespaces open at byte `at`, outermost first: `namespace a { namespace b {` → `[a, b]`.
-/// Anonymous namespaces count as one named `""`.
-pub(super) fn namespaces_at(text: &str, at: usize) -> Vec<String> {
-    let mut open: Vec<Option<String>> = Vec::new();
-    let mut pending: Option<String> = None;
+/// The namespaces open at byte `at`, outermost first and split at `::`: `namespace a::b {` and
+/// `namespace a { namespace b {` both give `[a, b]`. `None` when the scan cannot be sure:
+/// an anonymous or inline namespace, a raw string, a namespace macro, a namespace or brace
+/// inside a conditional block, or an unbalanced `}`. Comments and literals are skipped, and
+/// every step stays on bytes, so non-ASCII text anywhere is read safely (#1547).
+pub(super) fn namespaces_at(text: &str, at: usize) -> Option<Vec<String>> {
     let bytes = text.as_bytes();
+    let end = at.min(bytes.len());
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    let mut open: Vec<Option<Vec<String>>> = Vec::new();
+    let mut pending: Option<Vec<String>> = None;
+    // `#if` nesting that is not the file's include guard.
+    let mut conditional = 0usize;
+    let mut guard_candidate: Option<String> = None;
     let mut i = 0;
-    while i < at.min(text.len()) {
-        if text[i..].starts_with("namespace")
-            && (i == 0 || !(bytes[i - 1] as char).is_alphanumeric() && bytes[i - 1] != b'_')
-            && text[i + 9..].starts_with(|c: char| c.is_whitespace() || c == '{')
-        {
-            let rest = &text[i + 9..];
-            let name: String = rest
-                .trim_start()
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
-                .collect();
-            pending = Some(name);
-            i += 9;
+    while i < end {
+        let b = bytes[i];
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < end && bytes[i] != b'\n' {
+                i += 1;
+            }
             continue;
         }
-        match bytes[i] {
-            b'{' => open.push(pending.take()),
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i < end && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if b == b'"' {
+            if i > 0 && bytes[i - 1] == b'R' {
+                return None;
+            }
+            i += 1;
+            while i < end && bytes[i] != b'"' {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+            continue;
+        }
+        // A character literal, but not a digit separator as in `1'000`.
+        if b == b'\'' && !(i > 0 && bytes[i - 1].is_ascii_alphanumeric()) {
+            i += 1;
+            while i < end && bytes[i] != b'\'' {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'#'
+            && bytes[..i]
+                .iter()
+                .rev()
+                .take_while(|c| **c != b'\n')
+                .all(|c| c.is_ascii_whitespace())
+        {
+            let line_end = (i..bytes.len())
+                .find(|&j| bytes[j] == b'\n' && bytes[j - 1] != b'\\')
+                .unwrap_or(bytes.len());
+            let directive = String::from_utf8_lossy(&bytes[i + 1..line_end]);
+            let mut words = directive.split_whitespace();
+            let (kind, name) = (words.next(), words.next());
+            // `#ifndef X` straight followed by `#define X` is an include guard, not a branch.
+            if let Some(candidate) = guard_candidate.take()
+                && kind == Some("define")
+                && name == Some(candidate.as_str())
+            {
+                conditional -= 1;
+            }
+            match kind {
+                Some("ifndef") => {
+                    conditional += 1;
+                    guard_candidate = name.map(str::to_string);
+                }
+                Some("if" | "ifdef") => conditional += 1,
+                Some("endif") => conditional = conditional.saturating_sub(1),
+                _ => {}
+            }
+            i = line_end;
+            continue;
+        }
+        if ident(b) && (i == 0 || !ident(bytes[i - 1])) {
+            let word_end = (i..bytes.len())
+                .find(|&j| !ident(bytes[j]))
+                .unwrap_or(bytes.len());
+            let word = &text[i..word_end];
+            if word.to_ascii_lowercase().contains("namespace") && word != "namespace" {
+                return None;
+            }
+            match word {
+                "namespace" => {
+                    if conditional > 0 {
+                        return None;
+                    }
+                    let mut j = word_end;
+                    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    let name_end = (j..bytes.len())
+                        .find(|&k| !(ident(bytes[k]) || bytes[k] == b':'))
+                        .unwrap_or(bytes.len());
+                    let segments: Vec<String> =
+                        text[j..name_end].split("::").map(str::to_string).collect();
+                    pending = Some(segments);
+                    i = name_end;
+                    continue;
+                }
+                "inline" => {
+                    let rest = text[word_end..].trim_start();
+                    if rest.starts_with("namespace") {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+            i = word_end;
+            continue;
+        }
+        match b {
+            b'{' => {
+                if conditional > 0 {
+                    return None;
+                }
+                let scope = pending.take();
+                if scope
+                    .as_ref()
+                    .is_some_and(|s| s.iter().any(String::is_empty))
+                {
+                    return None;
+                }
+                open.push(scope);
+            }
             b'}' => {
-                open.pop();
+                if conditional > 0 || open.pop().is_none() {
+                    return None;
+                }
             }
             b';' => pending = None,
             _ => {}
         }
         i += 1;
     }
-    open.into_iter().flatten().collect()
+    Some(open.into_iter().flatten().flatten().collect())
 }
 
-/// `source` includes a header with this file name: `#include "x.h"` or `<dir/x.h>`.
-fn includes(source: &str, header: &Path) -> bool {
-    let Some(name) = header.file_name().and_then(|n| n.to_str()) else {
-        return false;
+/// Whether the header may declare the function named `name` at `def_at` in the source. It
+/// may not only when every whole-word `name` in the header sits in namespaces this scan reads
+/// with certainty, all of them differ from the definition's, and no name is qualified
+/// (`int other::f()` defines `other::f`).
+pub(super) fn header_may_declare(source: &str, def_at: usize, header: &str, name: &str) -> bool {
+    let qualified = |text: &str, at: usize| text[..at].trim_end().ends_with("::");
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let Some(definition) = namespaces_at(source, def_at).filter(|_| !qualified(source, def_at))
+    else {
+        return true;
     };
-    source.lines().any(|line| {
-        let line = line.trim_start();
-        let Some(rest) = line.strip_prefix('#') else {
-            return false;
-        };
-        let Some(spec) = rest.trim_start().strip_prefix("include") else {
-            return false;
-        };
-        let spec = spec.trim().trim_matches(|c| matches!(c, '"' | '<' | '>'));
-        spec.rsplit('/').next() == Some(name)
-    })
-}
-
-/// Whether the header prototype at `proto_at` may be the declaration of the function defined
-/// at `def_at` in `source`. It cannot when it sits in other namespaces than the definition, or
-/// when the source neither includes the header nor shares its stem.
-pub(super) fn header_may_declare(
-    source_path: &Path,
-    source: &str,
-    def_at: usize,
-    header_path: &Path,
-    header: &str,
-    proto_at: usize,
-) -> bool {
-    if namespaces_at(header, proto_at) != namespaces_at(source, def_at) {
-        return false;
-    }
-    let same_stem = source_path.file_stem() == header_path.file_stem();
-    same_stem || includes(source, header_path)
+    header
+        .match_indices(name)
+        .filter(|(at, _)| {
+            !header[..*at].chars().next_back().is_some_and(ident)
+                && !header[at + name.len()..].chars().next().is_some_and(ident)
+        })
+        .any(|(at, _)| {
+            qualified(header, at) || namespaces_at(header, at).is_none_or(|ns| ns == definition)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn namespaces_are_tracked_through_nesting_and_closing() {
-        let text = "namespace a { namespace b { int f(); } int g(); }\nint h();";
-        assert_eq!(namespaces_at(text, text.find("int f").unwrap()), ["a", "b"]);
-        assert_eq!(namespaces_at(text, text.find("int g").unwrap()), ["a"]);
-        assert!(namespaces_at(text, text.find("int h").unwrap()).is_empty());
-        let anonymous = "namespace { int k(); }";
-        assert_eq!(
-            namespaces_at(anonymous, anonymous.find("int k").unwrap()),
-            [""]
-        );
+    fn at(text: &str, needle: &str) -> Option<Vec<String>> {
+        namespaces_at(text, text.find(needle).unwrap())
     }
 
     #[test]
-    fn an_unrelated_namespace_or_unincluded_header_cannot_declare_it() {
-        let source = "int selected(int x) { return x; }\nint use() { return selected(1); }\n";
-        let at = source.find("int selected").unwrap();
+    fn namespaces_are_tracked_through_nesting_spellings_and_closing() {
+        let text = "namespace a { namespace b { int f(); } int g(); }\nint h();\nnamespace a::b { int k(); }";
+        assert_eq!(at(text, "int f").unwrap(), ["a", "b"]);
+        assert_eq!(at(text, "int g").unwrap(), ["a"]);
+        assert!(at(text, "int h").unwrap().is_empty());
+        // `a::b` and nested `a { b {` are the same namespace (#1546).
+        assert_eq!(at(text, "int k").unwrap(), ["a", "b"]);
+        // `using namespace`, aliases, classes and `extern "C"` open no namespace.
+        let text = "using namespace std;\nnamespace fs = std::filesystem;\nextern \"C\" { struct S { int x; }; }\nint m();";
+        assert!(at(text, "int m").unwrap().is_empty());
+    }
+
+    #[test]
+    fn comments_literals_and_unicode_do_not_move_the_scan() {
+        // A multibyte character before the declaration is read, not sliced through (#1547).
+        let text = "// café — namespace x {\nint selected(int x) { return x; }";
+        assert!(at(text, "int selected").unwrap().is_empty());
+        let text = "/* namespace x { */ const char* s = \"namespace y {\"; char c = '{'; int n = 1'000;\nnamespace é { int z(); }";
+        assert_eq!(at(text, "int z").unwrap(), ["é"]);
+    }
+
+    #[test]
+    fn what_the_scan_cannot_be_sure_of_is_none() {
+        assert!(at("namespace { int f(); }", "int f").is_none());
+        assert!(at("namespace a { inline namespace v1 { int f(); } }", "int f").is_none());
+        assert!(at("BEGIN_NAMESPACE(a)\nint f();", "int f").is_none());
+        assert!(at("#ifdef X\nnamespace a {\n#endif\nint f();", "int f").is_none());
+        assert!(at("const char* s = R\"(x)\";\nint f();", "int f").is_none());
+        assert!(at("}\nint f();", "int f").is_none());
+        // An include guard is not a conditional branch.
+        let guarded = "#ifndef API_H\n#define API_H\nnamespace other { int f(); }\n#endif\n";
+        assert_eq!(at(guarded, "int f").unwrap(), ["other"]);
+    }
+
+    #[test]
+    fn only_a_proven_other_namespace_declares_another_function() {
+        let source = "#include \"public.hpp\"\nint selected(int x) { return x; }\n";
+        let def = source.find("selected(").unwrap();
         let other = "namespace other { int selected(int x); }\n";
-        let other_at = other.find("int selected").unwrap();
-        // The bare spelling matches, but `other::selected` is another function (#1382).
-        assert!(!header_may_declare(
-            Path::new("src/value.cpp"),
-            source,
-            at,
-            Path::new("include/value.h"),
+        // `other::selected` is another function (#1382).
+        assert!(!header_may_declare(source, def, other, "selected"));
+        // A global prototype may be the declaration even when the header is reached only
+        // transitively or has another name; that stays refused (#1546).
+        let api = "#ifndef API_H\n#define API_H\nint selected(int x);\n#endif\n";
+        assert!(header_may_declare(source, def, api, "selected"));
+        // Equivalent namespace spellings match.
+        let nested = "namespace a { namespace b { int selected(int x); } }";
+        let flat = "namespace a::b {\nint selected(int x) { return x; }\n}";
+        assert!(header_may_declare(
+            flat,
+            flat.find("selected").unwrap(),
+            nested,
+            "selected"
+        ));
+        // A qualified definition names its namespace itself.
+        let qualified = "int other::selected(int x) { return x; }";
+        assert!(header_may_declare(
+            qualified,
+            qualified.find("selected").unwrap(),
             other,
-            other_at
+            "selected"
         ));
-        let global = "int selected(int x);\n";
-        // Same namespace, same stem: may be its declaration, so the caller still refuses.
-        assert!(header_may_declare(
-            Path::new("src/value.cpp"),
-            source,
-            at,
-            Path::new("include/value.h"),
-            global,
-            0
-        ));
-        // Same namespace but neither included nor of the same stem.
-        assert!(!header_may_declare(
-            Path::new("src/value.cpp"),
-            source,
-            at,
-            Path::new("include/unrelated.h"),
-            global,
-            0
-        ));
-        let including = format!("#include \"unrelated.h\"\n{source}");
-        assert!(header_may_declare(
-            Path::new("src/value.cpp"),
-            &including,
-            including.find("int selected").unwrap(),
-            Path::new("include/unrelated.h"),
-            global,
-            0
-        ));
+        // Uncertain scans may declare.
+        let anonymous = "namespace { int selected(int x); }";
+        assert!(header_may_declare(source, def, anonymous, "selected"));
+        // One of several same-named declarations may be it: the first is not the only one.
+        let both = "namespace other { int selected(int x); }\nint selected(int x);\n";
+        assert!(header_may_declare(source, def, both, "selected"));
     }
 }

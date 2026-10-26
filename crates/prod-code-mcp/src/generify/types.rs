@@ -58,7 +58,7 @@ impl Generified {
 pub struct PolyglotFuncDecl {
     pub name: String,
     pub decl_start: usize,
-    pub _name_start: usize,
+    pub name_start: usize,
     pub name_end: usize,
     pub open_paren: usize,
     pub close_paren: usize,
