@@ -99,6 +99,8 @@ pub async fn find_dead_code_opts(
                 }
             };
             let lines: Vec<&str> = text.lines().collect();
+            let attributes =
+                (language == "rust").then(|| super::rust_attributes::RustAttributes::new(&text));
             let uri = session.uri_for(&abs)?;
             let symbols = match session
                 .query(
@@ -133,6 +135,19 @@ pub async fn find_dead_code_opts(
             }
             report.files_scanned += 1;
             for (name, kind, line, col) in candidates {
+                if let Some(reason) = attributes
+                    .as_ref()
+                    .and_then(|a| a.retention_reason(line, col))
+                {
+                    report.unverified.push(Unverified {
+                        file: rel.clone(),
+                        name: Some(name),
+                        line,
+                        col,
+                        reason,
+                    });
+                    continue;
+                }
                 let bare = name.split('(').next().unwrap_or(&name);
                 if matches!(
                     bare,

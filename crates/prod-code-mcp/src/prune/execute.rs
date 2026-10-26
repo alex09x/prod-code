@@ -53,6 +53,7 @@ pub async fn prune_orphans_opts(
     git_patch: bool,
     commit: bool,
 ) -> Result<Pruned> {
+    super::scope::require_rust_scope(root)?;
     if commit {
         apply = true;
     }
@@ -95,6 +96,10 @@ pub async fn prune_orphans_opts(
         let mut reduced = Vec::with_capacity(deletion.len());
         for (uri, edits) in deletion {
             let path = crate::remote_fs::uri_to_path(&uri);
+            anyhow::ensure!(
+                Path::new(&path).extension().is_some_and(|ext| ext == "rs"),
+                "prune is Rust-only; safe delete returned a non-Rust edit; nothing was written"
+            );
             let old = std::fs::read_to_string(&path).unwrap_or_default();
             let new = crate::refactor::apply_text_edits(&old, &edits)?;
             reduced.push((uri, minimal_edits(&old, &new)));

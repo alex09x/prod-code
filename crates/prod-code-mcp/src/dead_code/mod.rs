@@ -18,6 +18,7 @@
 //! leaves the whole file unverified, since a symbol skipped is a symbol never judged.
 
 pub mod reachability_scan;
+pub(crate) mod rust_attributes;
 pub mod scan;
 pub mod syntax;
 pub mod types;

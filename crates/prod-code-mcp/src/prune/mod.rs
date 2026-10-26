@@ -15,6 +15,7 @@
 pub mod edits;
 pub mod execute;
 pub mod git;
+mod scope;
 pub mod types;
 
 #[cfg(test)]
