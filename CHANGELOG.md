@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Builder Fields with Associated-Type Bindings** (`crates/prod-code-mcp`, #1390):
+  `code_generate_fixture` with `builder` accepts a field such as `values: Box<dyn Iterator<Item = u8>>` and keeps its whole type. The `=` inside generic angles binds an associated type and is no longer read as a field default. A real default such as `max: Vec<u8> = Vec::new()` is still refused.
 - **Rename Comments in Rust Block Comments and Raw Strings** (`crates/prod-code-mcp`, #1384):
   `code_rename` with `comments` reads Rust files with Rust's lexer. It now renames inside `/* */`, `/** */` and nested or multiline block comments, and leaves raw-string data such as `r#"<a href="//Order">"#` byte for byte. A test commented out inside a block comment keeps its name. `comments` together with `accessors` is refused before writing instead of silently dropping the comment update.
 - **Descendants Outliving the Command** (`crates/prod-code-gateway`, #1541):

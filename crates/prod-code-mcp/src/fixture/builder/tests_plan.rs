@@ -36,6 +36,27 @@ fn other() {}
         plan(CONFIG, "Config", (3, 15), None).expect("a plan")
     }
 
+    /// An associated-type binding is part of the field's type; a real default is still
+    /// refused (#1390).
+    #[test]
+    fn associated_type_bindings_are_types_and_defaults_are_refused() {
+        let text = "struct Stream {\n    values: Box<dyn Iterator<Item = u8>>,\n    f: Box<dyn Fn(Vec<u8>) -> Box<dyn Iterator<Item = u8>>>,\n}\n";
+        let stream = plan(text, "Stream", (1, 8), None).expect("a plan");
+        let types: Vec<&str> = stream.fields.iter().map(|f| f.ty.as_str()).collect();
+        assert_eq!(
+            types,
+            [
+                "Box<dyn Iterator<Item = u8>>",
+                "Box<dyn Fn(Vec<u8>) -> Box<dyn Iterator<Item = u8>>>"
+            ]
+        );
+        let with_default = "struct Limit {\n    max: Vec<u8> = Vec::new(),\n}\n";
+        let error = plan(with_default, "Limit", (1, 8), None)
+            .expect_err("a default is refused")
+            .to_string();
+        assert!(error.contains("has a default value"), "{error}");
+    }
+
     #[test]
     fn fields_keep_their_names_and_full_type_spellings() {
         let plan = config_plan();
