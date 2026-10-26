@@ -17,20 +17,22 @@ pub(crate) struct ExecCompletion {
     pub accumulator: JsonStreamAccumulator,
 }
 
-/// Owns the command's process group while its stream runs: when the stream's future is
-/// dropped or cancelled before it finishes, the group is killed, and the blocking reaper still
-/// reaps it (#1536). `kill_exec_group` does nothing once the reaper has seen the exit, so a
-/// reused PID is never signalled.
+/// Owns the command's process group while its stream runs. The waiter leaves the exited
+/// leader unreaped until this guard is gone, so every signal the stream sends reaches its own
+/// group and never a later one that reused the number (#1545). When the stream's future is
+/// dropped or cancelled before it finishes, the group is killed first (#1536); the waiter then
+/// reaps the leader.
 struct GroupGuard {
     pid: u32,
-    exited: Arc<std::sync::Mutex<bool>>,
     armed: bool,
+    /// Dropped after `drop` has run, which lets the waiter reap the leader.
+    _release: std::sync::mpsc::Sender<()>,
 }
 
 impl Drop for GroupGuard {
     fn drop(&mut self) {
         if self.armed {
-            kill_exec_group(self.pid, &self.exited);
+            kill_exec_group(self.pid);
         }
     }
 }
@@ -47,25 +49,32 @@ pub(crate) async fn stream_exec(
     let readers = spawn_pipe_readers(&mut child, tx.clone());
     drop(tx);
     let pid = child.id();
-    let exited = Arc::new(std::sync::Mutex::new(false));
+    let (release, released) = std::sync::mpsc::channel::<()>();
     let mut group = GroupGuard {
         pid,
-        exited: exited.clone(),
         armed: true,
+        _release: release,
     };
-    let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
-    {
-        let exited = exited.clone();
-        tokio::task::spawn_blocking(move || {
-            let status = wait_with_usage(pid as i32, &exited);
-            // Status describes the process, not later pipe draining or workspace recovery.
-            drop(running);
-            let _ = exit_tx.send(status);
-            drop(child);
-        });
-    }
+    let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel::<()>();
+    let (status_tx, status_rx) = tokio::sync::oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        let exited = wait_for_exit(pid as i32);
+        // Status describes the process, not later pipe draining or workspace recovery.
+        drop(running);
+        let _ = exit_tx.send(());
+        // The zombie holds the group's number until the guard is gone; nothing is ever sent,
+        // so `recv` returns when it drops.
+        let _ = released.recv();
+        let status = if exited {
+            exec_shim::reap_with_usage(pid as i32)
+        } else {
+            None
+        };
+        let _ = status_tx.send(status);
+        drop(child);
+    });
     let mut timed_out = false;
-    let mut status = None;
+    let mut exited = false;
     let mut chunks_open = true;
     let mut client_left = false;
     let mut accumulator = JsonStreamAccumulator::new();
@@ -95,12 +104,10 @@ pub(crate) async fn stream_exec(
                 }
                 Err(_) => chunks_open = false,
             },
-            exit = &mut exit_rx, if status.is_none() => {
-                status = Some(exit.ok().flatten());
-            }
+            _ = &mut exit_rx, if !exited => exited = true,
             _ = tokio::time::sleep_until(deadline) => {
                 timed_out = true;
-                kill_exec_group(pid, &exited);
+                kill_exec_group(pid);
                 break;
             }
             // Descendants may hold pipes after the direct child exits. Keep watching the
@@ -116,16 +123,13 @@ pub(crate) async fn stream_exec(
                 _ => {}
             }
         }
-        if client_left || (!chunks_open && status.is_some()) {
+        if client_left || (!chunks_open && exited) {
             break;
         }
     }
     if client_left || timed_out {
-        kill_exec_group(pid, &exited);
+        kill_exec_group(pid);
         drop(rx);
-        if status.is_none() {
-            status = Some(exit_rx.await.ok().flatten());
-        }
         for reader in &readers {
             reader.abort();
         }
@@ -134,11 +138,14 @@ pub(crate) async fn stream_exec(
         let _ = reader.await;
     }
     // Finished on its own terms: exit, timeout or a departed client already handled the group.
+    // Only now may the waiter reap the leader and free the group's number.
     group.armed = false;
+    drop(group);
+    let status = status_rx.await.ok().flatten();
     Ok(ExecCompletion {
         timed_out,
         client_left,
-        status: status.flatten(),
+        status,
         accumulator,
     })
 }

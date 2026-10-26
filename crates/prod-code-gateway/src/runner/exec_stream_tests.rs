@@ -165,3 +165,69 @@ async fn exec_deadline_still_bounds_inherited_pipes_after_child_exit() {
         );
     }
 }
+
+/// While the stream may still signal the group, its exited leader stays a zombie that holds
+/// the PID and so the group's number; cancelling then kills the descendant and only after that
+/// lets the leader be reaped (#1545, #1541).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_exited_leader_holds_its_group_until_the_stream_lets_go() {
+    let marks = tempfile::tempdir().unwrap();
+    let pid_file = marks.path().join("pids");
+    let command = format!("sleep 30 & echo $$ $! > {}; exit 0", pid_file.display());
+    let (_workspace, _client, task) = exec_fixture(&command, 60, false).await;
+    let state = |pid: i32| {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(')')?.1.trim_start().chars().next()
+    };
+    let alive = |pid: i32| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let (leader, descendant) = loop {
+        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        if let [leader, descendant] = pids[..] {
+            break (leader, descendant);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the command never started"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    while state(leader) != Some('Z') {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "leader {leader} was reaped while its stream still runs: {:?}",
+            state(leader)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The descendant keeps the pipes open, so the stream drains on and the zombie stays.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        state(leader),
+        Some('Z'),
+        "the zombie holds the group's number"
+    );
+    task.abort();
+    let _ = task.await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while alive(descendant) || state(leader) == Some('Z') {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "descendant {descendant} alive {} or leader {leader} unreaped {:?}",
+            alive(descendant),
+            state(leader)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

@@ -48,15 +48,15 @@ fn a_live_leader_is_killed_with_its_group() {
         .process_group(0)
         .spawn()
         .unwrap();
-    kill_exec_group(child.id(), &std::sync::Mutex::new(false));
+    kill_exec_group(child.id());
     let status = child.wait().unwrap();
     assert_eq!(status.signal(), Some(9));
 }
 
-/// After the leader exited and was reaped, its descendants are still in its group, and that
-/// group is what is signalled; the leader's own PID is not (#1541).
+/// After the leader exited, its descendants are still in its group, and that group is what is
+/// signalled. The leader stays unreaped until then, as the stream keeps it (#1541, #1545).
 #[test]
-fn descendants_that_outlive_a_reaped_leader_are_killed_with_the_group() {
+fn descendants_that_outlive_their_leader_are_killed_with_the_group() {
     let marks = tempfile::tempdir().unwrap();
     let pid_file = marks.path().join("descendant");
     let mut leader = std::process::Command::new("sh")
@@ -69,8 +69,8 @@ fn descendants_that_outlive_a_reaped_leader_are_killed_with_the_group() {
         .unwrap();
     let pgid = leader.id();
     assert!(
-        leader.wait().unwrap().success(),
-        "the leader exits and is reaped"
+        wait_for_exit(pgid as i32),
+        "the leader exits and stays unreaped"
     );
     let descendant: i32 = std::fs::read_to_string(&pid_file)
         .unwrap()
@@ -85,7 +85,7 @@ fn descendants_that_outlive_a_reaped_leader_are_killed_with_the_group() {
             .is_ok_and(|s| s.success())
     };
     assert!(alive(descendant), "the descendant outlives its leader");
-    kill_exec_group(pgid, &std::sync::Mutex::new(true));
+    kill_exec_group(pgid);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while alive(descendant) {
         assert!(
@@ -94,22 +94,27 @@ fn descendants_that_outlive_a_reaped_leader_are_killed_with_the_group() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    assert!(
+        leader.wait().unwrap().success(),
+        "the leader is reaped after the kill"
+    );
 }
 
 #[test]
-fn waiting_reports_the_raw_status_and_marks_the_child_exited() {
-    // Reaped by `wait_with_usage` through its pid, which is what this test checks.
+fn waiting_leaves_the_exited_child_for_its_reaper() {
+    // Reaped by `reap_with_usage` through its pid, which is what this test checks.
     #[allow(clippy::zombie_processes)]
     let child = std::process::Command::new("sh")
         .args(["-c", "exit 3"])
         .spawn()
         .unwrap();
-    let exited = std::sync::Mutex::new(false);
-    let (raw, _usage) = wait_with_usage(child.id() as i32, &exited).expect("a status");
+    let pid = child.id() as i32;
+    assert!(wait_for_exit(pid));
+    // Still a zombie after the wait: its status is collected exactly once.
+    let (raw, _usage) = exec_shim::reap_with_usage(pid).expect("a status");
     assert_eq!(std::process::ExitStatus::from_raw(raw).code(), Some(3));
-    assert!(*exited.lock().unwrap());
-    // The pid is reaped now, so there is nothing left to wait for.
-    assert!(wait_with_usage(child.id() as i32, &exited).is_none());
+    assert!(exec_shim::reap_with_usage(pid).is_none());
+    assert!(!wait_for_exit(pid));
 }
 
 #[tokio::test]

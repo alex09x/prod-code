@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Process-Group Signals Stay with Their Own Group** (`crates/prod-code-gateway`, #1545):
+  A remote command's exited leader is no longer reaped while its stream may still signal the group. It stays a zombie that holds its PID, and so the group's number, until the stream has finished, timed out or been cancelled and killed the group. A late kill can therefore never reach a newer group that reused the number. Descendants that outlive the leader are still killed on timeout, departure and cancellation.
 - **Generify C++ Header Safety** (`crates/prod-code-mcp`, #1546, #1547):
   - A same-named prototype in a header no longer has to share the source's stem or be included directly to count. Generify refuses the split layout unless every such prototype provably sits in another namespace, so a header reached through another header or named differently is refused again instead of left out of sync with a template definition.
   - `namespace a::b` and `namespace a { namespace b` are the same namespace.

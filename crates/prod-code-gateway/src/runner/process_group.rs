@@ -21,10 +21,10 @@ pub fn on_path(program: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
-pub fn wait_with_usage(
-    pid: i32,
-    exited: &std::sync::Mutex<bool>,
-) -> Option<(i32, prod_code_protocol::ExecUsage)> {
+/// Blocks until the child `pid` has exited and leaves it unreaped (`WNOWAIT`): its zombie
+/// keeps the PID, and with it the number of the group it leads, until its reaper collects it
+/// (#1545). False when `pid` cannot be waited for.
+pub fn wait_for_exit(pid: i32) -> bool {
     loop {
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         let got = unsafe {
@@ -36,34 +36,26 @@ pub fn wait_with_usage(
             )
         };
         if got == 0 {
-            break;
+            return true;
         }
         if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-            return None;
+            return false;
         }
     }
-    let mut done = exited.lock().unwrap_or_else(|e| e.into_inner());
-    *done = true;
-    exec_shim::reap_with_usage(pid)
 }
 
-/// Kills the command's process group, and the leader itself while it has not exited.
-///
-/// Once the leader has exited it may already be reaped, so its PID is never signalled alone
-/// again: another process could have it. The group is still signalled, because descendants
-/// that outlived the leader (and may hold its pipes) are what is left to stop (#1541). Linux
-/// and macOS do not hand out a number that is still in use as a live process group's ID.
-pub fn kill_exec_group(pid: u32, exited: &std::sync::Mutex<bool>) {
-    let done = exited.lock().unwrap_or_else(|e| e.into_inner());
+/// Kills the command's process group and its leader. Called only while the leader is not
+/// reaped: alive or a zombie, it holds its PID, so neither that PID nor the group's number can
+/// belong to another process yet (#1545). The group is signalled after the leader exited too,
+/// because descendants that outlived it may hold its pipes (#1541).
+pub fn kill_exec_group(pid: u32) {
     let _ = std::process::Command::new("kill")
         .args(["-9", "--", &format!("-{pid}")])
         .stderr(std::process::Stdio::null())
         .status();
-    if *done {
-        return;
-    }
     let _ = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
         .status();
 }
 
