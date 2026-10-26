@@ -1,0 +1,83 @@
+   Compiling prod-code-mcp v0.3.41 (<workspace>
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 1 test
+macro owner original: source
+struct Tax;
+struct Order(u64);
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+impl Order {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } });
+        Inner::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+macro owner original: rustc exit status: 0
+
+macro owner original: runtime exit status: 0
+0
+
+macro owner prefix="tag:", apply=false, force=false: Ok(MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "/tmp/.tmpMPQVVw", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("/tmp/.tmpMPQVVw/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner;\n        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });\n        Inner::size()\n    }\n}\nstruct Order(u64);\nmacro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false })
+macro owner incorrectly permitted: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner;
+        make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+        Inner::size()
+    }
+}
+struct Order(u64);
+macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+fn main() { println!("{}", Tax::f()); }
+
+
+thread 'owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context' (1716746) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:175:5:
+rustc failed for macro owner incorrectly permitted
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+macro owner incorrectly permitted: rustc exit status: 1
+error: cannot find macro `make` in this scope
+  --> /tmp/.tmpofBoCt/main.rs:6:9
+   |
+ 6 |         make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+   |         ^^^^ consider moving the definition of `make` before this call
+   |
+note: a macro with the same name exists, but it appears later
+  --> /tmp/.tmpofBoCt/main.rs:11:14
+   |
+11 | macro_rules! make { (tag: impl $t:ty { $($body:tt)* }) => { impl $t { $($body)* } }; }
+   |              ^^^^
+
+error[E0599]: no associated function or constant named `size` found for struct `Inner` in the current scope
+ --> /tmp/.tmpofBoCt/main.rs:7:16
+  |
+5 |         struct Inner;
+  |         ------------ associated function or constant `size` not found for this struct
+6 |         make!(tag: impl Inner { fn size() -> usize { std::mem::size_of::<Order>() } });
+7 |         Inner::size()
+  |                ^^^^ associated function or constant not found in `Inner`
+  |
+  = help: items from traits can only be used if the trait is implemented and in scope
+  = note: the following trait defines an item `size`, perhaps you need to implement it:
+          candidate #1: `std::os::unix::fs::MetadataExt`
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0599`.
+
+test owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context ... FAILED
+
+failures:
+
+failures:
+    owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.12s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 1.1s (server 0.8s, cpu 0.6s user 0.7s sys, peak 507 MB) on node <build-node>, copy <workspace> (linux x86_64)

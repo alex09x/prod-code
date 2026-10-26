@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::helpers::{display, is_ident, path_start, receiver_for, receiver_of};
+use super::helpers::{display, is_ident, path_start, receiver_for};
 use super::types::MadeMethod;
 
 /// Makes the associated function declared at `line`:`col` of `file` a method of its type.
@@ -68,12 +68,24 @@ pub async fn convert_to_method(
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .with_context(|| format!("`{name}` takes no parameters, so nothing can become `self`"))?;
-    let (receiver, binding) = receiver_for(&first, &owner).with_context(|| {
+    let self_type = super::helpers::impl_self_type(&text[impl_at..impl_open])
+        .context("cannot determine the complete impl self type")?;
+    let (receiver, binding) = receiver_for(&first, &self_type).with_context(|| {
         format!(
             "the first parameter of `{name}`, `{first}`, is not `{owner}`, `&{owner}` or `&mut \
              {owner}`, so it cannot become the receiver"
         )
     })?;
+    let first_at = open + text[open..close].find(first.as_str()).unwrap_or(0);
+    super::declaration::ensure_receiver_identity(
+        remote,
+        root,
+        file,
+        &text,
+        first_at..first_at + first.len(),
+        &text[start + name.len()..open - 1],
+    )
+    .await?;
     let body_open = text[close..]
         .find('{')
         .map(|i| close + i)
@@ -94,7 +106,6 @@ pub async fn convert_to_method(
         .push((open, close - open, new_params));
 
     // The body: every use of the parameter, as the analyzer resolves it, becomes `self`.
-    let first_at = open + text[open..close].find(first.as_str()).unwrap_or(0);
     let binding_at = first_at
         + first
             .find(binding.as_str())
@@ -136,10 +147,23 @@ pub async fn convert_to_method(
         renamed_uses += 1;
     }
 
-    // The calls: `Owner::name(first, rest)` → `first.name(rest)`.
+    // Account for every reference, retaining qualified dispatch when not proven equivalent.
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
     texts.insert(file.to_path_buf(), text.clone());
     let mut rewritten_calls = 0usize;
+    let identity = if let Some(type_at) = text[impl_at..impl_open].find(&self_type) {
+        super::dispatch::owner_identity(remote, root, file, &text, impl_at + type_at, &self_type)
+            .await
+    } else {
+        None
+    };
+    let proof = super::dispatch::ReceiverProof {
+        remote,
+        root,
+        owner: &self_type,
+        identity,
+        declaration: (file, start),
+    };
     let mut unchanged = Vec::new();
     let mut unmatched = Vec::new();
     let (nl, nc) = crate::signature::position_at(&text, start)?;
@@ -178,35 +202,54 @@ pub async fn convert_to_method(
             unchanged.push(format!("{site} (a call without a path in front)"));
             continue;
         }
-        let args = crate::parameter_object::split_args(&body[args_start..args_end]);
+        let args = crate::signature::split_arguments(&body, args_start - 1)
+            .context("cannot read the call's arguments; nothing was planned")?;
         let Some(first_arg) = args.first().filter(|a| !a.trim().is_empty()) else {
             unchanged.push(format!("{site} (a call with no first argument)"));
             continue;
         };
-        let remaining: Vec<&str> = args[1..].iter().map(|a| a.trim()).collect();
-        edits.entry(path.clone()).or_default().push((
-            from,
-            args_end + 1 - from,
-            format!(
-                "{}.{name}({})",
-                receiver_of(first_arg),
-                remaining.join(", ")
-            ),
+        let argument_at = args_start
+            + body[args_start..args_end]
+                .find(first_arg.as_str())
+                .unwrap_or(0);
+        if proof
+            .exact_receiver(&path, &body, argument_at, first_arg)
+            .await
+        {
+            let receiver = super::helpers::receiver_of(first_arg);
+            // Keep the remaining source verbatim: a trailing newline can terminate
+            // a line comment, so rebuilding from trimmed arguments changes Rust.
+            let tail = body[argument_at + first_arg.len()..args_end].trim_start();
+            let remaining = tail.strip_prefix(',').map(str::trim_start).unwrap_or("");
+            let new_call = format!("{receiver}.{name}({remaining})");
+            let call = super::dispatch::CallEdit {
+                file: &path,
+                from,
+                len: args_end + 1 - from,
+                replacement: &new_call,
+                method_offset: receiver.len() + 1,
+            };
+            if proof.proves_dispatch(&texts, &edits, &call).await {
+                edits
+                    .entry(path.clone())
+                    .or_default()
+                    .push((from, call.len, new_call));
+                rewritten_calls += 1;
+                continue;
+            }
+        }
+        unchanged.push(format!(
+            "{site} (qualified call retained to preserve receiver coercion and dispatch)"
         ));
-        rewritten_calls += 1;
     }
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
-    for (path, mut file_edits) in edits {
-        let mut body = texts
+    for (path, file_edits) in edits {
+        let body = texts
             .get(&path)
             .cloned()
             .unwrap_or_else(|| std::fs::read_to_string(&path).unwrap_or_default());
-        file_edits.sort_by_key(|(at, _, _)| *at);
-        for (at, len, replacement) in file_edits.into_iter().rev() {
-            body.replace_range(at..at + len, &replacement);
-        }
-        rewritten.insert(path, body);
+        rewritten.insert(path, super::dispatch::render(&body, &file_edits));
     }
 
     let to_check: Vec<(PathBuf, String)> = rewritten

@@ -1,0 +1,18 @@
+# Aggregate Review Repair (#1357)
+
+Base SHA: `1ee6953b761637e3896b9ea525d8783873bd40d2`.
+Historical evidence in `evidence/issue-1357/` and `evidence/issue-1316/` is retained untouched.
+
+## Demonstrated causes and repairs
+
+1. **`method-const-generic-shadow-unguarded` (`crates/prod-code-mcp/src/to_method/declaration.rs`)**:
+   - **Cause**: `ensure_receiver_identity` previously skipped `const` generic parameters on the method (`if param.starts_with("const") { continue; }`), allowing a method-local `const N: usize` in `fn f<const N: usize>(c: &S<N>)` on `impl S<N_item>` to be rewritten into `&self` (silently narrowing the parameter type from `S<N_method>` to `S<N_item>` or writing invalid `E0308` call sites under `force: true`). Additionally, `type_names.is_empty()` caused early return before `expandMacro` could inspect macro-expanded receiver types for `const` generic shadows.
+   - **Repair**: `ensure_receiver_identity` now collects both `type_names` and `const_names` from the method's generic parameter list, checks both against the unexpanded receiver type, expands macros in the receiver type whenever either `type_names` or `const_names` is non-empty, and refuses before planning (even with `force: true`) when any unexpanded or macro-expanded receiver token shadows a method-local `const` generic. Unrelated method `const` generics (including macro-expanded body expressions) continue to convert and preserve runtime output.
+
+2. **`owner-identity-multi-target-collapse` (`crates/prod-code-mcp/src/to_method/dispatch.rs`, `crates/prod-code-mcp/src/to_method/rust.rs`)**:
+   - **Cause**: Native `textDocument/typeDefinition` on a generic nominal instantiation such as `Holder<Config>` legitimately returns multiple target locations (`[Location(Holder), Location(Config)]`). `owner_identity` previously called single-target `location_identity`, collapsing to `None` and keeping every call on `Holder<Config>` qualified (`0/2` rewritten calls).
+   - **Repair**: `owner_identity` now returns `OwnerIdentity { head, targets }`. When `textDocument/typeDefinition` returns a single location, `head` is that location. When it returns multiple locations, `owner_identity` queries `textDocument/definition` at the impl nominal head coordinate and at each path-final generic argument identifier coordinate in the impl header, requiring exact set coverage between `targets` and `{head} U arg_defs`. At each candidate call site, `ReceiverProof::exact_receiver` verifies the hover spelling, exact `typeDefinition` target list equality (`Some(&identity.targets)`), and—for multi-target owners—also proves that the call-site binding's outer nominal head resolves via `textDocument/definition` to `identity.head`, followed by the private-overlay dispatch check. Genuine deref coercions and shadowed head/argument types remain safely qualified.
+
+3. **`acceptance-overwrites-tracked-evidence` (`crates/prod-code-gateway/tests/rust_method_native/support.rs`, `evidence/issue-1357/run-final.py`)**:
+   - **Cause**: `support::artifact` unconditionally wrote into `evidence/issue-1357/native-consumer`, and `run-final.py` unconditionally overwrote tracked logs and hash manifests in `evidence/issue-1357/`.
+   - **Repair**: `support::artifact` now writes to `PROD_CODE_NATIVE_ARTIFACT_DIR` only when explicitly set (asserting it never points to the tracked `evidence/issue-1357/native-consumer` directory) and otherwise uses a temporary directory. `run-final.py` defaults to a temporary directory unless `--output-dir` or `PROD_CODE_EVIDENCE_OUT` explicitly names a caller-owned directory outside the tracked historical root. `support::dispatch_identity` also records distinct `(line, character)` call positions to prove per-call validation definition identities.

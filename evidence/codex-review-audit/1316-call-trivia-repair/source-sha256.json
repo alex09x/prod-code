@@ -1,0 +1,6 @@
+{
+  "crates/prod-code-mcp/src/to_method/rust.rs": "23504af3373ecc3882ebcc70df5b7f07c112c65d611395aff4c8d3ef4ac5e7e2",
+  "crates/prod-code-mcp/src/to_method/dispatch.rs": "527be565163770445e0975d676dd23238d994000231a88043c3874c74135df82",
+  "crates/prod-code-mcp/tests/rust_method_preservation.rs": "44699bafd0d2d4a2867bac574a681547239cbde9cb5777fc80d09d0315a1d45f",
+  "crates/prod-code-mcp/tests/rust_method_preservation/call_trivia.rs": "07d3484a7a929d54a45ba0f9c94890518916d0c559de279a3f6849d132b62e6b"
+}

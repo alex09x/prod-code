@@ -1,0 +1,1297 @@
+[
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpMxQSNa/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpMxQSNa/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 101,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 101,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 7,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 5,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "impl S"
+        },
+        {
+          "containerName": "impl S",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 12,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 3,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 16,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "a"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 30,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "b"
+        }
+      ]
+    },
+    "session": 101,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpMxQSNa/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpMxQSNa/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 7,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 5,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "impl S"
+        },
+        {
+          "containerName": "impl S",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 12,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 3,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 16,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "a"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 30,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "b"
+        }
+      ]
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpMxQSNa/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpMxQSNa/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 7,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 5,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "impl S"
+        },
+        {
+          "containerName": "impl S",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 12,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 3,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 16,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "a"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 30,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "b"
+        }
+      ]
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpMxQSNa/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpMxQSNa/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 104,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 7,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 5,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "impl S"
+        },
+        {
+          "containerName": "impl S",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 12,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 3,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "main"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 16,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "a"
+        },
+        {
+          "containerName": "main",
+          "kind": 13,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 30,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+          },
+          "name": "b"
+        }
+      ]
+    },
+    "session": 104,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 104,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmpMxQSNa/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmpMxQSNa/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 14,
+          "line": 1
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 30,
+              "line": 1
+            },
+            "start": {
+              "character": 30,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 1
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32601,
+        "message": "textDocument/typeDefinition is not supported by prod-code for Rust"
+      },
+      "id": 3,
+      "jsonrpc": "2.0"
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 12,
+          "line": 1
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 62,
+              "line": 2
+            },
+            "start": {
+              "character": 62,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 72,
+              "line": 2
+            },
+            "start": {
+              "character": 72,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 14,
+          "line": 1
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 30,
+              "line": 1
+            },
+            "start": {
+              "character": 30,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 1
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32601,
+        "message": "textDocument/typeDefinition is not supported by prod-code for Rust"
+      },
+      "id": 6,
+      "jsonrpc": "2.0"
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 12,
+          "line": 1
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 62,
+              "line": 2
+            },
+            "start": {
+              "character": 62,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 72,
+              "line": 2
+            },
+            "start": {
+              "character": 72,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  }
+]

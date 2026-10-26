@@ -1,0 +1,52 @@
+All commands ran in the assigned worktree. Remote commands ran in the foreground
+and were observed to terminal completion. Private paths and addresses in logs
+are sanitized; <build-node> denotes the requested remote endpoint.
+
+Issue read, terminal exit 0:
+gh issue view 1316 --json title,body,labels
+
+Common remote prefix:
+prod-code exec --remote <build-node> --timeout-secs 900 --
+
+Before production edits, terminal exit 101 (before.txt):
+cargo test -p prod-code-mcp --test rust_method_preservation regressions -- --nocapture
+10 passed, 1 failed. New const runtime regression failed; original three passed.
+Initial macro fixture was refused due to its local macro definition.
+
+Before production edits, terminal exit 101 (before-macro.txt):
+cargo test -p prod-code-mcp --test rust_method_preservation owner_header_regressions::macro_owner_tokens -- --nocapture
+Actual rustc rejection: cannot find macro make in this scope; E0599 Inner::size.
+Fixture macro definition was outside the body but after destination insertion.
+
+Corrected fixture, still before production edits, terminal exit 101
+(before-macro-confirmed.txt), same command as the previous entry:
+Public transformations compile but change runtime from 0 to 8 in all modes.
+
+Final changed-file formatting, terminal exit 0 (format.txt):
+rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/move_method/context.rs crates/prod-code-mcp/src/move_method/syntax.rs crates/prod-code-mcp/tests/rust_method_preservation.rs crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs
+
+Final workspace format check, terminal exit 1 (format-check.txt):
+cargo fmt --all -- --check
+Inherited diagnostic bodies match after path/address/footer normalization.
+
+Final crate lint, terminal exit 1 (lint.txt):
+prod-code lint --remote <build-node> --path crates/prod-code-mcp --timeout-secs 900
+210 errors; all 175 displayed diagnostic bodies match inherited evidence.
+
+One final full requested target gate, terminal exit 0 (acceptance.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 --env RUST_TEST_NOCAPTURE=1 -- cargo test -p prod-code-mcp --test rust_method_preservation
+26 passed; 0 failed. The environment option retains successful source/rustc/
+runtime stdout and changes neither the Cargo command nor test selection.
+
+Read-only source discovery blocked before execution by a hook:
+git log -4 --oneline && git diff --stat 61107a98e959d8d6517a1d67d5f84abcc5adc166 && find evidence/codex-review-audit/1316-final-regressions -maxdepth 2 -type f && wc -l crates/prod-code-mcp/src/move_method/{syntax,context}.rs crates/prod-code-mcp/tests/rust_method_preservation.rs
+Exact error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed..
+Bounded fallback (exit 0): same command with the find expression replaced by
+ls evidence/codex-review-audit/1316-final-regressions
+Navigation used prod-code outline and file-qualified prod-code def calls.
+No issue publication was performed, as this task explicitly excludes publication.
+
+Read-only verification, terminal exit 0:
+git diff --check
+Hash verification is recorded separately; no build or test was repeated.

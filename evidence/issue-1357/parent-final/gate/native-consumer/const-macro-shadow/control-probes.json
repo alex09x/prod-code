@@ -1,0 +1,134 @@
+[
+  {
+    "method": "textDocument/definition",
+    "params": {
+      "position": {
+        "character": 7,
+        "line": 2
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "id": "textDocument/definition",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 7,
+              "line": 2
+            },
+            "start": {
+              "character": 7,
+              "line": 2
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "method": "textDocument/hover",
+    "params": {
+      "position": {
+        "character": 7,
+        "line": 2
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "id": "textDocument/hover",
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```rust\nnative_extensions\n```\n\n```rust\nstruct S<T>(T)\n```\n\n---\n\ntype param may need Drop"
+        }
+      }
+    }
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "params": {
+      "position": {
+        "character": 7,
+        "line": 2
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "id": "textDocument/typeDefinition",
+      "jsonrpc": "2.0",
+      "result": []
+    }
+  },
+  {
+    "method": "textDocument/definition",
+    "params": {
+      "position": {
+        "character": 5,
+        "line": 3
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "id": "textDocument/definition",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 7,
+              "line": 2
+            },
+            "start": {
+              "character": 7,
+              "line": 2
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "params": {
+      "position": {
+        "character": 5,
+        "line": 3
+      },
+      "textDocument": {
+        "uri": "file:///client/src/lib.rs"
+      }
+    },
+    "response": {
+      "id": "textDocument/typeDefinition",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 8,
+              "line": 2
+            },
+            "start": {
+              "character": 7,
+              "line": 2
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  }
+]

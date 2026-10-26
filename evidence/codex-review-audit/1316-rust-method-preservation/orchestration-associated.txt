@@ -1,0 +1,20 @@
+warning: function `base_name` is never used
+  --> crates/prod-code-mcp/src/to_method/helpers.rs:27:15
+   |
+27 | pub(crate) fn base_name(ty: &str) -> &str {
+   |               ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prod-code-mcp` (lib) generated 1 warning
+   Compiling prod-code-mcp v0.3.41 (<build-worktree>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.52s
+     Running tests/orchestration.rs (target/debug/deps/orchestration-177e3fd65f94e01b)
+
+running 2 tests
+test an_associated_function_moves_to_a_named_type ... ok
+test an_associated_function_becomes_a_method_with_every_call ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 0.10s
+
+[prod-code exec] exit 0 in 2.1s (server 1.7s, cpu 2.0s user 1.0s sys, peak 570 MB) on node <linux-build-node>, copy <build-worktree> (linux x86_64)

@@ -1,0 +1,97 @@
+{
+  "status": "completed",
+  "base_sha": "d2e6dc5988762addd6b2d89adbdf97c46634cecb",
+  "original_execution": {
+    "task": 4282,
+    "status": "failed",
+    "failure_code": "timeout",
+    "evidence": "evidence/codex-review-audit/recovery-4282.json",
+    "native_at_recovery": "interrupted without terminal result; neither native failure nor native success"
+  },
+  "review": {
+    "const_guard": "declaration.rs:48 collects const names; :73-74 checks both namespaces; :97 checks expanded const tokens; refusal precedes planning and is exercised with force.",
+    "const_guard_source": "crates/prod-code-mcp/src/to_method/declaration.rs:48",
+    "nominal_identity": "Nonempty identities require URI, line and column. Single-target response is accepted only at cardinality one. Multi-target head is independently resolved at exact impl head coordinate, and generic-argument definitions must cover targets. Receiver hover spelling and entire type-target list must agree, with binding head proof for multi-target owners. No bare-name, arbitrary first-result, empty-identity or generic-membership-only selection.",
+    "nominal_identity_source": "crates/prod-code-mcp/src/to_method/dispatch.rs:53",
+    "dispatch": "Every proposed dot call is resolved in a private overlay containing the converted declaration, compared to its shifted exact URI and position; independent validation sessions observed for every call in both phases.",
+    "dispatch_source": "crates/prod-code-mcp/src/to_method/dispatch.rs:175",
+    "output": "Normal native artifacts default to a temporary directory; runner defaults to temporary output. Explicit output is caller-selected; historical evidence bytes remain unchanged.",
+    "output_source": "crates/prod-code-gateway/tests/rust_method_native/support.rs:15",
+    "source_changes_required": false
+  },
+  "native_acceptance": {
+    "command": [
+      "prod-code",
+      "exec",
+      "--remote",
+      "<build-node>",
+      "--timeout-secs",
+      "1200",
+      "--env",
+      "PROD_CODE_NATIVE_ARTIFACT_DIR=evidence/issue-1357/review-repair/verification-native/native-consumer",
+      "--",
+      "cargo",
+      "test",
+      "-p",
+      "prod-code-gateway",
+      "--test",
+      "rust_method_native"
+    ],
+    "remote_identifier": "redacted under repository privacy rule",
+    "node_kind": "Linux x86_64 build node",
+    "client_exit": 0,
+    "server_exit": 0,
+    "passed": 8,
+    "failed": 0,
+    "test_seconds": 436.46,
+    "elapsed_seconds": 483.8,
+    "log": "evidence/issue-1357/review-repair/verification-native/native-command.txt",
+    "artifacts": "evidence/issue-1357/review-repair/verification-native/native-consumer",
+    "artifact_count": 93,
+    "compiler_runtime_outcomes": "evidence/issue-1357/review-repair/verification-native/compiler-runtime-outcomes.json",
+    "distinct_per_call_proofs": "evidence/issue-1357/review-repair/verification-native/dispatch-identities.json"
+  },
+  "reused_checks": [
+    {
+      "scope": "six unchanged recovered Rust files",
+      "command": "rustfmt --edition 2024 --config skip_children=true --check <six recovered Rust files>",
+      "exit_recorded": 0,
+      "evidence": "evidence/issue-1357/review-repair/format.txt",
+      "sha256": "6b63c991663759eb468e48618b7275a00ceafce022feffe97b9e65c49a928059",
+      "rerun": false,
+      "basis": "Recovered file hashes all match and no source edit was made; retained terminal client_exit=0."
+    },
+    {
+      "scope": "gateway native target, non-deny lint",
+      "command": "cargo clippy -p prod-code-gateway --test rust_method_native -- --cap-lints warn",
+      "exit_recorded": 0,
+      "evidence": "evidence/issue-1357/review-repair/lint.txt",
+      "sha256": "5858223c84a4bc4be3da62a685be5d564a5b92ca859e740d0aad1ba26d23fd68",
+      "rerun": false,
+      "basis": "Same recovered source state, retained terminal client_exit=0; warnings remain."
+    }
+  ],
+  "preservation": {
+    "rerun": false,
+    "passed_previously_reported": 55,
+    "evidence": "evidence/codex-review-audit/recovery-4282.json",
+    "reason": "No code change in this task; preserved all existing assertions and source hashes. Do not replay unchanged successful work. The interrupted native target alone was run.",
+    "limit": "Prior 55-test outcome is recovery/parent evidence, not a fresh execution by this worker."
+  },
+  "integrity": {
+    "recovered_files_matching": 12,
+    "recovery_hashes": "evidence/issue-1357/review-repair/verification-native/recovery-hashes.json",
+    "source_hashes": "evidence/issue-1357/review-repair/verification-native/source-hashes.json",
+    "preserved_input_hashes": "evidence/issue-1357/review-repair/verification-native/preserved-input-hashes.json",
+    "artifact_hashes": "evidence/issue-1357/review-repair/verification-native/artifact-hashes.json",
+    "tracked_changes": "none; additions only under requested review-repair evidence"
+  },
+  "tool_failures": "evidence/issue-1357/review-repair/verification-native/tool-errors.json",
+  "limits": [
+    "Original task 4282 retains failed/timeout status.",
+    "The original pre-recovery native gate remains unverified; this is a distinct completed verification run.",
+    "Final combined-main gate belongs to the parent and was not run here.",
+    "No new source implementation was required; existing scoped formatting/lint evidence was reused instead of replayed.",
+    "Full native log retained with infrastructure address and checkout path redacted; sources and semantic reply bytes retained unchanged."
+  ]
+}

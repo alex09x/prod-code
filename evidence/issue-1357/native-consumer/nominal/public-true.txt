@@ -1,0 +1,22 @@
+Ok(
+    MadeMethod {
+        owner: "S",
+        method: "f",
+        root: "/tmp/.tmpZKiqPl/fixture",
+        file: "src/lib.rs",
+        parameter: "s: &S",
+        receiver: "&self",
+        renamed_uses: 1,
+        rewritten_calls: 2,
+        unchanged: [],
+        unmatched: [],
+        rewritten: [
+            (
+                "/tmp/.tmpZKiqPl/fixture/src/lib.rs",
+                "struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", a.f(), b.f()); }\n",
+            ),
+        ],
+        diagnostics: [],
+        applied: true,
+    },
+)

@@ -1,0 +1,6 @@
+4f84b5581b1c7dece64a0dc089c2e9dbb732d5e18db91c024435bf6ec0d92311  crates/prod-code-mcp/src/to_method/declaration.rs
+929e7c1ef53f30ed67b21f6e18b3b3b7ed91fda4ff767906260b72e2e9aa2da8  crates/prod-code-mcp/src/to_method/expansion.rs
+22e0cfc7a7741f78cbbd88a362dfa595b558374361d18300b7060ce941f25b50  crates/prod-code-mcp/src/to_method/mod.rs
+c48cf8db57dd778090fcc0588207d0a2920b0562383fc6a850e783f516300aaf  crates/prod-code-mcp/tests/rust_method_preservation.rs
+9a1a9c937aa099a44dec1bca998ab3a8958b6bbf9a8070afa5307de84d1e6f15  crates/prod-code-mcp/tests/rust_method_preservation/macro_inputs.rs
+ab5f04cfdd7ffa23a94aa00c440e1d746414ae0fd25ad7662092d77ead2fd1a2  crates/prod-code-mcp/tests/rust_method_preservation/namespace_values.rs

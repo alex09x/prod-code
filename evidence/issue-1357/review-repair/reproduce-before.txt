@@ -1,0 +1,68 @@
+$ cargo test -p prod-code-gateway --test rust_method_native cases:: -- --nocapture
+
+thread 'cases::method_const_generic_shadows_refuse_before_writes_including_force' panicked at crates/prod-code-gateway/tests/rust_method_native/cases.rs:281:14:
+method const generic shadowing impl self type must refuse: MadeMethod { owner: "S", method: "f", root: "/tmp/.tmpvKw2wG/fixture", file: "src/lib.rs", parameter: "c: &S<N>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/lib.rs:4:36 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("/tmp/.tmpvKw2wG/fixture/src/lib.rs", "const N: usize = 1;\nstruct S<const K: usize>(usize);\nimpl S<N> { fn f<const N: usize>(&self) -> usize { self.0 + N } }\nfn main() { println!(\"{}\", S::<N>::f::<2>(&S::<2>(5))); }\n")], diagnostics: ["expected &S<1>, found &S<2> [E0308] (src/lib.rs:4:43)"], applied: false }
+test cases::method_const_generic_shadows_refuse_before_writes_including_force ... FAILED
+
+thread 'cases::unrelated_method_const_generic_with_macro_expansion_converts_and_preserves_output' panicked at crates/prod-code-gateway/tests/rust_method_native/support.rs:114:9:
+public consumer never requested rust-analyzer/expandMacro
+test cases::unrelated_method_const_generic_with_macro_expansion_converts_and_preserves_output ... FAILED
+
+thread 'cases::generic_owner_holder_config_converts_calls_with_distinct_identities' panicked at crates/prod-code-gateway/tests/rust_method_native/cases.rs:160:9:
+assertion `left == right` failed: MadeMethod {
+    owner: "Holder",
+    method: "f",
+    root: "/tmp/.tmpiDqnhH/fixture",
+    file: "src/lib.rs",
+    parameter: "h: &Holder<Config>",
+    receiver: "&self",
+    renamed_uses: 1,
+    rewritten_calls: 0,
+    unchanged: [
+        "src/lib.rs:4:110 (qualified call retained to preserve receiver coercion and dispatch)",
+        "src/lib.rs:4:125 (qualified call retained to preserve receiver coercion and dispatch)",
+    ],
+    unmatched: [],
+    rewritten: [
+        (
+            "/tmp/.tmpiDqnhH/fixture/src/lib.rs",
+            "struct Config(u32);\nstruct Holder<T>(T);\nimpl Holder<Config> { fn f(&self) -> u32 { (self.0).0 + 1 } }\nfn main() { let a = Holder(Config(6)); let b: Holder<Config> = Holder(Config(40)); println!(\"{} {}\", Holder::f(&a), Holder::f(&b)); }\n",
+        ),
+    ],
+    diagnostics: [],
+    applied: false,
+}
+  left: 0
+ right: 2
+test cases::generic_owner_holder_config_converts_calls_with_distinct_identities ... FAILED
+
+thread 'cases::generic_owner_holder_fallbacks_preserve_coerced_and_shadowed_calls' panicked at crates/prod-code-gateway/tests/rust_method_native/cases.rs:205:9:
+assertion `left == right` failed: MadeMethod {
+    owner: "Holder",
+    method: "f",
+    root: "/tmp/.tmpRBTaX6/fixture",
+    file: "src/lib.rs",
+    parameter: "h: &Holder<Config>",
+    receiver: "&self",
+    renamed_uses: 1,
+    rewritten_calls: 0,
+    unchanged: [
+        "src/lib.rs:25:24 (qualified call retained to preserve receiver coercion and dispatch)",
+        "src/lib.rs:31:24 (qualified call retained to preserve receiver coercion and dispatch)",
+        "src/lib.rs:33:34 (qualified call retained to preserve receiver coercion and dispatch)",
+    ],
+    unmatched: [],
+    rewritten: [
+        (
+            "/tmp/.tmpRBTaX6/fixture/src/lib.rs",
+            "pub struct Config(pub u32);\npub struct Holder<T>(pub T);\ntrait Intercept { fn f(&self) -> u32 { 999 } }\nmod shadow_head {\n    pub struct Holder<T>(pub crate::Holder<T>);\n    impl<T> Holder<T> { pub fn f(&self) -> u32 { 888 } }\n    impl<T> std::ops::Deref for Holder<T> {\n        type Target = crate::Holder<T>;\n        fn deref(&self) -> &Self::Target { &self.0 }\n    }\n}\nmod other { pub struct Config(pub crate::Holder<crate::Config>); }\nimpl Intercept for Holder<other::Config> {}\nimpl std::ops::Deref for Holder<other::Config> {\n    type Target = Holder<Config>;\n    fn deref(&self) -> &Self::Target { &(self.0).0 }\n}\nimpl Holder<Config> { pub fn f(&self) -> u32 { (self.0).0 + 1 } }\nfn main() {\n    let exact = Holder(Config(6));\n    let head_val = {\n        use shadow_head::Holder;\n        let bad_head: Holder<Config> = Holder(crate::Holder(Config(10)));\n        let _ = bad_head.f();\n        crate::Holder::f(&bad_head)\n    };\n    let arg_val = {\n        use other::Config;\n        let bad_arg: Holder<Config> = Holder(Config(Holder(crate::Config(20))));\n        let _ = bad_arg.f();\n        crate::Holder::f(&bad_arg)\n    };\n    println!(\"{} {} {}\", Holder::f(&exact), head_val, arg_val);\n}\n",
+        ),
+    ],
+    diagnostics: [],
+    applied: false,
+}
+  left: 0
+ right: 1
+test cases::generic_owner_holder_fallbacks_preserve_coerced_and_shadowed_calls ... FAILED
+
+exit=101

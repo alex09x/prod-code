@@ -20,6 +20,7 @@ pub fn editor_capabilities(server: Option<serde_json::Value>, rust: bool) -> ser
         _ if rust => serde_json::json!({
             "hoverProvider": true,
             "definitionProvider": true,
+            "typeDefinitionProvider": true,
             "referencesProvider": true,
             "implementationProvider": true,
             "documentSymbolProvider": true,

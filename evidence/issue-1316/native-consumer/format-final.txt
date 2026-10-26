@@ -1,0 +1,4 @@
+COMMAND prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-gateway/tests/rust_method_native.rs
+[prod-code exec] exit 0 in 1.1s (server 0.1s, cpu 0.0s user 0.0s sys, peak 38 MB) on node <build-node>, copy <remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09 (linux x86_64)
+
+TERMINAL_EXIT=0

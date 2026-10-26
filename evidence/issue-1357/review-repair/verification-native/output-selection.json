@@ -1,0 +1,16 @@
+{
+  "default": "temporary directory outside tracked evidence; created and removed",
+  "explicit": "caller-supplied new directory; created and removed",
+  "historical_roots_refused": [
+    {
+      "path": "evidence/issue-1357",
+      "result": "refusing to overwrite tracked historical evidence directory: evidence/issue-1357"
+    },
+    {
+      "path": "evidence/issue-1357/native-consumer",
+      "result": "refusing to overwrite tracked historical evidence directory: evidence/issue-1357/native-consumer"
+    }
+  ],
+  "native_invocation": "explicit fresh output; cargo test resolves relative output under package directory; 93 artifacts moved byte-for-byte into requested evidence location after exit",
+  "retained_evidence": "git diff --exit-code HEAD -- crates evidence/issue-1357 evidence/issue-1316 evidence/codex-review-audit returned 0 before adding this manifest; original tracked bytes unchanged"
+}

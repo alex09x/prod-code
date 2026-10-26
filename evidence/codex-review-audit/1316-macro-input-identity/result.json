@@ -1,0 +1,105 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1316",
+  "effective_base_sha": "86b8f87e6c48e37871046196f6c0880a961abc41",
+  "inherited_candidate_sha": "0b5019ebb0d5b5c4404f207d6f143fd2c4bb8153",
+  "repair": "Retain both original declaration-identity repairs. Inspect macro expansion in parameter scope instead of treating macro input identifiers as type references.",
+  "implementation": "crates/prod-code-mcp/src/to_method/declaration.rs:19",
+  "selected_parameter_implementation": "crates/prod-code-mcp/src/move_method/parameters.rs:16",
+  "original_public_reproduction_directory": "evidence/codex-review-audit/1316-declaration-identity",
+  "original_public_reproductions": {
+    "generic_owner_shadow": {
+      "original": "trait T { fn value(&self)->u8; }\nstruct S;\nimpl T for S { fn value(&self)->u8 {2} }\nimpl S { fn value(&self)->u8 {1} fn f<S:T>(c:&S)->u8 {c.value()} }\nfn main(){println!(\"{}\",S::f::<S>(&S));}\n",
+      "original_rustc_exit": 0,
+      "original_runtime_exit": 0,
+      "original_stdout": "2\n",
+      "actual_public_returned_before_repair": "trait T { fn value(&self)->u8; }\nstruct S;\nimpl T for S { fn value(&self)->u8 {2} }\nimpl S { fn value(&self)->u8 {1} fn f<S:T>(&self)->u8 {self.value()} }\nfn main(){println!(\"{}\",S::f::<S>(&S));}\n",
+      "returned_rustc_exit": 0,
+      "returned_runtime_exit": 0,
+      "returned_stdout": "1\n",
+      "repaired": "Refuses before planning declaration/body edits in all four apply/force combinations; source, manifest and sentinel bytes preserved.",
+      "evidence": [
+        "before.txt",
+        "focused.txt"
+      ]
+    },
+    "selected_parameter": {
+      "original": "struct Tax(u32);\nstruct Order(u32);\nimpl Order {\n    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }\n}\nfn helper(_: &Tax) {}\nfn main() { let o = Order(1); let t = Tax(2); println!(\"{}\", o.f(helper, &t)); }\n",
+      "original_rustc_exit": 0,
+      "original_runtime_exit": 0,
+      "original_stdout": "3\n",
+      "actual_public_returned_before_repair": "struct Tax(u32);\n\nimpl Tax {\n    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(tax); order.0 + tax.0 }\n}\nstruct Order(u32);\nfn helper(_: &Tax) {}\nfn main() { let o = Order(1); let t = Tax(2); println!(\"{}\", t.f(helper, &o)); }\n",
+      "before_returned_rustc_exit": 1,
+      "before_errors": [
+        "E0425 for both tax uses"
+      ],
+      "actual_public_returned_after_repair": "struct Tax(u32);\n\nimpl Tax {\n    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }\n}\nstruct Order(u32);\nfn helper(_: &Tax) {}\nfn main() { let o = Order(1); let t = Tax(2); println!(\"{}\", t.f(helper, &o)); }\n",
+      "after_returned_rustc_exit": 0,
+      "after_returned_runtime_exit": 0,
+      "after_returned_stdout": "3\n",
+      "wrong_binding_cursor_1_based": [
+        4,
+        28
+      ],
+      "selected_binding_cursor_1_based": [
+        4,
+        40
+      ],
+      "wrong_type_cursor_1_based": [
+        4,
+        34
+      ],
+      "selected_type_cursor_1_based": [
+        4,
+        46
+      ],
+      "gateway_contract": "Wrong nested label returns no references; selected binding returns both uses. Type query must exactly match selected type cursor.",
+      "modes": "Preview/apply with force false/true all compile and run; preview checks original source, manifest and sentinel bytes; apply source equals preview bytes.",
+      "evidence": [
+        "before-move-isolated.txt",
+        "focused.txt"
+      ]
+    }
+  },
+  "ignored_macro_input": {
+    "original": "macro_rules! fixed { ($ignored:ident) => { u8 }; }\nstruct S<T>(T);\nimpl S<fixed!(U)> { fn f<U>(c: &S<fixed!(U)>) -> u8 { c.0 } }\nfn main() { println!(\"{}\", S::f::<()>(&S(7))); }\n",
+    "before_public_result": "All four apply/force modes refuse; original rustc and runtime exit 0, stdout 7.",
+    "actual_returned_after": "macro_rules! fixed { ($ignored:ident) => { u8 }; }\nstruct S<T>(T);\nimpl S<fixed!(U)> { fn f<U>(&self) -> u8 { self.0 } }\nfn main() { println!(\"{}\", S::f::<()>(&S(7))); }\n",
+    "returned_rustc_exit": 0,
+    "returned_runtime_exit": 0,
+    "stdout": "7\n",
+    "modes": "Preview/apply, force false/true; preview preserves source/manifest/sentinel bytes, apply equals returned bytes.",
+    "before_evidence": "before.txt:165",
+    "after_evidence": "focused.txt:200"
+  },
+  "negative_controls": "Expansions to a method generic refuse in all four modes, including qualified/empty-input invocations. Missing expansion refuses even with force. Exact parameter-scope expansion cursors asserted.",
+  "preservation": "183 inherited evidence files byte-identical, including full review, actual dyn Trait/dynTrait 1-to-2 failure, original declaration failures and ordinary proved dot-call output.",
+  "checks": {
+    "before_exit": 101,
+    "focused_exit": 0,
+    "focused_passed": 8,
+    "format_exit": 0,
+    "lint_exit": 101,
+    "lint_errors": 103,
+    "lint_locations_in_edited_files": 0,
+    "lint_bodies_match_inherited": true,
+    "initial_acceptance_exit": 101,
+    "initial_passed": 51,
+    "isolated_sync_test_exit": 0,
+    "descriptor_failure_acceptance_exit": 101,
+    "descriptor_failure_passed": 50,
+    "fixture_resource_repair": "Reuse workspace/gateway across mode cases; all inputs and assertions retained.",
+    "fixture_format_exit": 0,
+    "final_acceptance_exit": 0,
+    "final_acceptance_passed": 52,
+    "git_diff_check_exit": 0
+  },
+  "final_source_manifest_sha256": "5ce2ad148f4cefb4d4e41c3a72ec2e082eb8f9863779fc09fd3322960eac29ff",
+  "limitations": [
+    "Scripted cursor-specific LSP responses plus real compiler/runtime execution, not live-analyzer end-to-end proof.",
+    "Narrow method-generic guard, not a general Rust resolver. Generic receiver types containing macros require analyzer expansion; unavailable expansion refuses even with force.",
+    "Clippy blocked by 103 unchanged library diagnostics; test-target lint did not complete.",
+    "Initial sync failure cause unproven. Subsequent descriptor exhaustion measured; exact required target passed after reducing gateway creation. No general infrastructure fix or stability campaign.",
+    "Inherited single-line move layout panic outside scope.",
+    "Parent owns aggregate review, integration and commit. No publication or commit from this worker."
+  ]
+}

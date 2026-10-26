@@ -1,0 +1,25 @@
+Ok(
+    MadeMethod {
+        owner: "S",
+        method: "f",
+        root: "/tmp/.tmpTUcQgu/fixture",
+        file: "src/lib.rs",
+        parameter: "s: &S",
+        receiver: "&self",
+        renamed_uses: 1,
+        rewritten_calls: 0,
+        unchanged: [
+            "src/lib.rs:3:63 (qualified call retained to preserve receiver coercion and dispatch)",
+            "src/lib.rs:3:73 (qualified call retained to preserve receiver coercion and dispatch)",
+        ],
+        unmatched: [],
+        rewritten: [
+            (
+                "/tmp/.tmpTUcQgu/fixture/src/lib.rs",
+                "struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n",
+            ),
+        ],
+        diagnostics: [],
+        applied: false,
+    },
+)

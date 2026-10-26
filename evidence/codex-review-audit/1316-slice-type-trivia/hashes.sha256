@@ -1,0 +1,14 @@
+91b6c2cb2529b06beeff73c8d5af8d5a1c1e7259f6d8f46080e773d97cbb0e10  evidence/codex-review-audit/1316-slice-type-trivia/README.md
+b22b87401c4ef308dd67d5534913c1fde8061ccca371bd690afe4afec249480a  evidence/codex-review-audit/1316-slice-type-trivia/acceptance.txt
+45f56e9dd6bbc6044fc32837872a46ca84b7267101f55683d49c68ae91f238bb  evidence/codex-review-audit/1316-slice-type-trivia/before-repaired.txt
+e69ca64053e2ff78881468e52b37fc777cc83bae23ca41646f0b9cdb67f32ec7  evidence/codex-review-audit/1316-slice-type-trivia/before.txt
+00a22c33f0931dae09f1f7cf2d12e5a241763302768601380f77552820f7d5e0  evidence/codex-review-audit/1316-slice-type-trivia/commands-and-failures.txt
+856b4da9cfaa4f7fb74e41726603f02cb4790c231ba954870ab26ce717a0580b  evidence/codex-review-audit/1316-slice-type-trivia/format.txt
+33c8289d450fef49341dff87851d0cedf7ab3dfa40d8b8e45315a3a9b1a65221  evidence/codex-review-audit/1316-slice-type-trivia/lint-comparison.txt
+e9c748f47c4bd2047144cb58c0a9c344a87b7d5247ee5aedf49334c5c1c56a09  evidence/codex-review-audit/1316-slice-type-trivia/lint.txt
+4e7c6f7aa4e2f2d088385dedce1a3606c1a861f2588aad6c73bfce1a1817a5b3  evidence/codex-review-audit/1316-slice-type-trivia/targeted-repaired.txt
+5834900ee49f438191c692086f5cceda3e2904337ebf4ea5725abfd1355ae2a4  evidence/codex-review-audit/1316-slice-type-trivia/targeted.txt
+13d84873d6887b1057982b2b84e46c1758ad253a6c55e46ecc59ac2eeed2d1bd  crates/prod-code-mcp/src/to_method/helpers.rs
+ba1791c31d3afafcab5053720b5c578643f1aac98bf0ff3b70a582edc639d02a  crates/prod-code-mcp/src/to_method/dispatch.rs
+4d99b6c95479cb4503a07f18b7599cfa3b8602c9905ef470df526c8860404815  crates/prod-code-mcp/tests/rust_method_preservation.rs
+9159b391b2ebbc92a94bef4674309abacac96d5c59c5132f36b0f2160cb60ebb  crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs

@@ -1,0 +1,12 @@
+fb64504302425d5c81dde5a0918b9887c890bf6d6238f8de8cc8d5460e24c8b7  crates/prod-code-mcp/src/to_method/helpers.rs
+304582c5eb9e7c39e22d877b1e172ab8eedaad1cb1822be35ebe8713e1cfddaa  crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs
+ca093610b385c19db48082ecb07c5c27df4ce6ca785b9e74c6550fce7f5ed5a2  evidence/codex-review-audit/1316-ordinary-type-trivia/README.md
+ea00c4c9afd0d5e2f937fba962f041c918b6f1d46577bc85eb443cff39c2a18a  evidence/codex-review-audit/1316-ordinary-type-trivia/acceptance.txt
+e7a3457825136eecfbb8e18431ccf065e6d519f38ca949addb6cc801c7d97cc9  evidence/codex-review-audit/1316-ordinary-type-trivia/after-repaired.txt
+7ad3767cf624d787bd98b7096e7205bcebac32f0e8d8bd54c334a238e2670980  evidence/codex-review-audit/1316-ordinary-type-trivia/after.txt
+f6be15a083af857985c8b5f42db58356739003ac4e18f3bc97c515f56d09b63b  evidence/codex-review-audit/1316-ordinary-type-trivia/before.txt
+feb7ce32091bafd00e4e7c16ee9b239ab7f55069c99060e8383d7c0806253f43  evidence/codex-review-audit/1316-ordinary-type-trivia/commands-and-failures.txt
+dc3685d4c8bc9353548c0496ecd40f0f38c556d5728c4a698f02328475e7de2f  evidence/codex-review-audit/1316-ordinary-type-trivia/format.txt
+36aec10265319622bbdc4cd99c389880c25fa0c844bf235801101594d90942d6  evidence/codex-review-audit/1316-ordinary-type-trivia/lint-comparison.txt
+87d4b1555a6a9974729ec5b7abbe6134f63576536955d7f66ab90d24f3a5eac0  evidence/codex-review-audit/1316-ordinary-type-trivia/lint.txt
+8e99f4a95426562d57593fba5f8f84a3d560e5fbb763f833bbe42c6362a602d7  evidence/codex-review-audit/1316-ordinary-type-trivia/preserved-evidence.sha256

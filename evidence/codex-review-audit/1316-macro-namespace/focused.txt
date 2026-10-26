@@ -1,0 +1,889 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.46s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 6 tests
+generic argument original: source
+extern crate self as This;
+struct Tax;
+trait T { fn value(&self)->u8; }
+struct A;
+impl T for A { fn value(&self)->u8 {2} }
+impl A { fn value(&self)->u8 {1} }
+struct S<U>(U);
+impl S<A> { fn f<A:T>(c:&S<A>)->u8 {c.0.value()} }
+fn main(){println!("{}",S::<A>::f::<A>(&S(A)));}
+
+generic shadow original: source
+trait T { fn value(&self)->u8; }
+struct S;
+impl T for S { fn value(&self)->u8 {2} }
+impl S { fn value(&self)->u8 {1} fn f<S:T>(c:&S)->u8 {c.value()} }
+fn main(){println!("{}",S::f::<S>(&S));}
+
+qualified original: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<This>(c:&::This::S)->u8 {c.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+function pointer original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
+}
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
+
+macro namespace original: source
+macro_rules! U { () => { u8 }; }
+struct Tax;
+struct S<T>(T);
+impl S<U!()> { fn f<U>(c: &S<U!()>) -> u8 { c.0 } }
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics original: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(c: &S) -> u8 { c.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics original: rustc exit status: 0
+
+qualified original: rustc exit status: 0
+
+generic argument original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+qualified original: runtime exit status: 0
+7
+
+generic argument original: runtime exit status: 0
+2
+
+function pointer original: rustc exit status: 0
+
+macro namespace original: rustc exit status: 0
+
+macro namespace original: runtime exit status: 0
+7
+
+function pointer original: runtime exit status: 0
+3
+
+generic shadow original: rustc exit status: 0
+
+generic shadow original: runtime exit status: 0
+2
+
+generic argument owner=S<A> apply=false force=false: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+generic shadow apply=false force=false: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+generic argument owner=S<A> apply=false force=true: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+generic shadow apply=false force=true: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+generic shadow apply=true force=false: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+generic argument owner=S<A> apply=true force=false: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+generic shadow apply=true force=true: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+generic argument owner=S<A> apply=true force=true: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+test declaration_identity::method_generic_owner_shadowing_refuses_before_any_edits ... ok
+generic argument original: source
+extern crate self as This;
+struct Tax;
+trait T { fn value(&self)->u8; }
+struct A;
+impl T for A { fn value(&self)->u8 {2} }
+impl A { fn value(&self)->u8 {1} }
+struct S<U>(U);
+impl ::This::S<A> { fn f<A:T>(c:&::This::S<A>)->u8 {c.0.value()} }
+fn main(){println!("{}",S::<A>::f::<A>(&S(A)));}
+
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+function pointer apply=false force=false: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+nothing was written; pass `apply: true` to make these edits
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+qualified owner=::This::S generic=This apply=false force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+macro namespace apply=false force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &S<U!()>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:31 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "macro_rules! U { () => { u8 }; }\nstruct Tax;\nstruct S<T>(T);\nimpl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }\nfn main() { println!(\"{}\", S::f::<()>(&S(7))); }\n")], diagnostics: [], applied: false })
+macro namespace returned: source
+macro_rules! U { () => { u8 }; }
+struct Tax;
+struct S<T>(T);
+impl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+generic argument original: rustc exit status: 0
+
+generic argument original: runtime exit status: 0
+2
+
+generic argument owner=::This::S<A> apply=false force=false: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+generic argument owner=::This::S<A> apply=false force=true: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+generic argument owner=::This::S<A> apply=true force=false: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+qualified returned: rustc exit status: 0
+
+function pointer returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+function pointer returned: runtime exit status: 0
+3
+
+macro namespace returned: rustc exit status: 0
+
+generic argument owner=::This::S<A> apply=true force=true: Err(method type parameter `A` shadows the impl self type; it cannot become `self`)
+macro namespace returned: runtime exit status: 0
+7
+
+test declaration_identity::generic_argument_shadowing_refuses_before_any_edits ... ok
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+qualified owner=::This::S generic=This apply=false force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+function pointer apply=false force=true: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+nothing was written; pass `apply: true` to make these edits
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+macro namespace apply=false force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &S<U!()>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:31 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "macro_rules! U { () => { u8 }; }\nstruct Tax;\nstruct S<T>(T);\nimpl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }\nfn main() { println!(\"{}\", S::f::<()>(&S(7))); }\n")], diagnostics: [], applied: false })
+macro namespace returned: source
+macro_rules! U { () => { u8 }; }
+struct Tax;
+struct S<T>(T);
+impl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+function pointer returned: rustc exit status: 0
+
+function pointer returned: runtime exit status: 0
+3
+
+macro namespace returned: rustc exit status: 0
+
+macro namespace returned: runtime exit status: 0
+7
+
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified owner=::This::S generic=This apply=true force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+function pointer apply=true force=false: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+[applied]
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+macro namespace apply=true force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &S<U!()>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:31 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "macro_rules! U { () => { u8 }; }\nstruct Tax;\nstruct S<T>(T);\nimpl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }\nfn main() { println!(\"{}\", S::f::<()>(&S(7))); }\n")], diagnostics: [], applied: true })
+macro namespace returned: source
+macro_rules! U { () => { u8 }; }
+struct Tax;
+struct S<T>(T);
+impl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: runtime exit status: 0
+7
+
+function pointer returned: rustc exit status: 0
+
+function pointer returned: runtime exit status: 0
+3
+
+macro namespace returned: rustc exit status: 0
+
+macro namespace returned: runtime exit status: 0
+7
+
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+qualified owner=::This::S generic=This apply=true force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+function pointer apply=true force=true: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+[applied]
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+macro namespace apply=true force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c: &S<U!()>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:31 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "macro_rules! U { () => { u8 }; }\nstruct Tax;\nstruct S<T>(T);\nimpl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }\nfn main() { println!(\"{}\", S::f::<()>(&S(7))); }\n")], diagnostics: [], applied: true })
+macro namespace returned: source
+macro_rules! U { () => { u8 }; }
+struct Tax;
+struct S<T>(T);
+impl S<U!()> { fn f<U>(&self) -> u8 { self.0 } }
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+qualified original: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<S>(c:&::This::S)->u8 {c.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+ordinary generics returned: rustc exit status: 0
+
+macro namespace returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+macro namespace returned: runtime exit status: 0
+7
+
+ordinary generics original: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(c: &S<T>) -> T { c.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+test declaration_identity::method_type_parameter_does_not_shadow_macro_namespace ... ok
+function pointer returned: rustc exit status: 0
+
+function pointer returned: runtime exit status: 0
+3
+
+test declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter ... ok
+qualified original: rustc exit status: 0
+
+qualified original: runtime exit status: 0
+7
+
+ordinary generics original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+qualified owner=::This::S generic=S apply=false force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<S>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<S>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=::This::S generic=S apply=false force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<S>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<S>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=::This::S generic=S apply=true force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<S>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<S>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=::This::S generic=S apply=true force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&::This::S", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct S(u8);\nimpl ::This::S { fn f<S>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct S(u8);
+impl ::This::S { fn f<S>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+qualified original: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<::This::A> { fn f<This>(c:&S<::This::A>)->u8 {c.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics original: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(c: &Self) -> u8 { c.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified original: rustc exit status: 0
+
+qualified original: runtime exit status: 0
+7
+
+ordinary generics original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+qualified owner=S<::This::A> generic=This apply=false force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<::This::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<::This::A> { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<::This::A> { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=S<::This::A> generic=This apply=false force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<::This::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<::This::A> { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<::This::A> { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=S<::This::A> generic=This apply=true force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<::This::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<::This::A> { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<::This::A> { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=S<::This::A> generic=This apply=true force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<::This::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<::This::A> { fn f<This>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<::This::A> { fn f<This>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+qualified original: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<crate::A> { fn f<A>(c:&S<crate::A>)->u8 {c.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics original: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(c: &'a S) -> u8 { c.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+ordinary generics original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+qualified original: rustc exit status: 0
+
+qualified original: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+qualified owner=S<crate::A> generic=A apply=false force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<crate::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<crate::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<crate::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+qualified owner=S<crate::A> generic=A apply=false force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<crate::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<crate::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<crate::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=S<crate::A> generic=A apply=true force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<crate::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<crate::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<crate::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+qualified owner=S<crate::A> generic=A apply=true force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<crate::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<crate::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, A)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<crate::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, A)));}
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+qualified original: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<types::A> { fn f<A>(c:&S<types::A>)->u8 {c.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, types::A)));}
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+test declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity ... ok
+qualified original: rustc exit status: 0
+
+qualified original: runtime exit status: 0
+7
+
+qualified owner=S<types::A> generic=A apply=false force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<types::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<types::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, types::A)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<types::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, types::A)));}
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+qualified owner=S<types::A> generic=A apply=false force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<types::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<types::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, types::A)));}\n")], diagnostics: [], applied: false })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<types::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, types::A)));}
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+qualified owner=S<types::A> generic=A apply=true force=false: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<types::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<types::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, types::A)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<types::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, types::A)));}
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+qualified owner=S<types::A> generic=A apply=true force=true: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "c:&S<types::A>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:5:28 (the function used as a value: a method is still reachable by its path)"], unmatched: [], rewritten: [("<fixture>/src/main.rs", "extern crate self as This;\nstruct Tax;\nstruct A; mod types { pub struct A; } struct S<U>(u8, U);\nimpl S<types::A> { fn f<A>(&self)->u8 {self.0} }\nfn main(){println!(\"{}\",S::f::<()>(&S(7, types::A)));}\n")], diagnostics: [], applied: true })
+qualified returned: source
+extern crate self as This;
+struct Tax;
+struct A; mod types { pub struct A; } struct S<U>(u8, U);
+impl S<types::A> { fn f<A>(&self)->u8 {self.0} }
+fn main(){println!("{}",S::f::<()>(&S(7, types::A)));}
+
+qualified returned: rustc exit status: 0
+
+qualified returned: runtime exit status: 0
+7
+
+test declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 2.75s
+
+[prod-code exec] exit 0 in 7.7s (server 7.3s, cpu 8.0s user 6.2s sys, peak 1263 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)

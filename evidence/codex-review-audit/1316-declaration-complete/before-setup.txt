@@ -1,0 +1,657 @@
+   Compiling unicode-ident v1.0.22
+   Compiling memchr v2.8.3
+   Compiling cfg-if v1.0.5
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.1
+   Compiling num-conv v0.2.2
+   Compiling serde_core v1.0.229
+   Compiling time-core v0.1.9
+   Compiling powerfmt v0.2.0
+   Compiling writeable v0.6.4
+   Compiling log v0.4.34
+   Compiling minimal-lexical v0.2.1
+   Compiling litemap v0.8.3
+   Compiling deranged v0.5.8
+   Compiling untrusted v0.9.0
+   Compiling utf8_iter v1.0.4
+   Compiling typenum v1.20.1
+   Compiling zeroize v1.9.0
+   Compiling once_cell v1.21.4
+   Compiling scopeguard v1.2.0
+   Compiling subtle v2.6.1
+   Compiling pin-project-lite v0.2.17
+   Compiling libc v0.2.189
+   Compiling icu_normalizer_data v2.3.0
+   Compiling icu_properties_data v2.3.0
+   Compiling bitflags v2.13.2
+   Compiling num-traits v0.2.19
+   Compiling bytes v1.12.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling serde v1.0.229
+   Compiling proc-macro2 v1.0.107
+   Compiling serde_json v1.0.151
+   Compiling zmij v1.0.23
+   Compiling base64 v0.22.1
+   Compiling percent-encoding v2.3.2
+   Compiling futures-sink v0.3.34
+   Compiling data-encoding v2.11.1
+   Compiling lazy_static v1.5.0
+   Compiling regex-syntax v0.8.11
+   Compiling futures-core v0.3.34
+   Compiling itoa v1.0.18
+   Compiling bitflags v1.3.2
+   Compiling prod-code-protocol v0.3.41 (<remote-checkout>/crates/prod-code-protocol)
+   Compiling time-macros v0.2.32
+   Compiling tracing-core v0.1.36
+   Compiling cpufeatures v0.2.17
+   Compiling nom v7.1.3
+   Compiling lock_api v0.4.14
+   Compiling aho-corasick v1.1.5
+   Compiling rustls-pki-types v1.15.1
+   Compiling same-file v1.0.6
+   Compiling bstr v1.13.1
+   Compiling anyhow v1.0.104
+   Compiling futures-task v0.3.34
+   Compiling linux-raw-sys v0.12.1
+   Compiling form_urlencoded v1.2.2
+   Compiling winnow v1.0.4
+   Compiling slab v0.4.12
+   Compiling notify-types v2.1.0
+   Compiling pem v3.0.6
+   Compiling winnow v0.7.15
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling fastrand v2.5.0
+   Compiling fluent-uri v0.1.4
+   Compiling similar v2.7.0
+   Compiling quote v1.0.47
+   Compiling glob v0.3.4
+   Compiling walkdir v2.5.0
+   Compiling generic-array v0.14.7
+   Compiling num-integer v0.1.47
+   Compiling rustls-pemfile v2.2.0
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling crossbeam-epoch v0.9.21
+   Compiling rustix v1.1.5
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling mio v1.2.3
+   Compiling parking_lot_core v0.9.12
+   Compiling socket2 v0.6.5
+   Compiling inotify-sys v0.1.8
+   Compiling getrandom v0.4.3
+   Compiling num-bigint v0.4.8
+   Compiling rusticata-macros v4.1.0
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling regex-automata v0.4.18
+   Compiling signal-hook-registry v1.4.8
+   Compiling crossbeam-deque v0.8.8
+   Compiling ring v0.17.14
+   Compiling inotify v0.11.5
+   Compiling parking_lot v0.12.5
+   Compiling digest v0.10.7
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.10.9
+   Compiling notify v8.2.0
+   Compiling tempfile v3.27.0
+   Compiling rustls-webpki v0.103.15
+   Compiling globset v0.4.20
+   Compiling regex v1.13.1
+   Compiling synstructure v0.14.0
+   Compiling synstructure v0.13.2
+   Compiling time v0.3.55
+   Compiling thiserror-impl v1.0.69
+   Compiling displaydoc v0.2.7
+   Compiling zerovec-derive v0.11.6
+   Compiling asn1-rs-impl v0.2.0
+   Compiling tokio-macros v2.7.2
+   Compiling serde_derive v1.0.229
+   Compiling serde_repr v0.1.21
+   Compiling thiserror-impl v2.0.20
+   Compiling tracing-attributes v0.1.31
+   Compiling futures-macro v0.3.34
+   Compiling rustls v0.23.45
+   Compiling ignore v0.4.33
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling asn1-rs-derive v0.5.1
+   Compiling yasna v0.5.2
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling zerofrom v0.1.8
+   Compiling thiserror v1.0.69
+   Compiling tracing v0.1.44
+   Compiling yoke v0.8.3
+   Compiling thiserror v2.0.20
+   Compiling asn1-rs v0.6.2
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling der-parser v9.0.0
+   Compiling oid-registry v0.7.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling tokio-rustls v0.26.6
+   Compiling tokio-util v0.7.19
+   Compiling icu_provider v2.3.1
+   Compiling x509-parser v0.16.0
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling url v2.5.8
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling rcgen v0.13.2
+   Compiling lsp-types v0.97.0
+   Compiling prod-code-testkit v0.3.41 (<remote-checkout>/crates/prod-code-testkit)
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.82s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 5 tests
+generic shadow original: source
+trait T { fn value(&self)->u8; }
+struct S;
+impl T for S { fn value(&self)->u8 {2} }
+impl S { fn value(&self)->u8 {1} fn f<S:T>(c:&S)->u8 {c.value()} }
+fn main(){println!("{}",S::f::<S>(&S));}
+
+generic argument original: source
+extern crate self as This;
+trait T { fn value(&self)->u8; }
+struct A;
+impl T for A { fn value(&self)->u8 {2} }
+impl A { fn value(&self)->u8 {1} }
+struct S<U>(U);
+impl S<A> { fn f<A:T>(c:&S<A>)->u8 {c.0.value()} }
+fn main(){println!("{}",S::<A>::f::<A>(&S(A)));}
+
+ordinary generics original: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(c: &S) -> u8 { c.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+qualified original: source
+extern crate self as This;
+struct S;
+impl ::This::S { fn f<This>(c:&::This::S)->u8 {let _ = c; 7} }
+fn main(){println!("{}",S::f::<()>(&S));}
+
+function pointer original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
+}
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
+
+generic shadow original: rustc exit status: 0
+
+generic shadow original: runtime exit status: 0
+2
+
+qualified original: rustc exit status: 0
+
+generic argument original: rustc exit status: 0
+
+qualified original: runtime exit status: 0
+7
+
+generic argument original: runtime exit status: 0
+2
+
+function pointer original: rustc exit status: 0
+
+ordinary generics original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+function pointer original: runtime exit status: 0
+3
+
+generic shadow apply=false force=false: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+
+thread 'declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing' (3249833) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:27:71:
+Tax
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'declaration_identity::generic_argument_shadowing_refuses_before_any_edits' (3249834) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:27:71:
+Tax
+test declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing ... FAILED
+test declaration_identity::generic_argument_shadowing_refuses_before_any_edits ... FAILED
+generic shadow apply=false force=true: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+generic shadow apply=true force=false: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+generic shadow apply=true force=true: Err(method type parameter `S` shadows the impl self type; it cannot become `self`)
+test declaration_identity::method_generic_owner_shadowing_refuses_before_any_edits ... ok
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+function pointer apply=false force=false: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+nothing was written; pass `apply: true` to make these edits
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+function pointer returned: rustc exit status: 0
+
+function pointer returned: runtime exit status: 0
+3
+
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+function pointer apply=false force=true: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+nothing was written; pass `apply: true` to make these edits
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+function pointer returned: rustc exit status: 0
+
+function pointer returned: runtime exit status: 0
+3
+
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+function pointer apply=true force=false: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+[applied]
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+function pointer returned: rustc exit status: 0
+
+function pointer returned: runtime exit status: 0
+3
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+definition cursor (4, 46), wrong=(4, 34), selected=(4, 46)
+references cursor (4, 40), wrong=(4, 28), selected=(4, 40)
+references cursor (4, 8), wrong=(4, 28), selected=(4, 40)
+function pointer apply=true force=true: `Order::f` is now `Tax::f`: `fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32`; 1 call(s) rewritten
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,8 @@
+ struct Tax(u32);
+-struct Order(u32);
+-impl Order {
+-    fn f(&self, helper: fn(tax: &Tax), tax: &Tax) -> u32 { helper(tax); self.0 + tax.0 }
++
++impl Tax {
++    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+ }
++struct Order(u32);
+ fn helper(_: &Tax) {}
+-fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(helper, &t)); }
++fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+the analyzer accepts the result: 0 errors
+
+[applied]
+
+function pointer returned: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: fn(tax: &Tax), order: &Order) -> u32 { helper(self); order.0 + self.0 }
+}
+struct Order(u32);
+fn helper(_: &Tax) {}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(helper, &o)); }
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<U>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+function pointer returned: rustc exit status: 0
+
+function pointer returned: runtime exit status: 0
+3
+
+ordinary generics original: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(c: &S<T>) -> T { c.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+test declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter ... ok
+ordinary generics original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S<T>(T);
+impl<T: Copy> S<T> {
+    fn f<U>(&self) -> T { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics original: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(c: &Self) -> u8 { c.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<S>(&self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<()>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics original: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(c: &'a S) -> u8 { c.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+ordinary generics original: rustc exit status: 0
+
+ordinary generics original: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+ordinary generics returned: source
+struct Tax;
+struct S(u8);
+impl S {
+    fn f<'a, U, const N: usize>(&'a self) -> u8 { self.0 }
+}
+fn main() { println!("{}", S::f::<(), 1>(&S(7))); }
+
+ordinary generics returned: rustc exit status: 0
+
+ordinary generics returned: runtime exit status: 0
+7
+
+test declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity ... ok
+
+failures:
+
+failures:
+    declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing
+    declaration_identity::generic_argument_shadowing_refuses_before_any_edits
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 44 filtered out; finished in 2.19s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 28.2s (server 27.1s, cpu 35.0s user 8.8s sys, peak 1900 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)

@@ -1,0 +1,311 @@
+[
+  {
+    "label": "nominal",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/original.rs",
+        "source_sha256": "23231742cb9bf85a44b8779f0a88eb487cb7e5dbf5b6d2dce53c7e9e9e42ad76",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 41\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/original-runtime.txt"
+      },
+      {
+        "phase": "returned-false",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/returned-false.rs",
+        "source_sha256": "9accdd0423d951b6de615cf2adbd3691724e0ceda50eb5223985d8dec2cf3557",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 41\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/returned-false-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/returned-false-runtime.txt"
+      },
+      {
+        "phase": "returned-true",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/returned-true.rs",
+        "source_sha256": "9accdd0423d951b6de615cf2adbd3691724e0ceda50eb5223985d8dec2cf3557",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 41\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/returned-true-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/returned-true-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/nominal/semantic-replies.json"
+  },
+  {
+    "label": "holder-config",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/original.rs",
+        "source_sha256": "092dfca2f612201fd27f43b550f24546747bc54f499b5cc91c7679a13e9d312e",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 41\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/original-runtime.txt"
+      },
+      {
+        "phase": "returned-false",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/returned-false.rs",
+        "source_sha256": "90ead43faf4ff8d12f0c14ba31368f5e43f8e4c15cca2c22e1466040c07edc9f",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 41\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/returned-false-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/returned-false-runtime.txt"
+      },
+      {
+        "phase": "returned-true",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/returned-true.rs",
+        "source_sha256": "90ead43faf4ff8d12f0c14ba31368f5e43f8e4c15cca2c22e1466040c07edc9f",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 41\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/returned-true-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/returned-true-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-config/semantic-replies.json"
+  },
+  {
+    "label": "holder-fallbacks",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/original.rs",
+        "source_sha256": "48f5dc1c1f337840ff7af3cba5ae8a5691175b834bcf8451a0c8d4774551d6ec",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 11 21\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/original-runtime.txt"
+      },
+      {
+        "phase": "returned-false",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/returned-false.rs",
+        "source_sha256": "1a19ed852ca7db15e01e82259c394facbd3b96246eee797f977fd5b9b676379c",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 11 21\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/returned-false-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/returned-false-runtime.txt"
+      },
+      {
+        "phase": "returned-true",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/returned-true.rs",
+        "source_sha256": "1a19ed852ca7db15e01e82259c394facbd3b96246eee797f977fd5b9b676379c",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7 11 21\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/returned-true-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/returned-true-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/holder-fallbacks/semantic-replies.json"
+  },
+  {
+    "label": "local-value",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/original.rs",
+        "source_sha256": "ca509b304dfe17c7b6c2aefe5eb25ddcc608824f7015be44c4eae661f796de95",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/original-runtime.txt"
+      },
+      {
+        "phase": "returned-false",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/returned-false.rs",
+        "source_sha256": "2169d8a7a005aafa11c11ae16f0381d160d9937ce7aa1760872d8dacd7309eb2",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/returned-false-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/returned-false-runtime.txt"
+      },
+      {
+        "phase": "returned-true",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/returned-true.rs",
+        "source_sha256": "2169d8a7a005aafa11c11ae16f0381d160d9937ce7aa1760872d8dacd7309eb2",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/returned-true-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/returned-true-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/local-value/semantic-replies.json"
+  },
+  {
+    "label": "const-positive",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/original.rs",
+        "source_sha256": "d79d4e00142b8500f02f85da1857ac31fa3807eacbfe3cae0c144db018630ca6",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "9\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/original-runtime.txt"
+      },
+      {
+        "phase": "returned-false",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/returned-false.rs",
+        "source_sha256": "677da159632d5e1aa61bed40925f209c0916c78e79ad37e0d43867cc81eb4ec1",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "9\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/returned-false-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/returned-false-runtime.txt"
+      },
+      {
+        "phase": "returned-true",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/returned-true.rs",
+        "source_sha256": "677da159632d5e1aa61bed40925f209c0916c78e79ad37e0d43867cc81eb4ec1",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "9\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/returned-true-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/returned-true-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-positive/semantic-replies.json"
+  },
+  {
+    "label": "const-shadow",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/original.rs",
+        "source_sha256": "bd389ef73f8d333f6b9ac385c3e3a536552394ecd01b947f97ae5c5639e15b1c",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/original-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/semantic-replies.json",
+    "refusals": [
+      {
+        "apply": false,
+        "force": false,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/public-false-false.txt"
+      },
+      {
+        "apply": false,
+        "force": true,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/public-false-true.txt"
+      },
+      {
+        "apply": true,
+        "force": false,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/public-true-false.txt"
+      },
+      {
+        "apply": true,
+        "force": true,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-shadow/public-true-true.txt"
+      }
+    ],
+    "unchanged_disk_assertions": "Observed native target exit 0; assertion checks source bytes after each preview/apply/force combination."
+  },
+  {
+    "label": "const-macro-shadow",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/original.rs",
+        "source_sha256": "a52ae092d14822630b5a1d30c9980418d88fe0b02d6b73659c0db9a9919d7e64",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "7\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/original-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/semantic-replies.json",
+    "refusals": [
+      {
+        "apply": false,
+        "force": false,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/public-false-false.txt"
+      },
+      {
+        "apply": false,
+        "force": true,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/public-false-true.txt"
+      },
+      {
+        "apply": true,
+        "force": false,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/public-true-false.txt"
+      },
+      {
+        "apply": true,
+        "force": true,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/const-macro-shadow/public-true-true.txt"
+      }
+    ],
+    "unchanged_disk_assertions": "Observed native target exit 0; assertion checks source bytes after each preview/apply/force combination."
+  },
+  {
+    "label": "type-capture",
+    "outcomes": [
+      {
+        "phase": "original",
+        "source": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/original.rs",
+        "source_sha256": "b889eac3b49a96a39d21c14d29ccc7d87eca24ac1b30e6fb4f388f9ce297e24a",
+        "compiler_exit": 0,
+        "runtime_exit": 0,
+        "stdout": "2\n",
+        "compiler_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/original-compiler.txt",
+        "runtime_log": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/original-runtime.txt"
+      }
+    ],
+    "semantic_replies": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/semantic-replies.json",
+    "refusals": [
+      {
+        "apply": false,
+        "force": false,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/public-false-false.txt"
+      },
+      {
+        "apply": false,
+        "force": true,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/public-false-true.txt"
+      },
+      {
+        "apply": true,
+        "force": false,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/public-true-false.txt"
+      },
+      {
+        "apply": true,
+        "force": true,
+        "result": "refused",
+        "evidence": "evidence/issue-1357/review-repair/verification-native/native-consumer/type-capture/public-true-true.txt"
+      }
+    ],
+    "unchanged_disk_assertions": "Observed native target exit 0; assertion checks source bytes after each preview/apply/force combination."
+  }
+]

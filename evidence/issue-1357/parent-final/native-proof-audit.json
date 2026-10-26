@@ -1,0 +1,166 @@
+{
+  "read_only_verification": true,
+  "dispatch_identities": [
+    {
+      "case": "nominal",
+      "proofs": [
+        {
+          "session": 101,
+          "request_id": 2,
+          "call_position": [
+            2,
+            61
+          ],
+          "declaration_position": [
+            1,
+            12
+          ],
+          "declaration_uri": "file:///tmp/.tmp4X8EMc/fixture/src/lib.rs"
+        },
+        {
+          "session": 102,
+          "request_id": 2,
+          "call_position": [
+            2,
+            68
+          ],
+          "declaration_position": [
+            1,
+            12
+          ],
+          "declaration_uri": "file:///tmp/.tmp4X8EMc/fixture/src/lib.rs"
+        },
+        {
+          "session": 105,
+          "request_id": 2,
+          "call_position": [
+            2,
+            61
+          ],
+          "declaration_position": [
+            1,
+            12
+          ],
+          "declaration_uri": "file:///tmp/.tmp4X8EMc/fixture/src/lib.rs"
+        },
+        {
+          "session": 106,
+          "request_id": 2,
+          "call_position": [
+            2,
+            68
+          ],
+          "declaration_position": [
+            1,
+            12
+          ],
+          "declaration_uri": "file:///tmp/.tmp4X8EMc/fixture/src/lib.rs"
+        }
+      ]
+    },
+    {
+      "case": "holder-config",
+      "proofs": [
+        {
+          "session": 101,
+          "request_id": 2,
+          "call_position": [
+            3,
+            103
+          ],
+          "declaration_position": [
+            2,
+            25
+          ],
+          "declaration_uri": "file:///tmp/.tmpwRwbzQ/fixture/src/lib.rs"
+        },
+        {
+          "session": 102,
+          "request_id": 2,
+          "call_position": [
+            3,
+            110
+          ],
+          "declaration_position": [
+            2,
+            25
+          ],
+          "declaration_uri": "file:///tmp/.tmpwRwbzQ/fixture/src/lib.rs"
+        },
+        {
+          "session": 105,
+          "request_id": 2,
+          "call_position": [
+            3,
+            103
+          ],
+          "declaration_position": [
+            2,
+            25
+          ],
+          "declaration_uri": "file:///tmp/.tmpwRwbzQ/fixture/src/lib.rs"
+        },
+        {
+          "session": 106,
+          "request_id": 2,
+          "call_position": [
+            3,
+            110
+          ],
+          "declaration_position": [
+            2,
+            25
+          ],
+          "declaration_uri": "file:///tmp/.tmpwRwbzQ/fixture/src/lib.rs"
+        }
+      ]
+    },
+    {
+      "case": "holder-fallbacks",
+      "proofs": [
+        {
+          "session": 101,
+          "request_id": 2,
+          "call_position": [
+            32,
+            31
+          ],
+          "declaration_position": [
+            2,
+            29
+          ],
+          "declaration_uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        },
+        {
+          "session": 104,
+          "request_id": 2,
+          "call_position": [
+            32,
+            31
+          ],
+          "declaration_position": [
+            2,
+            29
+          ],
+          "declaration_uri": "file:///tmp/.tmpUK5IlR/fixture/src/lib.rs"
+        }
+      ]
+    }
+  ],
+  "compiler_records": 18,
+  "runtime_records": 18,
+  "all_exit_zero": true,
+  "equal_runtime_pairs": [
+    "holder-config/returned-false-runtime.txt",
+    "holder-config/returned-true-runtime.txt",
+    "nominal/returned-false-runtime.txt",
+    "nominal/returned-true-runtime.txt",
+    "const-positive/returned-false-runtime.txt",
+    "const-positive/returned-true-runtime.txt",
+    "holder-fallbacks/returned-false-runtime.txt",
+    "holder-fallbacks/returned-true-runtime.txt",
+    "local-value/returned-false-runtime.txt",
+    "local-value/returned-true-runtime.txt"
+  ],
+  "method": "Actual final saved request/response identities and raw compiler/runtime records inspected. No test rerun."
+}

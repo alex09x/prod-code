@@ -1,0 +1,4 @@
+Prior displayed diagnostic bodies: 175
+Current displayed diagnostic bodies: 175
+Equal after normalizing source coordinates: True
+CLI omits 35 diagnostic bodies; those were not compared. Lint remains failed.

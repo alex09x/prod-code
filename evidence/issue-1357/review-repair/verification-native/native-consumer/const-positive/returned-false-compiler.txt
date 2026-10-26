@@ -1,0 +1,5 @@
+exit=0
+stdout=
+stderr=/tmp/.tmpyq5OtG/main.rs:1:58: warning: variable `K` should have a snake case name: help: convert the identifier to snake case (notice the capitalization): `k`
+warning: 1 warning emitted
+

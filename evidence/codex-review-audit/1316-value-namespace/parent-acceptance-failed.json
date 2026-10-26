@@ -1,0 +1,17 @@
+{
+  "candidate": "3690e4f895194e9e901e280e1ca507edab481f41",
+  "command": "prod-code exec --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation",
+  "exit": 101,
+  "passed": 54,
+  "failed": 1,
+  "failed_test": "declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity",
+  "observed_error": "pre-flight workspace sync failed: Too many open files (os error 24)",
+  "separate_exec_child_rlimit_nofile": [
+    1024,
+    1000000
+  ],
+  "causality": "not established; limit is not descriptor count at failure",
+  "issue": 1348,
+  "private_ref": "inc-2026-10-25-prodcode-test-emfile",
+  "log_sha256": "80edbaedb0ee48e085484345161bc85bf570e9a2c245c5edd159be224e29d94c"
+}

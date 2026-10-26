@@ -18,6 +18,7 @@ mod extensions;
 pub mod format;
 pub mod lines;
 pub mod mapping;
+mod navigation;
 pub mod snapshot;
 
 #[cfg(test)]

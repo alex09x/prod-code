@@ -1,0 +1,56 @@
+All project commands ran in the assigned worktree without changing cwd.
+Remote commands ran in the foreground and were observed to terminal completion.
+Private addresses and environment paths are sanitized. <linux-build-node> is
+the assigned remote, not an additional node or an invented location.
+
+Issue read (exit 0):
+gh issue view 1316 --json title,body,labels
+
+Common remote prefix:
+prod-code exec --remote <linux-build-node> --timeout-secs 900 --
+
+Focused public reproductions, before production edits:
+cargo test -p prod-code-mcp --test rust_method_preservation remaining_regressions -- --nocapture
+  -> terminal 101 -> before-initial.txt (three failed)
+Same command after correcting the binding fixture, still before production edits:
+  -> terminal 101 -> before-confirmed.txt (three failed)
+Same command after coherent production repairs:
+  -> terminal 0 -> after-focused.txt (three passed, 21 filtered out)
+Later additions to the owner matrix ran in the final gate below.
+
+Final changed-file format, terminal 0 (format.txt):
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/move_method/context.rs crates/prod-code-mcp/src/move_method/syntax.rs crates/prod-code-mcp/src/move_method/method.rs crates/prod-code-mcp/src/move_method/mod.rs crates/prod-code-mcp/src/move_method/captures.rs crates/prod-code-mcp/tests/rust_method_preservation.rs crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs
+
+Final workspace format check, terminal 1 (format-check.txt):
+prod-code exec --remote <linux-build-node> --timeout-secs 900 -- cargo fmt --all -- --check
+
+Final crate lint, CLI terminal 1, clippy 101 (lint.txt):
+prod-code lint --remote <linux-build-node> --path crates/prod-code-mcp --timeout-secs 900
+
+One final full requested target gate, terminal 0 (acceptance.txt):
+prod-code exec --remote <linux-build-node> --timeout-secs 900 --env RUST_TEST_NOCAPTURE=1 -- cargo test -p prod-code-mcp --test rust_method_preservation
+24 passed, 0 failed, 0 filtered out. The environment option retains successful
+test source/rustc/runtime output; it changes neither the Cargo command nor scope.
+
+Read-only discovery failure, blocked before execution:
+prod-code outline crates/prod-code-mcp/src/to_method; prod-code outline crates/prod-code-mcp/src/move_method; prod-code outline crates/prod-code-mcp/tests/rust_method_preservation.rs; find evidence/codex-review-audit/1316-owner-capture-repair -maxdepth 2 -type f
+Exact error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked.
+Bounded fallback: the same three outlines, followed by
+ls -R evidence/codex-review-audit/1316-owner-capture-repair
+The fallback exited 0; no source changed.
+
+Empty navigation output (no reported error):
+prod-code def --symbol return_position
+prod-code def --symbol ensure_owner_context
+prod-code def --symbol nested_owner_end
+prod-code def --symbol ensure_capture_identity
+prod-code def --symbol move_method --path crates/prod-code-mcp/src/move_method/method.rs
+The combined invocation returned no stdout. Bounded fallback used the documented
+positional file argument, for example:
+prod-code def crates/prod-code-mcp/src/move_method/syntax.rs --symbol nested_owner_end
+This exited 0 and returned the definition. No issue was published, as publication
+is excluded by this task. The invalid --path spelling above was not reused.
+
+Inherited failed commands and reviewer probes remain unchanged in the sibling
+audit directories. They were not relabeled as fresh executions or as passes.

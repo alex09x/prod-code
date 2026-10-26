@@ -1,0 +1,17 @@
+$ cargo test -p prod-code-gateway --test rust_method_native
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running tests/rust_method_native.rs (target/debug/deps/rust_method_native-048929475172f020)
+
+running 4 tests
+test navigation::native_type_navigation_has_strict_positions_and_session_identity ... ok
+test exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity has been running for over 60 seconds
+test expanded_method_type_capture_refuses_before_writes_including_force has been running for over 60 seconds
+test macro_local_value_keeps_unrelated_method_type_parameter_and_output has been running for over 60 seconds
+test expanded_method_type_capture_refuses_before_writes_including_force ... ok
+test exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity ... ok
+test macro_local_value_keeps_unrelated_method_type_parameter_and_output ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 216.03s
+
+
+exit=0

@@ -1,0 +1,93 @@
+Issue #1316. Effective base 86b8f87e6c48e37871046196f6c0880a961abc41.
+Inherited candidate 0b5019ebb0d5b5c4404f207d6f143fd2c4bb8153.
+All commands foreground and terminated. No publication, messages, installs,
+dependencies, delegation, other-worktree edits, commits or infrastructure changes.
+Addresses and machine paths sanitized. Node kind: Linux x86_64 build node.
+
+Before production edits:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation ignored_macro_inputs_preserve_supported_conversion -- --nocapture
+Exit 101, before.txt. Original compiles/runs, exit 0, stdout 7. All four public
+apply/force modes incorrectly refuse fixed!(U); original bytes preserved.
+
+Focused public verification after production repair:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation -- declaration_identity macro_inputs --nocapture
+Exit 0, focused.txt, eight passed. Returned ignored-input programs compile/run,
+exit 0, stdout 7 in all four modes. Preview preserves original source/manifest/
+sentinel bytes; applied source equals returned bytes. Macro expansions to the
+generic refuse, including qualified and empty-input forms. Missing expansion
+also refuses even with force. Existing declaration-identity tests pass.
+Production source unchanged since focused run; final fixture lifetimes differ.
+
+Scoped formatting:
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/to_method/declaration.rs crates/prod-code-mcp/src/to_method/rust.rs crates/prod-code-mcp/tests/rust_method_preservation.rs crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs crates/prod-code-mcp/tests/rust_method_preservation/macro_inputs.rs
+Exit 0, format.txt. Three files formatted and returned to this worktree.
+
+Scoped lint:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --test rust_method_preservation -- -D warnings
+Exit 101, lint.txt. 103 library errors; 107 primary/secondary locations, none in
+this attempt's edited files. Diagnostic bodies match inherited macro-namespace
+lint exactly after coordinate normalization. Test-target lint did not complete.
+No unrelated lint repairs or reruns. Later fixture changes cannot clear these
+blocking library diagnostics.
+
+Initial required gate:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation
+Exit 101, acceptance-failed-sync.txt: 51 passed, one failed at pre-flight workspace
+sync in equivalent_ordinary_type_punctuation_trivia_still_convert. Read connection
+and validation boundary source. Reported error drops the underlying cause chain;
+cause unproven.
+
+Isolated controlled observation (remove parallel test pressure):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert
+Exit 0, isolated-sync-failure.txt: one passed with unchanged source.
+
+Required gate retry, same exact command:
+Exit 101, acceptance-failed-descriptors.txt: 50 passed, two failed with OS error 24,
+Too many open files, while writing/spawning fixture compilation. Measured resource
+exhaustion is not proof that the earlier sync failure shared its cause.
+Bounded fixture repair: reuse workspace and ScriptedGateway across mode variants
+in affected macro fixtures. All inputs and assertions retained. No shared testkit,
+production, resource-limit or infrastructure edits.
+
+Formatting only the fixture resource repair:
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs crates/prod-code-mcp/tests/rust_method_preservation/macro_inputs.rs
+Exit 0, format-fixture-resource-repair.txt, no formatting changes.
+
+Final required gate after fixture repair:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation
+Exit 0, acceptance.txt: 52 passed, zero failed/ignored. No source edits after gate.
+git diff --check: exit 0.
+
+Preservation: all 183 inherited evidence files compared byte-for-byte with HEAD
+and hashed in preserved-evidence.sha256, including full aggregate review, actual
+owner-shadow 2-to-1 and nested-label E0425 public transformations, actual dyn
+Trait/dynTrait 1-to-2 failure and ordinary dot-call positive execution.
+Final source hashes: source-hashes.sha256. Artifact hashes: artifact-hashes.sha256.
+
+Navigation failures and bounded fallback:
+1. Command blocked before execution:
+git log -3 --oneline && wc -l evidence/codex-review-audit/review-aggregate-4052.json crates/prod-code-mcp/src/to_method/declaration.rs crates/prod-code-mcp/src/to_method/rust.rs && cat evidence/codex-review-audit/review-aggregate-4052.json && sed -n '1,180p' crates/prod-code-mcp/src/to_method/declaration.rs && rg --files crates/prod-code-mcp/tests | rg 'rust_method|method_preservation'
+Error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+Fallback: named file reads and git ls-files, terminal exit 0.
+2. code_outline({path: "crates/prod-code-mcp/src/move_method"}) returned:
+MCP tool call requires approval, but approval policy is never
+Fallback: foreground CLI navigation with assigned remote; no approval requested.
+No issue published because task explicitly prohibits publication.
+3. Combined command:
+git diff --stat 86b8f87e6c48e37871046196f6c0880a961abc41 HEAD && git ls-files 'crates/prod-code-mcp/tests/rust_method_preservation*' 'evidence/codex-review-audit/*4098*' && prod-code outline crates/prod-code-mcp/src/to_method && prod-code outline crates/prod-code-mcp/src/move_method
+Git commands completed; default-remote outline remained running without output.
+Sent Ctrl-C to exact session; terminal exit 130. No concurrent queries.
+Fallback: prod-code outline --remote <build-node> crates/prod-code-mcp/src/to_method/declaration.rs
+Exit 0. Subsequent navigation used the explicit remote.
+4. Command:
+prod-code def --remote <build-node> --symbol references crates/prod-code-mcp/src/signature/lsp.rs && prod-code grep --remote <build-node> 'pub.*definition|fn definitions|execute_lsp_query' crates/prod-code-mcp/src/signature
+Exit 1: Error: failed to read <checkout>/crates/prod-code-mcp/src/signature/lsp.rs (did you mean `crates/prod-code-mcp/src/signature/plan.rs`?): No such file or directory (os error 2)
+Fallback: prod-code outline --remote <build-node> crates/prod-code-mcp/src/signature
+Exit 0 located references.rs, then bounded named-file reads completed.
+5. Final artifact-writing shell call (Python heredoc containing these historical
+commands, then numbered focused.txt read and git diff --check) was blocked before
+execution with the same source-discovery hook error in item 1. The hook treated
+the quoted historical rg command as a fresh discovery command. No write occurred.
+Bounded fallback: apply_patch writes this evidence text, then a separate Python
+heredoc writes structured results without embedding historical shell commands.
+The exact rejected multiline tool input is retained in the provider transcript.

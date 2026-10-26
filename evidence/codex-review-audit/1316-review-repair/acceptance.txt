@@ -1,0 +1,27 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.74s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 18 tests
+test conversion::full_owner_paths_and_generic_arguments_are_required ... ok
+test receiver::module_word_before_plain_destination_binding_does_not_steal_cursor ... ok
+test review_regressions::ambiguous_macro_owner_declarations_refuse_without_writing_even_with_force ... ok
+test associated::associated_recursion_and_function_values_follow_the_destination ... ok
+test receiver::selected_binding_cursor_and_explicit_reference_lifetime_work ... ok
+test associated::cross_module_recursion_uses_the_destination_module_perspective ... ok
+test associated::associated_move_preserves_literal_bytes_and_nested_self_owner ... ok
+test conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value ... ok
+test review_regressions::recursive_destination_cannot_be_captured_by_local_imports ... ok
+test guards::effectful_calls_refuse_normally_but_force_constructs_the_rewrite ... ok
+test review_regressions::return_position_impl_trait_does_not_introduce_a_self_owner ... ok
+test review_regressions::macro_owner_tokens_keep_outer_self_in_associated_move ... ok
+test review_regressions::macro_owner_tokens_keep_outer_receiver_and_self_type ... ok
+test guards::failed_reference_queries_refuse_even_force_and_preserve_all_bytes ... ok
+test receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings ... ok
+test guards::unsupported_references_remain_accounted_and_block_forced_writes ... ok
+test review_regressions::keyword_macro_arguments_respect_each_token_tree_delimiter ... ok
+test conversion::exact_generic_and_path_owners_still_convert_and_run ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+[prod-code exec] exit 0 in 4.8s (server 4.4s, cpu 5.1s user 5.4s sys, peak 1176 MB) on node <private-address>, copy <remote-workspace> (linux x86_64)

@@ -1,0 +1,46 @@
+All commands ran in the assigned worktree, with remote commands observed to
+terminal completion. Endpoint and filesystem identity are sanitized consistently
+with README.md. No source was changed by a background worker.
+
+Initial harness failure, before.txt, terminal exit 101:
+prod-code exec --remote <build-node> --timeout-secs 900 -- env RUST_TEST_NOCAPTURE=1 cargo test -p prod-code-mcp --test rust_method_preservation type_identity::equivalent_slice_and_array_element_type_trivia_still_convert
+Exact error: panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:27:71: c.value
+The new tuple-struct fixture used c.0; the existing harness expected c.value.
+The bounded fallback selected the actual fixture's binding use site.
+
+Public reproduction, before-repaired.txt, terminal exit 101:
+prod-code exec --remote <build-node> --timeout-secs 900 -- env RUST_TEST_NOCAPTURE=1 cargo test -p prod-code-mcp --test rust_method_preservation type_identity
+3 passed, 1 failed. Exact error:
+called `Result::unwrap()` on an `Err` value: the first parameter of `f`, `c:&S<[Option<Option<u8> /* closer */ >]>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver
+The production repair distinguishes type elements from expressions in brackets.
+
+Intermediate targeted run, targeted.txt, terminal exit 101:
+prod-code exec --remote <build-node> --timeout-secs 900 -- env RUST_TEST_NOCAPTURE=1 cargo test -p prod-code-mcp --test rust_method_preservation type_identity
+3 passed, 2 failed. Both full-conversion array cases hit:
+`f` is not inside an `impl` block; a free function has to be moved into one before it can become a method
+The refusal harness additionally failed its assertion:
+assertion failed: error.to_string().contains("cannot become the receiver")
+Both fixtures had compiled and executed. Their impl headers contain semicolons;
+array normalization assertions were moved to the public receiver matcher to
+avoid changing that unrelated pre-existing lookup limitation.
+
+Repaired focused run, targeted-repaired.txt, terminal exit 0:
+prod-code exec --remote <build-node> --timeout-secs 900 -- env RUST_TEST_NOCAPTURE=1 cargo test -p prod-code-mcp --test rust_method_preservation type_identity
+5 passed, 0 failed, 38 filtered out. This command redundantly included three
+unchanged passing identity tests; no broader suite was selected.
+
+Scoped formatting, format.txt, terminal exit 0:
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/to_method/helpers.rs crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs
+
+Scoped lint, lint.txt, terminal exit 1 (underlying cargo exit 101):
+prod-code lint --remote <build-node> --path crates/prod-code-mcp --timeout-secs 900
+rust lint: FAILED (exit 101); 210 error(s), 0 warning(s)
+All 175 displayed bodies match the preceding retained lint evidence after
+source-coordinate normalization. The CLI omits 35 bodies.
+
+Final required acceptance gate, acceptance.txt, terminal exit 0:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation
+43 passed, 0 failed, 0 filtered out; Linux x86_64 build node.
+
+Final read-only whitespace inspection, terminal exit 0:
+git diff --check

@@ -1,0 +1,5 @@
+$ prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-engine-rust/src/editor/mod.rs crates/prod-code-engine-rust/src/editor/navigation.rs crates/prod-code-engine-rust/src/editor/snapshot.rs crates/prod-code-gateway/src/lsp_handlers/editor.rs crates/prod-code-gateway/src/session/lsp_intercept.rs crates/prod-code-gateway/src/session/position.rs crates/prod-code-gateway/tests/rust_method_native.rs crates/prod-code-gateway/tests/rust_method_native/navigation.rs crates/prod-code-gateway/tests/rust_method_native/support.rs
+[prod-code exec] 4 file(s) changed by the command written back: crates/prod-code-engine-rust/src/editor/navigation.rs, crates/prod-code-gateway/src/lsp_handlers/editor.rs, crates/prod-code-gateway/tests/rust_method_native.rs, crates/prod-code-gateway/tests/rust_method_native/navigation.rs
+[prod-code exec] exit 0 in 0.6s (server 0.1s, cpu 0.0s user 0.0s sys, peak 41 MB) on node <build-node>, copy <remote-checkout> (linux x86_64)
+
+client_exit=0

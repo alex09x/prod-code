@@ -1,0 +1,53 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1316",
+  "base_sha": "7a657415becbc6d8156335aefe45ca9223e7a3ff",
+  "change": "Use the existing analyzer proposed-text validation session and Rust CST to exempt bare value-expression paths and value-pattern names from expanded receiver type shadow detection. Retain qualified expression paths and all type positions.",
+  "implementation": [
+    "crates/prod-code-mcp/src/to_method/declaration.rs:85",
+    "crates/prod-code-mcp/src/to_method/expansion.rs:33",
+    "crates/prod-code-mcp/src/to_method/expansion.rs:82"
+  ],
+  "regressions": [
+    "crates/prod-code-mcp/tests/rust_method_preservation/namespace_values.rs:28",
+    "crates/prod-code-mcp/tests/rust_method_preservation/namespace_values.rs:80",
+    "crates/prod-code-mcp/tests/rust_method_preservation/namespace_values.rs:116"
+  ],
+  "actual_before": {
+    "artifact": "before.txt",
+    "exit": 101,
+    "original_rustc_exit": 0,
+    "runtime_exit": 0,
+    "stdout": "7\n",
+    "conversion": "All four apply/force modes refused the value U as a method type capture before editing."
+  },
+  "actual_after": {
+    "artifacts": [
+      "focused-attempt.txt",
+      "capture.txt",
+      "acceptance.txt"
+    ],
+    "value_conversion": "All four modes succeed; each actual returned source compiles and prints 7. Preview keeps original bytes; apply matches returned bytes.",
+    "captured_type": "A is used both as a captured type and a local value. Original compiles and prints 2. All four modes refuse without byte changes.",
+    "uncertainty": "Null, malformed and non-covering syntax answers refuse in every mode without byte changes."
+  },
+  "checks": {
+    "initial_focused_exit": 101,
+    "initial_focused_passed": 2,
+    "initial_focused_failure": "New refusal fixture used a unit struct A, preventing a local value binding A; corrected to braced struct A. Full compiler diagnostics retained.",
+    "corrected_failed_scope_exit": 0,
+    "format_exit": 0,
+    "non_deny_clippy_exit": 0,
+    "clippy_warnings": 103,
+    "clippy_locations_in_changed_files": 0,
+    "acceptance_exit": 0,
+    "acceptance_passed": 55,
+    "inherited_evidence_verified": 199,
+    "node_kind": "Linux x86_64 build node"
+  },
+  "limits": [
+    "Macro expansion and semantic reference responses are cursor-specific scripts; the expansion CST is obtained from a real installed rust-analyzer. Actual original/returned programs use the real Rust compiler/runtime. This is not live-analyzer expansion end-to-end evidence.",
+    "Additional CST query occurs only when an expansion has a potentially shadowed name. Unavailable or untrusted syntax refuses before planning edits.",
+    "Clippy was intentionally non-deny and reported 103 pre-existing warnings; no strict-green claim.",
+    "No Cargo changes, new parser linkage, installs, publication, commits or delegation. Parent owns integration."
+  ]
+}

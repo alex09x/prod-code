@@ -1,0 +1,8 @@
+{
+  "baseline": "evidence/codex-review-audit/1316-aggregate-repair/lint-final.txt",
+  "baseline_count": 103,
+  "current_count": 103,
+  "new_primary_diagnostics": [],
+  "removed_primary_diagnostics": [],
+  "comparison": "error message, source path and primary source line; positions may shift"
+}

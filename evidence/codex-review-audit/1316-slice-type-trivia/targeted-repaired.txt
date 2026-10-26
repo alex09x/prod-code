@@ -1,0 +1,607 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-workspace>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.63s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 5 tests
+type boundary original: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(c:&S<dynTrait>)->u8{c.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+type boundary original: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b "x")> { fn f(c:&S<n!(b"x")>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b "x")>::f(&x));}
+equivalent type original: source
+struct S<T: ?Sized>(T);
+impl S<[Option<Option<u8>>]> { fn f(c:&S<[Option<Option<u8> /* closer */ >]>)->usize {c.0.len()} } fn main(){let x=S([Some(Some(7))]);println!("{}",S::<[Option<Option<u8>>]>::f(&x));}
+equivalent type original: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(c:& S < dyn /* outer /* nested */ comment */ Trait >)->u8{c.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+test type_identity::array_element_trivia_preserves_length_expression_token_boundaries ... ok
+type boundary original: rustc exit status: 0
+
+equivalent type original: rustc exit status: 0
+
+type boundary original: runtime exit status: 0
+2
+
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+1
+
+equivalent type original: runtime exit status: 0
+2
+
+type boundary original: rustc exit status: 0
+
+type boundary original: runtime exit status: 0
+1
+
+type boundary apply=false force=false: Err(the first parameter of `f`, `c:&S<n!(b"x")>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b "x")> { fn f(c:&S<n!(b"x")>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b "x")>::f(&x));}
+type boundary apply=false force=false: Err(the first parameter of `f`, `c:&S<dynTrait>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(c:&S<dynTrait>)->u8{c.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[Option<Option<u8> /* closer */ >]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:176 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!(\"{}\",S::<[Option<Option<u8>>]>::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!("{}",S::<[Option<Option<u8>>]>::f(&x));}
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < dyn /* outer /* nested */ comment */ Trait >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:1:374 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!(\"{}\",S::<dyn Trait>::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+1
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=false: Err(the first parameter of `f`, `c:&S<dynTrait>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(c:&S<dynTrait>)->u8{c.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+type boundary apply=true force=false: Err(the first parameter of `f`, `c:&S<n!(b"x")>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b "x")> { fn f(c:&S<n!(b"x")>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b "x")>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+2
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+1
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=false force=true: Err(the first parameter of `f`, `c:&S<dynTrait>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(c:&S<dynTrait>)->u8{c.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+type boundary apply=false force=true: Err(the first parameter of `f`, `c:&S<n!(b"x")>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b "x")> { fn f(c:&S<n!(b"x")>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b "x")>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+1
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=true: Err(the first parameter of `f`, `c:&S<dynTrait>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(c:&S<dynTrait>)->u8{c.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+type boundary apply=true force=true: Err(the first parameter of `f`, `c:&S<n!(b"x")>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b "x")> { fn f(c:&S<n!(b"x")>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b "x")>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+1
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < dyn /* outer /* nested */ comment */ Trait >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:1:374 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!(\"{}\",S::<dyn Trait>::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+test type_identity::distinct_type_token_boundaries_refuse_before_writes ... ok
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[Option<Option<u8> /* closer */ >]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:176 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!(\"{}\",S::<[Option<Option<u8>>]>::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!("{}",S::<[Option<Option<u8>>]>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary original: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b r#"x"#)> { fn f(c:&S<n!(br#"x"#)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b r#"x"#)>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+equivalent type converted: runtime exit status: 0
+2
+
+type boundary original: rustc exit status: 0
+
+type boundary original: runtime exit status: 0
+2
+
+type boundary apply=false force=false: Err(the first parameter of `f`, `c:&S<n!(br#"x"#)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b r#"x"#)> { fn f(c:&S<n!(br#"x"#)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b r#"x"#)>::f(&x));}
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < dyn /* outer /* nested */ comment */ Trait >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:1:374 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!(\"{}\",S::<dyn Trait>::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[Option<Option<u8> /* closer */ >]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:176 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!(\"{}\",S::<[Option<Option<u8>>]>::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!("{}",S::<[Option<Option<u8>>]>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=false: Err(the first parameter of `f`, `c:&S<n!(br#"x"#)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b r#"x"#)> { fn f(c:&S<n!(br#"x"#)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b r#"x"#)>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+2
+
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=false force=true: Err(the first parameter of `f`, `c:&S<n!(br#"x"#)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b r#"x"#)> { fn f(c:&S<n!(br#"x"#)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b r#"x"#)>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=true: Err(the first parameter of `f`, `c:&S<n!(br#"x"#)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (b $s:literal) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(b r#"x"#)> { fn f(c:&S<n!(br#"x"#)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(b r#"x"#)>::f(&x));}
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < dyn /* outer /* nested */ comment */ Trait >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:1:374 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!(\"{}\",S::<dyn Trait>::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+#![allow(non_camel_case_types)] trait Trait { fn value(&self)->u8; } struct dynTrait; impl dynTrait { fn value(&self)->u8 {1} } impl Trait for dynTrait { fn value(&self)->u8 {2} } struct S<T:?Sized>{value:T} impl S<dyn Trait>{ fn f(&self)->u8{self.value.value()} } fn main(){let x=S{value:dynTrait};println!("{}",S::<dyn Trait>::f(&x));}
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[Option<Option<u8> /* closer */ >]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:176 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!(\"{}\",S::<[Option<Option<u8>>]>::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[Option<Option<u8>>]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([Some(Some(7))]);println!("{}",S::<[Option<Option<u8>>]>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary original: source
+macro_rules! n { ($s:literal suffix) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!("x" suffix)> { fn f(c:&S<n!("x"suffix)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!("x" suffix)>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+2
+
+equivalent type original: source
+struct S<T>(T);
+impl<T: Copy> S<T> { fn f(c:& S /* type */ < T >)->T {c.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+equivalent type original: source
+struct S<T: ?Sized>(T);
+impl S<[&&u8]> { fn f(c:&S<[& /* borrow */ &u8]>)->usize {c.0.len()} } fn main(){let x=S([&&7]);println!("{}",S::<[&&u8]>::f(&x));}
+type boundary original: rustc exit status: 0
+
+type boundary original: runtime exit status: 0
+2
+
+type boundary apply=false force=false: Err(the first parameter of `f`, `c:&S<n!("x"suffix)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ($s:literal suffix) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!("x" suffix)> { fn f(c:&S<n!("x"suffix)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!("x" suffix)>::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+1
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=false: Err(the first parameter of `f`, `c:&S<n!("x"suffix)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ($s:literal suffix) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!("x" suffix)> { fn f(c:&S<n!("x"suffix)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!("x" suffix)>::f(&x));}
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S /* type */ < T >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:134 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!("{}",S::f(&x));}
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[& /* borrow */ &u8]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:124 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!(\"{}\",S::<[&&u8]>::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!("{}",S::<[&&u8]>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+type boundary refused: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+type boundary refused: runtime exit status: 0
+2
+
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+type boundary apply=false force=true: Err(the first parameter of `f`, `c:&S<n!("x"suffix)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ($s:literal suffix) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!("x" suffix)> { fn f(c:&S<n!("x"suffix)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!("x" suffix)>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=true: Err(the first parameter of `f`, `c:&S<n!("x"suffix)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ($s:literal suffix) => {u8}; ($s:literal) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!("x" suffix)> { fn f(c:&S<n!("x"suffix)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!("x" suffix)>::f(&x));}
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S /* type */ < T >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:134 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!("{}",S::f(&x));}
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[& /* borrow */ &u8]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:124 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!(\"{}\",S::<[&&u8]>::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!("{}",S::<[&&u8]>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary original: source
+macro_rules! n { (& &) => {u8}; (&&) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(& &)> { fn f(c:&S<n!(&&)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(& &)>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+type boundary original: rustc exit status: 0
+
+type boundary original: runtime exit status: 0
+2
+
+type boundary apply=false force=false: Err(the first parameter of `f`, `c:&S<n!(&&)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (& &) => {u8}; (&&) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(& &)> { fn f(c:&S<n!(&&)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(& &)>::f(&x));}
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[& /* borrow */ &u8]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:124 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!(\"{}\",S::<[&&u8]>::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!("{}",S::<[&&u8]>::f(&x));}
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S /* type */ < T >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:134 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!("{}",S::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=false: Err(the first parameter of `f`, `c:&S<n!(&&)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (& &) => {u8}; (&&) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(& &)> { fn f(c:&S<n!(&&)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(& &)>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=false force=true: Err(the first parameter of `f`, `c:&S<n!(&&)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (& &) => {u8}; (&&) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(& &)> { fn f(c:&S<n!(&&)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(& &)>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=true: Err(the first parameter of `f`, `c:&S<n!(&&)>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { (& &) => {u8}; (&&) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!(& &)> { fn f(c:&S<n!(&&)>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!(& &)>::f(&x));}
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:&S<[& /* borrow */ &u8]>", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:124 (a call without a path in front)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T: ?Sized>(T);\nimpl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!(\"{}\",S::<[&&u8]>::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T: ?Sized>(T);
+impl S<[&&u8]> { fn f(&self)->usize {self.0.len()} } fn main(){let x=S([&&7]);println!("{}",S::<[&&u8]>::f(&x));}
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S /* type */ < T >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:134 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl<T: Copy> S<T> { fn f(&self)->T {self.value()} fn value(&self)->T {self.0} } fn main(){let x=S(7);println!("{}",S::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary original: source
+macro_rules! n { ([& &]) => {u8}; ([&&]) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!([& &])> { fn f(c:&S<n!([&&])>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!([& &])>::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+1
+
+test type_identity::equivalent_slice_element_type_trivia_still_convert ... ok
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<fn() -> u8> { fn f(c:& S < fn /* gap */ ( ) -> u8 >)->u8 {c.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!("{}",S::f(&x));}
+type boundary original: rustc exit status: 0
+
+type boundary original: runtime exit status: 0
+2
+
+type boundary apply=false force=false: Err(the first parameter of `f`, `c:&S<n!([&&])>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ([& &]) => {u8}; ([&&]) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!([& &])> { fn f(c:&S<n!([&&])>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!([& &])>::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=false: Err(the first parameter of `f`, `c:&S<n!([&&])>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ([& &]) => {u8}; ([&&]) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!([& &])> { fn f(c:&S<n!([&&])>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!([& &])>::f(&x));}
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < fn /* gap */ ( ) -> u8 >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:164 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!("{}",S::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+type boundary apply=false force=true: Err(the first parameter of `f`, `c:&S<n!([&&])>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ([& &]) => {u8}; ([&&]) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!([& &])> { fn f(c:&S<n!([&&])>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!([& &])>::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+type boundary apply=true force=true: Err(the first parameter of `f`, `c:&S<n!([&&])>`, is not `S`, `&S` or `&mut S`, so it cannot become the receiver)
+type boundary refused: source
+macro_rules! n { ([& &]) => {u8}; ([&&]) => {u16}; }
+struct S<T>{value:T}
+impl<T> S<T> { fn value(&self)->u8 {std::mem::size_of_val(&self.value) as u8} }
+impl S<n!([& &])> { fn f(c:&S<n!([&&])>)->u8 {c.value()} }
+fn main() {let x=S{value:0u16};println!("{}",S::<n!([& &])>::f(&x));}
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < fn /* gap */ ( ) -> u8 >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:164 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!("{}",S::f(&x));}
+type boundary refused: rustc exit status: 0
+
+type boundary refused: runtime exit status: 0
+2
+
+test type_identity::macro_type_literal_and_punctuation_boundaries_are_not_trivia ... ok
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < fn /* gap */ ( ) -> u8 >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:164 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < fn /* gap */ ( ) -> u8 >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:164 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<fn() -> u8> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {(self.0)()} } fn main(){let x:S<fn()->u8>=S(||7);println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type original: source
+struct S<T>(T);
+impl S<Option<Option<u8>>> { fn f(c:& S < Option < Option < u8 > /* closer */ > >)->u8 {c.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!("{}",S::f(&x));}
+equivalent type original: rustc exit status: 0
+
+equivalent type original: runtime exit status: 0
+7
+
+equivalent type apply=false force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < Option < Option < u8 > /* closer */ > >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:199 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=false: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < Option < Option < u8 > /* closer */ > >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:199 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=false force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < Option < Option < u8 > /* closer */ > >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:199 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: false }
+equivalent type converted: source
+struct S<T>(T);
+impl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+equivalent type apply=true force=true: MadeMethod { owner: "S", method: "f", root: "<fixture-workspace>", file: "src/main.rs", parameter: "c:& S < Option < Option < u8 > /* closer */ > >", receiver: "&self", renamed_uses: 1, rewritten_calls: 0, unchanged: ["src/main.rs:2:199 (qualified call retained to preserve receiver coercion and dispatch)"], unmatched: [], rewritten: [("<fixture-workspace>/src/main.rs", "struct S<T>(T);\nimpl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!(\"{}\",S::f(&x));}")], diagnostics: [], applied: true }
+equivalent type converted: source
+struct S<T>(T);
+impl S<Option<Option<u8>>> { fn f(&self)->u8 {self.value()} fn value(&self)->u8 {self.0.unwrap().unwrap()} } fn main(){let x=S(Some(Some(7)));println!("{}",S::f(&x));}
+equivalent type converted: rustc exit status: 0
+
+equivalent type converted: runtime exit status: 0
+7
+
+test type_identity::equivalent_trait_objects_and_generic_type_trivia_still_convert ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; finished in 2.14s
+
+[prod-code exec] exit 0 in 3.2s (server 2.8s, cpu 2.5s user 4.3s sys, peak 508 MB) on node <build-node>, copy <remote-workspace> (linux x86_64)

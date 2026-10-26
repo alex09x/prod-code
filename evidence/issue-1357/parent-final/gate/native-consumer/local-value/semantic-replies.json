@@ -1,0 +1,1496 @@
+[
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp7QnfkK/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp7QnfkK/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 101,
+    "validation": true
+  },
+  {
+    "method": "rust-analyzer/viewSyntaxTree",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/viewSyntaxTree",
+      "params": {
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": "{\"type\":\"Node\",\"kind\":\"SOURCE_FILE\",\"start\":[0,0,0],\"end\":[54,3,3],\"children\":[{\"type\":\"Node\",\"kind\":\"TYPE_ALIAS\",\"start\":[0,0,0],\"end\":[54,3,3],\"children\":[{\"type\":\"Token\",\"kind\":\"TYPE_KW\",\"start\":[0,0,0],\"end\":[4,0,4]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[4,0,4],\"end\":[5,0,5]},{\"type\":\"Node\",\"kind\":\"NAME\",\"start\":[5,0,5],\"end\":[19,0,19],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[5,0,5],\"end\":[19,0,19]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[19,0,19],\"end\":[20,0,20]},{\"type\":\"Token\",\"kind\":\"EQ\",\"start\":[20,0,20],\"end\":[21,0,21]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[21,0,21],\"end\":[23,0,23]},{\"type\":\"Node\",\"kind\":\"ARRAY_TYPE\",\"start\":[23,0,23],\"end\":[53,3,2],\"children\":[{\"type\":\"Token\",\"kind\":\"L_BRACK\",\"start\":[23,0,23],\"end\":[24,0,24]},{\"type\":\"Node\",\"kind\":\"PATH_TYPE\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH_SEGMENT\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Node\",\"kind\":\"NAME_REF\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[24,0,24],\"end\":[26,0,26]}]}]}]}]},{\"type\":\"Token\",\"kind\":\"SEMICOLON\",\"start\":[26,0,26],\"end\":[27,0,27]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[27,0,27],\"end\":[28,0,28]},{\"type\":\"Node\",\"kind\":\"CONST_ARG\",\"start\":[28,0,28],\"end\":[52,3,1],\"children\":[{\"type\":\"Node\",\"kind\":\"BLOCK_EXPR\",\"start\":[28,0,28],\"end\":[52,3,1],\"children\":[{\"type\":\"Node\",\"kind\":\"STMT_LIST\",\"start\":[28,0,28],\"end\":[52,3,1],\"children\":[{\"type\":\"Token\",\"kind\":\"L_CURLY\",\"start\":[28,0,28],\"end\":[29,0,29]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[29,0,29],\"end\":[34,1,4]},{\"type\":\"Node\",\"kind\":\"LET_STMT\",\"start\":[34,1,4],\"end\":[44,1,14],\"children\":[{\"type\":\"Token\",\"kind\":\"LET_KW\",\"start\":[34,1,4],\"end\":[37,1,7]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[37,1,7],\"end\":[38,1,8]},{\"type\":\"Node\",\"kind\":\"IDENT_PAT\",\"start\":[38,1,8],\"end\":[39,1,9],\"children\":[{\"type\":\"Node\",\"kind\":\"NAME\",\"start\":[38,1,8],\"end\":[39,1,9],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[38,1,8],\"end\":[39,1,9]}]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[39,1,9],\"end\":[40,1,10]},{\"type\":\"Token\",\"kind\":\"EQ\",\"start\":[40,1,10],\"end\":[41,1,11]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[41,1,11],\"end\":[42,1,12]},{\"type\":\"Node\",\"kind\":\"LITERAL\",\"start\":[42,1,12],\"end\":[43,1,13],\"children\":[{\"type\":\"Token\",\"kind\":\"INT_NUMBER\",\"start\":[42,1,12],\"end\":[43,1,13]}]},{\"type\":\"Token\",\"kind\":\"SEMICOLON\",\"start\":[43,1,13],\"end\":[44,1,14]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[44,1,14],\"end\":[49,2,4]},{\"type\":\"Node\",\"kind\":\"PATH_EXPR\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH_SEGMENT\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Node\",\"kind\":\"NAME_REF\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[49,2,4],\"end\":[50,2,5]}]}]}]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[50,2,5],\"end\":[51,3,0]},{\"type\":\"Token\",\"kind\":\"R_CURLY\",\"start\":[51,3,0],\"end\":[52,3,1]}]}]}]},{\"type\":\"Token\",\"kind\":\"R_BRACK\",\"start\":[52,3,1],\"end\":[53,3,2]}]},{\"type\":\"Token\",\"kind\":\"SEMICOLON\",\"start\":[53,3,2],\"end\":[54,3,3]}]}]}"
+    },
+    "session": 101,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp7QnfkK/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp7QnfkK/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 13,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "fixed"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 7,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "impl S<fixed!()>"
+        },
+        {
+          "containerName": "impl S<fixed!()>",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 22,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 3,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "main"
+        }
+      ]
+    },
+    "session": 102,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp7QnfkK/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp7QnfkK/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 13,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "fixed"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 7,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "impl S<fixed!()>"
+        },
+        {
+          "containerName": "impl S<fixed!()>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 22,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 3,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "main"
+        }
+      ]
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 103,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp7QnfkK/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp7QnfkK/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 104,
+    "validation": true
+  },
+  {
+    "method": "rust-analyzer/viewSyntaxTree",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/viewSyntaxTree",
+      "params": {
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": "{\"type\":\"Node\",\"kind\":\"SOURCE_FILE\",\"start\":[0,0,0],\"end\":[54,3,3],\"children\":[{\"type\":\"Node\",\"kind\":\"TYPE_ALIAS\",\"start\":[0,0,0],\"end\":[54,3,3],\"children\":[{\"type\":\"Token\",\"kind\":\"TYPE_KW\",\"start\":[0,0,0],\"end\":[4,0,4]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[4,0,4],\"end\":[5,0,5]},{\"type\":\"Node\",\"kind\":\"NAME\",\"start\":[5,0,5],\"end\":[19,0,19],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[5,0,5],\"end\":[19,0,19]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[19,0,19],\"end\":[20,0,20]},{\"type\":\"Token\",\"kind\":\"EQ\",\"start\":[20,0,20],\"end\":[21,0,21]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[21,0,21],\"end\":[23,0,23]},{\"type\":\"Node\",\"kind\":\"ARRAY_TYPE\",\"start\":[23,0,23],\"end\":[53,3,2],\"children\":[{\"type\":\"Token\",\"kind\":\"L_BRACK\",\"start\":[23,0,23],\"end\":[24,0,24]},{\"type\":\"Node\",\"kind\":\"PATH_TYPE\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH_SEGMENT\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Node\",\"kind\":\"NAME_REF\",\"start\":[24,0,24],\"end\":[26,0,26],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[24,0,24],\"end\":[26,0,26]}]}]}]}]},{\"type\":\"Token\",\"kind\":\"SEMICOLON\",\"start\":[26,0,26],\"end\":[27,0,27]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[27,0,27],\"end\":[28,0,28]},{\"type\":\"Node\",\"kind\":\"CONST_ARG\",\"start\":[28,0,28],\"end\":[52,3,1],\"children\":[{\"type\":\"Node\",\"kind\":\"BLOCK_EXPR\",\"start\":[28,0,28],\"end\":[52,3,1],\"children\":[{\"type\":\"Node\",\"kind\":\"STMT_LIST\",\"start\":[28,0,28],\"end\":[52,3,1],\"children\":[{\"type\":\"Token\",\"kind\":\"L_CURLY\",\"start\":[28,0,28],\"end\":[29,0,29]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[29,0,29],\"end\":[34,1,4]},{\"type\":\"Node\",\"kind\":\"LET_STMT\",\"start\":[34,1,4],\"end\":[44,1,14],\"children\":[{\"type\":\"Token\",\"kind\":\"LET_KW\",\"start\":[34,1,4],\"end\":[37,1,7]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[37,1,7],\"end\":[38,1,8]},{\"type\":\"Node\",\"kind\":\"IDENT_PAT\",\"start\":[38,1,8],\"end\":[39,1,9],\"children\":[{\"type\":\"Node\",\"kind\":\"NAME\",\"start\":[38,1,8],\"end\":[39,1,9],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[38,1,8],\"end\":[39,1,9]}]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[39,1,9],\"end\":[40,1,10]},{\"type\":\"Token\",\"kind\":\"EQ\",\"start\":[40,1,10],\"end\":[41,1,11]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[41,1,11],\"end\":[42,1,12]},{\"type\":\"Node\",\"kind\":\"LITERAL\",\"start\":[42,1,12],\"end\":[43,1,13],\"children\":[{\"type\":\"Token\",\"kind\":\"INT_NUMBER\",\"start\":[42,1,12],\"end\":[43,1,13]}]},{\"type\":\"Token\",\"kind\":\"SEMICOLON\",\"start\":[43,1,13],\"end\":[44,1,14]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[44,1,14],\"end\":[49,2,4]},{\"type\":\"Node\",\"kind\":\"PATH_EXPR\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Node\",\"kind\":\"PATH_SEGMENT\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Node\",\"kind\":\"NAME_REF\",\"start\":[49,2,4],\"end\":[50,2,5],\"children\":[{\"type\":\"Token\",\"kind\":\"IDENT\",\"start\":[49,2,4],\"end\":[50,2,5]}]}]}]}]},{\"type\":\"Token\",\"kind\":\"WHITESPACE\",\"start\":[50,2,5],\"end\":[51,3,0]},{\"type\":\"Token\",\"kind\":\"R_CURLY\",\"start\":[51,3,0],\"end\":[52,3,1]}]}]}]},{\"type\":\"Token\",\"kind\":\"R_BRACK\",\"start\":[52,3,1],\"end\":[53,3,2]}]},{\"type\":\"Token\",\"kind\":\"SEMICOLON\",\"start\":[53,3,2],\"end\":[54,3,3]}]}]}"
+    },
+    "session": 104,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp7QnfkK/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp7QnfkK/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 105,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 105,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 13,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "fixed"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 7,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "impl S<fixed!()>"
+        },
+        {
+          "containerName": "impl S<fixed!()>",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 22,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 3,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "main"
+        }
+      ]
+    },
+    "session": 105,
+    "validation": true
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp7QnfkK/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp7QnfkK/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "rust-analyzer/expandMacro",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/expandMacro",
+      "params": {
+        "position": {
+          "character": 33,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "expansion": " [u8; {\n    let U = 1;\n    U\n}]",
+        "name": "fixed!"
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 27,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 52,
+              "line": 2
+            },
+            "start": {
+              "character": 52,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 8,
+              "line": 1
+            },
+            "start": {
+              "character": 7,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 22,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 30,
+              "line": 3
+            },
+            "start": {
+              "character": 30,
+              "line": 3
+            }
+          },
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "rust-analyzer/expandMacro",
+    "request": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "rust-analyzer/expandMacro",
+      "params": {
+        "position": {
+          "character": 33,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "result": {
+        "expansion": " [u8; {\n    let U = 1;\n    U\n}]",
+        "name": "fixed!"
+      }
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 27,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 52,
+              "line": 2
+            },
+            "start": {
+              "character": 52,
+              "line": 2
+            }
+          },
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/typeDefinition",
+    "request": {
+      "id": 8,
+      "jsonrpc": "2.0",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 8,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 8,
+              "line": 1
+            },
+            "start": {
+              "character": 7,
+              "line": 1
+            }
+          },
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "textDocument/references",
+    "request": {
+      "id": 9,
+      "jsonrpc": "2.0",
+      "method": "textDocument/references",
+      "params": {
+        "context": {
+          "includeDeclaration": false
+        },
+        "position": {
+          "character": 22,
+          "line": 2
+        },
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 9,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 30,
+              "line": 3
+            },
+            "start": {
+              "character": 30,
+              "line": 3
+            }
+          },
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      ]
+    },
+    "session": 100,
+    "validation": false
+  },
+  {
+    "method": "initialize",
+    "request": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "capabilities": {
+          "textDocument": {
+            "definition": {
+              "linkSupport": true
+            },
+            "documentSymbol": {
+              "hierarchicalDocumentSymbolSupport": true
+            },
+            "hover": {
+              "contentFormat": [
+                "markdown",
+                "plaintext"
+              ]
+            },
+            "references": {}
+          },
+          "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+          }
+        },
+        "processId": null,
+        "rootUri": "file:///tmp/.tmp7QnfkK/fixture",
+        "workspaceFolders": [
+          {
+            "name": "fixture",
+            "uri": "file:///tmp/.tmp7QnfkK/fixture"
+          }
+        ]
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "callHierarchyProvider": true,
+          "codeActionProvider": {
+            "resolveProvider": true
+          },
+          "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [
+              ":",
+              ".",
+              "'",
+              "("
+            ]
+          },
+          "definitionProvider": true,
+          "documentFormattingProvider": true,
+          "documentHighlightProvider": true,
+          "documentSymbolProvider": true,
+          "hoverProvider": true,
+          "implementationProvider": true,
+          "inlayHintProvider": true,
+          "referencesProvider": true,
+          "renameProvider": true,
+          "signatureHelpProvider": {
+            "triggerCharacters": [
+              "(",
+              ",",
+              "<"
+            ]
+          },
+          "textDocumentSync": {
+            "change": 1,
+            "openClose": true
+          },
+          "typeDefinitionProvider": true,
+          "workspaceSymbolProvider": true
+        },
+        "serverInfo": {
+          "name": "prod-code",
+          "version": "0.3.41"
+        }
+      }
+    },
+    "session": 106,
+    "validation": true
+  },
+  {
+    "method": "textDocument/documentSymbol",
+    "request": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "textDocument/documentSymbol",
+      "params": {
+        "prodCodeTimeoutMs": 29999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "containerName": null,
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 0
+              },
+              "start": {
+                "character": 13,
+                "line": 0
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "fixed"
+        },
+        {
+          "containerName": null,
+          "kind": 23,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 1
+              },
+              "start": {
+                "character": 7,
+                "line": 1
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "S"
+        },
+        {
+          "containerName": null,
+          "kind": 5,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 5,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "impl S<fixed!()>"
+        },
+        {
+          "containerName": "impl S<fixed!()>",
+          "kind": 6,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 2
+              },
+              "start": {
+                "character": 22,
+                "line": 2
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "f"
+        },
+        {
+          "containerName": "fn()",
+          "kind": 12,
+          "location": {
+            "range": {
+              "end": {
+                "character": 0,
+                "line": 3
+              },
+              "start": {
+                "character": 3,
+                "line": 3
+              }
+            },
+            "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+          },
+          "name": "main"
+        }
+      ]
+    },
+    "session": 106,
+    "validation": true
+  },
+  {
+    "method": "textDocument/diagnostic",
+    "request": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "textDocument/diagnostic",
+      "params": {
+        "prodCodeTimeoutMs": 59999,
+        "textDocument": {
+          "uri": "file:///tmp/.tmp7QnfkK/fixture/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "items": [],
+        "kind": "full"
+      }
+    },
+    "session": 106,
+    "validation": true
+  }
+]

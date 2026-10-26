@@ -1,0 +1,42 @@
+{
+  "crates/prod-code-mcp/src/move_method/captures.rs": {
+    "baseline_sha256": "ce8b565ec79aa2578d2549e125b96aae1d852c1fc900de70d9e3d1678f2bf5a3",
+    "final_sha256": "5aaa533d9315049c54ef57782b232d04551efeaf0ef1a304f254236af6ff64de"
+  },
+  "crates/prod-code-mcp/src/move_method/context.rs": {
+    "baseline_sha256": "84f90f1cfdc58c5497d5d59be425c2cac7d2dff9efc2bcac109686cccc763215",
+    "final_sha256": "c8512768e501a81e41103b21de6192664b4af72738aadf19c62235e3b469e032"
+  },
+  "crates/prod-code-mcp/src/move_method/syntax.rs": {
+    "baseline_sha256": "828cfe98ec2003dc27824b87681e164b65912c06a127168fc079de2e727609fd",
+    "final_sha256": "573f3b2fa74a4c0bef5920f230febc13d464b85f952a27721b61706142d7ef1f"
+  },
+  "crates/prod-code-mcp/src/to_method/helpers.rs": {
+    "baseline_sha256": "83593b5bd42747ab12f02030b152db5f49e0aac490acf4766c5d435a64b3f02d",
+    "final_sha256": "de8fc9784d1023dd1ac5214fd8cf2ad8ea1fcef6dcbfa26f69accaea0c0271ed"
+  },
+  "crates/prod-code-mcp/src/to_method/mod.rs": {
+    "baseline_sha256": "6f3d9daa08582541f3eece640e709439018941ea0f9e469fe53dbee17d37eda2",
+    "final_sha256": "f315680507fb0fd6c67f72cce1457d1f3eff1bc65a38f4f8c3047ce180b17f99"
+  },
+  "crates/prod-code-mcp/src/to_method/rust.rs": {
+    "baseline_sha256": "e1c82b6ede1e9e9685a574b511df99a38629632869826e70cd1350b057b8be6e",
+    "final_sha256": "3c061458a2e6a496cc9c24fdf5b8ab6e4763869a7326577979a7f142a470f8a4"
+  },
+  "crates/prod-code-mcp/tests/orchestration.rs": {
+    "baseline_sha256": "c1615d5de386195e6ef32185d6e1804dbe9e75dde82e41f3792af56ef43c02e6",
+    "final_sha256": "792cdd7692f44df2ea00188c18578a9c8fba947435a6954e3235c0eaec8381f2"
+  },
+  "crates/prod-code-mcp/tests/rust_method_preservation.rs": {
+    "baseline_sha256": "dec1f36b7acbd6310dbb188e3e2303b478ed67a0b0b56b3e2d7e77fdd13aff9d",
+    "final_sha256": "f46d595e60272b7b15db662d1ca2bfe492f95cd1eb59a0ea2cda709e4fc3db6d"
+  },
+  "crates/prod-code-mcp/src/to_method/dispatch.rs": {
+    "baseline_sha256": null,
+    "final_sha256": "6e6456878efe3cd6e7493b6b597d824ec6627f26d91bf1d264c29edf0cf07049"
+  },
+  "crates/prod-code-mcp/tests/rust_method_preservation/aggregate.rs": {
+    "baseline_sha256": null,
+    "final_sha256": "288812ad6ffe2aa726e3db48f17f2be65b65e767e37f0c52bb56765c63861b76"
+  }
+}

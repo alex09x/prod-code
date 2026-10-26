@@ -1,0 +1,32 @@
+[
+  {
+    "artifact": "evidence/issue-1357/parent-final/format-terminal.txt",
+    "original_sha256": "bcb500c229ff63deba5a5335f940f60666ee990d32df570ac5f450e41edae4d8",
+    "published_sha256": "c1d19f533a3ac6a2c24561e433818357f6e63ff7577be03ee19c79b00e5fbfe3",
+    "redactions": "Build endpoint, home and local checkout prefixes only; originals retained privately."
+  },
+  {
+    "artifact": "evidence/issue-1357/parent-final/gate-terminal.txt",
+    "original_sha256": "2afc9941b034dcbbb97492641b6b2208d898c9609d0f05db214358614714b15b",
+    "published_sha256": "ca16e5a5cde74cfc8525d0df144aea0437eb518f4f34e814a878f276d73010ae",
+    "redactions": "Build endpoint, home and local checkout prefixes only; originals retained privately."
+  },
+  {
+    "artifact": "evidence/issue-1357/parent-final/lint-engine-terminal.txt",
+    "original_sha256": "c40e0af24cb030f7a7e0fb84efc1270aaf0c41276eb9d82073ee0255505284bd",
+    "published_sha256": "011840cb2348705ccdc3cf20d7320a7f57c9d4b6c7bac3711a82cfd53a5a7a6f",
+    "redactions": "Build endpoint, home and local checkout prefixes only; originals retained privately."
+  },
+  {
+    "artifact": "evidence/issue-1357/parent-final/lint-gateway-terminal.txt",
+    "original_sha256": "0ca5b5ad8239566fdc40b5fc023f2778dd66ea4cd3dabee85b63516c9b795758",
+    "published_sha256": "41f383b3bf27c203bbca68a3eb4d219f74aedda302927e30608f06355f8083af",
+    "redactions": "Build endpoint, home and local checkout prefixes only; originals retained privately."
+  },
+  {
+    "artifact": "evidence/issue-1357/parent-final/lint-mcp-terminal.txt",
+    "original_sha256": "824c83e8bd9bdd8932a60916cafe56cc446608831c3dfddbd2e8f8845c36a9b7",
+    "published_sha256": "9d006590c01fea39f87cac89290a43496a4b5e9406a8febf4244528e7166b2ac",
+    "redactions": "Build endpoint, home and local checkout prefixes only; originals retained privately."
+  }
+]

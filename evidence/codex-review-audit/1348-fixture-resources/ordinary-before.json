@@ -1,0 +1,119 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "prod-code-mcp",
+    "--test",
+    "rust_method_preservation",
+    "declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity",
+    "--",
+    "--exact"
+  ],
+  "exit": 0,
+  "peak": {
+    "fds": 108,
+    "kinds": {
+      "file": 3,
+      "anon_inode:[eventpoll]": 18,
+      "anon_inode:[eventfd]": 17,
+      "socket": 52,
+      "inotify": 16,
+      "pipe": 2
+    },
+    "socket_states_hex": {
+      "0A": 16,
+      "01": 32,
+      "08": 1
+    },
+    "inotify_watches": 21,
+    "empty_inotify": 15,
+    "nofile": [
+      "1024",
+      "1000000"
+    ]
+  },
+  "samples": [
+    {
+      "seconds": 25.777,
+      "fds": 3,
+      "kinds": {
+        "file": 3
+      },
+      "socket_states_hex": {},
+      "inotify_watches": 0,
+      "empty_inotify": 0,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 26.268,
+      "fds": 35,
+      "kinds": {
+        "file": 4,
+        "anon_inode:[eventpoll]": 6,
+        "anon_inode:[eventfd]": 5,
+        "socket": 16,
+        "inotify": 4
+      },
+      "socket_states_hex": {
+        "0A": 4,
+        "01": 8,
+        "08": 1
+      },
+      "inotify_watches": 21,
+      "empty_inotify": 3,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 27.107,
+      "fds": 71,
+      "kinds": {
+        "file": 3,
+        "anon_inode:[eventpoll]": 12,
+        "anon_inode:[eventfd]": 11,
+        "socket": 33,
+        "inotify": 10,
+        "pipe": 2
+      },
+      "socket_states_hex": {
+        "0A": 10,
+        "01": 20
+      },
+      "inotify_watches": 21,
+      "empty_inotify": 9,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 27.788,
+      "fds": 103,
+      "kinds": {
+        "file": 3,
+        "anon_inode:[eventpoll]": 17,
+        "anon_inode:[eventfd]": 16,
+        "socket": 50,
+        "inotify": 15,
+        "pipe": 2
+      },
+      "socket_states_hex": {
+        "0A": 15,
+        "01": 31,
+        "08": 1
+      },
+      "inotify_watches": 21,
+      "empty_inotify": 14,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    }
+  ]
+}

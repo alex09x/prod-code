@@ -1,0 +1,74 @@
+[
+  {
+    "path": "crates/prod-code-gateway/tests/rust_method_native.rs",
+    "sha256": "65edbf3d7ebbb1973e250fbf48b5ecbb760dd60bbee7d0a5e05e138f258eebe5",
+    "expected": "65edbf3d7ebbb1973e250fbf48b5ecbb760dd60bbee7d0a5e05e138f258eebe5",
+    "matches": true
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/rust_method_native/cases.rs",
+    "sha256": "a0259182782b57140c9788d1f89c9a8d15d3aecc1fb82bed4153aecc7fe26f68",
+    "expected": "a0259182782b57140c9788d1f89c9a8d15d3aecc1fb82bed4153aecc7fe26f68",
+    "matches": true
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/rust_method_native/support.rs",
+    "sha256": "d71cd05dd44b0cde9df557e8695ab5372855fe9d319c1e36ab09f83c350e6c19",
+    "expected": "d71cd05dd44b0cde9df557e8695ab5372855fe9d319c1e36ab09f83c350e6c19",
+    "matches": true
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/declaration.rs",
+    "sha256": "50838f747662c9c1729942a6c87ac0b3d8b4d831129339d7af518d53381f505e",
+    "expected": "50838f747662c9c1729942a6c87ac0b3d8b4d831129339d7af518d53381f505e",
+    "matches": true
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/dispatch.rs",
+    "sha256": "61f341ced6d39ed11cfd3682ceeae00a9a5ec4a1d3450ef8fd7618bcf26521f8",
+    "expected": "61f341ced6d39ed11cfd3682ceeae00a9a5ec4a1d3450ef8fd7618bcf26521f8",
+    "matches": true
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/rust.rs",
+    "sha256": "01e5121756dee1a357b1e1450aa448330c27e34d335a513d58f36c0dee7ec34e",
+    "expected": "01e5121756dee1a357b1e1450aa448330c27e34d335a513d58f36c0dee7ec34e",
+    "matches": true
+  },
+  {
+    "path": "evidence/issue-1357/review-repair/README.md",
+    "sha256": "a17e0b3bf3374edaff91f550772f58c1f8e6d40f2e979b268547149b01212e62",
+    "expected": "a17e0b3bf3374edaff91f550772f58c1f8e6d40f2e979b268547149b01212e62",
+    "matches": true
+  },
+  {
+    "path": "evidence/issue-1357/review-repair/format.txt",
+    "sha256": "6b63c991663759eb468e48618b7275a00ceafce022feffe97b9e65c49a928059",
+    "expected": "6b63c991663759eb468e48618b7275a00ceafce022feffe97b9e65c49a928059",
+    "matches": true
+  },
+  {
+    "path": "evidence/issue-1357/review-repair/lint.txt",
+    "sha256": "5858223c84a4bc4be3da62a685be5d564a5b92ca859e740d0aad1ba26d23fd68",
+    "expected": "5858223c84a4bc4be3da62a685be5d564a5b92ca859e740d0aad1ba26d23fd68",
+    "matches": true
+  },
+  {
+    "path": "evidence/issue-1357/review-repair/reproduce-before.txt",
+    "sha256": "e777ce68d862dfd7af602c97265ad90b8db667d44601e08d02502e155f021eee",
+    "expected": "e777ce68d862dfd7af602c97265ad90b8db667d44601e08d02502e155f021eee",
+    "matches": true
+  },
+  {
+    "path": "evidence/issue-1357/review-repair/tool-errors.txt",
+    "sha256": "e9086a8027cf4dcf24b520ac42a0c0b72ccc92a09c865671cce96f78ca85044d",
+    "expected": "e9086a8027cf4dcf24b520ac42a0c0b72ccc92a09c865671cce96f78ca85044d",
+    "matches": true
+  },
+  {
+    "path": "evidence/issue-1357/run-final.py",
+    "sha256": "8bc8979d72a0cee449ffe99eaedc62ce5e24bcb49d47db1b32fc261397cf1998",
+    "expected": "8bc8979d72a0cee449ffe99eaedc62ce5e24bcb49d47db1b32fc261397cf1998",
+    "matches": true
+  }
+]

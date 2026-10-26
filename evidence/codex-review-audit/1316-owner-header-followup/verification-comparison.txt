@@ -1,0 +1,4 @@
+Formatting diagnostic bodies match inherited evidence after normalizing file labels, addresses and footer: True
+Displayed lint diagnostic bodies match inherited evidence: True
+Displayed lint errors inherited/current: 175/175
+Lint omits 35 additional diagnostics; no exhaustive clean-lint claim.

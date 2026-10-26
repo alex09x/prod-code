@@ -1,0 +1,466 @@
+[
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/engine.rs",
+    "sha256": "d781dc944bd91468dd12f0f80f755edbad922be0acf3732ed59090ed3a215e5d"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/extensions.rs",
+    "sha256": "7631f480908bdd92f36787c3b1da9a29a8530d6b86a9fd552f40cb568b331baf"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/format.rs",
+    "sha256": "6baf66bcdbb45fa0b92dd0ed0512c19295be764dfbe6526869f24e13b90fa459"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/lines.rs",
+    "sha256": "471752d8b7b80b50b1c98e37d44784c0f27cf693707299cca597beb7c99b3ef0"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/mapping.rs",
+    "sha256": "774b30f137aa03d6ceb0188184198e76e5c3fc2c0a476a41d250378912219071"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/mod.rs",
+    "sha256": "e3957ff068ae1c5b054ce1fecd48a7d7a2511d556e684a2b59091e9f77a782c0"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/navigation.rs",
+    "sha256": "57ecba9287c3eb84993b05bb9bf31d520f9e76a190371080c7add63240affa5a"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/snapshot.rs",
+    "sha256": "c1c57813b17a6a2271c9c7f23d0e4c22a5553fc45223dfb8e29a316f79261323"
+  },
+  {
+    "path": "crates/prod-code-engine-rust/src/editor/tests.rs",
+    "sha256": "24384c126819f4cd985264438dab3319f5b3385afde99db443e6db82a0d92d39"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/lsp_handlers/editor.rs",
+    "sha256": "2d33da8bd9c733fde8c06c62d77bee9a04a20278dc7a064199ff5b90d7b0bce7"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/lsp_handlers/mod.rs",
+    "sha256": "82577472c6e93fd12cdb02940220197641066aa52fe816e71fefe9434cbc2a6f"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/lsp_handlers/module_path.rs",
+    "sha256": "e4bc2d077a57e8b56e21f2ca56581640640c57dd7c1a55778cb6fd3a705d3606"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/lsp_handlers/native_extensions.rs",
+    "sha256": "e25aa3900c64716754b78b4e7196ecd03bb56dc9e5ce970aa02f5ceb8c200aca"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/lsp_handlers/navigation.rs",
+    "sha256": "437c5144176955e70e177080641656242d97eb81a541bcfba533a1b0ad50128d"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/lsp_handlers/refactor.rs",
+    "sha256": "812810364e623b81eb67eda53749e5171ac2f82e288b6ebd09ed88cc66652669"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/lsp_handlers/symbols.rs",
+    "sha256": "6c461ae8720e10bb4128cb161d1f59e157c9509a552101833bc720ea6d7b5eb3"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/client_handler/tests.rs",
+    "sha256": "3b7efbb3689034e1cb6846138f7b9c1177bdc272c65b94e14024c4782238d88c"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/client_handler.rs",
+    "sha256": "7c105f8529540c92f9c6643478df29b0637656b28031ec6bd6f37277130713e2"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/handshake.rs",
+    "sha256": "358117ce633cd1483c016ac8728354b0082b518032b4f725eb9675094b148124"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/heartbeat.rs",
+    "sha256": "4528946e98cb382fa0fb8c9ba39916ab5478c696f1a5270352bae636f0411ba0"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/loop_run.rs",
+    "sha256": "84236dd959e018b763192bd72ff68383bbfa80542ffe4f582d6e29150cdd8288"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/lsp_intercept/tests/backend_session.rs",
+    "sha256": "763cd9e85abc88c11f31e3443fdfc484ff690c3bea92692951fc08fbf838978a"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/lsp_intercept/tests/managed.rs",
+    "sha256": "7745f8f6b74ae03a95fb56452d2fffb269830007870553643afe2c169dce3672"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/lsp_intercept/tests.rs",
+    "sha256": "5e88a722fa514364ca641518443ecd1578a29303ae0682bd4fed53d6829be67f"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/lsp_intercept.rs",
+    "sha256": "c6e874e32929b160a0687af035fc44432520edeae2efb6b5a1662c0096922476"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/lsp_managed.rs",
+    "sha256": "fc9d81af22b5aba160f0ad7682aba994782ce47ddabdbcca450feb2ab775628c"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/lsp_rust.rs",
+    "sha256": "8900248fc154cbf9348d014f554acc81a1622ba7da8437a788e0d4386c5b1843"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/message_dispatch.rs",
+    "sha256": "8a7a1fa5bdf4fcec87ca70949c558b75b64888454f66f4a631e5ea8570ce016c"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/mod.rs",
+    "sha256": "3775e2022c4677ebeb1d3ae2be3f2378689a9c434d3873b5d703de88f355b8bc"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/position.rs",
+    "sha256": "7f6a57011aeb34aacad11b281bfc058aaeaa85de99838fefa112367d3c3ffc19"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/redirect/tests.rs",
+    "sha256": "f75d6e5938216256cf1257f1095d7ca2a53c63e47d8f2e6d4df6d3ecae7b10c4"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/redirect.rs",
+    "sha256": "1b02290ac3c8a1c695dccd21fc3d38cb951315bfbc8e2fd2ecf4f65d7cea581a"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/server_req/tests.rs",
+    "sha256": "34eaff7274eb70abed0ec33166e9d4fb1c6a252665a29962ab5531dd19bb3cbd"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/server_req.rs",
+    "sha256": "549f0f3586a3e33035ae97ada0730982eb8e66e1f38948413e7569e12fb548c5"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/shared_output.rs",
+    "sha256": "60ac54e52de569aeba2ce07e2f8d62aee4f7714e76583cebabab22d6bc7ba98e"
+  },
+  {
+    "path": "crates/prod-code-gateway/src/session/sync_handler.rs",
+    "sha256": "bff5722a27817da3f496b15e9ac5a5b47bf2921367c4567477c2f241ab3fb9a7"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/common/native_rust/bridge.rs",
+    "sha256": "6bd9dc876c31941cae66f03dec42df74425909a5eeb5144d7ad30c59172d6973"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/common/native_rust.rs",
+    "sha256": "6946488ad245fab3cd8dcb7f9363f0914c553054e4895380e022875334e36173"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/native_rust_extensions/consumer.rs",
+    "sha256": "0d338ca8aa9347741cd0d403320059369b75380bec4adf4d4c8041f933d02895"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/native_rust_extensions/views.rs",
+    "sha256": "76f1f77fdeb568d4a3a4553f60c2e554a1db0544cc69401011a81fd9d89eef6a"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/native_rust_extensions.rs",
+    "sha256": "412064ab7a50335b5c4bfaa265d235d515614200d8e5ce614f40131f7d80ff39"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/rust_method_native/cases.rs",
+    "sha256": "a0259182782b57140c9788d1f89c9a8d15d3aecc1fb82bed4153aecc7fe26f68"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/rust_method_native/navigation.rs",
+    "sha256": "770e45fb4a14c05c31c6d0949cefbd2a66041028e77b7c22d950c58d184ff913"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/rust_method_native/support.rs",
+    "sha256": "d71cd05dd44b0cde9df557e8695ab5372855fe9d319c1e36ab09f83c350e6c19"
+  },
+  {
+    "path": "crates/prod-code-gateway/tests/rust_method_native.rs",
+    "sha256": "65edbf3d7ebbb1973e250fbf48b5ecbb760dd60bbee7d0a5e05e138f258eebe5"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/associated.rs",
+    "sha256": "4e2ed26d414fc94c5851ebc1f5c879441129ba1d50f6210037d5e0c7c6d2ed3e"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/captures.rs",
+    "sha256": "5aaa533d9315049c54ef57782b232d04551efeaf0ef1a304f254236af6ff64de"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/context.rs",
+    "sha256": "c8512768e501a81e41103b21de6192664b4af72738aadf19c62235e3b469e032"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/edits.rs",
+    "sha256": "95b169ed7b11e83008e887615f7b846bdae2f42595564d127714c0a8ce14dc32"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/method.rs",
+    "sha256": "72ce8133b9226eb06f9dfc43d5f35d4fe70c5f0997685dd0ec5e7c3f3ec43f7a"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/mod.rs",
+    "sha256": "02385e9b196039ceae5faa0897601d639878a5f0bf09ba44fb1165e13dc3f8a4"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/parameters.rs",
+    "sha256": "a3d0b5fa11c888c629b63c8b16df86b3dbb109df5705e87244c9a344a74d2aa6"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/rewrite.rs",
+    "sha256": "c2aec33f021ca34640af0eda367ab7fe1aa6cd1f7aa4c6d63af2952a08218b2e"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/syntax.rs",
+    "sha256": "573f3b2fa74a4c0bef5920f230febc13d464b85f952a27721b61706142d7ef1f"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/tests.rs",
+    "sha256": "028620bec6ce8ed7b53cc984c59c6ed08de83b9a8ae4f9a578b6a344e891f654"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/types.rs",
+    "sha256": "4ec9c84861e6e90564852eeb96b9b508be6aa90f76f56f8416f887ab7d2291d8"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/move_method/types_tests.rs",
+    "sha256": "47917ee6a55a346861dee865f6bf458dbc6925c135c83706b9c2c923690e845a"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/declaration.rs",
+    "sha256": "50838f747662c9c1729942a6c87ac0b3d8b4d831129339d7af518d53381f505e"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/dispatch.rs",
+    "sha256": "61f341ced6d39ed11cfd3682ceeae00a9a5ec4a1d3450ef8fd7618bcf26521f8"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/expansion.rs",
+    "sha256": "929e7c1ef53f30ed67b21f6e18b3b3b7ed91fda4ff767906260b72e2e9aa2da8"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/helpers.rs",
+    "sha256": "fb64504302425d5c81dde5a0918b9887c890bf6d6238f8de8cc8d5460e24c8b7"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/mod.rs",
+    "sha256": "22e0cfc7a7741f78cbbd88a362dfa595b558374361d18300b7060ce941f25b50"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/polyglot/cpp.rs",
+    "sha256": "811be13cfa0391edd5b95096850a677ca3112360f6288c392a11a5401be6dac3"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/polyglot/go.rs",
+    "sha256": "488cc37851f00e12271ed867955f13810fd9489105106b0a19140d7b72df3f42"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/polyglot/mod.rs",
+    "sha256": "d88a1fc811aef02068ad9f275e21da3a260e4633ffb3e15b182d8619f01441f1"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/polyglot/py.rs",
+    "sha256": "d5ab9f1d1336dbba20781f94c4e9ea112ff60368cf30410d1d2ffd6dd804295e"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/polyglot/rewrite.rs",
+    "sha256": "f94bc8b58fed01cab8f5c2bc24e360d5fd892d92a07b3c4543be257fb178b0e9"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/polyglot/swift.rs",
+    "sha256": "e78830cf7c3ba03e431cee23cc531992a08dd93c2fe227f89aac276456066a69"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/polyglot/ts.rs",
+    "sha256": "00b872a35fef0a7fbbb617767478b411ac693e1e9a725825f57b30d8b7b86fd0"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/rust.rs",
+    "sha256": "01e5121756dee1a357b1e1450aa448330c27e34d335a513d58f36c0dee7ec34e"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/tests.rs",
+    "sha256": "ee4e452b3b08db3f0faed0aa826d66d355750dffaa23e12d49bb1afc537c5247"
+  },
+  {
+    "path": "crates/prod-code-mcp/src/to_method/types.rs",
+    "sha256": "35444b9d18a4538cad006e1487c93a220bc6c3666f520c4c17b571e5455b2eb7"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/orchestration.rs",
+    "sha256": "792cdd7692f44df2ea00188c18578a9c8fba947435a6954e3235c0eaec8381f2"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/aggregate.rs",
+    "sha256": "25562d265f798eb8efa5e1132594259508ea5c0e068cdb19de53a9999062f991"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/associated.rs",
+    "sha256": "62dd02d9d0c888e555b9b909d23a5fc86292314547808521ee4345b8473a5a3f"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/call_trivia.rs",
+    "sha256": "47f3027dba0f8ad196735e1ee64ca706df14ca4409eb04ae3a149d53f6b38180"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/conversion.rs",
+    "sha256": "6b4598c58e6241be1965c73e04a5190772718fd9811a0808819648e019ea042f"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs",
+    "sha256": "1a9aea73623306c536630a3afc91df83fe470d4150dcd7f2fcebcb6f2f76abfb"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/guards.rs",
+    "sha256": "5c25ebdff4e08a268f9a280dcb67f12c4b299c5d82c4edcb8195c0ab5db80e6b"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/macro_inputs.rs",
+    "sha256": "9a1a9c937aa099a44dec1bca998ab3a8958b6bbf9a8070afa5307de84d1e6f15"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/namespace_values.rs",
+    "sha256": "ab5f04cfdd7ffa23a94aa00c440e1d746414ae0fd25ad7662092d77ead2fd1a2"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/owner_boundary_regressions.rs",
+    "sha256": "34acbd13924ab094295ca4375326d141b96372bce8e050fda308ff7f027232e6"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/owner_capture.rs",
+    "sha256": "5785f8d50b8b1cdfdb04fa187ed547467e8f0d7409b509a725c583797abc2365"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/owner_header_regressions.rs",
+    "sha256": "decdf1cbf27db8d18a1a087ea5da0ea4403a1390d5cf85ff451166b143ffaf8b"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/receiver.rs",
+    "sha256": "78598d4ede9dd49bd879172b718c1af3a9d2caf26422a4d70a30fdd6b870d140"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs",
+    "sha256": "b398f6995747c7f8bd7cd758d190b4cf83dd7782c7f7c835f432bfe22bce860e"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/review_regressions.rs",
+    "sha256": "060f47ad2ad2aa7b4d33b5311c7204cb6c64f28ba53c61d26afd444879e567ab"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/support.rs",
+    "sha256": "89815860b28113289480b84c648ade6e335d80d96a19cfc5a996fbeb96996088"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs",
+    "sha256": "cba75613bccaff10b45c5758fe3e9c3c48c75d35085cf15a4dec29feb3aa2070"
+  },
+  {
+    "path": "crates/prod-code-mcp/tests/rust_method_preservation.rs",
+    "sha256": "c48cf8db57dd778090fcc0588207d0a2920b0562383fc6a850e783f516300aaf"
+  },
+  {
+    "path": "evidence/issue-1357/native-consumer/local-value/original.rs",
+    "sha256": "ca509b304dfe17c7b6c2aefe5eb25ddcc608824f7015be44c4eae661f796de95"
+  },
+  {
+    "path": "evidence/issue-1357/native-consumer/local-value/returned-false.rs",
+    "sha256": "2169d8a7a005aafa11c11ae16f0381d160d9937ce7aa1760872d8dacd7309eb2"
+  },
+  {
+    "path": "evidence/issue-1357/native-consumer/local-value/returned-true.rs",
+    "sha256": "2169d8a7a005aafa11c11ae16f0381d160d9937ce7aa1760872d8dacd7309eb2"
+  },
+  {
+    "path": "evidence/issue-1357/native-consumer/nominal/original.rs",
+    "sha256": "23231742cb9bf85a44b8779f0a88eb487cb7e5dbf5b6d2dce53c7e9e9e42ad76"
+  },
+  {
+    "path": "evidence/issue-1357/native-consumer/nominal/returned-false.rs",
+    "sha256": "9accdd0423d951b6de615cf2adbd3691724e0ceda50eb5223985d8dec2cf3557"
+  },
+  {
+    "path": "evidence/issue-1357/native-consumer/nominal/returned-true.rs",
+    "sha256": "9accdd0423d951b6de615cf2adbd3691724e0ceda50eb5223985d8dec2cf3557"
+  },
+  {
+    "path": "evidence/issue-1357/native-consumer/type-capture/original.rs",
+    "sha256": "b889eac3b49a96a39d21c14d29ccc7d87eca24ac1b30e6fb4f388f9ce297e24a"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/const-macro-shadow/original.rs",
+    "sha256": "a52ae092d14822630b5a1d30c9980418d88fe0b02d6b73659c0db9a9919d7e64"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/const-positive/original.rs",
+    "sha256": "d79d4e00142b8500f02f85da1857ac31fa3807eacbfe3cae0c144db018630ca6"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/const-positive/returned-false.rs",
+    "sha256": "677da159632d5e1aa61bed40925f209c0916c78e79ad37e0d43867cc81eb4ec1"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/const-positive/returned-true.rs",
+    "sha256": "677da159632d5e1aa61bed40925f209c0916c78e79ad37e0d43867cc81eb4ec1"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/const-shadow/original.rs",
+    "sha256": "bd389ef73f8d333f6b9ac385c3e3a536552394ecd01b947f97ae5c5639e15b1c"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/holder-config/original.rs",
+    "sha256": "092dfca2f612201fd27f43b550f24546747bc54f499b5cc91c7679a13e9d312e"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/holder-config/returned-false.rs",
+    "sha256": "90ead43faf4ff8d12f0c14ba31368f5e43f8e4c15cca2c22e1466040c07edc9f"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/holder-config/returned-true.rs",
+    "sha256": "90ead43faf4ff8d12f0c14ba31368f5e43f8e4c15cca2c22e1466040c07edc9f"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/holder-fallbacks/original.rs",
+    "sha256": "48f5dc1c1f337840ff7af3cba5ae8a5691175b834bcf8451a0c8d4774551d6ec"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/holder-fallbacks/returned-false.rs",
+    "sha256": "1a19ed852ca7db15e01e82259c394facbd3b96246eee797f977fd5b9b676379c"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/holder-fallbacks/returned-true.rs",
+    "sha256": "1a19ed852ca7db15e01e82259c394facbd3b96246eee797f977fd5b9b676379c"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/local-value/original.rs",
+    "sha256": "ca509b304dfe17c7b6c2aefe5eb25ddcc608824f7015be44c4eae661f796de95"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/local-value/returned-false.rs",
+    "sha256": "2169d8a7a005aafa11c11ae16f0381d160d9937ce7aa1760872d8dacd7309eb2"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/local-value/returned-true.rs",
+    "sha256": "2169d8a7a005aafa11c11ae16f0381d160d9937ce7aa1760872d8dacd7309eb2"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/nominal/original.rs",
+    "sha256": "23231742cb9bf85a44b8779f0a88eb487cb7e5dbf5b6d2dce53c7e9e9e42ad76"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/nominal/returned-false.rs",
+    "sha256": "9accdd0423d951b6de615cf2adbd3691724e0ceda50eb5223985d8dec2cf3557"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/nominal/returned-true.rs",
+    "sha256": "9accdd0423d951b6de615cf2adbd3691724e0ceda50eb5223985d8dec2cf3557"
+  },
+  {
+    "path": "evidence/issue-1357/parent-final/gate/native-consumer/type-capture/original.rs",
+    "sha256": "b889eac3b49a96a39d21c14d29ccc7d87eca24ac1b30e6fb4f388f9ce297e24a"
+  },
+  {
+    "path": "evidence/issue-1357/run-final.py",
+    "sha256": "8bc8979d72a0cee449ffe99eaedc62ce5e24bcb49d47db1b32fc261397cf1998"
+  }
+]

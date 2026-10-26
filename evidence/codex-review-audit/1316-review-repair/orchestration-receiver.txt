@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/orchestration.rs (target/debug/deps/orchestration-177e3fd65f94e01b)
+
+running 1 test
+test a_method_moves_to_the_type_of_its_parameter ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.15s
+
+[prod-code exec] exit 0 in 0.6s (server 0.3s, cpu 0.1s user 0.1s sys, peak 68 MB) on node <private-address>, copy <remote-workspace> (linux x86_64)

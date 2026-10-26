@@ -1,0 +1,2 @@
+[prod-code exec] 2 file(s) changed by the command written back: crates/prod-code-mcp/tests/rust_method_preservation.rs, crates/prod-code-mcp/tests/rust_method_preservation/owner_boundary_regressions.rs
+[prod-code exec] exit 0 in 0.3s (server 0.1s, cpu 0.0s user 0.0s sys, peak 38 MB) on node <build-node>, copy <remote-path> (linux x86_64)

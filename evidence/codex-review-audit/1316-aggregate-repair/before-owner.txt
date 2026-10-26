@@ -1,0 +1,412 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.95s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 1 test
+test aggregate::aggregate_raw_owner_and_array_shift_runtime ... aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#impl { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#trait { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        let value = r#mod { n: std::mem::size_of::<Self>() }; value.n
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+0
+
+aggregate original: source
+struct Tax;
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+impl Order {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Self>() + Inner::<[u8; 4]>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+aggregate original: rustc exit status: 0
+
+aggregate original: runtime exit status: 0
+8
+
+aggregate apply=false force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+16
+
+aggregate apply=true force=false: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+16
+
+aggregate apply=false force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: false }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+16
+
+aggregate apply=true force=true: MovedMethod { method: "f", from_type: "Order", to_type: "Tax", root: "<fixture>", signature: "fn f() -> usize", calls: 1, blocked: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\n\nimpl Tax {\n    fn f() -> usize {\n        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()\n    }\n}\nstruct Order(u64);\nstruct r#impl { n: usize }\nstruct r#trait { n: usize }\nstruct r#mod { n: usize }\nfn main() { println!(\"{}\", Tax::f()); }\n")], diagnostics: [], applied: true }
+aggregate transformed: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Order>() } } std::mem::size_of::<Order>() + Inner::<[u8; 4]>::size()
+    }
+}
+struct Order(u64);
+struct r#impl { n: usize }
+struct r#trait { n: usize }
+struct r#mod { n: usize }
+fn main() { println!("{}", Tax::f()); }
+
+aggregate transformed: rustc exit status: 0
+
+aggregate transformed: runtime exit status: 0
+16
+
+
+thread 'aggregate::aggregate_raw_owner_and_array_shift_runtime' (1935912) panicked at crates/prod-code-mcp/tests/rust_method_preservation/aggregate.rs:40:5:
+["let value = r#impl { n: std::mem::size_of::<Self>() }; value.n: apply=false force=false: \"0\\n\"", "let value = r#impl { n: std::mem::size_of::<Self>() }; value.n: apply=true force=false: \"0\\n\"", "let value = r#impl { n: std::mem::size_of::<Self>() }; value.n: apply=false force=true: \"0\\n\"", "let value = r#impl { n: std::mem::size_of::<Self>() }; value.n: apply=true force=true: \"0\\n\"", "let value = r#trait { n: std::mem::size_of::<Self>() }; value.n: apply=false force=false: \"0\\n\"", "let value = r#trait { n: std::mem::size_of::<Self>() }; value.n: apply=true force=false: \"0\\n\"", "let value = r#trait { n: std::mem::size_of::<Self>() }; value.n: apply=false force=true: \"0\\n\"", "let value = r#trait { n: std::mem::size_of::<Self>() }; value.n: apply=true force=true: \"0\\n\"", "let value = r#mod { n: std::mem::size_of::<Self>() }; value.n: apply=false force=false: \"0\\n\"", "let value = r#mod { n: std::mem::size_of::<Self>() }; value.n: apply=true force=false: \"0\\n\"", "let value = r#mod { n: std::mem::size_of::<Self>() }; value.n: apply=false force=true: \"0\\n\"", "let value = r#mod { n: std::mem::size_of::<Self>() }; value.n: apply=true force=true: \"0\\n\"", "struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Self>() + Inner::<[u8; 4]>::size(): apply=false force=false: \"16\\n\"", "struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Self>() + Inner::<[u8; 4]>::size(): apply=true force=false: \"16\\n\"", "struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Self>() + Inner::<[u8; 4]>::size(): apply=false force=true: \"16\\n\"", "struct Inner<T>(std::marker::PhantomData<T>); impl Inner<[u8; 1 << 2]> { fn size() -> usize { std::mem::size_of::<Self>() } } std::mem::size_of::<Self>() + Inner::<[u8; 4]>::size(): apply=true force=true: \"16\\n\""]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    aggregate::aggregate_raw_owner_and_array_shift_runtime
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 2.22s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 3.7s (server 3.3s, cpu 1.8s user 2.3s sys, peak 506 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)

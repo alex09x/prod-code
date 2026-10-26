@@ -1,0 +1,41 @@
+{
+  "task": 4269,
+  "original_status": "failed",
+  "failure_code": "capture_failed",
+  "candidate": "7ad6a50de730c19e957e6064f37fa5955050b73d",
+  "recovered_logs": {
+    "evidence/issue-1357/native-consumer/local-value/original-compiler.txt": "194b111332cc5b7682df38f3969ecd0e374a39254ad75dd66d04b107b1cfd597",
+    "evidence/issue-1357/native-consumer/local-value/public-false.txt": "62965a38a2e4506e2411c207ac1e3812023141d93bca5bbcd6fd122000e948fc",
+    "evidence/issue-1357/native-consumer/local-value/public-true.txt": "76c4f2bfc941b1ae5408cbef9b6a10d6b990bf7eff4d19f734dbd2c69152e127",
+    "evidence/issue-1357/native-consumer/local-value/returned-false-compiler.txt": "079fa96abcfe7ce3e3a0d0f579e0651aecdaf7eff2693a0008b0868453f9b66e",
+    "evidence/issue-1357/native-consumer/local-value/returned-true-compiler.txt": "a37754283041c535bb37768144891bec6e0159e2d68fcdf2f49d146506ebe4ca",
+    "evidence/issue-1357/native-consumer/local-value/semantic-replies.json": "5f6418bf8d535084221c4ab747a738e63b980868b37b8d87e2b323b14c8f1f63",
+    "evidence/issue-1357/native-consumer/navigation/replies.json": "f96bb879abe166dae13ee9bca1f5595282845696f4c3e291123a875db90ab380",
+    "evidence/issue-1357/native-consumer/nominal/public-false.txt": "82fd3600bb7928a658b32aa4d7b2ad115ea6678f4162f13d534a6960c351739a",
+    "evidence/issue-1357/native-consumer/nominal/public-true.txt": "c7128a24e0c97b897fc17707e626800611b41e708d02c19677fdabdd557142ca",
+    "evidence/issue-1357/native-consumer/nominal/semantic-replies.json": "d8e4f7cfe9c686290ff0f887541af47b8f9419152b7525d0c096c2bc93cb813e",
+    "evidence/issue-1357/native-consumer/type-capture/original-compiler.txt": "b3558fe19e748b4cf728178d7ac5f72cf70aa1841eeb5d4f4be78dffd61ffb9a",
+    "evidence/issue-1357/native-consumer/type-capture/semantic-replies.json": "f8e263bcd85fd565eb0c0f23799c4ff7740135196adc93b3abd0a13d5195df11",
+    "evidence/issue-1357/rust_method_native.txt": "0a844af02dec02cb356bce6b45ecd6b285ac10b1c8d7cf13364cb61d8c38eb6d",
+    "evidence/issue-1357/rust_method_preservation.txt": "de947c3a3b568db40bd541ac887135ce65d659ad1878e8d80928fb6dd48cc380"
+  },
+  "matched_source_hashes": 97,
+  "actual_acceptance": {
+    "preservation": {
+      "passed": 55,
+      "failed": 0,
+      "exit": 0
+    },
+    "native": {
+      "passed": 4,
+      "failed": 0,
+      "exit": 0
+    }
+  },
+  "limits": [
+    "Production and tests unchanged; only acceptance-written evidence recovered byte-identically.",
+    "Historical artifact-hashes.json binds prior evidence; recovered evidence hashes are recorded here separately.",
+    "Runner and native test artifact helper still write tracked evidence; change to opt-in capture required before reusable acceptance.",
+    "Aggregate Rust-method review and final integration remain pending."
+  ]
+}

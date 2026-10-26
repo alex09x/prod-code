@@ -1,0 +1,29 @@
+{
+  "discovery": [
+    {
+      "command": "rg --files crates/prod-code-mcp/tests evidence/codex-review-audit/1316-value-namespace | head -90; prod-code --help",
+      "result": "PreToolUse blocked source discovery: supported-language source discovery goes through prod-code. No command executed.",
+      "fallback": "Named directory listings and bounded reads, then prod-code grep."
+    },
+    {
+      "command": "prod-code outline crates/prod-code-testkit/src --max-depth 2",
+      "exit": 2,
+      "result": "error: unexpected argument '--max-depth' found; tip: a similar argument exists: '--max-items'"
+    },
+    {
+      "command": "prod-code outline crates/prod-code-testkit/src",
+      "exit": 1,
+      "result": "Error: gateway refused the session: capacity: this node has no memory for a new rust engine (memory 79% used, 0.0 GiB held for 0 load(s) in flight, a new engine counts 4.0 GiB, the limit is 85% of 61.9 GiB). Engines already loaded here keep answering.",
+      "fallback": "Bounded reads of known paths. Remote grep and all Linux exec checks subsequently worked. No restart, reconfiguration, install or issue publication."
+    }
+  ],
+  "observer": {
+    "command": ["python3", "evidence/codex-review-audit/1348-fixture-resources/observe.py", "evidence/codex-review-audit/1348-fixture-resources/acceptance", "cargo", "test", "-p", "prod-code-mcp", "--test", "rust_method_preservation"],
+    "transport": "prod-code exec --remote TASK_ACCEPTANCE_NODE --timeout-secs 900 -- (node address intentionally omitted)",
+    "exit": 1,
+    "result": "snapshot(pid): os.readlink(fd) raised PermissionError: [Errno 13] Permission denied: '/proc/<test-pid>/fd/35'",
+    "retained_output": "acceptance-observer-failed.txt",
+    "interpretation": "Cargo output reports 55/55, but the observer exited before observing cargo's terminal status. This invocation is not counted as a passing gate.",
+    "followup": "A foreground remote check confirmed the exact observed target was no longer live (terminal exit 0). Observer now tolerates /proc teardown races and always joins its child in finally. Only this failed gate was rerun; its terminal exit 0 and descriptor samples are in acceptance.json."
+  }
+}

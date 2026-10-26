@@ -1,0 +1,684 @@
+[
+  {
+    "id": "caps",
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ":",
+            ".",
+            "'",
+            "("
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentSymbolProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": {
+          "change": 1,
+          "openClose": true
+        },
+        "typeDefinitionProvider": true,
+        "workspaceSymbolProvider": true
+      },
+      "serverInfo": {
+        "name": "prod-code",
+        "version": "0.3.41"
+      }
+    }
+  },
+  {
+    "request": {
+      "id": 0,
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 0,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 1
+            },
+            "start": {
+              "character": 22,
+              "line": 1
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": "same-spelling",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 117,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "same-spelling",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 24,
+              "line": 2
+            },
+            "start": {
+              "character": 23,
+              "line": 2
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": 203,
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 128,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": 203,
+      "jsonrpc": "2.0",
+      "result": []
+    }
+  },
+  {
+    "request": {
+      "id": "multiple",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 121,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "multiple",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 11,
+              "line": 3
+            },
+            "start": {
+              "character": 7,
+              "line": 3
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        },
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 1
+            },
+            "start": {
+              "character": 22,
+              "line": 1
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {},
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "invalid params for textDocument/typeDefinition: position coordinates must be non-negative integers below 4294967295"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 0,
+          "line": -1
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "invalid params for textDocument/typeDefinition: position coordinates must be non-negative integers below 4294967295"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 1.5,
+          "line": 0
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "invalid params for textDocument/typeDefinition: position coordinates must be non-negative integers below 4294967295"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 4294967295,
+          "line": 0
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "invalid params for textDocument/typeDefinition: position coordinates must be non-negative integers below 4294967295"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 0,
+          "line": 4294967296
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "invalid params for textDocument/typeDefinition: position coordinates must be non-negative integers below 4294967295"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 0,
+          "line": 99
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "position is outside the document or splits a UTF-16 character"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 999,
+          "line": 0
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "position is outside the document or splits a UTF-16 character"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-position",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 5,
+          "line": 0
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "position is outside the document or splits a UTF-16 character"
+      },
+      "id": "invalid-position",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-document",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": null
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "textDocument.uri must be a file URI"
+      },
+      "id": "invalid-document",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-document",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": 9
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "textDocument.uri must be a file URI"
+      },
+      "id": "invalid-document",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-document",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "https://example.com/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "textDocument.uri must be a file URI"
+      },
+      "id": "invalid-document",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-document",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file://other-host/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "textDocument.uri must be a file URI"
+      },
+      "id": "invalid-document",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "invalid-document",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file:///client/missing.rs"
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "File not found in VFS: \"/tmp/.tmp7Kgrge/fixture/missing.rs\""
+      },
+      "id": "invalid-document",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "request": {
+      "id": "barrier",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "barrier",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 1
+            },
+            "start": {
+              "character": 22,
+              "line": 1
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": "view",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 7
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "view",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 3
+            },
+            "start": {
+              "character": 22,
+              "line": 3
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": "view",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 6
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "view",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 2
+            },
+            "start": {
+              "character": 22,
+              "line": 2
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": "view",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 6
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "view",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 2
+            },
+            "start": {
+              "character": 22,
+              "line": 2
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": "view",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 5
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "view",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 1
+            },
+            "start": {
+              "character": 22,
+              "line": 1
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  },
+  {
+    "request": {
+      "id": "view-again",
+      "method": "textDocument/typeDefinition",
+      "params": {
+        "position": {
+          "character": 113,
+          "line": 7
+        },
+        "textDocument": {
+          "uri": "file:///client/src/lib.rs"
+        }
+      }
+    },
+    "response": {
+      "id": "view-again",
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 3
+            },
+            "start": {
+              "character": 22,
+              "line": 3
+            }
+          },
+          "uri": "file:///client/src/lib.rs"
+        }
+      ]
+    }
+  }
+]

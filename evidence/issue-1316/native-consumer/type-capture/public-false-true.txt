@@ -1,0 +1,3 @@
+Err(
+    "method type parameter `A` shadows the impl self type; it cannot become `self`",
+)

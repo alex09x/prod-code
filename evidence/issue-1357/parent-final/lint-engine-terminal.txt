@@ -1,0 +1,49 @@
+$ prod-code exec --remote <build-node> --timeout-secs 1800 -- cargo clippy -p prod-code-engine-rust --lib
+    Checking bitflags v2.13.2
+    Checking tracing-subscriber v0.3.23
+    Checking mbe v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking ra-ap-rustc_abi v0.166.0
+    Checking rustc_apfloat v0.2.3+llvm-462a31f5a5ab
+    Checking notify-types v2.1.0
+    Checking inotify v0.11.5
+    Checking pulldown-cmark v0.9.6
+    Checking ra-ap-rustc_pattern_analysis v0.166.0
+    Checking pulldown-cmark-to-cmark v10.0.4
+    Checking ra-ap-rustc_type_ir v0.166.0
+    Checking notify v8.2.0
+    Checking vfs-notify v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking hir-expand v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking tracing-tree v0.4.1
+    Checking hir-def v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking test-fixture v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking ra-ap-rustc_next_trait_solver v0.166.0
+    Checking hir-ty v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking hir v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking ide-db v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+    Checking ide-diagnostics v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking ide-completion v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking ide-assists v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking ide-ssr v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking load-cargo v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking ide v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+    Checking prod-code-engine-rust v0.3.41 (<developer-home>/prod-code-storage/workspaces/prod-code--wt-b694d9e5/crates/prod-code-engine-rust)
+warning: this `map_or` can be simplified
+   --> crates/prod-code-engine-rust/src/proc_macro_farm/sandbox.rs:225:16
+    |
+225 |             && std::fs::read_to_string(&wrapper_path).map_or(false, |content| content == script)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_map_or
+    = note: `#[warn(clippy::unnecessary_map_or)]` on by default
+help: use `is_ok_and` instead
+    |
+225 -             && std::fs::read_to_string(&wrapper_path).map_or(false, |content| content == script)
+225 +             && std::fs::read_to_string(&wrapper_path).is_ok_and(|content| content == script)
+    |
+
+warning: `prod-code-engine-rust` (lib) generated 1 warning (run `cargo clippy --fix --lib -p prod-code-engine-rust -- ` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.93s
+[prod-code exec] exit 0 in 14.2s (server 14.0s, cpu 0.6s user 0.3s sys, peak 339 MB) on node <build-node>, copy <developer-home>/prod-code-storage/workspaces/prod-code--wt-b694d9e5 (linux x86_64)
+
+LOCAL_EXIT=0

@@ -1,0 +1,148 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 3 tests
+mutable binding original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, mut t: Tax) -> u32 {
+        t.0 += 1; self.0 + t.0
+    }
+}
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", o.f(tax)); }
+
+nested impl type original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+fn main() { let n = { Order::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+negation original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f(&self, tax: &Tax, flag: bool) -> &'static str {
+        let _ = tax;
+        fn diverge() -> ! { let _ = "{self:?}"; loop {} }
+        if !flag {
+            struct Inner;
+            impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+            assert_eq!(Inner::size(), 0);
+            "{self:?}"
+        } else { r#"{self:?}"# }
+    }
+}
+fn main() { let o = Order(2); let t = Tax; println!("{}|{}", o.f(&t, false), o.f(&t, true)); }
+
+mutable binding original: rustc exit status: 0
+
+mutable binding original: runtime exit status: 0
+6
+
+nested impl type original: rustc exit status: 0
+
+nested impl type original: runtime exit status: 0
+8
+
+negation original: rustc exit status: 0
+
+negation original: runtime exit status: 0
+{self:?}|{self:?}
+
+negation force=false: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+negation apply force=false: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+negation force=true: cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned
+negation apply force=true: Err(cannot establish Self ownership of an owner declaration inside macro tokens; nothing was planned)
+negation force=false: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+negation apply force=false: Err(cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned)
+binding gateway queried (4, 19); binding=(4, 21); mut-keyword=(4, 19)
+negation force=true: cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned
+negation apply force=true: Err(cannot establish binding identity for implicit format capture `self` in macro literal; nothing was planned)
+binding gateway queried (4, 8); binding=(4, 21); mut-keyword=(4, 19)
+
+thread 'remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros' (1682753) panicked at crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs:79:5:
+assertion `left == right` failed: ordinary negation/never blocks must remain movable
+  left: 4
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... FAILED
+nested impl type preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> Option<impl Iterator<Item = usize>> {
+        struct Inner;
+        impl Inner { fn size() -> usize { std::mem::size_of::<Self>() } }
+        let n = std::mem::size_of::<Self>() + Inner::size();
+        Some(std::iter::once(n))
+    }
+}
+struct Order(u64);
+fn main() { let n = { Tax::f().unwrap().next().unwrap() }; println!("{}", n); }
+
+mutable binding preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(mut self, order: &Order) -> u32 {
+        t.0 += 1; order.0 + t.0
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(2); let tax = Tax(3); println!("{}", tax.f(&o)); }
+
+mutable binding preview: rustc exit status: 1
+error[E0425]: cannot find value `t` in this scope
+ --> <scratch>/main.rs:5:9
+  |
+5 |         t.0 += 1; order.0 + t.0
+  |         ^ not found in this scope
+
+error[E0425]: cannot find value `t` in this scope
+ --> <scratch>/main.rs:5:29
+  |
+5 |         t.0 += 1; order.0 + t.0
+  |                             ^ not found in this scope
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0425`.
+
+
+thread 'remaining_regressions::mutable_short_binding_uses_its_token_cursor' (1682752) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:175:5:
+rustc failed for mutable binding preview
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... FAILED
+nested impl type preview: rustc exit status: 0
+
+nested impl type preview: runtime exit status: 0
+0
+
+
+thread 'remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self' (1682754) panicked at crates/prod-code-mcp/tests/rust_method_preservation/remaining_regressions.rs:31:13:
+assertion `left == right` failed
+  left: "0\n"
+ right: "8\n"
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... FAILED
+
+failures:
+
+failures:
+    remaining_regressions::mutable_short_binding_uses_its_token_cursor
+    remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros
+    remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 1.1s (server 0.8s, cpu 0.7s user 0.8s sys, peak 507 MB) on node <linux-build-node>, copy <remote-checkout> (linux x86_64)
+
+Terminal exit: 101

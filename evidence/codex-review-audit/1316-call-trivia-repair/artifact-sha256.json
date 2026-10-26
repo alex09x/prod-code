@@ -1,0 +1,15 @@
+{
+  "README.md": "824b685d90c1def8cb339c35a0f6351fa5c6b1a43e2f6d3466bb3827c9fca1c5",
+  "acceptance.txt": "47d601cb0ae76dc1477d37d208f7e92fb043e9111c671ee1948ae7146169ccc5",
+  "before.txt": "ffc460f34530d47541ca653a940702abfcd0fabb5238bd128502d8711f85780f",
+  "commands.json": "73d29c92aa9c74405ca4b71fa21f600d7f0b6fa28dafe4a8cc41afb410acb3c1",
+  "format.txt": "59a7b7e5da5bf23c81cc7338e910c67403f3eb15c3d1db0533c2711b10207393",
+  "lint-comparison.json": "ec01f8bf7f0ef4cb9194c29aa8e7c525a826298ffd7ed3b52db59b4fb1b681b8",
+  "lint.txt": "a2d1ccc29c009de12e648047510a211ac5d7e69a8265dbc9fe08a2c621dcc88e",
+  "orchestration.txt": "aca755a15685d410bae2f080801e75ae84603b0b6c626f297832f8103c8d12c9",
+  "preserved-evidence.json": "c48b62be60124ba370721ab7d9711aaf225fd3cc2dadc999f07cd272001a6aec",
+  "runtime-sha256.json": "25c07df6c3c85f8eb694b93c56900f2a8cf254af5f5cee2b7c851a3e216c9dad",
+  "runtime.txt": "2c6e80e342d12869ddd94aafbfb1ffd1f534fbf21d8d386049e07a69775cc2f9",
+  "source-sha256.json": "1eff338fc577318dd75bf90f6ca3e57576b2a7d16a8ab34a85a6e45ce8cde0be",
+  "tool-failures.txt": "d408b3b340dcdf2d2ce1ebf35a1064b57e9c911163a5689ad469d00c4cfb1e10"
+}

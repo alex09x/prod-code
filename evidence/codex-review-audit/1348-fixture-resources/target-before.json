@@ -1,0 +1,645 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "prod-code-mcp",
+    "--test",
+    "rust_method_preservation"
+  ],
+  "exit": 101,
+  "peak": {
+    "fds": 1004,
+    "kinds": {
+      "file": 6,
+      "socket": 490,
+      "anon_inode:[eventpoll]": 190,
+      "anon_inode:[eventfd]": 172,
+      "inotify": 124,
+      "pipe": 22
+    },
+    "socket_states_hex": {
+      "0A": 121,
+      "08": 118,
+      "01": 210
+    },
+    "inotify_watches": 63,
+    "empty_inotify": 121,
+    "nofile": [
+      "1024",
+      "1000000"
+    ]
+  },
+  "samples": [
+    {
+      "seconds": 0.112,
+      "fds": 64,
+      "kinds": {
+        "file": 6,
+        "anon_inode:[eventpoll]": 26,
+        "anon_inode:[eventfd]": 13,
+        "socket": 15,
+        "pipe": 4
+      },
+      "socket_states_hex": {},
+      "inotify_watches": 0,
+      "empty_inotify": 0,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.149,
+      "fds": 194,
+      "kinds": {
+        "file": 15,
+        "anon_inode:[eventpoll]": 64,
+        "anon_inode:[eventfd]": 32,
+        "socket": 34,
+        "pipe": 49
+      },
+      "socket_states_hex": {},
+      "inotify_watches": 0,
+      "empty_inotify": 0,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.226,
+      "fds": 229,
+      "kinds": {
+        "file": 3,
+        "anon_inode:[eventpoll]": 69,
+        "anon_inode:[eventfd]": 37,
+        "socket": 57,
+        "inotify": 5,
+        "pipe": 58
+      },
+      "socket_states_hex": {
+        "0A": 11,
+        "01": 12
+      },
+      "inotify_watches": 63,
+      "empty_inotify": 2,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.315,
+      "fds": 279,
+      "kinds": {
+        "file": 3,
+        "anon_inode:[eventpoll]": 82,
+        "anon_inode:[eventfd]": 50,
+        "socket": 102,
+        "inotify": 18,
+        "pipe": 24
+      },
+      "socket_states_hex": {
+        "0A": 30,
+        "01": 36,
+        "08": 2
+      },
+      "inotify_watches": 337,
+      "empty_inotify": 2,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.408,
+      "fds": 319,
+      "kinds": {
+        "file": 5,
+        "anon_inode:[eventpoll]": 87,
+        "anon_inode:[eventfd]": 55,
+        "socket": 121,
+        "inotify": 23,
+        "pipe": 28
+      },
+      "socket_states_hex": {
+        "0A": 31,
+        "01": 52,
+        "08": 7
+      },
+      "inotify_watches": 421,
+      "empty_inotify": 3,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.508,
+      "fds": 364,
+      "kinds": {
+        "file": 5,
+        "anon_inode:[eventpoll]": 92,
+        "anon_inode:[eventfd]": 60,
+        "socket": 144,
+        "inotify": 28,
+        "pipe": 35
+      },
+      "socket_states_hex": {
+        "0A": 34,
+        "01": 59,
+        "08": 15
+      },
+      "inotify_watches": 484,
+      "empty_inotify": 5,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.681,
+      "fds": 417,
+      "kinds": {
+        "file": 11,
+        "anon_inode:[eventpoll]": 98,
+        "anon_inode:[eventfd]": 66,
+        "socket": 164,
+        "inotify": 33,
+        "pipe": 45
+      },
+      "socket_states_hex": {
+        "0A": 42,
+        "08": 18,
+        "01": 71
+      },
+      "inotify_watches": 399,
+      "empty_inotify": 14,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.766,
+      "fds": 455,
+      "kinds": {
+        "file": 10,
+        "anon_inode:[eventpoll]": 107,
+        "anon_inode:[eventfd]": 75,
+        "socket": 189,
+        "inotify": 41,
+        "pipe": 33
+      },
+      "socket_states_hex": {
+        "0A": 50,
+        "08": 18,
+        "01": 86
+      },
+      "inotify_watches": 462,
+      "empty_inotify": 19,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.855,
+      "fds": 497,
+      "kinds": {
+        "file": 13,
+        "anon_inode:[eventpoll]": 115,
+        "anon_inode:[eventfd]": 83,
+        "socket": 212,
+        "inotify": 48,
+        "pipe": 26
+      },
+      "socket_states_hex": {
+        "0A": 59,
+        "08": 19,
+        "01": 99
+      },
+      "inotify_watches": 399,
+      "empty_inotify": 29,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 0.986,
+      "fds": 544,
+      "kinds": {
+        "file": 10,
+        "anon_inode:[eventpoll]": 126,
+        "anon_inode:[eventfd]": 94,
+        "socket": 229,
+        "inotify": 58,
+        "pipe": 27
+      },
+      "socket_states_hex": {
+        "0A": 65,
+        "08": 20,
+        "01": 116
+      },
+      "inotify_watches": 462,
+      "empty_inotify": 36,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 1.084,
+      "fds": 582,
+      "kinds": {
+        "file": 11,
+        "anon_inode:[eventpoll]": 134,
+        "anon_inode:[eventfd]": 102,
+        "socket": 238,
+        "inotify": 64,
+        "pipe": 33
+      },
+      "socket_states_hex": {
+        "0A": 59,
+        "08": 27,
+        "01": 118
+      },
+      "inotify_watches": 440,
+      "empty_inotify": 43,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 1.248,
+      "fds": 658,
+      "kinds": {
+        "file": 9,
+        "anon_inode:[eventpoll]": 155,
+        "anon_inode:[eventfd]": 123,
+        "socket": 258,
+        "inotify": 81,
+        "pipe": 32
+      },
+      "socket_states_hex": {
+        "0A": 62,
+        "08": 41,
+        "01": 119
+      },
+      "inotify_watches": 461,
+      "empty_inotify": 59,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 1.295,
+      "fds": 690,
+      "kinds": {
+        "file": 12,
+        "anon_inode:[eventpoll]": 159,
+        "anon_inode:[eventfd]": 127,
+        "socket": 268,
+        "inotify": 85,
+        "pipe": 39
+      },
+      "socket_states_hex": {
+        "0A": 63,
+        "08": 44,
+        "01": 126
+      },
+      "inotify_watches": 503,
+      "empty_inotify": 61,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 1.446,
+      "fds": 737,
+      "kinds": {
+        "file": 9,
+        "anon_inode:[eventpoll]": 170,
+        "anon_inode:[eventfd]": 138,
+        "socket": 293,
+        "inotify": 94,
+        "pipe": 33
+      },
+      "socket_states_hex": {
+        "0A": 73,
+        "08": 43,
+        "01": 139
+      },
+      "inotify_watches": 399,
+      "empty_inotify": 75,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 1.54,
+      "fds": 772,
+      "kinds": {
+        "file": 10,
+        "anon_inode:[eventpoll]": 178,
+        "anon_inode:[eventfd]": 146,
+        "socket": 310,
+        "inotify": 101,
+        "pipe": 27
+      },
+      "socket_states_hex": {
+        "0A": 78,
+        "08": 44,
+        "01": 155
+      },
+      "inotify_watches": 441,
+      "empty_inotify": 80,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 1.772,
+      "fds": 817,
+      "kinds": {
+        "file": 8,
+        "anon_inode:[eventpoll]": 193,
+        "anon_inode:[eventfd]": 161,
+        "socket": 312,
+        "inotify": 113,
+        "pipe": 30
+      },
+      "socket_states_hex": {
+        "0A": 74,
+        "08": 64,
+        "01": 139
+      },
+      "inotify_watches": 378,
+      "empty_inotify": 95,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 1.919,
+      "fds": 859,
+      "kinds": {
+        "file": 7,
+        "anon_inode:[eventpoll]": 198,
+        "anon_inode:[eventfd]": 168,
+        "socket": 333,
+        "inotify": 119,
+        "pipe": 34
+      },
+      "socket_states_hex": {
+        "0A": 81,
+        "08": 67,
+        "01": 152
+      },
+      "inotify_watches": 336,
+      "empty_inotify": 103,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 2.467,
+      "fds": 892,
+      "kinds": {
+        "file": 6,
+        "socket": 374,
+        "anon_inode:[eventpoll]": 190,
+        "anon_inode:[eventfd]": 167,
+        "inotify": 119,
+        "pipe": 36
+      },
+      "socket_states_hex": {
+        "0A": 93,
+        "08": 76,
+        "01": 178
+      },
+      "inotify_watches": 0,
+      "empty_inotify": 119,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 2.737,
+      "fds": 929,
+      "kinds": {
+        "file": 9,
+        "socket": 412,
+        "anon_inode:[eventpoll]": 190,
+        "anon_inode:[eventfd]": 167,
+        "inotify": 119,
+        "pipe": 32
+      },
+      "socket_states_hex": {
+        "0A": 107,
+        "08": 82,
+        "01": 198
+      },
+      "inotify_watches": 0,
+      "empty_inotify": 119,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 3.578,
+      "fds": 970,
+      "kinds": {
+        "file": 5,
+        "socket": 466,
+        "anon_inode:[eventpoll]": 191,
+        "anon_inode:[eventfd]": 172,
+        "inotify": 124,
+        "pipe": 12
+      },
+      "socket_states_hex": {
+        "0A": 125,
+        "08": 103,
+        "01": 215
+      },
+      "inotify_watches": 105,
+      "empty_inotify": 119,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 3.801,
+      "fds": 1004,
+      "kinds": {
+        "file": 6,
+        "socket": 490,
+        "anon_inode:[eventpoll]": 190,
+        "anon_inode:[eventfd]": 172,
+        "inotify": 124,
+        "pipe": 22
+      },
+      "socket_states_hex": {
+        "0A": 121,
+        "08": 118,
+        "01": 210
+      },
+      "inotify_watches": 63,
+      "empty_inotify": 121,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 3.855,
+      "fds": 970,
+      "kinds": {
+        "file": 6,
+        "socket": 471,
+        "anon_inode:[eventpoll]": 189,
+        "anon_inode:[eventfd]": 172,
+        "inotify": 124,
+        "pipe": 8
+      },
+      "socket_states_hex": {
+        "0A": 123,
+        "08": 116,
+        "01": 210
+      },
+      "inotify_watches": 63,
+      "empty_inotify": 121,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 4.506,
+      "fds": 925,
+      "kinds": {
+        "file": 7,
+        "socket": 437,
+        "anon_inode:[eventpoll]": 180,
+        "pipe": 6,
+        "anon_inode:[eventfd]": 171,
+        "inotify": 124
+      },
+      "socket_states_hex": {
+        "0A": 92,
+        "08": 149,
+        "01": 184
+      },
+      "inotify_watches": 0,
+      "empty_inotify": 124,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 4.636,
+      "fds": 893,
+      "kinds": {
+        "file": 5,
+        "socket": 408,
+        "anon_inode:[eventpoll]": 178,
+        "anon_inode:[eventfd]": 171,
+        "pipe": 7,
+        "inotify": 124
+      },
+      "socket_states_hex": {
+        "0A": 78,
+        "08": 166,
+        "01": 154
+      },
+      "inotify_watches": 0,
+      "empty_inotify": 124,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 4.948,
+      "fds": 849,
+      "kinds": {
+        "file": 3,
+        "socket": 368,
+        "anon_inode:[eventpoll]": 176,
+        "anon_inode:[eventfd]": 171,
+        "pipe": 7,
+        "inotify": 124
+      },
+      "socket_states_hex": {
+        "0A": 54,
+        "08": 196,
+        "01": 108
+      },
+      "inotify_watches": 0,
+      "empty_inotify": 124,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 5.511,
+      "fds": 798,
+      "kinds": {
+        "file": 4,
+        "socket": 321,
+        "anon_inode:[eventpoll]": 174,
+        "anon_inode:[eventfd]": 171,
+        "pipe": 4,
+        "inotify": 124
+      },
+      "socket_states_hex": {
+        "0A": 28,
+        "08": 232,
+        "01": 56
+      },
+      "inotify_watches": 0,
+      "empty_inotify": 124,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    },
+    {
+      "seconds": 6.193,
+      "fds": 749,
+      "kinds": {
+        "file": 3,
+        "socket": 277,
+        "anon_inode:[eventpoll]": 172,
+        "anon_inode:[eventfd]": 171,
+        "pipe": 2,
+        "inotify": 124
+      },
+      "socket_states_hex": {
+        "0A": 4,
+        "08": 262,
+        "01": 8
+      },
+      "inotify_watches": 0,
+      "empty_inotify": 124,
+      "nofile": [
+        "1024",
+        "1000000"
+      ]
+    }
+  ]
+}

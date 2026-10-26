@@ -1,0 +1,1982 @@
+Diff in <remote-workspace>/crates/prod-code-client/tests/codemod_polyglot.rs:41:
+ 
+ #[tokio::test]
+ async fn polyglot_codemod_go_api_migration() {
+-    let ws = Workspace::new(&[
+-        (
+-            "pkg/server/handler.go",
+-            "package server\n\nimport \"errors\"\n\nfunc HandleRequest() error {\n\terr := fetch()\n\tif err != nil {\n\t\treturn errors.Wrap(err, \"fetch failed\")\n\t}\n\treturn nil\n}\n",
+-        ),
+-    ]);
++    let ws = Workspace::new(&[(
++        "pkg/server/handler.go",
++        "package server\n\nimport \"errors\"\n\nfunc HandleRequest() error {\n\terr := fetch()\n\tif err != nil {\n\t\treturn errors.Wrap(err, \"fetch failed\")\n\t}\n\treturn nil\n}\n",
++    )]);
+     let gw = ScriptedGateway::start(|_, _| json!(null)).await;
+ 
+     // 1. Dry run preview via CLI
+Diff in <remote-workspace>/crates/prod-code-client/tests/codemod_polyglot.rs:134:
+ 
+ #[tokio::test]
+ async fn polyglot_codemod_python_library_modernization() {
+-    let ws = Workspace::new(&[
+-        (
+-            "app/config.py",
+-            "import os\n\ndef load():\n    cfg = os.path.join(base_dir, \"settings.yaml\")\n    return cfg\n",
+-        ),
+-    ]);
++    let ws = Workspace::new(&[(
++        "app/config.py",
++        "import os\n\ndef load():\n    cfg = os.path.join(base_dir, \"settings.yaml\")\n    return cfg\n",
++    )]);
+     let gw = ScriptedGateway::start(|_, _| json!(null)).await;
+ 
+     let result = prod_code_mcp::tools::execute_tool(
+Diff in <remote-workspace>/crates/prod-code-client/tests/editor_mirror.rs:166:
+         0,
+         "source/documentation caused a remote file read"
+     );
+-    assert!(!files.mirror_path(Path::new("/node/source.rs")).unwrap().exists());
++    assert!(
++        !files
++            .mirror_path(Path::new("/node/source.rs"))
++            .unwrap()
++            .exists()
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-client/tests/editor_mirror.rs:265:
+         cache.path(),
+     );
+ 
+-    assert!(files.mirror_path(Path::new("/node/../../etc/passwd")).is_none());
+-    assert!(files.mirror_path(Path::new("../../../../etc/shadow")).is_none());
++    assert!(
++        files
++            .mirror_path(Path::new("/node/../../etc/passwd"))
++            .is_none()
++    );
++    assert!(
++        files
++            .mirror_path(Path::new("../../../../etc/shadow"))
++            .is_none()
++    );
+ 
+     let traversal_uris = [
+         "file:///node/../../etc/passwd",
+Diff in <remote-workspace>/crates/prod-code-client/tests/editor_mirror.rs:294:
+     std::fs::create_dir_all(cache.path().join("sub")).unwrap();
+     std::os::unix::fs::symlink(&outside_file, &target).unwrap();
+ 
+-    let res = prod_code_client::editor_files::write_read_only(
+-        cache.path(),
+-        &target,
+-        b"overwritten",
+-    );
++    let res =
++        prod_code_client::editor_files::write_read_only(cache.path(), &target, b"overwritten");
+     assert!(res.is_err());
+     assert_eq!(std::fs::read(&outside_file).unwrap(), b"initial");
+ }
+Diff in <remote-workspace>/crates/prod-code-client/tests/editor_mirror.rs:312:
+     std::os::unix::fs::symlink(outside.path(), &escaped_parent).unwrap();
+ 
+     let target = escaped_parent.join("file.txt");
+-    let res = prod_code_client::editor_files::write_read_only(
+-        cache.path(),
+-        &target,
+-        b"overwritten",
+-    );
++    let res =
++        prod_code_client::editor_files::write_read_only(cache.path(), &target, b"overwritten");
+     assert!(res.is_err());
+     assert!(!outside.path().join("file.txt").exists());
+ }
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:114:
+     .unwrap();
+     let mock_text = tool_text(&res_mock);
+     assert!(mock_text.contains("mock for `UserService`"), "{mock_text}");
+-    assert!(mock_text.contains("type MockUserService struct"), "{mock_text}");
+-    assert!(mock_text.contains("GetUserFunc func(id string) (string, error)"), "{mock_text}");
+-    assert!(mock_text.contains("DeleteUserFunc func(id string) error"), "{mock_text}");
+-    assert!(mock_text.contains("func (m *MockUserService) GetUser(id string) (string, error)"), "{mock_text}");
+-    assert!(mock_text.contains("m.Calls = append(m.Calls, \"GetUser\")"), "{mock_text}");
++    assert!(
++        mock_text.contains("type MockUserService struct"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("GetUserFunc func(id string) (string, error)"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("DeleteUserFunc func(id string) error"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("func (m *MockUserService) GetUser(id string) (string, error)"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("m.Calls = append(m.Calls, \"GetUser\")"),
++        "{mock_text}"
++    );
+ 
+     // Test CLI integration
+     let cli_out = cli(
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:125:
+         &ws,
+         gw.addr(),
+-        &["fixture", "ServerConfig", "--no-verify", "--path", "config.go"],
++        &[
++            "fixture",
++            "ServerConfig",
++            "--no-verify",
++            "--path",
++            "config.go",
++        ],
+     )
+     .await;
+     assert!(cli_out.status.success());
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:135:
+     let cli_rand = cli(
+         &ws,
+         gw.addr(),
+-        &["fixture", "ServerConfig", "--randomized", "--no-verify", "--path", "config.go"],
++        &[
++            "fixture",
++            "ServerConfig",
++            "--randomized",
++            "--no-verify",
++            "--path",
++            "config.go",
++        ],
+     )
+     .await;
+     assert!(cli_rand.status.success());
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:146:
+     let cli_mock = cli(
+         &ws,
+         gw.addr(),
+-        &["fixture", "UserService", "--mock", "--no-verify", "--path", "service.go"],
++        &[
++            "fixture",
++            "UserService",
++            "--mock",
++            "--no-verify",
++            "--path",
++            "service.go",
++        ],
+     )
+     .await;
+     assert!(cli_mock.status.success());
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:199:
+     .unwrap();
+     let text = tool_text(&res);
+     assert!(!res.is_error, "{text}");
+-    assert!(text.contains("const userProfile: UserProfile = {"), "{text}");
++    assert!(
++        text.contains("const userProfile: UserProfile = {"),
++        "{text}"
++    );
+     assert!(text.contains("id: \"id_9823\","), "{text}");
+     assert!(text.contains("email: \"user@example.com\","), "{text}");
+     assert!(text.contains("age: 30,"), "{text}");
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:215:
+     .await
+     .unwrap();
+     let mock_text = tool_text(&res_mock);
+-    assert!(mock_text.contains("export class MockCacheService implements CacheService"), "{mock_text}");
+-    assert!(mock_text.contains("public getHandler?: (key: string) => Promise<string>;"), "{mock_text}");
+-    assert!(mock_text.contains("async get(key: string): Promise<string>"), "{mock_text}");
+-    assert!(mock_text.contains("this.calls.push({ method: \"get\", args: [key] })"), "{mock_text}");
+-    assert!(mock_text.contains("export const createMockCacheService"), "{mock_text}");
++    assert!(
++        mock_text.contains("export class MockCacheService implements CacheService"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("public getHandler?: (key: string) => Promise<string>;"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("async get(key: string): Promise<string>"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("this.calls.push({ method: \"get\", args: [key] })"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("export const createMockCacheService"),
++        "{mock_text}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:283:
+     .unwrap();
+     let mock_text = tool_text(&res_mock);
+     assert!(mock_text.contains("class MockStorage:"), "{mock_text}");
+-    assert!(mock_text.contains("def save(self, key: str, val: bytes) -> bool:"), "{mock_text}");
+-    assert!(mock_text.contains("self.calls.append((\"save\", (key, val), {}))"), "{mock_text}");
++    assert!(
++        mock_text.contains("def save(self, key: str, val: bytes) -> bool:"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("self.calls.append((\"save\", (key, val), {}))"),
++        "{mock_text}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:342:
+     .await
+     .unwrap();
+     let mock_text = tool_text(&res_mock);
+-    assert!(mock_text.contains("final class MockNetworkService: NetworkService"), "{mock_text}");
+-    assert!(mock_text.contains("func fetch(url: String) -> String"), "{mock_text}");
++    assert!(
++        mock_text.contains("final class MockNetworkService: NetworkService"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("func fetch(url: String) -> String"),
++        "{mock_text}"
++    );
+     assert!(mock_text.contains("calls.append(\"fetch\")"), "{mock_text}");
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-client/tests/fixture_polyglot.rs:402:
+     .await
+     .unwrap();
+     let mock_text = tool_text(&res_mock);
+-    assert!(mock_text.contains("class MockExecutor : public Executor"), "{mock_text}");
+-    assert!(mock_text.contains("void execute(int code) override"), "{mock_text}");
+-    assert!(mock_text.contains("calls.push_back(\"execute\");"), "{mock_text}");
++    assert!(
++        mock_text.contains("class MockExecutor : public Executor"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("void execute(int code) override"),
++        "{mock_text}"
++    );
++    assert!(
++        mock_text.contains("calls.push_back(\"execute\");"),
++        "{mock_text}"
++    );
+ }
+-
+ 
+Diff in <remote-workspace>/crates/prod-code-client/tests/validate_metadata.rs:97:
+     let text = match &res.content[0] {
+         prod_code_mcp::protocol::McpContentItem::Text { text } => text,
+     };
+-    assert!(text.contains("package.json: 0 error(s), 0 warning(s)"), "{text}");
++    assert!(
++        text.contains("package.json: 0 error(s), 0 warning(s)"),
++        "{text}"
++    );
+ 
+     // 2. Malformed package.json proposal reports syntax error at line and column
+     let malformed_pkg = "{\n  \"name\": \"prod-browser\",\n}";
+Diff in <remote-workspace>/crates/prod-code-client/tests/validate_metadata.rs:182:
+     )
+     .await
+     .expect("validation succeeds on valid markdown");
+-    assert!(!res.is_error, "clean markdown should have 0 errors: {res:?}");
++    assert!(
++        !res.is_error,
++        "clean markdown should have 0 errors: {res:?}"
++    );
+     let text = match &res.content[0] {
+         prod_code_mcp::protocol::McpContentItem::Text { text } => text,
+     };
+Diff in <remote-workspace>/crates/prod-code-client/tests/validate_metadata.rs:259:
+     let text = match &res.content[0] {
+         prod_code_mcp::protocol::McpContentItem::Text { text } => text,
+     };
+-    assert!(text.contains("2 file(s) checked together: 0 error(s), 0 warning(s)"), "{text}");
++    assert!(
++        text.contains("2 file(s) checked together: 0 error(s), 0 warning(s)"),
++        "{text}"
++    );
+ 
+     // 6. CLI invocation reproduction: prod-code validate src/content/blog/example.md --from proposed.md --with public/img/card.svg=proposed.svg --json
+     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+Diff in <remote-workspace>/crates/prod-code-client/tests/validate_metadata.rs:290:
+     assert!(stdout.contains("public/img/card.svg"), "{stdout}");
+ 
+     // Gateway was never queried for parser-backed documentation or SVG
+-    assert_eq!(gw.calls(), 0, "Markdown and SVG files are validated locally by syntax parsers");
++    assert_eq!(
++        gw.calls(),
++        0,
++        "Markdown and SVG files are validated locally by syntax parsers"
++    );
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-engine-generic/tests/fake_server.rs:1792:
+     let java = GenericLspConfig::for_java();
+     assert!(!java.command.is_empty(), "Java's server is named");
+     let kotlin = GenericLspConfig::for_kotlin();
+-    assert_eq!(kotlin.command, "kotlin-language-server", "Kotlin's server is named");
++    assert_eq!(
++        kotlin.command, "kotlin-language-server",
++        "Kotlin's server is named"
++    );
+     let csharp = GenericLspConfig::for_csharp();
+     assert!(!csharp.command.is_empty(), "C#'s server is named");
+     let php = GenericLspConfig::for_php();
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:48:
+                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                         exit_code: None,
+                                         duration_ms: 0,
+-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
++                                        server_workspace_root: workspace
++                                            .to_string_lossy()
++                                            .to_string(),
+                                         timed_out: false,
+                                         error: Some("workspace not synced".into()),
+                                         usage: None,
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:69:
+                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                         exit_code: None,
+                                         duration_ms: 0,
+-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
++                                        server_workspace_root: workspace
++                                            .to_string_lossy()
++                                            .to_string(),
+                                         timed_out: false,
+                                         error: Some(format!(
+                                             "timeout_secs ({}) exceeds maximum allowed (604800)",
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:88:
+                                 return;
+                             }
+ 
+-                            if req.command == RemoteExecCommand::Check && req.language == RemoteExecLanguage::Rust {
++                            if req.command == RemoteExecCommand::Check
++                                && req.language == RemoteExecLanguage::Rust
++                            {
+                                 // Simulate cargo compiler JSON message stream
+                                 let diag_json = r#"{"reason":"compiler-message","package_id":"foo","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":10,"column_start":5,"is_primary":true,"label":"expected u32, found &str"}],"rendered":"error[E0308]: mismatched types\n"}}"#;
+                                 let _ = framed
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:101:
+                                     .await;
+ 
+                                 if req.format == RemoteExecFormat::Json
+-                                    && let Some(stream_ev) = prod_code_protocol::parse_cargo_json_event(diag_json) {
+-                                        let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+-                                    }
++                                    && let Some(stream_ev) =
++                                        prod_code_protocol::parse_cargo_json_event(diag_json)
++                                {
++                                    let _ =
++                                        framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
++                                }
+ 
+                                 let _ = framed
+                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:110:
+                                         exit_code: Some(1),
+                                         duration_ms: 45,
+-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
++                                        server_workspace_root: workspace
++                                            .to_string_lossy()
++                                            .to_string(),
+                                         timed_out: false,
+                                         error: None,
+                                         usage: None,
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:129:
+                                         benches: Vec::new(),
+                                     }))
+                                     .await;
+-                            } else if req.command == RemoteExecCommand::Test && req.language == RemoteExecLanguage::Rust {
++                            } else if req.command == RemoteExecCommand::Test
++                                && req.language == RemoteExecLanguage::Rust
++                            {
+                                 // Simulate cargo test output: mixed compiler JSON and standard libtest text lines
+                                 let lines = [
+                                     r#"{"reason":"compiler-artifact","package_id":"my-crate"}"#,
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:145:
+                                 let mut failures = Vec::new();
+                                 for line in lines {
+                                     let _ = framed
+-                                        .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
+-                                            ExecChunk {
++                                        .send(WireMessage::RemoteExecStream(
++                                            RemoteExecStream::Chunk(ExecChunk {
+                                                 stderr: false,
+                                                 data: Some(format!("{line}\n").into_bytes()),
+-                                            },
+-                                        )))
++                                            }),
++                                        ))
+                                         .await;
+-                                    if let Some(stream_ev) = prod_code_protocol::parse_cargo_json_event(line) {
++                                    if let Some(stream_ev) =
++                                        prod_code_protocol::parse_cargo_json_event(line)
++                                    {
+                                         match &stream_ev {
+-                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { .. }) => passed += 1,
+-                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { .. }) => {
++                                            RemoteExecStream::TestEvent(
++                                                RemoteExecTestEvent::Passed { .. },
++                                            ) => passed += 1,
++                                            RemoteExecStream::TestEvent(
++                                                RemoteExecTestEvent::Failed { .. },
++                                            ) => {
+                                                 failed += 1;
+-                                                if let RemoteExecStream::TestEvent(te) = &stream_ev {
++                                                if let RemoteExecStream::TestEvent(te) = &stream_ev
++                                                {
+                                                     failures.push(te.clone());
+                                                 }
+                                             }
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:164:
+-                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { .. }) => skipped += 1,
++                                            RemoteExecStream::TestEvent(
++                                                RemoteExecTestEvent::Skipped { .. },
++                                            ) => skipped += 1,
+                                             _ => {}
+                                         }
+-                                        let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
++                                        let _ = framed
++                                            .send(WireMessage::RemoteExecStream(stream_ev))
++                                            .await;
+                                     }
+                                 }
+ 
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:172:
+                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                         exit_code: Some(1),
+                                         duration_ms: 180,
+-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
++                                        server_workspace_root: workspace
++                                            .to_string_lossy()
++                                            .to_string(),
+                                         timed_out: false,
+                                         error: None,
+                                         usage: None,
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:185:
+                                         benches: Vec::new(),
+                                     }))
+                                     .await;
+-                            } else if req.command == RemoteExecCommand::Test && req.language == RemoteExecLanguage::Go {
++                            } else if req.command == RemoteExecCommand::Test
++                                && req.language == RemoteExecLanguage::Go
++                            {
+                                 if req.format == RemoteExecFormat::Raw {
+                                     let argv = req.to_argv();
+-                                    assert!(argv.contains(&"-v".to_string()), "expected -v in raw Go test command: {argv:?}");
++                                    assert!(
++                                        argv.contains(&"-v".to_string()),
++                                        "expected -v in raw Go test command: {argv:?}"
++                                    );
+                                     let raw_lines = [
+                                         "=== RUN   TestLogin",
+                                         "--- PASS: TestLogin (0.012s)",
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:205:
+                                     let mut failures = Vec::new();
+                                     for line in raw_lines {
+                                         let _ = framed
+-                                            .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
+-                                                ExecChunk {
++                                            .send(WireMessage::RemoteExecStream(
++                                                RemoteExecStream::Chunk(ExecChunk {
+                                                     stderr: false,
+                                                     data: Some(format!("{line}\n").into_bytes()),
+-                                                },
+-                                            )))
++                                                }),
++                                            ))
+                                             .await;
+-                                        if let Some(stream_ev) = prod_code_protocol::parse_go_test_json_event(line) {
++                                        if let Some(stream_ev) =
++                                            prod_code_protocol::parse_go_test_json_event(line)
++                                        {
+                                             match &stream_ev {
+-                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { .. }) => passed += 1,
+-                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { .. }) => {
++                                                RemoteExecStream::TestEvent(
++                                                    RemoteExecTestEvent::Passed { .. },
++                                                ) => passed += 1,
++                                                RemoteExecStream::TestEvent(
++                                                    RemoteExecTestEvent::Failed { .. },
++                                                ) => {
+                                                     failed += 1;
+-                                                    if let RemoteExecStream::TestEvent(te) = &stream_ev {
++                                                    if let RemoteExecStream::TestEvent(te) =
++                                                        &stream_ev
++                                                    {
+                                                         failures.push(te.clone());
+                                                     }
+                                                 }
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:224:
+-                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { .. }) => skipped += 1,
++                                                RemoteExecStream::TestEvent(
++                                                    RemoteExecTestEvent::Skipped { .. },
++                                                ) => skipped += 1,
+                                                 _ => {}
+                                             }
+-                                            let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
++                                            let _ = framed
++                                                .send(WireMessage::RemoteExecStream(stream_ev))
++                                                .await;
+                                         }
+                                     }
+                                     let _ = framed
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:231:
+                                         .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                             exit_code: Some(1),
+                                             duration_ms: 120,
+-                                            server_workspace_root: workspace.to_string_lossy().to_string(),
++                                            server_workspace_root: workspace
++                                                .to_string_lossy()
++                                                .to_string(),
+                                             timed_out: false,
+                                             error: None,
+                                             usage: None,
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:251:
+ 
+                                     for line in [go_pass, go_fail] {
+                                         let _ = framed
+-                                            .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
+-                                                ExecChunk {
++                                            .send(WireMessage::RemoteExecStream(
++                                                RemoteExecStream::Chunk(ExecChunk {
+                                                     stderr: false,
+                                                     data: Some(format!("{line}\n").into_bytes()),
+-                                                },
+-                                            )))
++                                                }),
++                                            ))
+                                             .await;
+-                                        if let Some(stream_ev) = prod_code_protocol::parse_go_test_json_event(line) {
+-                                            let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
++                                        if let Some(stream_ev) =
++                                            prod_code_protocol::parse_go_test_json_event(line)
++                                        {
++                                            let _ = framed
++                                                .send(WireMessage::RemoteExecStream(stream_ev))
++                                                .await;
+                                         }
+                                     }
+ 
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:267:
+                                         .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                             exit_code: Some(1),
+                                             duration_ms: 120,
+-                                            server_workspace_root: workspace.to_string_lossy().to_string(),
++                                            server_workspace_root: workspace
++                                                .to_string_lossy()
++                                                .to_string(),
+                                             timed_out: false,
+                                             error: None,
+                                             usage: None,
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:293:
+                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
+                                         exit_code: Some(0),
+                                         duration_ms: 10,
+-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
++                                        server_workspace_root: workspace
++                                            .to_string_lossy()
++                                            .to_string(),
+                                         timed_out: false,
+                                         error: None,
+                                         usage: None,
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:340:
+         client_host: Some("localhost".into()),
+     };
+ 
+-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
++    framed
++        .send(WireMessage::RemoteExecRequest(req))
++        .await
++        .unwrap();
+ 
+     let mut stream_events = Vec::new();
+     let mut final_result = None;
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:365:
+     assert_eq!(res.diagnostics[0].code.as_deref(), Some("E0308"));
+ 
+     // Verify stream contained both raw chunk and structured diagnostic
+-    let has_chunk = stream_events.iter().any(|ev| matches!(ev, RemoteExecStream::Chunk(_)));
+-    let has_diag = stream_events.iter().any(|ev| matches!(ev, RemoteExecStream::Diagnostic(d) if d.code.as_deref() == Some("E0308")));
++    let has_chunk = stream_events
++        .iter()
++        .any(|ev| matches!(ev, RemoteExecStream::Chunk(_)));
++    let has_diag = stream_events.iter().any(
++        |ev| matches!(ev, RemoteExecStream::Diagnostic(d) if d.code.as_deref() == Some("E0308")),
++    );
+     assert!(has_chunk);
+     assert!(has_diag);
+ }
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:392:
+         client_host: Some("localhost".into()),
+     };
+ 
+-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
++    framed
++        .send(WireMessage::RemoteExecRequest(req))
++        .await
++        .unwrap();
+ 
+     let mut stream_events = Vec::new();
+     let mut final_result = None;
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:445:
+         client_host: None,
+     };
+ 
+-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
++    framed
++        .send(WireMessage::RemoteExecRequest(req))
++        .await
++        .unwrap();
+ 
+     let msg = framed.next().await.unwrap().unwrap();
+     match msg {
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:479:
+         client_host: Some("localhost".into()),
+     };
+ 
+-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
++    framed
++        .send(WireMessage::RemoteExecRequest(req))
++        .await
++        .unwrap();
+ 
+     let mut stream_events = Vec::new();
+     let mut final_result = None;
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:550:
+         client_host: None,
+     };
+ 
+-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
++    framed
++        .send(WireMessage::RemoteExecRequest(req))
++        .await
++        .unwrap();
+ 
+     let msg = framed.next().await.unwrap().unwrap();
+     match msg {
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/e2e_remote_exec.rs:589:
+ 
+     assert_eq!(req.to_argv(), vec!["go", "test", "-v", "./..."]);
+ 
+-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
++    framed
++        .send(WireMessage::RemoteExecRequest(req))
++        .await
++        .unwrap();
+ 
+     let mut stream_events = Vec::new();
+     let mut final_result = None;
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/proc_macro_farm_integration.rs:10:
+ 
+ #![cfg(unix)]
+ 
+-use prod_code_engine_rust::proc_macro_farm::{
+-    prepare_sandboxed_srv, ProcMacroWorkerFarm,
+-};
+-use prod_code_engine_rust::{ProdCodeConfig, ProcMacroServerKind, RustEngine};
++use prod_code_engine_rust::proc_macro_farm::{ProcMacroWorkerFarm, prepare_sandboxed_srv};
++use prod_code_engine_rust::{ProcMacroServerKind, ProdCodeConfig, RustEngine};
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ 
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/proc_macro_farm_integration.rs:66:
+     let (w6, permit6) = farm.allocate_workers(&ws6, 2);
+     assert_eq!(w6, 0, "Must be rejected when farm is at full capacity");
+     assert_eq!(permit6.worker_count(), 0);
+-    assert_eq!(farm.active_workers(), 10, "Total active workers must not exceed capacity");
++    assert_eq!(
++        farm.active_workers(),
++        10,
++        "Total active workers must not exceed capacity"
++    );
+     assert_eq!(farm.active_workspaces(), 5);
+ 
+     // When Workspace 1 finishes / is evicted, its 2 workers are returned
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/proc_macro_farm_integration.rs:117:
+     .unwrap();
+ 
+     use std::os::unix::fs::PermissionsExt;
+-    let mut perms = std::fs::metadata(&mock_proc_macro_srv).unwrap().permissions();
++    let mut perms = std::fs::metadata(&mock_proc_macro_srv)
++        .unwrap()
++        .permissions();
+     perms.set_mode(0o755);
+     std::fs::set_permissions(&mock_proc_macro_srv, perms).unwrap();
+ 
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/proc_macro_farm_integration.rs:148:
+     assert!(out.status.success());
+     let stdout = String::from_utf8_lossy(&out.stdout);
+ 
+-    assert!(stdout.contains("AUTH_TOKEN=''"), "PROD_CODE_AUTH_TOKEN must be scrubbed: {stdout}");
+-    assert!(stdout.contains("AUTH_FILE=''"), "PROD_CODE_AUTH_TOKEN_FILE must be scrubbed: {stdout}");
+-    assert!(stdout.contains("TOKEN=''"), "PROD_CODE_TOKEN must be scrubbed: {stdout}");
+-    assert!(stdout.contains("SECRET=''"), "PROD_CODE_SECRET must be scrubbed: {stdout}");
+-    assert!(stdout.contains("TLS_KEY=''"), "PROD_CODE_TLS_KEY must be scrubbed: {stdout}");
+-    assert!(stdout.contains("AWS=''"), "AWS_SECRET_ACCESS_KEY must be scrubbed: {stdout}");
+-    assert!(stdout.contains("GITHUB=''"), "GITHUB_TOKEN must be scrubbed: {stdout}");
+-    assert!(stdout.contains("SSH=''"), "SSH_AUTH_SOCK must be scrubbed: {stdout}");
+-    assert!(stdout.contains("INTERNAL='this is unstable'"), "Internal authorization must be set: {stdout}");
+-    assert!(stdout.contains("/scratch"), "Isolated scratch dir must be set: {stdout}");
++    assert!(
++        stdout.contains("AUTH_TOKEN=''"),
++        "PROD_CODE_AUTH_TOKEN must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("AUTH_FILE=''"),
++        "PROD_CODE_AUTH_TOKEN_FILE must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("TOKEN=''"),
++        "PROD_CODE_TOKEN must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("SECRET=''"),
++        "PROD_CODE_SECRET must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("TLS_KEY=''"),
++        "PROD_CODE_TLS_KEY must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("AWS=''"),
++        "AWS_SECRET_ACCESS_KEY must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("GITHUB=''"),
++        "GITHUB_TOKEN must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("SSH=''"),
++        "SSH_AUTH_SOCK must be scrubbed: {stdout}"
++    );
++    assert!(
++        stdout.contains("INTERNAL='this is unstable'"),
++        "Internal authorization must be set: {stdout}"
++    );
++    assert!(
++        stdout.contains("/scratch"),
++        "Isolated scratch dir must be set: {stdout}"
++    );
+ }
+ 
+ #[test]
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/proc_macro_farm_integration.rs:224:
+     let engine = RustEngine::load(temp.path()).expect("Must load workspace with sandboxed farm");
+ 
+     let metrics = RustEngine::proc_macro_farm_metrics();
+-    assert!(metrics.active_workers >= 1, "Farm must track active worker allocation");
+-    assert!(metrics.active_workspaces >= 1, "Farm must track active workspace");
++    assert!(
++        metrics.active_workers >= 1,
++        "Farm must track active worker allocation"
++    );
++    assert!(
++        metrics.active_workspaces >= 1,
++        "Farm must track active workspace"
++    );
+ 
+-    let syms = engine.document_symbols(&lib_rs).expect("Must get document symbols");
++    let syms = engine
++        .document_symbols(&lib_rs)
++        .expect("Must get document symbols");
+     assert!(syms.iter().any(|s| s.name == "WorkerItem"));
+     assert!(syms.iter().any(|s| s.name == "new"));
+ 
+Diff in <remote-workspace>/crates/prod-code-gateway/tests/proc_macro_farm_integration.rs:234:
+-    let hover = engine.hover(&lib_rs, 2, 12).expect("Hover query must succeed");
++    let hover = engine
++        .hover(&lib_rs, 2, 12)
++        .expect("Hover query must succeed");
+     assert!(hover.is_some(), "Must resolve hover for WorkerItem");
+ 
+     drop(engine);
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:8:
+  * SPDX-License-Identifier: MIT OR Apache-2.0
+  */
+ 
+-use prod_code_mcp::signature::{change_with, Modifiers, Param};
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_mcp::signature::{Modifiers, Param, change_with};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:22:
+     .await
+ }
+ 
+-fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: usize) -> serde_json::Value {
++fn reference_at(
++    file: &std::path::Path,
++    source: &str,
++    name: &str,
++    occurrence: usize,
++) -> serde_json::Value {
+     let at = source
+         .match_indices(name)
+         .nth(occurrence)
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:30:
+         .0;
+     let before = &source[..at];
+     let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
+-    let character = before.rsplit('\n').next().unwrap_or_default().encode_utf16().count() as u32;
++    let character = before
++        .rsplit('\n')
++        .next()
++        .unwrap_or_default()
++        .encode_utf16()
++        .count() as u32;
+     serde_json::json!({
+         "uri": url::Url::from_file_path(file).unwrap().to_string(),
+         "range": { "start": { "line": line, "character": character } }
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:219:
+     let math_h = root.join("math.h");
+     let app_cpp = root.join("app.cpp");
+     let app_text = fs::read_to_string(&app_cpp).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&app_cpp, &app_text, "multiply", 0)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&app_cpp, &app_text, "multiply", 0)]).await;
+ 
+     let params = vec![
+         Param::Keep("b".to_string()),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:326:
+     let other_file = root.join("other.ts");
+     let main_text = fs::read_to_string(&main_file).unwrap();
+     let other_before = fs::read_to_string(&other_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&main_file, &main_text, "add", 1)]).await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&main_file, &main_text, "add", 1)]).await;
+     let params = vec![Param::Keep("b".to_string()), Param::Keep("a".to_string())];
+ 
+     let change = change_with(
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:367:
+     let root = ws.root().to_path_buf();
+     let swift_file = root.join("formatter.swift");
+     let swift_text = fs::read_to_string(&swift_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&swift_file, &swift_text, "format", 1)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&swift_file, &swift_text, "format", 1)])
++            .await;
+ 
+     let params = vec![
+         Param::Keep("code".to_string()),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:404:
+     assert!(change.applied);
+ 
+     let content = fs::read_to_string(&swift_file).unwrap();
+-    assert!(content.contains("func format(code: Int, title: String, prefix: String = \"LOG\") -> String"));
++    assert!(
++        content
++            .contains("func format(code: Int, title: String, prefix: String = \"LOG\") -> String")
++    );
+     assert!(content.contains("format(code: 404, title: \"Error\", prefix: \"LOG\")"));
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:471:
+     let root = ws.root().to_path_buf();
+     let api_file = root.join("api.py");
+     let api_text = fs::read_to_string(&api_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&api_file, &api_text, "fetch", 1)]).await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&api_file, &api_text, "fetch", 1)]).await;
+     let params = vec![Param::Keep("id".to_string())];
+     let modifiers = Modifiers {
+         returns: None,
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:533:
+     .await
+     .unwrap_err();
+ 
+-    assert!(err.to_string().contains("parameter `secret` is still used in the function body"));
++    assert!(
++        err.to_string()
++            .contains("parameter `secret` is still used in the function body")
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/change_signature_polyglot_tests.rs:572:
+     .await
+     .unwrap_err();
+ 
+-    assert!(err.to_string().contains("`non_existent` is not a declared parameter"));
++    assert!(
++        err.to_string()
++            .contains("`non_existent` is not a declared parameter")
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_delegate_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::extract_delegate::extract_delegate_polyglot;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ use std::path::Path;
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_delegate_polyglot_tests.rs:468:
+     )
+     .await
+     .expect_err("unresolved package-qualified Go literals must not be rewritten");
+-    assert!(format!("{err:#}").contains("Go literals need package-aware semantic resolution"), "{err:#}");
++    assert!(
++        format!("{err:#}").contains("Go literals need package-aware semantic resolution"),
++        "{err:#}"
++    );
+     assert_eq!(fs::read_to_string(&server_file).unwrap(), server_before);
+     assert_eq!(fs::read_to_string(&main_file).unwrap(), main_before);
+ }
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_delegate_polyglot_tests.rs:513:
+     )
+     .await
+     .unwrap_err();
+-    assert!(err.to_string().contains("uses `score`, which does not move"));
++    assert!(
++        err.to_string()
++            .contains("uses `score`, which does not move")
++    );
+ 
+     // 2. Non-existent field
+     let err2 = extract_delegate_polyglot(
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_delegate_polyglot_tests.rs:553:
+     )
+     .await
+     .unwrap_err();
+-    assert!(err3.to_string().contains("has no method `nonexistentMethod`"));
++    assert!(
++        err3.to_string()
++            .contains("has no method `nonexistentMethod`")
++    );
+ 
+     // 4. Delegate field already exists
+     let err4 = extract_delegate_polyglot(
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_delegate_polyglot_tests.rs:607:
+         "apply": true,
+     });
+ 
+-    let tool_res = prod_code_mcp::tools::execute_tool(
+-        gw.addr(),
+-        &root,
+-        "code_extract_delegate",
+-        args,
+-    )
+-    .await
+-    .unwrap();
++    let tool_res =
++        prod_code_mcp::tools::execute_tool(gw.addr(), &root, "code_extract_delegate", args)
++            .await
++            .unwrap();
+ 
+     assert!(!tool_res.is_error);
+     let content = fs::read_to_string(&service_file).unwrap();
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::extract_field::extract_polyglot;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:45:
+     .await
+     .expect_err("unsupported compile verification must be rejected");
+     assert!(format!("{err:#}").contains("only supported for Rust"));
+-    assert_eq!(ws.read("src/main.ts"), "export function f() { return 42; }\n");
++    assert_eq!(
++        ws.read("src/main.ts"),
++        "export function f() { return 42; }\n"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:103:
+ 
+     let content = fs::read_to_string(&calc_file).unwrap();
+     assert!(content.contains("baseVal: number = 100;"), "{content}");
+-    assert!(content.contains("return this.baseVal * factor;"), "{content}");
++    assert!(
++        content.contains("return this.baseVal * factor;"),
++        "{content}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:134:
+     .await
+     .unwrap();
+     let rewritten = &result.rewritten[0].1;
+-    assert!(rewritten.contains("static MAGIC: number = 42;"), "{rewritten}");
++    assert!(
++        rewritten.contains("static MAGIC: number = 42;"),
++        "{rewritten}"
++    );
+     assert!(rewritten.contains("return this.MAGIC;"), "{rewritten}");
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:191:
+ 
+     let content = fs::read_to_string(&worker_file).unwrap();
+     assert!(content.contains("self.task = \"heavy task\""), "{content}");
+-    assert!(content.contains("self.task = \"heavy task\"\n    def work("), "{content}");
++    assert!(
++        content.contains("self.task = \"heavy task\"\n    def work("),
++        "{content}"
++    );
+     assert!(content.contains("return self.task"), "{content}");
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:427:
+     .unwrap_err();
+ 
+     let msg = err.to_string();
+-    assert!(msg.contains("mentions parameter `x`"), "unexpected error: {msg}");
++    assert!(
++        msg.contains("mentions parameter `x`"),
++        "unexpected error: {msg}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:465:
+     .unwrap_err();
+ 
+     let msg = err.to_string();
+-    assert!(msg.contains("mentions local `factor`"), "unexpected error: {msg}");
++    assert!(
++        msg.contains("mentions local `factor`"),
++        "unexpected error: {msg}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_field_polyglot_tests.rs:505:
+     .unwrap_err();
+ 
+     let msg = err.to_string();
+-    assert!(msg.contains("already has a field `cap`"), "unexpected error: {msg}");
++    assert!(
++        msg.contains("already has a field `cap`"),
++        "unexpected error: {msg}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_function_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::extract_function::extract_function;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/extract_interface_caller_migration_tests.rs:10:
+ 
+ use prod_code_mcp::extract_interface::extract_interface_impl;
+ use prod_code_mcp::extract_trait::extract_trait_ext;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::generify::generify_polyglot;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:110:
+     assert_eq!(res_prom.function, "handlePromise");
+     assert!(res_prom.applied);
+     let content = fs::read_to_string(&file).unwrap();
+-    assert!(content.contains("export function handlePromise<P>(data: Promise<P>): Promise<string> {"));
++    assert!(
++        content.contains("export function handlePromise<P>(data: Promise<P>): Promise<string> {")
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:148:
+     assert_eq!(res.function, "transform");
+     assert!(res.applied);
+     let content = fs::read_to_string(&file).unwrap();
+-    assert!(content.contains("export function transform<U, T extends Comparable>(item: T, meta: U): void {"));
++    assert!(
++        content.contains(
++            "export function transform<U, T extends Comparable>(item: T, meta: U): void {"
++        )
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:367:
+     assert!(res.applied);
+ 
+     let cpp_content = fs::read_to_string(&cpp_file).unwrap();
+-    assert!(cpp_content.contains("template<typename U, typename T>\nvoid combine(const T& item, U other) {"));
++    assert!(
++        cpp_content
++            .contains("template<typename U, typename T>\nvoid combine(const T& item, U other) {")
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:608:
+     let root = ws.root().to_path_buf();
+     let file = root.join("api.ts");
+     let original = fs::read_to_string(&file).unwrap();
+-    let caller_diagnostic_requests =
+-        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let caller_diagnostic_requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+     let caller_seen = std::sync::Arc::clone(&caller_diagnostic_requests);
+     let remote = ScriptedGateway::start(move |method, params| {
+         if method == "textDocument/diagnostic"
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:655:
+ 
+     assert_eq!(result.callers_checked, 1);
+     assert!(
+-        result.diagnostics.iter().any(|d| d.contains("caller type error")),
++        result
++            .diagnostics
++            .iter()
++            .any(|d| d.contains("caller type error")),
+         "diagnostics: {:?}; requests: {:?}",
+         result.diagnostics,
+         caller_diagnostic_requests.load(std::sync::atomic::Ordering::SeqCst)
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:736:
+     .await;
+     assert!(err_missing.is_err());
+     let err_msg = err_missing.unwrap_err().to_string();
+-    assert!(err_msg.contains("has no parameter `nonexistent`"), "{err_msg}");
++    assert!(
++        err_msg.contains("has no parameter `nonexistent`"),
++        "{err_msg}"
++    );
+ 
+     // 2. Type param collision with existing 'T'
+     let err_collision = generify_polyglot(
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/generify_polyglot_tests.rs:755:
+     .await;
+     assert!(err_collision.is_err());
+     let err_msg = err_collision.unwrap_err().to_string();
+-    assert!(err_msg.contains("already has a generic parameter `T`"), "{err_msg}");
++    assert!(
++        err_msg.contains("already has a generic parameter `T`"),
++        "{err_msg}"
++    );
+ 
+     // 3. Invalid identifier
+     let err_invalid = generify_polyglot(
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/impact_rust_tests.rs:475:
+     let root = ws.root();
+     ws.write(
+         "tests/impact.rs",
+-        &TEST.replace("assert_eq!(test_helper(), 2);", "assert_eq!(test_helper(), 3);"),
++        &TEST.replace(
++            "assert_eq!(test_helper(), 2);",
++            "assert_eq!(test_helper(), 3);",
++        ),
+     );
+     let test_uri = prod_code_protocol::path::file_uri(ws.path("tests/impact.rs").as_path());
+     let remote = ScriptedGateway::start_arc(Arc::new(move |method, _| match method {
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/impact_rust_tests.rs:499:
+     let report = impact::analyze(remote, &root, None, 4)
+         .await
+         .expect("impact analysis runs");
+-    assert_eq!(report.tests.len(), 1, "only actual_test is selected: {:?}", report.tests);
++    assert_eq!(
++        report.tests.len(),
++        1,
++        "only actual_test is selected: {:?}",
++        report.tests
++    );
+     assert_eq!(report.tests[0].name, "actual_test");
+     assert_eq!(report.reaches.len(), 1);
+     assert_eq!(report.reaches[0].hops, 0);
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/impact_rust_tests.rs:507:
+     assert_eq!(report.reaches[0].changed.name, "actual_test");
+     assert_eq!(
+         report.test_command.as_deref(),
+-        Some(&["cargo".to_string(), "test".to_string(), "--workspace".to_string(), "--".to_string(), "actual_test".to_string()][..])
++        Some(
++            &[
++                "cargo".to_string(),
++                "test".to_string(),
++                "--workspace".to_string(),
++                "--".to_string(),
++                "actual_test".to_string()
++            ][..]
++        )
+     );
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/inline_parameter_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::inline_parameter::inline_parameter_polyglot;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/inline_parameter_polyglot_tests.rs:22:
+     .await
+ }
+ 
+-fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: usize) -> serde_json::Value {
++fn reference_at(
++    file: &std::path::Path,
++    source: &str,
++    name: &str,
++    occurrence: usize,
++) -> serde_json::Value {
+     let at = source
+         .match_indices(name)
+         .nth(occurrence)
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/inline_parameter_polyglot_tests.rs:30:
+         .0;
+     let before = &source[..at];
+     let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
+-    let character = before.rsplit('\n').next().unwrap_or_default().encode_utf16().count() as u32;
++    let character = before
++        .rsplit('\n')
++        .next()
++        .unwrap_or_default()
++        .encode_utf16()
++        .count() as u32;
+     serde_json::json!({
+         "uri": url::Url::from_file_path(file).unwrap().to_string(),
+         "range": { "start": { "line": line, "character": character } }
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/inline_parameter_polyglot_tests.rs:425:
+     let math_file = root.join("math.ts");
+     let client_file = root.join("client.ts");
+     let client_text = fs::read_to_string(&client_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "clamp", 1)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "clamp", 1)])
++            .await;
+ 
+     let err = inline_parameter_polyglot(
+         gw.addr(),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/inline_parameter_polyglot_tests.rs:443:
+     .unwrap_err();
+ 
+     assert!(
+-        err.to_string().contains("may name something of the caller's"),
++        err.to_string()
++            .contains("may name something of the caller's"),
+         "{err}"
+     );
+ }
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::invert_boolean::invert_polyglot;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:22:
+     .await
+ }
+ 
+-fn reference_at(file: &std::path::Path, source: &str, name: &str, occurrence: usize) -> serde_json::Value {
++fn reference_at(
++    file: &std::path::Path,
++    source: &str,
++    name: &str,
++    occurrence: usize,
++) -> serde_json::Value {
+     let at = source
+         .match_indices(name)
+         .nth(occurrence)
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:30:
+         .0;
+     let before = &source[..at];
+     let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
+-    let character = before.rsplit('\n').next().unwrap_or_default().encode_utf16().count() as u32;
++    let character = before
++        .rsplit('\n')
++        .next()
++        .unwrap_or_default()
++        .encode_utf16()
++        .count() as u32;
+     serde_json::json!({
+         "uri": url::Url::from_file_path(file).unwrap().to_string(),
+         "range": { "start": { "line": line, "character": character } }
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:137:
+     let client_file = root.join("client.ts");
+     let math_before = fs::read_to_string(&math_file).unwrap();
+     let client_text = fs::read_to_string(&client_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "check", 0)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "check", 0)])
++            .await;
+ 
+     let error = invert_polyglot(
+         gw.addr(),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:289:
+     let math_file = root.join("math.cpp");
+     let client_file = root.join("client.cpp");
+     let client_text = fs::read_to_string(&client_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
++            .await;
+ 
+     let res = invert_polyglot(
+         gw.addr(),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:316:
+     assert!(math_content.contains("return !(x > 0);"));
+ 
+     let client_content = fs::read_to_string(&client_file).unwrap();
+-    assert!(client_content.contains("bool isInvalid(int x);"), "{client_content}");
++    assert!(
++        client_content.contains("bool isInvalid(int x);"),
++        "{client_content}"
++    );
+     assert!(client_content.contains("!isInvalid(10)"));
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:343:
+     let math_file = root.join("math.swift");
+     let client_file = root.join("client.swift");
+     let client_text = fs::read_to_string(&client_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 0)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 0)])
++            .await;
+ 
+     let res = invert_polyglot(
+         gw.addr(),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:402:
+     let math_file = root.join("math.go");
+     let client_file = root.join("client.go");
+     let client_text = fs::read_to_string(&client_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "IsValid", 0)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "IsValid", 0)])
++            .await;
+ 
+     let res = invert_polyglot(
+         gw.addr(),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/invert_boolean_polyglot_tests.rs:498:
+     let math_file = root.join("math.ts");
+     let client_file = root.join("client.ts");
+     let client_text = fs::read_to_string(&client_file).unwrap();
+-    let gw = fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
+-        .await;
++    let gw =
++        fake_gateway_with_references(vec![reference_at(&client_file, &client_text, "isValid", 1)])
++            .await;
+ 
+     let res = invert_polyglot(
+         gw.addr(),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/slice_completeness.rs:792:
+     let text = report.render();
+     assert!(text.contains("seed"), "{text}");
+ }
+-
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/slicing.rs:1638:
+                 .and_then(|u| u.as_str())
+                 .unwrap_or("");
+             if uri.ends_with("sig.rs") {
+-                serde_json::json!([
+-                    answers::document_symbol("recover_address_from_prehash", 12, 1, 3, 8)
+-                ])
++                serde_json::json!([answers::document_symbol(
++                    "recover_address_from_prehash",
++                    12,
++                    1,
++                    3,
++                    8
++                )])
+             } else {
+                 serde_json::Value::Null
+             }
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/slicing.rs:1667:
+ 
+     assert_eq!(report.items.len(), 1);
+     assert_eq!(report.items[0].name, "recover_address_from_prehash");
+-    assert!(report.items[0].text.contains("pub fn recover_address_from_prehash"));
++    assert!(
++        report.items[0]
++            .text
++            .contains("pub fn recover_address_from_prehash")
++    );
+ }
+-
+ 
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/stale_reference.rs:589:
+ 
+     assert_eq!(reports.len(), 2);
+     assert_eq!(reports[0].errors, 0);
+-    assert_eq!(reports[0].warnings, 0, "service.js must have 0 warnings: {}", reports[0].render());
++    assert_eq!(
++        reports[0].warnings,
++        0,
++        "service.js must have 0 warnings: {}",
++        reports[0].render()
++    );
+     assert_eq!(reports[1].errors, 0);
+     assert_eq!(
+         reports[1].warnings,
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/stale_reference.rs:603:
+ async fn non_rust_unresolved_removed_symbol_is_flagged_as_stale_reference() {
+     let ws = Workspace::new(&[
+         ("package.json", r#"{"name":"test-pkg","version":"1.0.0"}"#),
++        ("src/utils.js", "export function oldHelper() {}\n"),
+         (
+-            "src/utils.js",
+-            "export function oldHelper() {}\n",
+-        ),
+-        (
+             "src/app.js",
+             "import { oldHelper } from './utils.js';\noldHelper();\n",
+         ),
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/stale_reference.rs:626:
+                         .and_then(|changes| changes.first())
+                         .and_then(|change| change["text"].as_str())
+                 };
+-                if uri.ends_with("/src/utils.js") && let Some(text) = text {
++                if uri.ends_with("/src/utils.js")
++                    && let Some(text) = text
++                {
+                     flag.store(text.contains("oldHelper"), Ordering::SeqCst);
+                 }
+                 Value::Null
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/stale_reference.rs:650:
+     let reports = prod_code_mcp::diagnostics::validate_texts(
+         remote,
+         &ws.root(),
+-        &[(ws.path("src/utils.js"), "export function newHelper() {}\n".to_string())],
++        &[(
++            ws.path("src/utils.js"),
++            "export function newHelper() {}\n".to_string(),
++        )],
+         &[ws.path("src/app.js")],
+     )
+     .await
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/swift_cross_target_validation.rs:9:
+  */
+ 
+ use prod_code_mcp::diagnostics::{is_swift_cross_target_candidate, swift_target_name};
+-use prod_code_mcp::verify::{detect_tools, plan_command_with, VerifyKind};
++use prod_code_mcp::verify::{VerifyKind, detect_tools, plan_command_with};
+ use std::path::Path;
+ 
+ #[test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/swift_cross_target_validation.rs:50:
+ #[test]
+ fn swift_target_name_resolution() {
+     assert_eq!(
+-        swift_target_name(Path::new("clients/macos/ProdUI/Sources/ProdApp/WorkspaceTerminalView.swift")),
++        swift_target_name(Path::new(
++            "clients/macos/ProdUI/Sources/ProdApp/WorkspaceTerminalView.swift"
++        )),
+         Some("ProdApp".to_string())
+     );
+     assert_eq!(
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/swift_cross_target_validation.rs:57:
+-        swift_target_name(Path::new("clients/macos/ProdUI/Sources/ProdUI/ProdTerminalSurfacePolicy.swift")),
++        swift_target_name(Path::new(
++            "clients/macos/ProdUI/Sources/ProdUI/ProdTerminalSurfacePolicy.swift"
++        )),
+         Some("ProdUI".to_string())
+     );
+     assert_eq!(
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/swift_cross_target_validation.rs:61:
+-        swift_target_name(Path::new("clients/macos/ProdUI/Tests/ProdUITests/RemoteTerminalSurfaceCacheTests.swift")),
++        swift_target_name(Path::new(
++            "clients/macos/ProdUI/Tests/ProdUITests/RemoteTerminalSurfaceCacheTests.swift"
++        )),
+         Some("ProdUITests".to_string())
+     );
+-    assert_eq!(
+-        swift_target_name(Path::new("Package.swift")),
+-        None
+-    );
+-    assert_eq!(
+-        swift_target_name(Path::new("docs/architecture.md")),
+-        None
+-    );
++    assert_eq!(swift_target_name(Path::new("Package.swift")), None);
++    assert_eq!(swift_target_name(Path::new("docs/architecture.md")), None);
+ }
+ 
+ #[test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/to_method_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::to_method::convert_to_method_polyglot;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/to_method_polyglot_tests.rs:343:
+         "apply": true,
+     });
+ 
+-    let tool_res = prod_code_mcp::tools::execute_tool(
+-        gw.addr(),
+-        &root,
+-        "code_convert_to_method",
+-        args,
+-    )
+-    .await
+-    .unwrap();
++    let tool_res =
++        prod_code_mcp::tools::execute_tool(gw.addr(), &root, "code_convert_to_method", args)
++            .await
++            .unwrap();
+ 
+     assert!(!tool_res.is_error);
+     let content = fs::read_to_string(&util_file).unwrap();
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:9:
+  */
+ 
+ use prod_code_mcp::type_migration::migrate_ext;
+-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
++use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+ use std::fs;
+ 
+ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:69:
+     assert_eq!(res.symbol, "val");
+     assert_eq!(res.was, "number");
+     assert_eq!(res.now, "string");
+-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
++    assert!(
++        res.transitive_count >= 3,
++        "expected >= 3 transitive migrations, got {}",
++        res.transitive_count
++    );
+     assert!(res.applied);
+ 
+     let calc_content = fs::read_to_string(&calc_file).unwrap();
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:76:
+-    assert!(calc_content.contains("function compute(val: string): string"), "{calc_content}");
+-    assert!(calc_content.contains("const doubled: string = val * 2;"), "{calc_content}");
++    assert!(
++        calc_content.contains("function compute(val: string): string"),
++        "{calc_content}"
++    );
++    assert!(
++        calc_content.contains("const doubled: string = val * 2;"),
++        "{calc_content}"
++    );
+ 
+     let main_content = fs::read_to_string(&main_file).unwrap();
+-    assert!(main_content.contains("const result: string = compute(10);"), "{main_content}");
++    assert!(
++        main_content.contains("const result: string = compute(10);"),
++        "{main_content}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:125:
+     assert_eq!(res.symbol, "balance");
+     assert_eq!(res.was, "int");
+     assert_eq!(res.now, "float");
+-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
++    assert!(
++        res.transitive_count >= 3,
++        "expected >= 3 transitive migrations, got {}",
++        res.transitive_count
++    );
+     assert!(res.applied);
+ 
+     let service_content = fs::read_to_string(&service_file).unwrap();
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:132:
+-    assert!(service_content.contains("def calculate_fee(balance: float) -> float:"), "{service_content}");
+-    assert!(service_content.contains("fee: float = balance * 2"), "{service_content}");
++    assert!(
++        service_content.contains("def calculate_fee(balance: float) -> float:"),
++        "{service_content}"
++    );
++    assert!(
++        service_content.contains("fee: float = balance * 2"),
++        "{service_content}"
++    );
+ 
+     let app_content = fs::read_to_string(&app_file).unwrap();
+-    assert!(app_content.contains("total: float = calculate_fee(100)"), "{app_content}");
++    assert!(
++        app_content.contains("total: float = calculate_fee(100)"),
++        "{app_content}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:185:
+     assert_eq!(res.symbol, "count");
+     assert_eq!(res.was, "int32");
+     assert_eq!(res.now, "int64");
+-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
++    assert!(
++        res.transitive_count >= 3,
++        "expected >= 3 transitive migrations, got {}",
++        res.transitive_count
++    );
+     assert!(res.applied);
+ 
+     let service_content = fs::read_to_string(&service_file).unwrap();
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:192:
+-    assert!(service_content.contains("func Compute(count int64) int64 {"), "{service_content}");
+-    assert!(service_content.contains("var doubled int64 = count * 2"), "{service_content}");
++    assert!(
++        service_content.contains("func Compute(count int64) int64 {"),
++        "{service_content}"
++    );
++    assert!(
++        service_content.contains("var doubled int64 = count * 2"),
++        "{service_content}"
++    );
+ 
+     let caller_content = fs::read_to_string(&caller_file).unwrap();
+-    assert!(caller_content.contains("var res int64 = Compute(10)"), "{caller_content}");
++    assert!(
++        caller_content.contains("var res int64 = Compute(10)"),
++        "{caller_content}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:248:
+     assert!(res.applied);
+ 
+     let cpp_content = fs::read_to_string(&cpp_file).unwrap();
+-    assert!(cpp_content.contains("int64_t calculate(int64_t count)"), "{cpp_content}");
+-    assert!(cpp_content.contains("int64_t result = count * 2;"), "{cpp_content}");
++    assert!(
++        cpp_content.contains("int64_t calculate(int64_t count)"),
++        "{cpp_content}"
++    );
++    assert!(
++        cpp_content.contains("int64_t result = count * 2;"),
++        "{cpp_content}"
++    );
+ 
+     let header_content = fs::read_to_string(&header_file).unwrap();
+-    assert!(header_content.contains("int64_t calculate(int64_t count);"), "{header_content}");
++    assert!(
++        header_content.contains("int64_t calculate(int64_t count);"),
++        "{header_content}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:300:
+     assert_eq!(res.symbol, "amount");
+     assert_eq!(res.was, "Int");
+     assert_eq!(res.now, "Double");
+-    assert!(res.transitive_count >= 3, "expected >= 3 transitive migrations, got {}", res.transitive_count);
++    assert!(
++        res.transitive_count >= 3,
++        "expected >= 3 transitive migrations, got {}",
++        res.transitive_count
++    );
+     assert!(res.applied);
+ 
+     let account_content = fs::read_to_string(&account_file).unwrap();
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:307:
+-    assert!(account_content.contains("func getBalance(amount: Double) -> Double {"), "{account_content}");
+-    assert!(account_content.contains("let updated: Double = amount + 50"), "{account_content}");
++    assert!(
++        account_content.contains("func getBalance(amount: Double) -> Double {"),
++        "{account_content}"
++    );
++    assert!(
++        account_content.contains("let updated: Double = amount + 50"),
++        "{account_content}"
++    );
+ 
+     let main_content = fs::read_to_string(&main_file).unwrap();
+-    assert!(main_content.contains("let finalBalance: Double = getBalance(amount: 100)"), "{main_content}");
++    assert!(
++        main_content.contains("let finalBalance: Double = getBalance(amount: 100)"),
++        "{main_content}"
++    );
+ }
+ 
+ #[tokio::test]
+Diff in <remote-workspace>/crates/prod-code-mcp/tests/type_migration_polyglot_tests.rs:436:
+ 
+     assert!(forced.applied);
+     let content = fs::read_to_string(&lib_file).unwrap();
+-    assert!(content.contains("pub timeout_secs: std::time::Duration,"), "{content}");
++    assert!(
++        content.contains("pub timeout_secs: std::time::Duration,"),
++        "{content}"
++    );
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:38:
+     AuthToken, FileDelta, ReadFileRequest, ReadFileResponse, SyncRequest, SyncResponse, WireMessage,
+ };
+ use prod_code_protocol::tls::{
++    ClientTlsConfig, DEFAULT_TLS_SERVER_NAME, ServerTlsConfig, TLS_CA_ENV, TLS_CERT_ENV,
++    TLS_ENV_VARS, TLS_KEY_ENV, TLS_MODE_ENV, TLS_PIN_ENV, TLS_SERVER_NAME_ENV, TlsMode,
+     check_key_permissions, ensure_crypto_provider, pki, upgrade_client_stream,
+-    upgrade_server_stream, ClientTlsConfig, ServerTlsConfig, TlsMode, DEFAULT_TLS_SERVER_NAME,
+-    TLS_CA_ENV, TLS_CERT_ENV, TLS_ENV_VARS, TLS_KEY_ENV, TLS_MODE_ENV, TLS_PIN_ENV,
+-    TLS_SERVER_NAME_ENV,
++    upgrade_server_stream,
+ };
+ use prod_code_protocol::transport::{
+-    clear_client_tls_cache, connect_with, default_client_tls_built, init_client_tls_from_env,
+-    AUTH_TOKEN_VARS, ScrubSecrets,
++    AUTH_TOKEN_VARS, ScrubSecrets, clear_client_tls_cache, connect_with, default_client_tls_built,
++    init_client_tls_from_env,
+ };
+-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+ use rustls::RootCertStore;
++use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+ use tokio::io::{AsyncReadExt, AsyncWriteExt};
+ use tokio::net::{TcpListener, TcpStream};
+ use tokio_util::codec::{Encoder, Framed};
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:464:
+         // 0x14 = ChangeCipherSpec (TLS 1.3 middlebox compat)
+         // 0x16 = Handshake
+         // 0x17 = Application Data (encrypted)
+-        let has_handshake = captured.windows(3).any(|w| w[0] == 0x16 && w[1] == 0x03 && w[2] == 0x03);
+-        let has_app_data = captured.windows(3).any(|w| w[0] == 0x17 && w[1] == 0x03 && w[2] == 0x03);
++        let has_handshake = captured
++            .windows(3)
++            .any(|w| w[0] == 0x16 && w[1] == 0x03 && w[2] == 0x03);
++        let has_app_data = captured
++            .windows(3)
++            .any(|w| w[0] == 0x17 && w[1] == 0x03 && w[2] == 0x03);
+ 
+-        assert!(has_handshake, "wire capture must contain TLS 1.3 handshake record (0x16 0x03 0x03)");
+-        assert!(has_app_data, "wire capture must contain TLS 1.3 application data records (0x17 0x03 0x03)");
++        assert!(
++            has_handshake,
++            "wire capture must contain TLS 1.3 handshake record (0x16 0x03 0x03)"
++        );
++        assert!(
++            has_app_data,
++            "wire capture must contain TLS 1.3 application data records (0x17 0x03 0x03)"
++        );
+     }
+ }
+ 
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:697:
+ 
+     // Subcase 3b: Client with forged / mismatched pin fails closed
+     {
+-        let fake_pin = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string();
++        let fake_pin =
++            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string();
+         let (pinned_client, server_name) = ClientTlsConfig::new()
+             .with_pins(vec![fake_pin])
+             .with_server_name(DEFAULT_TLS_SERVER_NAME)
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:709:
+             .await
+             .unwrap_err();
+         assert!(
+-            err.to_string().contains("does not match any configured pins")
++            err.to_string()
++                .contains("does not match any configured pins")
+                 || err.to_string().contains("failed"),
+             "mismatched pin must fail handshake: {err}"
+         );
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:835:
+                 assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+             }
+             Some(Ok(msg)) => {
+-                panic!("TLS-required server must not return protocol response to plaintext client, got: {msg:?}");
++                panic!(
++                    "TLS-required server must not return protocol response to plaintext client, got: {msg:?}"
++                );
+             }
+         }
+ 
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:876:
+     )
+     .unwrap();
+ 
+-    let server1_tls = ServerTlsConfig::new(parse_cert_pem(&node1_pem), parse_key_pem(&node1_key_pem))
+-        .build()
+-        .unwrap();
+-    let server2_tls = ServerTlsConfig::new(parse_cert_pem(&node2_pem), parse_key_pem(&node2_key_pem))
+-        .build()
+-        .unwrap();
++    let server1_tls =
++        ServerTlsConfig::new(parse_cert_pem(&node1_pem), parse_key_pem(&node1_key_pem))
++            .build()
++            .unwrap();
++    let server2_tls =
++        ServerTlsConfig::new(parse_cert_pem(&node2_pem), parse_key_pem(&node2_key_pem))
++            .build()
++            .unwrap();
+ 
+     let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+     let addr1 = listener1.local_addr().unwrap();
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1193:
+                 tracing::span::Id::from_u64(1)
+             }
+             fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+-            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
++            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
++            }
+             fn event(&self, event: &tracing::Event<'_>) {
+                 struct Visitor<'a>(&'a mut String);
+                 impl<'a> tracing::field::Visit for Visitor<'a> {
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1200:
+-                    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
++                    fn record_debug(
++                        &mut self,
++                        field: &tracing::field::Field,
++                        value: &dyn std::fmt::Debug,
++                    ) {
+                         use std::fmt::Write;
+                         let _ = write!(self.0, " {}={:?}", field.name(), value);
+                     }
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1204:
+                 }
+-                let mut msg = format!("{:?} {}", event.metadata().level(), event.metadata().target());
++                let mut msg = format!(
++                    "{:?} {}",
++                    event.metadata().level(),
++                    event.metadata().target()
++                );
+                 let mut visitor = Visitor(&mut msg);
+                 event.record(&mut visitor);
+                 if let Ok(mut logs) = self.logs.lock() {
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1221:
+             &[],
+         )
+         .unwrap();
+-        let (client_pem, client_key_pem) = pki::generate_node_cert(
+-            &ca_pem,
+-            &ca_key_pem,
+-            &["client.internal".to_string()],
+-            &[],
+-        )
+-        .unwrap();
++        let (client_pem, client_key_pem) =
++            pki::generate_node_cert(&ca_pem, &ca_key_pem, &["client.internal".to_string()], &[])
++                .unwrap();
+ 
+         let secret_token_str = "super-secret-auth-token-canary-998877";
+         let auth_token = AuthToken(secret_token_str.to_string());
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1234:
+         let wire_auth = WireMessage::Auth(auth_token.clone());
+ 
+-        let server_tls = ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem));
+-        let client_tls = ClientTlsConfig::new().with_client_cert(parse_cert_pem(&client_pem), parse_key_pem(&client_key_pem));
++        let server_tls =
++            ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem));
++        let client_tls = ClientTlsConfig::new()
++            .with_client_cert(parse_cert_pem(&client_pem), parse_key_pem(&client_key_pem));
+ 
+         // A. Direct Debug representation checks:
+         let debug_auth = format!("{auth_token:?}");
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1241:
+-        assert!(!debug_auth.contains(secret_token_str), "AuthToken Debug must not contain secret string: {debug_auth}");
+-        assert!(debug_auth.contains("<redacted>"), "AuthToken Debug must be redacted: {debug_auth}");
++        assert!(
++            !debug_auth.contains(secret_token_str),
++            "AuthToken Debug must not contain secret string: {debug_auth}"
++        );
++        assert!(
++            debug_auth.contains("<redacted>"),
++            "AuthToken Debug must be redacted: {debug_auth}"
++        );
+ 
+         let debug_wire = format!("{wire_auth:?}");
+-        assert!(!debug_wire.contains(secret_token_str), "WireMessage::Auth Debug must not contain secret string: {debug_wire}");
+-        assert!(debug_wire.contains("<redacted>"), "WireMessage::Auth Debug must be redacted: {debug_wire}");
++        assert!(
++            !debug_wire.contains(secret_token_str),
++            "WireMessage::Auth Debug must not contain secret string: {debug_wire}"
++        );
++        assert!(
++            debug_wire.contains("<redacted>"),
++            "WireMessage::Auth Debug must be redacted: {debug_wire}"
++        );
+ 
+         let debug_server = format!("{server_tls:?}");
+-        assert!(!debug_server.contains(&server_key_pem), "ServerTlsConfig Debug must not leak private key PEM: {debug_server}");
+-        assert!(debug_server.contains("[REDACTED]"), "ServerTlsConfig Debug must mark key as [REDACTED]: {debug_server}");
++        assert!(
++            !debug_server.contains(&server_key_pem),
++            "ServerTlsConfig Debug must not leak private key PEM: {debug_server}"
++        );
++        assert!(
++            debug_server.contains("[REDACTED]"),
++            "ServerTlsConfig Debug must mark key as [REDACTED]: {debug_server}"
++        );
+ 
+         let debug_client = format!("{client_tls:?}");
+-        assert!(!debug_client.contains(&client_key_pem), "ClientTlsConfig Debug must not leak private key PEM: {debug_client}");
+-        assert!(debug_client.contains("[REDACTED]"), "ClientTlsConfig Debug must mark key as [REDACTED]: {debug_client}");
++        assert!(
++            !debug_client.contains(&client_key_pem),
++            "ClientTlsConfig Debug must not leak private key PEM: {debug_client}"
++        );
++        assert!(
++            debug_client.contains("[REDACTED]"),
++            "ClientTlsConfig Debug must mark key as [REDACTED]: {debug_client}"
++        );
+ 
+         // B. In-memory tracing log capture check:
+         let captured_logs = Arc::new(Mutex::new(Vec::new()));
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1349:
+     )
+     .unwrap();
+ 
+-    let server_tls = ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem))
+-        .build()
+-        .unwrap();
++    let server_tls =
++        ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem))
++            .build()
++            .unwrap();
+ 
+     let mut roots = RootCertStore::empty();
+     for ca in parse_cert_pem(&ca_pem) {
+Diff in <remote-workspace>/crates/prod-code-protocol/tests/transport_security_acceptance.rs:1531:
+ 
+     // 5. Privacy: Minimal periodic multicast strips workspace names and detailed telemetry
+     let minimal_line = format_minimal_node_line("<private-address>", "rust,go", Some(token));
+-    let minimal_node = parse_node_line_with_auth_and_nonce(
+-        &minimal_line,
+-        Some(token),
+-        Some(sender_ip),
+-        None,
+-    )
+-    .expect("minimal announcement must parse");
++    let minimal_node =
++        parse_node_line_with_auth_and_nonce(&minimal_line, Some(token), Some(sender_ip), None)
++            .expect("minimal announcement must parse");
+     assert!(
+         minimal_node.workspaces.is_empty(),
+         "minimal multicast announcement must NOT disclose workspace names"
+[prod-code exec] exit 1 in 2.7s (server 2.4s, cpu 2.2s user 0.1s sys, peak 160 MB) on node <private-address>, copy <remote-workspace> (linux x86_64)

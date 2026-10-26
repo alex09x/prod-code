@@ -21,8 +21,11 @@
 //! of type `&&Order` coerces to `&Order`. The whole change is type-checked in one overlay first.
 
 mod associated;
+mod captures;
+mod context;
 mod edits;
 mod method;
+mod parameters;
 mod rewrite;
 mod syntax;
 #[cfg(test)]

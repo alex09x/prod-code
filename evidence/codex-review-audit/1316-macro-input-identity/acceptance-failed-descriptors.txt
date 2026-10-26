@@ -1,0 +1,704 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 52 tests
+test aggregate::aggregate_raw_literal_cannot_hide_an_implicit_capture ... ok
+test declaration_identity::method_generic_owner_shadowing_refuses_before_any_edits ... ok
+test conversion::full_owner_paths_and_generic_arguments_are_required ... ok
+test declaration_identity::generic_argument_shadowing_refuses_before_any_edits ... ok
+test associated::associated_recursion_and_function_values_follow_the_destination ... ok
+test associated::cross_module_recursion_uses_the_destination_module_perspective ... ok
+test owner_capture::implicit_receiver_captures_refuse_without_writing_even_with_force ... ok
+test receiver::module_word_before_plain_destination_binding_does_not_steal_cursor ... ok
+test conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value ... ok
+test associated::associated_move_preserves_literal_bytes_and_nested_self_owner ... ok
+test guards::unsupported_references_remain_accounted_and_block_forced_writes ... ok
+test receiver::selected_binding_cursor_and_explicit_reference_lifetime_work ... ok
+test owner_capture::explicit_arguments_literal_data_and_nested_captures_remain_supported ... ok
+test guards::effectful_calls_refuse_normally_but_force_constructs_the_rewrite ... ok
+test receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings ... ok
+test type_identity::array_element_trivia_preserves_length_expression_token_boundaries ... ok
+test review_regressions::ambiguous_macro_owner_declarations_refuse_without_writing_even_with_force ... ok
+test owner_header_regressions::macro_owner_tokens_do_not_acquire_rust_header_context ... ok
+test conversion::exact_generic_and_path_owners_still_convert_and_run ... ok
+test type_identity::distinct_type_token_boundaries_refuse_before_writes ... ok
+test macro_inputs::ignored_macro_inputs_preserve_supported_conversion ... ok
+test review_regressions::macro_owner_tokens_keep_outer_self_in_associated_move ... ok
+test guards::failed_reference_queries_refuse_even_force_and_preserve_all_bytes ... ok
+test review_regressions::macro_owner_tokens_keep_outer_receiver_and_self_type ... ok
+test owner_header_regressions::raw_identifier_header_leak_preserves_independent_owner ... ok
+test owner_capture::comparisons_inside_nested_owners_keep_their_self_identity ... ok
+test declaration_identity::method_type_parameter_does_not_shadow_macro_namespace ... ok
+test review_regressions::return_position_impl_trait_does_not_introduce_a_self_owner ... ok
+test declaration_identity::nested_function_pointer_label_cannot_steal_selected_parameter ... ok
+test review_regressions::recursive_destination_cannot_be_captured_by_local_imports ... ok
+test remaining_regressions::mutable_short_binding_uses_its_token_cursor ... ok
+test review_regressions::keyword_macro_arguments_respect_each_token_tree_delimiter ... ok
+test macro_inputs::macro_expansion_resolving_method_generic_refuses_before_edits ... ok
+test aggregate::aggregate_exact_receiver_calls_convert_with_semantic_identity ... ok
+test owner_header_regressions::array_length_header_leak_preserves_independent_owner ... ok
+test aggregate::aggregate_receiver_move_uses_the_same_owner_identity ... ok
+test remaining_regressions::negation_and_never_types_do_not_turn_blocks_into_macros ... ok
+test owner_header_regressions::const_expression_operators_keep_independent_owner_self ... FAILED
+test owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics ... FAILED
+test call_trivia::line_comment_argument_retains_its_newline ... ok
+test type_identity::equivalent_slice_element_type_trivia_still_convert ... ok
+test call_trivia::nested_exact_owner_calls_do_not_overlap ... ok
+test type_identity::macro_type_literal_and_punctuation_boundaries_are_not_trivia ... ok
+test owner_boundary_regressions::field_initializer_comparisons_do_not_hide_independent_owners ... ok
+test aggregate::aggregate_exact_owner_trait_dispatch_needs_overlay_proof ... ok
+test aggregate::aggregate_raw_owner_and_array_shift_runtime ... ok
+test declaration_identity::ordinary_method_generics_and_self_keep_their_declaration_identity ... ok
+test aggregate::aggregate_semantic_wrapper_and_uncertain_identity_stay_qualified ... ok
+test type_identity::equivalent_trait_objects_and_generic_type_trivia_still_convert ... ok
+test declaration_identity::absolute_paths_and_qualified_arguments_bypass_local_shadowing ... ok
+test type_identity::equivalent_ordinary_type_punctuation_trivia_still_convert ... ok
+test remaining_regressions::nested_impl_trait_types_preserve_outer_and_independent_self ... ok
+
+failures:
+
+---- owner_header_regressions::const_expression_operators_keep_independent_owner_self stdout ----
+const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+const owner original: rustc exit status: 0
+
+const owner original: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 2 > 1 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+const owner original: rustc exit status: 0
+
+const owner original: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ 1 < 2 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+const owner original: rustc exit status: 0
+
+const owner original: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner preview: rustc exit status: 0
+
+const owner preview: runtime exit status: 0
+8
+
+const owner applied: source
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ (8 >> 1) == 4 }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Order>() + Inner::<true>::size()
+    }
+}
+struct Order(u64);
+fn main() { println!("{}", Tax::f()); }
+
+const owner applied: rustc exit status: 0
+
+const owner applied: runtime exit status: 0
+8
+
+const owner original: source
+struct Tax;
+struct Order(u64);
+impl Order {
+    fn f() -> usize {
+        struct Inner<const B: bool>;
+        impl Inner<{ { 2 > 1 } }> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        std::mem::size_of::<Self>() + Inner::<true>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+
+thread 'owner_header_regressions::const_expression_operators_keep_independent_owner_self' (3555278) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:169:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: TooManyOpenFiles, message: "Too many open files" }
+
+---- owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics stdout ----
+type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=false: rustc exit status: 0
+
+type macro owner applied force=false: runtime exit status: 0
+9
+
+type macro owner preview force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=true: rustc exit status: 0
+
+type macro owner preview force=true: runtime exit status: 0
+9
+
+type macro owner applied force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!(a > b)> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=true: rustc exit status: 0
+
+type macro owner applied force=true: runtime exit status: 0
+9
+
+type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=false: rustc exit status: 0
+
+type macro owner applied force=false: runtime exit status: 0
+9
+
+type macro owner preview force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=true: rustc exit status: 0
+
+type macro owner preview force=true: runtime exit status: 0
+9
+
+type macro owner applied force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty![a < b]> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=true: rustc exit status: 0
+
+type macro owner applied force=true: runtime exit status: 0
+9
+
+type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=false: rustc exit status: 0
+
+type macro owner applied force=false: runtime exit status: 0
+9
+
+type macro owner preview force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=true: rustc exit status: 0
+
+type macro owner preview force=true: runtime exit status: 0
+9
+
+type macro owner applied force=true: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!{a >> b}> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner applied force=true: rustc exit status: 0
+
+type macro owner applied force=true: runtime exit status: 0
+9
+
+type macro owner original: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+type macro owner original: rustc exit status: 0
+
+type macro owner original: runtime exit status: 0
+9
+
+type macro owner preview force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+
+type macro owner preview force=false: rustc exit status: 0
+
+type macro owner preview force=false: runtime exit status: 0
+9
+
+type macro owner applied force=false: source
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+
+impl Tax {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+struct Order(u128);
+fn main() { println!("{}", Tax::f()); }
+macro_rules! ty { ($($t:tt)*) => { u8 }; }
+struct Tax;
+struct Order(u128);
+impl Order {
+    fn f() -> usize {
+        #[repr(C, packed)] struct Inner<T>(std::marker::PhantomData<T>, u64, T);
+        impl Inner<ty!((a > b) [<] {>})> { fn size() -> usize { std::mem::size_of::<Self>() } }
+        Inner::<u8>::size()
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+
+thread 'owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics' (3555273) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:169:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: TooManyOpenFiles, message: "Too many open files" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    owner_boundary_regressions::type_macro_tokens_do_not_close_owner_generics
+    owner_header_regressions::const_expression_operators_keep_independent_owner_self
+
+test result: FAILED. 50 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.54s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 5.1s (server 4.7s, cpu 22.3s user 40.3s sys, peak 112 MB) on node <build-node>, copy <remote-path> (linux x86_64)
+
+client_exit=101

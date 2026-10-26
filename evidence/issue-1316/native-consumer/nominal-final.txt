@@ -1,0 +1,134 @@
+COMMAND prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-gateway --test rust_method_native exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity
+   Compiling prod-code-gateway v0.3.41 (<remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09/crates/prod-code-gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.44s
+     Running tests/rust_method_native.rs (target/debug/deps/rust_method_native-048929475172f020)
+
+running 1 test
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (40s elapsed)
+[prod-code exec] waiting for command output or exit; checking gateway connection (50s elapsed)
+test exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity ... FAILED
+
+failures:
+
+---- exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity stdout ----
+REQUEST session=1 {"id":"textDocument/definition","jsonrpc":"2.0","method":"textDocument/definition","params":{"position":{"character":7,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 elapsed_ms=21596 {"id":"textDocument/definition","jsonrpc":"2.0","result":[{"range":{"end":{"character":7,"line":0},"start":{"character":7,"line":0}},"uri":"file:///client/src/lib.rs"}]}
+REQUEST session=1 {"id":"textDocument/hover","jsonrpc":"2.0","method":"textDocument/hover","params":{"position":{"character":7,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 elapsed_ms=3551 {"id":"textDocument/hover","jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"\n```rust\nnative_extensions\n```\n\n```rust\nstruct S(u32)\n```\n\n---\n\nno Drop"}}}
+REQUEST session=1 {"id":"textDocument/typeDefinition","jsonrpc":"2.0","method":"textDocument/typeDefinition","params":{"position":{"character":7,"line":0},"textDocument":{"uri":"file:///client/src/lib.rs"}}}
+RESPONSE session=1 elapsed_ms=0 {"error":{"code":-32601,"message":"textDocument/typeDefinition is not supported by prod-code for Rust"},"id":"textDocument/typeDefinition","jsonrpc":"2.0"}
+BOUNDARY probe session=100 verified_files=4
+BOUNDARY handshake session=100 validation=false native=true backend=false
+REQUEST session=100 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpMxQSNa/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpMxQSNa/fixture"}]}}
+RESPONSE session=100 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=100 {"jsonrpc":"2.0","method":"initialized","params":{}}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(s: &S) -> u32 { s.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs","version":1}}}
+REQUEST session=100 {"id":2,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":14,"line":1},"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=3 {"id":2,"jsonrpc":"2.0","result":[{"range":{"end":{"character":30,"line":1},"start":{"character":30,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}]}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":3,"jsonrpc":"2.0","method":"textDocument/typeDefinition","params":{"position":{"character":5,"line":1},"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=0 {"error":{"code":-32601,"message":"textDocument/typeDefinition is not supported by prod-code for Rust"},"id":3,"jsonrpc":"2.0"}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":4,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":12,"line":1},"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=100 {"id":4,"jsonrpc":"2.0","result":[{"range":{"end":{"character":62,"line":2},"start":{"character":62,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},{"range":{"end":{"character":72,"line":2},"start":{"character":72,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}]}
+BOUNDARY probe session=101 verified_files=4
+BOUNDARY handshake session=101 validation=true native=true backend=false
+REQUEST session=101 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpMxQSNa/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpMxQSNa/fixture"}]}}
+RESPONSE session=101 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=101 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=101 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(s: &S) -> u32 { s.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs","version":1}}}
+REQUEST session=101 {"id":2,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=101 elapsed_ms=25267 {"id":2,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+REQUEST session=101 {"id":3,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=101 elapsed_ms=0 {"id":3,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":12,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=101 {"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+BOUNDARY unregister session=101
+BOUNDARY probe session=102 verified_files=4
+BOUNDARY handshake session=102 validation=true native=true backend=false
+REQUEST session=102 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpMxQSNa/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpMxQSNa/fixture"}]}}
+RESPONSE session=102 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=102 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=102 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs","version":1}}}
+REQUEST session=102 {"id":2,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=102 elapsed_ms=1 {"id":2,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":6,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=102 {"id":3,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=102 elapsed_ms=15 {"id":3,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+REQUEST session=102 {"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+BOUNDARY probe session=100 verified_files=4
+BOUNDARY unregister session=102
+REQUEST session=100 {"id":5,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":14,"line":1},"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=1 {"id":5,"jsonrpc":"2.0","result":[{"range":{"end":{"character":30,"line":1},"start":{"character":30,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}]}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":6,"jsonrpc":"2.0","method":"textDocument/typeDefinition","params":{"position":{"character":5,"line":1},"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=0 {"error":{"code":-32601,"message":"textDocument/typeDefinition is not supported by prod-code for Rust"},"id":6,"jsonrpc":"2.0"}
+BOUNDARY probe session=100 verified_files=4
+REQUEST session=100 {"id":7,"jsonrpc":"2.0","method":"textDocument/references","params":{"context":{"includeDeclaration":false},"position":{"character":12,"line":1},"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=100 elapsed_ms=1 {"id":7,"jsonrpc":"2.0","result":[{"range":{"end":{"character":62,"line":2},"start":{"character":62,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},{"range":{"end":{"character":72,"line":2},"start":{"character":72,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}]}
+BOUNDARY probe session=103 verified_files=4
+BOUNDARY handshake session=103 validation=true native=true backend=false
+REQUEST session=103 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpMxQSNa/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpMxQSNa/fixture"}]}}
+RESPONSE session=103 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=103 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=103 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(s: &S) -> u32 { s.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs","version":1}}}
+REQUEST session=103 {"id":2,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=103 elapsed_ms=17 {"id":2,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+REQUEST session=103 {"id":3,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=103 elapsed_ms=0 {"id":3,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":12,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=103 {"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+BOUNDARY unregister session=103
+BOUNDARY probe session=104 verified_files=4
+BOUNDARY handshake session=104 validation=true native=true backend=false
+REQUEST session=104 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"textDocument":{"definition":{"linkSupport":true},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]},"references":{}},"workspace":{"configuration":true,"workspaceFolders":true}},"processId":null,"rootUri":"file:///tmp/.tmpMxQSNa/fixture","workspaceFolders":[{"name":"fixture","uri":"file:///tmp/.tmpMxQSNa/fixture"}]}}
+RESPONSE session=104 elapsed_ms=0 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"callHierarchyProvider":true,"codeActionProvider":{"resolveProvider":true},"completionProvider":{"resolveProvider":true,"triggerCharacters":[":",".","'","("]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",",","<"]},"textDocumentSync":{"change":1,"openClose":true},"workspaceSymbolProvider":true},"serverInfo":{"name":"prod-code","version":"0.3.41"}}}
+REQUEST session=104 {"jsonrpc":"2.0","method":"initialized","params":{}}
+REQUEST session=104 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"languageId":"rust","text":"struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n","uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs","version":1}}}
+REQUEST session=104 {"id":2,"jsonrpc":"2.0","method":"textDocument/documentSymbol","params":{"prodCodeTimeoutMs":29999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=104 elapsed_ms=0 {"id":2,"jsonrpc":"2.0","result":[{"containerName":null,"kind":23,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":7,"line":0}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"S"},{"containerName":null,"kind":5,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":5,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"impl S"},{"containerName":"impl S","kind":6,"location":{"range":{"end":{"character":0,"line":1},"start":{"character":12,"line":1}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"f"},{"containerName":"fn()","kind":12,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":3,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"main"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":16,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"a"},{"containerName":"main","kind":13,"location":{"range":{"end":{"character":0,"line":2},"start":{"character":30,"line":2}},"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"},"name":"b"}]}
+REQUEST session=104 {"id":3,"jsonrpc":"2.0","method":"textDocument/diagnostic","params":{"prodCodeTimeoutMs":59999,"textDocument":{"uri":"file:///tmp/.tmpMxQSNa/fixture/src/lib.rs"}}}
+RESPONSE session=104 elapsed_ms=15 {"id":3,"jsonrpc":"2.0","result":{"items":[],"kind":"full"}}
+BOUNDARY unregister session=104
+BOUNDARY unregister session=100
+
+thread 'exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity' (2961720) panicked at crates/prod-code-gateway/tests/rust_method_native.rs:111:13:
+assertion `left == right` failed: exact nominal calls must become useful dot calls: MadeMethod {
+    owner: "S",
+    method: "f",
+    root: "/tmp/.tmpMxQSNa/fixture",
+    file: "src/lib.rs",
+    parameter: "s: &S",
+    receiver: "&self",
+    renamed_uses: 1,
+    rewritten_calls: 0,
+    unchanged: [
+        "src/lib.rs:3:63 (qualified call retained to preserve receiver coercion and dispatch)",
+        "src/lib.rs:3:73 (qualified call retained to preserve receiver coercion and dispatch)",
+    ],
+    unmatched: [],
+    rewritten: [
+        (
+            "/tmp/.tmpMxQSNa/fixture/src/lib.rs",
+            "struct S(u32);\nimpl S { fn f(&self) -> u32 { self.0 + 1 } }\nfn main() { let a = S(6); let b = S(40); println!(\"{} {}\", S::f(&a), S::f(&b)); }\n",
+        ),
+    ],
+    diagnostics: [],
+    applied: false,
+}
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    exact_nominal_receiver_converts_direct_calls_with_native_dispatch_identity
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 54.00s
+
+error: test failed, to rerun pass `-p prod-code-gateway --test rust_method_native`
+[prod-code exec] 3 file(s) changed by the command written back: evidence/issue-1316/native-consumer/nominal/public-false.txt, evidence/issue-1316/native-consumer/nominal/public-true.txt, evidence/issue-1316/native-consumer/nominal/semantic-replies.json
+[prod-code exec] exit 101 in 56.1s (server 55.6s, cpu 55.4s user 2.9s sys, peak 1748 MB) on node <build-node>, copy <remote-checkout>/prod-code-storage/workspaces/prod-code--wt-53124b09 (linux x86_64)
+
+TERMINAL_EXIT=101

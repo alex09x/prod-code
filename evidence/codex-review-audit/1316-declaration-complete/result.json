@@ -1,0 +1,62 @@
+{
+  "issue": "https://github.com/alex09x/prod-code/issues/1316",
+  "effective_base_sha": "86b8f87e6c48e37871046196f6c0880a961abc41",
+  "inherited_candidate_sha": "8ee569ca282ec4ed95205b05b3c5abf4122a424a",
+  "node_kind": "Linux x86_64 build node",
+  "repair": {
+    "receiver": "Check locally resolved path roots throughout the receiver type, including generic arguments, before any edits. Absolute roots and qualified path members do not resolve through method generic bindings.",
+    "selected_parameter": "Retain the previous top-level span/index repair for binding and type cursors, unchanged and reverified.",
+    "implementation": "crates/prod-code-mcp/src/to_method/declaration.rs:18",
+    "argument_regression": "crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs:177",
+    "absolute_path_controls": "crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs:218"
+  },
+  "actual_public_reproductions": {
+    "generic_argument": {
+      "before": "before-public.txt:86",
+      "actual_returned_source": "before-public.txt:87",
+      "original_stdout": "2\n",
+      "returned_stdout": "1\n",
+      "original_rustc_exit": 0,
+      "returned_rustc_exit": 0,
+      "original_runtime_exit": 0,
+      "returned_runtime_exit": 0,
+      "returned_runtime_evidence": "before-public.txt:139",
+      "after": "Refuse S<A> and ::This::S<A> with method generic A in all four apply/force combinations; original bytes preserved."
+    },
+    "absolute_path": {
+      "before": "before-public.txt:74",
+      "before_original_stdout": "7\n",
+      "before_conversion": "Refused ::This::S because method generic This was incorrectly treated as shadowing the absolute root.",
+      "after": "Five absolute/qualified positive forms produce actual returned &self/self.0 programs, compile and print 7 in all four modes. Preview preserves bytes and applied bytes equal returned source.",
+      "variant_note": "The before refusal probe used struct S and let _ = c; 7. Positive coverage uses S(u8) and c.0 to check field access too."
+    },
+    "original_owner_and_move": "The inherited actual public owner-shadow runtime 2-to-1 and nested-label E0425 reproductions remain unchanged in ../1316-declaration-identity/. Their repaired public cases are re-executed in focused.txt."
+  },
+  "checks": {
+    "before_setup_exit": 101,
+    "before_public_exit": 101,
+    "focused_exit": 0,
+    "focused_passed": 5,
+    "scoped_format_exit": 0,
+    "scoped_lint_exit": 101,
+    "lint_primary_diagnostics": 103,
+    "lint_diagnostics_in_edited_files": 0,
+    "acceptance_exit": 0,
+    "acceptance_passed": 49,
+    "acceptance_evidence": "acceptance.txt:56",
+    "inherited_evidence_files_verified_byte_identical": 161
+  },
+  "integrity": {
+    "inherited_evidence": "preserved-evidence.sha256",
+    "final_source_hashes": "source-hashes.sha256",
+    "artifacts": "artifact-hashes.sha256",
+    "historical_evidence": "Full aggregate review, prior actual dyn Trait/dynTrait runtime 1-to-2 failure and ordinary dot-call positives all preserved byte for byte."
+  },
+  "limitations": [
+    "Scripted cursor-specific semantic responses with real compiler/runtime execution; not live-analyzer end-to-end evidence.",
+    "Narrow method type-parameter shadowing guard, not a general Rust name resolver or parser project.",
+    "Scoped lint fails in unchanged library files before completing test-target lint. No unrelated lint repair or retry.",
+    "Previous single-line move layout panic remains outside this repair; no new failures in the required target.",
+    "Parent owns aggregate review, integration and any result commit; no publication, messages, dependencies, installs, other-worktree edits or delegation."
+  ]
+}

@@ -1,0 +1,69 @@
+Read-only discovery failures; bounded fallbacks used the named repository paths
+and prod-code navigation. No failing call below is reported as a passing test.
+Private home/worktree prefixes are represented as <home>/<checkout>.
+
+1. Command:
+sed -n '1,220p' evidence/issue-1316/native-consumer/README.md && rg --files evidence/issue-1316 crates | rg '(native|to_method|dispatch|navigation|editor|session)'
+Error: Command blocked by PreToolUse hook: Supported-language source discovery
+goes through prod-code: grep, rg, find and recursive scans over source are blocked.
+Fallback: prod-code grep 'typeDefinition|goto_type_definition' crates, plus the
+explicit evidence README read. Both returned successfully.
+
+2. Command:
+ls crates/prod-code-engine/src && prod-code grep 'textDocument/definition|definitionProvider' crates/prod-code-gateway/src && sed -n '1,240p' crates/prod-code-mcp/src/to_method/dispatch.rs && sed -n '1,200p' crates/prod-code-gateway/tests/rust_method_native.rs
+Exit: 1
+Error: ls: crates/prod-code-engine/src: No such file or directory
+Fallback: ls crates established the actual crate names, then the same explicit
+source reads succeeded.
+
+3. Command (last operation of a read-only inspection batch):
+prod-code source ra_ap_ide/src/lib.rs --line 770
+Exit: 1
+Error: reading <checkout>/ra_ap_ide/src/lib.rs (did you mean
+`crates/prod-code-engine-generic/src/lib.rs`,
+`crates/prod-code-engine-go/src/lib.rs`,
+`crates/prod-code-engine-rust/src/lib.rs`?): No such file or directory (os error 2)
+Fallback: prod-code def --symbol Analysis::goto_type_definition returned the
+actual pinned git checkout and signature. A subsequent prod-code source read of
+that returned checkout's goto_type_definition.rs confirmed its native semantics.
+
+4. Command:
+ls <home>/.cargo/registry/src/*/ra_ap_ide-*/src/goto_type_definition.rs && sed -n '1,110p' <home>/.cargo/registry/src/*/ra_ap_ide-0.0.*/src/goto_type_definition.rs && sed -n '140,165p' crates/prod-code-mcp/src/to_method/rust.rs && sed -n '1,100p' crates/prod-code-gateway/src/lsp_handlers/mod.rs
+Error: Command blocked by PreToolUse hook: Supported-language source discovery
+goes through prod-code: grep, rg, find and recursive scans over source are blocked.
+Fallback: semantic definition navigation (item 3), then bounded source reads.
+The separately inspected registry copy was not used as route proof.
+
+5. Command:
+sed -n '1,130p' crates/prod-code-engine-rust/Cargo.toml && sed -n '1,190p' crates/prod-code-gateway/tests/rust_native_extensions.rs && sed -n '1,190p' crates/prod-code-gateway/src/session/mod.rs && sed -n '1,130p' crates/prod-code-gateway/tests/common/native_rust/bridge.rs
+Exit: 1
+Error: sed: crates/prod-code-gateway/tests/rust_native_extensions.rs: No such file or directory
+Fallback: ls crates/prod-code-gateway/tests returned native_rust_extensions.rs.
+
+6. Command:
+ls crates/prod-code-gateway/tests && sed -n '1,130p' crates/prod-code-protocol/src/path.rs && sed -n '1,160p' crates/prod-code-gateway/src/session/mod.rs
+Exit: 1
+Error: sed: crates/prod-code-protocol/src/path.rs: No such file or directory
+Fallback: ls crates/prod-code-protocol/src/path returned uri.rs, then its bounded
+read confirmed file_uri_path and uri_of mapping without adding a dependency.
+
+7. Command:
+ls crates/prod-code-protocol/src/path && sed -n '1,170p' crates/prod-code-gateway/src/session/mod.rs && sed -n '1,160p' crates/prod-code-gateway/tests/native_rust_extensions.rs && sed -n '1,100p' crates/prod-code-gateway/tests/native_rust_extensions/endpoint.rs
+Exit: 1
+Error: sed: crates/prod-code-gateway/tests/native_rust_extensions/endpoint.rs: No such file or directory
+Fallback: native_rust_extensions.rs already showed the real endpoint cases and
+its declared views.rs module; only those confirmed paths were read next.
+
+8. Command (last operation of a read-only inspection batch):
+sed -n '1,150p' crates/prod-code-gateway/src/query.rs
+Exit: 1
+Error: sed: crates/prod-code-gateway/src/query.rs: No such file or directory
+Fallback: prod-code def --symbol execute_bounded_query_with_timeout returned
+crates/prod-code-gateway/src/lsp/bounded_query.rs and its exact implementation.
+
+9. Command (after reading the in-progress focused test log):
+ls evidence/issue-1357/native-consumer/nominal
+Exit: 1
+Error: ls: evidence/issue-1357/native-consumer/nominal: No such file or directory
+The foreground remote command had not finished or returned its generated files.
+It subsequently finished with exit 0 and wrote back all 13 nominal artifacts.

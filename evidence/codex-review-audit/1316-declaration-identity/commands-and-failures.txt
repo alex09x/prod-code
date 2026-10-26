@@ -1,0 +1,64 @@
+Issue #1316 bounded declaration-identity repair
+Base: 86b8f87e6c48e37871046196f6c0880a961abc41
+All project commands ran in the assigned checkout. Remote address and absolute
+runtime paths are sanitized as <build-node>, <remote-checkout> and <fixture>.
+The original 148 tracked evidence files are unchanged (preserved-evidence.sha256).
+
+Public reproduction before production edits:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation declaration_identity -- --nocapture
+Exit 101; before.txt. Actual generic conversion compiled and changed runtime 2
+to 1. Initial single-line move input also exposed an existing slice panic:
+crates/prod-code-mcp/src/move_method/edits.rs:37:23:
+byte range starts at 48 but ends at 36.
+
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation declaration_identity::nested_function_pointer_label -- --nocapture
+Exit 101; before-move.txt. Multiline layout isolates the wrong binding/type
+queries. Returned source has two E0425 errors and an unconverted effectful call.
+The same exact command with pure caller arguments produced
+before-move-isolated.txt, exit 101: actual returned public source has only two
+E0425 errors, both caused by leaving the selected binding's uses unchanged.
+
+After completing both production repairs and all new focused tests:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation declaration_identity -- --nocapture
+Exit 0; focused.txt. Three tests passed. Exact returned source, compiler exits,
+runtime exits, four apply/force modes, semantic cursors and ordinary generic
+controls are retained. Tests check byte-preserving preview/refusal.
+
+One final scoped formatter invocation (edits pulled back):
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/to_method/declaration.rs crates/prod-code-mcp/src/to_method/mod.rs crates/prod-code-mcp/src/to_method/rust.rs crates/prod-code-mcp/src/move_method/parameters.rs crates/prod-code-mcp/src/move_method/mod.rs crates/prod-code-mcp/src/move_method/method.rs crates/prod-code-mcp/tests/rust_method_preservation.rs crates/prod-code-mcp/tests/rust_method_preservation/declaration_identity.rs
+Exit 0; format.txt. Three new files formatted. Existing files already formatted.
+
+One scoped lint invocation:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo clippy -p prod-code-mcp --test rust_method_preservation -- -D warnings
+Exit 101; lint.txt. 103 diagnostics point at unchanged source files;
+lint-locations.json records every primary diagnostic location. No lint green
+claim: the lib failed before clippy could finish the test target. No lint retry.
+
+One final compile/test acceptance gate, exact requested command:
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation
+Exit 0; acceptance.txt. 47 passed, zero failed/ignored. Linux x86_64 build node.
+git diff --check: exit 0. No subsequent source edits or repeated successful gates.
+Final source hashes: hashes.sha256. Artifact hashes: artifact-hashes.sha256.
+
+Tool/navigation failures (bounded fallbacks, no publication authorized):
+Command:
+wc -l evidence/codex-review-audit/review-aggregate-4052.json; sed -n '1,240p' evidence/codex-review-audit/review-aggregate-4052.json; rg --files | rg '(to_method|move_method|rust_method_preservation)'
+Error:
+Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.
+Fallback: read the explicitly named review; prod-code outline the fixture directory.
+
+Command: prod-code outline crates/prod-code-mcp --max-depth 2 --max-bytes 10000
+Exit 2:
+error: unexpected argument '--max-depth' found
+  tip: a similar argument exists: '--max-items'
+Usage: prod-code outline --max-items <MAX_ITEMS> <FILE>
+For more information, try '--help'.
+Fallback: prod-code outline crates/prod-code-mcp/tests/rust_method_preservation --max-items 100 (exit 0).
+
+Command: prod-code def --symbol parse_method crates/prod-code-mcp/src/move_method/method.rs
+Exit 1:
+Error: no symbol named `parse_method` in the workspace index (try code_symbols with a shorter name)
+Fallback: explicitly named source slices plus successful semantic definition and
+outline commands for split_params, receiver_for and the implicated modules.
+
+No command remains running. No commit or publication; parent owns integration.

@@ -1,0 +1,3 @@
+Err(
+    "method const parameter `N` shadows the impl self type; it cannot become `self`",
+)

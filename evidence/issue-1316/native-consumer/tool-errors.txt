@@ -1,0 +1,4 @@
+Read-only discovery command rejected before execution:
+rg --files crates | rg 'native|rust_method|method.*test|Cargo.toml' && sed -n '1,180p' evidence/codex-review-audit/1316-value-namespace/primary-combined-input.json && sed -n '1,100p' evidence/codex-review-audit/1316-value-namespace/primary-combined-check.txt && prod-code exec --help
+Exact error: Command blocked by PreToolUse hook: Grep for text pattern `crates` over source files is blocked. Use prod-code literal/regex text search instead: code_grep {pattern: "crates"} (CLI: `prod-code grep "crates"`). It runs ripgrep on the build node and returns file:line:col with the enclosing AST symbol (`[in Type::method]`). For AST symbol lookups use code_symbols / code_definition / code_references; for concept search use code_search.
+No command exit status (hook rejection). Bounded fallback: git ls-files for file inventory; succeeded.

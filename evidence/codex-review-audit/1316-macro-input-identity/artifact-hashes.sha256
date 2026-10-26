@@ -1,0 +1,14 @@
+913c6379d47c9795a037d6535d2a760c01b7c45fc0eef1cba8f1b88881b17dac  evidence/codex-review-audit/1316-macro-input-identity/acceptance-failed-descriptors.txt
+6a41c2ee71e7c6a0167cce6a10c2de91604e37afc15422c4edb5cbafb77da470  evidence/codex-review-audit/1316-macro-input-identity/acceptance-failed-sync.txt
+d5401fcb4d97b958a3ce3075fb3ed5a21aa37d79b4da2b2bf2fdfa26910c8a6e  evidence/codex-review-audit/1316-macro-input-identity/acceptance.txt
+0f7fa2b4ae15f8770d636514782db68dd740e762e2ef672a3fd3675cbbe1781f  evidence/codex-review-audit/1316-macro-input-identity/before.txt
+bfbaa193500779e44a1bef62ab011735a9cc22b99a7d6f9a015ed4e35c4c94eb  evidence/codex-review-audit/1316-macro-input-identity/commands-and-failures.txt
+268daf791c3ec0c7d85bcc3ff129aae73b3f9d9e075ab38696c4f300ef2ae2cf  evidence/codex-review-audit/1316-macro-input-identity/focused.txt
+ffe1cac96288061e5b39a9b05845dc53ac4cb210c2c8e0a86914f88be8602093  evidence/codex-review-audit/1316-macro-input-identity/format-fixture-resource-repair.txt
+7cb8571fc2e86eb325db406e52f4300e66cb9e72633b6bc314610ce18a9a621e  evidence/codex-review-audit/1316-macro-input-identity/format.txt
+939a9b58216a8fb47b252ff0a83c51c04cf5f2ff34845747c6eb572563c7fd17  evidence/codex-review-audit/1316-macro-input-identity/isolated-sync-failure.txt
+0c069ba5251de77449af6f8012b13ff44dc0f96233d9adea1283e07dba00cf92  evidence/codex-review-audit/1316-macro-input-identity/lint-comparison.json
+9a219de1850c5efd6c27ca79d388b25f188e8bff386f5f205c81b08933b39193  evidence/codex-review-audit/1316-macro-input-identity/lint.txt
+a3184458474e2420a6d81c500b338be862f32d76c8f2c661eab2b9dcd23ed809  evidence/codex-review-audit/1316-macro-input-identity/preserved-evidence.sha256
+d0c27e507971f501d9ebc871f3493ceee73d859378ac0f3861672350b197493e  evidence/codex-review-audit/1316-macro-input-identity/result.json
+5ce2ad148f4cefb4d4e41c3a72ec2e082eb8f9863779fc09fd3322960eac29ff  evidence/codex-review-audit/1316-macro-input-identity/source-hashes.sha256

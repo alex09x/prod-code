@@ -1,0 +1,56 @@
+All project commands ran in the assigned worktree; remote commands were observed
+to terminal completion. Endpoint, workstation and home paths are sanitized.
+<build-node> is the acceptance endpoint; <assigned-worktree> is this checkout.
+
+Before production edits, terminal exit 101 (before.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation distinct_type_token_boundaries_refuse_before_writes -- --nocapture
+0 passed, 1 failed; all four public conversions compile and change 1 to 2.
+
+Intermediate targeted run, terminal exit 101 (targeted.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation type_identity -- --nocapture
+1 passed, 2 failed. Complete errors retained: `f` is not inside an `impl`
+block; a free function has to be moved into one before it can become a method.
+The const-macro fixture and same-line impl fixture were repaired together.
+
+Repaired focused run, terminal exit 0 (targeted-repaired.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 -- cargo test -p prod-code-mcp --test rust_method_preservation type_identity -- --nocapture
+3 passed; 38 filtered out. Later nested-generic positive control is verified by
+the final target gate rather than repeating this successful focused run.
+
+Changed-file formatting, terminal exit 0 (format.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 -- rustfmt --edition 2024 --config skip_children=true crates/prod-code-mcp/src/to_method/helpers.rs crates/prod-code-mcp/src/to_method/dispatch.rs crates/prod-code-mcp/tests/rust_method_preservation.rs crates/prod-code-mcp/tests/rust_method_preservation/type_identity.rs
+
+Scoped crate lint, terminal exit 1 (lint.txt):
+prod-code lint --remote <build-node> --path crates/prod-code-mcp --timeout-secs 900
+210 errors, 175 displayed bodies equal to retained baseline; 35 bodies omitted.
+
+Final target gate, terminal exit 0 (acceptance.txt):
+prod-code exec --remote <build-node> --timeout-secs 900 --env RUST_TEST_NOCAPTURE=1 -- cargo test -p prod-code-mcp --test rust_method_preservation
+41 passed, 0 failed. Same requested Cargo target, with successful source/runtime
+stdout enabled. No overlapping final build/check/test chain was run.
+
+Read-only discovery blocked before execution by hook:
+prod-code outline crates/prod-code-mcp/tests/rust_method_preservation.rs && prod-code outline crates/prod-code-mcp/src/to_method/helpers.rs && prod-code outline crates/prod-code-mcp/src/to_method.rs && rg --files evidence/codex-review-audit crates/prod-code-mcp/tests | head -70
+Exact error: Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed..
+Bounded fallback removed rg discovery and used prod-code outline and ls.
+
+That fallback reached a nonexistent guessed module path, terminal exit 1:
+prod-code outline crates/prod-code-mcp/tests/rust_method_preservation.rs && prod-code outline crates/prod-code-mcp/src/to_method/helpers.rs && prod-code outline crates/prod-code-mcp/src/to_method.rs && ls evidence/codex-review-audit
+Exact error: Error: cannot outline: file does not exist: crates/prod-code-mcp/src/to_method.rs (did you mean `crates/prod-code-mcp/src/to_method/mod.rs`?)
+Fallback used the returned to_method/mod.rs path, terminal exit 0.
+
+Another bounded lexical-facility lookup reached a nonexistent directory, exit 1:
+prod-code outline crates/prod-code-mcp/src/to_method/rust.rs && prod-code def crates/prod-code-mcp/src/signature/call_sites.rs --symbol opaque_at && prod-code grep 'Token|token' crates/prod-code-mcp/src/rust_lex && prod-code grep 'mod .*lex|pub.*token' crates/prod-code-mcp/src/lib.rs && sed -n '1,210p' crates/prod-code-mcp/src/to_method/rust.rs && ls crates/prod-code-mcp/src | head -60
+Exact error: Error: search path does not exist: <assigned-worktree>/crates/prod-code-mcp/src/rust_lex
+Fallback used prod-code grep for lexer declarations across crates and found the
+existing fixture/builder/lexer.rs, which was subsequently inspected.
+
+One further guessed lexer file failed, terminal exit 1:
+sed -n '1,180p' crates/prod-code-mcp/src/codemod/source.rs && sed -n '1,170p' crates/prod-code-mcp/src/fixture/builder/lexer.rs && prod-code outline crates/prod-code-mcp/src/codemod/lexer.rs && sed -n '1,120p' crates/prod-code-mcp/src/codemod/types.rs
+Exact error: Error: cannot outline: file does not exist: crates/prod-code-mcp/src/codemod/lexer.rs (did you mean `crates/prod-code-mcp/src/fixture/builder/lexer.rs`, `crates/prod-code-mcp/src/safe_delete_typescript/lexer.rs`, `crates/prod-code-mcp/src/safe_delete_typescript/tests/lexer.rs`?)
+Fallback inspected the confirmed fixture/builder/lexer.rs with bounded reads.
+These are caller path mistakes with actionable errors, not gateway defects.
+No issue publication was performed (explicit task exclusion).
+
+Read-only whitespace verification, terminal exit 0:
+git diff --check

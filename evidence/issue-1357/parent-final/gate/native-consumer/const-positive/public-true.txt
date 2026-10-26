@@ -1,0 +1,24 @@
+Ok(
+    MadeMethod {
+        owner: "S",
+        method: "f",
+        root: "/tmp/.tmp8emDKJ/fixture",
+        file: "src/lib.rs",
+        parameter: "c: &S<N, fixed!(M)>",
+        receiver: "&self",
+        renamed_uses: 2,
+        rewritten_calls: 0,
+        unchanged: [
+            "src/lib.rs:6:87 (the function used as a value: a method is still reachable by its path)",
+        ],
+        unmatched: [],
+        rewritten: [
+            (
+                "/tmp/.tmp8emDKJ/fixture/src/lib.rs",
+                "macro_rules! fixed { ($ignored:ident) => { [usize; { let K = 1; K }] }; }\nstruct S<const N: usize, T>([usize; N], T);\nimpl<const N: usize> S<N, fixed!(M)> {\n    fn f<const M: usize>(&self) -> usize { self.0[0] + self.1[0] + M }\n}\nfn main() { let s: S<1, [usize; 1]> = S([4], [2]); println!(\"{}\", S::<1, [usize; 1]>::f::<3>(&s)); }\n",
+            ),
+        ],
+        diagnostics: [],
+        applied: true,
+    },
+)

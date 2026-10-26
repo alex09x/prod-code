@@ -1,0 +1,443 @@
+   Compiling prod-code-mcp v0.3.41 (<build-worktree>/crates/prod-code-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
+     Running tests/rust_method_preservation.rs (target/debug/deps/rust_method_preservation-7126ebbd21dafda3)
+
+running 10 tests
+dispatch original: source
+struct Tax;
+struct S;
+struct Wrapper(S);
+impl S {
+    fn f(s: &S) -> u32 { let _ = s; 7 }
+}
+impl Wrapper { fn f(&self) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = S; fn deref(&self) -> &S { &self.0 } }
+fn main() { let wrapper = &Wrapper(S); println!("{}", S::f(wrapper)); }
+
+wrong owner original: source
+struct Tax;
+struct S;
+mod other { pub struct S; }
+impl S {
+    fn f(s: &other::S) -> u32 { let _ = s; 7 }
+}
+fn main() { println!("{}", S::f(&other::S)); }
+
+associated original: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f() -> &'static str {
+        // Self self tax
+        struct Inner;
+        impl Inner { fn label() -> &'static str { let _ = Self; "inner" } }
+        let _ = Inner::label();
+        let _ = Self;
+        let _ = b"Self self tax";
+        let _ = br##"Self self tax"##;
+        let _ = "Self self tax";
+        r##"Self self tax"##
+    }
+}
+fn main() { println!("{}", Order::f()); }
+
+effectful original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, tax: &Tax) -> u32 { self.0 + tax.0 }
+}
+fn order() -> Order { println!("order"); Order(1) }
+fn tax() -> Tax { println!("tax"); Tax(2) }
+fn main() { println!("{}", order().f(&tax())); }
+
+exact owner original: source
+struct Tax;
+struct S(u32);
+impl S {
+    fn f(s: &S) -> u32 { s.0 }
+}
+fn main() { println!("{}", S::f(&S(7))); }
+
+receiver original: source
+struct Tax(u32);
+struct Order(u32);
+impl Order {
+    fn f(&self, tax: &Tax) -> u32 {
+        // self Self tax
+        /* Self /* self */ tax */
+        println!("self Self tax");
+        println!(r##"self Self tax"##);
+        println!("{}", std::str::from_utf8(b"self Self tax").unwrap());
+        println!("{}", std::str::from_utf8(br##"self Self tax"##).unwrap());
+        struct Inner(u32);
+        impl Inner {
+            fn read(&self) -> u32 { let _: &Self = self; self.0 }
+        }
+        let outer = tax.0;
+        let nested = { let tax = Tax(3); tax.0 };
+        self.0 + outer + nested + Inner(4).read()
+    }
+}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(&t)); }
+
+recursion original: source
+struct Tax;
+struct Order;
+impl Order {
+    fn f(n: u32) -> u32 {
+        let recur = Self::f;
+        if n == 0 { 1 } else if n % 2 == 0 { recur(n - 1) + 1 } else { Order::f(n - 1) + 1 }
+    }
+}
+fn main() { println!("{}", Order::f(4)); }
+
+lifetime cursor original: source
+struct Tax(u32);
+mod tax { pub struct Helper; }
+struct Order(u32);
+impl Order {
+    fn f<'a>(&self, helper: tax::Helper, tax: &'a Tax) -> u32 {
+        let _ = helper; self.0 + tax.0
+    }
+}
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", o.f(tax::Helper, &t)); }
+
+failed references kind=0 force=false: cannot find the uses of `s`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+wrong owner original: rustc exit status: 0
+
+dispatch original: rustc exit status: 0
+
+wrong owner original: runtime exit status: 0
+7
+
+dispatch original: runtime exit status: 0
+7
+
+failed references kind=0 force=true: cannot find the uses of `s`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+exact owner original: rustc exit status: 0
+
+effectful original: rustc exit status: 0
+
+exact owner original: runtime exit status: 0
+7
+
+effectful original: runtime exit status: 0
+order
+tax
+3
+
+recursion original: rustc exit status: 0
+
+associated original: rustc exit status: 0
+
+recursion original: runtime exit status: 0
+5
+
+associated original: runtime exit status: 0
+Self self tax
+
+receiver original: rustc exit status: 0
+
+receiver original: runtime exit status: 0
+self Self tax
+self Self tax
+self Self tax
+self Self tax
+10
+
+lifetime cursor original: rustc exit status: 0
+
+lifetime cursor original: runtime exit status: 0
+3
+
+
+thread 'receiver::selected_binding_cursor_and_explicit_reference_lifetime_work' (1546711) panicked at crates/prod-code-mcp/tests/rust_method_preservation/receiver.rs:56:134:
+called `Result::unwrap()` on an `Err` value: `tax: &'a Tax` is not a named type a method can move to
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test receiver::selected_binding_cursor_and_explicit_reference_lifetime_work ... FAILED
+dispatch preview: source
+struct Tax;
+struct S;
+struct Wrapper(S);
+impl S {
+    fn f(&self) -> u32 { let _ = self; 7 }
+}
+impl Wrapper { fn f(&self) -> u32 { 99 } }
+impl std::ops::Deref for Wrapper { type Target = S; fn deref(&self) -> &S { &self.0 } }
+fn main() { let wrapper = &Wrapper(S); println!("{}", wrapper.f()); }
+
+cursor applied: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, helper: tax::Helper, order: &Order) -> u32 {
+        let _ = helper; order.0 + tax.0
+    }
+}
+mod tax { pub struct Helper; }
+struct Order(u32);
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(tax::Helper, &o)); }
+
+failed references kind=1 force=false: cannot find the uses of `tax`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+receiver preview: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> u32 {
+        // order Order tax
+        /* Order /* order */ tax */
+        println!("order Order tax");
+        println!(r##"order Order tax"##);
+        println!("{}", std::str::from_utf8(b"order Order tax").unwrap());
+        println!("{}", std::str::from_utf8(br##"order Order tax"##).unwrap());
+        struct Inner(u32);
+        impl Inner {
+            fn read(&order) -> u32 { let _: &Order = order; order.0 }
+        }
+        let outer = self.0;
+        let nested = { let tax = Tax(3); tax.0 };
+        order.0 + outer + nested + Inner(4).read()
+    }
+}
+struct Order(u32);
+fn main() { let o = Order(1); let t = Tax(2); println!("{}", t.f(&o)); }
+
+associated preview: source
+struct Tax;
+
+impl Tax {
+    fn f() -> &'static str {
+        // Order self tax
+        struct Inner;
+        impl Inner { fn label() -> &'static str { let _ = Order; "inner" } }
+        let _ = Inner::label();
+        let _ = Order;
+        let _ = b"Order self tax";
+        let _ = br##"Order self tax"##;
+        let _ = "Order self tax";
+        r##"Order self tax"##
+    }
+}
+struct Order;
+fn main() { println!("{}", Tax::f()); }
+
+
+thread 'conversion::full_owner_paths_and_generic_arguments_are_required' (1546706) panicked at crates/prod-code-mcp/tests/rust_method_preservation/conversion.rs:39:13:
+accepted a different self type: Ok(MadeMethod { owner: "S", method: "f", root: "<fixture>", file: "src/main.rs", parameter: "s: &other::S", receiver: "&self", renamed_uses: 0, rewritten_calls: 0, unchanged: [], unmatched: [], rewritten: [("<fixture>/src/main.rs", "struct Tax;\nstruct S;\nmod other { pub struct S; }\nimpl S {\n    fn f(&self) -> u32 { let _ = s; 7 }\n}\nfn main() { println!(\"{}\", S::f(&other::S)); }\n")], diagnostics: [], applied: true })
+test conversion::full_owner_paths_and_generic_arguments_are_required ... FAILED
+
+thread 'receiver::module_word_before_plain_destination_binding_does_not_steal_cursor' (1546709) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:126:5:
+rustc failed for cursor applied
+cursor applied: rustc exit status: 1
+error[E0423]: expected value, found module `tax`
+ --> <fixture>/main.rs:5:35
+  |
+1 | struct Tax(u32);
+  | ---------------- similarly named tuple struct `Tax` defined here
+...
+5 |         let _ = helper; order.0 + tax.0
+  |                                   ^^^
+  |
+help: use the path separator to refer to an item
+  |
+5 -         let _ = helper; order.0 + tax.0
+5 +         let _ = helper; order.0 + tax::0
+  |
+help: a tuple struct with a similar name exists
+  |
+5 -         let _ = helper; order.0 + tax.0
+5 +         let _ = helper; order.0 + Tax.0
+  |
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0423`.
+
+test receiver::module_word_before_plain_destination_binding_does_not_steal_cursor ... FAILED
+dispatch preview: rustc exit status: 0
+
+dispatch preview: runtime exit status: 0
+99
+
+
+thread 'conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value' (1546704) panicked at crates/prod-code-mcp/tests/rust_method_preservation/conversion.rs:22:5:
+assertion `left == right` failed
+  left: "99\n"
+ right: "7\n"
+test conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value ... FAILED
+failed references kind=1 force=true: cannot find the uses of `tax`, which become `self`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+receiver preview: rustc exit status: 1
+error: expected one of `:`, `@`, or `|`, found `)`
+  --> <fixture>/main.rs:13:27
+   |
+13 |             fn read(&order) -> u32 { let _: &Order = order; order.0 }
+   |                           ^ expected one of `:`, `@`, or `|`
+   |
+help: if this is a `self` type, give it a parameter name
+   |
+13 |             fn read(self: &order) -> u32 { let _: &Order = order; order.0 }
+   |                     +++++
+help: if this is a parameter name, give it a type
+   |
+13 -             fn read(&order) -> u32 { let _: &Order = order; order.0 }
+13 +             fn read(order: &TypeName) -> u32 { let _: &Order = order; order.0 }
+   |
+help: if this is a type, explicitly ignore the parameter name
+   |
+13 |             fn read(_: &order) -> u32 { let _: &Order = order; order.0 }
+   |                     ++
+
+error[E0599]: no method named `read` found for struct `Inner` in the current scope
+  --> <fixture>/main.rs:17:45
+   |
+11 |         struct Inner(u32);
+   |         ------------ method `read` not found for this struct
+...
+17 |         order.0 + outer + nested + Inner(4).read()
+   |                                             ^^^^ this is an associated function, not a method
+   |
+   = note: found the following associated functions; to be used as methods, functions must have a `self` parameter
+note: the candidate is defined in an impl for the type `Inner`
+  --> <fixture>/main.rs:13:13
+   |
+13 |             fn read(&order) -> u32 { let _: &Order = order; order.0 }
+   |             ^^^^^^^^^^^^^^^^^^^^^^
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `read`, perhaps you need to implement it:
+           candidate #1: `std::io::Read`
+help: use associated function syntax instead
+   |
+17 -         order.0 + outer + nested + Inner(4).read()
+17 +         order.0 + outer + nested + Inner::read()
+   |
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0599`.
+
+
+thread 'receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings' (1546710) panicked at crates/prod-code-mcp/tests/rust_method_preservation/support.rs:126:5:
+rustc failed for receiver preview
+test receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings ... FAILED
+
+thread 'associated::associated_recursion_and_function_values_follow_the_destination' (1546703) panicked at crates/prod-code-mcp/tests/rust_method_preservation/associated.rs:53:5:
+assertion `left == right` failed
+  left: 1
+ right: 3
+test associated::associated_recursion_and_function_values_follow_the_destination ... FAILED
+exact owner applied: source
+struct Tax;
+struct S(u32);
+impl S {
+    fn f(&self) -> u32 { self.0 }
+}
+fn main() { println!("{}", S(7).f()); }
+
+failed references kind=2 force=false: cannot find the paths to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+associated preview: rustc exit status: 0
+
+associated preview: runtime exit status: 0
+Order self tax
+
+
+thread 'associated::associated_move_preserves_literal_bytes_and_nested_self_owner' (1546702) panicked at crates/prod-code-mcp/tests/rust_method_preservation/associated.rs:37:5:
+assertion `left == right` failed
+  left: "Order self tax\n"
+ right: "Self self tax\n"
+test associated::associated_move_preserves_literal_bytes_and_nested_self_owner ... FAILED
+effectful forced: source
+struct Tax(u32);
+
+impl Tax {
+    fn f(&self, order: &Order) -> u32 { order.0 + self.0 }
+}
+struct Order(u32);
+fn order() -> Order { println!("order"); Order(1) }
+fn tax() -> Tax { println!("tax"); Tax(2) }
+fn main() { println!("{}", tax().f(&order())); }
+
+failed references kind=2 force=true: cannot find the paths to `f`; nothing was planned: the analyzer's references are not a list: {"error":"reference query failed"}
+test guards::failed_reference_queries_refuse_even_force_and_preserve_all_bytes ... ok
+exact owner applied: rustc exit status: 0
+
+exact owner applied: runtime exit status: 0
+7
+
+exact owner original: source
+struct Tax;
+struct Wrapper<T>(T);
+impl<T: Copy> Wrapper<T> {
+    fn f(s: &Wrapper<T>) -> T { s.0 }
+}
+fn main() { println!("{}", Wrapper::f(&Wrapper(7))); }
+
+effectful forced: rustc exit status: 0
+
+effectful forced: runtime exit status: 0
+tax
+order
+3
+
+test guards::effectful_calls_refuse_normally_but_force_constructs_the_rewrite ... ok
+exact owner original: rustc exit status: 0
+
+exact owner original: runtime exit status: 0
+7
+
+exact owner applied: source
+struct Tax;
+struct Wrapper<T>(T);
+impl<T: Copy> Wrapper<T> {
+    fn f(&self) -> T { self.0 }
+}
+fn main() { println!("{}", Wrapper(7).f()); }
+
+exact owner applied: rustc exit status: 0
+
+exact owner applied: runtime exit status: 0
+7
+
+exact owner original: source
+struct Tax;
+mod model { pub struct S(pub u32); }
+impl model::S {
+    fn f(s: &model::S) -> u32 { s.0 }
+}
+fn main() { println!("{}", model::S::f(&model::S(7))); }
+
+exact owner original: rustc exit status: 0
+
+exact owner original: runtime exit status: 0
+7
+
+exact owner applied: source
+struct Tax;
+mod model { pub struct S(pub u32); }
+impl model::S {
+    fn f(&self) -> u32 { self.0 }
+}
+fn main() { println!("{}", model::S(7).f()); }
+
+exact owner applied: rustc exit status: 0
+
+exact owner applied: runtime exit status: 0
+7
+
+test conversion::exact_generic_and_path_owners_still_convert_and_run ... ok
+
+failures:
+
+failures:
+    associated::associated_move_preserves_literal_bytes_and_nested_self_owner
+    associated::associated_recursion_and_function_values_follow_the_destination
+    conversion::deref_wrapper_keeps_the_qualified_dispatch_and_runtime_value
+    conversion::full_owner_paths_and_generic_arguments_are_required
+    receiver::module_word_before_plain_destination_binding_does_not_steal_cursor
+    receiver::receiver_move_preserves_literals_comments_and_nested_owner_bindings
+    receiver::selected_binding_cursor_and_explicit_reference_lifetime_work
+
+test result: FAILED. 3 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+error: test failed, to rerun pass `-p prod-code-mcp --test rust_method_preservation`
+[prod-code exec] exit 101 in 1.6s (server 1.3s, cpu 1.5s user 1.9s sys, peak 503 MB) on node <linux-build-node>, copy <build-worktree> (linux x86_64)
