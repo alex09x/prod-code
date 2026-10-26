@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Stale Deletion Hunks** (`crates/prod-code-mcp`, #1374):
+  A patch that deletes a file is applied only when its hunks reproduce the live file exactly, carriage returns and the final newline included. A stale, incomplete or replaced preimage refuses the whole proposal before the analyzer or any write; a Git preimage no longer stands in for a missing live file.
 - **Pull-Up Literal and Declaration Preservation** (`crates/prod-code-mcp`, #1327):
   Sibling cleanup no longer treats literal whitespace or modifier-looking text as interchangeable. Moved-member modifier edits stay within parsed declarations, retaining decorators and ordinary constructor/destructor boundaries. Inheritance replacement refuses opaque base coverage and excludes Swift initializers from default method forwarding.
 - **Go Project Routing and Placement Evidence** (`crates/prod-code-mcp`, #1330):
