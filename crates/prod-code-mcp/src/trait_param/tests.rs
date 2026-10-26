@@ -62,6 +62,18 @@ fn an_argument_that_does_something_is_named() {
     assert_eq!(effect_of("!flag"), None);
     assert_eq!(effect_of("r?"), Some("can return early with `?`"));
     assert_eq!(effect_of("f.await"), Some("awaits"));
+    // Assignments are effects wherever they stand; plain blocks are not (#1396).
+    assert_eq!(effect_of("{ counter += 1; value }"), Some("assigns"));
+    assert_eq!(effect_of("{ x = 2; x }"), Some("assigns"));
+    assert_eq!(effect_of("{ let y = a + 1; y * 2 }"), None);
+    assert_eq!(
+        effect_of("if ready { return } else { 1 }"),
+        Some("leaves the surrounding code")
+    );
+    assert_eq!(effect_of("a == b && c <= d"), None);
+    assert_eq!(effect_of("&mut buffer[1..]"), None);
+    // Text that is no expression keeps the textual checks.
+    assert_eq!(effect_of("next( ,"), Some("calls something"));
     assert!(mentions("let _ = unused;", "unused") && !mentions("_unused", "unused"));
     let t = "trait T { fn a(&self); fn area(&self); }";
     assert_eq!(

@@ -157,8 +157,46 @@ pub fn removal(spans: &[(usize, usize)], index: usize) -> Option<(usize, usize)>
     })
 }
 
-/// Why dropping `arg` would change what the program does, if it would.
+/// Why dropping `arg` would change what the program does, if it would. The argument is read
+/// as a Rust expression: an assignment anywhere in it, as in `{ counter += 1; value }`, is an
+/// effect like a call, not the absence of one (#1396). Text that is no expression falls back to
+/// the textual checks.
 pub fn effect_of(arg: &str) -> Option<&'static str> {
+    use ra_ap_syntax::{AstNode, SyntaxKind, ast};
+    let wrapped = format!("fn __prod_code_arg() {{ let _ = {arg}; }}");
+    let parsed = ra_ap_syntax::SourceFile::parse(&wrapped, ra_ap_syntax::Edition::CURRENT);
+    if !parsed.errors().is_empty() {
+        return textual_effect_of(arg);
+    }
+    let mut found: Option<(u8, &'static str)> = None;
+    for node in parsed.tree().syntax().descendants() {
+        let effect = match node.kind() {
+            SyntaxKind::AWAIT_EXPR => Some((0, "awaits")),
+            SyntaxKind::TRY_EXPR => Some((1, "can return early with `?`")),
+            SyntaxKind::MACRO_CALL => Some((2, "expands a macro")),
+            SyntaxKind::CALL_EXPR | SyntaxKind::METHOD_CALL_EXPR => Some((3, "calls something")),
+            SyntaxKind::BIN_EXPR => ast::BinExpr::cast(node.clone())
+                .and_then(|bin| bin.op_kind())
+                .is_some_and(|op| matches!(op, ast::BinaryOp::Assignment { .. }))
+                .then_some((4, "assigns")),
+            SyntaxKind::RETURN_EXPR
+            | SyntaxKind::BREAK_EXPR
+            | SyntaxKind::CONTINUE_EXPR
+            | SyntaxKind::BECOME_EXPR
+            | SyntaxKind::YIELD_EXPR => Some((5, "leaves the surrounding code")),
+            _ => None,
+        };
+        if let Some(effect) = effect
+            && found.is_none_or(|f| effect.0 < f.0)
+        {
+            found = Some(effect);
+        }
+    }
+    found.map(|(_, why)| why)
+}
+
+/// The checks for text that is no expression: an await, a `?`, a macro, a call.
+fn textual_effect_of(arg: &str) -> Option<&'static str> {
     if arg.contains(".await") {
         Some("awaits")
     } else if arg.contains('?') {
