@@ -38,6 +38,8 @@ struct Reply {
     stderr: &'static str,
     exit: i32,
     changes: Vec<(&'static str, &'static str)>,
+    /// A local edit made while the command runs, before its changes come back.
+    local_edit: Option<(std::path::PathBuf, &'static str)>,
 }
 
 /// A node answering the commands it is sent from `script`, in order, over as many connections
@@ -113,6 +115,9 @@ async fn answer(
             };
             let _ = framed.send(WireMessage::ExecChunk(chunk)).await;
         }
+    }
+    if let Some((path, text)) = &r.local_edit {
+        std::fs::write(path, text).unwrap();
     }
     if !r.changes.is_empty() {
         let files = r
@@ -300,6 +305,53 @@ async fn a_linters_fix_mode_runs_on_the_node_and_its_rewrites_come_back() {
     assert_eq!(seen[1].env, [("NO_COLOR".to_string(), "1".to_string())]);
     assert!(seen[1].pull_changes);
     assert_eq!(seen[1].subdir, None);
+}
+
+/// A local edit made while the fixer runs wins the writeback: the report names the kept file as
+/// skipped, with why, and never as fixed (#1414).
+#[tokio::test]
+async fn a_file_kept_for_a_local_edit_is_reported_and_not_fixed() {
+    let ws = Workspace::new(&[
+        ("pyproject.toml", "[tool.ruff]\n"),
+        ("app.py", "import os\n"),
+        ("lib.py", "import sys\n"),
+    ]);
+    let (addr, _) = node(vec![
+        Reply {
+            stdout: "app.py:1:8: F401 `os` imported but unused\n",
+            exit: 1,
+            ..Reply::default()
+        },
+        Reply {
+            changes: vec![("app.py", "\n"), ("lib.py", "\n")],
+            local_edit: Some((ws.root().join("app.py"), "import os  # mine\n")),
+            ..Reply::default()
+        },
+        Reply::default(),
+    ])
+    .await;
+    let fixed = fix(addr, &ws, None, VerifyKind::Lint).await.unwrap();
+
+    let ruff = RUFF_FIX.join(" ");
+    assert_eq!(
+        fixed.note,
+        Some(format!(
+            "fixes: `{ruff}` rewrote 1 file(s); 1 file(s) kept with their local state, the fix \
+             not written: app.py"
+        ))
+    );
+    assert_eq!(
+        ws.read("app.py"),
+        "import os  # mine\n",
+        "the local edit stays"
+    );
+    assert_eq!(ws.read("lib.py"), "\n");
+    let kept = fixed.outcomes.iter().find(|o| o.file == "app.py").unwrap();
+    assert!(kept.skipped.is_some(), "{kept:?}");
+    let report = fixed.render(50);
+    assert!(report.contains("  fixed lib.py\n"), "{report}");
+    assert!(report.contains("  skipped app.py: fixed by"), "{report}");
+    assert!(!report.contains("fixed app.py"), "{report}");
 }
 
 #[tokio::test]

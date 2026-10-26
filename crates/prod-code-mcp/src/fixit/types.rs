@@ -90,6 +90,9 @@ impl Fixed {
                 // A linter's own fix mode rewrites whole files, with no line to name.
                 None if o.line == 0 => format!("  fixed {}\n", o.file),
                 None => format!("  fixed {}:{}: {}\n", o.file, o.line, o.message),
+                Some(why) if o.line == 0 => {
+                    format!("  skipped {}: {} ({why})\n", o.file, o.message)
+                }
                 Some(why) => format!("  skipped {}:{}: {} ({why})\n", o.file, o.line, o.message),
             };
             const MORE_MARKER_ESTIMATE: usize = 60;
