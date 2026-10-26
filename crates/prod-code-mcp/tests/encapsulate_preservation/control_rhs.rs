@@ -87,7 +87,7 @@ async fn cpp_unbraced_bodies_apply_but_value_consuming_prefixes_refuse() {
             }
             if supported && plan.applied {
                 assert!(plan.unmatched.is_empty());
-                assert!(ws.read("main.cpp").contains("))(2);"));
+                assert!(ws.read("main.cpp").contains("(2);"));
             } else if !supported {
                 assert!(!plan.unmatched.is_empty());
                 assert_eq!(ws.read("main.cpp"), body);

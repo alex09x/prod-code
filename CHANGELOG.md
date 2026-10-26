@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **Python Setter Evaluation Order** (`crates/prod-code-mcp`, #1406):
+  Encapsulating a Python field keeps the staged form for an assignment whose value is an attribute read, since a property getter can rebind the receiver first; literals and bare names still become a direct setter call. C++ literals now also get the direct call.
+- **Go Signature Stack Overflow** (`crates/prod-code-mcp`):
+  The change-signature planner future is boxed, so a Go reorder no longer overflows a 2 MB thread stack in debug builds.
+- **Test Suite Green Again** (`crates/prod-code-mcp`, tests):
+  Tests whose expectations predated the audit merges follow the current contracts. These cover analyzer identity for fields, stricter diagnostics, staged compiler reports, failed fixer status, TypeScript compile refusal and syntax-tree identity for introduce-variable. Workspace formatting is clean again.
 - **Compile Verification of Every Affected Rust Project** (`crates/prod-code-mcp`, #1365):
   `verify: "compile"` checks each Cargo package group that owns an edited Rust file, including crates the root workspace excludes, in the same proposed shadow; any failing group fails the verdict, and a Rust file no Cargo target owns is reported as incomplete verification instead of passing. Edits outside Rust and trees without any `Cargo.toml` keep the single root check.
 - **Polyglot Extract-Delegate Identity and Initialization** (`crates/prod-code-mcp`, #1335):

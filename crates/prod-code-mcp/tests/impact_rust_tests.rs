@@ -475,7 +475,10 @@ async fn directly_changed_attributed_test_is_selected_with_zero_hops() {
     let root = ws.root();
     ws.write(
         "tests/impact.rs",
-        &TEST.replace("assert_eq!(test_helper(), 2);", "assert_eq!(test_helper(), 3);"),
+        &TEST.replace(
+            "assert_eq!(test_helper(), 2);",
+            "assert_eq!(test_helper(), 3);",
+        ),
     );
     let test_uri = prod_code_protocol::path::file_uri(ws.path("tests/impact.rs").as_path());
     let remote = ScriptedGateway::start_arc(Arc::new(move |method, _| match method {
@@ -499,7 +502,12 @@ async fn directly_changed_attributed_test_is_selected_with_zero_hops() {
     let report = impact::analyze(remote, &root, None, 4)
         .await
         .expect("impact analysis runs");
-    assert_eq!(report.tests.len(), 1, "only actual_test is selected: {:?}", report.tests);
+    assert_eq!(
+        report.tests.len(),
+        1,
+        "only actual_test is selected: {:?}",
+        report.tests
+    );
     assert_eq!(report.tests[0].name, "actual_test");
     assert_eq!(report.reaches.len(), 1);
     assert_eq!(report.reaches[0].hops, 0);
@@ -507,7 +515,15 @@ async fn directly_changed_attributed_test_is_selected_with_zero_hops() {
     assert_eq!(report.reaches[0].changed.name, "actual_test");
     assert_eq!(
         report.test_command.as_deref(),
-        Some(&["cargo".to_string(), "test".to_string(), "--workspace".to_string(), "--".to_string(), "actual_test".to_string()][..])
+        Some(
+            &[
+                "cargo".to_string(),
+                "test".to_string(),
+                "--workspace".to_string(),
+                "--".to_string(),
+                "actual_test".to_string()
+            ][..]
+        )
     );
 }
 

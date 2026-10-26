@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::generify::generify_polyglot;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
@@ -110,7 +110,9 @@ export function handlePromise(data: Promise<string>): Promise<string> {
     assert_eq!(res_prom.function, "handlePromise");
     assert!(res_prom.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("export function handlePromise<P>(data: Promise<P>): Promise<string> {"));
+    assert!(
+        content.contains("export function handlePromise<P>(data: Promise<P>): Promise<string> {")
+    );
 }
 
 #[tokio::test]
@@ -148,7 +150,11 @@ async fn test_generify_typescript_append_to_existing_generics() {
     assert_eq!(res.function, "transform");
     assert!(res.applied);
     let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("export function transform<U, T extends Comparable>(item: T, meta: U): void {"));
+    assert!(
+        content.contains(
+            "export function transform<U, T extends Comparable>(item: T, meta: U): void {"
+        )
+    );
 }
 
 #[tokio::test]
@@ -367,7 +373,10 @@ void combine(const std::string& item, U other) {
     assert!(res.applied);
 
     let cpp_content = fs::read_to_string(&cpp_file).unwrap();
-    assert!(cpp_content.contains("template<typename U, typename T>\nvoid combine(const T& item, U other) {"));
+    assert!(
+        cpp_content
+            .contains("template<typename U, typename T>\nvoid combine(const T& item, U other) {")
+    );
 }
 
 #[tokio::test]
@@ -608,8 +617,7 @@ async fn test_generify_checks_discovered_caller_files_before_apply() {
     let root = ws.root().to_path_buf();
     let file = root.join("api.ts");
     let original = fs::read_to_string(&file).unwrap();
-    let caller_diagnostic_requests =
-        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let caller_diagnostic_requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let caller_seen = std::sync::Arc::clone(&caller_diagnostic_requests);
     let remote = ScriptedGateway::start(move |method, params| {
         if method == "textDocument/diagnostic"
@@ -655,7 +663,10 @@ async fn test_generify_checks_discovered_caller_files_before_apply() {
 
     assert_eq!(result.callers_checked, 1);
     assert!(
-        result.diagnostics.iter().any(|d| d.contains("caller type error")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("caller type error")),
         "diagnostics: {:?}; requests: {:?}",
         result.diagnostics,
         caller_diagnostic_requests.load(std::sync::atomic::Ordering::SeqCst)
@@ -736,7 +747,10 @@ async fn test_generify_safety_refusals() {
     .await;
     assert!(err_missing.is_err());
     let err_msg = err_missing.unwrap_err().to_string();
-    assert!(err_msg.contains("has no parameter `nonexistent`"), "{err_msg}");
+    assert!(
+        err_msg.contains("has no parameter `nonexistent`"),
+        "{err_msg}"
+    );
 
     // 2. Type param collision with existing 'T'
     let err_collision = generify_polyglot(
@@ -755,7 +769,10 @@ async fn test_generify_safety_refusals() {
     .await;
     assert!(err_collision.is_err());
     let err_msg = err_collision.unwrap_err().to_string();
-    assert!(err_msg.contains("already has a generic parameter `T`"), "{err_msg}");
+    assert!(
+        err_msg.contains("already has a generic parameter `T`"),
+        "{err_msg}"
+    );
 
     // 3. Invalid identifier
     let err_invalid = generify_polyglot(

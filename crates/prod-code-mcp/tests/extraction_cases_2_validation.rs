@@ -80,7 +80,16 @@ async fn rejecting_gateway() -> ScriptedGateway {
                 .push(warning["items"][0].take());
             report
         }
-        "textDocument/documentSymbol" => serde_json::json!([]),
+        // `Store.value` where the delegate test's source declares it; the delegate needs the
+        // field's analyzer identity before it plans anything.
+        "textDocument/documentSymbol" => serde_json::json!([{
+            "name": "Store", "kind": 5,
+            "selectionRange": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 11}},
+            "children": [{
+                "name": "value", "kind": 8,
+                "selectionRange": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 9}}
+            }]
+        }]),
         _ => serde_json::Value::Null,
     })
     .await

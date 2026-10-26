@@ -1792,7 +1792,10 @@ fn each_language_gets_a_configuration_that_names_its_server() {
     let java = GenericLspConfig::for_java();
     assert!(!java.command.is_empty(), "Java's server is named");
     let kotlin = GenericLspConfig::for_kotlin();
-    assert_eq!(kotlin.command, "kotlin-language-server", "Kotlin's server is named");
+    assert_eq!(
+        kotlin.command, "kotlin-language-server",
+        "Kotlin's server is named"
+    );
     let csharp = GenericLspConfig::for_csharp();
     assert!(!csharp.command.is_empty(), "C#'s server is named");
     let php = GenericLspConfig::for_php();

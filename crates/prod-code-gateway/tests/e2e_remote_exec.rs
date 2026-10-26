@@ -48,7 +48,9 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
                                         exit_code: None,
                                         duration_ms: 0,
-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
+                                        server_workspace_root: workspace
+                                            .to_string_lossy()
+                                            .to_string(),
                                         timed_out: false,
                                         error: Some("workspace not synced".into()),
                                         usage: None,
@@ -69,7 +71,9 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
                                         exit_code: None,
                                         duration_ms: 0,
-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
+                                        server_workspace_root: workspace
+                                            .to_string_lossy()
+                                            .to_string(),
                                         timed_out: false,
                                         error: Some(format!(
                                             "timeout_secs ({}) exceeds maximum allowed (604800)",
@@ -88,7 +92,9 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                 return;
                             }
 
-                            if req.command == RemoteExecCommand::Check && req.language == RemoteExecLanguage::Rust {
+                            if req.command == RemoteExecCommand::Check
+                                && req.language == RemoteExecLanguage::Rust
+                            {
                                 // Simulate cargo compiler JSON message stream
                                 let diag_json = r#"{"reason":"compiler-message","package_id":"foo","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":10,"column_start":5,"is_primary":true,"label":"expected u32, found &str"}],"rendered":"error[E0308]: mismatched types\n"}}"#;
                                 let _ = framed
@@ -101,15 +107,20 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     .await;
 
                                 if req.format == RemoteExecFormat::Json
-                                    && let Some(stream_ev) = prod_code_protocol::parse_cargo_json_event(diag_json) {
-                                        let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
-                                    }
+                                    && let Some(stream_ev) =
+                                        prod_code_protocol::parse_cargo_json_event(diag_json)
+                                {
+                                    let _ =
+                                        framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                }
 
                                 let _ = framed
                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
                                         exit_code: Some(1),
                                         duration_ms: 45,
-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
+                                        server_workspace_root: workspace
+                                            .to_string_lossy()
+                                            .to_string(),
                                         timed_out: false,
                                         error: None,
                                         usage: None,
@@ -129,7 +140,9 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                         benches: Vec::new(),
                                     }))
                                     .await;
-                            } else if req.command == RemoteExecCommand::Test && req.language == RemoteExecLanguage::Rust {
+                            } else if req.command == RemoteExecCommand::Test
+                                && req.language == RemoteExecLanguage::Rust
+                            {
                                 // Simulate cargo test output: mixed compiler JSON and standard libtest text lines
                                 let lines = [
                                     r#"{"reason":"compiler-artifact","package_id":"my-crate"}"#,
@@ -145,26 +158,37 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                 let mut failures = Vec::new();
                                 for line in lines {
                                     let _ = framed
-                                        .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
-                                            ExecChunk {
+                                        .send(WireMessage::RemoteExecStream(
+                                            RemoteExecStream::Chunk(ExecChunk {
                                                 stderr: false,
                                                 data: Some(format!("{line}\n").into_bytes()),
-                                            },
-                                        )))
+                                            }),
+                                        ))
                                         .await;
-                                    if let Some(stream_ev) = prod_code_protocol::parse_cargo_json_event(line) {
+                                    if let Some(stream_ev) =
+                                        prod_code_protocol::parse_cargo_json_event(line)
+                                    {
                                         match &stream_ev {
-                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { .. }) => passed += 1,
-                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { .. }) => {
+                                            RemoteExecStream::TestEvent(
+                                                RemoteExecTestEvent::Passed { .. },
+                                            ) => passed += 1,
+                                            RemoteExecStream::TestEvent(
+                                                RemoteExecTestEvent::Failed { .. },
+                                            ) => {
                                                 failed += 1;
-                                                if let RemoteExecStream::TestEvent(te) = &stream_ev {
+                                                if let RemoteExecStream::TestEvent(te) = &stream_ev
+                                                {
                                                     failures.push(te.clone());
                                                 }
                                             }
-                                            RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { .. }) => skipped += 1,
+                                            RemoteExecStream::TestEvent(
+                                                RemoteExecTestEvent::Skipped { .. },
+                                            ) => skipped += 1,
                                             _ => {}
                                         }
-                                        let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                        let _ = framed
+                                            .send(WireMessage::RemoteExecStream(stream_ev))
+                                            .await;
                                     }
                                 }
 
@@ -172,7 +196,9 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
                                         exit_code: Some(1),
                                         duration_ms: 180,
-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
+                                        server_workspace_root: workspace
+                                            .to_string_lossy()
+                                            .to_string(),
                                         timed_out: false,
                                         error: None,
                                         usage: None,
@@ -185,10 +211,15 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                         benches: Vec::new(),
                                     }))
                                     .await;
-                            } else if req.command == RemoteExecCommand::Test && req.language == RemoteExecLanguage::Go {
+                            } else if req.command == RemoteExecCommand::Test
+                                && req.language == RemoteExecLanguage::Go
+                            {
                                 if req.format == RemoteExecFormat::Raw {
                                     let argv = req.to_argv();
-                                    assert!(argv.contains(&"-v".to_string()), "expected -v in raw Go test command: {argv:?}");
+                                    assert!(
+                                        argv.contains(&"-v".to_string()),
+                                        "expected -v in raw Go test command: {argv:?}"
+                                    );
                                     let raw_lines = [
                                         "=== RUN   TestLogin",
                                         "--- PASS: TestLogin (0.012s)",
@@ -205,33 +236,47 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     let mut failures = Vec::new();
                                     for line in raw_lines {
                                         let _ = framed
-                                            .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
-                                                ExecChunk {
+                                            .send(WireMessage::RemoteExecStream(
+                                                RemoteExecStream::Chunk(ExecChunk {
                                                     stderr: false,
                                                     data: Some(format!("{line}\n").into_bytes()),
-                                                },
-                                            )))
+                                                }),
+                                            ))
                                             .await;
-                                        if let Some(stream_ev) = prod_code_protocol::parse_go_test_json_event(line) {
+                                        if let Some(stream_ev) =
+                                            prod_code_protocol::parse_go_test_json_event(line)
+                                        {
                                             match &stream_ev {
-                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Passed { .. }) => passed += 1,
-                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Failed { .. }) => {
+                                                RemoteExecStream::TestEvent(
+                                                    RemoteExecTestEvent::Passed { .. },
+                                                ) => passed += 1,
+                                                RemoteExecStream::TestEvent(
+                                                    RemoteExecTestEvent::Failed { .. },
+                                                ) => {
                                                     failed += 1;
-                                                    if let RemoteExecStream::TestEvent(te) = &stream_ev {
+                                                    if let RemoteExecStream::TestEvent(te) =
+                                                        &stream_ev
+                                                    {
                                                         failures.push(te.clone());
                                                     }
                                                 }
-                                                RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { .. }) => skipped += 1,
+                                                RemoteExecStream::TestEvent(
+                                                    RemoteExecTestEvent::Skipped { .. },
+                                                ) => skipped += 1,
                                                 _ => {}
                                             }
-                                            let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                            let _ = framed
+                                                .send(WireMessage::RemoteExecStream(stream_ev))
+                                                .await;
                                         }
                                     }
                                     let _ = framed
                                         .send(WireMessage::RemoteExecResult(RemoteExecResult {
                                             exit_code: Some(1),
                                             duration_ms: 120,
-                                            server_workspace_root: workspace.to_string_lossy().to_string(),
+                                            server_workspace_root: workspace
+                                                .to_string_lossy()
+                                                .to_string(),
                                             timed_out: false,
                                             error: None,
                                             usage: None,
@@ -251,15 +296,19 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
 
                                     for line in [go_pass, go_fail] {
                                         let _ = framed
-                                            .send(WireMessage::RemoteExecStream(RemoteExecStream::Chunk(
-                                                ExecChunk {
+                                            .send(WireMessage::RemoteExecStream(
+                                                RemoteExecStream::Chunk(ExecChunk {
                                                     stderr: false,
                                                     data: Some(format!("{line}\n").into_bytes()),
-                                                },
-                                            )))
+                                                }),
+                                            ))
                                             .await;
-                                        if let Some(stream_ev) = prod_code_protocol::parse_go_test_json_event(line) {
-                                            let _ = framed.send(WireMessage::RemoteExecStream(stream_ev)).await;
+                                        if let Some(stream_ev) =
+                                            prod_code_protocol::parse_go_test_json_event(line)
+                                        {
+                                            let _ = framed
+                                                .send(WireMessage::RemoteExecStream(stream_ev))
+                                                .await;
                                         }
                                     }
 
@@ -267,7 +316,9 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                         .send(WireMessage::RemoteExecResult(RemoteExecResult {
                                             exit_code: Some(1),
                                             duration_ms: 120,
-                                            server_workspace_root: workspace.to_string_lossy().to_string(),
+                                            server_workspace_root: workspace
+                                                .to_string_lossy()
+                                                .to_string(),
                                             timed_out: false,
                                             error: None,
                                             usage: None,
@@ -293,7 +344,9 @@ async fn start_test_gateway() -> (SocketAddr, tokio::task::JoinHandle<()>, tempf
                                     .send(WireMessage::RemoteExecResult(RemoteExecResult {
                                         exit_code: Some(0),
                                         duration_ms: 10,
-                                        server_workspace_root: workspace.to_string_lossy().to_string(),
+                                        server_workspace_root: workspace
+                                            .to_string_lossy()
+                                            .to_string(),
                                         timed_out: false,
                                         error: None,
                                         usage: None,
@@ -340,7 +393,10 @@ async fn test_polyglot_remote_exec_rust_check_flow() {
         client_host: Some("localhost".into()),
     };
 
-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+    framed
+        .send(WireMessage::RemoteExecRequest(req))
+        .await
+        .unwrap();
 
     let mut stream_events = Vec::new();
     let mut final_result = None;
@@ -365,8 +421,12 @@ async fn test_polyglot_remote_exec_rust_check_flow() {
     assert_eq!(res.diagnostics[0].code.as_deref(), Some("E0308"));
 
     // Verify stream contained both raw chunk and structured diagnostic
-    let has_chunk = stream_events.iter().any(|ev| matches!(ev, RemoteExecStream::Chunk(_)));
-    let has_diag = stream_events.iter().any(|ev| matches!(ev, RemoteExecStream::Diagnostic(d) if d.code.as_deref() == Some("E0308")));
+    let has_chunk = stream_events
+        .iter()
+        .any(|ev| matches!(ev, RemoteExecStream::Chunk(_)));
+    let has_diag = stream_events.iter().any(
+        |ev| matches!(ev, RemoteExecStream::Diagnostic(d) if d.code.as_deref() == Some("E0308")),
+    );
     assert!(has_chunk);
     assert!(has_diag);
 }
@@ -392,7 +452,10 @@ async fn test_polyglot_remote_exec_go_test_flow() {
         client_host: Some("localhost".into()),
     };
 
-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+    framed
+        .send(WireMessage::RemoteExecRequest(req))
+        .await
+        .unwrap();
 
     let mut stream_events = Vec::new();
     let mut final_result = None;
@@ -445,7 +508,10 @@ async fn test_polyglot_remote_exec_unsynced_workspace_error() {
         client_host: None,
     };
 
-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+    framed
+        .send(WireMessage::RemoteExecRequest(req))
+        .await
+        .unwrap();
 
     let msg = framed.next().await.unwrap().unwrap();
     match msg {
@@ -479,7 +545,10 @@ async fn test_polyglot_remote_exec_rust_test_flow() {
         client_host: Some("localhost".into()),
     };
 
-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+    framed
+        .send(WireMessage::RemoteExecRequest(req))
+        .await
+        .unwrap();
 
     let mut stream_events = Vec::new();
     let mut final_result = None;
@@ -550,7 +619,10 @@ async fn test_polyglot_remote_exec_timeout_overflow_rejected() {
         client_host: None,
     };
 
-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+    framed
+        .send(WireMessage::RemoteExecRequest(req))
+        .await
+        .unwrap();
 
     let msg = framed.next().await.unwrap().unwrap();
     match msg {
@@ -589,7 +661,10 @@ async fn test_polyglot_remote_exec_go_raw_test_flow() {
 
     assert_eq!(req.to_argv(), vec!["go", "test", "-v", "./..."]);
 
-    framed.send(WireMessage::RemoteExecRequest(req)).await.unwrap();
+    framed
+        .send(WireMessage::RemoteExecRequest(req))
+        .await
+        .unwrap();
 
     let mut stream_events = Vec::new();
     let mut final_result = None;

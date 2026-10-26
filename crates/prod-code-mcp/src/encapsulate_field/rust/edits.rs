@@ -87,10 +87,23 @@ pub(crate) fn compose(text: &str, edits: &mut Vec<Edit>, mut setters: Vec<Setter
         }
         let replacement = match receiver.map(|(_, lang)| lang) {
             // A plain place and a literal or path value have no evaluation order to keep.
-            // C++ keeps the long form: a setter call would change where conversions run.
-            Some(Language::Rust | Language::Python)
-                if plain_place(&target) && plain_value(rhs, &target) =>
+            // In C++ a path value may run a conversion operator, so only a literal qualifies.
+            Some(Language::Rust) if plain_place(&target) && plain_value(rhs, &target) => {
+                format!("{}{method}({rhs})", target.trim_start())
+            }
+            // A Python attribute read can run a property getter that rebinds the receiver,
+            // so only a literal or a bare name skips the staged form (#1406).
+            Some(Language::Python)
+                if plain_place(&target)
+                    && plain_value(rhs, &target)
+                    && (!rhs.contains('.')
+                        || rhs
+                            .trim_start_matches('-')
+                            .starts_with(|c: char| c.is_ascii_digit())) =>
             {
+                format!("{}{method}({rhs})", target.trim_start())
+            }
+            Some(Language::Cpp) if plain_place(&target) && plain_literal(rhs) => {
                 format!("{}{method}({rhs})", target.trim_start())
             }
             Some(Language::Rust) => {
@@ -174,6 +187,17 @@ fn plain_value(rhs: &str, target: &str) -> bool {
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':'))
         && !body.split(['.', ':']).any(|name| name == root)
+}
+
+/// A number, `true`, `false` or `nullptr`: a value no user-defined conversion can run for.
+fn plain_literal(rhs: &str) -> bool {
+    let rhs = rhs.trim();
+    let body = rhs.strip_prefix('-').unwrap_or(rhs);
+    matches!(body, "true" | "false" | "nullptr")
+        || (body.starts_with(|c: char| c.is_ascii_digit())
+            && body
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '\'')))
 }
 
 pub(crate) fn apply(text: &str, mut edits: Vec<Edit>) -> Result<String> {

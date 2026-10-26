@@ -77,7 +77,7 @@ async fn cpp_numeric_separators_preserve_fraction_and_exponent_boundaries() {
         );
         assert!(run(&ws, "./probe", &[]).status.success());
         assert!(result.applied, "{:?}", result.unmatched);
-        assert!(ws.read("main.cpp").contains(&format!("))({literal});")));
+        assert!(ws.read("main.cpp").contains(&format!("({literal});")));
     }
 }
 

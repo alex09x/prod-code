@@ -10,7 +10,7 @@
 
 use prod_code_mcp::extract_interface::extract_interface_impl;
 use prod_code_mcp::extract_trait::extract_trait_ext;
-use prod_code_testkit::{answers, ScriptedGateway, Workspace};
+use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::fs;
 
 const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";

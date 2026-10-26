@@ -9,7 +9,7 @@
  */
 
 use prod_code_mcp::diagnostics::{is_swift_cross_target_candidate, swift_target_name};
-use prod_code_mcp::verify::{detect_tools, plan_command_with, VerifyKind};
+use prod_code_mcp::verify::{VerifyKind, detect_tools, plan_command_with};
 use std::path::Path;
 
 #[test]
@@ -50,25 +50,25 @@ fn swift_cross_target_candidate_detection() {
 #[test]
 fn swift_target_name_resolution() {
     assert_eq!(
-        swift_target_name(Path::new("clients/macos/ProdUI/Sources/ProdApp/WorkspaceTerminalView.swift")),
+        swift_target_name(Path::new(
+            "clients/macos/ProdUI/Sources/ProdApp/WorkspaceTerminalView.swift"
+        )),
         Some("ProdApp".to_string())
     );
     assert_eq!(
-        swift_target_name(Path::new("clients/macos/ProdUI/Sources/ProdUI/ProdTerminalSurfacePolicy.swift")),
+        swift_target_name(Path::new(
+            "clients/macos/ProdUI/Sources/ProdUI/ProdTerminalSurfacePolicy.swift"
+        )),
         Some("ProdUI".to_string())
     );
     assert_eq!(
-        swift_target_name(Path::new("clients/macos/ProdUI/Tests/ProdUITests/RemoteTerminalSurfaceCacheTests.swift")),
+        swift_target_name(Path::new(
+            "clients/macos/ProdUI/Tests/ProdUITests/RemoteTerminalSurfaceCacheTests.swift"
+        )),
         Some("ProdUITests".to_string())
     );
-    assert_eq!(
-        swift_target_name(Path::new("Package.swift")),
-        None
-    );
-    assert_eq!(
-        swift_target_name(Path::new("docs/architecture.md")),
-        None
-    );
+    assert_eq!(swift_target_name(Path::new("Package.swift")), None);
+    assert_eq!(swift_target_name(Path::new("docs/architecture.md")), None);
 }
 
 #[test]

@@ -97,7 +97,10 @@ async fn json_files_such_as_package_json_are_syntax_validated_without_lsp_error(
     let text = match &res.content[0] {
         prod_code_mcp::protocol::McpContentItem::Text { text } => text,
     };
-    assert!(text.contains("package.json: 0 error(s), 0 warning(s)"), "{text}");
+    assert!(
+        text.contains("package.json: 0 error(s), 0 warning(s)"),
+        "{text}"
+    );
 
     // 2. Malformed package.json proposal reports syntax error at line and column
     let malformed_pkg = "{\n  \"name\": \"prod-browser\",\n}";
@@ -182,7 +185,10 @@ async fn markdown_and_svg_proposals_are_syntax_validated_without_lsp_error() {
     )
     .await
     .expect("validation succeeds on valid markdown");
-    assert!(!res.is_error, "clean markdown should have 0 errors: {res:?}");
+    assert!(
+        !res.is_error,
+        "clean markdown should have 0 errors: {res:?}"
+    );
     let text = match &res.content[0] {
         prod_code_mcp::protocol::McpContentItem::Text { text } => text,
     };
@@ -259,7 +265,10 @@ async fn markdown_and_svg_proposals_are_syntax_validated_without_lsp_error() {
     let text = match &res.content[0] {
         prod_code_mcp::protocol::McpContentItem::Text { text } => text,
     };
-    assert!(text.contains("2 file(s) checked together: 0 error(s), 0 warning(s)"), "{text}");
+    assert!(
+        text.contains("2 file(s) checked together: 0 error(s), 0 warning(s)"),
+        "{text}"
+    );
 
     // 6. CLI invocation reproduction: prod-code validate src/content/blog/example.md --from proposed.md --with public/img/card.svg=proposed.svg --json
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
@@ -290,5 +299,9 @@ async fn markdown_and_svg_proposals_are_syntax_validated_without_lsp_error() {
     assert!(stdout.contains("public/img/card.svg"), "{stdout}");
 
     // Gateway was never queried for parser-backed documentation or SVG
-    assert_eq!(gw.calls(), 0, "Markdown and SVG files are validated locally by syntax parsers");
+    assert_eq!(
+        gw.calls(),
+        0,
+        "Markdown and SVG files are validated locally by syntax parsers"
+    );
 }

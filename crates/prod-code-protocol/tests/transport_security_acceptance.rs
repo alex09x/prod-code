@@ -38,17 +38,17 @@ use prod_code_protocol::messages::{
     AuthToken, FileDelta, ReadFileRequest, ReadFileResponse, SyncRequest, SyncResponse, WireMessage,
 };
 use prod_code_protocol::tls::{
+    ClientTlsConfig, DEFAULT_TLS_SERVER_NAME, ServerTlsConfig, TLS_CA_ENV, TLS_CERT_ENV,
+    TLS_ENV_VARS, TLS_KEY_ENV, TLS_MODE_ENV, TLS_PIN_ENV, TLS_SERVER_NAME_ENV, TlsMode,
     check_key_permissions, ensure_crypto_provider, pki, upgrade_client_stream,
-    upgrade_server_stream, ClientTlsConfig, ServerTlsConfig, TlsMode, DEFAULT_TLS_SERVER_NAME,
-    TLS_CA_ENV, TLS_CERT_ENV, TLS_ENV_VARS, TLS_KEY_ENV, TLS_MODE_ENV, TLS_PIN_ENV,
-    TLS_SERVER_NAME_ENV,
+    upgrade_server_stream,
 };
 use prod_code_protocol::transport::{
-    clear_client_tls_cache, connect_with, default_client_tls_built, init_client_tls_from_env,
-    AUTH_TOKEN_VARS, ScrubSecrets,
+    AUTH_TOKEN_VARS, ScrubSecrets, clear_client_tls_cache, connect_with, default_client_tls_built,
+    init_client_tls_from_env,
 };
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::RootCertStore;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::{Encoder, Framed};
@@ -464,11 +464,21 @@ async fn test_packet_capture_wire_confidentiality() {
         // 0x14 = ChangeCipherSpec (TLS 1.3 middlebox compat)
         // 0x16 = Handshake
         // 0x17 = Application Data (encrypted)
-        let has_handshake = captured.windows(3).any(|w| w[0] == 0x16 && w[1] == 0x03 && w[2] == 0x03);
-        let has_app_data = captured.windows(3).any(|w| w[0] == 0x17 && w[1] == 0x03 && w[2] == 0x03);
+        let has_handshake = captured
+            .windows(3)
+            .any(|w| w[0] == 0x16 && w[1] == 0x03 && w[2] == 0x03);
+        let has_app_data = captured
+            .windows(3)
+            .any(|w| w[0] == 0x17 && w[1] == 0x03 && w[2] == 0x03);
 
-        assert!(has_handshake, "wire capture must contain TLS 1.3 handshake record (0x16 0x03 0x03)");
-        assert!(has_app_data, "wire capture must contain TLS 1.3 application data records (0x17 0x03 0x03)");
+        assert!(
+            has_handshake,
+            "wire capture must contain TLS 1.3 handshake record (0x16 0x03 0x03)"
+        );
+        assert!(
+            has_app_data,
+            "wire capture must contain TLS 1.3 application data records (0x17 0x03 0x03)"
+        );
     }
 }
 
@@ -697,7 +707,8 @@ async fn test_certificate_pinning_and_forgery_rejection() {
 
     // Subcase 3b: Client with forged / mismatched pin fails closed
     {
-        let fake_pin = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string();
+        let fake_pin =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string();
         let (pinned_client, server_name) = ClientTlsConfig::new()
             .with_pins(vec![fake_pin])
             .with_server_name(DEFAULT_TLS_SERVER_NAME)
@@ -709,7 +720,8 @@ async fn test_certificate_pinning_and_forgery_rejection() {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("does not match any configured pins")
+            err.to_string()
+                .contains("does not match any configured pins")
                 || err.to_string().contains("failed"),
             "mismatched pin must fail handshake: {err}"
         );
@@ -835,7 +847,9 @@ async fn test_zero_downgrade_and_plaintext_refusal_when_tls_required() {
                 assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
             }
             Some(Ok(msg)) => {
-                panic!("TLS-required server must not return protocol response to plaintext client, got: {msg:?}");
+                panic!(
+                    "TLS-required server must not return protocol response to plaintext client, got: {msg:?}"
+                );
             }
         }
 
@@ -876,12 +890,14 @@ async fn test_multi_ca_trust_bootstrap_and_key_rotation_without_downgrade() {
     )
     .unwrap();
 
-    let server1_tls = ServerTlsConfig::new(parse_cert_pem(&node1_pem), parse_key_pem(&node1_key_pem))
-        .build()
-        .unwrap();
-    let server2_tls = ServerTlsConfig::new(parse_cert_pem(&node2_pem), parse_key_pem(&node2_key_pem))
-        .build()
-        .unwrap();
+    let server1_tls =
+        ServerTlsConfig::new(parse_cert_pem(&node1_pem), parse_key_pem(&node1_key_pem))
+            .build()
+            .unwrap();
+    let server2_tls =
+        ServerTlsConfig::new(parse_cert_pem(&node2_pem), parse_key_pem(&node2_key_pem))
+            .build()
+            .unwrap();
 
     let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr1 = listener1.local_addr().unwrap();
@@ -1193,16 +1209,25 @@ async fn test_secrets_absent_from_logs_and_child_environments() {
                 tracing::span::Id::from_u64(1)
             }
             fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
             fn event(&self, event: &tracing::Event<'_>) {
                 struct Visitor<'a>(&'a mut String);
                 impl<'a> tracing::field::Visit for Visitor<'a> {
-                    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
                         use std::fmt::Write;
                         let _ = write!(self.0, " {}={:?}", field.name(), value);
                     }
                 }
-                let mut msg = format!("{:?} {}", event.metadata().level(), event.metadata().target());
+                let mut msg = format!(
+                    "{:?} {}",
+                    event.metadata().level(),
+                    event.metadata().target()
+                );
                 let mut visitor = Visitor(&mut msg);
                 event.record(&mut visitor);
                 if let Ok(mut logs) = self.logs.lock() {
@@ -1221,37 +1246,59 @@ async fn test_secrets_absent_from_logs_and_child_environments() {
             &[],
         )
         .unwrap();
-        let (client_pem, client_key_pem) = pki::generate_node_cert(
-            &ca_pem,
-            &ca_key_pem,
-            &["client.internal".to_string()],
-            &[],
-        )
-        .unwrap();
+        let (client_pem, client_key_pem) =
+            pki::generate_node_cert(&ca_pem, &ca_key_pem, &["client.internal".to_string()], &[])
+                .unwrap();
 
         let secret_token_str = "super-secret-auth-token-canary-998877";
         let auth_token = AuthToken(secret_token_str.to_string());
         let wire_auth = WireMessage::Auth(auth_token.clone());
 
-        let server_tls = ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem));
-        let client_tls = ClientTlsConfig::new().with_client_cert(parse_cert_pem(&client_pem), parse_key_pem(&client_key_pem));
+        let server_tls =
+            ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem));
+        let client_tls = ClientTlsConfig::new()
+            .with_client_cert(parse_cert_pem(&client_pem), parse_key_pem(&client_key_pem));
 
         // A. Direct Debug representation checks:
         let debug_auth = format!("{auth_token:?}");
-        assert!(!debug_auth.contains(secret_token_str), "AuthToken Debug must not contain secret string: {debug_auth}");
-        assert!(debug_auth.contains("<redacted>"), "AuthToken Debug must be redacted: {debug_auth}");
+        assert!(
+            !debug_auth.contains(secret_token_str),
+            "AuthToken Debug must not contain secret string: {debug_auth}"
+        );
+        assert!(
+            debug_auth.contains("<redacted>"),
+            "AuthToken Debug must be redacted: {debug_auth}"
+        );
 
         let debug_wire = format!("{wire_auth:?}");
-        assert!(!debug_wire.contains(secret_token_str), "WireMessage::Auth Debug must not contain secret string: {debug_wire}");
-        assert!(debug_wire.contains("<redacted>"), "WireMessage::Auth Debug must be redacted: {debug_wire}");
+        assert!(
+            !debug_wire.contains(secret_token_str),
+            "WireMessage::Auth Debug must not contain secret string: {debug_wire}"
+        );
+        assert!(
+            debug_wire.contains("<redacted>"),
+            "WireMessage::Auth Debug must be redacted: {debug_wire}"
+        );
 
         let debug_server = format!("{server_tls:?}");
-        assert!(!debug_server.contains(&server_key_pem), "ServerTlsConfig Debug must not leak private key PEM: {debug_server}");
-        assert!(debug_server.contains("[REDACTED]"), "ServerTlsConfig Debug must mark key as [REDACTED]: {debug_server}");
+        assert!(
+            !debug_server.contains(&server_key_pem),
+            "ServerTlsConfig Debug must not leak private key PEM: {debug_server}"
+        );
+        assert!(
+            debug_server.contains("[REDACTED]"),
+            "ServerTlsConfig Debug must mark key as [REDACTED]: {debug_server}"
+        );
 
         let debug_client = format!("{client_tls:?}");
-        assert!(!debug_client.contains(&client_key_pem), "ClientTlsConfig Debug must not leak private key PEM: {debug_client}");
-        assert!(debug_client.contains("[REDACTED]"), "ClientTlsConfig Debug must mark key as [REDACTED]: {debug_client}");
+        assert!(
+            !debug_client.contains(&client_key_pem),
+            "ClientTlsConfig Debug must not leak private key PEM: {debug_client}"
+        );
+        assert!(
+            debug_client.contains("[REDACTED]"),
+            "ClientTlsConfig Debug must mark key as [REDACTED]: {debug_client}"
+        );
 
         // B. In-memory tracing log capture check:
         let captured_logs = Arc::new(Mutex::new(Vec::new()));
@@ -1349,9 +1396,10 @@ async fn test_tls_handshake_and_warm_request_overhead_benchmark() {
     )
     .unwrap();
 
-    let server_tls = ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem))
-        .build()
-        .unwrap();
+    let server_tls =
+        ServerTlsConfig::new(parse_cert_pem(&server_pem), parse_key_pem(&server_key_pem))
+            .build()
+            .unwrap();
 
     let mut roots = RootCertStore::empty();
     for ca in parse_cert_pem(&ca_pem) {
@@ -1531,13 +1579,9 @@ fn test_forged_or_replayed_discovery_rejected() {
 
     // 5. Privacy: Minimal periodic multicast strips workspace names and detailed telemetry
     let minimal_line = format_minimal_node_line("192.168.1.100:9400", "rust,go", Some(token));
-    let minimal_node = parse_node_line_with_auth_and_nonce(
-        &minimal_line,
-        Some(token),
-        Some(sender_ip),
-        None,
-    )
-    .expect("minimal announcement must parse");
+    let minimal_node =
+        parse_node_line_with_auth_and_nonce(&minimal_line, Some(token), Some(sender_ip), None)
+            .expect("minimal announcement must parse");
     assert!(
         minimal_node.workspaces.is_empty(),
         "minimal multicast announcement must NOT disclose workspace names"

@@ -114,17 +114,38 @@ async fn polyglot_go_fixture_and_mock_generation() {
     .unwrap();
     let mock_text = tool_text(&res_mock);
     assert!(mock_text.contains("mock for `UserService`"), "{mock_text}");
-    assert!(mock_text.contains("type MockUserService struct"), "{mock_text}");
-    assert!(mock_text.contains("GetUserFunc func(id string) (string, error)"), "{mock_text}");
-    assert!(mock_text.contains("DeleteUserFunc func(id string) error"), "{mock_text}");
-    assert!(mock_text.contains("func (m *MockUserService) GetUser(id string) (string, error)"), "{mock_text}");
-    assert!(mock_text.contains("m.Calls = append(m.Calls, \"GetUser\")"), "{mock_text}");
+    assert!(
+        mock_text.contains("type MockUserService struct"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("GetUserFunc func(id string) (string, error)"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("DeleteUserFunc func(id string) error"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("func (m *MockUserService) GetUser(id string) (string, error)"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("m.Calls = append(m.Calls, \"GetUser\")"),
+        "{mock_text}"
+    );
 
     // Test CLI integration
     let cli_out = cli(
         &ws,
         gw.addr(),
-        &["fixture", "ServerConfig", "--no-verify", "--path", "config.go"],
+        &[
+            "fixture",
+            "ServerConfig",
+            "--no-verify",
+            "--path",
+            "config.go",
+        ],
     )
     .await;
     assert!(cli_out.status.success());
@@ -135,7 +156,14 @@ async fn polyglot_go_fixture_and_mock_generation() {
     let cli_rand = cli(
         &ws,
         gw.addr(),
-        &["fixture", "ServerConfig", "--randomized", "--no-verify", "--path", "config.go"],
+        &[
+            "fixture",
+            "ServerConfig",
+            "--randomized",
+            "--no-verify",
+            "--path",
+            "config.go",
+        ],
     )
     .await;
     assert!(cli_rand.status.success());
@@ -146,7 +174,14 @@ async fn polyglot_go_fixture_and_mock_generation() {
     let cli_mock = cli(
         &ws,
         gw.addr(),
-        &["fixture", "UserService", "--mock", "--no-verify", "--path", "service.go"],
+        &[
+            "fixture",
+            "UserService",
+            "--mock",
+            "--no-verify",
+            "--path",
+            "service.go",
+        ],
     )
     .await;
     assert!(cli_mock.status.success());
@@ -199,7 +234,10 @@ async fn polyglot_ts_fixture_and_mock_generation() {
     .unwrap();
     let text = tool_text(&res);
     assert!(!res.is_error, "{text}");
-    assert!(text.contains("const userProfile: UserProfile = {"), "{text}");
+    assert!(
+        text.contains("const userProfile: UserProfile = {"),
+        "{text}"
+    );
     assert!(text.contains("id: \"id_9823\","), "{text}");
     assert!(text.contains("email: \"user@example.com\","), "{text}");
     assert!(text.contains("age: 30,"), "{text}");
@@ -215,11 +253,26 @@ async fn polyglot_ts_fixture_and_mock_generation() {
     .await
     .unwrap();
     let mock_text = tool_text(&res_mock);
-    assert!(mock_text.contains("export class MockCacheService implements CacheService"), "{mock_text}");
-    assert!(mock_text.contains("public getHandler?: (key: string) => Promise<string>;"), "{mock_text}");
-    assert!(mock_text.contains("async get(key: string): Promise<string>"), "{mock_text}");
-    assert!(mock_text.contains("this.calls.push({ method: \"get\", args: [key] })"), "{mock_text}");
-    assert!(mock_text.contains("export const createMockCacheService"), "{mock_text}");
+    assert!(
+        mock_text.contains("export class MockCacheService implements CacheService"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("public getHandler?: (key: string) => Promise<string>;"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("async get(key: string): Promise<string>"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("this.calls.push({ method: \"get\", args: [key] })"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("export const createMockCacheService"),
+        "{mock_text}"
+    );
 }
 
 #[tokio::test]
@@ -283,8 +336,14 @@ async fn polyglot_python_fixture_and_mock_generation() {
     .unwrap();
     let mock_text = tool_text(&res_mock);
     assert!(mock_text.contains("class MockStorage:"), "{mock_text}");
-    assert!(mock_text.contains("def save(self, key: str, val: bytes) -> bool:"), "{mock_text}");
-    assert!(mock_text.contains("self.calls.append((\"save\", (key, val), {}))"), "{mock_text}");
+    assert!(
+        mock_text.contains("def save(self, key: str, val: bytes) -> bool:"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("self.calls.append((\"save\", (key, val), {}))"),
+        "{mock_text}"
+    );
 }
 
 #[tokio::test]
@@ -342,8 +401,14 @@ async fn polyglot_swift_fixture_and_mock_generation() {
     .await
     .unwrap();
     let mock_text = tool_text(&res_mock);
-    assert!(mock_text.contains("final class MockNetworkService: NetworkService"), "{mock_text}");
-    assert!(mock_text.contains("func fetch(url: String) -> String"), "{mock_text}");
+    assert!(
+        mock_text.contains("final class MockNetworkService: NetworkService"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("func fetch(url: String) -> String"),
+        "{mock_text}"
+    );
     assert!(mock_text.contains("calls.append(\"fetch\")"), "{mock_text}");
 }
 
@@ -402,8 +467,16 @@ async fn polyglot_cpp_fixture_and_mock_generation() {
     .await
     .unwrap();
     let mock_text = tool_text(&res_mock);
-    assert!(mock_text.contains("class MockExecutor : public Executor"), "{mock_text}");
-    assert!(mock_text.contains("void execute(int code) override"), "{mock_text}");
-    assert!(mock_text.contains("calls.push_back(\"execute\");"), "{mock_text}");
+    assert!(
+        mock_text.contains("class MockExecutor : public Executor"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("void execute(int code) override"),
+        "{mock_text}"
+    );
+    assert!(
+        mock_text.contains("calls.push_back(\"execute\");"),
+        "{mock_text}"
+    );
 }
-
