@@ -15,7 +15,7 @@ use crate::signature_go::hazards::{effect_hazards, is_subsequence, permutation, 
 use crate::signature_go::parse::{
     body_open, call_parens, ident_at, identifier_uses, parameter_names_at,
 };
-use crate::signature_go::reorder_verify::verify_gopls_edits;
+use crate::signature_go::reorder_verify::{unreported_calls, verify_gopls_edits};
 use crate::signature_go::syntax::normalize;
 use crate::signature_go::text::{
     closing, display, line_col_utf16, offset_at, position, split_list, strip_comments,
@@ -264,7 +264,7 @@ pub(crate) async fn reorder_or_remove_parameters(
         &mut rewritten,
     );
     let unexpected = verification.unexpected;
-    let unmatched = verification.unmatched;
+    let mut unmatched = verification.unmatched;
     let new_signature = verification.new_signature;
     // The whole proposal, judged together; files that call the name but were not reported are
     // checked with it.
@@ -278,9 +278,10 @@ pub(crate) async fn reorder_or_remove_parameters(
         .cloned()
         .collect();
     let checked: Vec<PathBuf> = originals.keys().cloned().collect();
-    also.extend(crate::signature::unreported_callers(
-        root, file, &decl.name, &checked,
-    ));
+    let unreported = crate::signature::unreported_callers(root, file, &decl.name, &checked);
+    // Compiling such a caller with the change does not show its arguments were permuted.
+    unmatched.extend(unreported_calls(root, file, &text, &decl, &unreported));
+    also.extend(unreported);
     let reports = crate::diagnostics::validate_texts(remote, root, &proposal, &also)
         .await
         .context("the proposal could not be validated; nothing was written")?;

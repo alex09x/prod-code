@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **Go Reorders Refuse Unreported Callers and Track Argument Comments** (`crates/prod-code-mcp`, #1410):
+  - `code_change_signature` on a Go function refuses a reorder or removal when a file gopls did not report calls it, such as one behind `//go:build extra`. Before, the file was only compiled with the change. With `f(a, b int)` swapped, it kept `f(1, 2)`, still type-checked, and `go run -tags extra` printed `12 21` instead of `12 12`.
+  - A comment inside an argument or parameter list now belongs to the element beside it: it must move with that element and goes when that element is removed. Before, the whole file's comments were compared as one list, so removing `b` from `h(1, 2 /* documents b */)` was refused although gopls removed the comment with it.
 - **JS/TS Delegate Extraction Reads Initializers, Exports and Receivers from Syntax** (`crates/prod-code-mcp`, #1409):
   - Before deferring a readonly field into the helper's constructor, `code_extract_delegate` checks every instance field initializer of the class as parsed. Before, only one-line `name = value;` declarations were checked, so `metadata =` with `of / this.current();` on the next line, or with no semicolon, called `current()` before the delegate existed.
   - A modifier inside a comment is not a modifier: `// export` above a plain class no longer exports the helper and inserts it inside the comment, which broke the program.
