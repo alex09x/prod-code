@@ -100,6 +100,23 @@ fn parse_go_method_signature(line: &str) -> Option<MethodSignature> {
     })
 }
 
+/// Whether the bare name at `parts[index]` belongs to a group whose type comes later:
+/// `dst, src, mode string` names `dst` and `src` with `mode`'s type. Every part up to the typed
+/// one must be a bare name too, so a list of unnamed types stays one (#1391).
+fn names_a_later_type(parts: &[String], index: usize) -> bool {
+    for next in &parts[index + 1..] {
+        let next = next.trim();
+        if next.split_once(char::is_whitespace).is_some() {
+            return !go_type_form(next);
+        }
+        let bare = !next.is_empty() && next.chars().all(|c| c.is_alphanumeric() || c == '_');
+        if !bare || go_type_form(next) {
+            return false;
+        }
+    }
+    false
+}
+
 fn parse_go_parameters(parameters: &str) -> Option<Vec<(String, String)>> {
     let parts = split_comma_top_level(parameters);
     let mut params = Vec::new();
@@ -119,11 +136,7 @@ fn parse_go_parameters(parameters: &str) -> Option<Vec<(String, String)>> {
             for name in names {
                 params.push((name, ty.to_string()));
             }
-        } else if parts
-            .get(index + 1)
-            .is_some_and(|next| next.split_once(char::is_whitespace).is_some())
-            && !go_type_form(part)
-        {
+        } else if names_a_later_type(&parts, index) && !go_type_form(part) {
             pending_names.push(part.to_string());
         } else {
             if !pending_names.is_empty() {
@@ -164,11 +177,7 @@ fn parse_go_result_types(results: &str) -> Option<String> {
                 pending_names.clear();
             }
             types.extend(names_part.split_whitespace().map(|_| ty.trim().to_string()));
-        } else if parts
-            .get(index + 1)
-            .is_some_and(|next| next.split_once(char::is_whitespace).is_some())
-            && !go_type_form(part)
-        {
+        } else if names_a_later_type(&parts, index) && !go_type_form(part) {
             pending_names.push(part.to_string());
         } else {
             if !pending_names.is_empty() {

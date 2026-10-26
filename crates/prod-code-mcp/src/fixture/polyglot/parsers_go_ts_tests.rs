@@ -76,6 +76,36 @@ fn go_interface_method_signatures() {
     assert_eq!(parse_go_shape(decl), Some(want));
 }
 
+/// A grouped name runs on to its group's explicit type, however many names it has; a list
+/// of unnamed types stays unnamed (#1391).
+#[test]
+fn go_groups_of_three_or_more_names_share_their_type() {
+    let decl = "type Copier interface {\n    Copy(dst, src, mode string) error\n    Mixed(a, b, c int, d, e string)\n    Types(int, string, error)\n    Sum() (x, y, z int)\n}";
+    let want = PolyglotShape::Interface {
+        methods: vec![
+            method(
+                "Copy",
+                &[("dst", "string"), ("src", "string"), ("mode", "string")],
+                Some("error"),
+            ),
+            method(
+                "Mixed",
+                &[
+                    ("a", "int"),
+                    ("b", "int"),
+                    ("c", "int"),
+                    ("d", "string"),
+                    ("e", "string"),
+                ],
+                None,
+            ),
+            method("Types", &[("", "int"), ("", "string"), ("", "error")], None),
+            method("Sum", &[], Some("int, int, int")),
+        ],
+    };
+    assert_eq!(parse_go_shape(decl), Some(want));
+}
+
 #[test]
 fn go_empty_and_unrecognised_declarations() {
     let cases: &[(&str, Option<PolyglotShape>)] = &[
