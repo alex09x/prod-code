@@ -52,19 +52,30 @@ pub(super) fn namespaces_at(text: &str, at: usize) -> Option<Vec<String>> {
             while i < end && bytes[i] != b'"' {
                 i += if bytes[i] == b'\\' { 2 } else { 1 };
             }
+            // A literal still open at the declaration was misread: no namespace is proven.
+            if i >= end {
+                return None;
+            }
             i += 1;
             continue;
         }
         // A character literal, also prefixed (`L'}'`, `u8'}'`), but not a digit separator as
         // in `1'000` or `0xFF'FF`: that `'` follows a word that starts with a digit (#1552).
-        let word_start = bytes[..i]
-            .iter()
-            .rposition(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
-            .map_or(0, |p| p + 1);
-        if b == b'\'' && !(word_start < i && bytes[word_start].is_ascii_digit()) {
+        // The walk back crosses earlier separators, so `0xAB'CD'EF` stays one number (#1556).
+        let separator = || {
+            let word_start = bytes[..i]
+                .iter()
+                .rposition(|c| !(c.is_ascii_alphanumeric() || *c == b'_' || *c == b'\''))
+                .map_or(0, |p| p + 1);
+            word_start < i && bytes[word_start].is_ascii_digit()
+        };
+        if b == b'\'' && !separator() {
             i += 1;
             while i < end && bytes[i] != b'\'' {
                 i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            if i >= end {
+                return None;
             }
             i += 1;
             continue;
@@ -216,7 +227,7 @@ mod tests {
         let text = "/* namespace x { */ const char* s = \"namespace y {\"; char c = '{'; int n = 1'000;\nnamespace é { int z(); }";
         assert_eq!(at(text, "int z").unwrap(), ["é"]);
         // Prefixed character literals are literals, digit separators are not (#1552).
-        let text = "namespace a {\nconst wchar_t m = L'}';\nchar16_t n = u'}'; char8_t o = u8'}';\nint h = 0xFF'FF; int k = 1'0;\nint selected(int x);\n}";
+        let text = "namespace a {\nconst wchar_t m = L'}';\nchar16_t n = u'}'; char8_t o = u8'}';\nint h = 0xFF'FF; int k = 1'0; int m = 0xAB'CD'EF; int q = 1'000'000;\nint selected(int x);\n}";
         assert_eq!(at(text, "int selected").unwrap(), ["a"]);
     }
 
@@ -273,6 +284,22 @@ mod tests {
             api,
             "selected"
         ));
+        // The issue's fixture: the second separator of `0xAB'CD'EF` opens no literal, so the
+        // definition sits in `b` like the header's prototype (#1556).
+        let api = "namespace b { int selected(int x); }\n";
+        let compute = "#include \"api.hpp\"\nnamespace a {\nconstexpr unsigned marker = 0xAB'CD'EF;\n}\nnamespace b {\nint selected(int x) { return x; }\n}\n";
+        assert!(header_may_declare(
+            compute,
+            compute.find("int selected").unwrap() + 4,
+            api,
+            "selected"
+        ));
+        assert_eq!(
+            namespaces_at(compute, compute.find("int selected").unwrap()).unwrap(),
+            ["b"]
+        );
+        // A literal still open at the declaration proves nothing.
+        assert!(namespaces_at("char c = '{;\nint f();", 15).is_none());
         // One of several same-named declarations may be it: the first is not the only one.
         let both = "namespace other { int selected(int x); }\nint selected(int x);\n";
         assert!(header_may_declare(source, def, both, "selected"));
