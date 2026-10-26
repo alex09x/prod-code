@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Generify Reads Every C++ Digit Separator** (`crates/prod-code-mcp`, #1556):
+  `0xAB'CD'EF` stays one number in the namespace scan. Before, its second separator opened a character literal that ran through `}` and `namespace b {`, so the definition read as `a` and the real header in `b` was taken as unrelated. A string or character literal still open at the declaration now makes the scan uncertain, which keeps the split-header refusal, instead of proving a namespace.
 - **Pruning Never Takes a Copy in Use** (`crates/prod-code-gateway`, #1524):
   - Every session and remote command holds a use on its checkout while it runs: an engine, a nested `engine_subpath` engine or a dedicated editor.
   - The worktree and main-copy pruners skip a copy that is used, or loaded at or below its root. Before, they checked only the checkout's exact engine key, so a running nested engine or editor did not protect it.
