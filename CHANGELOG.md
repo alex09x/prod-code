@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **URL Query Secrets in Running Commands** (`crates/prod-code-gateway`, #1535):
+  A URL argument in status and gossip keeps its keys, but a query value whose key names a secret reads `<redacted>`: `postgresql://host/db?password=…`, `access_token`, `X-Amz-Signature`, `pwd`. Userinfo is found before a `?` or `#` too.
 - **Unknown Verify Modes Refused** (`crates/prod-code-mcp`, #1453):
   A `verify` value other than `compile`, such as the typo `compiler`, is refused before any planning, analyzer query or write, for MCP tools and for the CLI, which goes through the same entry point. It used to read as "no compiler gate", so an apply went through unchecked. Omitting `verify` keeps the analyzer check, and `code_generate_fixture` keeps its boolean `verify`.
 - **Running Commands Without Secrets** (`crates/prod-code-gateway`, #1484):
