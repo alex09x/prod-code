@@ -83,22 +83,46 @@ pub(crate) fn is_use_declaration(path: &Path, remote: &RemoteSources, line: u32)
     let Some(target) = (line as usize).checked_sub(1) else {
         return false;
     };
-    // Every `use` runs from its first line to the line with its `;`.
+    // Every `use` runs from its first line to the line of the `;` that ends it, which a `;` in
+    // a comment or a literal does not (#1402).
+    let ends = statement_end_lines(&text);
     let mut at = 0;
     while at <= target && at < lines.len() {
         if !starts_use(lines[at]) {
             at += 1;
             continue;
         }
-        let end = (at..lines.len())
-            .find(|n| lines[*n].contains(';'))
-            .unwrap_or(at);
+        let end = ends.iter().copied().find(|n| *n >= at).unwrap_or(at);
         if (at..=end).contains(&target) {
             return true;
         }
         at = end + 1;
     }
     false
+}
+
+/// The 0-based lines, in order, that hold a `;` token of `text` as Rust's lexer reads it: none
+/// inside a comment, a string or a raw string.
+fn statement_end_lines(text: &str) -> Vec<usize> {
+    use ra_ap_syntax::{NodeOrToken, SyntaxKind};
+    let mut lines = Vec::new();
+    let (mut line, mut counted) = (0, 0);
+    for element in ra_ap_syntax::SourceFile::parse(text, ra_ap_syntax::Edition::CURRENT)
+        .syntax_node()
+        .descendants_with_tokens()
+    {
+        let NodeOrToken::Token(token) = element else {
+            continue;
+        };
+        if token.kind() != SyntaxKind::SEMICOLON {
+            continue;
+        }
+        let at = usize::from(token.text_range().start());
+        line += text[counted..at].matches('\n').count();
+        counted = at;
+        lines.push(line);
+    }
+    lines
 }
 
 /// Does this line start a `use` declaration, with or without a visibility?
