@@ -19,6 +19,7 @@ pub mod parse;
 pub mod reorder;
 pub mod reorder_verify;
 pub mod result;
+mod result_guards;
 pub mod shadowing;
 pub mod syntax;
 pub mod text;
