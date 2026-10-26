@@ -15,21 +15,25 @@ use std::path::Path;
 /// Texts of files a symbol hit points at that are not on this machine, keyed by path.
 pub(crate) type RemoteSources = std::collections::HashMap<std::path::PathBuf, String>;
 
-/// The most dependency files read from the gateway for one resolution.
+/// The most dependency files asked of the gateway for one resolution, read or not.
 pub(crate) const MAX_REMOTE_SOURCES: usize = 16;
 
 /// Reads from the gateway the files of `hits` that do not exist here. A dependency crate's
 /// source lives only in the build node's cargo registry, and the checks that tell a definition
-/// from its re-export read the file (#271).
+/// from its re-export read the file (#271). At most [`MAX_REMOTE_SOURCES`] distinct paths are
+/// asked for, failures included, and none twice: an answer full of stale paths costs a bounded
+/// number of round trips (#1413).
 pub(crate) async fn remote_sources(remote: SocketAddr, hits: &[SymbolHit]) -> RemoteSources {
     let mut texts = RemoteSources::new();
+    let mut asked = std::collections::HashSet::new();
     for hit in hits {
-        if texts.len() >= MAX_REMOTE_SOURCES {
-            break;
-        }
-        if hit.path.exists() || texts.contains_key(&hit.path) {
+        if hit.path.exists() || asked.contains(&hit.path) {
             continue;
         }
+        if asked.len() >= MAX_REMOTE_SOURCES {
+            break;
+        }
+        asked.insert(hit.path.clone());
         if let Ok((bytes, _)) =
             crate::remote_fs::read_remote_file(remote, &hit.path.to_string_lossy(), 4 << 20).await
         {
@@ -212,3 +216,7 @@ pub(crate) fn rewritten_files(edit: &serde_json::Value) -> Vec<(String, String)>
     }
     out
 }
+
+#[cfg(test)]
+#[path = "sources_tests.rs"]
+mod tests;
