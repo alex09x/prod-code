@@ -183,7 +183,10 @@ async fn test_mcp_tools_call_reports_a_failed_tool_as_a_normal_response() {
     // ephemeral port is taken by another test's listener often enough that the connection
     // succeeds and is reset instead of refused.
     let mut dummy_addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
-    let root = PathBuf::from("/tmp");
+    // An empty directory of its own: a node's shared `/tmp` can hold more files than the
+    // non-git size guard allows, which then fails first (#1567).
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_path_buf();
 
     let req = serde_json::json!({
         "jsonrpc": "2.0",
