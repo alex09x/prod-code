@@ -76,6 +76,25 @@ pub async fn pooled_engine_age(
     session.as_ref().and_then(LspSession::engine_age)
 }
 
+/// [`LspSession::index_age`] of the pooled session that answers about `file` in the checkout at
+/// `root`: how long its server has had to index since its engine loaded or its last refresh
+/// with changed files; `None` when there is none yet or its gateway does not say (#1422).
+pub async fn pooled_index_age(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+) -> Option<std::time::Duration> {
+    let (_, key) = pool_key(remote, root, file);
+    let slot = pool()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned()?;
+    // Metadata is advisory; it must not queue behind a query just to report its age.
+    let session = slot.try_lock().ok()?;
+    session.as_ref().and_then(LspSession::index_age)
+}
+
 /// [`LspSession::index_gated`] of the pooled session that answers about `file` in the checkout
 /// at `root`; `false` when there is none yet (#391).
 pub async fn pooled_index_gated(remote: SocketAddr, root: &Path, file: &Path) -> bool {

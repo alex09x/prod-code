@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Symbol Search Retries an Empty Answer Right After Synced Changes** (`crates/prod-code-mcp`, #1422):
+  A pooled session now records when a refresh last synced changed files. Symbol search counts its 30-second indexing grace from that moment or from the engine load, whichever is later. Before, a session whose non-gated engine was loaded more than 30 s earlier never asked again. A function in a file synced a moment before was reported as `no symbol named fresh` while the server was still indexing it.
 - **Unindexed Declarations Are Reported Beside Fuzzy Matches, Not From Comments** (`crates/prod-code-mcp`, #1421):
   - `code_symbols` looks for a declaration the index omits whenever no result has exactly the asked name, and lists it under the fuzzy matches. Before, `Lost` with an indexed `LostBuilder` showed only `LostBuilder`, and the unindexed `struct Lost` went unreported.
   - The declaration scans read source with comments and string literals blanked out, so `// fn Ghost()` and `"fn Ghost()"` are no longer reported as declarations and no longer use up the three-result report.

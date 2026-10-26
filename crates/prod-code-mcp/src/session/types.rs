@@ -27,6 +27,9 @@ pub struct LspSession {
     pub engine: String,
     /// When the gateway loaded that engine; `None` when it does not say (#381).
     pub(crate) engine_loaded: Option<std::time::Instant>,
+    /// When a refresh last synced changed files to the node: the server may be indexing them
+    /// again, however old its engine (#1422).
+    pub(crate) refreshed: Option<std::time::Instant>,
     /// Whether the gateway holds this engine's index questions until its server is ready, so
     /// that an empty answer is final (#391).
     pub(crate) index_gated: bool,
