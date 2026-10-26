@@ -1,0 +1,377 @@
+   Compiling unicode-ident v1.0.22
+   Compiling cfg-if v1.0.5
+   Compiling memchr v2.8.3
+   Compiling once_cell v1.21.4
+   Compiling smallvec v1.16.1
+   Compiling pin-project-lite v0.2.17
+   Compiling stable_deref_trait v1.2.1
+   Compiling scopeguard v1.2.0
+   Compiling either v1.18.0
+   Compiling bitflags v2.13.2
+   Compiling foldhash v0.2.0
+   Compiling equivalent v1.0.2
+   Compiling allocator-api2 v0.2.21
+   Compiling rustc-hash v2.1.3
+   Compiling log v0.4.34
+   Compiling jod-thread v1.0.0
+   Compiling winnow v0.7.15
+   Compiling hashbrown v0.14.5
+   Compiling text-size v1.1.1
+   Compiling unicode-properties v0.1.4
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling crossbeam-utils v0.8.23
+   Compiling thin-vec v0.2.20
+   Compiling rustc-literal-escaper v0.0.7
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling nohash-hasher v0.2.0
+   Compiling proc-macro2 v1.0.107
+   Compiling fst v0.4.7
+   Compiling memoffset v0.9.1
+   Compiling num_threads v0.1.7
+   Compiling tracing-core v0.1.36
+   Compiling lock_api v0.4.14
+   Compiling drop_bomb v0.1.5
+   Compiling arrayvec v0.7.8
+   Compiling countme v3.0.1
+   Compiling rustc-hash v1.1.0
+   Compiling powerfmt v0.2.0
+   Compiling deranged v0.5.8
+   Compiling edition v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling itertools v0.15.0
+   Compiling typeid v1.0.3
+   Compiling portable-atomic v1.15.0
+   Compiling salsa-macro-rules v0.28.5
+   Compiling smol_str v0.3.6
+   Compiling inventory v0.3.24
+   Compiling boxcar v0.2.14
+   Compiling hashbrown v0.17.1
+   Compiling ra-ap-rustc_lexer v0.166.0
+   Compiling intrusive-collections v0.10.3
+   Compiling la-arena v0.3.1
+   Compiling itoa v1.0.18
+   Compiling zmij v1.0.23
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling lazy_static v1.5.0
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-epoch v0.9.21
+   Compiling crossbeam-channel v0.5.17
+   Compiling rowan v0.17.0
+   Compiling quote v1.0.47
+   Compiling crossbeam-queue v0.3.14
+   Compiling rustc-stable-hash v0.1.2
+   Compiling time-macros v0.2.32
+   Compiling cov-mark v2.2.0
+   Compiling minimal-lexical v0.2.1
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling rustc_apfloat v0.2.3+llvm-462a31f5a5ab
+   Compiling tracing-log v0.2.0
+   Compiling ena v0.14.4
+   Compiling thread_local v1.1.10
+   Compiling foldhash v0.1.5
+   Compiling utf8_iter v1.0.4
+   Compiling nu-ansi-term v0.50.3
+   Compiling parking_lot_core v0.9.12
+   Compiling perf-event-open-sys v4.0.0
+   Compiling sharded-slab v0.1.7
+   Compiling ra-ap-rustc_hashes v0.166.0
+   Compiling ra-ap-rustc_ast_ir v0.166.0
+   Compiling getrandom v0.2.17
+   Compiling mio v1.2.3
+   Compiling hashlink v0.12.2
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling nom v7.1.3
+   Compiling ra-ap-rustc_parse_format v0.166.0
+   Compiling crossbeam-deque v0.8.8
+   Compiling typenum v1.20.1
+   Compiling fixedbitset v0.5.7
+   Compiling zeroize v1.9.0
+   Compiling untrusted v0.9.0
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling oorandom v11.1.5
+   Compiling subtle v2.6.1
+   Compiling dissimilar v1.0.11
+   Compiling typed-arena v2.0.2
+   Compiling num-integer v0.1.47
+   Compiling errno v0.3.14
+   Compiling hashbrown v0.15.5
+   Compiling strsim v0.11.1
+   Compiling socket2 v0.6.5
+   Compiling line-index v0.1.2
+   Compiling parking_lot v0.12.5
+   Compiling dashmap v6.2.1
+   Compiling perf-event v0.4.8
+   Compiling bytes v1.12.1
+   Compiling percent-encoding v2.3.2
+   Compiling anyhow v1.0.104
+   Compiling data-encoding v2.11.1
+   Compiling rayon-core v1.13.0
+   Compiling ring v0.17.14
+   Compiling same-file v1.0.6
+   Compiling bitflags v1.3.2
+   Compiling winnow v1.0.4
+   Compiling regex-automata v0.4.18
+   Compiling futures-sink v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling base64 v0.22.1
+   Compiling rustls-pki-types v1.15.1
+   Compiling inotify-sys v0.1.8
+   Compiling num-bigint v0.4.8
+   Compiling signal-hook-registry v1.4.8
+   Compiling prod-code-protocol v0.3.41 (<remote-checkout>/crates/prod-code-protocol)
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling cpufeatures v0.2.17
+   Compiling getrandom v0.3.4
+   Compiling profile v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling form_urlencoded v1.2.2
+   Compiling zerocopy v0.8.57
+   Compiling notify-types v2.1.0
+   Compiling walkdir v2.5.0
+   Compiling utf8parse v0.2.2
+   Compiling fluent-uri v0.1.4
+   Compiling unicase v2.9.0
+   Compiling colorchoice v1.0.5
+   Compiling rawpointer v0.2.1
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling pem v3.0.6
+   Compiling anstyle-query v1.1.5
+   Compiling rusticata-macros v4.1.0
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling rayon v1.12.0
+   Compiling generic-array v0.14.7
+   Compiling inotify v0.11.5
+   Compiling rustls-pemfile v2.2.0
+   Compiling anstyle v1.0.14
+   Compiling onig_sys v69.9.3
+   Compiling castaway v0.2.4
+   Compiling num-complex v0.4.6
+   Compiling itertools v0.14.0
+   Compiling rand_core v0.9.5
+   Compiling simd-adler32 v0.3.10
+   Compiling ryu v1.0.23
+   Compiling anstyle-parse v1.0.0
+   Compiling base64 v0.13.1
+   Compiling time v0.3.55
+   Compiling static_assertions v1.1.0
+   Compiling pulldown-cmark v0.9.6
+   Compiling matrixmultiply v0.3.11
+   Compiling unicode-segmentation v1.13.3
+   Compiling clap_lex v1.1.1
+   Compiling slab v0.4.12
+   Compiling adler2 v2.0.1
+   Compiling dot v0.1.4
+   Compiling tracing-attributes v0.1.31
+   Compiling synstructure v0.13.2
+   Compiling ra-ap-rustc_index_macros v0.166.0
+   Compiling thiserror-impl v1.0.69
+   Compiling asn1-rs-impl v0.2.0
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling darling_core v0.20.11
+   Compiling rustls-webpki v0.103.15
+   Compiling notify v8.2.0
+   Compiling monostate-impl v0.1.18
+   Compiling serde_derive v1.0.229
+   Compiling salsa-macros v0.28.5
+   Compiling synstructure v0.14.0
+   Compiling displaydoc v0.2.7
+   Compiling zerovec-derive v0.11.6
+   Compiling thiserror-impl v2.0.20
+   Compiling derive-where v1.7.0
+   Compiling tokio-macros v2.7.2
+   Compiling serde_repr v0.1.21
+   Compiling anstream v1.0.0
+   Compiling futures-macro v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling clap_derive v4.6.7
+   Compiling ndarray v0.17.2
+   Compiling miniz_oxide v0.9.1
+   Compiling digest v0.10.7
+   Compiling pulldown-cmark-to-cmark v10.0.4
+   Compiling matchers v0.2.0
+   Compiling ra-ap-rustc_type_ir_macros v0.166.0
+   Compiling asn1-rs-derive v0.5.1
+   Compiling macros v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling rustls v0.23.45
+   Compiling regex v1.13.1
+   Compiling clap_builder v4.6.7
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.10.9
+   Compiling rayon-cond v0.4.0
+   Compiling onig v6.5.3
+   Compiling macro_rules_attribute v0.2.3
+   Compiling esaxx-rs v0.1.10
+   Compiling darling_macro v0.20.11
+   Compiling crc32fast v1.5.2
+   Compiling ort-sys v2.0.0-rc.13
+   Compiling bstr v1.13.1
+   Compiling unicode-normalization-alignments v0.1.12
+   Compiling libloading v0.9.0
+   Compiling ra-ap-rustc_index v0.166.0
+   Compiling unicode_categories v0.1.1
+   Compiling yasna v0.5.2
+   Compiling ppv-lite86 v0.2.21
+   Compiling xxhash-rust v0.8.19
+   Compiling tokio v1.53.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling flate2 v1.1.10
+   Compiling rapidfire v0.2.0
+   Compiling globset v0.4.20
+   Compiling getrandom v0.4.3
+   Compiling similar v2.7.0
+   Compiling glob v0.3.4
+   Compiling fastrand v2.5.0
+   Compiling rand_chacha v0.9.0
+   Compiling darling v0.20.11
+   Compiling thiserror v1.0.69
+   Compiling ignore v0.4.33
+   Compiling futures-util v0.3.34
+   Compiling rustix v1.1.5
+   Compiling tracing v0.1.44
+   Compiling derive_builder_core v0.20.2
+   Compiling rand v0.9.5
+   Compiling asn1-rs v0.6.2
+   Compiling thiserror v2.0.20
+   Compiling stdx v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling parser v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ra-ap-rustc_abi v0.166.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling ra-ap-rustc_pattern_analysis v0.166.0
+   Compiling ort v2.0.0-rc.13
+   Compiling zerofrom v0.1.8
+   Compiling derive_builder_macro v0.20.2
+   Compiling yoke v0.8.3
+   Compiling cobs v0.3.0
+   Compiling der-parser v9.0.0
+   Compiling oid-registry v0.7.1
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tracing-tree v0.4.1
+   Compiling derive_builder v0.20.2
+   Compiling tempfile v3.27.0
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling tokio-rustls v0.26.6
+   Compiling tokio-util v0.7.19
+   Compiling icu_collections v2.3.0
+   Compiling clap v4.6.7
+   Compiling icu_locale_core v2.3.0
+   Compiling indexmap v2.14.2
+   Compiling camino v1.2.6
+   Compiling serde_json v1.0.151
+   Compiling semver v1.0.28
+   Compiling serde_spanned v1.1.1
+   Compiling cargo-platform v0.3.3
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling monostate v0.1.18
+   Compiling x509-parser v0.16.0
+   Compiling icu_provider v2.3.1
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling toml v1.1.6+spec-1.1.0
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling paths v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling toolchain v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling test-utils v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling url v2.5.8
+   Compiling serde v1.0.229
+   Compiling vfs v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ra-ap-rustc_type_ir v0.166.0
+   Compiling petgraph v0.8.3
+   Compiling vfs-notify v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling triomphe v0.1.16
+   Compiling lsp-types v0.97.0
+   Compiling postcard v1.1.3
+   Compiling cargo_metadata v0.23.1
+   Compiling dary_heap v0.3.9
+   Compiling spm_precompiled v0.1.4
+   Compiling ahash v0.8.12
+   Compiling compact_str v0.9.1
+   Compiling rcgen v0.13.2
+   Compiling salsa v0.28.5
+   Compiling syntax v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling intern v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling tokenizers v0.21.4
+   Compiling ra-ap-rustc_next_trait_solver v0.166.0
+   Compiling span v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling tt v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling cfg v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling syntax-bridge v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling proc-macro-api v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling mbe v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling base-db v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling hir-expand v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling project-model v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling hir-def v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling test-fixture v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling prod-code-engine-generic v0.3.41 (<remote-checkout>/crates/prod-code-engine-generic)
+   Compiling prod-code-engine-go v0.3.41 (<remote-checkout>/crates/prod-code-engine-go)
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+[prod-code exec] waiting for command output or exit; checking gateway connection (10s elapsed)
+   Compiling hir-ty v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+[prod-code exec] waiting for command output or exit; checking gateway connection (20s elapsed)
+warning: function `existing_root_file_is_executable` is never used
+   --> crates/prod-code-mcp/src/shadow/execute.rs:138:4
+    |
+138 | fn existing_root_file_is_executable(root: &Path, relative_path: &str) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling hir v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-db v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+warning: `prod-code-mcp` (lib) generated 1 warning
+   Compiling ide-assists v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-completion v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-diagnostics v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling ide-ssr v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling load-cargo v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+[prod-code exec] waiting for command output or exit; checking gateway connection (30s elapsed)
+   Compiling ide v0.0.0 (https://github.com/alex09x/rust-analyzer?rev=3abd2c9f653a27e8c1b19195b1582634a6fe86e1#3abd2c9f)
+   Compiling prod-code-engine-rust v0.3.41 (<remote-checkout>/crates/prod-code-engine-rust)
+   Compiling prod-code-gateway v0.3.41 (<remote-checkout>/crates/prod-code-gateway)
+[prod-code exec] waiting for command output or exit; checking gateway connection (40s elapsed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.99s
+     Running tests/shadow_executable_mode_native.rs (target/debug/deps/shadow_executable_mode_native-db04f13acbbba182)
+
+running 2 tests
+native backend=overlay overlay_unavailable=None
+name=original-executable-control exit=Some(1) timed_out=false error=None output="baseline-fail\n"
+native backend=overlay overlay_unavailable=None
+name=seed exit=Some(0) timed_out=false error=None output="seed-ok"
+native backend=overlay overlay_unavailable=None
+name=edited-script exit=Some(126) timed_out=false error=None output="setpriv: failed to execute ./scripts/check.sh: Permission denied\n"
+flags=[("scripts/check.sh", false), ("notes/readme.txt", false), ("notes/created.txt", false), ("scripts/obsolete.sh", false)]
+native backend=overlay overlay_unavailable=None
+name=replace-links exit=Some(0) timed_out=false error=None output="replaced-link\nreplaced-link\n"
+name=symlink-parent exit=None timed_out=false error=Some("invalid hypothesis: a parent of \"linked_dir/nested.sh\" is a symbolic link; shadow runs do not write through symlinked directories") output=""
+name=traversal exit=None timed_out=false error=Some("invalid hypothesis: invalid path \"../.tmp1ZgriG/outside_exec.sh\": it must be relative, stay inside the workspace and hold no control character") output=""
+name=absolute exit=None timed_out=false error=Some("invalid hypothesis: invalid path \"/tmp/.tmp1ZgriG/outside_exec.sh\": it must be relative, stay inside the workspace and hold no control character") output=""
+
+thread 'edited_executable_script_preserves_mode_and_runs_directly_in_shadow' (3993603) panicked at crates/prod-code-gateway/tests/shadow_executable_mode_native.rs:90:5:
+assertion `left == right` failed: error=None output="setpriv: failed to execute ./scripts/check.sh: Permission denied\n"
+  left: Some(126)
+ right: Some(0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test edited_executable_script_preserves_mode_and_runs_directly_in_shadow ... FAILED
+test symlink_and_outside_paths_do_not_inherit_unrelated_executable_modes ... ok
+
+failures:
+
+failures:
+    edited_executable_script_preserves_mode_and_runs_directly_in_shadow
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+error: test failed, to rerun pass `-p prod-code-gateway --test shadow_executable_mode_native`
+[prod-code exec] exit 101 in 47.0s (server 45.6s, cpu 59.0s user 13.8s sys, peak 1894 MB) on node <configured-node>, copy <remote-checkout> (linux x86_64)

@@ -1,0 +1,14 @@
+{
+  "crates/prod-code-mcp/src/shadow/execute.rs": "cdcf0943dc994d74cb0d65b9c2d56d35cb46ef25d6935b042524c2972433ac5b",
+  "crates/prod-code-gateway/tests/shadow_executable_mode_native.rs": "d763ad641d38ed281007c5e89c75a88af7776398e91ed00bde902f290612e801",
+  "crates/prod-code-gateway/tests/shadow_executable_mode_native/gateway.rs": "d049b625755108e06f2d01b9848ded8ef69a87929e8393b86f39913fceb3f816",
+  "crates/prod-code-gateway/src/session/client_handler.rs": "6f91804bc24bba53884f5b38b9f0ceca13f0820fcfe788265b51297f22750f02",
+  "crates/prod-code-gateway/src/state/server_state.rs": "352ff44dea6b615801a99a4e74951b17e96423ea320642e5aaa4671b4455221d",
+  "crates/prod-code-gateway/src/shadow/runner.rs": "124d3ab159a6d3fcee0b2e113823819dcfe33233e32eb99858da84605c969471",
+  "crates/prod-code-gateway/src/shadow/staging.rs": "b0846869b6d493a7a4da9ad6d47c25e995df8780e2edc25e2244c82a91364bf6",
+  "crates/prod-code-gateway/src/shadow/overlay.rs": "501d7ebe9d7d9990041df3bde4653639a132bbb4cd847c11dcd823597ed0d713",
+  "crates/prod-code-gateway/src/shadow/in_place/runner.rs": "41688242f087cb7912b6e0558a028eb26fb221077095ae948dc58dfd83e46b90",
+  "crates/prod-code-gateway/tests/shadow_executable_mode_native/fixtures/baseline-check.sh": "c49c9d703aa387f2352d191394a0b2bdede0e6f399beb7af3a82d52c408db6b4",
+  "crates/prod-code-gateway/tests/shadow_executable_mode_native/fixtures/edited-check.sh": "6708b2fd5ec8b915c3d09cefb0f513a2285017fcf6b8b92034e24cccb7918996",
+  "crates/prod-code-gateway/tests/shadow_executable_mode_native/fixtures/replaced-link.sh": "6109e70d3b1dc5cba3fc0d095f7c35c60b6822cebae1733a75a95f4e6c3e9622"
+}

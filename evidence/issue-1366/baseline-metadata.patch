@@ -1,0 +1,14 @@
+diff --git a/crates/prod-code-mcp/src/shadow/execute.rs b/crates/prod-code-mcp/src/shadow/execute.rs
+index 4ee98e1d..565c9ef1 100644
+--- a/crates/prod-code-mcp/src/shadow/execute.rs
++++ b/crates/prod-code-mcp/src/shadow/execute.rs
+@@ -55,8 +55,7 @@ pub(crate) async fn run_shadow_once(
+                 .map(|edit| FileDelta {
+                     relative_path: edit.relative_path.clone(),
+                     content: edit.text.as_ref().map(|t| t.as_bytes().to_vec()),
+-                    is_executable: edit.text.is_some()
+-                        && existing_root_file_is_executable(root, &edit.relative_path),
++                    is_executable: false,
+                 })
+                 .collect(),
+         })

@@ -1,0 +1,24 @@
+   Compiling prod-code-mcp v0.3.41 (<remote-checkout>/crates/prod-code-mcp)
+   Compiling prod-code-gateway v0.3.41 (<remote-checkout>/crates/prod-code-gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.95s
+     Running tests/shadow_executable_mode_native.rs (target/debug/deps/shadow_executable_mode_native-db04f13acbbba182)
+
+running 2 tests
+native backend=overlay overlay_unavailable=None
+name=original-executable-control exit=Some(1) timed_out=false error=None output="baseline-fail\n"
+native backend=overlay overlay_unavailable=None
+name=seed exit=Some(0) timed_out=false error=None output="seed-ok"
+native backend=overlay overlay_unavailable=None
+name=edited-script exit=Some(0) timed_out=false error=None output="shadow-script-ok:updated-note:new-ordinary-file\n"
+flags=[("scripts/check.sh", true), ("notes/readme.txt", false), ("notes/created.txt", false), ("scripts/obsolete.sh", false)]
+native backend=overlay overlay_unavailable=None
+name=replace-links exit=Some(0) timed_out=false error=None output="replaced-link\nreplaced-link\n"
+name=symlink-parent exit=None timed_out=false error=Some("invalid hypothesis: a parent of \"linked_dir/nested.sh\" is a symbolic link; shadow runs do not write through symlinked directories") output=""
+name=traversal exit=None timed_out=false error=Some("invalid hypothesis: invalid path \"../.tmpJwacVt/outside_exec.sh\": it must be relative, stay inside the workspace and hold no control character") output=""
+name=absolute exit=None timed_out=false error=Some("invalid hypothesis: invalid path \"/tmp/.tmpJwacVt/outside_exec.sh\": it must be relative, stay inside the workspace and hold no control character") output=""
+test edited_executable_script_preserves_mode_and_runs_directly_in_shadow ... ok
+test symlink_and_outside_paths_do_not_inherit_unrelated_executable_modes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+[prod-code exec] exit 0 in 7.7s (server 7.3s, cpu 11.3s user 3.3s sys, peak 1773 MB) on node <configured-node>, copy <remote-checkout> (linux x86_64)
