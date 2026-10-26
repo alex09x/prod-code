@@ -32,6 +32,8 @@ fn names_a_secret(name: &str) -> bool {
         "cookie",
         "private_key",
         "private-key",
+        "pwd",
+        "signature",
     ]
     .iter()
     .any(|word| name.contains(word))
@@ -40,10 +42,46 @@ fn names_a_secret(name: &str) -> bool {
 /// `scheme://user:pass@host/…` keeps its scheme and host; the userinfo goes.
 fn without_userinfo(arg: &str) -> Option<String> {
     let (scheme, rest) = arg.split_once("://")?;
-    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (userinfo, host) = rest[..authority_end].rsplit_once('@')?;
     (!userinfo.is_empty())
         .then(|| format!("{scheme}://{REDACTED}@{host}{}", &rest[authority_end..]))
+}
+
+/// The query of a URL keeps its keys; a value whose key names a secret goes:
+/// `…/db?password=x&mode=ro` reads `…/db?password=<redacted>&mode=ro` (#1535).
+fn without_query_secrets(arg: &str) -> Option<String> {
+    let after_scheme = arg.find("://")? + 3;
+    let query_start = after_scheme + arg[after_scheme..].find('?')? + 1;
+    let query_end = arg[query_start..]
+        .find('#')
+        .map_or(arg.len(), |i| query_start + i);
+    let mut changed = false;
+    let pairs: Vec<String> = arg[query_start..query_end]
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if names_a_secret(key) => {
+                changed = true;
+                format!("{key}={REDACTED}")
+            }
+            _ => pair.to_string(),
+        })
+        .collect();
+    changed.then(|| {
+        format!(
+            "{}{}{}",
+            &arg[..query_start],
+            pairs.join("&"),
+            &arg[query_end..]
+        )
+    })
+}
+
+/// Both URL redactions, userinfo and query, on one argument.
+fn without_url_secrets(arg: &str) -> Option<String> {
+    let userinfo = without_userinfo(arg);
+    let base = userinfo.as_deref().unwrap_or(arg);
+    without_query_secrets(base).or(userinfo)
 }
 
 fn display_arg(arg: &str, after_secret_flag: bool) -> String {
@@ -63,7 +101,7 @@ fn display_arg(arg: &str, after_secret_flag: bool) -> String {
             return format!("{name}{separator}{REDACTED}");
         }
     }
-    without_userinfo(arg).unwrap_or_else(|| arg.to_string())
+    without_url_secrets(arg).unwrap_or_else(|| arg.to_string())
 }
 
 /// The command as status and gossip show it: credential-shaped values replaced, at most
@@ -142,6 +180,37 @@ mod tests {
         assert_eq!(shown(&["tool", "Bearer SENTINEL-6"]), "tool <redacted>");
         let line = shown(&["tool", "--password", "SENTINEL-7"]);
         assert!(!line.contains("SENTINEL"), "{line}");
+    }
+
+    /// A credential in a URL query reads as redacted; the rest of the URL stays (#1535).
+    #[test]
+    fn secret_query_values_in_urls_are_replaced() {
+        assert_eq!(
+            shown(&[
+                "psql",
+                "postgresql://example.invalid/db?password=SYNTHETIC-CANARY"
+            ]),
+            "psql postgresql://example.invalid/db?password=<redacted>"
+        );
+        assert_eq!(
+            shown(&[
+                "curl",
+                "https://u:SENTINEL-9@example.invalid/x?mode=ro&access_token=SENTINEL-10&X-Amz-Signature=SENTINEL-11#top"
+            ]),
+            "curl https://<redacted>@example.invalid/x?mode=ro&access_token=<redacted>&X-Amz-Signature=<redacted>#top"
+        );
+        assert_eq!(
+            shown(&[
+                "env",
+                "DATABASE_URL=mysql://example.invalid/db?pwd=SENTINEL-12"
+            ]),
+            "env DATABASE_URL=mysql://example.invalid/db?pwd=<redacted>"
+        );
+        // A query with nothing secret is left as it is.
+        assert_eq!(
+            shown(&["curl", "https://example.invalid/search?q=rust&page=2"]),
+            "curl https://example.invalid/search?q=rust&page=2"
+        );
     }
 
     /// What status answers and gossip carry comes from this table, so it is checked there.
