@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Cancelled Exec Streams Kill Their Process Group** (`crates/prod-code-gateway`, #1536):
+  When a running command's stream is dropped or cancelled before it finishes, without a Disconnect, its process group is killed and still reaped. It used to keep running past its deadline. Normal exit, timeout and disconnect handling are unchanged.
 - **URL Query Secrets in Running Commands** (`crates/prod-code-gateway`, #1535):
   A URL argument in status and gossip keeps its keys, but a query value whose key names a secret reads `<redacted>`: `postgresql://host/db?password=…`, `access_token`, `X-Amz-Signature`, `pwd`. Userinfo is found before a `?` or `#` too.
 - **Unknown Verify Modes Refused** (`crates/prod-code-mcp`, #1453):

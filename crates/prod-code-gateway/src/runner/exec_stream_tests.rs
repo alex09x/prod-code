@@ -104,6 +104,47 @@ async fn exec_disconnected_silent_child_is_killed_and_unlisted() {
     }
 }
 
+/// Dropping the stream's future without a Disconnect, as a cancelled request does, still kills
+/// and reaps the process group (#1536).
+#[tokio::test]
+async fn exec_cancelled_stream_kills_its_process_group() {
+    let marks = tempfile::tempdir().unwrap();
+    let pid_file = marks.path().join("pid");
+    let command = format!("echo $$ > {}; sleep 30", pid_file.display());
+    let (_workspace, _client, task) = exec_fixture(&command, 60, false).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|t| t.trim().parse::<i32>().ok())
+        {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child never started"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    task.abort();
+    let _ = task.await;
+    let alive = |pid: i32| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while alive(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "process {pid} outlived its cancelled stream"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn exec_deadline_still_bounds_inherited_pipes_after_child_exit() {
     for structured in [false, true] {
