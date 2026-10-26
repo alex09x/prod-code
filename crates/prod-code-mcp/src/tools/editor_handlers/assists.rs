@@ -28,7 +28,6 @@ async fn prefer_names_in_scope(
     root: &Path,
     edit: serde_json::Value,
 ) -> Result<(serde_json::Value, usize)> {
-    const PRELUDE: &str = "std::prelude::v1::";
     let (planned, moves_files) = crate::refactor::planned_texts(root, &edit)?;
     if moves_files {
         return Ok((edit, 0));
@@ -36,20 +35,9 @@ async fn prefer_names_in_scope(
     let mut shortened = 0usize;
     let mut shorter = Vec::with_capacity(planned.len());
     for (path, text) in planned {
-        // Only lines the assist wrote: a line that was already in the file keeps its spelling,
-        // whatever it says.
         let before = std::fs::read_to_string(&path).unwrap_or_default();
-        let old_lines: std::collections::HashSet<&str> = before.lines().collect();
-        let mut out = String::with_capacity(text.len());
-        for line in text.split_inclusive('\n') {
-            let body = line.trim_end_matches('\n');
-            if body.contains(PRELUDE) && !old_lines.contains(body) {
-                shortened += body.matches(PRELUDE).count();
-                out.push_str(&line.replace(PRELUDE, ""));
-            } else {
-                out.push_str(line);
-            }
-        }
+        let (out, count) = shorten_new_prelude_paths(&before, &text);
+        shortened += count;
         shorter.push((path, out));
     }
     if shortened == 0 {
@@ -62,6 +50,73 @@ async fn prefer_names_in_scope(
     let files: std::collections::BTreeMap<std::path::PathBuf, String> =
         shorter.into_iter().collect();
     Ok((crate::signature::whole_file_edit(&files), shortened))
+}
+
+const PRELUDE: &str = "std::prelude::v1::";
+
+/// The byte ranges of `text`'s comments and string, byte and character literals.
+fn literal_and_comment_ranges(text: &str) -> Vec<(usize, usize)> {
+    use ra_ap_syntax::{NodeOrToken, SyntaxKind};
+    ra_ap_syntax::SourceFile::parse(text, ra_ap_syntax::Edition::CURRENT)
+        .syntax_node()
+        .descendants_with_tokens()
+        .filter_map(|element| match element {
+            NodeOrToken::Token(token)
+                if matches!(
+                    token.kind(),
+                    SyntaxKind::COMMENT
+                        | SyntaxKind::OUTER_DOC_COMMENT
+                        | SyntaxKind::INNER_DOC_COMMENT
+                        | SyntaxKind::STRING
+                        | SyntaxKind::BYTE_STRING
+                        | SyntaxKind::C_STRING
+                        | SyntaxKind::CHAR
+                        | SyntaxKind::BYTE
+                ) =>
+            {
+                let range = token.text_range();
+                Some((usize::from(range.start()), usize::from(range.end())))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The offsets of `std::prelude::v1::` in `text` that are code, not text inside a literal or
+/// a comment.
+fn prelude_paths_in_code(text: &str) -> Vec<usize> {
+    let opaque = literal_and_comment_ranges(text);
+    text.match_indices(PRELUDE)
+        .map(|(at, _)| at)
+        .filter(|at| !opaque.iter().any(|(s, e)| s <= at && at < e))
+        .collect()
+}
+
+/// `after` with the `std::prelude::v1::` paths the assist introduced dropped, and how many.
+/// Only code on lines the assist wrote is touched: a literal such as
+/// `println!("std::prelude::v1::")` or a comment keeps its bytes, and when `before` already
+/// spells the path in code nobody can tell which spelling is new, so the file keeps the
+/// analyzer's (#1400).
+fn shorten_new_prelude_paths(before: &str, after: &str) -> (String, usize) {
+    if !prelude_paths_in_code(before).is_empty() {
+        return (after.to_string(), 0);
+    }
+    let old_lines: std::collections::HashSet<&str> = before.lines().collect();
+    let mut cut: Vec<usize> = Vec::new();
+    let mut line_start = 0;
+    let code = prelude_paths_in_code(after);
+    for line in after.split_inclusive('\n') {
+        let end = line_start + line.len();
+        if !old_lines.contains(line.trim_end_matches('\n')) {
+            cut.extend(code.iter().filter(|at| line_start <= **at && **at < end));
+        }
+        line_start = end;
+    }
+    let mut out = after.to_string();
+    for at in cut.iter().rev() {
+        out.replace_range(*at..*at + PRELUDE.len(), "");
+    }
+    (out, cut.len())
 }
 
 pub(crate) async fn handle_assists(
@@ -162,4 +217,41 @@ pub(crate) async fn handle_assists(
         }
     }
     Ok(McpToolCallResult::text(out.trim_end().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shorten_new_prelude_paths;
+
+    #[test]
+    fn only_new_prelude_paths_in_code_are_shortened() {
+        let before = "use anyhow::Result;\nfn main() {\n    run();\n}\n";
+        let after = "use anyhow::Result;\nfn main() {\n    run();\n}\n\nfn fun_name() -> std::prelude::v1::Result<(), anyhow::Error> {\n    println!(\"std::prelude::v1::\"); // std::prelude::v1:: here\n    Ok(())\n}\n";
+        let (out, count) = shorten_new_prelude_paths(before, after);
+        assert_eq!(count, 1);
+        assert!(
+            out.contains("fn fun_name() -> Result<(), anyhow::Error> {"),
+            "{out}"
+        );
+        // A literal and a comment keep their bytes (#1400).
+        assert!(
+            out.contains("println!(\"std::prelude::v1::\"); // std::prelude::v1:: here"),
+            "{out}"
+        );
+        // A path already spelled in code: provenance is unknown, nothing is shortened.
+        let spelled = "fn f() -> std::prelude::v1::Option<u8> { None }\n";
+        let moved = "fn g() -> std::prelude::v1::Result<(), ()> { Ok(()) }\nfn f() -> std::prelude::v1::Option<u8> {\n    None\n}\n";
+        assert_eq!(
+            shorten_new_prelude_paths(spelled, moved),
+            (moved.to_string(), 0)
+        );
+        // A literal in the old file is no path and does not block.
+        let quoted = "const S: &str = \"std::prelude::v1::\";\n";
+        let (out, count) = shorten_new_prelude_paths(
+            quoted,
+            &format!("{quoted}fn h() -> std::prelude::v1::Option<u8> {{ None }}\n"),
+        );
+        assert_eq!(count, 1);
+        assert!(out.ends_with("fn h() -> Option<u8> { None }\n"), "{out}");
+    }
 }

@@ -4641,6 +4641,42 @@ async fn only_the_lines_an_assist_wrote_are_respelled() {
     );
 }
 
+/// On the lines the assist wrote, only the path in code is shortened: the same text inside a
+/// moved string literal or a comment keeps its bytes, so the program prints what it printed
+/// (#1400).
+#[tokio::test]
+async fn a_prelude_path_inside_a_literal_or_comment_is_not_respelled() {
+    let ws = workspace();
+    let before = "fn g() {}\n";
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let path = lib.clone();
+    let after = "fn g() {}\nfn fun_name() -> std::prelude::v1::Option<u8> {\n    println!(\"std::prelude::v1::\"); // std::prelude::v1:: here\n    None\n}\n";
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prodCode/applyAssist" => answers::whole_file(&path, before, after),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_assist",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 4, "id": "extract_function" }),
+    )
+    .await
+    .expect("the assist runs");
+    assert!(
+        text_of(&result).contains("1 `std::prelude::v1::` path(s)"),
+        "{}",
+        text_of(&result)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "fn g() {}\nfn fun_name() -> Option<u8> {\n    println!(\"std::prelude::v1::\"); // std::prelude::v1:: here\n    None\n}\n"
+    );
+}
+
 /// An assist that spells a prelude item by its full path gets the name in scope instead, when the
 /// analyzer accepts it (#97), and keeps rust-analyzer's spelling when it does not.
 #[tokio::test]
