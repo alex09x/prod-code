@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 
 use super::generics::{generic_arguments, impl_body_open, matching_angle, top_level_word};
 use super::lex::{
-    contains_code_word, has_outer_attribute_before, lexical_code, matching_close_brace,
-    previous_code,
+    contains_code_word, contains_macro_invocation, is_conditional_attribute, is_macro_bang,
+    lexical_code, matching_close_brace, outer_attributes_before, previous_code,
 };
 use super::rewrite::declaration;
 use super::types::{ImplBlock, Item, is_ident};
@@ -34,15 +34,16 @@ fn inside_macro(text: &str, at: usize) -> bool {
         }
     }
     opens.into_iter().any(|open| {
+        if previous_code(text, &code, open).is_some_and(|before| is_macro_bang(text, &code, before))
+        {
+            return true;
+        }
         let mut prefix = text[..open]
             .char_indices()
             .rev()
             .filter(|(i, c)| code[*i] && !c.is_whitespace())
             .map(|(_, c)| c)
             .peekable();
-        if prefix.peek() == Some(&'!') {
-            return true;
-        }
         // A macro_rules definition has its name between the bang and its delimiter.
         let mut named = false;
         while prefix.peek().is_some_and(|c| is_ident(*c)) {
@@ -78,7 +79,7 @@ fn inside_macro_invocation(text: &str, code: &[bool], at: usize) -> bool {
         }
     }
     opens.into_iter().any(|(open, _)| {
-        previous_code(text, code, open).is_some_and(|before| text.as_bytes()[before] == b'!')
+        previous_code(text, code, open).is_some_and(|before| is_macro_bang(text, code, before))
     })
 }
 
@@ -138,7 +139,6 @@ fn starts_impl_item(text: &str, code: &[bool], impl_at: usize) -> bool {
 
 fn enclosing_impl(text: &str, code: &[bool], at: usize) -> Option<(usize, usize, usize)> {
     text.match_indices("impl")
-        .take_while(|(i, _)| *i <= at)
         .filter(|(i, _)| {
             code[*i..*i + 4].iter().all(|is_code| *is_code)
                 && !text[..*i].chars().next_back().is_some_and(is_ident)
@@ -146,6 +146,12 @@ fn enclosing_impl(text: &str, code: &[bool], at: usize) -> Option<(usize, usize,
                 && starts_impl_item(text, code, *i)
         })
         .filter_map(|(start, _)| {
+            let attr_start = outer_attributes_before(text, start)
+                .first()
+                .map_or(start, |(s, _)| *s);
+            if at < attr_start {
+                return None;
+            }
             let open = impl_body_open(text, start).ok()?;
             let close = matching_close_brace(text, open)?;
             (at <= close).then_some((start, open, close))
@@ -174,17 +180,19 @@ pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
             .any(|qualifier| before.ends_with(qualifier)),
         "specialized, unsafe, and const impl blocks are not supported"
     );
-    anyhow::ensure!(
-        !has_outer_attribute_before(text, impl_at),
-        "attributes on impl blocks are not supported; remove or expand the conditional impl first"
-    );
+    for (start, end) in outer_attributes_before(text, impl_at) {
+        anyhow::ensure!(
+            is_conditional_attribute(&text[start..end]),
+            "attributes on impl blocks are not supported; remove or expand the conditional impl first"
+        );
+    }
     let header = text[impl_at + 4..open].trim();
     anyhow::ensure!(
         !header.contains('#'),
         "attributes in an impl header are not supported"
     );
     anyhow::ensure!(
-        !header.contains('!'),
+        !contains_macro_invocation(header),
         "macros in an impl header are not supported"
     );
     let (generics, after_generics) = if header.starts_with('<') {
@@ -237,6 +245,7 @@ pub fn items(text: &str, open: usize, close: usize) -> Vec<Item> {
     let code = lexical_code(text);
     let mut out = Vec::new();
     let mut depth = 0i32;
+    let mut angle = 0i32;
     let mut start: Option<usize> = None;
     let mut i = open + 1;
     while i < close {
@@ -252,17 +261,21 @@ pub fn items(text: &str, open: usize, close: usize) -> Vec<Item> {
             start.get_or_insert(i);
         }
         match c {
+            b'<' if depth == 0 => angle += 1,
+            b'>' if depth == 0 && angle > 0 && (i == 0 || bytes[i - 1] != b'-') => angle -= 1,
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' => depth -= 1,
             b'}' => {
                 depth -= 1;
                 if depth == 0
+                    && angle == 0
                     && let Some(s) = start.take()
                 {
                     out.push(item_at(text, s, i + 1));
                 }
             }
             b';' if depth == 0 => {
+                angle = 0;
                 if let Some(s) = start.take() {
                     out.push(item_at(text, s, i + 1));
                 }
@@ -275,14 +288,12 @@ pub fn items(text: &str, open: usize, close: usize) -> Vec<Item> {
 }
 
 fn item_at(text: &str, start: usize, end: usize) -> Item {
-    let decl = declaration(&text[start..end]).1;
+    let (_, decl) = super::rewrite::visibility(declaration(&text[start..end]).1);
     let name = decl.find("fn ").and_then(|i| {
         let before = &decl[..i];
-        let qualifiers_only = before.split_whitespace().all(|w| {
-            w.starts_with("pub")
-                || matches!(w, "const" | "async" | "unsafe" | "extern")
-                || w.starts_with('"')
-        });
+        let qualifiers_only = before
+            .split_whitespace()
+            .all(|w| matches!(w, "const" | "async" | "unsafe" | "extern") || w.starts_with('"'));
         let name: String = decl[i + 3..]
             .trim_start()
             .chars()
