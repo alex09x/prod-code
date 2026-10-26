@@ -32,6 +32,9 @@ pub(crate) fn one_based_lsp_position(text: &str, byte_offset: usize) -> (u32, u3
 }
 
 pub(crate) fn is_import_export_call_context(text: &str, at: usize, lang: Language) -> bool {
+    if lang == Language::Python {
+        return super::polyglot::python_import_context(text, at);
+    }
     if !matches!(lang, Language::TypeScript | Language::JavaScript) {
         return crate::inline_parameter::is_import_or_export_context(text, at, lang);
     }
@@ -152,10 +155,16 @@ pub(crate) fn cpp_return_type_span(
     decl_start: usize,
     name_start: usize,
 ) -> (String, Option<(usize, usize)>) {
+    let type_code = super::polyglot::cpp_attributes::type_code(text);
+    let text = type_code.as_str();
     let prefix = &text[decl_start..name_start];
     let leading = prefix.len() - prefix.trim_start().len();
     let mut start = decl_start + leading;
     let mut end = decl_start + prefix.trim_end().len();
+    // A prefix that is only blanks once attributes are masked names no return type.
+    if end <= start {
+        return (String::new(), None);
+    }
 
     // In an out-of-class definition, remove the trailing class scope qualifier from the
     // return-type region while preserving it in the declaration.

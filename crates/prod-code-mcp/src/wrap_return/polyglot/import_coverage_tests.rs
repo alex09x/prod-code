@@ -48,7 +48,7 @@ fn coverage_import_dispatch_and_receivers() {
             "f",
             Language::Swift
         ),
-        vec!["f"]
+        Vec::<String>::new()
     );
     assert_eq!(
         imported_caller_symbols(

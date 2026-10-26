@@ -52,7 +52,9 @@ pub(crate) fn imported_caller_symbols(
             vec![fn_name.to_string()]
         }
         Language::Go => go_imported_symbols(content, caller_path, decl_file, fn_name),
-        Language::Swift if caller_path.parent() == decl_file.parent() => vec![fn_name.to_string()],
+        Language::Swift if super::swift_scope::same_target(caller_path, decl_file, content) => {
+            vec![fn_name.to_string()]
+        }
         Language::Cpp | Language::C
             if c_cpp_proves_import(content, caller_path, decl_file, fn_name) =>
         {
