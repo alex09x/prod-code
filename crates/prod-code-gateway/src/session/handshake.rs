@@ -46,7 +46,8 @@ pub async fn handle_handshake(
         req.base_workspace_name.as_deref(),
     );
     let server_workspace_str = server_workspace.to_string_lossy().to_string();
-    workspace::touch_last_used(&server_workspace);
+    // Held for the whole session: no pruner takes the copy while it runs (#1524).
+    let _in_use = workspace::WorkspaceUse::enter(&server_workspace);
 
     // A nested project of another language (engine_subpath) gets its own engine
     // rooted there; sync and path translation stay on the checkout root.

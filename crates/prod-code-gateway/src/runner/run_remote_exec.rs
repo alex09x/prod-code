@@ -61,6 +61,8 @@ pub async fn run_remote_exec_with_ram(
         benches: Vec::new(),
     };
 
+    // Held while the command runs: no pruner takes the copy from under it (#1524).
+    let _in_use = workspace::WorkspaceUse::enter(&workspace);
     if !workspace.is_dir() {
         framed
             .send(WireMessage::RemoteExecResult(fail(format!(
@@ -69,7 +71,6 @@ pub async fn run_remote_exec_with_ram(
             .await?;
         return Ok(());
     }
-    workspace::touch_last_used(&workspace);
 
     let argv = req.to_argv();
     let Some((program, args)) = argv.split_first() else {

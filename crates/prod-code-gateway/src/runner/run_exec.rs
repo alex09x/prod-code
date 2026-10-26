@@ -54,6 +54,8 @@ pub async fn run_exec_with_ram(
         usage: None,
         platform: Some(prod_code_protocol::platform()),
     };
+    // Held while the command runs: no pruner takes the copy from under it (#1524).
+    let _in_use = workspace::WorkspaceUse::enter(&workspace);
     if !workspace.is_dir() {
         framed
             .send(WireMessage::ExecExit(fail(format!(
@@ -62,7 +64,6 @@ pub async fn run_exec_with_ram(
             .await?;
         return Ok(());
     }
-    workspace::touch_last_used(&workspace);
     let Some((program, args)) = req.command.split_first() else {
         framed
             .send(WireMessage::ExecExit(fail("empty command".to_string())))

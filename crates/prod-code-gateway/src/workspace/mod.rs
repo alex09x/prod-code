@@ -19,6 +19,7 @@ pub(crate) mod session;
 pub(crate) mod shared;
 pub(crate) mod stale;
 pub(crate) mod types;
+pub(crate) mod usage;
 pub(crate) mod validation;
 
 #[cfg(test)]
@@ -46,3 +47,4 @@ pub use types::{
     RustEngines, RustLoader, WatchedChange, WorkspaceKey, default_max_concurrent_engine_loads,
     unix_now,
 };
+pub use usage::WorkspaceUse;
