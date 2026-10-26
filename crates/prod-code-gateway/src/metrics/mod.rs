@@ -205,28 +205,35 @@ impl Metrics {
         storage::prune_expired_metrics(&self.dir, retention_days, max_bytes)
     }
 
-    /// Aggregates the last `since_secs` (0 = all the ring holds).
+    /// Aggregates the last `since_secs` (0 = all the ring holds). The ring is copied under its
+    /// lock and the lock released before the daily files are read, so recording never waits on
+    /// a historical scan (#1416); the files cover only what precedes the copy.
     pub fn summary(&self, node: &str, since_secs: u64) -> MetricsResponse {
-        let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         let cutoff = if since_secs == 0 {
             0
         } else {
             now_ms().saturating_sub(since_secs * 1000)
         };
+        let (recent, oldest_in_memory, ring_len) = {
+            let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+            let recent: Vec<Event> = ring.iter().filter(|e| e.ts_ms >= cutoff).cloned().collect();
+            (
+                recent,
+                ring.front().map_or_else(now_ms, |e| e.ts_ms),
+                ring.len(),
+            )
+        };
         let mut sum = Summary::default();
-        if since_secs > 0 {
-            let oldest_in_memory = ring.front().map_or_else(now_ms, |e| e.ts_ms);
-            if cutoff < oldest_in_memory {
-                storage::for_each_stored(&self.dir, cutoff, oldest_in_memory, |ev| sum.add(&ev));
-            }
+        if since_secs > 0 && cutoff < oldest_in_memory {
+            storage::for_each_stored(&self.dir, cutoff, oldest_in_memory, |ev| sum.add(&ev));
         }
-        for ev in ring.iter().filter(|e| e.ts_ms >= cutoff) {
+        for ev in &recent {
             sum.add(ev);
         }
 
         let snapshots = self.recent_snapshots(60);
         let inventory = self.toolchain_inventory();
 
-        sum.response(node, since_secs, ring.len() as u64, snapshots, inventory)
+        sum.response(node, since_secs, ring_len as u64, snapshots, inventory)
     }
 }

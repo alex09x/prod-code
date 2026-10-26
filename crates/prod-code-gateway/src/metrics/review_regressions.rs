@@ -80,3 +80,58 @@ fn metrics_review_unknown_persisted_categories_are_ignored() {
         assert_eq!(response.sync_rounds, 0);
     }
 }
+
+/// A historical scan does not hold the ring: while the scan is kept on an open daily file, an
+/// event is recorded from another thread (#1416).
+#[test]
+fn recording_does_not_wait_for_a_historical_scan() {
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    let temp = tempfile::tempdir().expect("metrics temp dir");
+    let dir = temp.path().join("metrics");
+    std::fs::create_dir_all(&dir).expect("metrics dir");
+    let day_ago = now_ms() - 24 * 3600 * 1000;
+    write_telemetry_batch(
+        &dir,
+        [TelemetryRecord::Operation(operation(
+            day_ago, "lsp", "hover",
+        ))]
+        .into_iter(),
+    );
+    let metrics = Arc::new(super::Metrics::new(dir.clone()));
+    metrics.record(Event::blank("lsp"));
+
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    let released = std::sync::Mutex::new(released);
+    super::storage::scan_hook::set(&dir, move || {
+        let _ = entered_tx.send(());
+        let _ = released
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10));
+    });
+    let scanning = Arc::clone(&metrics);
+    let scan = std::thread::spawn(move || scanning.summary("test-node", 2 * 24 * 3600));
+    entered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the scan reaches the daily file");
+
+    let (recorded_tx, recorded) = mpsc::channel();
+    let recording = Arc::clone(&metrics);
+    std::thread::spawn(move || {
+        recording.record(Event::blank("lsp"));
+        let _ = recorded_tx.send(());
+    });
+    let during_scan = recorded.recv_timeout(Duration::from_secs(2));
+    let _ = release.send(());
+    let summary = scan.join().expect("the scan finishes");
+    super::storage::scan_hook::clear();
+
+    assert!(
+        during_scan.is_ok(),
+        "recording waited for the historical scan"
+    );
+    assert_eq!(summary.queries.iter().map(|q| q.count).sum::<u64>(), 2);
+}
