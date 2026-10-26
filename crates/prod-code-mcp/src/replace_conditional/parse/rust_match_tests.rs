@@ -53,3 +53,22 @@ fn coverage_b2_match_expression_boundaries() {
         assert!(parse_rust_match(text, 0).is_none(), "{text}");
     }
 }
+
+/// The rolling context before a character is cut by characters: a byte cut inside `é` made
+/// `find_rust_arm_comma` panic on an ordinary arm (#1430).
+#[test]
+fn unicode_identifiers_in_an_arm_do_not_panic() {
+    // Byte offsets: `é` is two bytes, each of 日本語 three.
+    assert_eq!(find_rust_arm_comma("f(é, 0), tail"), Some(8));
+    assert_eq!(find_rust_arm_comma("g(日本語, ü::<A, B>()), x"), Some(26));
+    let text = "match k {\n    0 => f(é, 0),\n    _ => 0,\n}";
+    let block = parse_rust_match(text, 0).expect("the match parses");
+    assert_eq!(
+        block
+            .branches
+            .iter()
+            .map(|b| (b.tag.as_str(), b.body.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("0", "f(é, 0)"), ("_", "0")]
+    );
+}
