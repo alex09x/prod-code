@@ -104,6 +104,14 @@ impl ModuleMove {
     /// while the analyzer rejects the result, unless `force`, and while a path was not rewritten,
     /// forced or not (#446).
     pub fn write(&mut self, force: bool) -> Result<()> {
+        for path in self
+            .rewritten
+            .iter()
+            .map(|(path, _)| PathBuf::from(path))
+            .chain(self.removed.iter().map(|path| self.root.join(path)))
+        {
+            crate::move_item::ownership::filesystem::no_links(&self.root, &path)?;
+        }
         anyhow::ensure!(
             self.unmatched.is_empty(),
             "{} path(s) to `{}` were not rewritten; nothing was written:\n  {}",

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::move_item::{add_import, drop_import, module_of};
+use crate::move_item::{add_import, drop_import, rust_syntax};
 
 use super::syntax::*;
 use super::types::*;
@@ -27,119 +27,43 @@ pub async fn move_module(
     file: &Path,
     target: &Path,
 ) -> Result<ModuleMove> {
-    anyhow::ensure!(file.is_file(), "{} is not a file", display(root, file));
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let root = &canon(root);
-    let file = &canon(file);
-    // The target does not exist yet: its directory may not either.
-    let target = &match (target.parent(), target.file_name()) {
-        (Some(dir), Some(name)) if dir.exists() => canon(dir).join(name),
-        _ => target.to_path_buf(),
-    };
-    anyhow::ensure!(!target.exists(), "{} already exists", display(root, target));
-    let (_, from) = module_of(file)?;
-    let (_, to) = module_of(target)?;
+    let plan = super::plan::Plan::new(root, file, target)?;
+    let (from, to) = (&plan.from, &plan.to);
     let name = from
         .segments
         .last()
         .cloned()
-        .context("the crate root is not a module that can move")?;
-    anyhow::ensure!(
-        to.segments.last() == Some(&name),
-        "the module keeps its name `{name}` when it moves; move it, then rename it"
-    );
-    anyhow::ensure!(from.krate == to.krate, "a module moves within its crate");
-    let (from_parent, to_parent) = (parent_of(&from), parent_of(&to));
-    anyhow::ensure!(
-        from_parent != to_parent,
-        "{} is already in {}",
-        from.absolute(),
-        to_parent.absolute()
-    );
-    anyhow::ensure!(
-        !to_parent.segments.starts_with(&from.segments),
-        "a module cannot move into itself"
-    );
-
-    let old_parent = declaring_file(file)
-        .with_context(|| format!("no module file declares {}", display(root, file)))?;
-    let mod_rs = file.file_name().is_some_and(|n| n == "mod.rs");
-    let new_file = if mod_rs {
-        target.with_extension("").join("mod.rs")
-    } else {
-        target.to_path_buf()
-    };
-    let new_parent = declaring_file(&new_file).with_context(|| {
-        format!(
-            "{} has no parent module file to declare it in (for `src/c/b.rs`, `src/c.rs` or \
-             `src/c/mod.rs`); create the parent module first",
-            display(root, target)
-        )
-    })?;
-    // The submodules live in the module's directory: `src/a/b/` for both layouts.
-    let old_dir = if mod_rs {
-        file.parent().map(Path::to_path_buf)
-    } else {
-        Some(file.with_extension(""))
-    }
-    .filter(|d| d.is_dir());
-    let new_dir = if mod_rs {
-        new_file.parent().map(Path::to_path_buf).unwrap_or_default()
-    } else {
-        new_file.with_extension("")
-    };
-    if old_dir.is_some() {
-        anyhow::ensure!(
-            !new_dir.exists(),
-            "{} already exists",
-            display(root, &new_dir)
+        .context("crate root cannot move")?;
+    let old_parents: Vec<_> = plan
+        .transfers
+        .iter()
+        .map(|t| t.old.declaration.as_ref().unwrap().0.clone())
+        .collect();
+    let new_parents: Vec<_> = plan
+        .transfers
+        .iter()
+        .map(|t| t.parent.file.clone())
+        .collect();
+    let mut refs = Vec::new();
+    for transfer in &plan.transfers {
+        let (parent, decl) = transfer
+            .old
+            .declaration
+            .as_ref()
+            .context("module has no declaration")?;
+        let text = rust_syntax::read(parent)?;
+        let (line, col) = crate::signature::position_at(&text, decl.name_at)?;
+        refs.extend(
+            crate::signature::references(remote, root, parent, line, col)
+                .await
+                .with_context(|| {
+                    format!("cannot find the paths to `{name}`; nothing was planned")
+                })?,
         );
     }
-
-    let parent_text = std::fs::read_to_string(&old_parent)
-        .with_context(|| format!("cannot read {}", old_parent.display()))?;
-    let (decl_start, decl_end, decl_line) = declaration(&parent_text, &name).with_context(|| {
-        format!(
-            "{} does not declare `mod {name};` at its top level (an inline `mod {name} {{ … }}` \
-             or a `#[path]` module is not moved)",
-            display(root, &old_parent)
-        )
-    })?;
-    let block = parent_text[decl_start..decl_end].to_string();
-    anyhow::ensure!(
-        !block.contains("#[path"),
-        "`{name}` is declared with `#[path]`; its file is not where the layout puts it"
-    );
-    let new_parent_text = std::fs::read_to_string(&new_parent)
-        .with_context(|| format!("cannot read {}", new_parent.display()))?;
-    anyhow::ensure!(
-        declaration(&new_parent_text, &name).is_none(),
-        "{} already declares a module `{name}`",
-        display(root, &new_parent)
-    );
-
-    // Where the analyzer says the module is named, asked before any text moves.
-    let line_start = parent_text[..decl_end.saturating_sub(1)]
-        .rfind('\n')
-        .map_or(0, |i| i + 1);
-    let decl_line_no = parent_text[..line_start].matches('\n').count() as u32 + 1;
-    let name_col = decl_line.rfind(&format!("mod {name};")).unwrap_or(0) as u32 + 5;
-    let refs = crate::signature::references(remote, root, &old_parent, decl_line_no, name_col)
-        .await
-        .with_context(|| format!("cannot find the paths to `{name}`; nothing was planned"))?;
-
-    // The files that move: the module's own, and everything in its directory.
-    let mut moves: Vec<(PathBuf, PathBuf)> = vec![(file.to_path_buf(), new_file.clone())];
-    if let Some(dir) = &old_dir {
-        for f in files_under(dir) {
-            if f == *file {
-                continue;
-            }
-            if let Ok(rel) = f.strip_prefix(dir) {
-                moves.push((f.clone(), new_dir.join(rel)));
-            }
-        }
-    }
+    refs.sort();
+    refs.dedup();
+    let moves = &plan.moves;
     let moved_to = |path: &Path| {
         moves
             .iter()
@@ -153,7 +77,19 @@ pub async fn move_module(
     let mut unmatched = Vec::new();
     let mut by_file: BTreeMap<PathBuf, Vec<(u32, u32)>> = BTreeMap::new();
     for (path, l, c) in refs {
-        by_file.entry(canon(&path)).or_default().push((l, c));
+        // A declaration is handled by its exact syntax owner below, not as an import.
+        if plan.transfers.iter().any(|t| {
+            t.old.declaration.as_ref().is_some_and(|(parent, decl)| {
+                *parent == path
+                    && rust_syntax::read(parent)
+                        .ok()
+                        .and_then(|text| crate::signature::offset_of(&text, l, c))
+                        == Some(decl.name_at)
+            })
+        }) {
+            continue;
+        }
+        by_file.entry(path).or_default().push((l, c));
     }
     for (path, mut positions) in by_file {
         // Skipped, its paths would still name the old module (#446).
@@ -164,15 +100,22 @@ pub async fn move_module(
                 path.display()
             )
         })?;
-        let Ok((_, module)) = module_of(&path) else {
-            notes.push(format!(
-                "{} — outside the ordinary crate layout, not rewritten",
-                display(root, &path)
-            ));
-            continue;
-        };
-        let new_parent_path = to_parent.spelled_from(&module.krate);
-        let new_path = to.spelled_from(&module.krate);
+        let owners = plan.graph.owners(&path, None)?;
+        let caller = &owners[0];
+        let destinations: Vec<_> = plan
+            .transfers
+            .iter()
+            .map(|t| t.destination.clone())
+            .collect();
+        let new_path = plan.graph.caller_spelling(&owners, &destinations)?;
+        let parents: Vec<_> = destinations
+            .into_iter()
+            .map(|mut owner| {
+                owner.module = parent_of(&owner.module);
+                owner
+            })
+            .collect();
+        let new_parent_path = plan.graph.caller_spelling(&owners, &parents)?;
         let mut out = text.clone();
         let (mut bare, mut grouped, mut qualified) = (0, 0, 0);
         positions.sort_unstable();
@@ -189,6 +132,16 @@ pub async fn move_module(
                 unmatched.push(format!(
                     "{site} (the analyzer places `{name}` here, but the file says otherwise)"
                 ));
+                continue;
+            }
+            if let Some(rewritten) = super::imports::rewrite_reference(
+                &out,
+                offset,
+                &new_path,
+                rust_syntax::edition(&caller.root),
+            ) {
+                out = rewritten;
+                qualified += 1;
                 continue;
             }
             match spelling(&out, offset) {
@@ -213,13 +166,13 @@ pub async fn move_module(
             for note in dropped {
                 notes.push(format!("{shown}: {note}"));
             }
-            if path != new_parent {
+            if !new_parents.contains(&path) {
                 out = add_import(&out, &format!("use {new_path};"));
                 notes.push(format!("{shown}: added `use {new_path};`"));
             }
         }
         // In the old parent a bare `b` was its own child; now it is imported.
-        if bare > 0 && path == old_parent {
+        if bare > 0 && old_parents.contains(&path) {
             out = add_import(&out, &format!("use {new_path};"));
             notes.push(format!("{shown}: added `use {new_path};`"));
         }
@@ -227,42 +180,39 @@ pub async fn move_module(
     }
 
     // The declaration leaves the old parent and arrives in the new one.
-    let old_parent_now = texts
-        .get(&old_parent)
-        .cloned()
-        .unwrap_or_else(|| parent_text.clone());
-    let (start, end, _) = declaration(&old_parent_now, &name)
-        .context("the declaration was rewritten while its paths were")?;
-    let mut old_parent_new = old_parent_now.clone();
-    old_parent_new.replace_range(start..end, "");
-    texts.insert(old_parent.clone(), old_parent_new);
-    let new_parent_now = texts.get(&new_parent).cloned().unwrap_or(new_parent_text);
-    // An import of the module in its new parent would now clash with the declaration.
-    let (new_parent_now, dropped) = drop_import(&new_parent_now, &name);
-    for note in dropped {
-        notes.push(format!("{}: {note}", display(root, &new_parent)));
-    }
-    texts.insert(
-        new_parent.clone(),
-        declare_block(&new_parent_now, &name, &block),
-    );
+    super::declarations::transfer(&plan, &mut texts, &name)?;
 
     // The moved files, at their new paths; `super::` in the module's own file meant the old
     // parent.
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut removed = Vec::new();
-    for (old, new) in &moves {
+    for (old, new) in moves {
         let text = match texts.remove(old) {
             Some(t) => t,
             None => std::fs::read_to_string(old)
                 .with_context(|| format!("cannot read {}", old.display()))?,
         };
-        let text = if old == file {
-            let head = from_parent.spelled_from(&from.krate);
-            let (resolved, count) = resolve_super(&text, &head);
+        let text = if old.extension().is_some_and(|ext| ext == "rs") {
+            // Undeclared .rs resources are copied byte-for-byte; only known module scopes
+            // have a lexical parent whose paths can be rebased.
+            let depth = plan
+                .graph
+                .owners(old, None)
+                .ok()
+                .map(|owners| owners[0].module.segments.len() - from.segments.len());
+            let (resolved, count) = if let Some(depth) = depth {
+                rust_syntax::rebase_super(
+                    &text,
+                    &from.segments,
+                    depth,
+                    rust_syntax::edition(&plan.transfers[0].old.root),
+                )?
+            } else {
+                (text, 0)
+            };
             if count > 0 {
                 notes.push(format!(
-                    "{}: {count} `super::` now `{head}::`",
+                    "{}: {count} lexical `super` path(s) preserve their original scope",
                     display(root, new)
                 ));
             }
@@ -282,7 +232,24 @@ pub async fn move_module(
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &[]).await?;
+    let roots: Vec<_> = plan
+        .graph
+        .nodes
+        .iter()
+        .filter(|owner| {
+            old_parents.contains(&owner.file)
+                || new_parents.contains(&owner.file)
+                || rewritten.contains_key(&owner.file)
+                || moves.iter().any(|(old, _)| old == &owner.file)
+        })
+        .map(|owner| owner.root.clone())
+        .collect();
+    for (path, _) in &edits {
+        crate::move_item::ownership::filesystem::no_links(root, path)?;
+    }
+    plan.graph
+        .ensure_unaliased(root, edits.iter().map(|(p, _)| p.as_path()))?;
+    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &roots).await?;
     let diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))

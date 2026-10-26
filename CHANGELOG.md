@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Item and Module Moves** (`crates/prod-code-mcp`, #1354):
+  Moves keep multiline attribute and doc preambles, give a public item a public new module, pick the new module's parent from the item's own crate root, and refuse targets owned by a different library/binary crate. Whole-module moves rewrite `super::` paths by syntax, do not follow links, and update every root that declares a shared file.
 - **Return Wrapping Callers and C++ Prototypes** (`crates/prod-code-mcp`, #1347):
   Swift callers in the same SwiftPM target and real calls after a Python import on the same line are no longer skipped. A C++ prototype is rewritten only when its header is actually included by the definition, so an unrelated same-named prototype stays untouched, and attributes on the declaration survive.
 - **Encapsulate-Field Nested Edits and Privacy** (`crates/prod-code-mcp`, #1326):

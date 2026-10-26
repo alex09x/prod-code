@@ -109,10 +109,15 @@ async fn move_position_encoding_table() {
                 "pub struct Holder",
                 "use crate::quote_feed_types::QuoteFeedState;\npub struct Holder",
                 1,
-            ),
+            )
+            .replace('\n', ending),
             "{case}"
         );
-        assert_eq!(ws.read("src/quote_feed_types.rs"), ITEM, "{case}");
+        assert_eq!(
+            ws.read("src/quote_feed_types.rs"),
+            ITEM.replace('\n', ending),
+            "{case}"
+        );
         assert_eq!(
             ws.read("src/caller.rs"),
             caller.replace(

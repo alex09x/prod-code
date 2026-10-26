@@ -64,7 +64,9 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
         let mut tail_end = end;
         if replacement.is_empty() {
             // Take the newline with the line, or an empty line is left behind.
-            if out[tail_end..].starts_with('\n') {
+            if out[tail_end..].starts_with("\r\n") {
+                tail_end += 2;
+            } else if out[tail_end..].starts_with('\n') {
                 tail_end += 1;
             }
         }
@@ -212,10 +214,11 @@ pub fn add_import(text: &str, use_line: &str) -> String {
         .or_else(|| Some(super::preamble::preamble_end(text)))
         .unwrap_or(0);
     let mut out = text.to_string();
-    let insert = if out[after..].starts_with('\n') {
-        format!("\n{use_line}")
+    let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let insert = if out[after..].starts_with(['\n', '\r']) {
+        format!("{ending}{use_line}")
     } else {
-        format!("{use_line}\n")
+        format!("{use_line}{ending}")
     };
     out.insert_str(after, &insert);
     out
@@ -275,36 +278,6 @@ pub(crate) fn has_use_super_glob(text: &str) -> bool {
         let stmt = text[s..e].trim();
         stmt == "use super::*;" || stmt.ends_with(" use super::*;")
     })
-}
-
-/// Returns `true` when `source_text` declares `target` as a child module (either via
-/// `#[path = "..."]` naming `target`'s file name or via `mod <target_stem>;`) (#1117).
-pub(crate) fn source_declares_child_module(source_text: &str, target: &std::path::Path) -> bool {
-    if let Some(file_name) = target.file_name().and_then(|n| n.to_str()) {
-        let path_attr_double = format!("\"{file_name}\"");
-        let path_attr_slash = format!("/{file_name}\"");
-        for line in source_text.lines() {
-            let t = line.trim();
-            if t.starts_with("#[path")
-                && (t.contains(&path_attr_double) || t.contains(&path_attr_slash))
-            {
-                return true;
-            }
-        }
-    }
-    if let Some(stem) = target.file_stem().and_then(|s| s.to_str()) {
-        let mod_decl = format!("mod {stem};");
-        for line in source_text.lines() {
-            let t = line.trim();
-            if t == mod_decl
-                || t.strip_prefix("pub ").is_some_and(|r| r.trim() == mod_decl)
-                || (t.starts_with("pub(") && t.ends_with(&mod_decl))
-            {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// The imports the moved item takes with it.

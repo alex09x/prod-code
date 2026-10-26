@@ -166,18 +166,3 @@ pub(super) fn parent_module_file(target: &Path) -> Option<PathBuf> {
     }
     None
 }
-
-pub(super) fn ensure_same_crate(
-    from: &Path,
-    to: &Path,
-    from_dir: &Path,
-    to_dir: &Path,
-) -> Result<()> {
-    let from = resolve(&canonical(from), from_dir)?.map(|(root, _)| root);
-    let to = resolve(&canonical(to), to_dir)?.map(|(root, _)| root);
-    anyhow::ensure!(
-        from == to,
-        "integration-test targets are separate crates; move within the same test crate"
-    );
-    Ok(())
-}

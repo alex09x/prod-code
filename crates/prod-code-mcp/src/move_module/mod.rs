@@ -11,7 +11,11 @@
 //! Moving a whole module to another parent: `a::b` becomes `c::b`, with its file and its
 //! submodules.
 
+mod declarations;
+mod descendants;
 pub mod execute;
+mod imports;
+mod plan;
 pub mod syntax;
 pub mod types;
 
