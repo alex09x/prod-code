@@ -1043,3 +1043,33 @@ async fn a_linked_source_ancestor_refuses_before_evidence() {
     assert!(output.contains("linked source path"), "{output}");
     assert_eq!(fixture.snapshot(), before);
 }
+
+/// A caller in an untracked, Git-ignored file of the package is not synced to the node, so
+/// neither gopls nor the compiler there would see it: the deletion is refused before any
+/// evidence is asked for, and nothing is written (#1397).
+#[tokio::test]
+async fn a_git_ignored_caller_in_the_package_refuses_before_evidence() {
+    let fixture = one_function();
+    std::fs::write(fixture.path(".gitignore"), "generated.go\n").expect("ignore file");
+    std::fs::write(
+        fixture.path("generated.go"),
+        "package main\n\nfunc init() { hidden() }\n",
+    )
+    .expect("ignored caller");
+    let before = fixture.snapshot();
+    let result = prod_code_mcp::tools::execute_tool(
+        SocketAddr::from(([127, 0, 0, 1], 9)),
+        fixture.root(),
+        "code_safe_delete",
+        json!({ "path": "main.go", "line": 3, "character": 6, "force": true }),
+    )
+    .await
+    .expect("preflight refusal is an MCP result");
+    let output = text_of(&result);
+    assert!(result.is_error, "{output}");
+    assert!(
+        output.contains("generated.go mentions hidden but Git ignores it"),
+        "{output}"
+    );
+    assert_eq!(fixture.snapshot(), before);
+}

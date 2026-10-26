@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Go Safe Delete Refuses on Git-Ignored Callers** (`crates/prod-code-mcp`, #1397):
+  `code_safe_delete` on a Go function refuses, before asking gopls or the compiler, when an untracked file of the same package that Git ignores mentions the function. Such a file is never synced to the build node, so neither check there could see the caller, and the local module would break. Tracked files that match an ignore pattern are synced and unaffected, and so are checkouts outside Git.
 - **Trait Parameter Removal Keeps Assigning Arguments** (`crates/prod-code-mcp`, #1396):
   Removing a trait method's parameter reads each dropped argument as a Rust expression. An assignment such as `{ counter += 1; value }` blocks the write like a call does, and so do `return`, `break` and `continue`. Before, only text with a call, macro, `?` or `.await` counted, so the increment silently disappeared. `force` still writes; pure arguments are still removed.
 - **Accessor Rename Finds the Field's Own Struct** (`crates/prod-code-mcp`, #1383):
