@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Call Tree Depth on Shorter Paths** (`crates/prod-code-mcp`, #1389):
+  `code_callers`/`code_callees` expand a function again when a later path reaches it higher up than where it was first shown, so a callee within the requested depth is no longer dropped as "shown above". Cycles and repeats at the same or a deeper level are still marked.
 - **Codemod Receiver Boundaries** (`crates/prod-code-mcp`, #1432):
   A placeholder before `.`, `->` or `?.` binds only the receiver: `$a.unwrap() ==>> handle($a)` turns `1 + obj.unwrap()` into `1 + handle(obj)`, not `handle(1 + obj)`. Grouped receivers, unary prefixes and turbofish arguments such as `parse::<u8, u16>(s)` still match whole.
 - **Unicode in Rust Match Arms** (`crates/prod-code-mcp`, #1430):
