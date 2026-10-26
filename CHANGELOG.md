@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **C-Family Parameter Extraction Lexes Continued Comments and Increments** (`crates/prod-code-mcp`, #1408):
+  - In C and C++, a `//` comment ending in a backslash runs on to the next physical line, with LF or CRLF. `code_extract_parameter` with `replace_all` no longer rewrites a value on that line, and selecting it is refused before anything is written. Before, `int a=80; // keep \` followed by `80` gave three replacements instead of two.
+  - `++` and `--` are single tokens in C and C++. Selecting `+value` starting at the second plus of `return ++value;` is refused. Before, it was extracted and the rewrite `return +limit;` dropped the increment, so the program printed `80 80` instead of `81 81`.
 - **Signature Changes Read Each JS/TS Caller as Its Own Language** (`crates/prod-code-mcp`, #1407):
   `code_change_signature` on a TypeScript function parses a `.js` caller with JSX, and on a JavaScript function parses a `.ts` caller without it. Before, the declaration's language decided: in a `.js` caller, `<p>ready to` followed by `export {f(1, 2)}` on the next line read as a module export, so only the declaration was reordered and the program printed 21 instead of 12. A `.ts` caller with `(<number>1)` of a JavaScript function was refused.
 - **Flat Outlines Hide Locals on the Function's Own Line** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1403):
