@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Assist Prelude Shortening Keeps Literals and Comments** (`crates/prod-code-mcp`, #1400):
+  `code_assist` drops `std::prelude::v1::` only from paths in code on the lines the assist wrote. The same text inside a string literal such as `println!("std::prelude::v1::")`, or inside a comment, keeps its bytes; before, it was cut and the program printed something else. A file that already spells the path in code keeps the analyzer's spelling, because which occurrence is new cannot be told.
 - **TypeScript Safe Delete Binds Its Snapshot to the Text It Cuts** (`crates/prod-code-mcp`, #1398):
   `code_safe_delete` on a TypeScript function refuses when the target file in its project snapshot is not byte for byte the text it read first. Every later check compares against that snapshot, while the deletion is cut from the first read. An edit made between the two, such as `keep = 1` becoming `keep = 2`, passed every check and was overwritten.
 - **Go Safe Delete Refuses on Git-Ignored Callers** (`crates/prod-code-mcp`, #1397):
