@@ -13,6 +13,14 @@ use std::time::{Duration, SystemTime};
 
 use super::manager::WorkspaceManager;
 use super::types::unix_now;
+use super::usage::{claim_for_removal, in_use_under, remove_leftover_tombstones};
+
+/// Whether a session, a remote command or a loaded engine uses the copy at `path` or a project
+/// below it: a nested `engine_subpath` engine and a dedicated editor hold keys of their own, not
+/// the checkout's (#1524).
+async fn in_use(manager: &WorkspaceManager, path: &Path) -> bool {
+    in_use_under(path) || manager.is_loaded_under(path).await
+}
 
 /// Marker file whose mtime records the last handshake on a workspace directory.
 pub const LAST_USED_MARKER: &str = ".prod-code-last-used";
@@ -86,6 +94,7 @@ pub async fn prune_worktree_dirs_for_space(
     free: impl Fn(&Path) -> Option<f64>,
 ) -> Vec<PathBuf> {
     let mut removed = Vec::new();
+    remove_leftover_tombstones(storage_root);
     let Some(mut share) = free(storage_root) else {
         return removed;
     };
@@ -100,7 +109,12 @@ pub async fn prune_worktree_dirs_for_space(
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if !path.is_dir() || !name.contains("--wt-") || manager.is_loaded(&path).await {
+        // A copy moved aside by another prune is hidden and not a candidate.
+        if !path.is_dir()
+            || name.starts_with('.')
+            || !name.contains("--wt-")
+            || in_use(manager, &path).await
+        {
             continue;
         }
         let idle = idle_for(&path, now);
@@ -113,7 +127,17 @@ pub async fn prune_worktree_dirs_for_space(
         if share >= min_free {
             break;
         }
-        match std::fs::remove_dir_all(&path) {
+        // The list is old by now: a candidate may have been entered or loaded while an earlier
+        // one was deleted, so each is checked again and moved aside in one step (#1524).
+        if in_use(manager, &path).await {
+            continue;
+        }
+        let Some(tombstone) = claim_for_removal(&path, |p| {
+            idle_for(p, SystemTime::now()) >= SPACE_PRUNE_MIN_IDLE
+        }) else {
+            continue;
+        };
+        match std::fs::remove_dir_all(&tombstone) {
             Ok(()) => {
                 let before = share;
                 share = free(storage_root).unwrap_or(share);
@@ -149,6 +173,7 @@ pub async fn prune_stale_worktree_dirs(
     manager: &WorkspaceManager,
 ) -> Vec<PathBuf> {
     let mut removed = Vec::new();
+    remove_leftover_tombstones(storage_root);
     let Ok(entries) = std::fs::read_dir(storage_root) else {
         return removed;
     };
@@ -156,17 +181,22 @@ pub async fn prune_stale_worktree_dirs(
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if !path.is_dir() || !name.contains("--wt-") {
+        if !path.is_dir() || name.starts_with('.') || !name.contains("--wt-") {
             continue;
         }
-        if manager.is_loaded(&path).await {
+        if in_use(manager, &path).await {
             continue;
         }
         let idle = idle_for(&path, now);
         if idle < max_age {
             continue;
         }
-        match std::fs::remove_dir_all(&path) {
+        let Some(tombstone) =
+            claim_for_removal(&path, |p| idle_for(p, SystemTime::now()) >= max_age)
+        else {
+            continue;
+        };
+        match std::fs::remove_dir_all(&tombstone) {
             Ok(()) => {
                 crate::sync::config_meta::remove_workspace(&path);
                 tracing::info!(
@@ -216,8 +246,8 @@ pub async fn prune_stale_main_workspace_dirs(
         if name.contains("--wt-") {
             continue;
         }
-        // Main workspace must not be loaded in memory
-        if manager.is_loaded(path).await {
+        // Main workspace must not be loaded or used, nor any project below it.
+        if in_use(manager, path).await {
             continue;
         }
         let idle = idle_for(path, now);
@@ -256,7 +286,12 @@ pub async fn prune_stale_main_workspace_dirs(
             continue;
         }
 
-        match std::fs::remove_dir_all(path) {
+        let Some(tombstone) =
+            claim_for_removal(path, |p| idle_for(p, SystemTime::now()) >= max_age)
+        else {
+            continue;
+        };
+        match std::fs::remove_dir_all(&tombstone) {
             Ok(()) => {
                 crate::sync::config_meta::remove_workspace(path);
                 tracing::info!(

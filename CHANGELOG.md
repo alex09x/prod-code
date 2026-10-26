@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **Pruning Never Takes a Copy in Use** (`crates/prod-code-gateway`, #1524):
+  - Every session and remote command holds a use on its checkout while it runs: an engine, a nested `engine_subpath` engine or a dedicated editor.
+  - The worktree and main-copy pruners skip a copy that is used, or loaded at or below its root. Before, they checked only the checkout's exact engine key, so a running nested engine or editor did not protect it.
+  - Each candidate is checked again just before it goes, under the lock that entering takes, and moved aside to a hidden name in the same step. The space pruner's candidate list no longer deletes a copy that a session entered while an earlier one was being deleted.
+  - Copies left moved aside by an interrupted prune are deleted on the next run.
 - **Sync Never Deletes Through a Directory Symlink** (`crates/prod-code-gateway`, #1526):
   Manifest reconciliation and command snapshots no longer walk a directory symlink on the node copy, the link `copy_tree` keeps as a link. Before, an alias such as `src/again -> .` made `src/again/value.rs` look absent from the client's manifest. The real `src/value.rs` was deleted through it, a link to a parent recursed, and files behind a link pointing outside the copy could be removed. The link itself stays; an ordinary unlisted file is still deleted. The special case for the shared Python stub link is covered by the same rule and was removed.
 - **Generify Reads Prefixed C++ Character Literals** (`crates/prod-code-mcp`, #1552):

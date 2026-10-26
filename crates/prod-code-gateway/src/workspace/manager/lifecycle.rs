@@ -176,6 +176,16 @@ impl WorkspaceManager {
             .collect()
     }
 
+    /// Whether a workspace is loaded or loading at `prefix` or below it: the checkout's own
+    /// engine or that of a nested project (#1524).
+    pub async fn is_loaded_under(&self, prefix: &Path) -> bool {
+        self.workspaces
+            .read()
+            .await
+            .keys()
+            .any(|key| key.0.starts_with(prefix))
+    }
+
     /// Whether a workspace is currently loaded (or loading) at `workspace_root`.
     pub async fn is_loaded(&self, workspace_root: &Path) -> bool {
         self.workspaces

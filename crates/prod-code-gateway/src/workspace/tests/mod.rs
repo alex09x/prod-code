@@ -13,6 +13,7 @@ mod coalescing_eval;
 mod fixtures;
 mod generic_eval;
 mod pruning_eval;
+mod pruning_users_eval;
 mod slow_loader_eval;
 mod worktree_eval;
 mod worktree_lifecycle_eval;
