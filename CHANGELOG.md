@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Go Mocks with Three or More Grouped Names** (`crates/prod-code-mcp`, #1391):
+  `code_generate_fixture` reads `Copy(dst, src, mode string)` as three `string` parameters, and `(x, y, z int)` results as three `int`s. Before, the first name became a parameter type, and the mock declared `arg0 dst`, a type that does not exist. A list of unnamed types such as `(int, string, error)` stays unnamed.
 - **Generify Reads Every C++ Digit Separator** (`crates/prod-code-mcp`, #1556):
   `0xAB'CD'EF` stays one number in the namespace scan. Before, its second separator opened a character literal that ran through `}` and `namespace b {`, so the definition read as `a` and the real header in `b` was taken as unrelated. A string or character literal still open at the declaration now makes the scan uncertain, which keeps the split-header refusal, instead of proving a namespace.
 - **Pruning Never Takes a Copy in Use** (`crates/prod-code-gateway`, #1524):
