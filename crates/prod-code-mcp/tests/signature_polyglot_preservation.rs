@@ -30,6 +30,8 @@ mod guards;
 mod identity;
 #[path = "signature_polyglot_preservation/jsx_review.rs"]
 mod jsx_review;
+#[path = "signature_polyglot_preservation/mixed_language_review.rs"]
+mod mixed_language_review;
 #[path = "signature_polyglot_preservation/module_slash_review.rs"]
 mod module_slash_review;
 #[path = "signature_polyglot_preservation/remaining.rs"]
