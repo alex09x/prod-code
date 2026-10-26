@@ -1,0 +1,66 @@
+{
+  "files": {
+    "client/scripts/check.sh": {
+      "sha256": "c49c9d703aa387f2352d191394a0b2bdede0e6f399beb7af3a82d52c408db6b4",
+      "length": 36,
+      "fixture_mode": "0o755"
+    },
+    "client/scripts/obsolete.sh": {
+      "sha256": "dd3289dc681d8bb7aead888984ef051ee8482ec2ebc62023ca3c8f086d404026",
+      "length": 24,
+      "fixture_mode": "0o755"
+    },
+    "client/notes/readme.txt": {
+      "sha256": "9160d4be34c8695bd172a76c7c7966587ea5a4d991ad22c87b2b91af54aa9ebb",
+      "length": 7,
+      "fixture_mode": "0o644"
+    },
+    "client/scripts/local.sh": {
+      "sha256": "3daa8de712b388b1e58c1daff3bd5fd840d3208f5110b9c4574a9e00106ef7bc",
+      "length": 21,
+      "fixture_mode": "0o755"
+    },
+    "outside/outside_exec.sh": {
+      "sha256": "8a7a46e07247da5ff03448a591fcbe63615675cf75139e9739788df2fbecaa21",
+      "length": 23,
+      "fixture_mode": "0o755"
+    },
+    "outside/sub/nested.sh": {
+      "sha256": "f311b025e49db3acdcd5c1c75acea8f33810176209094ffcac8024b28f1b03ce",
+      "length": 22,
+      "fixture_mode": "0o755"
+    },
+    "hypothesis/scripts/check.sh": {
+      "sha256": "6708b2fd5ec8b915c3d09cefb0f513a2285017fcf6b8b92034e24cccb7918996",
+      "length": 244,
+      "fixture_mode": "0o755"
+    },
+    "hypothesis/notes/readme.txt": {
+      "sha256": "c45b8841261b121cdee3e2e9092c4a6d08f1f797e2a0819ef53775faed989f1e",
+      "length": 12,
+      "fixture_mode": "0o644"
+    },
+    "hypothesis/notes/created.txt": {
+      "sha256": "560c887f34e6c1c3a327cf9c81cbd4f6c11a0aad434a666cd562a2d4f9ab8503",
+      "length": 17,
+      "fixture_mode": "0o644"
+    },
+    "hypothesis/replaced-link.sh": {
+      "sha256": "6109e70d3b1dc5cba3fc0d095f7c35c60b6822cebae1733a75a95f4e6c3e9622",
+      "length": 29,
+      "fixture_mode": "0o644"
+    }
+  },
+  "deletion": "scripts/obsolete.sh",
+  "symlinks": {
+    "scripts/external_link.sh": "<owned-outside>/outside_exec.sh",
+    "scripts/internal_link.sh": "local.sh",
+    "linked_dir": "<owned-outside>/sub"
+  },
+  "unsafe_edits": [
+    "linked_dir/nested.sh",
+    "../<owned-outside-basename>/outside_exec.sh",
+    "<owned-outside>/outside_exec.sh"
+  ],
+  "note": "Directory names are allocated by tempfile. Files contain the exact bytes used; fixture_mode records intended initial or staged executable status (not evidence file permissions). The original scripts fixture and safety fixture use separate client workspaces."
+}

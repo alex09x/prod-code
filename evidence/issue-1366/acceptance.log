@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running tests/shadow_executable_mode_native.rs (target/debug/deps/shadow_executable_mode_native-db04f13acbbba182)
+
+running 2 tests
+test edited_executable_script_preserves_mode_and_runs_directly_in_shadow ... ok
+test symlink_and_outside_paths_do_not_inherit_unrelated_executable_modes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+[prod-code exec] exit 0 in 0.7s (server 0.3s, cpu 0.1s user 0.1s sys, peak 85 MB) on node <configured-node>, copy <remote-checkout> (linux x86_64)

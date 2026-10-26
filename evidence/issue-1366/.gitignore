@@ -1,0 +1,2 @@
+# Retain the full verification logs with this issue's evidence.
+!*.log

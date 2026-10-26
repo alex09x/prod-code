@@ -1,0 +1,32 @@
+[
+  {
+    "command": "rg --files crates/prod-code-mcp/tests/shadow_executable_mode crates/prod-code-gateway/tests evidence/issue-1366 && sed -n '1,240p' crates/prod-code-mcp/tests/shadow_executable_mode.rs && sed -n '1,200p' crates/prod-code-mcp/tests/shadow_executable_mode/gateway.rs && sed -n '1,180p' crates/prod-code-gateway/Cargo.toml",
+    "result": "Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Reading a file you name explicitly is allowed.",
+    "classification": "navigation policy rejection; no repository command executed",
+    "fallback": "explicit bounded reads of named files and prod-code semantic navigation"
+  },
+  {
+    "command": "sed -n '1,240p' crates/prod-code-mcp/tests/shadow_executable_mode.rs && sed -n '1,230p' crates/prod-code-mcp/tests/shadow_executable_mode/gateway.rs && sed -n '1,180p' crates/prod-code-gateway/Cargo.toml && ls crates/prod-code-gateway/tests && ls evidence/issue-1366",
+    "exit_code": 1,
+    "result": "ls: evidence/issue-1366: No such file or directory",
+    "classification": "expected artifact directory did not yet exist; created in this task"
+  },
+  {
+    "command": "sed -n '1,200p' crates/prod-code-gateway/tests/shadow_lifecycle.rs && sed -n '1,170p' crates/prod-code-gateway/tests/common/mod.rs && sed -n '1,180p' crates/prod-code-gateway/tests/shadow_namespace_identity.rs && sed -n '1,170p' crates/prod-code-mcp/src/shadow/mod.rs && ls crates/prod-code-gateway/src/shadow",
+    "exit_code": 1,
+    "result": "sed: crates/prod-code-gateway/tests/common/mod.rs: No such file or directory",
+    "classification": "named optional helper absent; used public ServerState/handle_client instead"
+  },
+  {
+    "command": "sed -n '1,240p' crates/prod-code-gateway/src/shadow/runner.rs; sed -n '1,210p' crates/prod-code-gateway/src/shadow/in_place/mod.rs; sed -n '1,180p' crates/prod-code-gateway/src/shadow/tests/mod.rs; sed -n '1,150p' crates/prod-code-testkit/src/workspace.rs; sed -n '1,200p' crates/prod-code-gateway/src/runner/shadow.rs",
+    "exit_code": 1,
+    "result": "sed: crates/prod-code-gateway/src/runner/shadow.rs: No such file or directory",
+    "classification": "named optional source absent; production implementation was found at src/shadow/runner.rs"
+  },
+  {
+    "command": "git diff --stat 74df892dae59571127bc496885ab98d42c627b61 HEAD && sed -n '140,255p' crates/prod-code-gateway/tests/shadow_executable_mode_native.rs && rg --files evidence/issue-1366 && sed -n '1,210p' evidence/issue-1366/verification.json",
+    "result": "Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Reading a file you name explicitly is allowed.",
+    "classification": "navigation policy rejection; no repository command executed",
+    "fallback": "git ls-files for evidence paths and explicit bounded reads"
+  }
+]

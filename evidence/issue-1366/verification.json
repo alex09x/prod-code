@@ -1,0 +1,189 @@
+{
+  "issue": 1366,
+  "status": "completed",
+  "base_sha": "74df892dae59571127bc496885ab98d42c627b61",
+  "node_kind": "Linux x86_64 build node",
+  "privacy_redactions": [
+    "Configured remote endpoint and remote checkout prefix replaced in logs and command arguments. All other command output is retained."
+  ],
+  "checks": [
+    {
+      "name": "semantic-baseline",
+      "argv": [
+        "prod-code",
+        "exec",
+        "--remote",
+        "<configured-node>",
+        "--timeout-secs",
+        "1200",
+        "--",
+        "cargo",
+        "test",
+        "-p",
+        "prod-code-gateway",
+        "--test",
+        "shadow_executable_mode_native",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "log": "baseline-semantic.log",
+      "classification": "Expected semantic executable-bit regression with original is_executable:false: real overlay backend, original executable exit 1 with baseline-fail, edited executable exit 126 with Permission denied. All snapshots preceding that assertion passed; strengthened safety test passed with all four result names required.",
+      "passed": 1,
+      "failed": 1
+    },
+    {
+      "name": "scoped-format",
+      "argv": [
+        "prod-code",
+        "exec",
+        "--remote",
+        "<configured-node>",
+        "--timeout-secs",
+        "1200",
+        "--",
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "crates/prod-code-gateway/tests/shadow_executable_mode_native.rs",
+        "crates/prod-code-gateway/tests/shadow_executable_mode_native/gateway.rs"
+      ],
+      "exit_code": 0,
+      "log": "format.log"
+    },
+    {
+      "name": "scoped-non-deny-lint",
+      "argv": [
+        "prod-code",
+        "exec",
+        "--remote",
+        "<configured-node>",
+        "--timeout-secs",
+        "1200",
+        "--",
+        "cargo",
+        "clippy",
+        "-p",
+        "prod-code-gateway",
+        "--test",
+        "shadow_executable_mode_native",
+        "--no-deps"
+      ],
+      "exit_code": 0,
+      "log": "lint.log",
+      "warnings": "56 warnings in unchanged gateway library; no warnings in new integration source"
+    },
+    {
+      "name": "final-gateway-integration",
+      "argv": [
+        "prod-code",
+        "exec",
+        "--remote",
+        "<configured-node>",
+        "--timeout-secs",
+        "1200",
+        "--",
+        "cargo",
+        "test",
+        "-p",
+        "prod-code-gateway",
+        "--test",
+        "shadow_executable_mode_native",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "log": "final.log",
+      "passed": 2,
+      "failed": 0,
+      "backend": "overlay",
+      "purpose": "One final new integration target with uncaptured command output and observed backend; exact required acceptance is recorded separately."
+    }
+  ],
+  "baseline": {
+    "metadata": "is_executable: false",
+    "patch": "baseline-metadata.patch",
+    "source_hashes": "baseline-source-hashes.json",
+    "backend": "overlay",
+    "overlay_unavailable": null,
+    "original_command_exit": 1,
+    "original_command_output": "baseline-fail\n",
+    "edited_command_exit": 126,
+    "edited_command_output": "setpriv: failed to execute ./scripts/check.sh: Permission denied\n",
+    "environment_classification": "Semantic executable-bit regression, not unavailable namespaces or noexec filesystem: overlay probe succeeded, the original executable ran, and the restored metadata fix ran the edited script successfully."
+  },
+  "final": {
+    "metadata_matches_candidate_bytes": true,
+    "source_hashes": "final-source-hashes.json",
+    "backend": "overlay",
+    "overlay_unavailable": null,
+    "edited_command_exit": 0,
+    "edited_command_output": "shadow-script-ok:updated-note:new-ordinary-file\n",
+    "executable_flags": {
+      "scripts/check.sh": true,
+      "notes/readme.txt": false,
+      "notes/created.txt": false,
+      "scripts/obsolete.sh": false
+    }
+  },
+  "coverage": [
+    "actual MCP run_shadow -> transparent wire proxy -> ServerState/handle_client -> production sync and overlay staging/execution/results",
+    "original executable control",
+    "edited executable direct command and output",
+    "existing non-executable and new file bytes/modes",
+    "deletion during command and restoration afterwards",
+    "client bytes, modes, symlink targets and absence of created files unchanged",
+    "server fixture bytes, modes and symlink targets restored (excluding gateway-owned last-used marker)",
+    "external and internal leaf symlinks replaced without inherited executable mode, then restored",
+    "symlinked parent, traversal to actual owned outside executable, and absolute outside path refused before command",
+    "outside executable and nested bytes/modes unchanged",
+    "Exactly four ordered safety result names required before replacement and all three refusal assertions; missing, duplicate, reordered or extra results fail the test."
+  ],
+  "lifecycle": "Harness creates no detached tasks. Client, proxy and server futures joined on success and failure. Proxy 60s deadline drops sockets; production handle_client cancels/joins owned jobs on disconnect. Commands use real gateway timeout_secs=5. Fixture git commands use 10s timeout, kill_on_drop, explicit kill/reap on timeout and disabled hooks.",
+  "limits": [
+    "Observed backend was overlay; in-place fallback was not exercised. No copy fallback was used or simulated.",
+    "Final scoped lint is non-deny and reports pre-existing gateway-library warnings."
+  ],
+  "fixtures": "fixture-manifest.json",
+  "evidence_write_policy": "Tests only write owned temporary fixture/storage directories and ordinary production sync watermarks. No test reads or writes evidence/issue-1366; normal acceptance does not regenerate evidence.",
+  "production_scope": "No production gateway semantics, dependencies or MCP source bytes differ from pinned candidate; obsolete duplicate backend removed.",
+  "source_comparison": "Baseline and final regression target, harness, fixtures and production gateway sources have identical SHA-256 hashes; only the MCP FileDelta executable flag differs via baseline-metadata.patch. Restored MCP source exactly matches pinned candidate.",
+  "artifacts": [
+    "baseline-metadata.patch",
+    "baseline-semantic.log",
+    "baseline-source-hashes.json",
+    "final-source-hashes.json",
+    "final.log",
+    "fixture-manifest.json",
+    "fixtures/client/notes/readme.txt",
+    "fixtures/client/scripts/check.sh",
+    "fixtures/client/scripts/local.sh",
+    "fixtures/client/scripts/obsolete.sh",
+    "fixtures/hypothesis/notes/created.txt",
+    "fixtures/hypothesis/notes/readme.txt",
+    "fixtures/hypothesis/replaced-link.sh",
+    "fixtures/hypothesis/scripts/check.sh",
+    "fixtures/outside/outside_exec.sh",
+    "fixtures/outside/sub/nested.sh",
+    "format.log",
+    "lint.log",
+    "setup-failures.json",
+    "acceptance-result.json",
+    "acceptance.log"
+  ],
+  "revision": "Repair of previous review finding vacuous_safety_assertions; fresh baseline and final logs captured because prior logs were absent from the assigned checkout.",
+  "repair_start_sha": "c26e4ad436ff40de64f81abdb390bd7dcd8c7c0a",
+  "review_repair": {
+    "finding": "vacuous_safety_assertions",
+    "source": "crates/prod-code-gateway/tests/shadow_executable_mode_native.rs",
+    "required_result_names": [
+      "replace-links",
+      "symlink-parent",
+      "traversal",
+      "absolute"
+    ],
+    "behavior": "Assert the complete name vector before indexing results or zipping refusal reasons; no outcome can be silently omitted."
+  },
+  "exact_acceptance_record": "acceptance-result.json; produced after a byte-for-byte comparison of every pre-existing evidence file surrounding the required invocation. It contains the exact argv with the private endpoint replaced, exit code and per-file before/after hashes. Acceptance log is retained separately."
+}

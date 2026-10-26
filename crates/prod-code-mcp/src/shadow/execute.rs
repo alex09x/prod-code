@@ -55,7 +55,8 @@ pub(crate) async fn run_shadow_once(
                 .map(|edit| FileDelta {
                     relative_path: edit.relative_path.clone(),
                     content: edit.text.as_ref().map(|t| t.as_bytes().to_vec()),
-                    is_executable: false,
+                    is_executable: edit.text.is_some()
+                        && existing_root_file_is_executable(root, &edit.relative_path),
                 })
                 .collect(),
         })
@@ -133,4 +134,39 @@ pub(crate) async fn run_shadow_once(
         winner,
         in_memory: in_memory_outcome,
     })
+}
+
+fn existing_root_file_is_executable(root: &Path, relative_path: &str) -> bool {
+    let rel = Path::new(relative_path);
+    if relative_path.is_empty() || rel.is_absolute() || relative_path.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let mut components = Vec::new();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(name) => components.push(name),
+            std::path::Component::CurDir => {}
+            _ => return false,
+        }
+    }
+    if components.is_empty() {
+        return false;
+    }
+    let mut current = root.to_path_buf();
+    for (idx, name) in components.iter().enumerate() {
+        current.push(name);
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            return false;
+        };
+        let file_type = metadata.file_type();
+        if idx + 1 < components.len() {
+            if file_type.is_symlink() || !file_type.is_dir() {
+                return false;
+            }
+        } else {
+            return file_type.is_file() && crate::sync::entry::is_executable(&metadata);
+        }
+    }
+    false
 }

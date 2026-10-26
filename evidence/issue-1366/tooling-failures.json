@@ -1,0 +1,15 @@
+[
+  {
+    "command": "git diff --stat 74df892dae59571127bc496885ab98d42c627b61 HEAD && sed -n '140,255p' crates/prod-code-gateway/tests/shadow_executable_mode_native.rs && rg --files evidence/issue-1366 && sed -n '1,210p' evidence/issue-1366/verification.json",
+    "error": "Command blocked by PreToolUse hook: Supported-language source discovery goes through prod-code: grep, rg, find and recursive scans over source are blocked. Text, strings, error messages and regexes: `prod-code grep PATTERN [PATH]` (MCP code_grep). Identifiers and structure: `prod-code def --symbol NAME`, `prod-code refs --symbol NAME`, `prod-code symbols NAME`, `prod-code outline PATH` (MCP code_definition, code_references, code_symbols, code_outline). Reading a file you name explicitly (Read, cat, sed -n) is allowed.. Command: git diff --stat 74df892dae59571127bc496885ab98d42c627b61 HEAD && sed -n '140,255p' crates/prod-code-gateway/tests/shadow_executable_mode_native.rs && rg --files evidence/issue-1366 && sed -n '1,210p' evidence/issue-1366/verification.json",
+    "classification": "Navigation-policy tool rejection; no command ran. Bounded fallback used git ls-files and explicit named reads."
+  },
+  {
+    "command": "git add -- crates/prod-code-gateway/tests/shadow_executable_mode_native.rs evidence/issue-1366/verification.json evidence/issue-1366/baseline-source-hashes.json evidence/issue-1366/final-source-hashes.json evidence/issue-1366/setup-failures.json evidence/issue-1366/acceptance-result.json",
+    "exit_code": 128,
+    "error": "fatal: Unable to create '<worktree-git-index>/index.lock': Operation not permitted",
+    "redactions": "Private index path replaced with <worktree-git-index>.",
+    "classification": "Sandbox index-write permission failure, distinct from semantic baseline and successful acceptance. No files staged or committed. Parent owns delivery.",
+    "fallback": "Keep changes in assigned worktree. Add evidence-local .gitignore exception so logs are retained by ordinary git add."
+  }
+]
