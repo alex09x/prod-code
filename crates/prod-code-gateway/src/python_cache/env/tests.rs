@@ -211,38 +211,6 @@ fn the_type_checker_environment_points_mypy_at_the_best_view_there_is() {
 
 #[cfg(unix)]
 #[test]
-fn only_a_link_into_the_cache_counts_as_a_shared_stub_link() {
-    use std::os::unix::fs::symlink;
-    let temp = tempfile::tempdir().unwrap();
-    let cache = temp.path().join("cache");
-    let outside = temp.path().join("outside");
-    fs::create_dir_all(cache.join("pkg")).unwrap();
-    fs::create_dir(&outside).unwrap();
-    symlink(cache.join("pkg"), temp.path().join("into")).unwrap();
-    symlink(&outside, temp.path().join("away")).unwrap();
-    symlink(temp.path().join("gone"), temp.path().join("dangling")).unwrap();
-    for (name, expected) in [
-        ("into", true),
-        ("away", false),
-        ("dangling", false),
-        ("absent", false),
-        // A directory in the cache is not a link to it.
-        ("cache", false),
-    ] {
-        assert_eq!(
-            is_shared_stub_cache_link(&temp.path().join(name), &cache),
-            expected,
-            "{name}"
-        );
-    }
-    assert!(!is_shared_stub_cache_link(
-        &temp.path().join("into"),
-        &temp.path().join("no-cache")
-    ));
-}
-
-#[cfg(unix)]
-#[test]
 fn cache_directories_are_made_private_and_links_are_not_followed() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let temp = tempfile::tempdir().unwrap();

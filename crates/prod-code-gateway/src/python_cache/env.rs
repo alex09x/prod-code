@@ -97,17 +97,6 @@ fn cache_user_suffix() -> String {
     }
 }
 
-pub(crate) fn is_shared_stub_cache_link(path: &Path, cache_root: &Path) -> bool {
-    if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return false;
-    }
-    let (Ok(target), Ok(cache_root)) = (fs::canonicalize(path), fs::canonicalize(cache_root))
-    else {
-        return false;
-    };
-    target.starts_with(cache_root)
-}
-
 /// Ensures `dir` exists and has secure permissions (`0700` on Unix).
 pub fn ensure_cache_dir(dir: &Path) -> io::Result<()> {
     if dir.as_os_str().is_empty() || dir.file_name().is_none() {

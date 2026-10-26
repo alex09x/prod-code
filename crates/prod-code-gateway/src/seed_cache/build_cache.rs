@@ -211,11 +211,11 @@ pub fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(
         if is_node_cache(&name) {
             continue;
         }
-        if name == "typings" && path.is_symlink() {
-            let cache_root = python_cache::python_stub_cache_dir();
-            if python_cache::is_shared_stub_cache_link(&path, &cache_root) {
-                continue;
-            }
+        // A directory symlink is kept as a link (`copy_tree`, #414) and is not walked: its
+        // files are reached under their real path or not at all, so reconciliation never
+        // deletes a target through an alias, and a link to a parent cannot recurse (#1526).
+        if entry.file_type().is_ok_and(|t| t.is_symlink()) && path.is_dir() {
+            continue;
         }
         if path.is_dir() {
             walk_files(root, &path, out);

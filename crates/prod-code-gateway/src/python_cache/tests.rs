@@ -18,24 +18,6 @@ use crate::test_cache_support::{self, ample_disk_space};
 
 #[cfg(unix)]
 #[test]
-fn shared_stub_cache_link_is_recognized_by_canonical_target() {
-    use std::os::unix::fs::symlink;
-
-    let temp = tempfile::tempdir().unwrap();
-    let cache = temp.path().join("cache").join("namespace");
-    fs::create_dir_all(&cache).unwrap();
-    let workspace = temp.path().join("workspace");
-    fs::create_dir_all(&workspace).unwrap();
-    let link = workspace.join("typings");
-    symlink(&cache, &link).unwrap();
-
-    assert!(is_shared_stub_cache_link(
-        &link,
-        temp.path().join("cache").as_path()
-    ));
-}
-
-#[test]
 fn test_python_stub_cache_env_and_path() {
     test_cache_support::isolated!();
     let temp = tempfile::tempdir().unwrap();
