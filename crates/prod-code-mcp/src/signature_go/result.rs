@@ -12,9 +12,12 @@ use crate::signature::{Param, SignatureChange};
 use crate::signature_go::evidence::{function_reference_evidence, receiver_interface_evidence};
 use crate::signature_go::interface::ordinary_receiver;
 use crate::signature_go::parse::body_open;
+use crate::signature_go::result_guards::{
+    bare_result, refuse_name_based_calls, refuse_other_module_callers, result_token_at,
+};
 use crate::signature_go::shadowing::ensure_predeclared_types_unshadowed;
 use crate::signature_go::syntax::{normalize, primitive_type};
-use crate::signature_go::text::{closing, comments, display, skip_space, splice};
+use crate::signature_go::text::{closing, comments, display, splice};
 use crate::signature_go::types::{Decl, GoParam, refusal};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -68,8 +71,10 @@ pub(crate) async fn replace_result(
         ))
     );
     unchanged_parameters(&declared, request)?;
+    // `func Count() (int)` has the one unnamed result `int` (#1411).
+    let bare = bare_result(&decl.results).to_string();
     anyhow::ensure!(
-        primitive_type(&decl.results),
+        primitive_type(&bare),
         "{}",
         refusal(format!(
             "changing the results of `{}` is supported only for one unnamed primitive result, not `{}`",
@@ -90,7 +95,7 @@ pub(crate) async fn replace_result(
             decl.name
         ))
     );
-    ensure_predeclared_types_unshadowed(root, file, &[&decl.results, requested_result])
+    ensure_predeclared_types_unshadowed(root, file, &[&bare, requested_result])
         .map_err(|why| {
             refusal(format!(
                 "changing the result of `{}` is refused because primitive type identity cannot be proven: {why:#}",
@@ -110,6 +115,7 @@ pub(crate) async fn replace_result(
     // stale coordinate or malformed reference is evidence we do not have, not an empty caller.
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
+    refuse_name_based_calls(root, &text, &decl)?;
     if receiver.is_some() {
         receiver_interface_evidence(remote, root, file, &text, &decl.name, decl.name_at)
             .await
@@ -155,20 +161,21 @@ pub(crate) async fn replace_result(
             ))
         );
     }
+    refuse_other_module_callers(root, file, &decl, &calls)?;
 
-    let result_at = skip_space(&text, decl.close + 1);
-    anyhow::ensure!(
-        text[result_at..].starts_with(&decl.results),
-        "the primitive result token of `{}` cannot be located; nothing was written",
-        decl.name
-    );
+    let result_at = result_token_at(&text, decl.close, &bare).with_context(|| {
+        format!(
+            "the primitive result token of `{}` cannot be located; nothing was written",
+            decl.name
+        )
+    })?;
     let mut rewritten = BTreeMap::new();
-    if decl.results != requested_result {
+    if bare != requested_result {
         let replacement = splice(
             &text,
             &[(
                 result_at,
-                result_at + decl.results.len(),
+                result_at + bare.len(),
                 requested_result.to_string(),
             )],
         );
@@ -232,7 +239,7 @@ pub(crate) async fn replace_result(
         unexpected: Vec::new(),
         diagnostics: Vec::new(),
         applied,
-        returns: Some((decl.results, requested_result.to_string())),
+        returns: Some((bare, requested_result.to_string())),
         visibility: None,
         asyncness: None,
         not_async: Vec::new(),

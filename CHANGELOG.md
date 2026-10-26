@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **Go Result Replacement Knows Its Boundaries** (`crates/prod-code-mcp`, #1411):
+  - `func Count() (int)` is read as the one unnamed result `int`, and the replacement keeps the parentheses. Before, it was refused.
+  - A caller in another module of a `go.work` refuses the replacement. Only the declaring module is compiled with the change, so before, `func Use() int { return a.Value() }` in the sibling module went unchecked when `Value` became `uint`.
+  - An exported method refuses when the checkout imports `reflect`, `text/template` or `html/template`, or when its package is not `main`. In those cases code can call the method by name with no reference to it, as `reflect.ValueOf(v).MethodByName("ValueResult").Call(nil)[0].Int()` does, and that code panics after the change.
+  - Go test fixtures can hold a `go.work` with modules in subdirectories (`crates/prod-code-testkit`).
 - **Go Reorders Refuse Unreported Callers and Track Argument Comments** (`crates/prod-code-mcp`, #1410):
   - `code_change_signature` on a Go function refuses a reorder or removal when a file gopls did not report calls it, such as one behind `//go:build extra`. Before, the file was only compiled with the change. With `f(a, b int)` swapped, it kept `f(1, 2)`, still type-checked, and `go run -tags extra` printed `12 21` instead of `12 12`.
   - A comment inside an argument or parameter list now belongs to the element beside it: it must move with that element and goes when that element is removed. Before, the whole file's comments were compared as one list, so removing `b` from `h(1, 2 /* documents b */)` was refused although gopls removed the comment with it.

@@ -49,7 +49,11 @@ impl GoModule {
             .expect("tempdir");
         let root = std::fs::canonicalize(dir.path()).expect("canonical root");
         for (rel, text) in files {
-            std::fs::write(root.join(rel), text).expect("write fixture");
+            let path = root.join(rel);
+            // A `go.work` fixture keeps each module in a directory of its own.
+            std::fs::create_dir_all(path.parent().expect("a file has a directory"))
+                .expect("fixture directory");
+            std::fs::write(path, text).expect("write fixture");
         }
         for args in [
             &["init", "-q"][..],

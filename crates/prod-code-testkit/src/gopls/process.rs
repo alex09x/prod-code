@@ -47,11 +47,16 @@ pub(crate) struct Gopls {
 
 impl Gopls {
     pub(crate) fn start(root: &Path) -> Self {
-        let mut child = Command::new("gopls")
+        let mut command = Command::new("gopls");
+        command
             .arg("serve")
             .current_dir(root)
-            .env("GOTOOLCHAIN", "local")
-            .env("GOFLAGS", "-mod=mod")
+            .env("GOTOOLCHAIN", "local");
+        // Workspace mode allows only `-mod=readonly` or `vendor`, and `go list` would fail.
+        if !root.join("go.work").is_file() {
+            command.env("GOFLAGS", "-mod=mod");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
