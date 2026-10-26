@@ -10,6 +10,7 @@
 
 use crate::*;
 
+mod display;
 #[cfg(test)]
 mod tests;
 
@@ -124,7 +125,10 @@ impl RunningEntry {
         RUNNING_COMMANDS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id, (name, command.join(" "), Instant::now()));
+            .insert(
+                id,
+                (name, display::display_command(command), Instant::now()),
+            );
         Self(id)
     }
 }

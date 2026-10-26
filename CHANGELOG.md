@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Running Commands Without Secrets** (`crates/prod-code-gateway`, #1484):
+  Status answers and cluster gossip list each running command in a redacted, bounded form. Values after `--token`/`--password`-style flags, `KEY=value` pairs whose key names a secret, `Authorization`/`Bearer` values and URL userinfo read as `<redacted>`, and the line is capped at 240 bytes. The command still runs with its real arguments.
 - **Inline-Parameter Literals and Turbofish Calls** (`crates/prod-code-mcp`, #1381):
   A string argument counts as caller-independent only as one whole literal, so `"yes" if flag else "no"` is no longer copied into the callee. A Rust call with a turbofish, such as `clamp::<u32>(v, 100)`, is a call rather than a function value. Same-named constants from different caller scopes are tracked in #1508.
 - **Call Tree Depth on Shorter Paths** (`crates/prod-code-mcp`, #1389):
