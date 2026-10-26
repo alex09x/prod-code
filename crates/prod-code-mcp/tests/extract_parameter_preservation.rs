@@ -30,6 +30,8 @@ mod c_context_controls;
 mod c_delimiter_controls;
 #[path = "extract_parameter_preservation/c_designator_controls.rs"]
 mod c_designator_controls;
+#[path = "extract_parameter_preservation/c_lexer_controls.rs"]
+mod c_lexer_controls;
 #[path = "extract_parameter_preservation/constant_controls.rs"]
 mod constant_controls;
 #[path = "extract_parameter_preservation/declaration_controls.rs"]

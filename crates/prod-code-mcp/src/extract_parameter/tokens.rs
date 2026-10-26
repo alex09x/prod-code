@@ -106,7 +106,11 @@ fn scan_until<'s>(
             if (syntax == Syntax::Python && c == '#')
                 || (syntax != Syntax::Python && rest.starts_with("//"))
             {
-                at += rest.find('\n').unwrap_or(rest.len());
+                at += if syntax.is_c_family() {
+                    c_line_comment_end(rest)
+                } else {
+                    rest.find('\n').unwrap_or(rest.len())
+                };
                 continue;
             }
             if syntax != Syntax::Python && rest.starts_with("/*") {
@@ -218,6 +222,7 @@ fn scan_until<'s>(
                     rest.starts_with(op)
                         && (!matches!(*op, "&^" | "<-") || syntax == Syntax::Go)
                         && (!matches!(*op, "++" | "--")
+                            || syntax.is_c_family()
                             || matches!(
                                 syntax,
                                 Syntax::Go | Syntax::JavaScript | Syntax::TypeScript
@@ -339,6 +344,24 @@ fn regex_context(ts: &[Token<'_>]) -> Result<bool> {
             | "<<="
             | ">>="
     ))
+}
+
+/// Where a C or C++ `//` comment at the start of `rest` ends: at the first line break that a
+/// backslash does not splice to the next line (LF or CRLF), since splicing happens before
+/// comments are recognised (#1408).
+fn c_line_comment_end(rest: &str) -> usize {
+    let bytes = rest.as_bytes();
+    rest.match_indices('\n')
+        .map(|(at, _)| at)
+        .find(|&at| {
+            let before = if at > 0 && bytes[at - 1] == b'\r' {
+                at - 1
+            } else {
+                at
+            };
+            before == 0 || bytes[before - 1] != b'\\'
+        })
+        .unwrap_or(rest.len())
 }
 
 pub(super) fn ident(c: char) -> bool {
