@@ -1,0 +1,762 @@
+[
+  {
+    "name": "default_arguments_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_escu0061rguments_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = \\u0061rguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_escu{61}rguments_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = \\u{61}rguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_eval_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_escaped_eval_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = false ? \\u0065val(\"c\") : 7) { return other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "harmless_default_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = \"arguments eval c\") { return c.value + other.length;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "23\n",
+    "refuse": false,
+    "literal": "\"arguments eval c\"",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_lf_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment\n + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment\n",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "caller_lf_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value;\n    }\n}\n// C.same(comment)\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment)\n",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_lf_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment\n + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_crlf_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment\r\n + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment\r\n",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "caller_crlf_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value;\n    }\n}\n// C.same(comment)\r\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment)\r\n",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_crlf_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment\r\n + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_cr_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment\r + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment\r",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "caller_cr_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value;\n    }\n}\n// C.same(comment)\rconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment)\r",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_cr_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment\r + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_cr_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // comment\r arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_eval_cr_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // comment\r eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_harmless_cr_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // arguments eval c\r 7) { return c.value + other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// arguments eval c\r",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_ls_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment  + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment ",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "caller_ls_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value;\n    }\n}\n// C.same(comment) console.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment) ",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_ls_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment  + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_ls_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // comment  arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_eval_ls_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // comment  eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_harmless_ls_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // arguments eval c  7) { return c.value + other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// arguments eval c ",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_ps_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment  + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment ",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "caller_ps_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value;\n    }\n}\n// C.same(comment) console.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment) ",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_ps_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { return c.value // comment  + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_ps_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // comment  arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_eval_ps_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // comment  eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_comment_harmless_ps_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c, other = // arguments eval c  7) { return c.value + other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// arguments eval c ",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "literal_ls_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { const text = \"c.value arguments eval //  \"; return c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "\"c.value arguments eval //  \"",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "literal_ps_js",
+    "extension": "js",
+    "before": "class C {\n    value = 7;\n    static same(c) { const text = \"c.value arguments eval //  \"; return c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "\"c.value arguments eval //  \"",
+    "line": 3,
+    "column": 5
+  },
+  {
+    "name": "default_arguments_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_escu0061rguments_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = \\u0061rguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_escu{61}rguments_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = \\u{61}rguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_eval_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_escaped_eval_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = false ? \\u0065val(\"c\") : 7) { return other;\n    }\n}\nconsole.log(typeof C.same);\n",
+    "expected_stdout": "function\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "harmless_default_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = \"arguments eval c\") { return c.value + other.length;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "23\n",
+    "refuse": false,
+    "literal": "\"arguments eval c\"",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_lf_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment\n + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment\n",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "caller_lf_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value;\n    }\n}\n// C.same(comment)\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment)\n",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_lf_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment\n + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_crlf_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment\r\n + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment\r\n",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "caller_crlf_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value;\n    }\n}\n// C.same(comment)\r\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment)\r\n",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_crlf_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment\r\n + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_cr_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment\r + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment\r",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "caller_cr_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value;\n    }\n}\n// C.same(comment)\rconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment)\r",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_cr_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment\r + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_cr_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // comment\r arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_eval_cr_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // comment\r eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_harmless_cr_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // arguments eval c\r 7) { return c.value + other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// arguments eval c\r",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_ls_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment  + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment ",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "caller_ls_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value;\n    }\n}\n// C.same(comment) console.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment) ",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_ls_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment  + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_ls_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // comment  arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_eval_ls_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // comment  eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_harmless_ls_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // arguments eval c  7) { return c.value + other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// arguments eval c ",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_ps_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment  + c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// comment ",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "caller_ps_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value;\n    }\n}\n// C.same(comment) console.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "// C.same(comment) ",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "body_arguments_ps_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { return c.value // comment  + arguments[0].value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_ps_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // comment  arguments[0]) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_eval_ps_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // comment  eval(\"c\")) { return c === other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "true\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "default_comment_harmless_ps_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C, other = // arguments eval c  7) { return c.value + other;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "// arguments eval c ",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "literal_ls_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { const text = \"c.value arguments eval //  \"; return c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "\"c.value arguments eval //  \"",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "literal_ps_ts",
+    "extension": "ts",
+    "before": "export {};\nclass C {\n    value = 7;\n    static same(c: C) { const text = \"c.value arguments eval //  \"; return c.value;\n    }\n}\nconsole.log(C.same(new C()));\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": "\"c.value arguments eval //  \"",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "cpp_suffix_64",
+    "extension": "cpp",
+    "before": "#include <iostream>\nstruct C {\n    int value = 7;\n    static auto same(C& c) -> decltype(c.value) { return c.value; }\n};\nint main() { C value; std::cout << C::same(value) << '\\n'; }\n",
+    "expected_stdout": "7\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "cpp_suffix_65",
+    "extension": "cpp",
+    "before": "#include <iostream>\nstruct C {\n    int value = 7;\n    static int same(C& c) noexcept(noexcept(c.value)) { return c.value; }\n};\nint main() { C value; std::cout << C::same(value) << '\\n'; }\n",
+    "expected_stdout": "7\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "cpp_suffix_66",
+    "extension": "cpp",
+    "before": "#include <iostream>\nstruct C {\n    int value = 7;\n    static auto same(C& c) noexcept(noexcept(c.value)) -> decltype(c.value) { return c.value; }\n};\nint main() { C value; std::cout << C::same(value) << '\\n'; }\n",
+    "expected_stdout": "7\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "cpp_positive_67",
+    "extension": "cpp",
+    "before": "#include <iostream>\nstruct C {\n    int value = 7;\n    static auto same(C& c) -> decltype(C::value) { return c.value; }\n};\nint main() { C value; std::cout << C::same(value) << '\\n'; }\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": " -> decltype(C::value)",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "cpp_positive_68",
+    "extension": "cpp",
+    "before": "#include <iostream>\nstruct C {\n    int value = 7;\n    static int same(C& c) noexcept(noexcept(C{0})) { return c.value; }\n};\nint main() { C value; std::cout << C::same(value) << '\\n'; }\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": " noexcept(noexcept(C{0}))",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "cpp_positive_69",
+    "extension": "cpp",
+    "before": "#include <iostream>\nstruct C {\n    int value = 7;\n    static auto same(C& c) noexcept(sizeof(\"c.value\") > 0) -> decltype(C::value) { return c.value; }\n};\nint main() { C value; std::cout << C::same(value) << '\\n'; }\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": " noexcept(sizeof(\"c.value\") > 0) -> decltype(C::value)",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "python_fullwidth",
+    "extension": "py",
+    "before": "class C:\n    value = 7\n    @staticmethod\n    def same(c): return ｃ.value\nprint(C.same(C()))\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "python_mathematical",
+    "extension": "py",
+    "before": "class C:\n    value = 7\n    @staticmethod\n    def same(c): return 𝚌.value\nprint(C.same(C()))\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "python_capture",
+    "extension": "py",
+    "before": "class C:\n    value = 7\n    @staticmethod\n    def same(c): take = lambda: ｃ; return take() is c\nprint(C.same(C()))\n",
+    "expected_stdout": "True\n",
+    "refuse": false,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "python_mixed_literal",
+    "extension": "py",
+    "before": "class C:\n    value = 7\n    @staticmethod\n    def same(c): text = \"ｃ.value c.value\"; return ｃ.value + c.value\nprint(C.same(C()))\n",
+    "expected_stdout": "14\n",
+    "refuse": false,
+    "literal": "\"ｃ.value c.value\"",
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "python_combining",
+    "extension": "py",
+    "before": "class C:\n    value = 7\n    @staticmethod\n    def same(c): ċ = 99; return c.value\nprint(C.same(C()))\n",
+    "expected_stdout": "7\n",
+    "refuse": false,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  },
+  {
+    "name": "python_normalized_dynamic",
+    "extension": "py",
+    "before": "class C:\n    value = 7\n    @staticmethod\n    def same(c): return ｅｖａｌ('c.value')\nprint(C.same(C()))\n",
+    "expected_stdout": "7\n",
+    "refuse": true,
+    "literal": null,
+    "line": 4,
+    "column": 5
+  }
+]

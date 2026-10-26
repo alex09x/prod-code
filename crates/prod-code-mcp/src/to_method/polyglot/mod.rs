@@ -8,12 +8,20 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod binding;
+mod body;
 pub mod cpp;
+mod cpp_lex;
 pub mod go;
 pub mod py;
 pub mod rewrite;
 pub mod swift;
+mod swift_regex;
 pub mod ts;
+mod ts_literal;
+mod ts_mask;
+mod ts_queries;
+mod ts_return;
 
 pub use self::cpp::to_method_cpp;
 pub use self::go::to_method_go;
@@ -67,8 +75,20 @@ pub async fn convert_to_method_polyglot(
             && let Ok(other_content) = std::fs::read_to_string(path)
             && other_content.contains(method_name)
         {
-            let (new_other, calls) =
-                rewrite_static_calls_in_code(&other_content, method_name, &owner, lang);
+            let (new_other, calls) = if lang == Language::Cpp {
+                anyhow::ensure!(
+                    !cpp_lex::has_raw_string(&other_content),
+                    "unsupported C++ raw string caller file; nothing was written"
+                );
+                rewrite::rewrite_cpp_calls(
+                    &other_content,
+                    method_name,
+                    &owner,
+                    parameter.contains('*'),
+                )
+            } else {
+                rewrite_static_calls_in_code(&other_content, method_name, &owner, lang)
+            };
             if new_other != other_content {
                 rewritten.push((path.to_string_lossy().to_string(), new_other));
                 total_rewritten_calls += calls;

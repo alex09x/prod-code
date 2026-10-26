@@ -10,22 +10,35 @@
 
 use anyhow::{Context, Result};
 
-use super::rewrite::rewrite_static_calls_in_code;
+use super::rewrite::rewrite_cpp_calls;
 use crate::make_static::Language;
-use crate::to_method::helpers::{is_ident, split_call_arguments};
+use crate::to_method::helpers::split_call_arguments;
 
 pub fn to_method_cpp(
     code: &str,
     target_class: Option<&str>,
     target_method: &str,
 ) -> Result<(String, String, String, String, String, usize, usize)> {
+    anyhow::ensure!(
+        !super::cpp_lex::has_raw_string(code),
+        "unsupported C++ raw string receiver body"
+    );
     let lines: Vec<&str> = code.lines().collect();
     let mut class_start = None;
     let mut class_end = None;
     let mut class_name = String::new();
     let mut brace_depth = 0i32;
+    let syntax = super::binding::mask(code, Language::Cpp);
+    let mut offset = 0;
 
     for (idx, line) in lines.iter().enumerate() {
+        let line_offset = offset;
+        offset += line.len()
+            + if code.as_bytes().get(line_offset + line.len()) == Some(&b'\r') {
+                2
+            } else {
+                1
+            };
         let trimmed = line.trim_start();
         if trimmed.starts_with("class ") || trimmed.starts_with("struct ") {
             let words: Vec<&str> = trimmed.split_whitespace().collect();
@@ -45,8 +58,16 @@ pub fn to_method_cpp(
             }
         }
         if class_start.is_some() && class_end.is_none() {
-            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
-            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            brace_depth += line
+                .bytes()
+                .enumerate()
+                .filter(|(i, c)| *c == b'{' && syntax[line_offset + i])
+                .count() as i32;
+            brace_depth -= line
+                .bytes()
+                .enumerate()
+                .filter(|(i, c)| *c == b'}' && syntax[line_offset + i])
+                .count() as i32;
             if brace_depth == 0 && line.contains('}') {
                 class_end = Some(idx);
                 break;
@@ -87,19 +108,20 @@ pub fn to_method_cpp(
     let trimmed = m_line.trim_start();
     let indent = &m_line[..m_line.len() - trimmed.len()];
     let open_p = trimmed.find('(').context("Missing parameter list")?;
-    let close_p = trimmed.find(')').context("Parameter list does not close")?;
+    let close_p = super::binding::parameter_close(trimmed, Language::Cpp)?;
     let params_str = &trimmed[open_p + 1..close_p];
     let params = split_call_arguments(params_str);
     let first_param = params
         .first()
         .context("Method takes no parameters; nothing can become receiver")?
         .clone();
-    let is_const = first_param.starts_with("const ");
-    let param_words: Vec<&str> = first_param.split_whitespace().collect();
-    let param_name = param_words
-        .last()
-        .unwrap_or(&"")
-        .trim_matches(|c| c == '&' || c == '*');
+    let is_const = first_param
+        .split('*')
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .any(|word| word == "const");
+    let param_name = super::binding::cpp_parameter(&first_param, &class_name)?;
 
     let remaining_params = if params.len() > 1 {
         params[1..].join(", ")
@@ -107,80 +129,38 @@ pub fn to_method_cpp(
         String::new()
     };
 
-    let without_static = trimmed.replace("static ", "");
+    super::binding::parameters(&first_param, &param_name, &remaining_params, Language::Cpp)?;
+    let without_static = trimmed.replacen("static ", "", 1);
     let const_suffix = if is_const && !without_static.contains(") const") {
         " const"
     } else {
         ""
     };
-    let new_m_trimmed =
-        if let (Some(op), Some(cp)) = (without_static.find('('), without_static.find(')')) {
-            let after_cp = &without_static[cp + 1..];
-            format!(
-                "{}{remaining_params}){const_suffix}{after_cp}",
-                &without_static[..op + 1]
-            )
-        } else {
-            without_static
-        };
+    let new_m_trimmed = if let Some(op) = without_static.find('(') {
+        let cp = super::binding::parameter_close(&without_static, Language::Cpp)?;
+        let after_cp = &without_static[cp + 1..];
+        format!(
+            "{}{remaining_params}){const_suffix}{after_cp}",
+            &without_static[..op + 1]
+        )
+    } else {
+        without_static
+    };
 
-    let mut m_body_end = m_idx;
-    let mut m_depth = 0i32;
-    let mut started = false;
-    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
-        let opens = line.chars().filter(|&c| c == '{').count() as i32;
-        let closes = line.chars().filter(|&c| c == '}').count() as i32;
-        if opens > 0 {
-            started = true;
-        }
-        m_depth += opens;
-        m_depth -= closes;
-        if started && m_depth == 0 {
-            m_body_end = idx;
-            break;
-        }
-    }
-
-    let needle_param_dot = format!("{param_name}.");
-    let needle_param_arrow = format!("{param_name}->");
-    let mut renamed_uses = 0;
-    let mut new_lines = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        if idx == m_idx {
-            new_lines.push(format!("{indent}{new_m_trimmed}"));
-        } else if idx > m_idx && idx <= m_body_end {
-            let mut cur = line.to_string();
-            let mut search_idx = 0;
-            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
-                let pos = search_idx + rel;
-                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
-                    search_idx = pos + needle_param_dot.len();
-                    continue;
-                }
-                cur.replace_range(pos..pos + needle_param_dot.len(), "this->");
-                renamed_uses += 1;
-                search_idx = pos + "this->".len();
-            }
-            search_idx = 0;
-            while let Some(rel) = cur[search_idx..].find(&needle_param_arrow) {
-                let pos = search_idx + rel;
-                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
-                    search_idx = pos + needle_param_arrow.len();
-                    continue;
-                }
-                cur.replace_range(pos..pos + needle_param_arrow.len(), "this->");
-                renamed_uses += 1;
-                search_idx = pos + "this->".len();
-            }
-            new_lines.push(cur);
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-
-    let intermediate = new_lines.join("\n");
-    let (final_code, rewritten_calls) =
-        rewrite_static_calls_in_code(&intermediate, target_method, &class_name, Language::Cpp);
+    let (intermediate, renamed_uses) = super::body::braced(
+        code,
+        m_idx,
+        &format!("{indent}{new_m_trimmed}"),
+        &param_name,
+        &first_param,
+        Language::Cpp,
+    )?;
+    let (final_code, rewritten_calls) = rewrite_cpp_calls(
+        &intermediate,
+        target_method,
+        &class_name,
+        first_param.contains('*'),
+    );
 
     Ok((
         class_name,

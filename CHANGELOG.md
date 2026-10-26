@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Convert-to-Method Promoted Parameter Uses** (`crates/prod-code-mcp`, #1317):
+  Promoting a parameter to the receiver rewrites every direct use of it in TypeScript, Python, Swift and C++ bodies, including comparisons, indexing, arguments and one-line bodies, and keeps defaults, Unicode comment boundaries and signature suffixes in their scope.
 - **Rust Extract-Field Boundaries** (`crates/prod-code-mcp`, #1342):
   Extract-field no longer rewrites matching text inside strings or longer numbers, keeps deeply nested patterns blocking instead of giving them an initializer, and keeps binding identity under NFC normalization and private constructors.
 - **Prune Runtime Roots and Engine Scope** (`crates/prod-code-mcp`, #1376):

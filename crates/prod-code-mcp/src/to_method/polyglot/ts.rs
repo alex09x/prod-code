@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 
 use super::rewrite::rewrite_static_calls_in_code;
 use crate::make_static::Language;
-use crate::to_method::helpers::{is_ident, split_call_arguments};
+use crate::to_method::helpers::split_call_arguments;
 
 pub fn to_method_ts(
     code: &str,
@@ -24,8 +24,17 @@ pub fn to_method_ts(
     let mut class_end = None;
     let mut class_name = String::new();
     let mut brace_depth = 0i32;
+    let syntax = super::binding::mask(code, Language::TypeScript);
+    let mut offset = 0;
 
     for (idx, line) in lines.iter().enumerate() {
+        let line_offset = offset;
+        offset += line.len()
+            + if code.as_bytes().get(line_offset + line.len()) == Some(&b'\r') {
+                2
+            } else {
+                1
+            };
         let trimmed = line.trim_start();
         if trimmed.starts_with("class ")
             || trimmed.starts_with("export class ")
@@ -46,8 +55,16 @@ pub fn to_method_ts(
             }
         }
         if class_start.is_some() && class_end.is_none() {
-            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
-            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            brace_depth += line
+                .bytes()
+                .enumerate()
+                .filter(|(i, c)| *c == b'{' && syntax[line_offset + i])
+                .count() as i32;
+            brace_depth -= line
+                .bytes()
+                .enumerate()
+                .filter(|(i, c)| *c == b'}' && syntax[line_offset + i])
+                .count() as i32;
             if brace_depth == 0 && line.contains('}') {
                 class_end = Some(idx);
                 break;
@@ -85,9 +102,7 @@ pub fn to_method_ts(
     let trimmed = m_line.trim_start();
     let indent = &m_line[..m_line.len() - trimmed.len()];
     let open_p = trimmed.find('(').context("Missing parameter list")?;
-    let close_p = trimmed
-        .find(')')
-        .context("Parameter list does not close on declaration line")?;
+    let close_p = super::binding::parameter_close(trimmed, Language::TypeScript)?;
     let params_str = &trimmed[open_p + 1..close_p];
     let params = split_call_arguments(params_str);
     let first_param = params
@@ -107,61 +122,32 @@ pub fn to_method_ts(
         String::new()
     };
 
-    let without_static = trimmed.replace("static ", "");
-    let new_m_trimmed =
-        if let (Some(op), Some(cp)) = (without_static.find('('), without_static.find(')')) {
-            format!(
-                "{}{remaining_params}{}",
-                &without_static[..op + 1],
-                &without_static[cp..]
-            )
-        } else {
-            without_static
-        };
+    super::binding::parameters(
+        &first_param,
+        &param_name,
+        &remaining_params,
+        Language::TypeScript,
+    )?;
+    let without_static = trimmed.replacen("static ", "", 1);
+    let new_m_trimmed = if let Some(op) = without_static.find('(') {
+        let cp = super::binding::parameter_close(&without_static, Language::TypeScript)?;
+        format!(
+            "{}{remaining_params}{}",
+            &without_static[..op + 1],
+            &without_static[cp..]
+        )
+    } else {
+        without_static
+    };
 
-    let mut m_body_end = m_idx;
-    let mut m_depth = 0i32;
-    let mut started = false;
-    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
-        let opens = line.chars().filter(|&c| c == '{').count() as i32;
-        let closes = line.chars().filter(|&c| c == '}').count() as i32;
-        if opens > 0 {
-            started = true;
-        }
-        m_depth += opens;
-        m_depth -= closes;
-        if started && m_depth == 0 {
-            m_body_end = idx;
-            break;
-        }
-    }
-
-    let needle_param_dot = format!("{param_name}.");
-    let mut renamed_uses = 0;
-    let mut new_lines = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        if idx == m_idx {
-            new_lines.push(format!("{indent}{new_m_trimmed}"));
-        } else if idx > m_idx && idx <= m_body_end {
-            let mut cur = line.to_string();
-            let mut search_idx = 0;
-            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
-                let pos = search_idx + rel;
-                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
-                    search_idx = pos + needle_param_dot.len();
-                    continue;
-                }
-                cur.replace_range(pos..pos + needle_param_dot.len(), "this.");
-                renamed_uses += 1;
-                search_idx = pos + "this.".len();
-            }
-            new_lines.push(cur);
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-
-    let intermediate = new_lines.join("\n");
+    let (intermediate, renamed_uses) = super::body::braced(
+        code,
+        m_idx,
+        &format!("{indent}{new_m_trimmed}"),
+        &param_name,
+        &first_param,
+        Language::TypeScript,
+    )?;
     let (final_code, rewritten_calls) = rewrite_static_calls_in_code(
         &intermediate,
         target_method,

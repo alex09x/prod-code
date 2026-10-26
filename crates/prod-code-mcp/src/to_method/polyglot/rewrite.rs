@@ -17,6 +17,30 @@ pub fn rewrite_static_calls_in_code(
     owner_class: &str,
     lang: Language,
 ) -> (String, usize) {
+    rewrite_calls(code, target_method, owner_class, lang, false)
+}
+
+pub(super) fn rewrite_cpp_calls(
+    code: &str,
+    method: &str,
+    owner: &str,
+    pointer: bool,
+) -> (String, usize) {
+    rewrite_calls(code, method, owner, Language::Cpp, pointer)
+}
+
+fn rewrite_calls(
+    code: &str,
+    target_method: &str,
+    owner_class: &str,
+    lang: Language,
+    pointer: bool,
+) -> (String, usize) {
+    // Public string-only callers cannot return a refusal. The planner refuses this shape
+    // before applying; standalone rewriting leaves it intact rather than guessing a mask.
+    if lang == Language::Cpp && super::cpp_lex::has_raw_string(code) {
+        return (code.to_string(), 0);
+    }
     let mut out = String::new();
     let mut rewritten = 0;
     let target_prefix = match lang {
@@ -31,13 +55,20 @@ pub fn rewrite_static_calls_in_code(
         }
     };
 
-    for line in code.lines() {
+    let code_mask = super::binding::mask(code, lang);
+    let mut offset = 0;
+    for line in code.split_inclusive('\n') {
+        let line_offset = offset;
+        offset += line.len();
+        let line = line.strip_suffix('\n').unwrap_or(line);
         let trimmed = line.trim_start();
         let comment_prefix = match lang {
             Language::Python => "#",
             _ => "//",
         };
-        if trimmed.starts_with(comment_prefix) || trimmed.starts_with('*') {
+        if lang != Language::TypeScript
+            && (trimmed.starts_with(comment_prefix) || trimmed.starts_with('*'))
+        {
             out.push_str(line);
             out.push('\n');
             continue;
@@ -50,9 +81,17 @@ pub fn rewrite_static_calls_in_code(
         }
 
         let mut current_line = line.to_string();
+        let mut current_mask = code_mask[line_offset..line_offset + line.len()].to_vec();
         let mut search_start = 0;
         while let Some(rel_pos) = current_line[search_start..].find(&target_prefix) {
             let pos = search_start + rel_pos;
+            if !current_mask[pos..pos + target_prefix.len()]
+                .iter()
+                .all(|b| *b)
+            {
+                search_start = pos + target_prefix.len();
+                continue;
+            }
             if pos > 0 {
                 let prev_char = current_line[..pos].chars().next_back().unwrap();
                 if is_ident(prev_char) || (lang == Language::Go && prev_char == '.') {
@@ -73,6 +112,9 @@ pub fn rewrite_static_calls_in_code(
             let mut depth = 1i32;
             let mut close_pos = None;
             for (i, c) in rest.char_indices() {
+                if !current_mask[after_open + i] {
+                    continue;
+                }
                 if c == '(' {
                     depth += 1;
                 } else if c == ')' {
@@ -90,7 +132,15 @@ pub fn rewrite_static_calls_in_code(
             };
 
             let args_str = &current_line[after_open..cp];
-            let args = split_call_arguments(args_str);
+            let args = if lang == Language::Swift {
+                let Some(args) = super::swift_regex::arguments(args_str) else {
+                    search_start = pos + target_prefix.len();
+                    continue;
+                };
+                args
+            } else {
+                split_call_arguments(args_str)
+            };
             if args.is_empty() {
                 search_start = pos + target_prefix.len();
                 continue;
@@ -103,20 +153,17 @@ pub fn rewrite_static_calls_in_code(
                 String::new()
             };
 
-            let op = if lang == Language::Cpp && (recv.starts_with('*') || recv.ends_with("->")) {
+            let op = if lang == Language::Cpp && pointer {
                 "->"
             } else {
                 "."
             };
 
-            let formatted_recv = if recv.contains(' ') && !recv.starts_with('(') {
-                format!("({recv})")
-            } else {
-                recv.to_string()
-            };
+            let formatted_recv = complete_receiver(recv);
 
             let call_replacement = format!("{formatted_recv}{op}{target_method}({rest_args})");
             current_line.replace_range(pos..=cp, &call_replacement);
+            current_mask.splice(pos..=cp, std::iter::repeat_n(true, call_replacement.len()));
             rewritten += 1;
             search_start = pos + call_replacement.len();
         }
@@ -129,4 +176,27 @@ pub fn rewrite_static_calls_in_code(
         out.pop();
     }
     (out, rewritten)
+}
+
+fn complete_receiver(recv: &str) -> String {
+    let mut depth = 0i32;
+    let simple_start = recv.chars().next().is_some_and(is_ident);
+    let simple = simple_start
+        && recv.chars().all(|ch| match ch {
+            '(' | '[' => {
+                depth += 1;
+                true
+            }
+            ')' | ']' => {
+                depth -= 1;
+                true
+            }
+            _ if depth > 0 => true,
+            _ => is_ident(ch) || ch == '.' || ch == ':',
+        });
+    if simple {
+        recv.to_string()
+    } else {
+        format!("({recv})")
+    }
 }

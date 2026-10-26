@@ -12,7 +12,197 @@ use anyhow::{Context, Result};
 
 use super::rewrite::rewrite_static_calls_in_code;
 use crate::make_static::Language;
-use crate::to_method::helpers::{is_ident, split_call_arguments};
+
+#[path = "swift_scope.rs"]
+mod scope;
+#[path = "swift_unit.rs"]
+mod unit;
+
+/// A Void method needs no implicit return when its receiver alias is inserted.
+/// Inspect the signature suffix, excluding comments and nested type arrows.
+/// Resolve unit spellings only when their names are unshadowed at this method.
+pub(super) fn returns_void(suffix: &str, source: &str, method: usize, body: &str) -> bool {
+    let syntax = super::binding::mask(suffix, Language::Swift);
+    let mut depth = 0;
+    for (i, byte) in suffix.bytes().enumerate() {
+        if !syntax[i] {
+            continue;
+        }
+        match byte {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'-' if depth == 0 && suffix.as_bytes().get(i + 1) == Some(&b'>') => {
+                let result: String = suffix[i + 2..]
+                    .char_indices()
+                    .filter(|(at, ch)| syntax[i + 2 + at] && !ch.is_whitespace())
+                    .map(|(_, ch)| ch)
+                    .collect();
+                return match ungroup(&result) {
+                    "()" => true,
+                    "Void" | "Swift.Void" => {
+                        let name = if ungroup(&result) == "Void" {
+                            "Void"
+                        } else {
+                            "Swift"
+                        };
+                        match shadows(source, method, name) {
+                            Some(shadowed) => !shadowed,
+                            None => unit::separate_calls(body),
+                        }
+                    }
+                    _ => false,
+                };
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+/// Remove only parentheses enclosing the entire type. Optional, tuple and
+/// function types retain their distinguishing syntax after this normalization.
+fn ungroup(mut result: &str) -> &str {
+    while result != "()" && result.starts_with('(') && result.ends_with(')') {
+        let mut depth = 0;
+        let whole = result.bytes().enumerate().all(|(i, byte)| {
+            match byte {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            depth > 0 || i == result.len() - 1
+        });
+        if !whole || depth != 0 {
+            break;
+        }
+        result = &result[1..result.len() - 1];
+    }
+    result
+}
+
+// None means an external scope is unknown, not that it binds the name.
+fn shadows(source: &str, method: usize, name: &str) -> Option<bool> {
+    let syntax = super::binding::mask(source, Language::Swift);
+    let tokens = super::binding::words(source, Language::Swift);
+    // Bindings may be lexical, nominal/extension members, or inherited members.
+    // An unrelated nominal type cannot bind this name.
+    let mut scopes: Vec<_> = std::iter::once(0..source.len() + 1).collect();
+    let mut stack = vec![0];
+    let mut scope_at = vec![0; source.len()];
+    for (at, byte) in source.bytes().enumerate() {
+        scope_at[at] = *stack.last().unwrap();
+        if !syntax[at] {
+            continue;
+        }
+        match byte {
+            b'{' => {
+                stack.push(scopes.len());
+                scopes.push(at + 1..source.len() + 1);
+            }
+            b'}' if stack.len() > 1 => scopes[stack.pop().unwrap()].end = at + 1,
+            _ => {}
+        }
+    }
+    let (extensions, unresolved_base) =
+        scope::visible_extensions(source, method, name, &syntax, &tokens, &scopes, &scope_at);
+    for pair in tokens.windows(2) {
+        let [(_, keyword), (at, word)] = pair else {
+            unreachable!()
+        };
+        let nominal = matches!(*keyword, "class" | "struct" | "enum" | "protocol" | "actor");
+        if *word == name
+            && (nominal || matches!(*keyword, "typealias" | "associatedtype"))
+            && (scopes[scope_at[*at]].contains(&method) || extensions[scope_at[*at]])
+        {
+            return Some(true);
+        }
+        if (nominal || *keyword == "func")
+            && generic_shadows(source, &syntax, *at + word.len(), method, name, &scopes)
+        {
+            return Some(true);
+        }
+    }
+    (!unresolved_base).then_some(false)
+}
+
+/// Generic names belong to their declaration's body, rather than the scope in
+/// which the declaration itself is named. Constraint arguments do not bind names.
+fn generic_shadows(
+    source: &str,
+    syntax: &[bool],
+    after_name: usize,
+    method: usize,
+    name: &str,
+    scopes: &[std::ops::Range<usize>],
+) -> bool {
+    let mut code = source
+        .bytes()
+        .enumerate()
+        .skip(after_name)
+        .filter(|(at, byte)| syntax[*at] && !byte.is_ascii_whitespace())
+        .peekable();
+    if !matches!(code.peek(), Some((_, b'<'))) {
+        return false;
+    }
+    let code: Vec<_> = code.collect();
+    let mut depth = 0;
+    let mut parameter = false;
+    let mut binds = false;
+    let mut end = None;
+    for (index, &(at, byte)) in code.iter().enumerate() {
+        match byte {
+            b'<' => {
+                depth += 1;
+                if depth == 1 {
+                    parameter = true;
+                }
+            }
+            b'>' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(index + 1);
+                    break;
+                }
+            }
+            b',' if depth == 1 => parameter = true,
+            _ if parameter && depth == 1 => {
+                if at > 0
+                    && (source.as_bytes()[at - 1].is_ascii_alphanumeric()
+                        || source.as_bytes()[at - 1] == b'_')
+                {
+                    continue;
+                }
+                let word = source[at..]
+                    .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                    .next()
+                    .unwrap_or("");
+                binds |= word == name;
+                // A parameter pack's name follows the `each` keyword.
+                parameter = word == "each";
+            }
+            _ => {}
+        }
+    }
+    if !binds {
+        return false;
+    }
+    let Some(end) = end else { return false };
+    let mut delimiters = 0;
+    for &(at, byte) in &code[end..] {
+        match byte {
+            b'(' | b'[' => delimiters += 1,
+            b')' | b']' => delimiters -= 1,
+            b'{' if delimiters == 0 => {
+                return scopes
+                    .iter()
+                    .any(|scope| scope.start == at + 1 && scope.contains(&method));
+            }
+            b'}' | b';' if delimiters == 0 => break,
+            _ => {}
+        }
+    }
+    false
+}
 
 pub fn to_method_swift(
     code: &str,
@@ -24,12 +214,34 @@ pub fn to_method_swift(
     let mut class_end = None;
     let mut class_name = String::new();
     let mut brace_depth = 0i32;
+    let syntax = super::binding::mask(code, Language::Swift);
+    let mut line_start = 0;
+    let line_starts: Vec<_> = code
+        .split_inclusive('\n')
+        .map(|line| {
+            let start = line_start;
+            line_start += line.len();
+            start
+        })
+        .collect();
+    let mut offset = 0;
 
     for (idx, line) in lines.iter().enumerate() {
+        let line_offset = offset;
+        offset += line.len()
+            + if code.as_bytes().get(line_offset + line.len()) == Some(&b'\r') {
+                2
+            } else {
+                1
+            };
         let trimmed = line.trim_start();
-        if trimmed.starts_with("class ")
-            || trimmed.starts_with("struct ")
-            || trimmed.starts_with("actor ")
+        if syntax
+            .get(line_offset + line.len() - trimmed.len())
+            .copied()
+            .unwrap_or(false)
+            && (trimmed.starts_with("class ")
+                || trimmed.starts_with("struct ")
+                || trimmed.starts_with("actor "))
         {
             let words: Vec<&str> = trimmed.split_whitespace().collect();
             let mut name = "";
@@ -48,8 +260,16 @@ pub fn to_method_swift(
             }
         }
         if class_start.is_some() && class_end.is_none() {
-            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
-            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            brace_depth += line
+                .bytes()
+                .enumerate()
+                .filter(|(i, c)| *c == b'{' && syntax[line_offset + i])
+                .count() as i32;
+            brace_depth -= line
+                .bytes()
+                .enumerate()
+                .filter(|(i, c)| *c == b'}' && syntax[line_offset + i])
+                .count() as i32;
             if brace_depth == 0 && line.contains('}') {
                 class_end = Some(idx);
                 break;
@@ -67,7 +287,10 @@ pub fn to_method_swift(
             continue;
         }
         let needle = format!("func {target_method}(");
-        if trimmed.contains(&needle) {
+        if trimmed
+            .find(&needle)
+            .is_some_and(|at| syntax[line_starts[idx] + line.len() - trimmed.len() + at])
+        {
             method_line_idx = Some(idx);
             break;
         }
@@ -84,9 +307,10 @@ pub fn to_method_swift(
     let trimmed = m_line.trim_start();
     let indent = &m_line[..m_line.len() - trimmed.len()];
     let open_p = trimmed.find('(').context("Missing parameter list")?;
-    let close_p = trimmed.find(')').context("Parameter list does not close")?;
+    let close_p = super::binding::parameter_close(trimmed, Language::Swift)?;
     let params_str = &trimmed[open_p + 1..close_p];
-    let params = split_call_arguments(params_str);
+    let params = super::swift_regex::arguments(params_str)
+        .context("unsupported Swift parameter literals")?;
     let first_param = params
         .first()
         .context("Method takes no parameters; nothing can become `self`")?
@@ -95,7 +319,9 @@ pub fn to_method_swift(
         .split(':')
         .next()
         .unwrap_or(&first_param)
-        .trim()
+        .split_whitespace()
+        .next_back()
+        .unwrap_or("")
         .to_string();
 
     let remaining_params = if params.len() > 1 {
@@ -104,63 +330,35 @@ pub fn to_method_swift(
         String::new()
     };
 
-    let without_static = trimmed
-        .replace("static func ", "func ")
-        .replace("class func ", "func ");
-    let new_m_trimmed =
-        if let (Some(op), Some(cp)) = (without_static.find('('), without_static.find(')')) {
-            format!(
-                "{}{remaining_params}{}",
-                &without_static[..op + 1],
-                &without_static[cp..]
-            )
-        } else {
-            without_static
-        };
+    super::binding::parameters(
+        &first_param,
+        &param_name,
+        &remaining_params,
+        Language::Swift,
+    )?;
+    let without_static =
+        trimmed
+            .replacen("static func ", "func ", 1)
+            .replacen("class func ", "func ", 1);
+    let new_m_trimmed = if let Some(op) = without_static.find('(') {
+        let cp = super::binding::parameter_close(&without_static, Language::Swift)?;
+        format!(
+            "{}{remaining_params}{}",
+            &without_static[..op + 1],
+            &without_static[cp..]
+        )
+    } else {
+        without_static
+    };
 
-    let mut m_body_end = m_idx;
-    let mut m_depth = 0i32;
-    let mut started = false;
-    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
-        let opens = line.chars().filter(|&c| c == '{').count() as i32;
-        let closes = line.chars().filter(|&c| c == '}').count() as i32;
-        if opens > 0 {
-            started = true;
-        }
-        m_depth += opens;
-        m_depth -= closes;
-        if started && m_depth == 0 {
-            m_body_end = idx;
-            break;
-        }
-    }
-
-    let needle_param_dot = format!("{param_name}.");
-    let mut renamed_uses = 0;
-    let mut new_lines = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        if idx == m_idx {
-            new_lines.push(format!("{indent}{new_m_trimmed}"));
-        } else if idx > m_idx && idx <= m_body_end {
-            let mut cur = line.to_string();
-            let mut search_idx = 0;
-            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
-                let pos = search_idx + rel;
-                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
-                    search_idx = pos + needle_param_dot.len();
-                    continue;
-                }
-                cur.replace_range(pos..pos + needle_param_dot.len(), "self.");
-                renamed_uses += 1;
-                search_idx = pos + "self.".len();
-            }
-            new_lines.push(cur);
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-
-    let intermediate = new_lines.join("\n");
+    let (intermediate, renamed_uses) = super::body::braced(
+        code,
+        m_idx,
+        &format!("{indent}{new_m_trimmed}"),
+        &param_name,
+        &first_param,
+        Language::Swift,
+    )?;
     let (final_code, rewritten_calls) =
         rewrite_static_calls_in_code(&intermediate, target_method, &class_name, Language::Swift);
 
