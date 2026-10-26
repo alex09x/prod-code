@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Encoded Query Keys in Running Commands** (`crates/prod-code-gateway`, #1539):
+  A URL query key is percent-decoded before the secret-name check, so `?p%61ssword=…` and `?%74oken=…` read `<redacted>` in status and gossip like their plain forms.
 - **Generify Bounds and C++ Headers** (`crates/prod-code-mcp`, #1382):
   The new type parameter goes after a complete `F: Fn() -> i32` bound instead of inside its return arrow. A C/C++ header whose same-named prototype sits in another namespace, or that the source neither includes nor shares a stem with, no longer blocks the conversion. A header that may declare the function is still refused.
 - **Cancelled Exec Streams Kill Their Process Group** (`crates/prod-code-gateway`, #1536):
