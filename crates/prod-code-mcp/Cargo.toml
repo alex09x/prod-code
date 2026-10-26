@@ -33,6 +33,12 @@ icu_normalizer = { version = "2.3.0", default-features = false, features = ["com
 libc = "0.2"
 # Use the engine's already locked Rust parser for exact expression ancestry.
 ra_ap_syntax = { git = "https://github.com/alex09x/rust-analyzer", rev = "3abd2c9f653a27e8c1b19195b1582634a6fe86e1", package = "syntax" }
+# Parse JavaScript/TypeScript with a real parser for delegate initializer boundaries (#1335).
+oxc_allocator = "=0.146.0"
+oxc_ast = "=0.146.0"
+oxc_parser = "=0.146.0"
+oxc_semantic = { version = "=0.146.0", default-features = false }
+oxc_span = "=0.146.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Polyglot Extract-Delegate Identity and Initialization** (`crates/prod-code-mcp`, #1335):
+  JavaScript and TypeScript sources are parsed with Oxc, so a delegate keeps its declaration initializer when the constructor assigns other fields, and only the analyzer's references are rewritten, never a same-named property of another receiver. Declaring-file references and callers before the class are rewritten, and Go keeps package qualification in nested literals.
 - **Polyglot Signature Identity, Effects and Awaits** (`crates/prod-code-mcp`, #1333):
   Signature changes rewrite a C/C++ prototype only when the analyzer ties it to the changed function, treat `1+i++` and concatenations with calls as effectful arguments, and remove only the `await` that belongs to the changed call, including `await obj.f()` and parenthesized operands. Rust literals such as `0x1F_u8` and CommonJS `require` bindings keep their earlier handling.
 - **Extract-Parameter Tokens and One-Line Bodies** (`crates/prod-code-mcp`, #1309):

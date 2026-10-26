@@ -12,8 +12,9 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 
+pub use super::go_text::rewrite_go_literals;
 use super::params::extract_param_names_go;
-use crate::extract_delegate::common::{is_ident, is_ident_str, split_top};
+use crate::extract_delegate::common::{is_ident, is_ident_str};
 
 pub fn restructure_go(
     text: &str,
@@ -23,6 +24,31 @@ pub fn restructure_go(
     methods: &[String],
     helper: &str,
     field: &str,
+) -> Result<(String, String)> {
+    let mut source =
+        super::semantic::Source::new(text, crate::parameter_object::Language::Go, field);
+    restructure_go_semantic(
+        text,
+        symbol_opt,
+        line_opt,
+        fields,
+        methods,
+        helper,
+        field,
+        &mut source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restructure_go_semantic(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    source: &mut super::semantic::Source<'_>,
 ) -> Result<(String, String)> {
     let (struct_open, struct_close, owner) = {
         let mut found = None;
@@ -71,7 +97,6 @@ pub fn restructure_go(
 
     let struct_body = &text[struct_open + 1..struct_close];
     let mut field_decls: BTreeMap<String, String> = BTreeMap::new();
-    let mut field_types: BTreeMap<String, String> = BTreeMap::new();
 
     for line in struct_body.lines() {
         let trimmed = line.trim();
@@ -81,10 +106,8 @@ pub fn restructure_go(
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.len() >= 2 {
             let fname = parts[0];
-            let ftype = parts[1];
             if is_ident_str(fname) {
                 field_decls.insert(fname.to_string(), line.to_string());
-                field_types.insert(fname.to_string(), ftype.to_string());
             }
         }
     }
@@ -192,8 +215,7 @@ pub fn restructure_go(
     let mut helper_lines = Vec::new();
     helper_lines.push(format!("type {helper} struct {{"));
     for f in fields {
-        let ty = field_types.get(f).map(|s| s.as_str()).unwrap_or("string");
-        helper_lines.push(format!("    {f} {ty}"));
+        helper_lines.push(field_decls[f].clone());
     }
     helper_lines.push("}".to_string());
 
@@ -216,8 +238,11 @@ pub fn restructure_go(
     }
     let helper_text = helper_lines.join("\n");
 
-    let mut out = text.to_string();
-    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    source.consumed(&text[struct_open + 1..struct_close]);
+    for minfo in moved_methods.values() {
+        source.moved_method(&text[minfo.start..minfo.end], &minfo.recv_var)?;
+    }
+    let mut edits = super::go_literals::literal_edits(source, &owner, helper)?;
 
     for m in methods {
         let minfo = moved_methods.get(m).unwrap();
@@ -243,10 +268,16 @@ pub fn restructure_go(
         edits.push((minfo.start, minfo.end, forwarding));
     }
 
-    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    edits.sort_by_key(|e| e.0);
+    let mut out = String::new();
+    let mut cursor = 0;
     for (s, e, repl) in edits {
-        out.replace_range(s..e, &repl);
+        anyhow::ensure!(s >= cursor, "overlapping Go transformations");
+        out.push_str(&source.rewrite(&text[cursor..s])?);
+        out.push_str(&repl);
+        cursor = e;
     }
+    out.push_str(&source.rewrite(&text[cursor..])?);
 
     let new_struct_open = out
         .find(&format!("type {owner} struct"))
@@ -292,87 +323,4 @@ pub fn restructure_go(
     let final_pos = out.find(&format!("type {owner} struct")).unwrap();
     out.insert_str(final_pos, &format!("{helper_text}\n\n"));
     Ok((out, owner))
-}
-
-pub fn rewrite_go_literals(
-    text: &str,
-    owner: &str,
-    fields: &[String],
-    field: &str,
-    helper: &str,
-) -> String {
-    let mut edits: Vec<(usize, usize, String)> = Vec::new();
-    for (i, _) in text.match_indices(owner) {
-        let before = &text[..i];
-        if before.chars().next_back().is_some_and(is_ident)
-            || text[i + owner.len()..].chars().next().is_some_and(is_ident)
-            || before.trim_end().ends_with("type")
-        {
-            continue;
-        }
-        let rest = &text[i + owner.len()..];
-        let trimmed = rest.trim_start();
-        if !trimmed.starts_with('{') {
-            continue;
-        }
-        let open = i + owner.len() + (rest.len() - trimmed.len());
-        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
-            continue;
-        };
-        let body = &text[open + 1..close];
-        let entries: Vec<&str> = split_top(body, ',')
-            .into_iter()
-            .map(|(s, e)| body[s..e].trim())
-            .filter(|e| !e.is_empty())
-            .collect();
-        let key = |e: &str| -> String { e.split(':').next().unwrap_or(e).trim().to_string() };
-        let inner: Vec<&str> = entries
-            .iter()
-            .copied()
-            .filter(|e| fields.contains(&key(e)))
-            .collect();
-        if inner.is_empty() {
-            continue;
-        }
-        let indent: String = body
-            .trim_start_matches(['\n'])
-            .chars()
-            .take_while(|c| *c == ' ' || *c == '\t')
-            .collect();
-        let nested = format!("{field}: {helper}{{ {} }}", inner.join(", "));
-        let mut all: Vec<String> = Vec::new();
-        let mut placed = false;
-        for e in &entries {
-            if fields.contains(&key(e)) {
-                if !placed {
-                    all.push(nested.clone());
-                    placed = true;
-                }
-            } else {
-                all.push(e.to_string());
-            }
-        }
-        let new_body = if body.contains('\n') {
-            let close_indent: String = text[..close]
-                .rsplit('\n')
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take_while(|c| *c == ' ' || *c == '\t')
-                .collect();
-            format!(
-                "\n{indent}{},\n{close_indent}",
-                all.join(&format!(",\n{indent}"))
-            )
-        } else {
-            format!(" {} ", all.join(", "))
-        };
-        edits.push((open + 1, close, new_body));
-    }
-    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
-    let mut out = text.to_string();
-    for (s, e, t) in edits {
-        out.replace_range(s..e, &t);
-    }
-    out
 }

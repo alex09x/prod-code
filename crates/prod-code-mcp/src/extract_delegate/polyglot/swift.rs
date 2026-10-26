@@ -24,6 +24,31 @@ pub fn restructure_swift(
     helper: &str,
     field: &str,
 ) -> Result<(String, String)> {
+    let mut source =
+        super::semantic::Source::new(text, crate::parameter_object::Language::Swift, field);
+    restructure_swift_semantic(
+        text,
+        symbol_opt,
+        line_opt,
+        fields,
+        methods,
+        helper,
+        field,
+        &mut source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restructure_swift_semantic(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    source: &mut super::semantic::Source<'_>,
+) -> Result<(String, String)> {
     let (open_brace, close_brace, owner) = {
         let mut found = None;
         for keyword in ["struct ", "class "] {
@@ -239,6 +264,7 @@ pub fn restructure_swift(
             .values()
             .any(|minfo| minfo.start_line <= line_index && line_index <= minfo.end_line)
         {
+            source.moved_method(line, "self")?;
             continue;
         }
         let trimmed = line.trim();
@@ -250,6 +276,7 @@ pub fn restructure_swift(
             }
         });
         if is_moved_prop {
+            source.consumed(line);
             if !prop_placed {
                 new_body_lines.push(format!("    public var {field}: {helper}"));
                 prop_placed = true;
@@ -267,6 +294,7 @@ pub fn restructure_swift(
                     || trimmed.starts_with(&format!("self.{f}="))
             });
             if is_moved_assign {
+                source.consumed(line);
                 if !init_replaced {
                     new_body_lines
                         .push(format!("        self.{field} = {helper}({init_call_args})"));
@@ -279,7 +307,7 @@ pub fn restructure_swift(
             }
         }
 
-        new_body_lines.push(line.to_string());
+        new_body_lines.push(source.rewrite(line)?);
     }
 
     if !prop_placed {
@@ -298,8 +326,11 @@ pub fn restructure_swift(
     }
 
     let new_body = new_body_lines.join("\n");
-    let mut out = text.to_string();
-    out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
+    let out = format!(
+        "{}\n{new_body}\n{}",
+        source.rewrite(&text[..open_brace + 1])?,
+        source.rewrite(&text[close_brace..])?
+    );
     let final_text = format!("{helper_text}\n\n{out}");
     Ok((final_text, owner))
 }
