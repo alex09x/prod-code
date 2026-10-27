@@ -135,6 +135,15 @@ fn a_macos_node_takes_only_what_needs_macos_or_what_nothing_else_serves() {
         place(&held, Some("go"), None).as_deref(),
         Some("linux:9400")
     );
+    // One in use there stays, as an active workspace on any holder does (#1494): the Mac is
+    // still found as its holder, and nothing makes it move.
+    let mut active = held.clone();
+    active.nodes[1].workspaces[0].sessions = 2;
+    assert_eq!(
+        place(&active, Some("go"), None).as_deref(),
+        Some("mac:9400"),
+        "an active Mac holder keeps its workspace"
+    );
 
     // With the Linux node down, the Mac takes plain Go rather than nothing.
     let mut down = view.clone();
