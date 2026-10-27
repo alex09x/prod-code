@@ -60,7 +60,7 @@ impl MovedMethod {
         out.push('\n');
         let mut body = String::new();
         for (path, new_text) in &self.rewritten {
-            let old = crate::refactor::text_before_apply(Path::new(path));
+            let old = crate::refactor::text_before_report(Path::new(path), self.applied);
             let rel = display(&self.root, Path::new(path));
             body.push_str(
                 &similar::TextDiff::from_lines(&old, new_text)

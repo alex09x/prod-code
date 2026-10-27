@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Refactoring Preview Is Diffed Against the File as It Is** (`crates/prod-code-mcp`, #1470):
+  After an edit was applied, a later dry run on the unchanged result, such as a signature change, an inversion or a move, was diffed against the text from before that earlier edit, so its diff and counts included changes already made. Only the report of an applied edit now shows that edit's old text, however often it is rendered. A preview is diffed against the file on disk.
 - **Checks Refuse a `--path` Outside the Checkout, and `validate --compile` Checks the File's Own Checkout** (`crates/prod-code-client`, #1478):
   - `prod-code check --path ../other-project` silently checked the current checkout and reported its success. A `--path` outside the checkout the command runs in is now refused with the reason. The same applies to `test`, `lint`, `bench` and their `--fix`.
   - `prod-code validate --compile` on a file of another checkout ran the compiler in the current directory's checkout. It now uses the checkout that holds the file, as validation without `--compile` already did.

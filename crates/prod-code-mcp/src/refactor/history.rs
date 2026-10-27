@@ -54,6 +54,16 @@ pub fn remember_applied(root: &Path, before: &[(String, Option<Vec<u8>>)]) {
 /// The text a file had before the edit that produced what is on disk now: what a report shows as
 /// the old side of its diff. When no edit wrote the file, or the file has changed since, that is
 /// simply what is on disk.
+/// The old side of a report's diff: [`text_before_apply`] for a report that applied its edit,
+/// and the file as it is now for one that only proposes it. A proposal is diffed against what
+/// it would change, not against a state an earlier, applied edit replaced (#1470).
+pub fn text_before_report(path: &Path, applied: bool) -> String {
+    if applied {
+        return text_before_apply(path);
+    }
+    String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default()).into_owned()
+}
+
 pub fn text_before_apply(path: &Path) -> String {
     let current = std::fs::read(path).unwrap_or_default();
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
