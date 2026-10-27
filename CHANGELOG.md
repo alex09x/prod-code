@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **`prod-code` Without a Subcommand Refuses at `initialize` Like `prod-code lsp`** (`crates/prod-code-client`, #1519):
+  `prod-code` with no subcommand runs the editor bridge, but when no gateway could be placed it exited before the editor's `initialize`. Only an explicit `prod-code lsp` gave the structured refusal. Both now answer `initialize` with the reason.
 - **The Editor Bridge Ends Cleanly After the Editor's `exit`** (`crates/prod-code-client`, #1521):
   Once the editor had sent `exit`, the language server leaving and the gateway closing the session were treated like a broken connection: exit 1, or a new session with `--reconnect`. The bridge now notes `shutdown` and `exit`, and a closure after `exit` ends it with 0 when `shutdown` came first and 1 when it did not, as the protocol has a server exit. An unexpected closure is still reported or reconnected.
 - **A Save Whose File Did Not Reach the Node Waits Before the Server Sees It** (`crates/prod-code-client`, #1517):

@@ -296,7 +296,7 @@ async fn run_cli() -> Result<()> {
     }
     // An editor learns why its server could not start from the answer to its `initialize`,
     // not from a process that is gone before it asks (#338).
-    if let (Some(Commands::Lsp { .. }), Err(err)) = (&cli.command, &picked) {
+    if let (true, Err(err)) = (cli::argv::starts_an_editor_session(&cli), &picked) {
         return refuse_lsp(err).await;
     }
     // Likewise, an MCP client expects the stdio server to complete `initialize` and `tools/list`

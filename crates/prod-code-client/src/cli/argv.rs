@@ -59,6 +59,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> (super::Cli, bool) {
     (cli, pinned)
 }
 
+/// Whether this command line runs an editor's language server: `prod-code lsp`, or
+/// `prod-code` with no subcommand, which is `lsp` too. Both learn why a server could not start
+/// from the answer to `initialize` (#1519).
+pub fn starts_an_editor_session(cli: &super::Cli) -> bool {
+    matches!(cli.command, None | Some(super::Commands::Lsp { .. }))
+}
+
 /// Whether the global `remote` option was typed at this level or a subcommand below it.
 fn remote_given(matches: &clap::ArgMatches) -> bool {
     matches.value_source("remote") == Some(clap::parser::ValueSource::CommandLine)
@@ -179,6 +186,17 @@ mod tests {
                     if pinned {
                         assert_eq!(cli.remote, "h:1", "{args:?}");
                     }
+                }
+                // No subcommand is `lsp` too, so it gets the same refusal at `initialize` (#1519).
+                for (args, editor) in [
+                    (&["prod-code"][..], true),
+                    (&["prod-code", "lsp"][..], true),
+                    (&["prod-code", "-r", "h:1"][..], true),
+                    (&["prod-code", "mcp"][..], false),
+                    (&["prod-code", "status"][..], false),
+                ] {
+                    let (cli, _) = super::parse(args.iter().map(|a| a.to_string()));
+                    assert_eq!(super::starts_an_editor_session(&cli), editor, "{args:?}");
                 }
             })
             .unwrap()
