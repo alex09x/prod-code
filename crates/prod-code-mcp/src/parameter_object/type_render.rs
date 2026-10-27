@@ -213,9 +213,31 @@ pub fn type_text(
                 // A `let` with a value is a constant the memberwise initialiser cannot set; a
                 // `var` with one is a parameter of it with that default.
                 match &f.default {
-                    Some(d) => out.push_str(&format!("{indent}var {}: {ty} = {d}\n", f.name)),
-                    None => out.push_str(&format!("{indent}let {}: {ty}\n", f.name)),
+                    Some(d) => {
+                        out.push_str(&format!("{indent}{public}var {}: {ty} = {d}\n", f.name))
+                    }
+                    None => out.push_str(&format!("{indent}{public}let {}: {ty}\n", f.name)),
                 }
+            }
+            // The memberwise initialiser Swift makes is internal: a public type that callers in
+            // another module construct needs a public one, with the same defaults (#1511).
+            if export {
+                let params = fields
+                    .iter()
+                    .map(|f| {
+                        let ty = f.ty.as_deref().unwrap_or("Any");
+                        match &f.default {
+                            Some(d) => format!("{}: {ty} = {d}", f.name),
+                            None => format!("{}: {ty}", f.name),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!("\n{indent}public init({params}) {{\n"));
+                for f in fields {
+                    out.push_str(&format!("{indent}{indent}self.{0} = {0}\n", f.name));
+                }
+                out.push_str(&format!("{indent}}}\n"));
             }
             out.push_str("}\n");
         }

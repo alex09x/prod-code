@@ -756,7 +756,7 @@ async fn a_swift_function_takes_a_struct_and_its_callers_pass_its_initialiser() 
     let home = rewritten(&done, "Home.swift");
     assert!(
         home.starts_with(
-            "/// The parameters `build` takes together.\npublic struct Size {\n    let width: Int\n    let height: Int\n}\n\n/// Describes a shape.\npublic func build(name: String, size: Size) -> String {\n    let area = size.width * size.height\n"
+            "/// The parameters `build` takes together.\npublic struct Size {\n    public let width: Int\n    public let height: Int\n\n    public init(width: Int, height: Int) {\n        self.width = width\n        self.height = height\n    }\n}\n\n/// Describes a shape.\npublic func build(name: String, size: Size) -> String {\n    let area = size.width * size.height\n"
         ),
         "{home}"
     );
@@ -801,7 +801,7 @@ async fn a_swift_method_gets_its_struct_above_the_type() {
     let home = rewritten(&done, "Home.swift");
     assert!(
         home.contains(
-            "}\n\n/// The parameters `draw` takes together.\npublic struct Point {\n    let x: Int\n    var y: Int = 0\n}\n\npublic struct Canvas {\n    var scale = 1\n\n    public init() {}\n\n    public func draw(_ label: String, point: Point) -> String {\n        return \"\\(label) \\(point.x * scale) \\(point.y)\"\n    }\n}\n"
+            "}\n\n/// The parameters `draw` takes together.\npublic struct Point {\n    public let x: Int\n    public var y: Int = 0\n\n    public init(x: Int, y: Int = 0) {\n        self.x = x\n        self.y = y\n    }\n}\n\npublic struct Canvas {\n    var scale = 1\n\n    public init() {}\n\n    public func draw(_ label: String, point: Point) -> String {\n        return \"\\(label) \\(point.x * scale) \\(point.y)\"\n    }\n}\n"
         ),
         "{home}"
     );
