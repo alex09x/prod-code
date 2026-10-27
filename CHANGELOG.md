@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Fallback Health Probes Wait for Outstanding Requests and Ignore Replayed Answers** (`crates/prod-code-gateway`, #1428):
+  The fallback language server's health probe is deferred while an ordinary request is still unanswered, so a long silent request on a serial server no longer gets the server retired as unresponsive. A request left unanswered for eight probe intervals is still probed, so a stuck server is retired. An answer to a request that was already answered no longer counts as proof that the server works: each request's answer is accepted once.
 - **Moving a Default Export Keeps Every Default Import Working** (`crates/prod-code-mcp`, #1431):
   `code_move` of a TypeScript or JavaScript `export default` function rewrites every default import of it, whatever its local name.
   - `import Foo, { other } from "./source"` is split: `other` stays imported from the source, and `import Foo from "./helpers"` is added.

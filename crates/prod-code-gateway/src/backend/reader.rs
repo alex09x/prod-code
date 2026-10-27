@@ -92,7 +92,7 @@ pub(crate) fn spawn_reader_loop(
 
                 if method.is_none() {
                     if valid_dispatch_response(&val)
-                        && id.is_some_and(|id| lock_unpoisoned(&issued_requests).contains(id))
+                        && id.is_some_and(|id| lock_unpoisoned(&issued_requests).take(id))
                     {
                         record_dispatch_liveness(&ordinary_epoch, &last_activity, &probe_state);
                     }
