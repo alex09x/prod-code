@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A New Storage Directory Reports Its Disk Before the First Sync** (`crates/prod-code-gateway`, `cluster`, #1429):
+  A gateway whose `--storage` directory does not exist yet reports the free share of the filesystem it will be created on: the nearest existing parent. Before, it reported "unknown" until the first sync created the directory, so the first placement onto a nearly full filesystem did not account for disk pressure.
 - **Fallback Health Probes Wait for Outstanding Requests and Ignore Replayed Answers** (`crates/prod-code-gateway`, #1428):
   The fallback language server's health probe is deferred while an ordinary request is still unanswered, so a long silent request on a serial server no longer gets the server retired as unresponsive. A request left unanswered for eight probe intervals is still probed, so a stuck server is retired. An answer to a request that was already answered no longer counts as proof that the server works: each request's answer is accepted once.
 - **Moving a Default Export Keeps Every Default Import Working** (`crates/prod-code-mcp`, #1431):
