@@ -76,7 +76,7 @@ impl RustEngine {
         let waiting = std::time::Instant::now();
         let _permit = budget.acquire();
         let num_threads = budget.workers;
-        let mut cargo_config = config.cargo_config();
+        let mut cargo_config = config.cargo_config_for(workspace_root);
         // Apply to this invocation only; changing the daemon's environment races other
         // loads and user commands. The CLI argument also bounds a project's jobs setting.
         cargo_config

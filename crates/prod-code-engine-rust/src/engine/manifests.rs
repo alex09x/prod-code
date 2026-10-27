@@ -155,7 +155,7 @@ impl RustEngine {
         let manifest = ProjectManifest::discover_single(&abs_root)
             .map_err(|e| anyhow::anyhow!("Manifest discovery failed: {e}"))?;
         let config = ProdCodeConfig::load(&self.workspace_root);
-        let cargo_config = config.cargo_config();
+        let cargo_config = config.cargo_config_for(&self.workspace_root);
         let mut ws = ProjectWorkspace::load(manifest, &cargo_config, &|_| {})
             .map_err(|e| anyhow::anyhow!("Project workspace load failed: {e}"))?;
         if config.rust.build_scripts
@@ -187,7 +187,7 @@ impl RustEngine {
             base_root: base_abs,
         };
         let config = ProdCodeConfig::load(copy_root);
-        let cargo_config = config.cargo_config();
+        let cargo_config = config.cargo_config_for(copy_root);
         let mut workspace = match self.worktrees.workspace_of_copy(&overlay) {
             Some(ws) => ws,
             None => {

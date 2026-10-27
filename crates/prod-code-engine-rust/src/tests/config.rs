@@ -103,3 +103,33 @@ proc_macro_srv = "disabled"
     let config: ProdCodeConfig = toml::from_str(disabled_toml).unwrap();
     assert_eq!(config.rust.proc_macro_srv, ProcMacroServerKind::Disabled);
 }
+
+/// #1446: when a Cargo config builds into one directory outside the workspace, the analyzer's
+/// build scripts run in the workspace's own `target/rust-analyzer`.
+#[test]
+fn analyzer_build_scripts_get_the_worktree_own_target_when_the_configured_one_is_shared() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("ws");
+    std::fs::create_dir_all(root.join(".cargo")).unwrap();
+    let config = ProdCodeConfig::default();
+    if crate::target_dir::shared_target_dir(&root).is_none() {
+        assert_eq!(
+            config.cargo_config_for(&root).target_dir_config,
+            ra_ap_project_model::TargetDirectoryConfig::None
+        );
+    }
+    std::fs::write(
+        root.join(".cargo/config.toml"),
+        format!(
+            "[build]\ntarget-dir = {:?}\n",
+            temp.path().join("shared").to_string_lossy()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        config.cargo_config_for(&root).target_dir_config,
+        ra_ap_project_model::TargetDirectoryConfig::Directory(
+            ra_ap_paths::Utf8PathBuf::from_path_buf(root.join("target/rust-analyzer")).unwrap()
+        )
+    );
+}

@@ -113,6 +113,22 @@ impl ProdCodeConfig {
         }
     }
 
+    /// [`Self::cargo_config`] for the workspace at `root`. When Cargo would build it into a
+    /// directory outside it, a `CARGO_TARGET_DIR` or an absolute `build.target-dir` several
+    /// worktrees share, the analyzer's build scripts run in `root/target/rust-analyzer` instead
+    /// (#1446).
+    pub fn cargo_config_for(&self, root: &std::path::Path) -> CargoConfig {
+        let mut config = self.cargo_config();
+        if let Some(shared) = crate::target_dir::shared_target_dir(root)
+            && let Ok(own) =
+                ra_ap_paths::Utf8PathBuf::from_path_buf(root.join("target/rust-analyzer"))
+        {
+            tracing::info!(root = %root.display(), shared = %shared.display(), "analyzer build scripts use the worktree's own target");
+            config.target_dir_config = ra_ap_project_model::TargetDirectoryConfig::Directory(own);
+        }
+        config
+    }
+
     /// The rust-analyzer cargo configuration these options describe.
     pub fn cargo_config(&self) -> CargoConfig {
         let rust = &self.rust;

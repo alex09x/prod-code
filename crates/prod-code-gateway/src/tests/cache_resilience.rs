@@ -121,6 +121,46 @@ fn test_polyglot_compiler_cache_env_composition() {
     assert!(!ccache_envs.iter().any(|(k, _)| k == "CCACHE_NOHASHDIR"));
 }
 
+/// #1446: a synced Cargo config that builds into one absolute directory would make every
+/// worktree's copy share it; the command builds into its own copy's target instead. Without such
+/// a config, Cargo's default is left alone.
+#[test]
+fn a_shared_cargo_target_dir_is_replaced_by_the_copy_own() {
+    crate::test_cache_support::isolated!();
+    let temp = tempfile::tempdir().unwrap();
+    let ws = temp.path().join("my-project");
+    std::fs::create_dir_all(ws.join(".cargo")).unwrap();
+    let target_dir = |envs: &[(String, String)]| {
+        envs.iter()
+            .find(|(k, _)| k == "CARGO_TARGET_DIR")
+            .map(|(_, v)| v.clone())
+    };
+    if prod_code_engine_rust::target_dir::shared_target_dir(&ws).is_none() {
+        assert_eq!(
+            target_dir(&polyglot_compiler_cache_env(&ws, false, None)),
+            None
+        );
+    }
+    std::fs::write(
+        ws.join(".cargo/config.toml"),
+        format!(
+            "[build]\ntarget-dir = {:?}\n",
+            temp.path().join("shared").to_string_lossy()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        target_dir(&polyglot_compiler_cache_env(&ws, false, None)),
+        Some(ws.join("target").to_string_lossy().into_owned())
+    );
+    // The RAM cache, when chosen, still decides.
+    let ram = temp.path().join("ram");
+    assert_eq!(
+        target_dir(&polyglot_compiler_cache_env(&ws, false, Some(&ram))),
+        Some(ram.to_string_lossy().into_owned())
+    );
+}
+
 #[test]
 fn test_resolve_ram_build_cache_workspace_isolation() {
     use crate::runner::ram_cache::resolve_ram_build_cache_with_space;

@@ -27,6 +27,7 @@ pub mod priming;
 pub mod proc_macro_farm;
 pub(crate) mod session_overlays;
 pub mod snapshot;
+pub mod target_dir;
 pub mod types;
 pub mod vfs;
 
