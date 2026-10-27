@@ -64,8 +64,17 @@ pub(crate) async fn discover_call_sites(
                     std::fs::read_to_string(root.join(&rel_file)).unwrap_or_default()
                 });
                 let file_lang = file_language(root, &rel_file).unwrap_or("generic");
-                let end_line = call_expression_end_line(source, line, col, &sym.name, file_lang)
-                    .unwrap_or(line);
+                let end_line =
+                    match call_expression_end_line(source, line, col, &sym.name, file_lang) {
+                        Some(end_line) => end_line,
+                        // The name is there with no argument list after it: an import, a re-export
+                        // or the function used as a value, which a signature change does not
+                        // adjust (#1474).
+                        None if names_at(source, line, col, &sym.name) => continue,
+                        // The text there is not the name (the reference starts at a path, or the
+                        // file changed): not shown to be no call, so it stays a call site.
+                        None => line,
+                    };
                 sites.push((rel_file, line, col, end_line, None));
             }
         }
@@ -185,6 +194,13 @@ pub(crate) fn lsp_position_to_byte_offset(text: &str, line: u32, character: u32)
         return (units == target).then_some(offset + line_text.len());
     }
     None
+}
+
+/// Whether `name` is written at the 1-based `line` and `col` of `text`.
+fn names_at(text: &str, line: u32, col: u32, name: &str) -> bool {
+    lsp_position_to_byte_offset(text, line, col)
+        .and_then(|at| text.get(at..))
+        .is_some_and(|rest| rest.starts_with(name))
 }
 
 pub(crate) fn call_expression_end_line(

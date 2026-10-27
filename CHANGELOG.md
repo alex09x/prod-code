@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Signature Impact Reports Only Calls as Unadjusted Call Sites** (`crates/prod-code-mcp`, #1474):
+  After a signature change, `code_impact` listed every reference to the function as an unadjusted call, so `use crate::helper;` and `let f = helper;` were reported next to the real `helper(10)`. A reference whose name is followed by no argument list is now left out, because a signature change adjusts nothing there. A reference where the text does not show the name, for example one starting at a path such as `crate::helper(…)`, is kept as before.
 - **Impact Does Not Retry a Failed Call-Hierarchy Request as a Cold Index** (`crates/prod-code-mcp`, #1473):
   A language server that has just started can answer "no callers" until it has read the project, so `code_impact` asks again up to three times, 800 ms apart. It did so for every answer other than a non-empty list of callers, including a request that failed or timed out, which only spent the waits. Now only a successful empty answer is asked again. A failed request stops the retries and stays the reason the analysis is incomplete, and so does a session that cannot be opened again.
 - **The Swift Settings Probe Finds Custom Target Paths and Keeps Its Deadline** (`crates/prod-code-gateway`, `crates/prod-code-engine-generic`, #1500):
