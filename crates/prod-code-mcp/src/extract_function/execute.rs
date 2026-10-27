@@ -247,7 +247,12 @@ pub async fn extract_function(
             .unwrap_or(file)
             .to_string_lossy()
             .into_owned(),
-        call: rename_placeholder(final_call.as_deref().unwrap_or(&text[start..end]), name),
+        // An assist rewrite whose call could not be read off the text leaves it unknown, not
+        // the old selection (#1441); the diff still shows it.
+        call: final_call
+            .as_deref()
+            .map(|call| rename_placeholder(call, name))
+            .unwrap_or_default(),
         parameters: parameters
             .iter()
             .map(|(n, ty)| format!("{n}: {ty}"))

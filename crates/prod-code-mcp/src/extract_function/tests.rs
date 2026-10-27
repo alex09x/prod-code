@@ -364,3 +364,29 @@ impl Engine {
         "owned value must not emit spurious E0502"
     );
 }
+
+/// An assist that also edits text before the selection (here `let mut g`) gives no readable
+/// call; the report then claims none and points at the diff, instead of naming the old
+/// selection as the new call (#1441).
+#[test]
+fn an_unread_call_is_not_reported_as_the_old_selection() {
+    let old = "fn f(o: &O) -> u32 {\n    let g = o.a;\n    let n = g + 1;\n    n\n}\n";
+    let new = "fn f(o: &O) -> u32 {\n    let mut g = o.a;\n    let n = fun_name(&mut g);\n    n\n}\n\nfn fun_name(g: &mut u32) -> u32 {\n    *g + 1\n}\n";
+    let start = old.find("let n").unwrap();
+    let end = old.find("+ 1;").unwrap() + 4;
+    assert!(rewrite_of(old, new, start, end).is_none());
+    let extracted = super::types::Extracted {
+        name: "next".to_string(),
+        root: std::path::PathBuf::from("/w"),
+        file: "src/lib.rs".to_string(),
+        call: String::new(),
+        parameters: Vec::new(),
+        duplicates: Vec::new(),
+        rewritten: Vec::new(),
+        diagnostics: Vec::new(),
+        applied: false,
+    };
+    let text = extracted.render();
+    assert!(text.contains("the new call is in the diff below"), "{text}");
+    assert!(!text.contains("the selection now reads"), "{text}");
+}
