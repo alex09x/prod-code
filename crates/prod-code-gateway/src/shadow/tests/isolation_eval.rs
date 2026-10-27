@@ -291,3 +291,63 @@ async fn request_env_cannot_replace_the_run_script_variables() {
     assert_eq!(output(&r), format!("{}\nproposed\n", ws.display()));
     assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "base\n");
 }
+
+/// #1468: the request's env reaches the command only after `setpriv` has dropped the
+/// capabilities. A `PATH` entry the run script would search for `mount` is not seen by it,
+/// while the command still gets the request's `PATH` and runs with no capabilities.
+#[tokio::test]
+async fn request_env_reaches_only_the_command_after_the_capability_drop() {
+    if let Some(reason) = overlay_unavailable() {
+        eprintln!("skipped: {reason}");
+        return;
+    }
+    let (root, ws, _outside) = workspace_with_sibling();
+    std::fs::write(ws.join("a.txt"), "base\n").unwrap();
+    let inherited = std::env::var("PATH").unwrap();
+    let real_mount = std::env::split_paths(&inherited)
+        .map(|dir| dir.join("mount"))
+        .find(|p| p.is_file())
+        .expect("mount is installed");
+    // A benign hook: it records that it ran, and with which capabilities, then mounts.
+    let hooks = root.path().join("hooks");
+    let mark = root.path().join("bootstrap-mark");
+    std::fs::create_dir(&hooks).unwrap();
+    let hook = hooks.join("mount");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\ngrep CapEff /proc/self/status >> '{}'\nexec '{}' \"$@\"\n",
+            mark.display(),
+            real_mount.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let shadow = tempfile::tempdir().unwrap();
+    let script = format!(
+        "case \":$PATH:\" in *':{}:'*) echo path-kept;; esac; \
+         awk '/^CapEff/ {{print $2}}' /proc/self/status; cat a.txt",
+        hooks.display()
+    );
+    let mut j = job(
+        &ws,
+        shadow.path(),
+        "loader-env",
+        vec![delta("a.txt", Some("proposed\n"))],
+        &["sh", "-c", &script],
+    );
+    j.env = vec![(
+        "PATH".to_string(),
+        format!("{}:{inherited}", hooks.display()),
+    )];
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    let r = run_overlay(j, rx).await;
+    assert!(
+        !mark.exists(),
+        "the bootstrap ran the request's hook: {}",
+        std::fs::read_to_string(&mark).unwrap_or_default()
+    );
+    assert_eq!(r.exit_code, Some(0), "{:?} {}", r.error, output(&r));
+    assert_eq!(output(&r), "path-kept\n0000000000000000\nproposed\n");
+}
