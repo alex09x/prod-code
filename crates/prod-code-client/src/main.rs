@@ -11,7 +11,6 @@
 //! prod-code client: ultra-thin CLI bridge for editors and AI coding agents over 10G LAN.
 
 use anyhow::{Context, Result};
-use clap::Parser;
 use std::env;
 
 mod cert;
@@ -48,10 +47,9 @@ async fn run_cli() -> Result<()> {
     // subcommand, and until this timer existed none of it was measured: the query timer
     // starts after it. See the report on stderr under `PROD_CODE_TIMING=1`.
     let mut startup = QueryTiming::labelled("startup");
-    let cli = Cli::parse_from(cli::argv::normalize_args(env::args()));
+    let (cli, pinned) = cli::argv::parse(env::args());
     startup.mark("parse_args");
 
-    let pinned = env::args().any(|a| a == "-r" || a == "--remote" || a.starts_with("--remote="));
     let mut remote_spec = cli.remote.clone();
     if !pinned
         && env::var_os("PROD_CODE_REMOTE").is_none()
