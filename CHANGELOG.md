@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Rename That Moves a File Is Validated on the File at Its New Path** (`crates/prod-code-mcp`, #1469):
+  The in-memory preview of a `WorkspaceEdit` (`refactor::planned_texts`), which `code_rename` and other tools validate before writing, applied text edits only. A rename of `old_name.rs` to `new_name.rs` was therefore checked with an edit to the new path applied to an empty file (the preview held just `g` for `pub fn g() {}`), so a valid module rename could be refused. The preview now follows the edit's operations in order: a renamed file's text moves to its new path and later edits apply to it, a created file starts empty, and a deleted or moved-away path is left out. Removing files is still not checked by the analyzer, and callers are told so as before.
 - **A Validation Engine Catches Up on Changes Made While It Loaded** (`crates/prod-code-gateway`, #1490):
   The Rust validation engine loads in the background and is added to the engines that synced and command-written files reach only when the load ends. A file that changed after the loader read it, and before that point, reached only the engines already there, so the new engine answered from the old text until the file changed again. While a validation engine of a root loads, the changes that reach the root are now journaled. The engine is published first and then given the journaled files' current text from disk, or their deletion. In that order no change can fall between the two.
 - **Synced and Command-Written Files Reach a Nested Project's Rust Engine** (`crates/prod-code-gateway`, #1488):
