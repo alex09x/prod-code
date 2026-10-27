@@ -101,3 +101,47 @@ async fn the_members_of_a_class_that_is_not_exported_are_left_out() {
     );
     assert!(!text.contains("hide"), "{text}");
 }
+
+const RUST_IMPLS: &str = "struct Hidden;\nimpl Hidden {\n    pub fn new() -> Self { Hidden }\n}\npub struct Shown<T>(T);\nimpl<T: Clone> Shown<T> {\n    pub fn get(&self) -> T { self.0.clone() }\n}\ntrait Secret {\n    fn tell(&self);\n}\nimpl Secret for Shown<u8> {\n    fn tell(&self) {}\n}\nimpl From<u8> for Elsewhere {\n    fn from(_: u8) -> Self { todo!() }\n}\n";
+
+/// #1587: a member of `impl T` is exported only when `T` is. `impl Hidden`'s `pub fn new` is
+/// unreachable from outside the crate and left out; a public generic type keeps its methods,
+/// and a type the file does not declare is not judged here.
+#[tokio::test]
+async fn an_impl_of_a_private_type_exports_none_of_its_members() {
+    let symbols = serde_json::json!([
+        node("Hidden", 23, (0, 0), vec![]),
+        node(
+            "impl Hidden",
+            19,
+            (1, 3),
+            vec![node("new", 6, (2, 2), vec![])]
+        ),
+        node("Shown", 23, (4, 4), vec![]),
+        node(
+            "impl<T: Clone> Shown<T>",
+            19,
+            (5, 7),
+            vec![node("get", 6, (6, 6), vec![])]
+        ),
+        node(
+            "Secret",
+            11,
+            (8, 10),
+            vec![node("tell", 12, (9, 9), vec![])]
+        ),
+        node(
+            "impl Secret for Shown<u8>",
+            19,
+            (11, 13),
+            vec![node("tell", 6, (12, 12), vec![])]
+        ),
+    ]);
+    let text = exported_outline("src/lib.rs", RUST_IMPLS, symbols).await;
+    for listed in ["Shown", "get"] {
+        assert!(text.contains(&format!("] {listed} (")), "{listed}: {text}");
+    }
+    for hidden in ["Hidden", "new", "Secret", "tell"] {
+        assert!(!text.contains(&format!("] {hidden} (")), "{hidden}: {text}");
+    }
+}
