@@ -144,8 +144,12 @@ pub(crate) fn seed_build_cache_within(
             .arg("-a")
             .arg(source.join(part))
             .arg(&dest)
-            .status()?;
-        if !status.success() {
+            .status();
+        if !status.as_ref().is_ok_and(|status| status.success()) {
+            // Half a part would pass for a seeded cache whose fingerprints no longer match
+            // what is on disk (#1525).
+            let _ = std::fs::remove_dir_all(dest.join(part));
+            let status = status?;
             return Err(std::io::Error::other(format!(
                 "copying {} failed: {status}",
                 source.join(part).display()

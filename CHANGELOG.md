@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Seeded Worktree Gets Dependency Trees Only for Its Own Lockfile, and Never Half a Tree** (`crates/prod-code-gateway`, #1525):
+  Seeding a fresh worktree copied the origin copy's `node_modules` trees and virtual environments without comparing the worktree's package manifest. A worktree with another `package.json` or lockfile therefore started with packages installed for the old one, and nothing repaired them, because those trees are not synced. A tree is now taken only when every package-manager input beside it is the same in the incoming manifest as in the seed copy, or absent from both: `package.json`, the npm/yarn/pnpm/bun lockfiles, `pyproject.toml`, `poetry.lock`, `uv.lock`, `Pipfile(.lock)`, `requirements.txt`, `setup.py`, `setup.cfg`. A copy that fails half way, or a venv that cannot be relocated, is removed instead of being left to pass for an installed tree. The same applies to a failed `target/debug` part.
 - **Exported-Only Rust Outlines Leave Out `impl` Blocks of Private Types** (`crates/prod-code-mcp`, #1587):
   `code_outline` with `exported_only` listed the `impl Hidden` block of a private `struct Hidden`, and its `pub fn new`, although nothing outside the crate can reach them. An `impl` now exports nothing when the type it implements, or its trait, is declared in the file and is not exported. Generic headers such as `impl<T: Clone> Shown<T>` and `impl fmt::Display for W<'a>` are read by their last path segment. A type the file does not declare is not judged.
 - **A Qualified Rust Name Resolves Through Its `pub use` Path** (`crates/prod-code-mcp`, #1582):
