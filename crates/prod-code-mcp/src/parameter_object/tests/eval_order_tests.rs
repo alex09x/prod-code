@@ -195,3 +195,48 @@ fn a_literal_counts_as_inert_only_where_the_language_converts_it() {
         None
     );
 }
+
+/// #1512: a checkout that declares its own `Int` runs its `init(integerLiteral:)` for a bare
+/// `Int` literal, so the literal is no longer moved past an argument that does something; the
+/// standard one, spelled `Swift.Int`, still is.
+#[test]
+fn a_swift_literal_of_a_type_the_checkout_declares_is_not_inert() {
+    use super::super::swift_shadow::{declares, shadowed_literal_types, with_shadowed};
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("Sources/App")).unwrap();
+    std::fs::write(
+        temp.path().join("Sources/App/Int.swift"),
+        "public struct Int: ExpressibleByIntegerLiteral {\n    public init(integerLiteral v: Swift.Int) { log.append(\"literal\") }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("Sources/App/Other.swift"),
+        "struct Integer {}\nlet x: String = \"\"\n",
+    )
+    .unwrap();
+    let shadowed = shadowed_literal_types(temp.path());
+    assert_eq!(
+        shadowed.into_iter().collect::<Vec<_>>(),
+        vec!["Int".to_string()]
+    );
+    assert!(declares("typealias String = NSString", "String"));
+    assert!(!declares("struct Integer {}", "Int"));
+    assert!(!declares("substruct Int", "Int"));
+
+    let language = Language::Swift;
+    let (_, params) = parse_params("_ a: Swift.Int, _ b: Swift.Int, _ c: Int", language);
+    let args = strings(&["mark(\"a\")", "mark(\"b\")", "3"]);
+    let bound = bind_arguments(&args, &params, language).expect("bound");
+    assert_eq!(
+        reordered_arguments(&args, &bound, &[0, 2], &params, language),
+        None,
+        "taken for the standard Int, the literal is moved"
+    );
+    let marked = with_shadowed(&params, &shadowed_literal_types(temp.path()));
+    assert!(
+        reordered_arguments(&args, &bound, &[0, 2], &marked, language).is_some(),
+        "the checkout's Int runs code: the literal is not moved past `mark(\"b\")`"
+    );
+    // `Swift.Int` is the standard one whatever the checkout declares.
+    assert_eq!(marked[0].ty, params[0].ty);
+}

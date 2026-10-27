@@ -179,29 +179,32 @@ fn effect_of(arg: &str, param: Option<&Param>, language: Language) -> Effect {
     Effect::Unknown
 }
 
+/// The Swift standard types whose literals the standard library initialises.
+pub(crate) const SWIFT_LITERAL_TYPES: &[&str] = &[
+    "Int",
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "UInt",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "Double",
+    "Float",
+    "Bool",
+    "String",
+    "Character",
+];
+
 /// Whether a Swift parameter type is one the standard library initialises a literal of,
-/// optional or not: a number, `Bool`, `String` or `Character`.
+/// optional or not: a number, `Bool`, `String` or `Character`. A bare name the checkout gives
+/// its own type is not one; callers mark it first (`swift_shadow::with_shadowed`, #1512).
 fn swift_literal_type(ty: &str) -> bool {
     let ty = ty.trim().trim_end_matches(['?', '!']);
     let ty = ty.strip_prefix("Swift.").unwrap_or(ty);
-    matches!(
-        ty,
-        "Int"
-            | "Int8"
-            | "Int16"
-            | "Int32"
-            | "Int64"
-            | "UInt"
-            | "UInt8"
-            | "UInt16"
-            | "UInt32"
-            | "UInt64"
-            | "Double"
-            | "Float"
-            | "Bool"
-            | "String"
-            | "Character"
-    )
+    SWIFT_LITERAL_TYPES.contains(&ty)
 }
 
 /// Whether a C++ parameter, declared as `ty` (its name `name` included), has a built-in type —

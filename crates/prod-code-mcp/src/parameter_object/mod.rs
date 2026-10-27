@@ -26,6 +26,7 @@ pub mod rust_introduce;
 mod rust_scope;
 pub mod rust_types;
 mod rust_uses;
+pub(crate) mod swift_shadow;
 pub mod syntax;
 pub mod type_render;
 pub mod types;
