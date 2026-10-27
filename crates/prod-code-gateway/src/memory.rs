@@ -10,6 +10,21 @@
 
 //! Memory watchdog and RSS tracking module for prod-code gateway daemon.
 
+/// Gives the heap this process has freed back to the system, and returns its RSS before and
+/// after, in bytes. glibc's malloc keeps freed memory in its arenas, one per thread that
+/// allocated, and an unloaded analysis database is freed from many threads: a node reported
+/// 33 GB of RSS with no workspace loaded, and refused every new engine for it (#1590). Called
+/// after engines are dropped, off the runtime's threads. Elsewhere it changes nothing.
+pub fn return_freed_memory() -> (Option<u64>, Option<u64>) {
+    let before = get_process_rss_bytes();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` only returns free memory of the allocator to the system.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    (before, get_process_rss_bytes())
+}
+
 /// Retrieve current resident set size (RSS) in bytes for this process.
 pub fn get_process_rss_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
@@ -186,6 +201,35 @@ mod tests {
             .expect("a new directory is measured on its existing ancestor");
         assert!(parent.abs_diff(child) <= 5, "{parent} vs {child}");
         assert!(!new.exists(), "measuring creates nothing");
+    }
+
+    /// #1590: heap freed in small blocks below one that stays allocated is kept by glibc's
+    /// malloc, and RSS with it, until it is given back. Measured in a thread of its own.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn freed_heap_is_given_back_to_the_system() {
+        const BLOCKS: usize = 64 * 1024;
+        let (kept, given_back) = std::thread::spawn(|| {
+            let mut blocks: Vec<Box<[u8; 4096]>> = (0..BLOCKS)
+                .map(|i| Box::new([(i % 251) as u8; 4096]))
+                .collect();
+            // Allocated last, above the freed blocks, so the heap's top is never free.
+            let pin = Box::new([1u8; 4096]);
+            blocks.clear();
+            blocks.shrink_to_fit();
+            let (before, after) = return_freed_memory();
+            std::hint::black_box(&pin);
+            (before.unwrap(), after.unwrap())
+        })
+        .join()
+        .unwrap();
+        let freed = kept.saturating_sub(given_back);
+        assert!(
+            freed > 128 * 1024 * 1024,
+            "RSS {} MB before, {} MB after",
+            kept / (1024 * 1024),
+            given_back / (1024 * 1024)
+        );
     }
 
     #[test]
