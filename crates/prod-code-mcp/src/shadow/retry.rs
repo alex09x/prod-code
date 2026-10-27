@@ -51,7 +51,7 @@ pub async fn run_shadow(
         remote,
         root,
         subdir,
-        command.clone(),
+        warmup_command(root, subdir, &command),
         env.clone(),
         timeout_secs,
         false,
@@ -90,6 +90,40 @@ pub async fn run_shadow(
             .saturating_add(warmup.exit.duration_ms);
     }
     Ok(retry)
+}
+
+/// The warm-up runs in the node's persistent copy of the workspace, not in a shadow, so it must
+/// leave that copy as the checkout has it (#1443). With a `Cargo.lock` in the checkout, it runs
+/// `--locked` and cannot change it. Without one, Cargo would write one there that the checkout
+/// does not have: it is removed again after the warm-up.
+fn warmup_command(root: &Path, subdir: Option<&str>, command: &[String]) -> Vec<String> {
+    let start = subdir.map_or_else(|| root.to_path_buf(), |s| root.join(s));
+    let locked = start
+        .ancestors()
+        .take_while(|dir| dir.starts_with(root))
+        .any(|dir| dir.join("Cargo.lock").is_file());
+    let check = command
+        .iter()
+        .position(|arg| arg == "check")
+        .unwrap_or(command.len().saturating_sub(1));
+    if locked {
+        let mut out = command.to_vec();
+        if !out.iter().any(|arg| arg == "--locked" || arg == "--frozen") {
+            out.insert(check + 1, "--locked".to_string());
+        }
+        return out;
+    }
+    let mut out: Vec<String> = [
+        "sh",
+        "-c",
+        "\"$@\"; status=$?; manifest=$(cargo locate-project --workspace --message-format plain \
+         2>/dev/null) && rm -f \"$(dirname \"$manifest\")/Cargo.lock\"; exit $status",
+        "sh",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    out.extend(command.iter().cloned());
+    out
 }
 
 fn needs_dependency_metadata_warmup(command: &[String], output: &str) -> bool {
@@ -136,5 +170,34 @@ mod tests {
             &cargo_check,
             "error: could not write target/debug/deps/libserde.rmeta: No space left on device"
         ));
+    }
+
+    /// #1443: the warm-up cannot leave a lock file the checkout does not have, nor change one
+    /// it has.
+    #[test]
+    fn the_warmup_keeps_the_persistent_copy_as_the_checkout_has_it() {
+        let check = ["cargo", "+stable", "check", "--workspace"].map(str::to_string);
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("crates/a")).unwrap();
+
+        let unlocked = warmup_command(root, Some("crates/a"), &check);
+        assert_eq!(&unlocked[..2], &["sh".to_string(), "-c".to_string()]);
+        assert!(
+            unlocked[2].contains("cargo locate-project --workspace"),
+            "{unlocked:?}"
+        );
+        assert!(unlocked[2].contains("rm -f"), "{unlocked:?}");
+        assert!(unlocked[2].contains("exit $status"), "{unlocked:?}");
+        assert_eq!(&unlocked[4..], &check);
+
+        // A lock at the workspace root, above the subdirectory.
+        std::fs::write(root.join("Cargo.lock"), "").unwrap();
+        assert_eq!(
+            warmup_command(root, Some("crates/a"), &check),
+            ["cargo", "+stable", "check", "--locked", "--workspace"].map(str::to_string)
+        );
+        let frozen = ["cargo", "check", "--frozen"].map(str::to_string);
+        assert_eq!(warmup_command(root, None, &frozen), frozen);
     }
 }

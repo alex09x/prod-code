@@ -1503,9 +1503,18 @@ async fn validate_compile_metadata_warmup_case(
                 let Some(Ok(WireMessage::ExecRequest(request))) = framed.next().await else {
                     panic!("the metadata warm-up uses a plain remote exec");
                 };
+                // The fixture has no Cargo.lock: the warm-up removes the one Cargo writes into
+                // the persistent copy (#1443).
+                assert_eq!(&request.command[..2], &["sh", "-c"]);
+                assert!(
+                    request.command[2].contains("rm -f")
+                        && request.command[2].contains("Cargo.lock"),
+                    "{:?}",
+                    request.command
+                );
                 assert_eq!(
-                    request.command,
-                    vec![
+                    &request.command[4..],
+                    &[
                         "cargo",
                         "check",
                         "--workspace",
