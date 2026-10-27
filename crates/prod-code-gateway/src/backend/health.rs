@@ -22,6 +22,10 @@ use super::request_history::OwnedTask;
 use super::worker::BackendWorker;
 use super::writer::{FrameWrite, FrameWriter};
 
+/// Probe intervals an ordinary request may stay unanswered before the server is probed
+/// anyway: a request that long without an answer is taken to be stuck.
+const STUCK_AFTER_INTERVALS: u32 = 8;
+
 impl BackendWorker {
     pub(crate) fn start_health_probe(&mut self, interval: Duration, response_timeout: Duration) {
         let stdin = Arc::downgrade(&self.writer.stdin);
@@ -55,6 +59,19 @@ impl BackendWorker {
                     break;
                 };
                 if lock_unpoisoned(&activity).elapsed() < interval {
+                    continue;
+                }
+                // A request still being answered defers the probe: a serial server gets to the
+                // probe only after it, and the probe's timeouts would retire a server that is
+                // busy, not stuck. One unanswered for `STUCK_AFTER_INTERVALS` is probed all the
+                // same (#1428).
+                if let Some(history) = issued_requests.upgrade()
+                    && lock_unpoisoned(&history)
+                        .oldest_outstanding()
+                        .is_some_and(|at| {
+                            at.elapsed() < interval.saturating_mul(STUCK_AFTER_INTERVALS)
+                        })
+                {
                     continue;
                 }
                 let activity_before_wait = epoch.load(Ordering::Acquire);

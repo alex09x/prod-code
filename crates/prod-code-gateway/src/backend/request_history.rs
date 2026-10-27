@@ -11,20 +11,22 @@
 use super::probe::lock_unpoisoned;
 use std::collections::VecDeque;
 use std::sync::{Mutex as StdMutex, Weak};
+use std::time::Instant;
 
 pub(crate) const MAX_RETAINED_DISPATCH_IDENTITIES: usize = 256;
 
+/// The ordinary requests sent to the server and not answered yet, oldest first (#1428).
 #[derive(Default)]
 pub(crate) struct IssuedRequestHistory {
     pub(crate) next_token: u64,
-    pub(crate) requests: VecDeque<(u64, serde_json::Value)>,
+    pub(crate) requests: VecDeque<(u64, serde_json::Value, Instant)>,
 }
 
 impl IssuedRequestHistory {
     pub(crate) fn insert(&mut self, id: serde_json::Value) -> u64 {
         self.next_token = self.next_token.wrapping_add(1);
         let token = self.next_token;
-        self.requests.push_back((token, id));
+        self.requests.push_back((token, id, Instant::now()));
         while self.requests.len() > MAX_RETAINED_DISPATCH_IDENTITIES {
             self.requests.pop_front();
         }
@@ -35,14 +37,29 @@ impl IssuedRequestHistory {
         if let Some(index) = self
             .requests
             .iter()
-            .position(|(candidate, _)| *candidate == token)
+            .position(|(candidate, _, _)| *candidate == token)
         {
             self.requests.remove(index);
         }
     }
 
-    pub(crate) fn contains(&self, id: &serde_json::Value) -> bool {
-        self.requests.iter().any(|(_, candidate)| candidate == id)
+    /// Whether `id` answers an outstanding request, which it then no longer is: a response
+    /// replayed for a request already answered is not new evidence that the server works.
+    pub(crate) fn take(&mut self, id: &serde_json::Value) -> bool {
+        let Some(index) = self
+            .requests
+            .iter()
+            .position(|(_, candidate, _)| candidate == id)
+        else {
+            return false;
+        };
+        self.requests.remove(index);
+        true
+    }
+
+    /// When the oldest unanswered request was sent.
+    pub(crate) fn oldest_outstanding(&self) -> Option<Instant> {
+        self.requests.iter().map(|(_, _, at)| *at).min()
     }
 }
 

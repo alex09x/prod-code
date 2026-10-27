@@ -400,9 +400,35 @@ async fn controlled_backends_prove_health_lifecycle_and_private_routing() {
                     .send_lsp(r#"{"jsonrpc":"2.0","id":99,"method":"fixture/lost"}"#)
                     .await
                     .expect("lost request is written");
+                // An unanswered request defers probes for eight intervals before the server is
+                // taken to be stuck and probed (#1428).
                 wait_until(
-                    Duration::from_millis(500),
+                    Duration::from_millis(1500),
                     "lost request not retained as busy",
+                    || !worker.is_alive(),
+                )
+                .await;
+            }
+            "busy" => {
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","id":50,"method":"fixture/slow"}"#)
+                    .await
+                    .expect("slow request is written");
+                assert_eq!(receive_id(&mut replies, 50).await["result"], "slow");
+                assert!(
+                    worker.is_alive(),
+                    "a long silent request is work, not a stuck server (#1428)"
+                );
+            }
+            "replay-ordinary" => {
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","id":60,"method":"fixture/once"}"#)
+                    .await
+                    .expect("ordinary request is written");
+                assert_eq!(receive_id(&mut replies, 60).await["result"], "once");
+                wait_until(
+                    Duration::from_millis(1500),
+                    "a replayed answer is not liveness (#1428)",
                     || !worker.is_alive(),
                 )
                 .await;
@@ -555,7 +581,7 @@ while True:
         break
     method = request.get('method')
     if method == 'prodCode/healthProbe':
-        if mode in ('success', 'flood', 'drop', 'identity'):
+        if mode in ('success', 'flood', 'drop', 'identity', 'busy'):
             send({'jsonrpc': '2.0', 'id': request['id'], 'result': None})
             if mode == 'identity' and 'actual_probe_id' not in globals():
                 actual_probe_id = request['id']
@@ -570,6 +596,10 @@ while True:
             if 'replayed' not in globals():
                 replayed = {'jsonrpc': '2.0', 'id': request['id'], 'result': None}
             send(replayed)
+        elif mode == 'replay-ordinary':
+            # Every probe gets the answer to an ordinary request already answered.
+            if 'ordinary_reply' in globals():
+                send(ordinary_reply)
         elif mode == 'malformed':
             send({'jsonrpc': '2.0', 'id': request['id'], 'method': 'workspace/configuration', 'params': {'items': []}})
             reply = read()
@@ -577,6 +607,14 @@ while True:
             send({'jsonrpc': '2.0', 'id': request['id'], 'result': None, 'error': {'code': -1, 'message': 'both'}})
     elif method == 'fixture/ping':
         send({'jsonrpc': '2.0', 'id': request['id'], 'result': 'pong'})
+    elif method == 'fixture/slow':
+        # A long serial request with no progress: probes wait unread behind it.
+        import time
+        time.sleep(0.4)
+        send({'jsonrpc': '2.0', 'id': request['id'], 'result': 'slow'})
+    elif method == 'fixture/once':
+        ordinary_reply = {'jsonrpc': '2.0', 'id': request['id'], 'result': 'once'}
+        send(ordinary_reply)
     elif method == 'fixture/collide':
         send({'jsonrpc': '2.0', 'id': request['id'], 'result': 'pong'})
         send({'jsonrpc': '2.0', 'id': actual_probe_id, 'method': 'workspace/configuration', 'params': {'items': []}})
@@ -606,6 +644,8 @@ while True:
         "flood",
         "identity",
         "drop",
+        "busy",
+        "replay-ordinary",
         "cancel-init",
     ] {
         let child = tokio::process::Command::new(std::env::current_exe().expect("test binary"))
