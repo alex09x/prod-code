@@ -72,11 +72,7 @@ impl GenericLspConfig {
         let installed = if command.is_absolute() {
             command.is_file()
         } else if config.command == "xcrun" {
-            std::process::Command::new("xcrun")
-                .args(["--find", "sourcekit-lsp"])
-                .output()
-                .map(|out| out.status.success())
-                .unwrap_or(false)
+            launcher_finds(Path::new("xcrun"), "sourcekit-lsp")
         } else {
             which_bin(&config.command).is_ok()
         };
@@ -90,5 +86,72 @@ impl GenericLspConfig {
             None => config.command.clone(),
         };
         Some(label)
+    }
+}
+
+/// How long a launcher gets to say where a tool is.
+const LAUNCHER_PROBE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether `launcher --find tool` (`xcrun --find sourcekit-lsp`) names the tool in the
+/// selected toolchain within [`LAUNCHER_PROBE`]. A launcher that is installed while the
+/// toolchain lacks the tool, that is missing, or that hangs, finds nothing (#1449).
+pub fn launcher_finds(launcher: &Path, tool: &str) -> bool {
+    let Ok(mut child) = std::process::Command::new(launcher)
+        .args(["--find", tool])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + LAUNCHER_PROBE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::launcher_finds;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn launcher(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// A launcher that is present but cannot find the server is no server (#1449).
+    #[test]
+    fn a_present_launcher_without_the_server_finds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let found = launcher(
+            dir.path(),
+            "found",
+            "[ \"$2\" = sourcekit-lsp ] && echo /x/sourcekit-lsp",
+        );
+        let absent = launcher(
+            dir.path(),
+            "absent",
+            "echo 'unable to find utility' >&2; exit 72",
+        );
+        assert!(launcher_finds(&found, "sourcekit-lsp"));
+        assert!(!launcher_finds(&absent, "sourcekit-lsp"));
+        assert!(!launcher_finds(
+            &dir.path().join("missing"),
+            "sourcekit-lsp"
+        ));
     }
 }

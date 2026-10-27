@@ -211,7 +211,12 @@ async fn installed_sourcekit_lsp_initializes_and_answers_before_and_after_probes
     let config = GenericLspConfig::for_swift();
     let sourcekit_lsp = match config.command.as_str() {
         "sourcekit-lsp" => prod_code_engine_generic::which_bin("sourcekit-lsp").is_ok(),
-        "xcrun" => prod_code_engine_generic::which_bin("xcrun").is_ok(),
+        // The launcher alone is no server: ask it for SourceKit in the selected toolchain, as
+        // the gateway does (#1449).
+        "xcrun" => prod_code_engine_generic::config::installed::launcher_finds(
+            std::path::Path::new("xcrun"),
+            "sourcekit-lsp",
+        ),
         _ => false,
     };
     if !engine_is_available(
