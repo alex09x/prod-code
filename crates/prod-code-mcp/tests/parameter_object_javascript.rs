@@ -1149,3 +1149,78 @@ async fn a_real_typescript_server_bundles_the_javascript_fixture() {
         VIEW.replace("build(title, 7)", "build(title, { width: 7, height: 2 })")
     );
 }
+
+const EVALS: &str = "export function direct(width, height) {
+  return eval(\"width\") + height;
+}
+
+export function indirect(width, height) {
+  return globalThis.eval(\"1\") + width + height + \"eval(x)\".length;
+}
+";
+
+/// A direct `eval(…)` can read the parameters by name, so its function is refused; an indirect
+/// one, a property `obj.eval(…)`, and `eval` inside a string do not stop the bundling (#1510).
+#[tokio::test]
+async fn a_direct_eval_is_refused_and_an_indirect_one_is_not() {
+    let ws = Workspace::new(&[FILES[0], FILES[1], ("src/evals.js", EVALS)]);
+    let file = ws.path("src/evals.js");
+    let f = file.clone();
+    let uses = |needle: &str, skip| spot(EVALS, needle, skip);
+    let (dw, dh) = (uses("direct(width", 7), uses("direct(width, height", 14));
+    let (iw, ih) = (
+        uses("indirect(width", 9),
+        uses("indirect(width, height", 16),
+    );
+    let (dh_use, iw_use, ih_use) = (
+        uses("+ height;", 2),
+        uses("+ width +", 2),
+        uses("+ height +", 2),
+    );
+    let remote = table_gateway(move |at| {
+        let one = |spot: (u32, u32)| Some(answers::locations(&f, &[spot]));
+        if at == dw {
+            Some(serde_json::json!([]))
+        } else if at == dh {
+            one(dh_use)
+        } else if at == iw {
+            one(iw_use)
+        } else if at == ih {
+            one(ih_use)
+        } else {
+            None
+        }
+    })
+    .await;
+    let root = ws.root();
+    let (direct, indirect) = (uses("direct(", 0), uses("indirect(", 0));
+    let err = match introduce(
+        remote,
+        &root,
+        &file,
+        direct.0,
+        direct.1,
+        &["width", "height"],
+        "opts",
+        false,
+    )
+    .await
+    {
+        Ok(done) => panic!("`direct` was bundled: {}", done.render(4000)),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(err.contains("calls `eval` directly"), "{err}");
+    let done = introduce(
+        remote,
+        &root,
+        &file,
+        indirect.0,
+        indirect.1,
+        &["width", "height"],
+        "opts",
+        false,
+    )
+    .await
+    .expect("`indirect` is bundled");
+    assert_eq!(done.symbol, "indirect");
+}
