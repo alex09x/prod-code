@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Direct CLI Queries Warn When the Server Was Still Indexing** (`crates/prod-code-client`, #1520):
+  A direct query such as `prod-code impls FILE LINE COL` dropped the gateway's `prod-code/indexing` note, so a partial list, or "No implementations found", gave no hint that the server had not finished indexing. The note is now printed to stderr as a warning that the answer may be incomplete. The answer itself and the response matching are unchanged.
 - **`prod-code` Without a Subcommand Refuses at `initialize` Like `prod-code lsp`** (`crates/prod-code-client`, #1519):
   `prod-code` with no subcommand runs the editor bridge, but when no gateway could be placed it exited before the editor's `initialize`. Only an explicit `prod-code lsp` gave the structured refusal. Both now answer `initialize` with the reason.
 - **The Editor Bridge Ends Cleanly After the Editor's `exit`** (`crates/prod-code-client`, #1521):
