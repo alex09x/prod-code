@@ -97,6 +97,8 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
                         "diff": patch,
                         "compile": compile || borrow_check,
                         "borrow_check": borrow_check,
+                        // `--json` is the same contract as whole-file validation (#1456).
+                        "json": json,
                     }),
                 )
                 .await;
