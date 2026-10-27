@@ -258,3 +258,50 @@ fn test_diagnostics_respect_module_boundaries_import_bindings_and_inline_uses() 
         "native unresolved-import errors must remain visible"
     );
 }
+
+/// #1447: with `[rust] sysroot = false` the standard library is deliberately not analyzed, so
+/// the prelude's `Vec`, `Option`, `String` and its macros resolve to nothing. That is the
+/// setting, not the code's error: they are not reported, while a name that is missing from the
+/// user's own code still is.
+#[test]
+fn test_diagnostics_without_the_sysroot_leave_the_prelude_alone() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("prod-code.toml"),
+        "[rust]\nproc_macro_srv = \"disabled\"\nsysroot = false\n",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    let lib = temp.path().join("src/lib.rs");
+    std::fs::write(
+        &lib,
+        concat!(
+            "pub fn f() -> Vec<u8> { Vec::new() }\n",
+            "pub fn g() -> Option<String> { Some(String::new()) }\n",
+            "pub fn h() -> Result<Box<u8>, ()> { let _v = vec![1u8]; Ok(Box::new(1)) }\n",
+            "pub fn i(_x: NoSuchType) {}\n",
+        ),
+    )
+    .unwrap();
+    let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+    let diagnostics = engine.diagnostics(&lib).unwrap();
+    let found: Vec<(u32, &str)> = diagnostics
+        .iter()
+        .filter(|d| d.code == "unresolved-path")
+        .map(|d| (d.line, d.message.split('`').nth(1).unwrap_or("")))
+        .collect();
+    assert_eq!(found, vec![(4, "NoSuchType")], "{diagnostics:?}");
+    // rust-analyzer's own reports of `Some`, `Ok` and `vec!` are the setting's too.
+    assert!(
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == "error")
+            .all(|d| d.line == 4),
+        "{diagnostics:?}"
+    );
+}

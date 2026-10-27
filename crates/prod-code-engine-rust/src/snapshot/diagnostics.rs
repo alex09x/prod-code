@@ -42,7 +42,8 @@ impl RustEngineSnapshot {
             .filter(|d| d.range.file_id == file_id)
             .map(|d| d.range.range)
             .collect();
-        let unresolved = self.unresolved_paths(file_id, &text, &covered);
+        let without_std = self.without_standard_library();
+        let unresolved = self.unresolved_paths(file_id, &text, &covered, without_std);
         tracing::debug!(
             file = %path.display(),
             engine = self.label,
@@ -55,6 +56,13 @@ impl RustEngineSnapshot {
         Ok(diagnostics
             .into_iter()
             .filter(|d| d.range.file_id == file_id)
+            // Without the sysroot, a standard name resolves to nothing by design (#1447).
+            .filter(|d| {
+                !(without_std
+                    && text
+                        .get(usize::from(d.range.range.start())..usize::from(d.range.range.end()))
+                        .is_some_and(|t| super::prelude::standard_name_in(d.code.as_str(), t)))
+            })
             .map(|d| {
                 let (line, col) = offset_to_line_col(&text, d.range.range.start());
                 let (end_line, end_col) = offset_to_line_col(&text, d.range.range.end());
@@ -90,6 +98,7 @@ impl RustEngineSnapshot {
         file_id: FileId,
         text: &str,
         covered: &[TextRange],
+        without_std: bool,
     ) -> Vec<FileDiagnostic> {
         use ra_ap_syntax::AstNode;
         use ra_ap_syntax::ast::{self, PathSegmentKind};
@@ -138,6 +147,11 @@ impl RustEngineSnapshot {
             // the leaf ranges already covered by those diagnostics.
             if !unresolved(&name)
                 || matches!(name_text.as_str(), "std" | "core" | "alloc")
+                // Nor its prelude: `Vec`, `Option`, `String` start no path it can resolve
+                // (#1447).
+                || (without_std
+                    && segment.parent_path().qualifier().is_none()
+                    && super::prelude::is_standard_name(&name_text))
                 || covered.iter().any(|c| c.intersect(range).is_some())
                 || segment.syntax().ancestors().any(|n| {
                     matches!(

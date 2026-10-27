@@ -30,6 +30,7 @@ pub mod hierarchy;
 pub(crate) mod lifetime;
 mod module_path;
 pub mod navigation;
+mod prelude;
 pub mod refactor;
 pub mod ssr;
 pub use lifetime::SnapshotCancellation;
