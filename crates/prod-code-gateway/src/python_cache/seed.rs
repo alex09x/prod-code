@@ -72,6 +72,8 @@ pub fn seed_python_worktree_within(
     );
     let cache_dir = python_stub_cache_dir().join(namespace);
     ensure_cache_dir(&cache_dir)?;
+    // The new worktree's typings link to this namespace: it is in use (#1530).
+    super::fs_ops::mark_dir_used(&cache_dir);
     let venv_stubs = if compatible {
         from_venv_stubs
     } else {

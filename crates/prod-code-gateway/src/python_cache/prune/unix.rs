@@ -21,6 +21,9 @@ use super::timestamp::parse_tmp_stub_timestamp;
 #[cfg(test)]
 mod tests;
 
+/// The file whose modification time records when a directory's stubs were last used.
+pub(crate) const USE_MARKER: &str = ".prod-code-used";
+
 pub struct CacheEntry {
     pub rel_components: Vec<std::ffi::CString>,
     pub file_name: std::ffi::CString,
@@ -96,6 +99,7 @@ pub fn prune_unix(
             now,
             tmp_grace_period,
             &mut removed,
+            0,
         );
     }
 
@@ -134,6 +138,9 @@ pub fn prune_unix(
     Ok(removed)
 }
 
+/// `inherited_used_at` is the latest use marker of the directories above this one: a namespace
+/// a workspace links to is used as a whole.
+#[allow(clippy::too_many_arguments)]
 unsafe fn collect_dir(
     current_fd: libc::c_int,
     rel_components: &mut Vec<std::ffi::CString>,
@@ -142,6 +149,7 @@ unsafe fn collect_dir(
     now: SystemTime,
     tmp_grace_period: Duration,
     removed: &mut usize,
+    inherited_used_at: i64,
 ) {
     unsafe {
         let dup_fd = libc::dup(current_fd);
@@ -153,6 +161,23 @@ unsafe fn collect_dir(
             libc::close(dup_fd);
             return;
         }
+        // When the stubs of this directory were last used (`fs_ops::mark_used`), #1530.
+        let used_at = {
+            let mut marker: libc::stat = std::mem::zeroed();
+            let name = std::ffi::CString::new(USE_MARKER).expect("no NUL in the marker's name");
+            let own = if libc::fstatat(
+                current_fd,
+                name.as_ptr(),
+                &mut marker,
+                libc::AT_SYMLINK_NOFOLLOW,
+            ) == 0
+            {
+                marker.st_mtime
+            } else {
+                0
+            };
+            own.max(inherited_used_at)
+        };
 
         loop {
             let entry = libc::readdir(dir_stream);
@@ -236,13 +261,16 @@ unsafe fn collect_dir(
                         now,
                         tmp_grace_period,
                         removed,
+                        used_at,
                     );
                     rel_components.pop();
                     libc::close(child_fd);
                 }
             } else if mode == libc::S_IFREG {
-                let modified =
-                    SystemTime::UNIX_EPOCH + Duration::from_secs(st.st_mtime.max(0) as u64);
+                // An entry's age runs from its last use: the later of when its source was
+                // published (its mtime) and when its directory's stubs were last used (#1530).
+                let modified = SystemTime::UNIX_EPOCH
+                    + Duration::from_secs(st.st_mtime.max(used_at).max(0) as u64);
                 let size = st.st_size as u64;
                 *total_size += size;
                 files.push(CacheEntry {

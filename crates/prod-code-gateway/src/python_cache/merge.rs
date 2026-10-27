@@ -118,6 +118,9 @@ fn merge_stubs_inner(src_dir: &Path, dst_dir: &Path, visited: &mut VisitedDirs) 
             if should_check {
                 let copied = copy_and_publish_stub(&path, &target_path)?;
                 bytes_written += copied;
+            } else {
+                // The cache's copy serves this environment too: it is in use (#1530).
+                super::fs_ops::mark_used(&target_path);
             }
         }
     }

@@ -168,7 +168,16 @@ pub fn python_stub_cache_env() -> Vec<(String, String)> {
 
 /// Uses the workspace's version-isolated typings view when starting its type checker.
 pub fn python_stub_cache_env_for_workspace(workspace: &Path) -> Vec<(String, String)> {
-    python_stub_cache_env_for_dir(&workspace.join("typings"))
+    let typings = workspace.join("typings");
+    // The shared namespace the view links to is in use while a checker reads it (#1530).
+    let cache = python_stub_cache_dir();
+    let cache = std::fs::canonicalize(&cache).unwrap_or(cache);
+    if let Ok(namespace) = std::fs::canonicalize(&typings)
+        && namespace.starts_with(&cache)
+    {
+        super::fs_ops::mark_dir_used(&namespace);
+    }
+    python_stub_cache_env_for_dir(&typings)
 }
 
 pub fn python_stub_cache_env_for_dir(dir: &Path) -> Vec<(String, String)> {
