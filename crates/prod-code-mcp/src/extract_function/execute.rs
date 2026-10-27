@@ -155,11 +155,13 @@ pub async fn extract_function(
             untyped = Some(literal.to_string());
             break;
         };
-        let name = if varying.len() == 1 {
+        let preferred = if varying.len() == 1 {
             "value".to_string()
         } else {
             format!("value{}", n + 1)
         };
+        let taken: Vec<String> = parameters.iter().map(|(p, _)| p.clone()).collect();
+        let name = super::rewrite::fresh_name(&extracted, &preferred, &taken);
         parameters.push((name, ty));
     }
     if untyped.is_some() {

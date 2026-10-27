@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Function Extraction Keeps Other Files' Text and Picks Unshadowed Parameter Names** (`crates/prod-code-mcp`, #1439):
+  - When a duplicate in another file is replaced, only the inserted call is renamed from `fun_name` to the requested name. That file's own text, such as a `"fun_name"` string, a comment, or a function of its own with that name, stays as it was.
+  - In the file the helper is made in, only name tokens are renamed, so strings and comments keep the placeholder's spelling.
+  - A parameter that replaces differing literals gets a name nothing in the file already uses (`value`, or `value_2`, …). Before, a local `value` in the helper's body could shadow it and change the result.
 - **Rust Function Extraction Finds Duplicates by Rust's Own Tokens and Real Local Reads** (`crates/prod-code-mcp`, #1438):
   - Duplicate copies of the selection are matched on the tokens of Rust's own lexer, so code inside a `/* */` comment or a raw, byte or C string is no longer taken for a copy and rewritten.
   - A `let` binding is told by its role in the pattern, not by its case: `let Gross = …` is a binding, while the `Some`, `P` and `E::V` of `let Some(n)`, `let P { x }` and `let E::V(y)` are not. A path pattern with `::` is no longer cut as if it were a type annotation.

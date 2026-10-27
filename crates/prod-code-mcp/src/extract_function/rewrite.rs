@@ -73,24 +73,49 @@ pub fn indent_at(text: &str, at: usize) -> &str {
     &text[line..line + width]
 }
 
-/// `text` with every whole `fun_name` made `name`.
+/// `text` with every `fun_name` name token made `name`: one in a string or a comment stays as
+/// it is (#1439).
 pub fn rename_placeholder(text: &str, name: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
-    for (i, _) in text.match_indices(PLACEHOLDER) {
-        let whole = !text[..i].chars().next_back().is_some_and(is_ident)
-            && !text[i + PLACEHOLDER.len()..]
-                .chars()
-                .next()
-                .is_some_and(is_ident);
-        if whole && i >= at {
-            out.push_str(&text[at..i]);
+    for (kind, s, e) in super::tokens::tokens(text) {
+        if kind == super::tokens::Token::Word && &text[s..e] == PLACEHOLDER {
+            out.push_str(&text[at..s]);
             out.push_str(name);
-            at = i + PLACEHOLDER.len();
+            at = e;
         }
     }
     out.push_str(&text[at..]);
     out
+}
+
+/// `preferred`, or `preferred_2`, `preferred_3`, …: the first that no name token of `code` and
+/// no name in `taken` already spells, so a parameter that replaces a literal is never shadowed
+/// by a local of the same name in the helper's body (#1439).
+pub fn fresh_name(code: &str, preferred: &str, taken: &[String]) -> String {
+    let words: std::collections::BTreeSet<&str> = super::tokens::tokens(code)
+        .into_iter()
+        .filter(|(kind, ..)| *kind == super::tokens::Token::Word)
+        .map(|(_, s, e)| &code[s..e])
+        .collect();
+    let free = |name: &str| !words.contains(name) && !taken.iter().any(|t| t == name);
+    if free(preferred) {
+        return preferred.to_string();
+    }
+    (2..)
+        .map(|k| format!("{preferred}_{k}"))
+        .find(|name| free(name))
+        .expect("an unused suffix exists")
+}
+
+/// Another file, `original`, with the calls of `edits` put in and named `name`. Only the calls
+/// are renamed: the file's own text, even a `fun_name` of its own, stays as it was (#1439).
+pub fn with_calls(original: &str, edits: &[(usize, usize, String)], name: &str) -> String {
+    let named: Vec<(usize, usize, String)> = edits
+        .iter()
+        .map(|(from, to, call)| (*from, *to, rename_placeholder(call, name)))
+        .collect();
+    apply_edits(original, &named)
 }
 
 /// The type in a hover on a literal: the first code block, when it is one line that reads like
@@ -159,3 +184,7 @@ pub async fn errors_in(
         })
         .collect())
 }
+
+#[cfg(test)]
+#[path = "rewrite_tests.rs"]
+mod tests;
