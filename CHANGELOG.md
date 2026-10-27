@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Search Stops Promising Background Embedding When the Model for Declarations Failed** (`crates/prod-code-gateway`, `crates/prod-code-protocol`, `crates/prod-code-mcp`, #1485):
+  When the model that embeds declarations could not be loaded, it stayed missing, but every later search still started a background pass that embedded nothing, and the answer still said the rest were being embedded. The gateway now remembers that failure. Searches start no such pass, and the dense status carries a new `embedding` flag (true by default, so older gateways read as before). `code_search` then says that no more declarations are being embedded. Lexical search and the declarations already embedded work as before.
 - **The Engine-Cache Test No Longer Races Other Tests' Status Requests** (`crates/prod-code-gateway`, test, #1487):
   The test of the installed-engine cache planted a sentinel in the process-wide cache, so a status request from a test running at the same time could read the sentinel instead of the real engines. The cache logic now works on a cache it is given. The process keeps one, and the test uses its own, and checks that the sentinel never reaches the shared one.
 - **Pulling a File Takes the Node's Executable Bit Both Ways** (`crates/prod-code-mcp`, #1477):

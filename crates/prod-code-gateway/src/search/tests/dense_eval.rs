@@ -374,3 +374,27 @@ fn a_declaration_both_halves_find_outranks_one_found_by_one() {
     assert!(rank(&index, "the", 5, None).is_empty());
     assert!(!rank_with(&index, "the", Some(&q), 5, None).is_empty());
 }
+
+/// When the model for declarations failed to load, a search says no more are being embedded
+/// and starts no background pass, however often it is asked (#1485).
+#[test]
+fn a_failed_model_for_declarations_starts_no_background_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::write(
+        root.join("net.rs"),
+        "/// Reconnects the socket.\npub fn reconnect() {}\n",
+    )
+    .unwrap();
+    let indexes = SearchIndexes::with_query_model_only(Box::new(Concepts));
+    for _ in 0..3 {
+        let found = indexes.search(&root, "restore the connection", 5, None);
+        let dense = found.dense.expect("the question model works");
+        assert!(!dense.embedding, "no progress is promised");
+        assert_eq!(dense.embedded, 0);
+        assert!(
+            indexes.inner.embedding.lock().unwrap().is_empty(),
+            "no background pass was started"
+        );
+    }
+}

@@ -143,6 +143,7 @@ fn search_response_survives_wire_trip_and_older_payloads() {
         dense: Some(DenseStatus {
             used: true,
             embedded: 200,
+            embedding: true,
         }),
         graph_fused: Some(true),
     };
