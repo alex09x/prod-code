@@ -49,6 +49,9 @@ pub(crate) struct Inner {
     pub(crate) passage_model: Mutex<Model>,
     /// Workspaces a background pass is embedding right now.
     pub(crate) embedding: Mutex<HashSet<PathBuf>>,
+    /// The model for declarations is missing or failed to load, which it then stays. A flag of
+    /// its own, so a search learns it without waiting for the model a batch may hold (#1485).
+    pub(crate) passages_missing: std::sync::atomic::AtomicBool,
     /// Unique file-entry identities, including across workspace eviction and recreation.
     pub(crate) next_generation: AtomicU64,
 }
@@ -78,15 +81,24 @@ impl SearchIndexes {
     }
 
     fn with(query: Model, passages: Model) -> Self {
+        let passages_missing = matches!(passages, Model::Missing);
         Self {
             inner: Arc::new(Inner {
                 by_workspace: Mutex::new(HashMap::new()),
                 query_model: Mutex::new(query),
                 passage_model: Mutex::new(passages),
                 embedding: Mutex::new(HashSet::new()),
+                passages_missing: std::sync::atomic::AtomicBool::new(passages_missing),
                 next_generation: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// A gateway whose model for questions works and whose model for declarations does not:
+    /// what a failed second load leaves (#1485).
+    #[cfg(test)]
+    pub(crate) fn with_query_model_only(query: Box<dyn Embed>) -> Self {
+        Self::with(Model::Ready(query), Model::Missing)
     }
 
     /// Refreshes the workspace's index against the files on disk and runs the query, both
@@ -110,6 +122,9 @@ impl SearchIndexes {
             }
             let embedded = index.declarations().filter(|d| d.vector.is_some()).count();
             let with_vectors = query_vector.as_deref().filter(|_| embedded > 0);
+            // A model for declarations that failed to load stays failed: say so, and start no
+            // background pass that would embed nothing (#1485).
+            let embedding = !self.inner.passages_failed();
             Found {
                 hits: rank_with(index, query, with_vectors, limit, subpath),
                 files: index.files.len(),
@@ -117,6 +132,7 @@ impl SearchIndexes {
                 dense: query_vector.as_ref().map(|_| DenseStatus {
                     used: embedded > 0,
                     embedded,
+                    embedding,
                 }),
                 graph_fused: true,
             }
@@ -124,7 +140,7 @@ impl SearchIndexes {
         if found
             .dense
             .as_ref()
-            .is_some_and(|d| d.embedded < found.declarations)
+            .is_some_and(|d| d.embedding && d.embedded < found.declarations)
         {
             self.embed_in_background(&root);
         }
@@ -204,6 +220,11 @@ impl SearchIndexes {
 }
 
 impl Inner {
+    /// Whether the model for declarations is known to be missing (#1485).
+    pub(crate) fn passages_failed(&self) -> bool {
+        self.passages_missing.load(Ordering::Acquire)
+    }
+
     pub(crate) fn lock_indexes(
         &self,
     ) -> std::sync::MutexGuard<'_, HashMap<PathBuf, WorkspaceIndex>> {
@@ -253,7 +274,11 @@ impl Inner {
                     return 0;
                 }
             },
-            _ => return 0,
+            Model::Missing => {
+                self.passages_missing.store(true, Ordering::Release);
+                return 0;
+            }
+            Model::Unloaded(_) => return 0,
         };
         let mut guard = self.lock_indexes();
         let Some(index) = guard.get_mut(root) else {

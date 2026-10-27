@@ -89,10 +89,15 @@ fn ranking(resp: &SearchResponse) -> String {
             format!("ranked by words{graph_note} and by meaning")
         }
         Some(d) => format!(
-            "ranked by words{graph_note}{}; {} of {} declarations embedded so far, the rest in the background",
+            "ranked by words{graph_note}{}; {} of {} declarations embedded{}",
             if d.used { " and by meaning" } else { " only" },
             d.embedded,
-            resp.indexed_declarations
+            resp.indexed_declarations,
+            if d.embedding {
+                " so far, the rest in the background"
+            } else {
+                ", and no more are being embedded: the gateway could not load the model for declarations"
+            }
         ),
     }
 }
@@ -231,6 +236,7 @@ mod tests {
         partial.dense = Some(prod_code_protocol::DenseStatus {
             used: false,
             embedded: 0,
+            embedding: true,
         });
         let text = render(&partial, "kubernetes ingress");
         assert!(
@@ -240,13 +246,25 @@ mod tests {
         partial.dense = Some(prod_code_protocol::DenseStatus {
             used: true,
             embedded: 2400,
+            embedding: true,
         });
         assert!(render(&partial, "q").contains("ranked by words and by meaning)"));
         partial.dense = Some(prod_code_protocol::DenseStatus {
             used: true,
             embedded: 1200,
+            embedding: true,
         });
         assert!(render(&partial, "q").contains("by meaning; 1200 of 2400"));
+        // The model for declarations failed to load: no background progress is promised (#1485).
+        partial.dense = Some(prod_code_protocol::DenseStatus {
+            used: true,
+            embedded: 1200,
+            embedding: false,
+        });
+        let text = render(&partial, "q");
+        assert!(text.contains("1200 of 2400"), "{text}");
+        assert!(text.contains("no more are being embedded"), "{text}");
+        assert!(!text.contains("in the background"), "{text}");
     }
 
     #[test]

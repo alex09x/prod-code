@@ -76,6 +76,15 @@ pub struct DenseStatus {
     /// The question was ranked by meaning too: the model is there and some declarations have
     /// vectors.
     pub used: bool,
-    /// Declarations with a vector so far; the rest are being embedded in the background.
+    /// Declarations with a vector so far.
     pub embedded: usize,
+    /// The rest are being embedded in the background. `false` when the model that embeds
+    /// declarations could not be loaded, so no more will get a vector (#1485). Gateways from
+    /// before this field embed whenever they can, hence the default.
+    #[serde(default = "embedding_by_default")]
+    pub embedding: bool,
+}
+
+fn embedding_by_default() -> bool {
+    true
 }
