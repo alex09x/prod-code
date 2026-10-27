@@ -46,9 +46,7 @@ pub async fn run_safe_delete(remote: SocketAddr, file: &Path, line: u32, col: u3
 /// The checkout whose edit a safe delete of `file` applies: the one holding the file, or the
 /// current directory's when the file is in none (#1455).
 fn safe_delete_root(file: &Path, cwd: &Path) -> PathBuf {
-    find_workspace_root(file)
-        .or_else(|| find_workspace_root(cwd))
-        .unwrap_or_else(|| cwd.to_path_buf())
+    crate::workspace::checkout_of(file, cwd)
 }
 
 /// List code actions at a position (no `id`) or apply one (`id`) and write its edits locally.
@@ -194,7 +192,7 @@ pub async fn run_fix(
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let scope = verify_scope(&cwd, path.as_deref())?;
+    let scope = verify_scope(&cwd, &root, path.as_deref())?;
     let fixed =
         prod_code_mcp::fixit::check_and_fix(remote, &root, Some(&scope), kind, timeout_secs)
             .await?;

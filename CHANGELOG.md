@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Checks Refuse a `--path` Outside the Checkout, and `validate --compile` Checks the File's Own Checkout** (`crates/prod-code-client`, #1478):
+  - `prod-code check --path ../other-project` silently checked the current checkout and reported its success. A `--path` outside the checkout the command runs in is now refused with the reason. The same applies to `test`, `lint`, `bench` and their `--fix`.
+  - `prod-code validate --compile` on a file of another checkout ran the compiler in the current directory's checkout. It now uses the checkout that holds the file, as validation without `--compile` already did.
+  - Placement of a relative nested project from a subdirectory (the first part of #1478) is not changed here.
 - **Closing a Rust File Without Saving Replaces Its Discarded Diagnostics** (`crates/prod-code-gateway`, #1515):
   In an editor session served by the in-memory Rust engine, `didClose` put the file back to its text on disk but published nothing, so an error in the unsaved text stayed in the editor. Closing now cancels any diagnostics pass still pending for the file and publishes the diagnostics of the text on disk.
 - **Removed-Symbol Warnings: Raw Keyword Names, Complete Definition Proof, and Unfinished Checks** (`crates/prod-code-mcp`, #1464, #1465):
