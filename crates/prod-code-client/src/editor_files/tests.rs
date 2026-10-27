@@ -173,6 +173,56 @@ fn retarget_keeps_translation_for_an_already_open_mirror_uri() {
     assert_eq!(files.to_node(&message), expected);
 }
 
+/// An editor message that names no mirrored file is passed on without being parsed, however
+/// large; one that names a copy, written plainly or JSON-escaped, is still translated (#1433).
+#[test]
+fn ordinary_messages_skip_the_mirror_parse() {
+    use super::remote::MIRROR_PARSES;
+    let checkout = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let files = RemoteFiles::new(
+        "127.0.0.1:9401".parse().unwrap(),
+        checkout.path(),
+        Path::new("/srv/workspaces/app"),
+        cache.path(),
+    );
+    let parses = || MIRROR_PARSES.with(|n| n.get());
+
+    let own = format!("file://{}/src/lib.rs", checkout.path().display());
+    let text = "fn main() {}\n".repeat(10_000);
+    let did_open = serde_json::json!({
+        "method": "textDocument/didOpen",
+        "params": { "textDocument": { "uri": own, "text": text } }
+    })
+    .to_string();
+    let before = parses();
+    assert_eq!(files.to_node(&did_open), did_open);
+    assert_eq!(parses(), before, "an ordinary message is not parsed");
+
+    let node_file = Path::new("/home/dev/.cargo/registry/src/lib.rs");
+    let copy = files.mirror_path(node_file).unwrap();
+    let plain = format!(
+        r#"{{"textDocument":{{"uri":"file://{}"}}}}"#,
+        copy.display()
+    );
+    let expected = format!(
+        r#"{{"textDocument":{{"uri":"file://{}"}}}}"#,
+        node_file.display()
+    );
+    assert_eq!(files.to_node(&plain), expected);
+    let escaped = plain.replace('/', "\\/");
+    assert_eq!(files.to_node(&escaped), expected, "JSON-escaped slashes");
+    assert!(parses() >= before + 2, "messages naming a copy are parsed");
+
+    // A `\u` escape can spell any path: such a message is parsed.
+    let slash = format!("{}u002f", '\\');
+    let unicode = format!(r#"{{"textDocument":{{"uri":"file:{slash}{slash}{slash}x"}}}}"#);
+    assert!(unicode.contains(&slash));
+    let before = parses();
+    files.to_node(&unicode);
+    assert_eq!(parses(), before + 1);
+}
+
 #[tokio::test]
 async fn frames_are_read_whatever_their_headers() {
     let input = b"Content-Length: 2\r\n\r\n{}content-length: 8\r\nContent-Type: x\r\n\r\n{\"id\":1}"

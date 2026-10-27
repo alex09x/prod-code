@@ -83,6 +83,9 @@ impl RemoteFiles {
     /// The editor's message with every path of a mirrored copy turned back into the node's.
     pub fn to_node(&self, raw: &str) -> String {
         let translators = self.mirror_paths.read().unwrap_or_else(|p| p.into_inner());
+        if !may_name_a_mirror(raw, translators.keys()) {
+            return raw.to_string();
+        }
         let translators: Vec<_> = translators.values().collect();
         translate_lsp_to_server_from_original(raw, &translators)
     }
@@ -219,10 +222,39 @@ impl RemoteFiles {
     }
 }
 
+/// Whether `raw` may name a file of a node's mirror, so that it is worth parsing (#1433). Each
+/// mirror is a directory named after its node, such as `192.168.2.168_9400`. When every such
+/// name is plain ASCII that no path, URI or JSON escape changes, a message without any of them
+/// names no mirrored file. A `\u` escape could spell one, and a name with other characters is
+/// not checked here: both are parsed.
+fn may_name_a_mirror<'a>(raw: &str, nodes: impl Iterator<Item = &'a SocketAddr>) -> bool {
+    if raw.contains("\\u") {
+        return true;
+    }
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+    let mut any = false;
+    for node in nodes {
+        let name = node.to_string().replace(':', "_");
+        if !name.chars().all(plain) || raw.contains(name.as_str()) {
+            return true;
+        }
+        any = true;
+    }
+    !any
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many messages this thread parsed to translate mirror paths.
+    pub(crate) static MIRROR_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn translate_lsp_to_server_from_original(
     raw: &str,
     translators: &[&prod_code_protocol::path::PathTranslator],
 ) -> String {
+    #[cfg(test)]
+    MIRROR_PARSES.with(|n| n.set(n.get() + 1));
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return raw.to_string();
     };

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Editor Traffic Skips the Mirror Parse When It Names No Mirrored File** (`crates/prod-code-client`, #1433):
+  `prod-code lsp` no longer parses every message the editor sends into a JSON tree to look for paths of the node's mirrored dependency files. Each mirror directory is named after its node, such as `192.168.2.168_9400`. A message that contains none of those names, and no `\u` escape that could spell one, is passed on as it is, so a large `didOpen` or `didChange` of an ordinary checkout file is no longer parsed for this. Messages that do name a copy, written plainly or with JSON-escaped slashes, are translated as before.
 - **A New Storage Directory Reports Its Disk Before the First Sync** (`crates/prod-code-gateway`, `cluster`, #1429):
   A gateway whose `--storage` directory does not exist yet reports the free share of the filesystem it will be created on: the nearest existing parent. Before, it reported "unknown" until the first sync created the directory, so the first placement onto a nearly full filesystem did not account for disk pressure.
 - **Fallback Health Probes Wait for Outstanding Requests and Ignore Replayed Answers** (`crates/prod-code-gateway`, #1428):
