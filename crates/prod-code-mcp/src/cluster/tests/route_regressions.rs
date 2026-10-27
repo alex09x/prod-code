@@ -27,6 +27,9 @@ mod go_roots;
 #[path = "route_local_deps.rs"]
 mod local_deps;
 
+#[path = "route_also_in.rs"]
+mod also_in;
+
 struct Node {
     addr: SocketAddr,
     state: Arc<Mutex<StatusResponse>>,

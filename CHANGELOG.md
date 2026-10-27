@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Nested Projects of Another Checkout Are Placed Under That Checkout** (`crates/prod-code-mcp`, `cluster`, #1424):
+  A query routed into a nested project of an `also_in` checkout remembers its placement under that checkout's name, `<checkout>#<engine>`, with a worktree's origin name as the CLI uses it. Before, it used the name of the checkout the process started in, so the first route chose and recorded `A#go` for a project of checkout B, and could start a cold session for it. The checkout's own default node is still kept when it serves the engine.
 - **Symlinked External Checkouts Are Asked by Their Real Paths** (`crates/prod-code-mcp`, #1423):
   A query about a file of another checkout reached through a symlink alias now opens and asks about the document by its real path. Every URI of the alias in the request becomes the real one. Before, the session opened on that checkout's real root, but `didOpen` and the request kept the alias URI, which the node cannot translate into its copy of the checkout, so the server lost the project context.
 - **Symbol Search Retries an Empty Answer Right After Synced Changes** (`crates/prod-code-mcp`, #1422):
