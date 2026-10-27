@@ -316,3 +316,41 @@ async fn deletion_through_symlink_parent_cannot_escape_checkout() {
     std::fs::remove_file(workspace.path("escape")).unwrap();
     assert_unchanged(&workspace);
 }
+
+/// `json: true` returns the diff validation as one JSON object, with the analyzer reports and
+/// the compiler's verdict, and keeps the error status of a rejected proposal (#1456).
+#[tokio::test]
+async fn diff_validation_answers_in_json_when_asked() {
+    let workspace = Workspace::new(FILES);
+    let gateway = CompilerGateway::start().await;
+    for (diff, accepted) in [
+        (VALID_EDIT.to_string(), true),
+        (format!("{INVALID_EDIT}{DELETE_CHILD}"), false),
+    ] {
+        let result = execute_tool(
+            gateway.addr,
+            &workspace.root(),
+            "code_validate_edits",
+            json!({"diff": diff, "compile": true, "json": true}),
+        )
+        .await
+        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(&text(&result)).expect("one JSON object");
+        assert_eq!(result.is_error, !accepted, "{report:#}");
+        assert_eq!(report["accepted"], accepted, "{report:#}");
+        assert!(report["reports"].is_array(), "{report:#}");
+        assert!(
+            report["files"].as_u64().is_some_and(|n| n >= 1),
+            "{report:#}"
+        );
+        let compiler_errors = report["compiler"]["errors"].as_u64().expect("compiler ran");
+        assert_eq!(compiler_errors == 0, accepted, "{report:#}");
+        assert!(
+            report["compiler"]["report"]
+                .as_str()
+                .is_some_and(|r| r.contains("compiler:"))
+        );
+    }
+    assert_unchanged(&workspace);
+}

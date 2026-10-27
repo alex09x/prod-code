@@ -316,15 +316,37 @@ pub(crate) async fn handle_validate_edits(
         text.push_str(&report.render());
     }
     let mut errors = errors;
+    let analyzer_errors = errors;
     let borrow_check = args.get("borrow_check").and_then(|v| v.as_bool()) == Some(true);
     let compile = args.get("compile").and_then(|v| v.as_bool()) == Some(true);
+    let mut compiler = None;
     if compile || borrow_check {
         let (compiled_errors, compiled) =
             super::compiler_proposal::compile_proposal(remote, workspace_root, &proposal).await?;
         text.push_str(&format!("\n{compiled}"));
         errors += compiled_errors;
+        compiler = Some(serde_json::json!({
+            "errors": compiled_errors,
+            "borrow_check": borrow_check,
+            "report": compiled.trim_end(),
+        }));
     }
-    let text = text.trim_end().to_string();
+    // `json: true` gives the same outcome as one JSON object (#1456): the per-file analyzer
+    // reports, their totals, and the compiler's count with its report text when it ran.
+    let text = if args.get("json").and_then(|v| v.as_bool()) == Some(true) {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "accepted": errors == 0,
+            "files": reports.len(),
+            "platform_excluded": excluded,
+            "analyzer_errors": analyzer_errors,
+            "warnings": warnings,
+            "notes": notes.lines().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>(),
+            "reports": reports,
+            "compiler": compiler,
+        }))?
+    } else {
+        text.trim_end().to_string()
+    };
     Ok(if errors == 0 {
         McpToolCallResult::text(text)
     } else {

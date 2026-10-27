@@ -114,7 +114,8 @@ pub fn analysis_tools() -> Vec<McpTool> {
                         "description": "Unchanged files to diagnose against the proposed edits (optional)"
                     },
                     "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION },
-                    "borrow_check": { "type": "boolean", "description": "Run the configured compiler check on the complete supported proposal in a shadow; coverage is limited to the reported command" }
+                    "borrow_check": { "type": "boolean", "description": "Run the configured compiler check on the complete supported proposal in a shadow; coverage is limited to the reported command" },
+                    "json": { "type": "boolean", "description": "Return one JSON object: `accepted`, per-file analyzer `reports` with their totals, and `compiler` (its error count and report text) when a compiler check ran" }
                 },
                 "anyOf": [
                     { "required": ["edits"] },

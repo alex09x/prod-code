@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **`prod-code validate --diff --json` Answers in JSON** (`crates/prod-code-client`, `crates/prod-code-mcp`, #1456):
+  Diff validation ignored `--json` and printed the human-readable report. `code_validate_edits` now takes `json: true`, and the CLI passes `--json` on. The answer is then one JSON object: `accepted`, the per-file analyzer `reports` with their error and warning totals, the notes, and, when a compiler check ran, `compiler` with its error count and report text. A rejected proposal still exits non-zero.
 - **A `-r` Inside an `exec` Command No Longer Pins the Client to Its Seed** (`crates/prod-code-client`, `cluster`, #1454):
   The client decided that `--remote` was given by looking for `-r`/`--remote` anywhere among the raw arguments. `prod-code exec -- grep -r pattern .` therefore skipped cluster discovery and stayed on the default seed. Clap now reports where the remote came from: only prod-code's own `-r`/`--remote`, given before or after the subcommand, pins the client.
 - **SourceKit Is Found Through `xcrun` Only When the Selected Toolchain Has It** (`crates/prod-code-engine-generic`, test, #1449):
