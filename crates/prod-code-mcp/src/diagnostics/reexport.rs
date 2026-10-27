@@ -193,16 +193,20 @@ pub fn public_reexport_token(text: &str, diagnostic: &DocDiagnostic) -> Option<u
 /// A declaration removed from one file may still resolve in the complete proposal: a move,
 /// re-export or unrelated same-named binding is not a broken caller. Ask while the whole
 /// overlay is open. Missing or malformed semantic evidence keeps the conservative warning.
+/// Adds to `resolved` each same-name token the analyzer resolves to a definition, and says
+/// whether every candidate was asked. It stops at the first failed request: the session is
+/// then unusable, and the tokens not asked stay unresolved, so they are still warned about.
+/// The caller's deadline can stop it too; what it found by then stays in `resolved` (#1465).
 pub async fn resolved_tokens(
     session: &mut LspSession,
     root: &Path,
     reports: &[DiagnosticsReport],
     sources: &HashMap<String, String>,
     missing: &[(String, String)],
-) -> BTreeSet<(String, u32, u32)> {
-    let mut resolved = BTreeSet::new();
+    resolved: &mut BTreeSet<(String, u32, u32)>,
+) -> bool {
     if missing.is_empty() {
-        return resolved;
+        return true;
     }
     for report in reports.iter() {
         let Some(text) = sources.get(&report.file) else {
@@ -222,7 +226,11 @@ pub async fn resolved_tokens(
         let is_rust = report.file.ends_with(".rs");
         if is_rust {
             for token in rust_code_identifiers(text) {
-                if !names.contains(token.name.as_str()) {
+                if !missing
+                    .iter()
+                    .filter(|(_, from)| from != &report.file)
+                    .any(|(name, _)| super::ident::names_removed(&token, name))
+                {
                     continue;
                 }
                 let answer = session
@@ -234,8 +242,12 @@ pub async fn resolved_tokens(
                         }),
                     )
                     .await;
-                if answer.as_ref().is_ok_and(has_definition) {
-                    resolved.insert((report.file.clone(), token.line, token.col));
+                match answer {
+                    Ok(answer) if has_definition(&answer) => {
+                        resolved.insert((report.file.clone(), token.line, token.col));
+                    }
+                    Ok(_) => {}
+                    Err(_) => return false,
                 }
             }
         } else {
@@ -252,15 +264,19 @@ pub async fn resolved_tokens(
                                 }),
                             )
                             .await;
-                        if answer.as_ref().is_ok_and(has_definition) {
-                            resolved.insert((report.file.clone(), line_no, col));
+                        match answer {
+                            Ok(answer) if has_definition(&answer) => {
+                                resolved.insert((report.file.clone(), line_no, col));
+                            }
+                            Ok(_) => {}
+                            Err(_) => return false,
                         }
                     }
                 }
             }
         }
     }
-    resolved
+    true
 }
 
 pub fn has_definition(value: &serde_json::Value) -> bool {
@@ -268,11 +284,8 @@ pub fn has_definition(value: &serde_json::Value) -> bool {
         if value.get("error").is_some() {
             return false;
         }
-        let (uri, range) = if value.get("targetUri").is_some() {
-            (value.get("targetUri"), value.get("targetSelectionRange"))
-        } else {
-            (value.get("uri"), value.get("range"))
-        };
+        let link = value.get("targetUri").is_some();
+        let uri = value.get(if link { "targetUri" } else { "uri" });
         let Some(uri) = uri.and_then(|u| u.as_str()) else {
             return false;
         };
@@ -283,7 +296,23 @@ pub fn has_definition(value: &serde_json::Value) -> bool {
         {
             return false;
         }
-        let Some(range) = range else { return false };
+        // A LocationLink proves a definition only whole: both its ranges, valid, and the
+        // name's range inside the declaration's (#1465).
+        if link {
+            let (Some(target), Some(selection)) = (
+                range_of(value.get("targetRange")),
+                range_of(value.get("targetSelectionRange")),
+            ) else {
+                return false;
+            };
+            return target.0 <= selection.0 && selection.1 <= target.1;
+        }
+        range_of(value.get("range")).is_some()
+    }
+    /// A range's start and end, when both are valid positions and the start is not after
+    /// the end.
+    fn range_of(range: Option<&serde_json::Value>) -> Option<((u32, u32), (u32, u32))> {
+        let range = range?;
         let position = |key: &str| -> Option<(u32, u32)> {
             let p = range.get(key)?;
             Some((
@@ -291,7 +320,8 @@ pub fn has_definition(value: &serde_json::Value) -> bool {
                 u32::try_from(p.get("character")?.as_u64()?).ok()?,
             ))
         };
-        matches!((position("start"), position("end")), (Some(start), Some(end)) if start <= end)
+        let (start, end) = (position("start")?, position("end")?);
+        (start <= end).then_some((start, end))
     }
     match value {
         serde_json::Value::Array(items) => !items.is_empty() && items.iter().all(location),

@@ -350,3 +350,35 @@ fn non_rust_files_preserve_existing_behavior_and_utf16_columns() {
     assert_eq!(reports[0].items[0].line, 3);
     assert_eq!(reports[0].items[0].col, 11);
 }
+
+/// A cut-short definition check keeps its warnings and says it was cut short (#1465).
+#[test]
+fn an_unfinished_definition_check_is_said_on_its_warnings() {
+    use crate::diagnostics::annotate::{STALE_REFERENCE, mark_unfinished_resolution};
+    let mut reports = vec![DiagnosticsReport {
+        file: "src/main.rs".to_string(),
+        errors: 0,
+        warnings: 0,
+        items: vec![],
+        preexisting: vec![],
+        in_derive: vec![],
+        auto_trait: vec![],
+        hallucinations: vec![],
+    }];
+    let sources = HashMap::from([(
+        "src/main.rs".to_string(),
+        "fn main() {\n    helper();\n}\n".to_string(),
+    )]);
+    let missing = vec![("helper".to_string(), "src/lib.rs".to_string())];
+    annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
+    mark_unfinished_resolution(&mut reports);
+    let stale: Vec<_> = reports[0]
+        .items
+        .iter()
+        .filter(|d| d.code.as_deref() == Some(STALE_REFERENCE))
+        .collect();
+    assert_eq!(stale.len(), 1, "the unchecked use is still warned about");
+    let note = stale[0].note.as_deref().unwrap_or_default();
+    assert!(note.contains("removed or renamed"), "{note}");
+    assert!(note.contains("was not asked about every use"), "{note}");
+}
