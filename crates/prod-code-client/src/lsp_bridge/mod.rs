@@ -12,9 +12,11 @@ pub mod bridge;
 pub mod encoding;
 pub mod reconnect;
 pub mod reconnect_handler;
+pub mod save_gate;
 pub mod session;
 pub mod state;
 pub mod sync;
+pub mod teardown;
 pub mod transport;
 
 #[cfg(test)]
