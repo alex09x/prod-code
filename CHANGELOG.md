@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **The Go Signature Tool Test Guards Its Stack Headroom** (`crates/prod-code-mcp`, #1597):
+  `signature_go::the_mcp_tool_previews_applies_and_refuses_go_reorders` overflowed its 2 MiB debug stack once an unrelated async layer was added on the MCP tool path, and the abort printed no test result. The path now needs about 1.5 MiB. Measured on a Linux build node with `RUST_MIN_STACK`, it passes at 1.5 MiB and overflows at 1.4375 MiB. The test now runs on a 1.75 MiB stack, so growth that eats that headroom fails this test before it can abort a real 2 MiB thread.
 - **A File Restored to HEAD After an Exec Write-Back Is Synced Again** (`crates/prod-code-mcp`, #1257):
   A file a `prod-code exec` command changed on the node, and wrote back into the checkout, was never sent again if it was then restored to its committed content (`git checkout -- FILE`) before the next sync. Git reported nothing for it, and the client had recorded only the node's version, so the node copy stayed different, and every later `exec`, `test`, `check` and `lint` ran on code that is not in the checkout. A write-back now marks the file dirty, as a local edit would be. A later revert is then seen as one and the committed text is sent.
 - **An Editor's Own Language Server Is Admitted Like an Engine** (`crates/prod-code-gateway`, #1528):

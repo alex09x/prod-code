@@ -1873,8 +1873,31 @@ async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
 /// `signature::change_with`, by position and by `symbol`: a preview writes nothing, a refusal
 /// writes nothing, `verify: "compile"` is refused before gopls is asked for an edit (it would
 /// run `cargo check` and write on its word), and `apply` writes a program that runs the same.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
+///
+/// It runs on a 1.75 MiB stack, under the 2 MiB of a default test or Tokio thread (#1597). The
+/// path needed about 1.5 MiB in a debug build when this was set: an async layer that eats the
+/// rest of that headroom fails here first, and not as an abort in some later change.
+#[test]
+fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
+    const HEADROOM_STACK: usize = 1792 * 1024;
+    let run = std::thread::Builder::new()
+        .stack_size(HEADROOM_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .thread_stack_size(HEADROOM_STACK)
+                .enable_all()
+                .build()
+                .expect("a runtime")
+                .block_on(mcp_tool_go_reorders())
+        })
+        .expect("the test thread starts");
+    if let Err(panic) = run.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn mcp_tool_go_reorders() {
     require_go_toolchain();
     let tool = prod_code_mcp::tools::list_tools()
         .into_iter()
