@@ -127,9 +127,7 @@ pub(crate) async fn initial_sync_unbounded(
     prod_code_mcp::sync::clear_sync_cache(root);
     let identity = prod_code_mcp::sync::WorkspaceIdentity {
         name: workspace_name.to_string(),
-        base: workspace_name
-            .split_once("--wt-")
-            .map(|(base, _)| base.to_string()),
+        base: origin_of(workspace_name),
     };
     let start = Instant::now();
     let stream = prod_code_protocol::transport::connect(remote)
@@ -367,4 +365,12 @@ pub(crate) async fn query_once(
     let text = hover_in_session(&mut framed, wt, language, 2).await;
     close_session(framed).await;
     text
+}
+
+/// The origin a copy named `<origin>--wt-<suffix>` seeds from. Only the last `--wt-` is the
+/// generated suffix, so an origin whose own name holds `--wt-` stays whole (#1522).
+pub(crate) fn origin_of(workspace_name: &str) -> Option<String> {
+    workspace_name
+        .rsplit_once("--wt-")
+        .map(|(origin, _)| origin.to_string())
 }

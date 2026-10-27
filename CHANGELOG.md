@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **The Divergent-Worktree Benchmark Checks Every Copy and Seeds From the Whole Origin Name** (`crates/prod-code-client`, test, #1522):
+  - Each benchmark worker queries one copy. With fewer workers than `--worktrees` some copies were never asked, and their kind still passed on the other copies. Such a run is now refused, and the report fails for any copy that gave no successful response.
+  - A copy's warm seed is taken from everything before its last `--wt-`, so an origin whose own name holds `--wt-` is no longer cut short.
 - **Direct CLI Queries Warn When the Server Was Still Indexing** (`crates/prod-code-client`, #1520):
   A direct query such as `prod-code impls FILE LINE COL` dropped the gateway's `prod-code/indexing` note, so a partial list, or "No implementations found", gave no hint that the server had not finished indexing. The note is now printed to stderr as a warning that the answer may be incomplete. The answer itself and the response matching are unchanged.
 - **`prod-code` Without a Subcommand Refuses at `initialize` Like `prod-code lsp`** (`crates/prod-code-client`, #1519):

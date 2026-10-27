@@ -13,7 +13,7 @@ use super::session::{close_session, hover_in_session, initial_sync, open_session
 use super::setup::setup;
 use super::types::{
     DivergentBenchConfig, DivergentWorktree, Expectations, MIN_WORKERS, QueryOutcome,
-    WorkspaceMode, WorktreeKind,
+    VerificationResult, WorkspaceMode, WorktreeKind,
 };
 use super::verify::verify;
 use crate::LatencyStats;
@@ -37,6 +37,15 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
     if config.worktrees == 0 || !config.worktrees.is_multiple_of(4) {
         bail!(
             "--worktrees must be a multiple of 4, one copy of each mutation kind per four, got {}",
+            config.worktrees
+        );
+    }
+    // Each worker queries one copy: with fewer workers than copies, some copies would never be
+    // asked while their kind still passed on the others (#1522).
+    if config.workers < config.worktrees {
+        bail!(
+            "every worktree needs a worker: --workers {} is fewer than --worktrees {}",
+            config.workers,
             config.worktrees
         );
     }
@@ -216,7 +225,21 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         }
     }
 
-    let verifications = verify(&all_outcomes, &expect);
+    let mut verifications = verify(&all_outcomes, &expect);
+    // A kind passing on one copy says nothing about another copy of it (#1522).
+    for copy in unanswered_copies(&all_outcomes, worktrees.len()) {
+        let wt = &worktrees[copy];
+        verifications.push(VerificationResult {
+            kind: wt.kind,
+            passed: false,
+            message: format!(
+                "copy {copy} ({}) gave no successful response",
+                wt.workspace_name
+            ),
+            violations: 0,
+            sample: String::new(),
+        });
+    }
     let total_errors = all_outcomes.iter().filter(|o| !o.ok).count();
     let all_verified = verifications.iter().all(|v| v.passed);
     let churn_ok = config.churn_percent == 0 || matches!(gateway_after, Some((true, 0)));
@@ -273,4 +296,15 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         verifications,
         all_passed,
     })
+}
+
+/// The copies no successful response came from. Worker `w` queries copy `w % copies`.
+pub(crate) fn unanswered_copies(outcomes: &[QueryOutcome], copies: usize) -> Vec<usize> {
+    (0..copies)
+        .filter(|copy| {
+            !outcomes
+                .iter()
+                .any(|o| o.ok && o.worker_id % copies == *copy)
+        })
+        .collect()
 }

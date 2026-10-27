@@ -391,3 +391,43 @@ fn a_go_package_is_read_from_its_first_line_and_nothing_else() {
     assert_eq!(go_package_name("// only a comment\n"), None);
     assert_eq!(go_package_name(""), None);
 }
+
+/// Every copy must answer, and a copy is named after its whole origin (#1522).
+#[test]
+fn every_copy_must_answer_and_keeps_its_whole_origin() {
+    use super::super::runner::unanswered_copies;
+    use super::super::session::origin_of;
+    let at = |worker_id: usize, ok: bool| QueryOutcome {
+        worker_id,
+        ..synthetic(WorktreeKind::Master, ok, BASE_SIGNATURE)
+    };
+    // Eight copies, workers 0..8: copy 5 only failed and copy 7 was never answered.
+    let outcomes: Vec<QueryOutcome> = (0..8)
+        .filter(|w| *w != 7)
+        .map(|w| at(w, w != 5))
+        .chain([at(13, false)])
+        .collect();
+    assert_eq!(unanswered_copies(&outcomes, 8), [5, 7]);
+    assert!(unanswered_copies(&clean_outcomes(), 1).is_empty());
+
+    assert_eq!(
+        origin_of("api--wt-tools--wt-1a2b").as_deref(),
+        Some("api--wt-tools")
+    );
+    assert_eq!(origin_of("plain").as_deref(), None);
+}
+
+/// Fewer workers than copies is refused before anything is set up (#1522).
+#[tokio::test]
+async fn fewer_workers_than_worktrees_is_refused() {
+    let config = DivergentBenchConfig {
+        workers: MIN_WORKERS,
+        worktrees: MIN_WORKERS + 4 - MIN_WORKERS % 4,
+        ..DivergentBenchConfig::default()
+    };
+    let error = run(config).await.expect_err("refused");
+    assert!(
+        error.to_string().contains("every worktree needs a worker"),
+        "{error}"
+    );
+}

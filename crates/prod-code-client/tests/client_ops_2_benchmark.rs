@@ -73,7 +73,8 @@ async fn persistent_workers_account_for_churn_and_failed_queries() {
                 );
             }
         }
-        assert_eq!(report.verifications.len(), 4);
+        // When every query fails, each of the four copies also fails on its own (#1522).
+        assert_eq!(report.verifications.len(), if fail { 8 } else { 4 });
         assert!(report.verifications.iter().all(|v| v.passed != fail));
         report.print();
     }
