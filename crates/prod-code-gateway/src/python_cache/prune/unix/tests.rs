@@ -105,3 +105,52 @@ fn pruning_handles_absent_roots_and_protects_recent_or_locked_temporary_files() 
     assert_eq!(fs::read_to_string(recent).unwrap(), "recent");
     assert!(locked.is_file());
 }
+
+/// #1530: an entry still in use is not evicted for its age. Both packages' stubs were published
+/// two hours ago; one package has been used since, and only the other goes past a one-hour limit.
+#[test]
+fn an_entry_in_use_is_not_pruned_for_its_age() {
+    let temp = tempfile::tempdir().unwrap();
+    let used = temp.path().join("used_pkg/__init__.pyi");
+    let idle = temp.path().join("idle_pkg/__init__.pyi");
+    let two_hours_ago = SystemTime::now() - Duration::from_secs(2 * 3600);
+    for path in [&used, &idle] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "def f() -> int: ...\n").unwrap();
+        let file = fs::File::options().write(true).open(path).unwrap();
+        file.set_times(
+            fs::FileTimes::new()
+                .set_accessed(two_hours_ago)
+                .set_modified(two_hours_ago),
+        )
+        .unwrap();
+    }
+    crate::python_cache::fs_ops::mark_used(&used);
+    let meta = fs::metadata(&used).unwrap();
+    assert!(
+        meta.modified().unwrap() <= two_hours_ago + Duration::from_secs(1),
+        "marking keeps the source's time"
+    );
+    // A namespace a workspace links to is used as a whole, its nested packages too.
+    let nested = temp.path().join("ns-1/pkg/sub/mod.pyi");
+    fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    fs::write(&nested, "x: int\n").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&nested)
+        .unwrap()
+        .set_modified(two_hours_ago)
+        .unwrap();
+    crate::python_cache::fs_ops::mark_dir_used(&temp.path().join("ns-1"));
+    let removed = prune_unix(
+        temp.path(),
+        Duration::from_secs(3600),
+        u64::MAX,
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    assert_eq!(removed, 1);
+    assert!(used.exists(), "the used stub stays");
+    assert!(nested.exists(), "a stub of a used namespace stays");
+    assert!(!idle.exists(), "the idle one goes");
+}

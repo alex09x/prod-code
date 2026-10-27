@@ -24,6 +24,35 @@ struct TargetLock {
     _file: std::fs::File,
 }
 
+/// Records that the cached stub at `path` is in use, by setting the time of its directory's use
+/// marker (`.prod-code-used`) to now. The stub's own modification time says how fresh its source
+/// is and stays. Pruning counts an entry's age from the later of the two, so a stub still in use
+/// is not evicted for being old (#1530). Access times are no record: on the build nodes' ZFS
+/// they read as 0.
+pub(crate) fn mark_used(path: &Path) {
+    if let Some(dir) = path.parent() {
+        mark_dir_used(dir);
+    }
+}
+
+/// [`mark_used`] for every stub at or below `dir`: a namespace a workspace links to.
+pub(crate) fn mark_dir_used(dir: &Path) {
+    #[cfg(unix)]
+    {
+        let marker = dir.join(super::prune::unix::USE_MARKER);
+        if let Ok(file) = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&marker)
+        {
+            let _ = file.set_modified(SystemTime::now());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
 impl TargetLock {
     fn acquire(lock_path: &Path) -> io::Result<Self> {
         let file = fs::OpenOptions::new()
@@ -75,6 +104,8 @@ pub(crate) fn copy_and_publish_stub(src: &Path, dst: &Path) -> io::Result<u64> {
     if let Ok(dst_meta) = fs::metadata(dst) {
         let dst_mod = dst_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         if dst_mod > src_mod || (dst_mod == src_mod && dst_meta.len() == src_meta.len()) {
+            // Kept, and so in use: an entry the cache already has is not idle (#1530).
+            mark_used(dst);
             return Ok(0);
         }
     }

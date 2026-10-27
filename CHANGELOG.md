@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **The Python Stub Cache Keeps Stubs That Are Still in Use** (`crates/prod-code-gateway`, #1530):
+  The shared stub cache was pruned by each file's modification time. That time records how fresh the stub's source is, not when it was last used, so a namespace that analyzers kept reading still reached the age limit and was removed. Use is now recorded apart from freshness, as the time of a `.prod-code-used` marker in a directory. The marker is set when publishing finds the cache's copy already current, when a worktree is seeded and linked to a namespace, and when a workspace's type checker is given its typings view. Pruning counts a stub's age from the later of its own time and the markers of its directory and the directories above it. Access times could not serve: on the build nodes' ZFS they read as 0.
 - **`code_grep` Searches a Markdown File Without a Node That Serves Markdown** (`crates/prod-code-mcp`, #1558):
   `code_grep` with a single Markdown file as its `path` answered "`notes.md` is in a markdown project" and searched nothing, while the same search over the file's directory worked. Tools are routed by the engine of their `path`, so a node that serves that language is asked, and no node served Markdown. A text search reads the synced copy, which every node holding the checkout has, so `code_grep` is no longer routed by its path's engine. Language-server tools on such a file are still routed, and still refused when no node serves the language.
 - **Inline-Parameter Inlines a Named Constant Only When Every Call Names the Same One** (`crates/prod-code-mcp`, #1508):
