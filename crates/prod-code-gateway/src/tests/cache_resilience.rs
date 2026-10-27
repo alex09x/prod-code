@@ -117,11 +117,8 @@ fn test_polyglot_compiler_cache_env_composition() {
             .iter()
             .any(|(k, v)| k == "CCACHE_BASEDIR" && v == ws.to_str().unwrap())
     );
-    assert!(
-        ccache_envs
-            .iter()
-            .any(|(k, v)| k == "CCACHE_NOHASHDIR" && v == "1")
-    );
+    // ccache keeps the working directory in a debug build's hash (#1482).
+    assert!(!ccache_envs.iter().any(|(k, _)| k == "CCACHE_NOHASHDIR"));
 }
 
 #[test]

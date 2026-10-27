@@ -99,29 +99,31 @@ pub fn kill_exec_tree(child: &mut tokio::process::Child) {
 /// base directories once, when its server starts, so it cannot follow worktrees that appear
 /// later. CMake picks the launchers up when it configures a build directory. Nothing when the
 /// node has no ccache; the caller's own variables are applied after these and win.
+///
+/// ccache keeps hashing the working directory (`hash_dir`, its default), which it does only
+/// for a compile with debug info: such an object records its directory, and a hit from another
+/// worktree would point a debugger at that worktree's sources (#1482). A build passing
+/// `-fdebug-prefix-map` is shared anyway, as ccache documents. The launcher is named by its
+/// path here, so a command whose own `PATH` lacks ccache still configures one that runs.
 pub fn compiler_cache_env(workspace: &Path, ccache: bool) -> Vec<(String, String)> {
     if !ccache {
         return Vec::new();
     }
+    let launcher = super::process_group::find_on_path("ccache")
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "ccache".to_string());
     vec![
         (
             "CCACHE_BASEDIR".to_string(),
             workspace.to_string_lossy().into_owned(),
         ),
-        ("CCACHE_NOHASHDIR".to_string(), "1".to_string()),
         (
             "CCACHE_SLOPPINESS".to_string(),
             "pch_defines,time_macros".to_string(),
         ),
         ("CCACHE_PCH_EXTSUM".to_string(), "1".to_string()),
-        (
-            "CMAKE_C_COMPILER_LAUNCHER".to_string(),
-            "ccache".to_string(),
-        ),
-        (
-            "CMAKE_CXX_COMPILER_LAUNCHER".to_string(),
-            "ccache".to_string(),
-        ),
+        ("CMAKE_C_COMPILER_LAUNCHER".to_string(), launcher.clone()),
+        ("CMAKE_CXX_COMPILER_LAUNCHER".to_string(), launcher),
     ]
 }
 

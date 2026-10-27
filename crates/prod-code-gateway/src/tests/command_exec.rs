@@ -48,11 +48,16 @@ fn a_compiler_cache_is_shared_across_worktrees_when_the_node_has_ccache() {
             .map(|(_, v)| v.as_str())
     };
     assert_eq!(get("CCACHE_BASEDIR"), Some("/srv/workspaces/shop--wt-1a2b"));
-    assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
+    // A debug build keeps its working directory in the hash (#1482).
+    assert_eq!(get("CCACHE_NOHASHDIR"), None);
     assert_eq!(get("CCACHE_SLOPPINESS"), Some("pch_defines,time_macros"));
     assert_eq!(get("CCACHE_PCH_EXTSUM"), Some("1"));
-    assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
-    assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
+    // The launcher is the ccache the gateway found, by its path (#1482).
+    let launcher = find_on_path("ccache")
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "ccache".to_string());
+    assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some(launcher.as_str()));
+    assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some(launcher.as_str()));
     assert!(on_path("sh"), "sh is on PATH on every node");
     assert!(!on_path("no-such-program-on-any-node"));
 }

@@ -17,8 +17,15 @@ pub const MAX_JSON_LINE_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Whether `program` is an executable file in a directory of `PATH`.
 pub fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+    find_on_path(program).is_some()
+}
+
+/// Where `program` is in this process's `PATH`, the first directory that has it.
+pub fn find_on_path(program: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Blocks until the child `pid` has exited and leaves it unreaped (`WNOWAIT`): its zombie

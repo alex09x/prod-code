@@ -337,11 +337,43 @@ fn test_compiler_cache_env_contains_pch_sharing_flags() {
         get("CCACHE_BASEDIR"),
         Some("/srv/workspaces/cpp-project--wt-test")
     );
-    assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
+    // The working directory stays in a debug build's hash: its objects record it (#1482).
+    assert_eq!(get("CCACHE_NOHASHDIR"), None);
     assert_eq!(get("CCACHE_SLOPPINESS"), Some("pch_defines,time_macros"));
     assert_eq!(get("CCACHE_PCH_EXTSUM"), Some("1"));
-    assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
-    assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
+    // The launcher is named by the path the gateway found it at, which a command's own `PATH`
+    // need not contain.
+    let found = prod_code_gateway::find_on_path("ccache")
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "ccache".to_string());
+    assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some(found.as_str()));
+    assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some(found.as_str()));
+}
+
+/// #1482: a command whose request `PATH` has no ccache still runs the launcher CMake was given.
+#[test]
+fn the_ccache_launcher_runs_without_the_commands_path() {
+    let Some(ccache) = prod_code_gateway::find_on_path("ccache") else {
+        eprintln!("skipped: no ccache on this node");
+        return;
+    };
+    let env = compiler_cache_env(Path::new("/srv/ws/a"), true);
+    let launcher = env
+        .iter()
+        .find(|(k, _)| k == "CMAKE_C_COMPILER_LAUNCHER")
+        .map(|(_, v)| v.clone())
+        .unwrap();
+    assert_eq!(Path::new(&launcher), ccache.as_path());
+    let ran = std::process::Command::new(&launcher)
+        .arg("--version")
+        .env("PATH", "/nonexistent")
+        .output()
+        .expect("the launcher starts with an empty PATH");
+    assert!(
+        ran.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
 }
 
 #[tokio::test]
