@@ -247,6 +247,10 @@ pub async fn execute_lsp_query(
         let remaining = query_deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, framed.next()).await {
             Ok(Some(Ok(WireMessage::LspPayload(resp_json)))) => {
+                if let Some(note) = busy_note(&resp_json) {
+                    eprintln!("{note}");
+                    continue;
+                }
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json)
                     .map_err(|_| ())
                     .and_then(|v| {
@@ -299,4 +303,45 @@ pub async fn execute_lsp_query(
     }
 
     anyhow::bail!("No response received for query {}", method)
+}
+
+/// The warning to print for a `prod-code/indexing` note the gateway sends ahead of an answer
+/// given while the server was still loading or indexing: that answer may be partial or empty
+/// for that reason only (#1520).
+fn busy_note(payload: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    if value.get("method")?.as_str()? != prod_code_protocol::readiness::BUSY_NOTIFICATION {
+        return None;
+    }
+    let busy: prod_code_protocol::readiness::Busy =
+        serde_json::from_value(value.get("params")?.clone()).ok()?;
+    Some(format!(
+        "warning: the language server was still indexing ({}); the answer below may be incomplete",
+        busy.describe()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The indexing note is turned into a warning; other messages are not notes (#1520).
+    #[test]
+    fn an_indexing_note_becomes_a_warning() {
+        let note = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": prod_code_protocol::readiness::BUSY_NOTIFICATION,
+            "params": { "title": "Indexing", "for_ms": 4000 }
+        })
+        .to_string();
+        let warning = super::busy_note(&note).expect("a note");
+        assert!(warning.contains("still indexing (Indexing"), "{warning}");
+        assert!(warning.contains("may be incomplete"), "{warning}");
+        assert_eq!(
+            super::busy_note(r#"{"jsonrpc":"2.0","id":2,"result":[]}"#),
+            None
+        );
+        assert_eq!(
+            super::busy_note(r#"{"method":"window/logMessage","params":{}}"#),
+            None
+        );
+    }
 }
