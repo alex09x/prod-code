@@ -2629,6 +2629,27 @@ async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
         )
         .await;
     assert_eq!(folding["error"]["code"], -32601, "{folding}");
+
+    // Closed without saving, the broken text is gone: the error it published is replaced by
+    // the diagnostics of the file on disk, which has none (#1515).
+    let published = editor
+        .notes
+        .iter()
+        .filter(|n| n["method"] == "textDocument/publishDiagnostics" && n["params"]["uri"] == uri)
+        .count();
+    editor
+        .notify(
+            "textDocument/didClose",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+    let after_close = editor.diagnostics(&uri, published).await;
+    assert!(
+        !after_close
+            .as_array()
+            .is_some_and(|d| d.iter().any(|d| d["severity"] == 1)),
+        "the discarded error stays published: {after_close}"
+    );
 }
 
 /// A crate that moves a value twice (rustc's E0382, which only a build finds) and calls a

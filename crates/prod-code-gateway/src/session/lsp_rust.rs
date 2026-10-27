@@ -251,6 +251,10 @@ pub async fn handle_rust_lsp(
                         "session overlay close failed"
                     );
                 }
+                drop(engine);
+                // The editor's unsaved text is gone: a pass still pending for it is cancelled,
+                // and the diagnostics of the text on disk replace those it published (#1515).
+                publish_rust_diagnostics(out_tx, translator, view, meta, file_path, engine_lock);
             }
             return Some(Flow::Next);
         }

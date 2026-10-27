@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Closing a Rust File Without Saving Replaces Its Discarded Diagnostics** (`crates/prod-code-gateway`, #1515):
+  In an editor session served by the in-memory Rust engine, `didClose` put the file back to its text on disk but published nothing, so an error in the unsaved text stayed in the editor. Closing now cancels any diagnostics pass still pending for the file and publishes the diagnostics of the text on disk.
 - **Removed-Symbol Warnings: Raw Keyword Names, Complete Definition Proof, and Unfinished Checks** (`crates/prod-code-mcp`, #1464, #1465):
   - A removed function written as a raw keyword, such as `r#match`, is looked for only where `r#match` is written. An ordinary `match` expression is the keyword and is no longer warned about as its use. Other names match whether written raw or not.
   - A `LocationLink` proves that a same-name use resolves only when it is whole: `targetRange` and `targetSelectionRange` both present and valid, the name's range inside the declaration's. Before, a link without `targetRange` was taken as proof and silenced the warning.
