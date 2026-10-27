@@ -14,7 +14,7 @@ pub mod schema;
 pub use ast::*;
 pub use schema::*;
 
-use crate::commands::common::{parse_line_col, run_tool};
+use crate::commands::common::parse_line_col;
 use crate::commands::exec::verify_scope;
 use crate::commands::query::execute_lsp_query;
 use crate::workspace::find_workspace_root;
@@ -28,8 +28,11 @@ use url::Url;
 /// Delete an unreferenced item through the remote analyzer and apply the edit locally.
 pub async fn run_safe_delete(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    run_tool(
+    // The edit is applied in the checkout that holds the file, wherever this runs from (#1455).
+    let root = safe_delete_root(&abs_path, &env::current_dir()?);
+    crate::commands::common::run_tool_in(
         remote,
+        &root,
         "code_safe_delete",
         serde_json::json!({
             "path": abs_path.to_string_lossy(),
@@ -38,6 +41,14 @@ pub async fn run_safe_delete(remote: SocketAddr, file: &Path, line: u32, col: u3
         }),
     )
     .await
+}
+
+/// The checkout whose edit a safe delete of `file` applies: the one holding the file, or the
+/// current directory's when the file is in none (#1455).
+fn safe_delete_root(file: &Path, cwd: &Path) -> PathBuf {
+    find_workspace_root(file)
+        .or_else(|| find_workspace_root(cwd))
+        .unwrap_or_else(|| cwd.to_path_buf())
 }
 
 /// List code actions at a position (no `id`) or apply one (`id`) and write its edits locally.
@@ -193,4 +204,29 @@ pub async fn run_fix(
         print!("{}", fixed.render(200));
     }
     std::process::exit(if fixed.ok() { 0 } else { 1 });
+}
+
+#[cfg(test)]
+mod safe_delete_tests {
+    /// A file of checkout B, named from checkout A or from outside any project, is deleted in
+    /// B; a file in no checkout falls back to where the command runs (#1455).
+    #[test]
+    fn the_target_files_checkout_owns_the_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        for repo in [&a, &b] {
+            std::fs::create_dir_all(repo.join(".git")).unwrap();
+            std::fs::create_dir_all(repo.join("src")).unwrap();
+        }
+        let target = b.join("src/lib.rs");
+        std::fs::write(&target, "pub fn unused() {}\n").unwrap();
+        let outside = dir.path().join("plain");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(super::safe_delete_root(&target, &a.join("src")), b);
+        assert_eq!(super::safe_delete_root(&target, &outside), b);
+        let loose = outside.join("loose.rs");
+        std::fs::write(&loose, "fn f() {}\n").unwrap();
+        assert_eq!(super::safe_delete_root(&loose, &a), a);
+    }
 }

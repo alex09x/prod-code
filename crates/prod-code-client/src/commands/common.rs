@@ -12,7 +12,7 @@ use crate::workspace::find_workspace_root;
 use anyhow::{Context, Result};
 use std::env;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 #[path = "common_tests.rs"]
@@ -58,6 +58,18 @@ pub fn symbols_args(symbols: &[String], file: Option<PathBuf>) -> serde_json::Va
 pub async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    run_tool_in(remote, &root, tool, args).await
+}
+
+/// [`run_tool`] for the checkout at `root`, which a command naming a file of another checkout
+/// takes from that file, not from the current directory (#1455).
+pub async fn run_tool_in(
+    remote: SocketAddr,
+    root: &Path,
+    tool: &str,
+    args: serde_json::Value,
+) -> Result<()> {
+    let root = root.to_path_buf();
     let mut remote = remote;
     let timeout = prod_code_mcp::resolve_tool_call_timeout(&args);
     let mut result = tokio::time::timeout(
