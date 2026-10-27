@@ -171,6 +171,23 @@ mod tests {
         );
     }
 
+    /// A storage directory that does not exist yet reports the free share of the filesystem it
+    /// will be made on, not "unknown", so the first placement weighs disk pressure (#1429).
+    #[test]
+    fn a_new_storage_directory_reports_its_parents_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let new = dir.path().join("not/created/yet/storage");
+        assert!(!new.exists());
+        let parent = host_resources(dir.path())
+            .storage_free_millis
+            .expect("parent disk");
+        let child = host_resources(&new)
+            .storage_free_millis
+            .expect("a new directory is measured on its existing ancestor");
+        assert!(parent.abs_diff(child) <= 5, "{parent} vs {child}");
+        assert!(!new.exists(), "measuring creates nothing");
+    }
+
     #[test]
     fn test_rss_reading() {
         let bytes = get_process_rss_bytes();

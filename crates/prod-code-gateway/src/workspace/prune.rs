@@ -37,8 +37,11 @@ pub(crate) fn idle_for(path: &Path, now: SystemTime) -> Duration {
 }
 
 /// The share of the filesystem holding `path` that is free for use (0.0 to 1.0); `None` when it
-/// cannot be read.
+/// cannot be read. A path that does not exist yet, such as a new storage directory before the
+/// first sync, is measured on its nearest existing ancestor, the filesystem it will be made on
+/// (#1429).
 pub fn free_share(path: &Path) -> Option<f64> {
+    let path = path.ancestors().find(|p| p.exists())?;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
