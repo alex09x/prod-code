@@ -247,22 +247,40 @@ pub(crate) fn caller(
     )))
 }
 
+/// A test's own name, from the forms runners and analyzers give it (#1472): unittest's
+/// `test_add (mod.Class.test_add)` (or `(mod.Class)` before Python 3.11), Vitest's and Bun's
+/// `file > suite > test` and Jest's `suite › test` lose their decoration, then a path
+/// (`tests::doubles`, `MathTests.testAdds()`) its qualifiers.
+fn bare_test_name(name: &str) -> String {
+    let name = name.trim();
+    let name = match name.split_once(" (") {
+        Some((test, rest)) if rest.ends_with(')') => test,
+        _ => name,
+    };
+    let name = [" > ", " › "]
+        .iter()
+        .filter_map(|sep| name.rfind(sep).map(|at| at + sep.len()))
+        .max()
+        .map_or(name, |at| &name[at..]);
+    name.rsplit("::")
+        .next()
+        .unwrap_or(name)
+        .rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches("()")
+        .to_string()
+}
+
 /// The changed functions that reach the failing test `name` (`tests::doubles`,
 /// `MathTests.testAdds()`, `tests/test_x.py::test_y`), nearest first, each once.
 pub fn suspects_for(reaches: &[Reach], name: &str) -> Vec<(Symbol, usize)> {
-    let bare = |n: &str| -> String {
-        n.rsplit("::")
-            .next()
-            .unwrap_or(n)
-            .rsplit('.')
-            .next()
-            .unwrap_or(n)
-            .trim_end_matches("()")
-            .to_string()
-    };
-    let wanted = bare(name);
+    let wanted = bare_test_name(name);
     let mut best: BTreeMap<Symbol, usize> = BTreeMap::new();
-    for r in reaches.iter().filter(|r| bare(&r.test.name) == wanted) {
+    for r in reaches
+        .iter()
+        .filter(|r| bare_test_name(&r.test.name) == wanted)
+    {
         let hops = best.entry(r.changed.clone()).or_insert(r.hops);
         *hops = (*hops).min(r.hops);
     }
