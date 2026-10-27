@@ -42,6 +42,51 @@ pub fn parse_go_text(text: &str) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// The findings of golangci-lint's JSON output, which a project's config can select instead
+/// of text (`{"Issues":[{"FromLinter":…,"Text":…,"Pos":{"Filename":…,"Line":…,"Column":…}}]}`,
+/// one object per line or the whole stdout). Text that is not that report gives nothing, so
+/// the text parser's findings stand (#1480).
+pub fn parse_golangci_json(text: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for chunk in std::iter::once(text).chain(text.lines()) {
+        let Ok(report) = serde_json::from_str::<serde_json::Value>(chunk.trim()) else {
+            continue;
+        };
+        let Some(issues) = report.get("Issues").and_then(|i| i.as_array()) else {
+            continue;
+        };
+        for issue in issues {
+            let pos = issue.get("Pos");
+            let Some(file) = pos.and_then(|p| p.get("Filename")).and_then(|f| f.as_str()) else {
+                continue;
+            };
+            let text = issue
+                .get("Text")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default();
+            let message = match issue.get("FromLinter").and_then(|l| l.as_str()) {
+                Some(linter) if !linter.is_empty() => format!("{text} ({linter})"),
+                _ => text.to_string(),
+            };
+            out.push(Diagnostic {
+                level: "error".to_string(),
+                code: None,
+                message,
+                file: Some(file.to_string()),
+                line: pos.and_then(|p| p.get("Line")).and_then(|l| l.as_u64()),
+                column: pos
+                    .and_then(|p| p.get("Column"))
+                    .and_then(|c| c.as_u64())
+                    .filter(|c| *c > 0),
+            });
+        }
+        if !out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
 /// Parses `go test -json` events into pass/fail counts and per-test failure output.
 pub fn parse_go_test_json(text: &str) -> (u64, u64, Vec<TestFailure>) {
     let mut passed = 0;

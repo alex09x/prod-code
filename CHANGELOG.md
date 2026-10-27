@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Go Lint Reads golangci-lint's JSON Output** (`crates/prod-code-mcp`, #1480):
+  `prod-code lint` on Go parsed only golangci-lint's `file.go:line:col: message` text. A project whose golangci-lint config prints JSON lost every finding to the bounded output tail. The JSON report (`{"Issues":[…]}`) is now read too, each finding with its linter, file, line and column. Text output, the `go vet` fallback and output that is neither stay as before.
 - **A Java Gradle Project That Uses the Kotlin Standard Library Stays Java** (`crates/prod-code-mcp`, `cluster`, #1476):
   The client took any `org.jetbrains.kotlin` text in a Gradle file as a Kotlin project, a `kotlin-stdlib` dependency included, and so placed and routed a Java-only project as Kotlin. It now uses the gateway's rule: Kotlin sources, or an applied Kotlin plugin in one of its spellings, outside comments.
 - **Background Priming Logs Name Their Engine and Revision** (`crates/prod-code-engine-rust`, #1499):
