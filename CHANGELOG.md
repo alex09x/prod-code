@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Language Server That Does Not Start Fails the Load Instead of Leaving an Empty Workspace** (`crates/prod-code-gateway`, #1427):
+  When an engine's configured language server (Python, TypeScript, clangd, Ada, ...) does not start and there is no managed fallback, the workspace load fails with the startup error, and the session is told why. Before, the error was dropped and a workspace with no engine was cached as ready. Every later session got that workspace and empty answers until it was unloaded, even after the server was installed or fixed. Engines that have no language server at all still load with no engine, as before.
 - **Rust Validation Warm-Up Queues Files Synced During a Running Job** (`crates/prod-code-gateway`, #1426):
   When a sync asks the gateway to warm newly written Rust files while a warm-up job for that workspace is still running, the files are queued instead of dropped. The running job warms them next, and keeps going until nothing is queued. The queue holds at most the 20 latest files. Before, the request was discarded, so the files an agent had just edited stayed cold and their first validation was slow.
 - **Cross-Repository Schema Renames Report Every Repository Still Indexing** (`crates/prod-code-mcp`, #1425):

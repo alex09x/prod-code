@@ -72,9 +72,24 @@ fn generic_lsp_config(engine: &str) -> Option<(GenericLspConfig, &'static str)> 
 pub(crate) async fn load_generic(
     workspace_root: &Path,
     engine: &str,
-) -> Option<(Option<Arc<GenericLspEngine>>, Option<Arc<BackendWorker>>)> {
-    let (mut config, label) = generic_lsp_config(engine)?;
+) -> Option<anyhow::Result<GenericLoad>> {
+    let (config, label) = generic_lsp_config(engine)?;
+    Some(load_generic_with(workspace_root, engine, config, label).await)
+}
 
+/// The engines a generic language server's workspace answers from.
+pub(crate) type GenericLoad = (Option<Arc<GenericLspEngine>>, Option<Arc<BackendWorker>>);
+
+/// [`load_generic`] with the server `config` given. A server that does not start, with no
+/// managed fallback either, fails the load with its startup error. A workspace with no engine
+/// at all would otherwise be cached and handed to every later session until it was unloaded,
+/// even after the cause was fixed (#1427).
+pub(crate) async fn load_generic_with(
+    workspace_root: &Path,
+    engine: &str,
+    mut config: GenericLspConfig,
+    label: &str,
+) -> anyhow::Result<GenericLoad> {
     if engine == "cpp" {
         warm_cmake_compile_commands(workspace_root).await;
     } else if engine == "swift" {
@@ -89,15 +104,16 @@ pub(crate) async fn load_generic(
             if engine == "swift" {
                 wait_for_swift_build_settings(&generic_eng, workspace_root).await;
             }
-            Some((Some(Arc::new(generic_eng)), None))
+            Ok((Some(Arc::new(generic_eng)), None))
         }
         Err(err) => {
             tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn {label} LSP; falling back to subprocess");
-            let backend = BackendWorker::spawn(workspace_root, engine)
-                .await
-                .ok()
-                .map(Arc::new);
-            Some((None, backend))
+            match BackendWorker::spawn(workspace_root, engine).await {
+                Ok(backend) => Ok((None, Some(Arc::new(backend)))),
+                Err(fallback) => Err(anyhow::anyhow!(
+                    "the {label} language server did not start: {err:#} (no fallback: {fallback:#})"
+                )),
+            }
         }
     }
 }
