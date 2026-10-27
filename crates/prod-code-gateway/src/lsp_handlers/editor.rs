@@ -46,6 +46,11 @@ pub(crate) fn lsp_editor_request(
     let session_id = view.session_id;
     let is_single_owner = view.is_single_owner();
     let method = method.to_string();
+    let caps = view
+        .editor_caps
+        .lock()
+        .map(|caps| caps.clone())
+        .unwrap_or_default();
     let started = Instant::now();
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
     tokio::task::spawn(async move {
@@ -58,7 +63,7 @@ pub(crate) fn lsp_editor_request(
                         tracing::warn!(error = %e, session = session_id, "session view activation failed");
                     }
                 engine
-                    .editor_request(&m, &params)
+                    .editor_request_with(&m, &params, &caps)
                     .unwrap_or_else(|| Err(anyhow::anyhow!("{m} is not an editor request")))
             })
             .await

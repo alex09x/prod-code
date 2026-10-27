@@ -2237,10 +2237,18 @@ struct EditorSession {
 impl EditorSession {
     async fn open(addr: SocketAddr, root: &Path) -> (Self, serde_json::Value) {
         let root_uri = format!("file://{}", root.display());
+        // An editor that takes what these tests read back: snippets in completions, and
+        // workspace edits with document changes that create and rename files (#1516).
         Self::open_with(
             addr,
             root,
-            serde_json::json!({ "rootUri": root_uri, "capabilities": {} }),
+            serde_json::json!({ "rootUri": root_uri, "capabilities": {
+                "textDocument": { "completion": { "completionItem": { "snippetSupport": true } } },
+                "workspace": { "workspaceEdit": {
+                    "documentChanges": true,
+                    "resourceOperations": ["create", "rename", "delete"]
+                } }
+            } }),
         )
         .await
     }
