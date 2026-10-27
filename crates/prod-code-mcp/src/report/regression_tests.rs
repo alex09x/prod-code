@@ -299,6 +299,36 @@ fn report_issue_help_schema_and_agent_guidance_advertise_roadmap() {
     }
 }
 
+/// The initialization guidance and the similar-issue result agree: an open match gets a
+/// comment, and a closed one that still happens on a fixed version is filed again with `force`,
+/// naming it, instead of only a comment on a closed issue (#1434).
+#[test]
+fn closed_similar_issues_are_refiled_not_only_commented() {
+    use crate::report::types::{Draft, Outcome, Similar};
+    let draft = Draft {
+        title: "code_outline returns nothing for a module".to_string(),
+        body: String::new(),
+        labels: vec!["bug".to_string()],
+    };
+    let similar = vec![Similar {
+        number: 7,
+        title: "code_outline returns nothing".to_string(),
+        url: "https://github.com/alex09x/prod-code/issues/7".to_string(),
+        state: "CLOSED".to_string(),
+    }];
+    let result = Outcome::Similar(draft, similar).render();
+    let guidance = crate::protocol::AGENT_INSTRUCTIONS;
+    for text in [guidance, result.as_str()] {
+        assert!(text.contains("open"), "{text}");
+        assert!(text.contains("closing change"), "{text}");
+        assert!(text.contains("naming the closed issue"), "{text}");
+    }
+    assert!(
+        !guidance.contains("When a similar issue is listed, add to it with a comment"),
+        "the guidance still sends every match to a comment"
+    );
+}
+
 #[tokio::test]
 async fn mcp_request_uses_shared_type_validation_and_scrubbing() {
     let address = synthetic_addresses().remove(0);

@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Agent Guidance Files a Recurrence of a Closed Issue Instead of Only Commenting on It** (`crates/prod-code-mcp`, #1434):
+  The MCP initialization instructions told agents to comment on any similar issue that `code_report_issue` listed, closed ones included. A bug that came back could then be recorded only as a comment on a closed issue, with no open issue tracking it. The instructions and the similar-issue result now give the same steps:
+  - an open issue that is the same problem gets a comment;
+  - for a closed one, check its closing change and `prod-code --version`, and if the bug still happens on a version that has the fix, report it again with `force`, naming the closed issue.
 - **Editor Traffic Skips the Mirror Parse When It Names No Mirrored File** (`crates/prod-code-client`, #1433):
   `prod-code lsp` no longer parses every message the editor sends into a JSON tree to look for paths of the node's mirrored dependency files. Each mirror directory is named after its node, such as `192.168.2.168_9400`. A message that contains none of those names, and no `\u` escape that could spell one, is passed on as it is, so a large `didOpen` or `didChange` of an ordinary checkout file is no longer parsed for this. Messages that do name a copy, written plainly or with JSON-escaped slashes, are translated as before.
 - **A New Storage Directory Reports Its Disk Before the First Sync** (`crates/prod-code-gateway`, `cluster`, #1429):

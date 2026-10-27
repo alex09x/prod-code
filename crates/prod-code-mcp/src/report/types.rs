@@ -120,8 +120,9 @@ impl Outcome {
                     "\nAn open one that is the same problem: add what you saw with `gh issue \
                      comment <number> --repo {REPOSITORY} --body …`. A closed one may be fixed \
                      in a newer release than this client ({}): check its closing change and \
-                     `prod-code --version`. A different problem: report again with `force` to \
-                     file \"{}\".",
+                     `prod-code --version`; when it still happens on a version with the fix, \
+                     report again with `force`, naming the closed issue in the body. A \
+                     different problem: report again with `force` to file \"{}\".",
                     env!("CARGO_PKG_VERSION"),
                     draft.title
                 ));
