@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Cross-Repository Schema Renames Report Every Repository Still Indexing** (`crates/prod-code-mcp`, #1425):
+  `code_schema_rename` with `repos` collects the language server's "still loading or indexing" notes from every repository it asks, the secondary ones included. Each note is listed under the result, the result is not clean, and `apply` writes nothing without `force`. Before, notes from the other repositories were stored and never shown, so a plan built from a half-indexed repository passed as complete, and the note could surface in a later, unrelated answer.
 - **Nested Projects of Another Checkout Are Placed Under That Checkout** (`crates/prod-code-mcp`, `cluster`, #1424):
   A query routed into a nested project of an `also_in` checkout remembers its placement under that checkout's name, `<checkout>#<engine>`, with a worktree's origin name as the CLI uses it. Before, it used the name of the checkout the process started in, so the first route chose and recorded `A#go` for a project of checkout B, and could start a cold session for it. The checkout's own default node is still kept when it serves the engine.
 - **Symlinked External Checkouts Are Asked by Their Real Paths** (`crates/prod-code-mcp`, #1423):

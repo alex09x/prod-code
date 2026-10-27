@@ -35,6 +35,10 @@ pub async fn rename_across(
 ) -> Result<AcrossRepos> {
     let mut repos = Vec::new();
     let mut missing = Vec::new();
+    // Notes left by earlier calls are not this rename's.
+    for root in roots {
+        let _ = crate::session::take_indexing_notes(root);
+    }
     for root in roots {
         match rename(remote, root, field, to, false, force, None).await {
             Ok(plan) => repos.push(plan),
@@ -42,6 +46,16 @@ pub async fn rename_across(
             Err(err) => return Err(err.context(format!("in {}", root.display()))),
         }
     }
+    // A repository's server still loading or indexing may have missed uses: the plan is not
+    // known to be complete there, whichever repository it is (#1425).
+    let incomplete: Vec<(PathBuf, String)> = roots
+        .iter()
+        .flat_map(|root| {
+            crate::session::take_indexing_notes(root)
+                .into_iter()
+                .map(move |note| (root.clone(), note))
+        })
+        .collect();
     anyhow::ensure!(
         !repos.is_empty(),
         "`{field}` does not appear in any of the {} repositories",
@@ -64,6 +78,19 @@ pub async fn rename_across(
             errors.len(),
             errors.join("\n  ")
         );
+        anyhow::ensure!(
+            incomplete.is_empty() || force,
+            "the rename's evidence is incomplete; nothing was written in any repository. Retry \
+             once the language servers have loaded, or pass `force: true`:\n  {}",
+            incomplete
+                .iter()
+                .map(|(root, note)| format!(
+                    "{}: the language server was still {note}",
+                    root.display()
+                ))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        );
         let repo_roots: Vec<&Path> = repos.iter().map(|r| r.root.as_path()).collect();
         let mut all_ends = BTreeMap::new();
         let mut all_rewritten = Vec::new();
@@ -81,6 +108,7 @@ pub async fn rename_across(
     Ok(AcrossRepos {
         repos,
         missing,
+        incomplete,
         applied,
     })
 }

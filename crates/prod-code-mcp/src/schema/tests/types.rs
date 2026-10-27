@@ -109,6 +109,7 @@ fn across_repos_reports_each_repo_and_the_ones_without_the_field() {
             plan(b.path(), "b.txt", "order_id\n", "trade_id\n"),
         ],
         missing: vec![PathBuf::from("/nowhere/repo")],
+        incomplete: Vec::new(),
         applied: false,
     };
     assert!(across.clean());
@@ -140,6 +141,7 @@ fn across_repos_reports_each_repo_and_the_ones_without_the_field() {
     let empty = AcrossRepos {
         repos: Vec::new(),
         missing: Vec::new(),
+        incomplete: Vec::new(),
         applied: false,
     };
     assert!(empty.clean());
