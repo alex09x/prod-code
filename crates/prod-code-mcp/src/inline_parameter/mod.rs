@@ -19,6 +19,7 @@
 
 pub mod calls;
 pub mod decl;
+mod identity;
 pub mod polyglot;
 pub mod rust;
 pub mod syntax;
