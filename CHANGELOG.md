@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **In-Place Shadow Runs Keep Hard Links and Report Directories They Leave Behind** (`crates/prod-code-gateway`, #1467):
+  An in-place hypothesis removes each touched file and recreates it, and does the same when it puts the file back. A file with another hard link therefore came back as a new inode with the same bytes, and the link no longer shared writes with it. Such a file is now refused before anything is changed, with a pointer to the overlay mode. Restore also only logged a failure to remove a directory the run had created, so an `EACCES` there left the directory behind while the run reported success. Now that failure is one of the restore problems. A directory the command filled with output is still kept without one.
 - **Signature Impact Reports Only Calls as Unadjusted Call Sites** (`crates/prod-code-mcp`, #1474):
   After a signature change, `code_impact` listed every reference to the function as an unadjusted call, so `use crate::helper;` and `let f = helper;` were reported next to the real `helper(10)`. A reference whose name is followed by no argument list is now left out, because a signature change adjusts nothing there. A reference where the text does not show the name, for example one starting at a path such as `crate::helper(…)`, is kept as before.
 - **Impact Does Not Retry a Failed Call-Hierarchy Request as a Cold Index** (`crates/prod-code-mcp`, #1473):

@@ -264,3 +264,92 @@ async fn created_directory_cleanup_never_follows_a_replaced_parent() {
     );
     assert_eq!(sentinel(&outside).as_deref(), Some("keep\n"));
 }
+
+/// #1467: a file with another hard link is refused in place before anything changes, since
+/// putting it back would make it a new inode that no longer shares writes with its link.
+#[cfg(unix)]
+#[tokio::test]
+async fn in_place_refuses_a_file_with_another_hard_link() {
+    use std::os::unix::fs::MetadataExt;
+    let ws = tempfile::tempdir().unwrap();
+    std::fs::write(ws.path().join("a.txt"), "base\n").unwrap();
+    std::fs::hard_link(ws.path().join("a.txt"), ws.path().join("b.txt")).unwrap();
+    let inode = std::fs::metadata(ws.path().join("a.txt")).unwrap().ino();
+    let shadow = tempfile::tempdir().unwrap();
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    let r = run_in_place(
+        job(
+            ws.path(),
+            shadow.path(),
+            "linked",
+            vec![delta("a.txt", Some("proposed\n"))],
+            &["true"],
+        ),
+        rx,
+    )
+    .await;
+    let error = r.error.unwrap_or_default();
+    assert!(error.contains("hard links"), "{error}");
+    for name in ["a.txt", "b.txt"] {
+        let meta = std::fs::metadata(ws.path().join(name)).unwrap();
+        assert_eq!(meta.ino(), inode, "{name} is still the same inode");
+        assert_eq!(meta.nlink(), 2, "{name}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("b.txt")).unwrap(),
+        "base\n"
+    );
+}
+
+/// #1467: a directory the run created and cannot remove is reported, not only logged, while
+/// one the command filled with its output is kept without a problem.
+#[cfg(unix)]
+#[tokio::test]
+async fn in_place_reports_a_created_directory_it_cannot_remove() {
+    use std::os::unix::fs::PermissionsExt;
+    let ws = tempfile::tempdir().unwrap();
+    let shadow = tempfile::tempdir().unwrap();
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    // The command makes the outer created directory read-only, so the inner one cannot go.
+    let r = run_in_place(
+        job(
+            ws.path(),
+            shadow.path(),
+            "stuck",
+            vec![delta("new/dir/x.txt", Some("x\n"))],
+            &["sh", "-c", "chmod 555 new"],
+        ),
+        rx.clone(),
+    )
+    .await;
+    let locked = ws.path().join("new");
+    if std::fs::metadata(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    if std::fs::create_dir(locked.join("probe")).is_ok() {
+        // This user writes into a mode-555 directory (root): nothing to observe here.
+        let _ = std::fs::remove_dir(locked.join("probe"));
+    }
+    let error = r.error.unwrap_or_default();
+    assert!(
+        error.contains("could not remove the directory this run created"),
+        "{error}"
+    );
+
+    // Output the command leaves in a created directory is kept, and is no problem.
+    let ws = tempfile::tempdir().unwrap();
+    let r = run_in_place(
+        job(
+            ws.path(),
+            shadow.path(),
+            "output",
+            vec![delta("gen/x.txt", Some("x\n"))],
+            &["sh", "-c", "echo out > gen/report.txt"],
+        ),
+        rx,
+    )
+    .await;
+    assert!(r.error.is_none(), "{:?}", r.error);
+    assert!(ws.path().join("gen/report.txt").is_file());
+    assert!(!ws.path().join("gen/x.txt").exists());
+}
