@@ -147,6 +147,28 @@ pub async fn push_workspace_sync_with_progress(
                     outcome.bytes_transferred += again.bytes_transferred;
                     outcome.changed_paths.extend(again.changed_paths);
                     outcome.stale_paths = again.stale_paths;
+                    // Still not written though sent again: what runs next would see the node's
+                    // old copy. The sync fails, and the next one sends them again (#1475).
+                    // A sync of one subpath sends nothing outside it.
+                    let scope = crate::sync::filter_path::SyncPathFilter::new(root, subpath)?;
+                    let unwritten: Vec<String> = outcome
+                        .stale_paths
+                        .iter()
+                        .filter(|p| scope.includes(p))
+                        .cloned()
+                        .collect();
+                    if !unwritten.is_empty() {
+                        resend_lost_files(root, &gateway_node(framed), &unwritten);
+                        anyhow::bail!(
+                            "the node could not write {} file(s) of {} though they were sent \
+                             again: {}; nothing runs against its old copy of them. Check the \
+                             node's free space with `prod-code status`; the next sync sends them \
+                             again",
+                            unwritten.len(),
+                            identity.name,
+                            unwritten.join(", ")
+                        );
+                    }
                 }
                 RoundResult::NeedsFullResync => {
                     resets += 1;
@@ -293,11 +315,10 @@ async fn push_sync_round(
             outcome.files_deleted += resp.files_deleted;
             outcome.bytes_transferred += resp.bytes_transferred;
             outcome.server_workspace_root = resp.server_workspace_root;
-            for stale in resp.stale_paths {
-                if !outcome.stale_paths.contains(&stale) {
-                    outcome.stale_paths.push(stale);
-                }
-            }
+            // Each answer carries the gateway's whole stale set, failed writes included: the last
+            // one is current, and a file an earlier answer named that a later batch delivered is
+            // not stale any more (#1475).
+            outcome.stale_paths = resp.stale_paths;
         }
     }
 
