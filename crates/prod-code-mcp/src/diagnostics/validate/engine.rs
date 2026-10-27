@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use crate::diagnostics::annotate::annotate_missing_symbols;
 use crate::diagnostics::filter::{
-    refuse_unchecked, set_aside_derive_expansions, set_aside_preexisting, symbol_names,
+    refuse_unchecked, removed_names, set_aside_derive_expansions, set_aside_preexisting,
+    symbol_identities,
 };
 use crate::diagnostics::parse::parse_items;
 use crate::diagnostics::platform::{
@@ -160,7 +161,7 @@ pub(super) async fn validate_texts_single_engine(
                         budget.auxiliary,
                     )
                     .await
-                    .map(|r| symbol_names(&r))
+                    .map(|r| symbol_identities(&r))
                     .unwrap_or_default()
             } else {
                 BTreeSet::new()
@@ -241,8 +242,8 @@ pub(super) async fn validate_texts_single_engine(
             )
             .await
         {
-            for name in before.difference(&symbol_names(&after)) {
-                missing.push((name.clone(), display(root, file)));
+            for name in removed_names(&before, &symbol_identities(&after)) {
+                missing.push((name, display(root, file)));
             }
         }
     }

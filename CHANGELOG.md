@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Removed Method Is Seen While a Same-Named One Stays, and Removed Globals Count** (`crates/prod-code-mcp`, #1463, parts 1 and 2):
+  Validation compares a file's declarations before and after an edit, to explain the errors a removal causes elsewhere. It compared bare names, so removing `A::new` while `B::new` remained found nothing removed. It also left out every symbol of kind Variable as a local, which dropped top-level Rust statics and Go package variables as well. A declaration is now known by the symbols it is declared in, too. A variable is left out only when it is proven local: nested under a function, method or constructor, or, in a flat result, naming a function as its container.
 - **A Sync No Longer Resends a File a Later Batch Delivered, and Fails When the Node Cannot Write One** (`crates/prod-code-mcp`, #1475):
   Each sync answer from the gateway carries its whole set of stale files, failed writes included. The client merged the sets of every batch, so a file the first answer named and the second batch delivered was still treated as stale and uploaded a third time. The last answer is now the current set. A file the node still could not write after it was sent again no longer passes either. Before, the sync returned success, the watermark took the file as synced, and the exec or session that followed ran against the node's old copy. Now the sync fails with `the node could not write N file(s) of <workspace> though they were sent again: …`, so nothing runs against that copy, and the next sync sends those files again. A sync of one subpath judges only the files inside it.
 - **A Document the Language Server Refuses Ends the Session Instead of Going Stale** (`crates/prod-code-gateway`, #1518):
