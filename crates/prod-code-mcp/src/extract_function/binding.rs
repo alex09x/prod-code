@@ -8,7 +8,11 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::tokens::{is_ident, mentions};
+use super::tokens::is_ident;
+
+#[cfg(test)]
+#[path = "binding_tests.rs"]
+mod tests;
 
 /// The names the `let` statements in `code` bind: `let x`, `let mut x`, and the names in a
 /// tuple or struct pattern (`let (a, b)`, `let P { x, y: py }` binds `x` and `py`).
@@ -24,12 +28,17 @@ pub fn bound_names(code: &str) -> Vec<String> {
         let pattern_end = rest.find(['=', ';']).unwrap_or(rest.len());
         let mut pattern = &rest[..pattern_end];
         // `let x: T`: the type is not part of the pattern. A `:` inside braces is a field.
+        // A path separator `::` is no type annotation.
         let mut depth = 0i32;
+        let bytes = pattern.as_bytes();
         for (j, c) in pattern.char_indices() {
             match c {
                 '(' | '{' | '[' | '<' => depth += 1,
                 ')' | '}' | ']' | '>' => depth -= 1,
-                ':' if depth == 0 => {
+                ':' if depth == 0
+                    && bytes.get(j + 1) != Some(&b':')
+                    && (j == 0 || bytes[j - 1] != b':') =>
+                {
                     pattern = &pattern[..j];
                     break;
                 }
@@ -50,9 +59,17 @@ pub fn bound_names(code: &str) -> Vec<String> {
             }
             let end = chars.get(e).map_or(pattern.len(), |(i, _)| *i);
             let word = &pattern[s..end];
-            let field = pattern[end..].trim_start().starts_with(':');
-            let named = !matches!(word, "mut" | "ref" | "_")
-                && !word.starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit());
+            let next = pattern[end..].trim_start();
+            let field = next.starts_with(':');
+            // A binding is told by its role in the pattern, not its case (#1438): a name that
+            // opens a tuple or struct pattern or a path, or ends one, is a type or variant;
+            // `let Gross = …` binds `Gross`.
+            let path = next.starts_with(['(', '{'])
+                || pattern[..s].trim_end().ends_with("::")
+                || next.starts_with("::");
+            let named = !matches!(word, "mut" | "ref" | "_" | "None")
+                && !path
+                && !word.starts_with(|c: char| c.is_ascii_digit());
             if named && !field {
                 out.push(word.to_string());
             }
@@ -80,7 +97,109 @@ pub fn read_after_but_not_returned(
     bound_names(selection)
         .into_iter()
         .filter(|name| !returned.contains(name))
-        .find(|name| mentions(after, name))
+        .find(|name| reads_local(after, name))
+}
+
+/// Whether the code `after` reads the local `name` before a `let` in the same block binds it
+/// again (#1438). Only a name token counts: not a field or method after `.`, a path segment
+/// after `::`, a struct field before `:`, or text in a comment or literal. A `let` that binds
+/// `name` still reads the earlier one in its initializer, and hides it until its block ends.
+fn reads_local(after: &str, name: &str) -> bool {
+    use super::tokens::{Token, tokens};
+    let toks = tokens(after);
+    let text = |i: usize| toks.get(i).map(|&(_, s, e)| &after[s..e]);
+    let (mut depth, mut hidden_from) = (0i32, None::<i32>);
+    let mut i = 0;
+    while i < toks.len() {
+        let (kind, ..) = toks[i];
+        match text(i) {
+            Some("{") => depth += 1,
+            Some("}") => {
+                depth -= 1;
+                if hidden_from.is_some_and(|d| depth < d) {
+                    hidden_from = None;
+                }
+            }
+            _ => {}
+        }
+        if hidden_from.is_some() {
+            i += 1;
+            continue;
+        }
+        // Only a `let` statement hides the name for the rest of its block; the binding of an
+        // `if let` or `while let` lives in its own body, whose reads all count.
+        let statement = i
+            .checked_sub(1)
+            .and_then(text)
+            .is_none_or(|t| matches!(t, ";" | "{" | "}"));
+        if kind == Token::Word && text(i) == Some("let") && statement {
+            // The pattern up to `=`, `;` or `else`, at this nesting.
+            let mut j = i + 1;
+            let mut nest = 0i32;
+            while let Some(t) = text(j) {
+                match t {
+                    "(" | "[" | "{" => nest += 1,
+                    ")" | "]" | "}" => nest -= 1,
+                    "=" | ";" if nest == 0 => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            let pattern_end = toks.get(j).map_or(after.len(), |&(_, s, _)| s);
+            let start = toks.get(i).map_or(0, |&(_, s, _)| s);
+            if bound_names(&after[start..pattern_end])
+                .iter()
+                .any(|n| n == name)
+            {
+                // The initializer still reads the earlier binding; after it, the new one.
+                let mut k = if text(j) == Some("=") { j + 1 } else { j };
+                let mut nest = 0i32;
+                while let Some(t) = text(k) {
+                    match t {
+                        "(" | "[" | "{" => nest += 1,
+                        ")" | "]" | "}" => nest -= 1,
+                        ";" if nest == 0 => break,
+                        _ => {}
+                    }
+                    if is_read(&toks, after, k, name) {
+                        return true;
+                    }
+                    k += 1;
+                }
+                hidden_from = Some(depth);
+                i = k + 1;
+                continue;
+            }
+            i = j;
+            continue;
+        }
+        if is_read(&toks, after, i, name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether token `i` of `text` is the name `name` read as a local.
+fn is_read(
+    toks: &[(super::tokens::Token, usize, usize)],
+    text: &str,
+    i: usize,
+    name: &str,
+) -> bool {
+    let at = |k: usize| toks.get(k).map(|&(_, s, e)| &text[s..e]);
+    if toks[i].0 != super::tokens::Token::Word || at(i) != Some(name) {
+        return false;
+    }
+    let before = i.checked_sub(1).and_then(at);
+    let before2 = i.checked_sub(2).and_then(at);
+    let field = before == Some(".") && before2 != Some(".");
+    let path = before == Some(":") && before2 == Some(":");
+    let after_colon = at(i + 1) == Some(":") && at(i + 2) != Some(":");
+    // `Point { gross: 1 }` names a field; `match x { gross: … }` is no Rust, so a name before a
+    // single `:` inside braces is a field label, or a type ascription in a pattern.
+    !field && !path && !after_colon
 }
 
 /// Finds local variables and parameters from the enclosing function that are referenced in the
