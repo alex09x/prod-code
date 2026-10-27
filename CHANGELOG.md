@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **Moving a Default Export Keeps Every Default Import Working** (`crates/prod-code-mcp`, #1431):
+  `code_move` of a TypeScript or JavaScript `export default` function rewrites every default import of it, whatever its local name.
+  - `import Foo, { other } from "./source"` is split: `other` stays imported from the source, and `import Foo from "./helpers"` is added.
+  - `import LocalName from "./source"` now follows the move.
+  - The source's own remaining calls import the moved function by default.
+  Before, those cases kept a stale default import of the source, or added `import { Foo }`, a named export the destination does not have. The project failed to typecheck.
 - **A Language Server That Does Not Start Fails the Load Instead of Leaving an Empty Workspace** (`crates/prod-code-gateway`, #1427):
   When an engine's configured language server (Python, TypeScript, clangd, Ada, ...) does not start and there is no managed fallback, the workspace load fails with the startup error, and the session is told why. Before, the error was dropped and a workspace with no engine was cached as ready. Every later session got that workspace and empty answers until it was unloaded, even after the server was installed or fixed. Engines that have no language server at all still load with no engine, as before.
 - **Rust Validation Warm-Up Queues Files Synced During a Running Job** (`crates/prod-code-gateway`, #1426):
