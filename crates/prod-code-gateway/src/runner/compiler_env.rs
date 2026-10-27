@@ -24,11 +24,13 @@ pub(crate) async fn refresh_engines(
     server_workspace: &std::path::Path,
     files: &[FileDelta],
 ) {
+    let changed: Vec<std::path::PathBuf> = files
+        .iter()
+        .map(|delta| server_workspace.join(&delta.relative_path))
+        .collect();
     let loaded_rust = workspace_manager
-        .get_loaded(server_workspace)
-        .await
-        .map(|ws| ws.mirrored_rust_engines())
-        .unwrap_or_default();
+        .rust_engines_for_changes(server_workspace, &changed)
+        .await;
     let mut project_config_changed = false;
     for delta in files {
         project_config_changed |= is_project_config_file(&delta.relative_path);

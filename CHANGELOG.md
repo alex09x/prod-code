@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Validation Engine Catches Up on Changes Made While It Loaded** (`crates/prod-code-gateway`, #1490):
+  The Rust validation engine loads in the background and is added to the engines that synced and command-written files reach only when the load ends. A file that changed after the loader read it, and before that point, reached only the engines already there, so the new engine answered from the old text until the file changed again. While a validation engine of a root loads, the changes that reach the root are now journaled. The engine is published first and then given the journaled files' current text from disk, or their deletion. In that order no change can fall between the two.
+- **Synced and Command-Written Files Reach a Nested Project's Rust Engine** (`crates/prod-code-gateway`, #1488):
+  A nested Cargo project loaded under a checkout has its own engine, keyed `checkout/<subpath>`. Files a sync wrote, files a remote command changed, and the warm-up after a sync looked up only the checkout's exact key. The nested engine therefore kept answering from the text it had before. `WorkspaceManager::rust_engines_for_changes` now picks the checkout's engines and those of every nested project loaded under it that holds one of the changed files, each once. The sync apply and the command refresh use it, and the warm-up warms each loaded validation engine with its own files.
 - **The Go Signature Tool Test Guards Its Stack Headroom** (`crates/prod-code-mcp`, #1597):
   `signature_go::the_mcp_tool_previews_applies_and_refuses_go_reorders` overflowed its 2 MiB debug stack once an unrelated async layer was added on the MCP tool path, and the abort printed no test result. The path now needs about 1.5 MiB. Measured on a Linux build node with `RUST_MIN_STACK`, it passes at 1.5 MiB and overflows at 1.4375 MiB. The test now runs on a 1.75 MiB stack, so growth that eats that headroom fails this test before it can abort a real 2 MiB thread.
 - **A File Restored to HEAD After an Exec Write-Back Is Synced Again** (`crates/prod-code-mcp`, #1257):

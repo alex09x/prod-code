@@ -12,6 +12,7 @@ mod admission_eval;
 mod coalescing_eval;
 mod fixtures;
 mod generic_eval;
+mod nested_engines_eval;
 mod pruning_eval;
 mod pruning_users_eval;
 mod slow_loader_eval;

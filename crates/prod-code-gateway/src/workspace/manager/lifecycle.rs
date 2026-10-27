@@ -176,6 +176,35 @@ impl WorkspaceManager {
             .collect()
     }
 
+    /// The Rust engines a change to the `changed` files (absolute paths) of `checkout` must
+    /// reach (#1488): those of the checkout's own workspace, and of each nested project loaded
+    /// under it that holds one of the files. Its own key is `checkout/<subpath>`, which an
+    /// exact lookup of the checkout misses. An engine two workspaces share is listed once.
+    /// Each of those workspaces also notes the change for a validation engine loading there.
+    pub async fn rust_engines_for_changes(
+        &self,
+        checkout: &Path,
+        changed: &[PathBuf],
+    ) -> Vec<Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>> {
+        let mut engines: Vec<Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>> =
+            Vec::new();
+        for workspace in self.loaded_under(checkout).await {
+            let root = &workspace.key.0;
+            if root != checkout && !changed.iter().any(|path| path.starts_with(root)) {
+                continue;
+            }
+            // Noted before the engines are listed: a validation engine still loading picks
+            // the change up when it is published (#1490).
+            workspace.note_changes(changed);
+            for engine in workspace.mirrored_rust_engines() {
+                if !engines.iter().any(|seen| Arc::ptr_eq(seen, &engine)) {
+                    engines.push(engine);
+                }
+            }
+        }
+        engines
+    }
+
     /// Whether a workspace is loaded or loading at `prefix` or below it: the checkout's own
     /// engine or that of a nested project (#1524).
     pub async fn is_loaded_under(&self, prefix: &Path) -> bool {

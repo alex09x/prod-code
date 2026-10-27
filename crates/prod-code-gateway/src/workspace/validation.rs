@@ -85,6 +85,7 @@ impl SharedWorkspace {
                 validation_attached: AtomicBool::new(!is_main),
                 rebalance_tx: self.rebalance_tx.clone(),
                 manifest_mtimes: self.manifest_mtimes.clone(),
+                loading_changes: Arc::clone(&base.loading_changes),
             }));
         }
         self.base_validation_view(admission).await
@@ -123,6 +124,7 @@ impl SharedWorkspace {
             validation_attached: AtomicBool::new(false),
             rebalance_tx: self.rebalance_tx.clone(),
             manifest_mtimes: self.manifest_mtimes.clone(),
+            loading_changes: Arc::clone(&self.loading_changes),
         }))
     }
 
@@ -151,6 +153,7 @@ impl SharedWorkspace {
         let load_semaphore = Arc::clone(&this.engine_load_semaphore);
         let loading = tokio::spawn(async move {
             let engines = Arc::clone(&this.rust_engines);
+            let loading_changes = Arc::clone(&this.loading_changes);
             let root = this.root.clone();
             this.validation
                 .get_or_try_init(|| async move {
@@ -162,6 +165,11 @@ impl SharedWorkspace {
                         tracing::warn!(workspace = ?root, %refused, "validation engine not loaded; validating on the main engine");
                     })?;
                     let _load_permit = load_semaphore.acquire_owned().await.map_err(|_| ())?;
+                    // Changes from now on are journaled: the loader reads the files before
+                    // they change, and the engine is not yet among those a change reaches.
+                    if let Ok(mut pending) = loading_changes.lock() {
+                        pending.get_or_insert_with(Default::default);
+                    }
                     let load_root = root.clone();
                     let loaded = tokio::task::spawn_blocking(move || load(&load_root)).await;
                     reservation.release_after_settling();
@@ -172,6 +180,14 @@ impl SharedWorkspace {
                             if let Ok(mut all) = engines.lock() {
                                 all.push(Arc::clone(&engine));
                             }
+                            // Published first, then caught up: a change noted after the take
+                            // reaches the engine itself (#1490).
+                            let missed = loading_changes
+                                .lock()
+                                .ok()
+                                .and_then(|mut pending| pending.take())
+                                .unwrap_or_default();
+                            catch_up(&engine, &missed).await;
                             tracing::info!(workspace = ?root, "validation engine loaded");
                             // Nothing is warm after a load, and the files modified last are the
                             // ones an agent validates next (#233).
@@ -186,10 +202,12 @@ impl SharedWorkspace {
                             Some(engine)
                         }
                         Ok(Err(err)) => {
+                            stop_journal(&loading_changes);
                             tracing::warn!(error = %err, workspace = ?root, "validation engine failed to load; validating on the main engine");
                             None
                         }
                         Err(err) => {
+                            stop_journal(&loading_changes);
                             tracing::warn!(error = %err, workspace = ?root, "validation engine load panicked; validating on the main engine");
                             None
                         }
@@ -298,6 +316,43 @@ impl SharedWorkspace {
             validation_attached: AtomicBool::new(false),
             rebalance_tx: self.rebalance_tx.clone(),
             manifest_mtimes: self.manifest_mtimes.clone(),
+            loading_changes: Arc::clone(&self.loading_changes),
         }))
     }
+}
+
+/// Ends the journal of a load that produced no engine: nothing is there to catch up.
+fn stop_journal(loading_changes: &super::shared::LoadingChanges) {
+    if let Ok(mut pending) = loading_changes.lock() {
+        *pending = None;
+    }
+}
+
+/// Gives a just-published validation engine the files that changed while it loaded: their
+/// text on disk now, or their deletion (#1490).
+async fn catch_up(
+    engine: &Arc<Mutex<prod_code_engine_rust::RustEngine>>,
+    missed: &std::collections::BTreeSet<std::path::PathBuf>,
+) {
+    if missed.is_empty() {
+        return;
+    }
+    let mut engine = engine.lock().await;
+    for path in missed {
+        let text = match std::fs::read(path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => Some(text),
+                Err(_) => continue,
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => continue,
+        };
+        if let Err(error) = engine.update_base(path, text) {
+            tracing::warn!(%error, file = %path.display(), "validation engine catch-up failed");
+        }
+    }
+    tracing::info!(
+        files = missed.len(),
+        "validation engine caught up on changes made while it loaded"
+    );
 }
