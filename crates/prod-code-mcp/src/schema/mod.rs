@@ -10,6 +10,7 @@
 
 pub mod across;
 pub mod casing;
+mod comments;
 pub mod detect;
 pub mod edits;
 pub mod execute;

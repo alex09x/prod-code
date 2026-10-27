@@ -122,3 +122,55 @@ fn semantic_rename_position_uses_utf16_after_non_bmp_text() {
     assert_eq!(occurrence.col, 22);
     assert_eq!(lsp_position(text, &occurrence), (0, 22));
 }
+
+/// SQL and Protobuf fields are renamed as text, their comments are not, and a quoted name in a
+/// code comment is prose too (#1451).
+#[test]
+fn schema_and_code_comments_are_left_as_evidence() {
+    let variants = variants("order_id", "trade_id");
+    let rewrite = |path: &str, text: &str| {
+        let path = Path::new(path);
+        let edits: Vec<_> = scan(text, &variants, path)
+            .iter()
+            .filter(|o| text_rewrite_decision(kind_of(path), schema_of(path, text), text, o).0)
+            .map(|o| edit_for(o, &variants[o.variant]))
+            .collect();
+        crate::refactor::apply_scalar_text_edits(text, &edits).unwrap()
+    };
+    assert_eq!(
+        rewrite(
+            "db/schema.sql",
+            "-- order_id keys the table\nCREATE TABLE t (order_id INT, /* order_id */ note TEXT DEFAULT '--', x INT); -- order_id\nSELECT order_id FROM t WHERE n = 'a -- b' AND order_id > 0;\n"
+        ),
+        "-- order_id keys the table\nCREATE TABLE t (trade_id INT, /* order_id */ note TEXT DEFAULT '--', x INT); -- order_id\nSELECT trade_id FROM t WHERE n = 'a -- b' AND trade_id > 0;\n"
+    );
+    assert_eq!(
+        rewrite(
+            "api/order.proto",
+            "// order_id is the key\nmessage Order {\n  string order_id = 1; // order_id\n  /* order_id\n     order_id */ string url = 2 [json_name = \"a//b\"]; int64 order_id = 3;\n}\n"
+        ),
+        "// order_id is the key\nmessage Order {\n  string trade_id = 1; // order_id\n  /* order_id\n     order_id */ string url = 2 [json_name = \"a//b\"]; int64 trade_id = 3;\n}\n"
+    );
+    assert_eq!(
+        rewrite("src/lib.rs", "let k = \"order_id\"; // see \"order_id\"\n"),
+        "let k = \"trade_id\"; // see \"order_id\"\n"
+    );
+}
+
+/// In a minified OpenAPI document both the property key and its `required` entry are renamed,
+/// and the description is not (#1452).
+#[test]
+fn minified_openapi_renames_the_key_and_its_required_entry() {
+    let variants = variants("order_id", "trade_id");
+    let path = Path::new("api/spec.json");
+    let text = r#"{"info":{"title":"demo","version":"1"},"openapi":"3.1.0","paths":{},"components":{"schemas":{"Record":{"type":"object","properties":{"order_id":{"type":"string","description":"the order_id"}},"required":["order_id"]}}}}"#;
+    let edits: Vec<_> = scan(text, &variants, path)
+        .iter()
+        .filter(|o| text_rewrite_decision(kind_of(path), schema_of(path, text), text, o).0)
+        .map(|o| edit_for(o, &variants[o.variant]))
+        .collect();
+    let after = crate::refactor::apply_scalar_text_edits(text, &edits).unwrap();
+    assert!(after.contains(r#""properties":{"trade_id":"#), "{after}");
+    assert!(after.contains(r#""required":["trade_id"]"#), "{after}");
+    assert!(after.contains(r#""description":"the order_id""#), "{after}");
+}

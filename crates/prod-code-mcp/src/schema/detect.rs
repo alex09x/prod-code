@@ -77,12 +77,19 @@ pub(crate) fn schema_of(path: &Path, text: &str) -> Option<Schema> {
                 Schema::Yaml
             },
         ),
+        // The root object's keys decide, however the document is laid out or ordered: a
+        // minified `{"info":…,"openapi":"3.1.0",…}` is OpenAPI too (#1452). Text that does
+        // not parse as JSON falls back to a key at the start of a line.
         Kind::Text("json") => Some(
-            if text
-                .lines()
-                .map(|l| l.trim_start_matches(|c: char| c == '{' || c.is_whitespace()))
-                .any(|l| keyed(l, "\"openapi\"") || keyed(l, "\"swagger\""))
-            {
+            if match serde_json::from_str::<serde_json::Value>(text) {
+                Ok(value) => value.as_object().is_some_and(|root| {
+                    root.contains_key("openapi") || root.contains_key("swagger")
+                }),
+                Err(_) => text
+                    .lines()
+                    .map(|l| l.trim_start_matches(|c: char| c == '{' || c.is_whitespace()))
+                    .any(|l| keyed(l, "\"openapi\"") || keyed(l, "\"swagger\"")),
+            } {
                 Schema::OpenApi
             } else {
                 Schema::Json
@@ -234,16 +241,24 @@ pub(crate) fn text_comment_before(path: &Path, text: &str, occurrence: &Occurren
     false
 }
 
-/// Is this occurrence inside a GraphQL block string (`"""…"""`, a description)?
+/// Is this occurrence inside a GraphQL block string (`"""…"""`, a description)? The delimiters
+/// are read from the start of the file: inside a block string `\"""` is an escaped quote, not
+/// its end (#1452).
 pub(crate) fn in_block_string(text: &str, o: &Occurrence) -> bool {
-    let mut quotes = 0;
-    for (n, line) in text.lines().enumerate() {
-        if n + 1 == o.line as usize {
-            let prefix: String = line.chars().take(o.col as usize - 1).collect();
-            quotes += prefix.matches("\"\"\"").count();
-            break;
+    let Some(end) = super::comments::byte_offset(text, o) else {
+        return false;
+    };
+    let bytes = &text.as_bytes()[..end];
+    let (mut i, mut inside) = (0, false);
+    while i < bytes.len() {
+        if inside && bytes[i..].starts_with(b"\\\"\"\"") {
+            i += 4;
+        } else if bytes[i..].starts_with(b"\"\"\"") {
+            inside = !inside;
+            i += 3;
+        } else {
+            i += 1;
         }
-        quotes += line.matches("\"\"\"").count();
     }
-    quotes % 2 == 1
+    inside
 }

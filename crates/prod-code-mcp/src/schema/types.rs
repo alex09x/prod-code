@@ -20,6 +20,25 @@ pub struct Variant {
     pub from: String,
     pub to: String,
     pub style: &'static str,
+    /// The other styles that spell the field as `from` and the new name differently, such as
+    /// camelCase for a one-word `status` that snake_case also spells (#1450).
+    pub alternatives: Vec<(&'static str, String)>,
+}
+
+impl Variant {
+    /// The new spelling for an occurrence in `file`: camelCase in a language that writes its
+    /// names that way, when that differs from this variant's own style.
+    pub fn target_for(&self, file: &std::path::Path) -> &str {
+        use super::detect::{Kind, kind_of};
+        let camel = matches!(
+            kind_of(file),
+            Kind::Code("typescript" | "javascript" | "swift" | "go")
+        );
+        self.alternatives
+            .iter()
+            .find(|(style, _)| camel && *style == "camelCase")
+            .map_or(self.to.as_str(), |(_, to)| to.as_str())
+    }
 }
 
 /// Where a spelling appears. Positions are 1-based, `col` and `len` counted in characters.

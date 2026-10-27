@@ -131,7 +131,7 @@ pub(crate) fn edit_for(occurrence: &Occurrence, variant: &Variant) -> serde_json
             "start": { "line": occurrence.line - 1, "character": occurrence.col - 1 },
             "end": { "line": occurrence.line - 1, "character": occurrence.col - 1 + occurrence.len as u32 }
         },
-        "newText": variant.to
+        "newText": variant.target_for(&occurrence.file)
     })
 }
 
@@ -183,8 +183,18 @@ pub(crate) fn text_rewrite_decision(
                 Schema::Yaml => " (not a structured YAML key)",
             },
         ),
-        (Kind::Text("protobuf" | "sql"), None) => (true, ""),
-        (Kind::Code(_), None) => (occurrence.in_string, ""),
+        (Kind::Text(language @ ("protobuf" | "sql")), None) => (
+            !super::comments::in_schema_comment(language, text, occurrence),
+            " (a comment)",
+        ),
+        // A quoted name inside a comment is still prose (#1451).
+        (Kind::Code(_), None) => {
+            let comment = occurrence.in_string && super::edits::in_comment_of(text, occurrence);
+            (
+                occurrence.in_string && !comment,
+                if comment { " (a comment)" } else { "" },
+            )
+        }
         _ => (false, " (unsupported text evidence)"),
     }
 }
