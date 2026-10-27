@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **`prod-code safe-delete` Applies the Edit in the Checkout That Holds the File** (`crates/prod-code-client`, #1455):
+  A safe delete named by an absolute path in another checkout ran against the checkout of the current directory, so the edit the analyzer returned for the other checkout was refused at that boundary. The command now uses the checkout that holds the file, and falls back to the current directory's only when the file is in none. Edits outside the chosen checkout are still refused.
 - **Search Returns as Many Hits as Asked, Up to 500** (`crates/prod-code-gateway`, #1458):
   Each ranking (lexical, graph and dense) was cut to 50 candidates before fusion, so `prod-code search QUERY --limit 100` could return 50 hits when 100 matched. Each list now goes as deep as the limit asks, and at least 50 deep as before. A limit above 500, the most one search returns, is refused with an error naming that bound instead of being answered with fewer hits.
 - **Search Indexes Real C++ Functions and Keeps `cfg(test)` to Its Own Item** (`crates/prod-code-gateway`, #1457):
