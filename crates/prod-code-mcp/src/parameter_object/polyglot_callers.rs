@@ -86,10 +86,31 @@ pub(crate) async fn collect_body_uses(
                 continue;
             }
             // basedpyright counts the name of a keyword argument (`height=…`) as a reference;
-            // in a call in the body that is the callee's parameter, not a use of this one.
+            // in a call in the body that is the callee's parameter, not a use of this one. A
+            // keyword argument follows `(` or `,`; anywhere else, `width = …` assigns the
+            // parameter, and rewriting it to `options.width = …` would write to the caller's
+            // object, so that is refused (#1509).
             let after = text[o + p.name.len()..].trim_start();
-            if language == Language::Python && after.starts_with('=') && !after.starts_with("==") {
-                continue;
+            if language == Language::Python {
+                let assigns = (after.starts_with('=') && !after.starts_with("=="))
+                    || [
+                        "+=", "-=", "*=", "/=", "//=", "%=", "**=", "@=", "&=", "|=", "^=", ">>=",
+                        "<<=",
+                    ]
+                    .iter()
+                    .any(|op| after.starts_with(op));
+                let keyword_argument =
+                    after.starts_with('=') && text[..o].trim_end().ends_with(['(', ',']);
+                if keyword_argument {
+                    continue;
+                }
+                anyhow::ensure!(
+                    !assigns,
+                    "`{callee}` assigns its parameter `{}` at {}:{rl}:{rc}; bundled, the write \
+                     would go to the caller's object, so nothing was rewritten",
+                    p.name,
+                    display(root, file)
+                );
             }
             let field = if language == Language::Java {
                 format!("{binding}.{}()", p.name)
@@ -119,6 +140,23 @@ pub(crate) async fn collect_body_uses(
                  it is not bundled",
                 display(root, file),
                 line_of(*at)?
+            );
+        }
+        // A direct `eval(…)` reads the parameters by name from a string no reference reaches,
+        // and would find them gone (#1510). An indirect one (`obj.eval(…)`, `(0, eval)(…)`)
+        // runs in the global scope and sees no parameter.
+        let direct_eval = ident_uses(text, body.0, body.1, "eval")
+            .into_iter()
+            .find(|at| {
+                text[at + "eval".len()..].trim_start().starts_with('(')
+                    && !text[..*at].trim_end().ends_with('.')
+            });
+        if let Some(at) = direct_eval {
+            anyhow::bail!(
+                "`{callee}` calls `eval` directly ({}:{}), which can read its parameters by name; \
+                 it is not bundled",
+                display(root, file),
+                line_of(at)?
             );
         }
         // A name the function already has would shadow the object, or be shadowed by it; the
