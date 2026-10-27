@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Validation Warm-Up Queues Files Synced During a Running Job** (`crates/prod-code-gateway`, #1426):
+  When a sync asks the gateway to warm newly written Rust files while a warm-up job for that workspace is still running, the files are queued instead of dropped. The running job warms them next, and keeps going until nothing is queued. The queue holds at most the 20 latest files. Before, the request was discarded, so the files an agent had just edited stayed cold and their first validation was slow.
 - **Cross-Repository Schema Renames Report Every Repository Still Indexing** (`crates/prod-code-mcp`, #1425):
   `code_schema_rename` with `repos` collects the language server's "still loading or indexing" notes from every repository it asks, the secondary ones included. Each note is listed under the result, the result is not clean, and `apply` writes nothing without `force`. Before, notes from the other repositories were stored and never shown, so a plan built from a half-indexed repository passed as complete, and the note could surface in a later, unrelated answer.
 - **Nested Projects of Another Checkout Are Placed Under That Checkout** (`crates/prod-code-mcp`, `cluster`, #1424):

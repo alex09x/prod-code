@@ -19,7 +19,7 @@
 //! sync, an overlay) cancels it.
 
 use prod_code_engine_rust::RustEngine;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Instant, SystemTime};
@@ -32,10 +32,41 @@ pub const DIAGNOSED_FILES: usize = 3;
 /// Files warmed after one sync; a sync that writes more is a checkout arriving, not an edit.
 pub const SYNCED_FILES: usize = 20;
 
-/// Workspaces with a warming job running: one at a time per workspace.
-fn running() -> &'static StdMutex<HashSet<PathBuf>> {
-    static RUNNING: OnceLock<StdMutex<HashSet<PathBuf>>> = OnceLock::new();
+/// Workspaces with a warming job running, one at a time per workspace, each with the files
+/// asked for while it runs: the job warms them next (#1426).
+fn running() -> &'static StdMutex<HashMap<PathBuf, Vec<PathBuf>>> {
+    static RUNNING: OnceLock<StdMutex<HashMap<PathBuf, Vec<PathBuf>>>> = OnceLock::new();
     RUNNING.get_or_init(Default::default)
+}
+
+/// Asks for `files` of `workspace` to be warmed: `true` when no job runs for it and the caller
+/// starts one, `false` when the running job takes them after its current files. The queue
+/// holds at most [`SYNCED_FILES`], the latest asked kept.
+fn enqueue(workspace: &Path, files: &[PathBuf]) -> bool {
+    let mut guard = running().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(queued) = guard.get_mut(workspace) else {
+        guard.insert(workspace.to_path_buf(), Vec::new());
+        return true;
+    };
+    for file in files {
+        queued.retain(|q| q != file);
+        queued.push(file.clone());
+    }
+    let excess = queued.len().saturating_sub(SYNCED_FILES);
+    queued.drain(..excess);
+    false
+}
+
+/// The files asked for while `workspace`'s job ran, for it to warm next; `None`, and the job
+/// is over, when there are none.
+fn next_batch(workspace: &Path) -> Option<Vec<PathBuf>> {
+    let mut guard = running().lock().unwrap_or_else(|e| e.into_inner());
+    let queued = std::mem::take(guard.get_mut(workspace)?);
+    if queued.is_empty() {
+        guard.remove(workspace);
+        return None;
+    }
+    Some(queued)
 }
 
 /// The Rust files among `touched` (workspace-relative paths a sync wrote) that exist, at most
@@ -86,63 +117,94 @@ pub fn recent_rust_files(workspace: &Path, n: usize) -> Vec<PathBuf> {
     found.into_iter().take(n).map(|(_, path)| path).collect()
 }
 
-/// Warms `files` of `workspace` in the background, unless a job for it is already running.
-/// Returns whether a job was started.
+/// Warms `files` of `workspace` in the background. When a job for it is already running, the
+/// files are queued and that job warms them after its current ones. Returns whether a job was
+/// started.
 pub fn warm_in_background(
     engine: Arc<Mutex<RustEngine>>,
     workspace: PathBuf,
     files: Vec<PathBuf>,
 ) -> bool {
-    if files.is_empty() {
+    if files.is_empty() || !enqueue(&workspace, &files) {
         return false;
     }
-    {
-        let mut guard = running().lock().unwrap_or_else(|e| e.into_inner());
-        if !guard.insert(workspace.clone()) {
-            return false;
-        }
-    }
     tokio::spawn(async move {
-        let started = Instant::now();
-        // The job is made under the lock, which takes milliseconds, and runs after it is let go.
-        let job = {
-            let engine = engine.lock().await;
-            let paths: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
-            engine.priming_job(&paths)
-        };
-        let threads = job.threads();
-        let done = tokio::task::spawn_blocking(move || job.run())
-            .await
-            .unwrap_or(0);
-        // Then the diagnostics a validation asks for, computed on a snapshot without holding
-        // the engine lock, so concurrent queries, syncs, and refreshes never stall (#1118).
-        for path in files.iter().take(DIAGNOSED_FILES) {
-            let snap = engine.lock().await.snapshot_for_path(path);
-            let path = path.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let _ = snap.diagnostics(&path);
-            })
-            .await;
+        let mut files = files;
+        loop {
+            warm(&engine, &workspace, &files).await;
+            match next_batch(&workspace) {
+                Some(next) => files = next,
+                None => break,
+            }
         }
-        tracing::info!(
-            workspace = %workspace.display(),
-            files = files.len(),
-            functions = done,
-            threads,
-            ms = started.elapsed().as_millis() as u64,
-            "warmed rust-analyzer in the background"
-        );
-        running()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&workspace);
     });
     true
+}
+
+/// One round of warming `files`: the priming job on snapshots, then the first files'
+/// diagnostics.
+async fn warm(engine: &Arc<Mutex<RustEngine>>, workspace: &Path, files: &[PathBuf]) {
+    let started = Instant::now();
+    // The job is made under the lock, which takes milliseconds, and runs after it is let go.
+    let job = {
+        let engine = engine.lock().await;
+        let paths: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+        engine.priming_job(&paths)
+    };
+    let threads = job.threads();
+    let done = tokio::task::spawn_blocking(move || job.run())
+        .await
+        .unwrap_or(0);
+    // Then the diagnostics a validation asks for, computed on a snapshot without holding the
+    // engine lock, so concurrent queries, syncs, and refreshes never stall (#1118).
+    for path in files.iter().take(DIAGNOSED_FILES) {
+        let snap = engine.lock().await.snapshot_for_path(path);
+        let path = path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = snap.diagnostics(&path);
+        })
+        .await;
+    }
+    tracing::info!(
+        workspace = %workspace.display(),
+        files = files.len(),
+        functions = done,
+        threads,
+        ms = started.elapsed().as_millis() as u64,
+        "warmed rust-analyzer in the background"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Files asked for while a job runs are not dropped: the job takes the latest set after its
+    /// current files, and the workspace is free again once none are left (#1426).
+    #[test]
+    fn files_asked_for_during_a_job_are_warmed_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("queued-ws");
+        let (a, b, c) = (ws.join("a.rs"), ws.join("b.rs"), ws.join("c.rs"));
+        assert!(
+            enqueue(&ws, std::slice::from_ref(&a)),
+            "no job runs: start one"
+        );
+        // Two more syncs while the first job is still running.
+        assert!(!enqueue(&ws, &[b.clone(), c.clone()]));
+        assert!(!enqueue(&ws, std::slice::from_ref(&b)));
+        assert_eq!(next_batch(&ws), Some(vec![c.clone(), b.clone()]));
+        assert_eq!(next_batch(&ws), None, "the job ends when nothing is left");
+        assert!(enqueue(&ws, &[a]), "the workspace is free for a new job");
+        let many: Vec<PathBuf> = (0..SYNCED_FILES + 5)
+            .map(|i| ws.join(format!("f{i}.rs")))
+            .collect();
+        assert!(!enqueue(&ws, &many));
+        let queued = next_batch(&ws).unwrap();
+        assert_eq!(queued.len(), SYNCED_FILES, "the queue is bounded");
+        assert_eq!(queued.last(), many.last(), "the latest asked are kept");
+        assert_eq!(next_batch(&ws), None);
+    }
 
     #[test]
     fn the_files_to_warm_are_the_edited_ones_or_the_newest() {
