@@ -210,8 +210,10 @@ pub fn recognise_swift(text: &str, at: usize) -> Result<PolyglotLoop> {
         Shape::Count { cond } => {
             format!("let {acc} = {source}.filter {{ {pattern} in {cond} }}.count")
         }
+        // Appending every element as it is copies the sequence into an array; `map { p }`
+        // would name a `p` that nothing binds (#1461).
         Shape::Collect { cond: None, value } if value == pattern => {
-            format!("let {acc} = {source}.map {{ {pattern} }}")
+            format!("let {acc} = Array({source})")
         }
         Shape::Collect { cond: None, value } => {
             format!("let {acc} = {source}.map {{ {pattern} in {value} }}")

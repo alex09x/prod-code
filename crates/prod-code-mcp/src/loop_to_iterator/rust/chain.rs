@@ -33,10 +33,38 @@ pub fn iterator_of(source: &str, source_type: Option<&str>) -> String {
     if source.contains("..") {
         return format!("({source})");
     }
+    // `for` iterates through `IntoIterator`; the method `into_iter` may be an inherent one of
+    // the type with other items. Only a standard collection is known to have none (#1460).
+    if !source_type.is_some_and(std_collection) {
+        return format!("IntoIterator::into_iter({source})");
+    }
     if simple(source) || source.ends_with(')') && !source.contains(' ') {
         return format!("{source}.into_iter()");
     }
     format!("({source}).into_iter()")
+}
+
+/// Whether `ty` is an owned standard collection, array or `Option`, whose `into_iter` is
+/// `IntoIterator`'s.
+fn std_collection(ty: &str) -> bool {
+    let ty = ty.trim();
+    if ty.starts_with('[') {
+        return true;
+    }
+    let head = ty.split('<').next().unwrap_or(ty);
+    let name = head.rsplit("::").next().unwrap_or(head).trim();
+    matches!(
+        name,
+        "Vec"
+            | "VecDeque"
+            | "HashMap"
+            | "HashSet"
+            | "BTreeMap"
+            | "BTreeSet"
+            | "BinaryHeap"
+            | "LinkedList"
+            | "Option"
+    ) && (head == name || head.starts_with("std::") || head.starts_with("alloc::"))
 }
 
 /// The statement that replaces the `let` and the loop.

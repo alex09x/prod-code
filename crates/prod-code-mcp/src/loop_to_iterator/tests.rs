@@ -35,12 +35,22 @@ fn a_sum_a_count_and_a_collect_are_recognised() {
     let count = at("for x in xs");
     assert_eq!(
         chain(&count, "usize", None, false),
+        "    let n: usize = IntoIterator::into_iter(xs).filter(|&x| x % 2 == 0).count();"
+    );
+    // A known standard collection keeps the method form; an unknown type is iterated as
+    // `for` does, through `IntoIterator`, not an inherent `into_iter` (#1460).
+    assert_eq!(
+        chain(&count, "usize", Some("Vec<u64>"), false),
         "    let n: usize = xs.into_iter().filter(|&x| x % 2 == 0).count();"
+    );
+    assert!(
+        chain(&count, "usize", Some("Bag"), false).contains("IntoIterator::into_iter(xs)"),
+        "a custom type may have an inherent `into_iter` with other items"
     );
     let names = at("for (id, name)");
     assert_eq!(
         chain(&names, "Vec<_>", None, true),
-        "    let mut out: Vec<_> = users.into_iter().filter_map(|(id, name)| if *id > 10 { Some(name.clone()) } else { None }).collect();"
+        "    let mut out: Vec<_> = IntoIterator::into_iter(users).filter_map(|(id, name)| if *id > 10 { Some(name.clone()) } else { None }).collect();"
     );
 }
 
@@ -50,28 +60,28 @@ fn rust_general_loop_conversion_find_any_all() {
     let l = recognise(find_src, find_src.find("for u in").unwrap()).unwrap();
     assert_eq!(
         chain(&l, "Option<_>", None, false),
-        "    let found: Option<_> = users.into_iter().find(|&u| *u > 10);"
+        "    let found: Option<_> = IntoIterator::into_iter(users).find(|&u| *u > 10);"
     );
 
     let find_map_src = "pub fn find_user(users: &[u32]) -> Option<u32> {\n    let mut found = None;\n    for u in users {\n        if *u > 10 {\n            found = Some(*u);\n            break;\n        }\n    }\n    found\n}\n";
     let l2 = recognise(find_map_src, find_map_src.find("for u in").unwrap()).unwrap();
     assert_eq!(
         chain(&l2, "Option<_>", None, false),
-        "    let found: Option<_> = users.into_iter().find_map(|u| if *u > 10 { Some(*u) } else { None });"
+        "    let found: Option<_> = IntoIterator::into_iter(users).find_map(|u| if *u > 10 { Some(*u) } else { None });"
     );
 
     let any_src = "pub fn has_admin(users: &[bool]) -> bool {\n    let mut has_any = false;\n    for u in users {\n        if *u {\n            has_any = true;\n            break;\n        }\n    }\n    has_any\n}\n";
     let l = recognise(any_src, any_src.find("for u in").unwrap()).unwrap();
     assert_eq!(
         chain(&l, "bool", None, false),
-        "    let has_any: bool = users.into_iter().any(|&u| *u);"
+        "    let has_any: bool = IntoIterator::into_iter(users).any(|&u| *u);"
     );
 
     let all_src = "pub fn all_active(users: &[bool]) -> bool {\n    let mut all_match = true;\n    for u in users {\n        if !*u {\n            all_match = false;\n            break;\n        }\n    }\n    all_match\n}\n";
     let l = recognise(all_src, all_src.find("for u in").unwrap()).unwrap();
     assert_eq!(
         chain(&l, "bool", None, false),
-        "    let all_match: bool = users.into_iter().all(|&u| !(!*u));"
+        "    let all_match: bool = IntoIterator::into_iter(users).all(|&u| !(!*u));"
     );
 }
 
@@ -117,7 +127,11 @@ fn a_loop_that_does_more_than_accumulate_is_refused() {
 
 #[test]
 fn the_source_is_iterated_as_the_loop_did() {
-    assert_eq!(iterator_of("prices", None), "prices.into_iter()");
+    // An unknown type is iterated through `IntoIterator`, as the `for` loop did (#1460).
+    assert_eq!(
+        iterator_of("prices", None),
+        "IntoIterator::into_iter(prices)"
+    );
     assert_eq!(
         iterator_of("prices", Some("Vec<u64>")),
         "prices.into_iter()"
@@ -130,7 +144,14 @@ fn the_source_is_iterated_as_the_loop_did() {
         "self.items.iter_mut()"
     );
     assert_eq!(iterator_of("0..n", None), "(0..n)");
-    assert_eq!(iterator_of("m.values()", None), "m.values().into_iter()");
+    assert_eq!(
+        iterator_of("m.values()", None),
+        "IntoIterator::into_iter(m.values())"
+    );
+    assert_eq!(
+        iterator_of("m.values()", Some("std::collections::HashMap<u8, u8>")),
+        "m.values().into_iter()"
+    );
     assert_eq!(
         binding_type("```rust\nprices: &[u64]\n```"),
         Some("&[u64]".into())
@@ -217,6 +238,11 @@ fn swift_conversions_bind_the_loop_element_in_each_closure() {
     let poly = recognise_swift(collect, collect.find("for ").unwrap()).unwrap();
     assert!(poly.replacement.contains("map { p in p * 2 }"));
 
+    // Collecting each element unchanged binds nothing: it copies the sequence (#1461).
+    let copied = "func copied(prices: [Int]) -> [Int] {\n    var result: [Int] = []\n    for p in prices {\n        result.append(p)\n    }\n    return result\n}";
+    let poly = recognise_swift(copied, copied.find("for ").unwrap()).unwrap();
+    assert_eq!(poly.replacement.trim(), "let result = Array(prices)");
+
     let find = "func findPrice(prices: [Int]) -> Int? {\n    var found: Int? = nil\n    for p in prices {\n        if p > 0 {\n            found = p * 2\n            break;\n        }\n    }\n    return found\n}";
     let poly = recognise_swift(find, find.find("for ").unwrap()).unwrap();
     assert!(
@@ -277,4 +303,15 @@ fn go_single_range_variable_remains_the_index() {
 
     assert!(poly.replacement.contains("for i := range values"));
     assert!(!poly.replacement.contains("for _, i := range values"));
+}
+
+/// A vector made with `Vec::with_capacity(…)` is not collected: `collect()` would drop the
+/// call and the capacity it asks for (#1460).
+#[test]
+fn a_vector_with_capacity_is_refused() {
+    let src = "fn f(xs: Vec<u32>) -> Vec<u32> {\n    let mut out = Vec::with_capacity(size_hint());\n    for x in xs {\n        out.push(x + 1);\n    }\n    out\n}\n";
+    let error = recognise(src, src.find("for x").unwrap())
+        .map(|_| ())
+        .expect_err("with_capacity is refused");
+    assert!(error.to_string().contains("capacity"), "{error}");
 }

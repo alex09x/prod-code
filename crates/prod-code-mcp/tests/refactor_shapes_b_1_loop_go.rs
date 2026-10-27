@@ -373,7 +373,8 @@ async fn a_rust_file_is_found_by_line_and_column_by_line_alone_or_by_symbol() {
     }
     assert_eq!(
         statements[0],
-        "    let sum: u64 = prices.into_iter().sum();"
+        // The scripted gateway gives no type, so the source is iterated as `for` does (#1460).
+        "    let sum: u64 = IntoIterator::into_iter(prices).sum();"
     );
     assert_eq!(statements[1], statements[0]);
     assert_eq!(statements[2], statements[0]);

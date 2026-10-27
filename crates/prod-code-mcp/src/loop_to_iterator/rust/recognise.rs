@@ -159,8 +159,15 @@ pub fn recognise(text: &str, at: usize) -> Result<AccumulatorLoop> {
         let (pushes, value) = accumulation(stmt, &acc)
             .with_context(|| format!("the loop's body is not `{acc} += …;` or `{acc}.push(…);`"))?;
         if pushes {
+            // `Vec::with_capacity(f())` is refused too: `collect()` would neither call `f` nor
+            // ask for that capacity (#1460).
             anyhow::ensure!(
-                matches!(init, "Vec::new()" | "vec![]") || init.starts_with("Vec::with_capacity("),
+                !init.starts_with("Vec::with_capacity("),
+                "`{acc}` starts as `{init}`: a collected vector would drop that call and the \
+                 capacity it asks for"
+            );
+            anyhow::ensure!(
+                matches!(init, "Vec::new()" | "vec![]"),
                 "`{acc}` does not start empty (`{init}`), so a collected vector would lose it"
             );
             Shape::Collect { cond, value }
