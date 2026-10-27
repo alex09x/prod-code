@@ -312,3 +312,40 @@ fn a_limit_above_the_maximum_is_refused_by_name() {
     request.limit = MAX_LIMIT;
     assert_eq!(run_search(&indexes, storage.path(), &request).error, None);
 }
+
+/// On Unix `a:module.rs` is an ordinary file name: it is indexed, and its edit and deletion
+/// reach the index instead of leaving stale declarations (#1459).
+#[cfg(unix)]
+#[test]
+fn a_drive_like_unix_file_name_is_reindexed_and_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let file = root.join("a:module.rs");
+    std::fs::write(
+        &file,
+        "/// Parses the first ledger.\npub fn ledger_first() {}\n",
+    )
+    .unwrap();
+    let indexes = SearchIndexes::new();
+    let names = |query: &str| -> Vec<String> {
+        indexes
+            .search(&root, query, 5, None)
+            .hits
+            .into_iter()
+            .map(|h| h.name)
+            .collect()
+    };
+    assert_eq!(names("ledger"), ["ledger_first"]);
+
+    std::fs::write(
+        &file,
+        "/// Parses the second ledger.\npub fn ledger_second() {}\n",
+    )
+    .unwrap();
+    indexes.invalidate(&root, ["a:module.rs"]);
+    assert_eq!(names("ledger"), ["ledger_second"], "the edit is reindexed");
+
+    std::fs::remove_file(&file).unwrap();
+    indexes.invalidate(&root, ["a:module.rs"]);
+    assert!(names("ledger").is_empty(), "the deletion is reindexed");
+}

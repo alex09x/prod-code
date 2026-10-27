@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Search Reindexes Unix Files Whose Names Look Like a Drive** (`crates/prod-code-gateway`, #1459):
+  On Unix, a file such as `a:module.rs` was indexed at first, but every later change to it was dropped as if `a:` were a Windows drive, so its declarations and vectors stayed stale after edits and deletion. The drive-letter rule now applies on Windows only. Traversal (`..`) and absolute paths are still refused everywhere.
 - **Loop-to-Iterator Keeps Rust's `for` Semantics and Binds Swift's Copied Element** (`crates/prod-code-mcp`, #1460, #1461):
   - Rust: a source whose type is not a known standard collection is iterated with `IntoIterator::into_iter(source)`, which is what the `for` loop called. Before, `source.into_iter()` could pick an inherent `into_iter` of a custom type with other items.
   - Rust: a vector started with `Vec::with_capacity(…)` is refused. `collect()` would neither call the initializer nor ask for that capacity.
