@@ -20,6 +20,7 @@ use super::container::{body_span, in_import, qualifier_before};
 use super::effects::{js_constant, reordered, reordered_arguments};
 use super::params::entries;
 use super::rewrite::{called_name, ident_uses, object_shorthand, rewritten_call};
+use super::swift_shadow::{shadowed_literal_types, with_shadowed};
 use super::type_render::js_key;
 use super::types::{Language, Param};
 
@@ -205,6 +206,13 @@ pub(crate) async fn rewrite_polyglot_callers(
     let callers = crate::signature::references(remote, root, file, line, col)
         .await
         .with_context(|| unlisted(callee, root, file, line, col))?;
+    // A Swift literal passed as a type the checkout declares itself runs that type's
+    // initialiser: its parameters say so before the order of evaluation is judged (#1512).
+    let effect_params = if language == Language::Swift {
+        with_shadowed(declared, &shadowed_literal_types(root))
+    } else {
+        declared.to_vec()
+    };
 
     for (path, rl, rc) in callers {
         let source = texts(&path)?;
@@ -319,7 +327,7 @@ pub(crate) async fn rewrite_polyglot_callers(
             continue;
         };
         if let Some((moved, passed)) =
-            reordered_arguments(&args, &bound, bundled, declared, language)
+            reordered_arguments(&args, &bound, bundled, &effect_params, language)
         {
             return Err(reordered(callee, &place, moved, passed, language));
         }

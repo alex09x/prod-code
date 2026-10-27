@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Swift Parameter Bundling No Longer Moves a Literal of a Module's Own `Int` Past a Call** (`crates/prod-code-mcp`, #1512):
+  `code_introduce_parameter_object` moves bundled arguments together, and lets one move past an unbundled argument only when neither can do anything. A Swift literal counted as inert when its parameter's type was named like a standard one (`Int`, `String`, `Bool`, …). But a module may declare its own `Int` conforming to `ExpressibleByIntegerLiteral`, whose `init(integerLiteral:)` runs code. Bundling `a` and `c` of `f(mark("a"), mark("b"), 3)`, where `c` was such an `Int`, evaluated the literal before `mark("b")`. A bare standard name now counts as the standard type only when no Swift file of the checkout declares a type of that name (`struct`, `class`, `enum`, `actor`, `typealias`). `Swift.Int` is standard either way. In a checkout too large to read, more than 5000 Swift files, no bare name is assumed standard.
 - **A Rust Editor Session Gets Only the Response Forms Its Editor Advertised** (`crates/prod-code-engine-rust`, `crates/prod-code-gateway`, #1516):
   The in-memory Rust engine answered every editor the same way, whatever it said in `initialize`. Completions always filled in arguments with snippet placeholders (`insertTextFormat: 2`). A resolved code action was always a `documentChanges` edit, creating or renaming files where the action did. An editor that did not advertise snippets got literal `${1:amount}` text, and one without `documentChanges` or `resourceOperations` got an edit it could not apply. The session now keeps what `initialize` said, and the engine answers within it:
   - no snippet support: completions carry no snippets and fill in no arguments;
