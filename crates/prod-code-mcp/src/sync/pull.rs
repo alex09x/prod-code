@@ -48,6 +48,19 @@ pub fn apply_pulled_files_for(root: &Path, node: &str, files: &[FileDelta]) -> R
                     use std::os::unix::fs::PermissionsExt;
                     let _ =
                         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
+                } else {
+                    // The node says the file is not executable: a local copy that was keeps its
+                    // other permission bits but loses the executable ones (#1477).
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = target.metadata() {
+                        let mode = metadata.permissions().mode();
+                        if mode & 0o111 != 0 {
+                            let _ = std::fs::set_permissions(
+                                &target,
+                                std::fs::Permissions::from_mode(mode & !0o111),
+                            );
+                        }
+                    }
                 }
                 if let Ok(metadata) = target.metadata() {
                     state.files.insert(
@@ -82,4 +95,59 @@ pub async fn pull_remote_files(
     Ok(super::artifact::pull_remote_files_from(node, root, files)
         .await?
         .files)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::apply_pulled_files_for;
+    use prod_code_protocol::FileDelta;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn delta(path: &str, text: &str, is_executable: bool) -> FileDelta {
+        FileDelta {
+            relative_path: path.to_string(),
+            content: Some(text.as_bytes().to_vec()),
+            is_executable,
+        }
+    }
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// The node's executable bit wins over the local file's, both ways, and only the
+    /// executable bits change (#1477).
+    #[test]
+    fn a_pulled_file_takes_the_nodes_executable_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let was_executable = root.join("run.sh");
+        std::fs::write(&was_executable, "#!/bin/sh\necho old\n").unwrap();
+        std::fs::set_permissions(&was_executable, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let plain = root.join("notes.txt");
+        std::fs::write(&plain, "old\n").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        apply_pulled_files_for(
+            root,
+            "test-node",
+            &[
+                delta("run.sh", "#!/bin/sh\necho new\n", false),
+                delta("notes.txt", "new\n", true),
+                delta("new.txt", "fresh\n", false),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            mode(&was_executable),
+            0o640,
+            "a shebang does not keep it executable"
+        );
+        assert_eq!(mode(&plain) & 0o111, 0o111);
+        assert_eq!(mode(&root.join("new.txt")) & 0o111, 0, "a new plain file");
+        assert_eq!(
+            std::fs::read_to_string(&was_executable).unwrap(),
+            "#!/bin/sh\necho new\n"
+        );
+    }
 }
