@@ -305,9 +305,26 @@ pub async fn handle_generic_lsp(
         return Some(Flow::Next);
     } else if let Some(m) = method {
         let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-        let _ = generic_eng
+        let sent = generic_eng
             .send_session_notification(view.session_id, m, params)
             .await;
+        // A document the server did not take leaves this session's view of it unknown: later
+        // queries would answer from disk or an old text. The session ends, saying why, and
+        // the client reconnects with its documents opened afresh (#1518).
+        if let Err(err) = sent
+            && m.starts_with("textDocument/did")
+        {
+            tracing::warn!(session_id = view.session_id, method = m, error = %err, "document notification refused; ending the session");
+            let _ = out_tx
+                .send(WireMessage::Disconnect {
+                    reason: format!(
+                        "the language server refused `{m}`: {err:#}; reconnect to open the \
+                         documents afresh"
+                    ),
+                })
+                .await;
+            return Some(Flow::Stop);
+        }
         return Some(Flow::Next);
     }
 
