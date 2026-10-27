@@ -27,7 +27,9 @@ pub use edits::{
     text_for_edit,
 };
 pub use execute::{apply_multi_repository_workspace_edit, apply_workspace_edit};
-pub use history::{remember_applied, remember_applied_multi, text_before_apply};
+pub use history::{
+    remember_applied, remember_applied_multi, text_before_apply, text_before_report,
+};
 pub use locations::{lsp_locations, referenced_text};
 pub use ops::{MultiOp, check_multi_ops, multi_operations};
 pub use uri::{contained, resolve, uri_to_relative, uri_to_root_and_relative};

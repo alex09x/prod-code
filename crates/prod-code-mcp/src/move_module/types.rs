@@ -66,7 +66,7 @@ impl ModuleMove {
                 // A file that moves: its diff is shown as new, its old path is recorded as removed.
                 String::new()
             } else {
-                crate::refactor::text_before_apply(p)
+                crate::refactor::text_before_report(p, self.applied)
             };
             let rel = display(&self.root, p);
             body.push_str(
