@@ -16,7 +16,10 @@ use anyhow::{Result, anyhow};
 use crate::exec::{TailBuffer, run_remote_rooted};
 use crate::verify::detect::detect_tools;
 use crate::verify::parse::{event_of_line, parse_verification_output, relativize_diagnostics};
-use crate::verify::plan::{has_xcode_project, narrow_scope, plan_command_with, plan_xcode_command};
+use crate::verify::plan::{
+    has_xcode_project, is_xcodegen_spec, narrow_scope, plan_command_with, plan_xcode_command,
+    plan_xcodegen_command,
+};
 use crate::verify::types::{RunEvent, VerifyKind, VerifyReport};
 
 pub async fn run_verify(
@@ -69,6 +72,9 @@ pub async fn run_verify_with(
     let tools = detect_tools(&project_dir);
     let mut command = if language == "swift" && has_xcode_project(&project_dir) {
         plan_xcode_command(kind, filter)?
+    } else if language == "swift" && is_xcodegen_spec(&project_dir) {
+        // A spec only, with no Package.swift: SwiftPM cannot build it (#1481).
+        plan_xcodegen_command(kind, filter)?
     } else {
         plan_command_with(&tools, language, kind, filter)?
     };

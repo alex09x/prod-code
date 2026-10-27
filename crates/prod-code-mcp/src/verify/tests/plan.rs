@@ -374,3 +374,44 @@ fn go_lints_with_golangci_lint_and_falls_back_to_go_vet() {
         "note: golangci-lint is not installed on this node; linting with go vet"
     );
 }
+
+/// #1481: a checkout with only an XcodeGen `project.yml` is verified through the Xcode project
+/// generated from it, outside the checkout, not with SwiftPM.
+#[test]
+fn an_xcodegen_spec_is_generated_then_built_with_xcodebuild() {
+    use crate::verify::plan::{is_xcodegen_spec, plan_xcodegen_command};
+    let temp = tempfile::tempdir().unwrap();
+    assert!(!is_xcodegen_spec(temp.path()));
+    std::fs::write(temp.path().join("project.yml"), "name: Demo\noptions: {}\n").unwrap();
+    assert!(!is_xcodegen_spec(temp.path()), "no targets");
+    std::fs::write(
+        temp.path().join("project.yml"),
+        "name: Demo\ntargets:\n  Demo:\n    type: framework\n",
+    )
+    .unwrap();
+    assert!(is_xcodegen_spec(temp.path()));
+    std::fs::create_dir_all(temp.path().join("Demo.xcodeproj")).unwrap();
+    assert!(!is_xcodegen_spec(temp.path()), "already generated");
+    std::fs::remove_dir(temp.path().join("Demo.xcodeproj")).unwrap();
+    std::fs::write(temp.path().join("Package.swift"), "").unwrap();
+    assert!(!is_xcodegen_spec(temp.path()), "a SwiftPM package");
+
+    let cmd = plan_xcodegen_command(VerifyKind::Test, None).unwrap();
+    assert_eq!(&cmd[..2], &["sh".to_string(), "-c".to_string()]);
+    let script = &cmd[2];
+    assert!(script.contains("command -v xcodegen"), "{script}");
+    assert!(script.contains("exit 127"), "{script}");
+    assert!(
+        script.contains("xcodegen generate --quiet --spec \"$spec\" --project \"$gen\""),
+        "{script}"
+    );
+    assert!(script.contains("projectFormat"), "{script}");
+    for call in [
+        "xcodebuild -project \"$proj\" -list",
+        "xcodebuild -project \"$proj\" -showBuildSettings",
+        "xcodebuild test -project \"$proj\" -scheme",
+    ] {
+        assert!(script.contains(call), "{call}: {script}");
+    }
+    assert!(plan_xcodegen_command(VerifyKind::Lint, None).is_err());
+}
