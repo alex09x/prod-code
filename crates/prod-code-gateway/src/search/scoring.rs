@@ -105,10 +105,13 @@ pub(crate) fn rank_weighted(
         };
 
     let mut fused: Vec<HitAttribution<'_>> = Vec::new();
+    // Each list goes as deep as the caller asks, and at least `POOL` deep, so that the fused
+    // result can hold `limit` hits (#1458).
+    let pool = POOL.max(limit);
 
     // 1. Lexical BM25
     let lex_results = lexical(&docs, &terms);
-    for (rank, (decl, _lex_score, matched_terms)) in lex_results.iter().take(POOL).enumerate() {
+    for (rank, (decl, _lex_score, matched_terms)) in lex_results.iter().take(pool).enumerate() {
         let rrf = 1.0 / (RRF_K + rank as f64 + 1.0);
         let reason = if matched_terms.is_empty() {
             format!("lexical: rank {}", rank + 1)
@@ -134,7 +137,7 @@ pub(crate) fn rank_weighted(
 
     // 2. Typed AST Graph
     let graph_results = graph_rank(&docs, &terms, graph);
-    for (rank, (decl, _graph_score, graph_reason)) in graph_results.iter().take(POOL).enumerate() {
+    for (rank, (decl, _graph_score, graph_reason)) in graph_results.iter().take(pool).enumerate() {
         let rrf = GRAPH_WEIGHT / (RRF_K + rank as f64 + 1.0);
         let reason = format!("graph: rank {} ({graph_reason})", rank + 1);
         match fused.iter_mut().find(|h| std::ptr::eq(h.decl, *decl)) {
@@ -153,7 +156,7 @@ pub(crate) fn rank_weighted(
     // 3. Dense semantic vectors
     if let Some(q) = query_vector {
         let dense_results = dense(&docs, q);
-        for (rank, (decl, cosine)) in dense_results.iter().take(POOL).enumerate() {
+        for (rank, (decl, cosine)) in dense_results.iter().take(pool).enumerate() {
             let rrf = dense_weight / (RRF_K + rank as f64 + 1.0);
             let reason = format!("dense: rank {} (cosine {:.3})", rank + 1, cosine);
             match fused.iter_mut().find(|h| std::ptr::eq(h.decl, *decl)) {
@@ -272,7 +275,6 @@ pub(crate) fn graph_rank<'a>(
             .then_with(|| a.0.file.cmp(&b.0.file))
             .then_with(|| a.0.line.cmp(&b.0.line))
     });
-    scored.truncate(POOL);
     scored
 }
 
@@ -287,7 +289,7 @@ pub(crate) fn dense<'a>(docs: &[&'a Indexed], query: &[f32]) -> Vec<(&'a Declara
         })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().take(POOL).map(|(s, d)| (d, s)).collect()
+    scored.into_iter().map(|(s, d)| (d, s)).collect()
 }
 
 /// BM25 over the four fields of every declaration, best first.
@@ -351,7 +353,6 @@ pub(crate) fn lexical<'a>(
             .then_with(|| a.1.file.cmp(&b.1.file))
             .then_with(|| a.1.line.cmp(&b.1.line))
     });
-    scored.truncate(POOL);
     scored.into_iter().map(|(s, d, m)| (d, s, m)).collect()
 }
 

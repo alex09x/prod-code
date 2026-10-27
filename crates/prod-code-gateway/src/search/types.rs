@@ -19,8 +19,13 @@ pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_DOC_LINES: usize = 12;
 /// Hits returned when the caller does not say.
 pub const DEFAULT_LIMIT: usize = 10;
-/// How deep each half's ranking goes before the two are fused.
+/// How deep each ranking goes before they are fused, at least; a caller asking for more hits
+/// gets lists as deep as its limit (#1458).
 pub const POOL: usize = 50;
+/// The most hits one search returns: a larger limit is refused with an error that names this
+/// bound, rather than answered with fewer hits than asked, and each ranking's work stays
+/// bounded (#1458).
+pub const MAX_LIMIT: usize = 500;
 /// Reciprocal-rank fusion's constant: a hit at rank r scores 1 / (RRF_K + r) in each list.
 pub const RRF_K: f64 = 60.0;
 /// How much the dense list counts against the lexical one in the fusion. Chosen by

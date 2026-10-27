@@ -257,12 +257,48 @@ pub(crate) fn declaration_on(line: &str, language: &str) -> Option<(String, Stri
             ],
         )
         .or_else(|| {
-            // A definition line ending in `{` with a parameter list: `Type name(args) {`.
+            // A declaration or definition with a parameter list: `Type name(args) {`,
+            // `Type name(args);`, `Class::Class(args) {`. Not a statement or a call (#1457):
+            // `if (ready) {`, `for (…)`, `x = f(y);` and `do_work(x);` name no function.
             let before = t.split_once('(')?.0.trim_end();
-            (!before.is_empty() && t.contains('(') && !t.starts_with('#'))
-                .then(|| ident(before.rsplit([' ', ':', '*', '&']).next()?))
-                .flatten()
-                .map(|n| ("function".to_string(), n))
+            if before.is_empty() || t.starts_with(['#', '}']) || before.contains('=') {
+                return None;
+            }
+            let words: Vec<&str> = before.split_whitespace().collect();
+            const STATEMENTS: &[&str] = &[
+                "if",
+                "for",
+                "while",
+                "switch",
+                "catch",
+                "return",
+                "else",
+                "do",
+                "sizeof",
+                "case",
+                "throw",
+                "new",
+                "delete",
+                "co_return",
+                "co_await",
+                "co_yield",
+                "static_assert",
+                "decltype",
+                "alignof",
+                "typeid",
+            ];
+            if STATEMENTS.contains(words.first()?) || STATEMENTS.contains(words.last()?) {
+                return None;
+            }
+            let name = *words.last()?;
+            // A lone name is a call, unless it is a qualified definition (a constructor or
+            // destructor) that does not end the statement.
+            let lone_definition =
+                (name.contains("::") || name.starts_with('~')) && !t.trim_end().ends_with(';');
+            if words.len() < 2 && !lone_definition {
+                return None;
+            }
+            ident(name.rsplit([' ', ':', '*', '&']).next()?).map(|n| ("function".to_string(), n))
         }),
         _ => None,
     }

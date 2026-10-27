@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **Search Returns as Many Hits as Asked, Up to 500** (`crates/prod-code-gateway`, #1458):
+  Each ranking (lexical, graph and dense) was cut to 50 candidates before fusion, so `prod-code search QUERY --limit 100` could return 50 hits when 100 matched. Each list now goes as deep as the limit asks, and at least 50 deep as before. A limit above 500, the most one search returns, is refused with an error naming that bound instead of being answered with fewer hits.
+- **Search Indexes Real C++ Functions and Keeps `cfg(test)` to Its Own Item** (`crates/prod-code-gateway`, #1457):
+  - A C++ line counts as a function only when it reads like a declaration or definition. `if (…) {`, `for (…)`, `return f(x);`, assignments like `x = f(y);` and plain calls like `do_work(x);` no longer become "functions", so they no longer use up the 400-declaration budget per file before the real definitions after them.
+  - In Rust, `#[cfg(test)]` marks only the item it is on, and `mod tests { … }` ends at its closing brace. Before, everything after the first `#[cfg(test)]` in a file, even one on a `use`, was treated as test code and hidden from ordinary searches.
 - **`prod-code validate --diff --json` Answers in JSON** (`crates/prod-code-client`, `crates/prod-code-mcp`, #1456):
   Diff validation ignored `--json` and printed the human-readable report. `code_validate_edits` now takes `json: true`, and the CLI passes `--json` on. The answer is then one JSON object: `accepted`, the per-file analyzer `reports` with their error and warning totals, the notes, and, when a compiler check ran, `compiler` with its error count and report text. A rejected proposal still exits non-zero.
 - **A `-r` Inside an `exec` Command No Longer Pins the Client to Its Seed** (`crates/prod-code-client`, `cluster`, #1454):

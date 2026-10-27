@@ -52,19 +52,13 @@ pub fn declarations_in(rel_path: &str, text: &str) -> Vec<Declaration> {
     let mut out = Vec::new();
     let mut container: Option<String> = None;
     let mut container_indent = usize::MAX;
-    // Once a file's test module starts, everything after it is test material. This also
-    // covers the source fixtures tests keep in multi-line string literals, which a
-    // line-based scanner cannot tell from real code.
-    let mut in_test_module = false;
+    // A `#[cfg(test)]` item or a `mod tests` block is test material until its braces close,
+    // the source fixtures tests keep in multi-line strings included; production code after
+    // it is not (#1457). Python's `__main__` block runs to the end of the file.
+    let mut scope = TestScope::default();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with("#[cfg(test)]")
-            || trimmed.starts_with("mod tests")
-            || trimmed.starts_with("pub mod tests")
-            || trimmed == "if __name__ == \"__main__\":"
-        {
-            in_test_module = true;
-        }
+        let in_test_module = scope.line(trimmed);
         let indent = line.len() - line.trim_start().len();
         if indent <= container_indent && container.is_some() && !line.trim().is_empty() {
             let is_decl_here = declaration_on(line, language).is_some();
@@ -126,4 +120,57 @@ pub fn declarations_in(rel_path: &str, text: &str) -> Vec<Declaration> {
         }
     }
     out
+}
+
+/// Which lines of a file are test material, read line by line (#1457).
+#[derive(Default)]
+struct TestScope {
+    /// A `#[cfg(test)]` was read and its item has not started yet.
+    pending: bool,
+    /// The brace depth before the test item; it is test material until it is back there.
+    until: Option<i32>,
+    /// Everything from here on (Python's `if __name__ == "__main__":`).
+    rest: bool,
+    depth: i32,
+}
+
+impl TestScope {
+    /// Whether `trimmed`, the next line of the file, is test material.
+    fn line(&mut self, trimmed: &str) -> bool {
+        if trimmed == "if __name__ == \"__main__\":" {
+            self.rest = true;
+        }
+        let code = trimmed.split("//").next().unwrap_or(trimmed);
+        let attribute = trimmed.starts_with("#[cfg(test)]");
+        let starts_module =
+            trimmed.starts_with("mod tests") || trimmed.starts_with("pub mod tests");
+        if attribute {
+            self.pending = true;
+        }
+        // `#[cfg(test)] mod tests {` puts the item on the attribute's own line.
+        let item_here = trimmed
+            .strip_prefix("#[cfg(test)]")
+            .map_or(item_starts(trimmed), |rest| item_starts(rest.trim()));
+        let before = self.depth;
+        self.depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+        if self.until.is_none() && (starts_module || self.pending && item_here) {
+            self.pending = false;
+            // A one-line item (`use …;`, `fn f() {}`) is test material on its own line only.
+            if self.depth > before {
+                self.until = Some(before);
+            }
+            return true;
+        }
+        let inside = self.until.is_some();
+        if self.until.is_some_and(|depth| self.depth <= depth) {
+            self.until = None;
+        }
+        self.rest || inside || attribute || self.pending
+    }
+}
+
+/// Whether a line after an attribute starts the item it applies to: not another attribute, a
+/// comment or a blank line.
+fn item_starts(trimmed: &str) -> bool {
+    !trimmed.is_empty() && !trimmed.starts_with("#[") && !trimmed.starts_with("//")
 }

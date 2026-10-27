@@ -228,3 +228,87 @@ fn other_languages_are_recognised() {
     );
     assert_eq!(swift[0].name, "reload");
 }
+
+/// C++ statements and calls are not functions, so they neither pollute the index nor use up
+/// the per-file budget before a real definition (#1457).
+#[test]
+fn cpp_statements_and_calls_are_not_functions() {
+    let mut src = String::from("int main() {\n");
+    for _ in 0..450 {
+        src.push_str("    if (ready) {\n    for (int i = 0; i < n; ++i) {\n    do_work(x);\n    y = compute(x);\n    } else if (b) {\n    return f(x);\n");
+    }
+    src.push_str("}\nvoid Engine::start(int port) {\n}\nWidget::Widget(int x) : x_(x) {\n}\nstatic int helper(const char *s);\n");
+    let decls = declarations_in("src/engine.cpp", &src);
+    let names: Vec<&str> = decls.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["main", "start", "Widget", "helper"], "{names:?}");
+}
+
+/// `#[cfg(test)]` marks only its own item, and a test module ends at its closing brace: the
+/// production code after either is not test material (#1457).
+#[test]
+fn cfg_test_marks_only_its_item() {
+    let src = "#[cfg(test)]\nuse crate::fixtures::sample;\n\npub fn production_after_import() {}\n\n#[cfg(test)]\nfn helper() {\n    let s = \"}\";\n}\n\npub fn production_after_helper() {}\n\n#[cfg(test)]\nmod tests {\n    fn inner() {\n        if x {\n        }\n    }\n    const FIXTURE: &str = r#\"\nfn fixture_decl() {\n}\n\"#;\n}\n\npub fn production_after_module() {}\n";
+    let decls = declarations_in("src/lib.rs", src);
+    let test = |name: &str| {
+        decls
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("{name} in {decls:?}"))
+            .is_test
+    };
+    assert!(!test("production_after_import"));
+    assert!(test("helper"));
+    assert!(!test("production_after_helper"));
+    assert!(test("inner"));
+    assert!(test("fixture_decl"));
+    assert!(!test("production_after_module"));
+}
+
+/// A search asked for more than the default pool returns as many hits as it asked for (#1458).
+#[test]
+fn a_limit_above_the_pool_is_honoured() {
+    use super::super::graph::WorkspaceIndex;
+    use super::super::scoring::rank;
+    use super::super::types::{FileEntry, Indexed, POOL};
+    let mut src = String::new();
+    for n in 0..150 {
+        src.push_str(&format!(
+            "/// Opens widget number {n}.\npub fn open_widget_{n}() {{}}\n"
+        ));
+    }
+    let mut index = WorkspaceIndex::default();
+    let decls: Vec<Indexed> = declarations_in("src/widgets.rs", &src)
+        .into_iter()
+        .map(Indexed::new)
+        .collect();
+    assert_eq!(decls.len(), 150);
+    index.files.insert(
+        "src/widgets.rs".to_string(),
+        FileEntry {
+            stamp: (0, 0),
+            generation: 0,
+            decls,
+        },
+    );
+    const { assert!(POOL < 100) };
+    assert_eq!(rank(&index, "open widget", 100, None).len(), 100);
+    assert_eq!(rank(&index, "open widget", 10, None).len(), 10);
+}
+
+/// A limit above what one search returns is refused with an error naming the bound, instead of
+/// a silently shorter answer (#1458).
+#[test]
+fn a_limit_above_the_maximum_is_refused_by_name() {
+    use super::super::types::MAX_LIMIT;
+    let storage = tempfile::tempdir().unwrap();
+    write_scope_fixture(&storage.path().join("scope"));
+    let indexes = SearchIndexes::new();
+    let mut request = scoped_request("scope", "scope target", None);
+    request.limit = MAX_LIMIT + 1;
+    let refused = run_search(&indexes, storage.path(), &request);
+    assert!(refused.hits.is_empty());
+    let error = refused.error.expect("an error");
+    assert!(error.contains(&MAX_LIMIT.to_string()), "{error}");
+    request.limit = MAX_LIMIT;
+    assert_eq!(run_search(&indexes, storage.path(), &request).error, None);
+}

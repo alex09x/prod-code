@@ -9,7 +9,7 @@
  */
 
 use super::index::SearchIndexes;
-use super::types::DEFAULT_LIMIT;
+use super::types::{DEFAULT_LIMIT, MAX_LIMIT};
 use prod_code_protocol::{SearchRequest, SearchResponse};
 use std::path::Path;
 use std::time::Instant;
@@ -100,6 +100,20 @@ pub fn run_search(
             };
         }
     };
+    if limit > MAX_LIMIT {
+        return SearchResponse {
+            server_workspace_root: workspace_str,
+            hits: Vec::new(),
+            indexed_files: 0,
+            indexed_declarations: 0,
+            took_ms: started.elapsed().as_millis() as u64,
+            error: Some(format!(
+                "limit {limit} is above the {MAX_LIMIT} hits one search returns; ask for at most {MAX_LIMIT}"
+            )),
+            dense: None,
+            graph_fused: None,
+        };
+    }
     let found = indexes.search(&workspace, &req.query, limit, subpath.as_deref());
     SearchResponse {
         server_workspace_root: workspace_str,
