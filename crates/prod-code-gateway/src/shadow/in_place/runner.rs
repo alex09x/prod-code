@@ -132,6 +132,17 @@ impl InPlace {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Original::Missing,
             Err(e) => return Err(e),
             Ok(meta) if meta.file_type().is_symlink() => Original::Link(std::fs::read_link(&path)?),
+            // Restored, the file would be a new inode with the same bytes: its other links
+            // would stop sharing writes with it. Refused before anything is changed (#1467).
+            #[cfg(unix)]
+            Ok(meta) if std::os::unix::fs::MetadataExt::nlink(&meta) > 1 => {
+                return Err(std::io::Error::other(format!(
+                    "{} has {} hard links, which an in-place run would not put back; run it in \
+                     an overlay instead",
+                    rel.display(),
+                    std::os::unix::fs::MetadataExt::nlink(&meta)
+                )));
+            }
             Ok(meta) => Original::File {
                 bytes: std::fs::read(&path)?,
                 permissions: meta.permissions(),
@@ -186,12 +197,23 @@ impl InPlace {
                 ));
                 continue;
             }
-            if let Err(e) = std::fs::remove_dir(dir) {
-                tracing::warn!(
-                    path = %dir.display(),
-                    error = %e,
-                    "shadow run: could not remove a directory the hypothesis created"
-                );
+            match std::fs::remove_dir(dir) {
+                Ok(()) => {}
+                // What the command wrote there is its output, kept like the rest of it.
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+                // Any other failure leaves a directory of this run behind: reported, so the
+                // run does not say the workspace was put back (#1467).
+                Err(e) => {
+                    tracing::warn!(
+                        path = %dir.display(),
+                        error = %e,
+                        "shadow run: could not remove a directory the hypothesis created"
+                    );
+                    problems.push(format!(
+                        "{}: could not remove the directory this run created: {e}",
+                        dir.display()
+                    ));
+                }
             }
         }
         problems
