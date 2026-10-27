@@ -139,6 +139,50 @@ pub fn has_xcode_project(root: &Path) -> bool {
 /// given, otherwise the first scheme `xcodebuild -list` reports; iOS targets run on the
 /// first available iPhone simulator, everything else on the Mac.
 pub fn plan_xcode_command(kind: VerifyKind, scheme: Option<&str>) -> Result<Vec<String>> {
+    Ok(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        xcode_script(kind, scheme, "")?,
+    ])
+}
+
+/// An XcodeGen project not generated yet: a `project.yml` that declares `targets:`, and neither
+/// a generated Xcode project nor a `Package.swift` beside it.
+pub fn is_xcodegen_spec(root: &Path) -> bool {
+    !root.join("Package.swift").exists()
+        && !has_xcode_project(root)
+        && std::fs::read_to_string(root.join("project.yml"))
+            .is_ok_and(|text| text.lines().any(|line| line.starts_with("targets:")))
+}
+
+/// [`plan_xcode_command`] for an XcodeGen spec: the Xcode project is generated from
+/// `project.yml` into a temporary directory first, so that the checkout is not written to, and
+/// every `xcodebuild` call names it. A node without `xcodegen` fails with exit 127 and says so;
+/// a spec it cannot generate fails with its error (#1481).
+///
+/// xcodegen writes the newest project format by default, which an older Xcode cannot open
+/// (Xcode 15.4 refuses format 77). When the spec does not choose `projectFormat`, the node's
+/// Xcode decides it, through a spec that includes `project.yml` and adds only that option.
+pub fn plan_xcodegen_command(kind: VerifyKind, scheme: Option<&str>) -> Result<Vec<String>> {
+    let build = xcode_script(kind, scheme, " -project \"$proj\"")?;
+    let script = format!(
+        "command -v xcodegen >/dev/null 2>&1 || {{ echo 'prod-code: project.yml is an XcodeGen \
+spec and xcodegen is not installed on this node; install it (brew install xcodegen) or commit the \
+generated Xcode project' >&2; exit 127; }}; \
+gen=$(mktemp -d) || exit 1; trap 'rm -rf \"$gen\"' EXIT; spec=project.yml; \
+case \"$(xcodebuild -version 2>/dev/null | sed -n '1s/^Xcode //p')\" in \
+14.*) fmt=xcode14_0;; 15.0*|15.1*|15.2*) fmt=xcode15_0;; 15.*) fmt=xcode15_3;; *) fmt=;; esac; \
+if [ -n \"$fmt\" ] && ! grep -q '^ *projectFormat:' project.yml; then spec=\"$gen/spec.yml\"; \
+printf 'include:\\n  - path: %s\\noptions:\\n  projectFormat: %s\\n' \"$PWD/project.yml\" \"$fmt\" > \"$spec\"; fi; \
+xcodegen generate --quiet --spec \"$spec\" --project \"$gen\" || {{ status=$?; echo \
+'prod-code: xcodegen could not generate the Xcode project from project.yml' >&2; exit $status; }}; \
+proj=$(ls -d \"$gen\"/*.xcodeproj | head -n 1); {build}"
+    );
+    Ok(vec!["sh".to_string(), "-c".to_string(), script])
+}
+
+/// The `sh -c` script of [`plan_xcode_command`]; `project` is put after every `xcodebuild`.
+fn xcode_script(kind: VerifyKind, scheme: Option<&str>, project: &str) -> Result<String> {
     let action = match kind {
         VerifyKind::Check => "build",
         VerifyKind::Test => "test",
@@ -147,14 +191,15 @@ pub fn plan_xcode_command(kind: VerifyKind, scheme: Option<&str>) -> Result<Vec<
     };
     let scheme_expr = match scheme.filter(|s| !s.is_empty()) {
         Some(s) => format!("'{}'", s.replace('\'', "'\\''")),
-        None => "\"$(xcodebuild -list -json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d.get(\"project\") or d.get(\"workspace\"); print(d[\"schemes\"][0])')\"".to_string(),
+        None => format!(
+            "\"$(xcodebuild{project} -list -json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d.get(\"project\") or d.get(\"workspace\"); print(d[\"schemes\"][0])')\""
+        ),
     };
-    let script = format!(
+    Ok(format!(
         "scheme={scheme_expr}; \
-if xcodebuild -showBuildSettings -scheme \"$scheme\" 2>/dev/null | grep -q 'SDKROOT.*iPhoneOS'; then \
+if xcodebuild{project} -showBuildSettings -scheme \"$scheme\" 2>/dev/null | grep -q 'SDKROOT.*iPhoneOS'; then \
   dest=\"platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -m1 -o 'iPhone[^(]*' | sed 's/ *$//')\"; \
 else dest='platform=macOS'; fi; \
-xcodebuild {action} -scheme \"$scheme\" -destination \"$dest\" -quiet 2>&1"
-    );
-    Ok(vec!["sh".to_string(), "-c".to_string(), script])
+xcodebuild {action}{project} -scheme \"$scheme\" -destination \"$dest\" -quiet 2>&1"
+    ))
 }
