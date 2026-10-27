@@ -225,6 +225,20 @@ pub fn unreported_callers(
     name: &str,
     checked: &[PathBuf],
 ) -> Vec<PathBuf> {
+    unreported_callers_counted(root, file, name, checked).0
+}
+
+/// [`unreported_callers`], and how many more files beyond [`UNREPORTED_LIMIT`] call `name(`,
+/// counted up to [`UNREPORTED_COUNTED`]: those are not checked, and a caller must say so rather
+/// than take the first files for all of them (#1505). A file that only declares a function of
+/// that name (`function name(`, `def name(`) is not counted: it is no call, and many of them
+/// must not crowd out a real caller.
+pub fn unreported_callers_counted(
+    root: &Path,
+    file: &Path,
+    name: &str,
+    checked: &[PathBuf],
+) -> (Vec<PathBuf>, usize) {
     let family = |p: &Path| match crate::lang::language_id_for_path(p) {
         "c" | "cpp" | "objective-c" | "objective-cpp" => "c",
         "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => "javascript",
@@ -232,7 +246,7 @@ pub fn unreported_callers(
     };
     let wanted = family(file);
     if name.is_empty() || matches!(wanted, "rust" | "plaintext") {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let base = canonical(root);
@@ -242,6 +256,7 @@ pub fn unreported_callers(
         .chain([canonical(file)])
         .collect();
     let mut found = Vec::new();
+    let mut more = 0usize;
     for entry in ignore::WalkBuilder::new(root)
         .max_filesize(Some(1 << 20))
         .build()
@@ -255,7 +270,14 @@ pub fn unreported_callers(
             continue;
         };
         let path = canonical(path);
-        if !writes_call(&text, name) || known.contains(&path) {
+        if !calls_name(&text, name) || known.contains(&path) {
+            continue;
+        }
+        if found.len() == UNREPORTED_LIMIT {
+            more += 1;
+            if more == UNREPORTED_COUNTED {
+                break;
+            }
             continue;
         }
         // Spelled under `root` as the caller gave it, so that it is translated like the others.
@@ -263,12 +285,41 @@ pub fn unreported_callers(
             Ok(rel) => root.join(rel),
             Err(_) => path,
         });
-        if found.len() == UNREPORTED_LIMIT {
-            break;
-        }
     }
     found.sort();
-    found
+    (found, more)
+}
+
+/// How many files past [`UNREPORTED_LIMIT`] [`unreported_callers_counted`] counts at most.
+pub const UNREPORTED_COUNTED: usize = 200;
+
+/// The note a refactoring adds, so that it is not written unchecked, when `more` files that call
+/// `name(` were left out of its check.
+pub fn unreported_note(name: &str, more: usize) -> Option<String> {
+    let plus = if more >= UNREPORTED_COUNTED { "+" } else { "" };
+    (more > 0).then(|| {
+        format!(
+            "{more}{plus} more file(s) call `{name}(` beyond the {UNREPORTED_LIMIT} checked; a caller \
+             among them the analyzer did not report is neither rewritten nor checked"
+        )
+    })
+}
+
+/// Whether `text` calls `name(`: [`writes_call`] at an occurrence that does not declare a function
+/// of that name (`function`, `def`, `func`, `fn`, `fun` before it).
+fn calls_name(text: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].trim_end();
+        let declares = ["function", "def", "func", "fn", "fun"].iter().any(|kw| {
+            before
+                .strip_suffix(kw)
+                .is_some_and(|rest| !rest.chars().next_back().is_some_and(ident))
+        });
+        !text[..at].chars().next_back().is_some_and(ident)
+            && text[at + name.len()..].trim_start().starts_with('(')
+            && !declares
+    })
 }
 
 /// Whether `text` writes `name(` with `name` as a whole word, a call or a declaration.

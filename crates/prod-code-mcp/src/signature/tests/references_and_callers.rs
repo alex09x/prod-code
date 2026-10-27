@@ -173,3 +173,51 @@ fn a_malformed_reference_answer_is_an_error_not_a_missing_caller() {
         assert!(err.contains(why), "{reply}: {err}");
     }
 }
+
+/// #1505: files that only declare a function of the same name do not crowd out a real caller,
+/// and callers past the limit are counted and named, not taken as none.
+#[test]
+fn same_named_declarations_do_not_hide_a_caller_and_the_rest_is_counted() {
+    use crate::signature::{UNREPORTED_LIMIT, unreported_callers_counted, unreported_note};
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::create_dir_all(root.join("src/other")).unwrap();
+    std::fs::write(
+        root.join("src/price.ts"),
+        "export function price(x: number) { return x; }\n",
+    )
+    .unwrap();
+    for i in 0..25 {
+        std::fs::write(
+            root.join(format!("src/other/p{i:02}.ts")),
+            "export function price(y: string) { return y; }\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("src/app.ts"),
+        "import { price } from \"./price\";\nprice(3);\n",
+    )
+    .unwrap();
+    let (files, more) = unreported_callers_counted(&root, &root.join("src/price.ts"), "price", &[]);
+    assert_eq!(files, vec![root.join("src/app.ts")], "{files:?}");
+    assert_eq!(more, 0);
+    assert_eq!(unreported_note("price", more), None);
+
+    for i in 0..25 {
+        std::fs::write(root.join(format!("src/other/p{i:02}.ts")), "price(1);\n").unwrap();
+    }
+    let (files, more) = unreported_callers_counted(&root, &root.join("src/price.ts"), "price", &[]);
+    assert_eq!(files.len(), UNREPORTED_LIMIT);
+    assert_eq!(
+        files.len() + more,
+        26,
+        "every caller is either checked or counted"
+    );
+    assert!(
+        unreported_note("price", more)
+            .is_some_and(|n| n.starts_with("6 more file(s) call `price(`")),
+        "{:?}",
+        unreported_note("price", more)
+    );
+}
