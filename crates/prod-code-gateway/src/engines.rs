@@ -23,7 +23,7 @@ pub(crate) const ENGINE_CACHE_TTL: std::time::Duration = std::time::Duration::fr
 /// The probe's answer and the moment it stops being used. An expiry rather than the time of
 /// the probe, so that a test can seed an entry that is already stale without subtracting from
 /// a monotonic clock.
-type EngineCache = std::sync::RwLock<Option<(Instant, Vec<String>)>>;
+pub(crate) type EngineCache = std::sync::RwLock<Option<(Instant, Vec<String>)>>;
 
 fn engine_cache() -> &'static EngineCache {
     static CACHE: std::sync::OnceLock<EngineCache> = std::sync::OnceLock::new();
@@ -34,26 +34,36 @@ fn engine_cache() -> &'static EngineCache {
 /// serves a request asks through here; the probe itself runs at startup and on the janitor's
 /// tick, off the request path.
 pub fn cached_available_engines() -> Vec<String> {
-    if let Ok(cache) = engine_cache().read()
-        && let Some((expires_at, engines)) = cache.as_ref()
+    cached_in(engine_cache())
+}
+
+/// [`cached_available_engines`] over `cache`: the process's own, or a test's, which then
+/// cannot race the status requests of other tests for the shared one (#1487).
+pub(crate) fn cached_in(cache: &EngineCache) -> Vec<String> {
+    if let Ok(entry) = cache.read()
+        && let Some((expires_at, engines)) = entry.as_ref()
         && Instant::now() < *expires_at
     {
         return engines.clone();
     }
-    refresh_available_engines()
+    refresh_in(cache)
 }
 
 /// Probes for installed engines and stores the answer. Blocking: call it from a place that
 /// is allowed to block, never from a request handler.
 pub fn refresh_available_engines() -> Vec<String> {
+    refresh_in(engine_cache())
+}
+
+fn refresh_in(cache: &EngineCache) -> Vec<String> {
     let engines = available_engines();
-    store_engines(Instant::now() + ENGINE_CACHE_TTL, engines.clone());
+    store_in(cache, Instant::now() + ENGINE_CACHE_TTL, engines.clone());
     engines
 }
 
-pub(crate) fn store_engines(expires_at: Instant, engines: Vec<String>) {
-    if let Ok(mut cache) = engine_cache().write() {
-        *cache = Some((expires_at, engines));
+pub(crate) fn store_in(cache: &EngineCache, expires_at: Instant, engines: Vec<String>) {
+    if let Ok(mut entry) = cache.write() {
+        *entry = Some((expires_at, engines));
     }
 }
 

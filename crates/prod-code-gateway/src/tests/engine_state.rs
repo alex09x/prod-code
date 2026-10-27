@@ -230,29 +230,36 @@ async fn sync_rejects_absolute_parent_and_symlink_paths() {
     assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
 }
 
-/// Both halves of the engine cache, in one test because the cache is process-global and
-/// two tests would race for it. The sentinel is a value the probe cannot produce, so a
-/// sentinel coming back proves the probe did not run, and a sentinel gone proves it did.
+/// Both halves of the engine cache, on a cache of the test's own: the process's cache is
+/// shared with every status request other tests make at the same time, and a sentinel in it
+/// would reach them (#1487). The sentinel is a value the probe cannot produce, so a sentinel
+/// coming back proves the probe did not run, and a sentinel gone proves it did.
 #[test]
 fn engines_are_served_from_the_cache_until_it_expires() {
+    use crate::engines::{EngineCache, cached_in, store_in};
+    let cache = EngineCache::default();
     let sentinel = vec!["sentinel (not a real engine)".to_string()];
 
-    store_engines(Instant::now() + ENGINE_CACHE_TTL, sentinel.clone());
+    store_in(&cache, Instant::now() + ENGINE_CACHE_TTL, sentinel.clone());
     assert_eq!(
-        cached_available_engines(),
+        cached_in(&cache),
         sentinel,
         "a live entry must be answered without probing"
     );
+    assert!(
+        !cached_available_engines().contains(&sentinel[0]),
+        "the sentinel stays in the test's cache, out of other tests' status requests"
+    );
 
-    store_engines(Instant::now(), sentinel.clone());
-    let fresh = cached_available_engines();
+    store_in(&cache, Instant::now(), sentinel.clone());
+    let fresh = cached_in(&cache);
     assert_ne!(fresh, sentinel, "an expired entry must be probed again");
     assert!(
         fresh.iter().any(|e| e.starts_with("rust ")),
         "the probe always reports the in-process Rust engine, got {fresh:?}"
     );
     assert_eq!(
-        cached_available_engines(),
+        cached_in(&cache),
         fresh,
         "the probe's answer is what the next caller gets"
     );
