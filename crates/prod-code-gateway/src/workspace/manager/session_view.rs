@@ -125,6 +125,7 @@ impl WorkspaceManager {
             workspace,
             is_single_owner,
             direct_edit_open_files,
+            editor_caps: Default::default(),
             lease: Some(lease),
             owner: Some(WorktreeOwner {
                 root: worktree_root,

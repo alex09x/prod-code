@@ -191,6 +191,7 @@ async fn a_rust_test_function_rename_lands_in_the_checkout() {
         accounted: Arc::clone(&workspace),
         is_single_owner: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         direct_edit_open_files: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        editor_caps: Default::default(),
         lease: None,
         owner: None,
     };

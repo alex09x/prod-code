@@ -13,6 +13,7 @@
 //! Exposes editor endpoints (completion, hover, diagnostics, inlay hints, signature help,
 //! document highlight, code actions, formatting) over typed JSON-RPC payloads.
 
+pub mod caps;
 pub mod engine;
 mod extensions;
 pub mod format;
@@ -24,6 +25,7 @@ pub mod snapshot;
 #[cfg(test)]
 mod tests;
 
+pub use caps::EditorCaps;
 pub use extensions::InvalidExtensionParams;
 pub use lines::Lines;
 pub use snapshot::EDITOR_METHODS;

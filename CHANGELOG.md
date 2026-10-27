@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Rust Editor Session Gets Only the Response Forms Its Editor Advertised** (`crates/prod-code-engine-rust`, `crates/prod-code-gateway`, #1516):
+  The in-memory Rust engine answered every editor the same way, whatever it said in `initialize`. Completions always filled in arguments with snippet placeholders (`insertTextFormat: 2`). A resolved code action was always a `documentChanges` edit, creating or renaming files where the action did. An editor that did not advertise snippets got literal `${1:amount}` text, and one without `documentChanges` or `resourceOperations` got an edit it could not apply. The session now keeps what `initialize` said, and the engine answers within it:
+  - no snippet support: completions carry no snippets and fill in no arguments;
+  - no `documentChanges`: a text-only edit is sent as `changes`;
+  - no `create` or `rename` resource operation: an action that needs one is refused, saying why.
+  A caller that sends no `initialize`, such as the MCP tools, gets the full forms as before.
 - **C++ Parameter Objects Use Each Caller's Own Standard for Their Literals** (`crates/prod-code-mcp`, #1513):
   `code_introduce_parameter_object` writes a C++ call's bundled arguments as `{.a = x, .b = y}`, C++20's designated initialisers, or as `{x, y}` before C++20. It took the standard from the first `-std` anywhere in `compile_commands.json`, and used that one standard for every caller. So a function defined in `b.cpp`, built with `-std=c++17 -pedantic-errors`, got `{.field = value}` because `a.cpp` came first with `-std=c++20`. A command with `-std=c++20 -std=c++17` also counted as C++20. Each caller file now gets its own compilation database entry, judged by the last `-std` it gives, the one the compiler obeys. An entry without one counts as C++17. A header no entry names gets the oldest standard of all entries.
 - **A Gateway Stopped by SIGTERM Lets Its Open Sessions Finish and Writes Its Queued Telemetry** (`crates/prod-code-gateway`, #1486):

@@ -26,6 +26,8 @@ pub struct SessionView {
     pub accounted: Arc<SharedWorkspace>,
     pub is_single_owner: Arc<AtomicBool>,
     pub direct_edit_open_files: Arc<std::sync::Mutex<HashMap<PathBuf, String>>>,
+    /// What the session's editor said in `initialize` it can take back (#1516).
+    pub editor_caps: Arc<std::sync::Mutex<prod_code_engine_rust::editor::EditorCaps>>,
     pub(crate) lease: Option<WorkspaceLease>,
     pub(crate) owner: Option<WorktreeOwner>,
 }

@@ -16,6 +16,7 @@ use ra_ap_ide::{
 };
 use serde_json::{Value, json};
 
+use super::caps::EditorCaps;
 use super::lines::{Lines, document, uri_of};
 use super::mapping::{
     COMPLETION_LIMIT, completion_config, completion_item, inlay_config, text_edits,
@@ -23,8 +24,9 @@ use super::mapping::{
 use crate::RustEngineSnapshot;
 
 impl RustEngineSnapshot {
-    /// Completions at an LSP position, with `data` on the items that need an import.
-    pub fn completion(&self, params: &Value) -> Result<Value> {
+    /// Completions at an LSP position, with `data` on the items that need an import; snippets
+    /// only for an editor that takes them.
+    pub fn completion(&self, params: &Value, caps: &EditorCaps) -> Result<Value> {
         let (path, file_id, text) = document(self, params)?;
         let lines = Lines::new(&text);
         let position = FilePosition {
@@ -37,7 +39,7 @@ impl RustEngineSnapshot {
             .and_then(|s| s.chars().next());
         let items = self
             .analysis()?
-            .completions(&completion_config(), position, trigger)?
+            .completions(&completion_config(caps.snippets), position, trigger)?
             .unwrap_or_default();
         let incomplete = items.len() >= COMPLETION_LIMIT;
         let at = json!({ "uri": uri_of(&path), "position": params["position"] });
@@ -49,7 +51,7 @@ impl RustEngineSnapshot {
     }
 
     /// The item of `completionItem/resolve` with the edits that add its imports.
-    pub fn resolve_completion(&self, item: &Value) -> Result<Value> {
+    pub fn resolve_completion(&self, item: &Value, caps: &EditorCaps) -> Result<Value> {
         let mut item = item.clone();
         let Some(data) = item.get("data").cloned() else {
             return Ok(item);
@@ -78,9 +80,11 @@ impl RustEngineSnapshot {
                     .collect()
             })
             .unwrap_or_default();
-        let edits =
-            self.analysis()?
-                .resolve_completion_edits(&completion_config(), position, imports)?;
+        let edits = self.analysis()?.resolve_completion_edits(
+            &completion_config(caps.snippets),
+            position,
+            imports,
+        )?;
         let mut additional: Vec<Value> = item
             .get("additionalTextEdits")
             .and_then(Value::as_array)
@@ -247,7 +251,7 @@ impl RustEngineSnapshot {
     }
 
     /// The code action of `codeAction/resolve` with its edit.
-    pub fn resolve_code_action(&self, action: &Value) -> Result<Value> {
+    pub fn resolve_code_action(&self, action: &Value, caps: &EditorCaps) -> Result<Value> {
         let mut action = action.clone();
         let data = action.get("data").cloned().unwrap_or(Value::Null);
         let request = json!({ "textDocument": { "uri": data["uri"] } });
@@ -282,15 +286,43 @@ impl RustEngineSnapshot {
             .find(|a| a.id.0 == id && (subtype.is_none() || a.id.2 == subtype))
             .and_then(|a| a.source_change)
             .with_context(|| format!("code action `{id}` produced no edit"))?;
-        action["edit"] = self.workspace_edit(&change)?;
+        action["edit"] = self.workspace_edit(&change, caps)?;
         Ok(action)
     }
 
     /// A source change as an LSP workspace edit: text edits per file, and the files it
-    /// creates and moves as document changes.
-    fn workspace_edit(&self, change: &SourceChange) -> Result<Value> {
+    /// creates and moves as document changes. An editor without `documentChanges` gets the
+    /// text edits as `changes`; one that cannot create or rename files is refused an edit that
+    /// would need it, rather than sent one it cannot apply (#1516).
+    fn workspace_edit(&self, change: &SourceChange, caps: &EditorCaps) -> Result<Value> {
+        let outcome = self.outcome_from_change(change)?;
+        let needs_create = !outcome.created.is_empty();
+        let needs_rename = !outcome.moves.is_empty();
+        if (needs_create && !(caps.document_changes && caps.create_files))
+            || (needs_rename && !(caps.document_changes && caps.rename_files))
+        {
+            anyhow::bail!(
+                "this code action {} files, and the editor did not say in `initialize` that it \
+                 can (workspace.workspaceEdit.resourceOperations)",
+                if needs_create { "creates" } else { "renames" }
+            );
+        }
+        if !caps.document_changes {
+            let mut changes = serde_json::Map::new();
+            for (file_id, (edit, _snippet)) in change.source_file_edits.iter() {
+                let Some(path) = self.path_for_file_id(*file_id) else {
+                    continue;
+                };
+                let text = self.analysis()?.file_text(*file_id)?;
+                changes.insert(
+                    uri_of(&path).to_string(),
+                    json!(text_edits(&Lines::new(&text), edit)),
+                );
+            }
+            return Ok(json!({ "changes": changes }));
+        }
         let mut document_changes = Vec::new();
-        for fs_edit in &self.outcome_from_change(change)?.created {
+        for fs_edit in &outcome.created {
             let uri = uri_of(&fs_edit.path);
             document_changes.push(json!({ "kind": "create", "uri": uri }));
             document_changes.push(json!({
@@ -312,7 +344,7 @@ impl RustEngineSnapshot {
                 "edits": text_edits(&lines, edit),
             }));
         }
-        for moved in &self.outcome_from_change(change)?.moves {
+        for moved in &outcome.moves {
             document_changes.push(json!({
                 "kind": "rename",
                 "oldUri": uri_of(&moved.from),
@@ -325,17 +357,27 @@ impl RustEngineSnapshot {
     /// Dispatches one editor request by its LSP method; `None` for a method this module
     /// does not answer.
     pub fn editor_request(&self, method: &str, params: &Value) -> Option<Result<Value>> {
+        self.editor_request_with(method, params, &EditorCaps::default())
+    }
+
+    /// [`Self::editor_request`] for an editor that advertised `caps` in `initialize`.
+    pub fn editor_request_with(
+        &self,
+        method: &str,
+        params: &Value,
+        caps: &EditorCaps,
+    ) -> Option<Result<Value>> {
         Some(match method {
             "textDocument/typeDefinition" => self.type_definition(params),
             "rust-analyzer/viewSyntaxTree" => self.view_syntax_tree(params),
             "rust-analyzer/expandMacro" => self.expand_macro(params),
-            "textDocument/completion" => self.completion(params),
-            "completionItem/resolve" => self.resolve_completion(params),
+            "textDocument/completion" => self.completion(params, caps),
+            "completionItem/resolve" => self.resolve_completion(params, caps),
             "textDocument/signatureHelp" => self.signature_help(params),
             "textDocument/inlayHint" => self.inlay_hints(params),
             "textDocument/documentHighlight" => self.document_highlight(params),
             "textDocument/codeAction" => self.code_actions(params),
-            "codeAction/resolve" => self.resolve_code_action(params),
+            "codeAction/resolve" => self.resolve_code_action(params, caps),
             "textDocument/formatting" => self.formatting(params),
             _ => return None,
         })

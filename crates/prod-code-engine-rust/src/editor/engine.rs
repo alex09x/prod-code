@@ -23,6 +23,16 @@ impl RustEngine {
         self.snapshot().editor_request(method, params)
     }
 
+    /// [`Self::editor_request`] for an editor that advertised `caps` in `initialize` (#1516).
+    pub fn editor_request_with(
+        &self,
+        method: &str,
+        params: &Value,
+        caps: &super::caps::EditorCaps,
+    ) -> Option<Result<Value>> {
+        self.snapshot().editor_request_with(method, params, caps)
+    }
+
     /// The diagnostics of `path` as LSP `Diagnostic`s, for `textDocument/publishDiagnostics`:
     /// what [`RustEngine::diagnostics`] reports, placed in UTF-16 columns.
     pub fn editor_diagnostics(&self, path: &Path) -> Result<Value> {

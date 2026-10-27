@@ -22,7 +22,9 @@ use super::lines::Lines;
 
 pub(crate) const COMPLETION_LIMIT: usize = 256;
 
-pub(crate) fn completion_config() -> CompletionConfig<'static> {
+/// The completion configuration for an editor that does or does not take snippets: without
+/// them, no item fills in arguments or carries a placeholder (#1516).
+pub(crate) fn completion_config(snippets: bool) -> CompletionConfig<'static> {
     CompletionConfig {
         enable_postfix_completions: true,
         enable_imports_on_the_fly: true,
@@ -33,10 +35,10 @@ pub(crate) fn completion_config() -> CompletionConfig<'static> {
         enable_term_search: false,
         term_search_fuel: 1000,
         full_function_signatures: false,
-        callable: Some(CallableSnippets::FillArguments),
+        callable: snippets.then_some(CallableSnippets::FillArguments),
         add_colons_to_module: true,
         add_semicolon_to_unit: true,
-        snippet_cap: SnippetCap::new(true),
+        snippet_cap: SnippetCap::new(snippets),
         insert_use: DiagnosticsConfig::test_sample().insert_use,
         prefer_no_std: false,
         prefer_prelude: true,

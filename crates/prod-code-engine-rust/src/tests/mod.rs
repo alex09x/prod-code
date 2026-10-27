@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 mod config;
 mod dependency_cases;
 mod diagnostics;
+mod editor_caps;
 mod engine;
 mod extract_function;
 mod navigation;

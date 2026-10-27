@@ -43,6 +43,14 @@ pub async fn on_client_message(
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
                 let method = val.get("method").and_then(|m| m.as_str());
                 let id = val.get("id").cloned();
+                // Answers are written in the forms the editor said it takes (#1516).
+                if method == Some("initialize")
+                    && let Ok(mut caps) = view.editor_caps.lock()
+                {
+                    *caps = prod_code_engine_rust::editor::EditorCaps::from_initialize(
+                        val.get("params").unwrap_or(&serde_json::Value::Null),
+                    );
+                }
                 if view.workspace.rust_engine.is_some()
                     && let Err(reason) = native_position_params(method, val.get("params"))
                 {
