@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Making a Rust Function Async Accepts an Awaited Nested Call** (`crates/prod-code-mcp`, #1504, part 2):
+  `code_change_signature` with `async: true` on `load` rewrites `load(load(1))` to `load(load(1).await).await`, which is right. Its check of nested calls then looked for the old inner text `load(1)` in the new outer call, found it as the start of `load(1).await`, and reported the inner call as "left as it was". That note blocks the write even with `force`. An occurrence of the old text now counts as left only if it is not followed by the `.await` the change added. An inner call that really was not awaited is still named.
 - **The Fallback Caller Scan No Longer Stops Silently at Its First 20 Files** (`crates/prod-code-mcp`, #1505):
   When a language server may not have reported every caller, the non-Rust signature, extract-parameter and parameter-object refactorings also check the files that write `name(` (#294). The scan took the first 20 such files and returned them as if they were all. It also counted files that only declare another function of that name, so many of those could crowd out a real caller. A file that only declares the name (`function name(`, `def name(`, `func name(`, `fn name(`, `fun name(`) is no longer counted. Files past the 20 checked are counted, up to 200 more. The refactoring then names them in its unmatched notes ("6 more file(s) call `price(` beyond the 20 checked; …"), so the write is not taken as complete and needs `force`.
 - **A Rename Is Not Blocked by an Unrelated Error a Rewritten File Already Had** (`crates/prod-code-mcp`, #1491):

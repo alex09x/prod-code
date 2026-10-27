@@ -244,3 +244,26 @@ mod relocated_comment_tests {
         assert_eq!(code, br##"(r#"/* text */ a b"#,"x y",1)"##);
     }
 }
+
+/// #1504: making `load` async rewrites `load(load(1))` to `load(load(1).await).await`. The new
+/// outer call still contains the old inner text `load(1)` as the start of `load(1).await`; that
+/// is the inner call rewritten, not left as it was.
+#[test]
+fn an_awaited_inner_call_is_rewritten_though_its_old_text_is_still_there() {
+    let old = "async fn m() {\n    load(load(1));\n}\n";
+    let new = "async fn m() {\n    load(load(1).await).await;\n}\n";
+    let at = |n| line_col_at(old, old.match_indices("load").nth(n).expect("there").0).unwrap();
+    let needs_await = |_: &[String], awaited: bool| !awaited;
+    let (unmatched, unexpected) =
+        attribute("m.rs", old, new, "load", &[at(0), at(1)], &needs_await);
+    assert!(unmatched.is_empty(), "{unmatched:?}");
+    assert!(unexpected.is_empty(), "{unexpected:?}");
+
+    // An inner call really left as it was is still named.
+    let half = "async fn m() {\n    load(load(1)).await;\n}\n";
+    let (unmatched, _) = attribute("m.rs", old, half, "load", &[at(0), at(1)], &needs_await);
+    assert!(
+        unmatched.iter().any(|u| u.contains("left as it was")),
+        "{unmatched:?}"
+    );
+}
