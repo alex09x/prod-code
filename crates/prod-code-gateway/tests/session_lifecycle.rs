@@ -12,8 +12,17 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_gateway::workspace::{SharedWorkspace, WorkspaceManager};
 use prod_code_gateway::{ServerState, handle_client};
 use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, ReadFileRequest, WireMessage,
+    ClientCapabilities, HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, ReadFileRequest,
+    WireMessage,
 };
+
+/// A client that follows `Redirect` frames: only such a client is sent one (#1495).
+fn follows_redirects() -> Option<ClientCapabilities> {
+    Some(ClientCapabilities {
+        redirects: true,
+        ..Default::default()
+    })
+}
 use std::future::Future;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -858,7 +867,7 @@ async fn validation_under_memory_pressure_redirects_to_available_cluster_peer() 
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: Some(vec![PROTOCOL_VERSION]),
-            capabilities: None,
+            capabilities: follows_redirects(),
             client_name: "validation-redirect-test".to_string(),
             client_pid: std::process::id(),
             auth_token: None,
@@ -1360,7 +1369,7 @@ async fn check_editor_rebalance_redirect(wait_for_subscription: bool) {
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: Some(vec![PROTOCOL_VERSION]),
-            capabilities: None,
+            capabilities: follows_redirects(),
             client_name: "editor-redirect-test".to_string(),
             client_pid: std::process::id(),
             auth_token: None,

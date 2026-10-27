@@ -162,63 +162,117 @@ pub async fn try_validation_redirect(
     framed: &mut Framed<AnyStream, ProdCodeCodec>,
     err: &anyhow::Error,
 ) -> Result<Option<()>> {
+    let Some(target) = validation_redirect_target(req, state, engine, err).await else {
+        return Ok(None);
+    };
+    tracing::info!(
+        session_id,
+        engine,
+        target = %target,
+        "redirecting validation session under gateway memory pressure"
+    );
+    state
+        .workspace_manager
+        .unregister_session_view(session_view)
+        .await;
+    let _ = framed
+        .send(WireMessage::Redirect {
+            reason: Some(format!(
+                "gateway memory pressure; validating {engine} on {target}"
+            )),
+            target_addr: target,
+        })
+        .await;
+    Ok(Some(()))
+}
+
+/// The node a validation handshake refused for capacity (`err`) is sent to, if any. Only a
+/// client that said it follows redirects gets one: an older client cannot read the frame, and
+/// is refused with the reason instead (#1495).
+pub(crate) async fn validation_redirect_target(
+    req: &HandshakeRequest,
+    state: &Arc<ServerState>,
+    engine: &str,
+    err: &anyhow::Error,
+) -> Option<String> {
+    let supports_redirects = req
+        .capabilities
+        .as_ref()
+        .is_some_and(|capabilities| capabilities.redirects);
     let is_capacity = err
         .downcast_ref::<crate::admission::CapacityRefused>()
         .is_some()
         || err.root_cause().is::<crate::admission::CapacityRefused>()
         || err.to_string().contains("capacity:");
-
-    if is_capacity && req.redirect_count < 2 {
-        let view = state.cluster_view().await;
-        let own_addr = state.advertise.read().await.clone();
-        let ws_name = req
-            .base_workspace_name
-            .as_deref()
-            .unwrap_or(&req.client_workspace_root);
-        let required_headroom = state.workspace_manager.admission().reserve_for(engine);
-        let target = view
-            .nodes
-            .iter()
-            .filter(|n| {
-                n.alive
-                    && !n.addr.is_empty()
-                    && n.addr != own_addr
-                    && n.addr != view.this_node
-                    && cluster_supports_engine(&n.status, engine)
-                    && n.status.host.pressure().is_none()
-                    && n.status
-                        .host
-                        .memory_available_bytes
-                        .is_none_or(|available| available >= required_headroom)
-                    && (req.redirect_count == 0 || !n.workspaces.iter().any(|w| w.name == ws_name))
-            })
-            .max_by_key(|n| n.status.host.memory_available_bytes.unwrap_or(0));
-
-        if let Some(target) = target {
-            tracing::info!(
-                session_id,
-                engine,
-                target = %target.addr,
-                "redirecting validation session under gateway memory pressure"
-            );
-            state
-                .workspace_manager
-                .unregister_session_view(session_view)
-                .await;
-            let _ = framed
-                .send(WireMessage::Redirect {
-                    target_addr: target.addr.clone(),
-                    reason: Some(format!(
-                        "gateway memory pressure; validating {engine} on {}",
-                        target.addr
-                    )),
-                })
-                .await;
-            return Ok(Some(()));
-        }
+    if !supports_redirects || !is_capacity || req.redirect_count >= 2 {
+        return None;
     }
+    let view = state.cluster_view().await;
+    let own_addr = state.advertise.read().await.clone();
+    let ws_name = req
+        .base_workspace_name
+        .as_deref()
+        .unwrap_or(&req.client_workspace_root);
+    let reserve = state.workspace_manager.admission().reserve_for(engine);
+    view.nodes
+        .iter()
+        .filter(|n| {
+            n.alive
+                && !n.addr.is_empty()
+                && n.addr != own_addr
+                && n.addr != view.this_node
+                && cluster_supports_engine(&n.status, engine)
+                && n.status.host.pressure().is_none()
+                && (req.redirect_count == 0 || !n.workspaces.iter().any(|w| w.name == ws_name))
+        })
+        .filter_map(|n| {
+            // A peer without the workspace warm loads its main engine before the validation
+            // one, so it needs room for both (#1496).
+            let warm = n.workspaces.iter().any(|w| w.name == ws_name);
+            let needed = if warm {
+                reserve
+            } else {
+                reserve.saturating_mul(2)
+            };
+            let host = &n.status.host;
+            let spare = match (host.memory_available_bytes, host.memory_total_bytes) {
+                // What the peer would admit, as `Admission::try_reserve` counts it: its limit
+                // less what is in use. The free memory it gossips has its own reservations
+                // taken off already, so a big, nearly full host ranks below a small idle one.
+                (Some(available), Some(total)) if total > 0 => {
+                    let used = total.saturating_sub(available.min(total));
+                    crate::admission::types::limit_bytes(total)
+                        .saturating_sub(used)
+                        .checked_sub(needed)?
+                }
+                (Some(available), _) => available.checked_sub(needed)?,
+                // A host whose memory is not known admits every engine, as placement does,
+                // and ranks below every host with known room.
+                (None, _) => 0,
+            };
+            Some((spare, n))
+        })
+        .max_by_key(|(spare, _)| *spare)
+        .map(|(_, n)| n.addr.clone())
+}
 
-    Ok(None)
+/// What a session told to move to `target_addr` sends its client: a redirect it follows, or,
+/// for a client that never said it reads one, a disconnect naming where to reconnect (#1495).
+pub(crate) fn rebalance_frame(
+    redirects: bool,
+    target_addr: String,
+    reason: Option<String>,
+) -> WireMessage {
+    if redirects {
+        return WireMessage::Redirect {
+            target_addr,
+            reason,
+        };
+    }
+    let why = reason.map(|r| format!(" ({r})")).unwrap_or_default();
+    WireMessage::Disconnect {
+        reason: format!("this workspace moved to {target_addr}{why}; reconnect there"),
+    }
 }
 
 #[cfg(test)]
