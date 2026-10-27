@@ -39,6 +39,17 @@ pub(super) async fn prepare(
     identity: &WorkspaceIdentity,
     output: &mut impl FnMut(bool, &[u8]),
 ) -> Result<Framed<AnyStream, ProdCodeCodec>> {
+    Ok(prepare_rooted(remote, root, identity, output).await?.0)
+}
+
+/// [`prepare`], and the root of the workspace's copy on the node, which the pre-flight sync
+/// learns before the command starts (#1479).
+pub(super) async fn prepare_rooted(
+    remote: SocketAddr,
+    root: &Path,
+    identity: &WorkspaceIdentity,
+    output: &mut impl FnMut(bool, &[u8]),
+) -> Result<(Framed<AnyStream, ProdCodeCodec>, String)> {
     prepare_reporting_after(remote, root, identity, output, REPORT_EVERY).await
 }
 
@@ -50,13 +61,14 @@ pub(super) async fn prepare_reporting_after(
     identity: &WorkspaceIdentity,
     output: &mut impl FnMut(bool, &[u8]),
     quiet_for: Duration,
-) -> Result<Framed<AnyStream, ProdCodeCodec>> {
+) -> Result<(Framed<AnyStream, ProdCodeCodec>, String)> {
     let started = Instant::now();
     let stream = tokio::time::timeout(IDLE_LIMIT, prod_code_protocol::transport::connect(remote))
         .await
         .context("timed out connecting to gateway; check `prod-code status`")?
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let server_root;
     {
         let (phases, mut changes) = tokio::sync::mpsc::unbounded_channel();
         let mut observer = move |phase| {
@@ -72,7 +84,10 @@ pub(super) async fn prepare_reporting_after(
         tokio::pin!(limit);
         loop {
             tokio::select! {
-                result = &mut sync => { result.context("pre-flight workspace sync failed")?; break; }
+                result = &mut sync => {
+                    server_root = result.context("pre-flight workspace sync failed")?.server_workspace_root;
+                    break;
+                }
                 // A quick pre-flight stays silent; one that drags on says each step it reaches.
                 Some(next) = changes.recv() => {
                     phase = next;
@@ -87,7 +102,7 @@ pub(super) async fn prepare_reporting_after(
             }
         }
     }
-    Ok(framed)
+    Ok((framed, server_root))
 }
 
 /// Keeps silent commands visible, probes the connection, and bounds missing terminal results.

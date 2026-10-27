@@ -13,7 +13,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 
-use crate::exec::{TailBuffer, run_remote};
+use crate::exec::{TailBuffer, run_remote_rooted};
 use crate::verify::detect::detect_tools;
 use crate::verify::parse::{event_of_line, parse_verification_output, relativize_diagnostics};
 use crate::verify::plan::{has_xcode_project, narrow_scope, plan_command_with, plan_xcode_command};
@@ -85,7 +85,9 @@ pub async fn run_verify_with(
     env.extend(extra_env.iter().cloned());
     // Complete stdout lines become events as they arrive; a line split across chunks waits.
     let mut pending: Vec<u8> = Vec::new();
-    let outcome = run_remote(
+    // Streamed diagnostics name files the way the final report does (#1479).
+    let server_root = std::sync::OnceLock::<String>::new();
+    let outcome = run_remote_rooted(
         remote,
         root,
         subdir.as_deref(),
@@ -93,14 +95,24 @@ pub async fn run_verify_with(
         env,
         timeout_secs,
         false,
+        |root| {
+            let _ = server_root.set(root.to_string());
+        },
         |is_stderr, data| {
             if !is_stderr {
                 pending.extend_from_slice(data);
                 while let Some(end) = pending.iter().position(|b| *b == b'\n') {
                     let line: Vec<u8> = pending.drain(..=end).collect();
-                    if let Some(event) =
+                    if let Some(mut event) =
                         event_of_line(language, kind, String::from_utf8_lossy(&line).trim_end())
                     {
+                        if let RunEvent::Diagnostic(diagnostic) = &mut event {
+                            localize(
+                                std::slice::from_mut(diagnostic),
+                                server_root.get().map_or("", String::as_str),
+                                subdir.as_deref(),
+                            );
+                        }
                         on_event(event);
                     }
                 }
@@ -122,25 +134,11 @@ pub async fn run_verify_with(
 
     let (mut diagnostics, fixes, benches, tests_passed, tests_failed, mut failures) =
         parse_verification_output(language, kind, &stdout, &stderr, &tools);
-    if let Some(sub) = &subdir {
-        let nested = format!(
-            "{}/{sub}",
-            outcome.exit.server_workspace_root.trim_end_matches('/')
-        );
-        relativize_diagnostics(&mut diagnostics, &nested);
-    }
-    relativize_diagnostics(&mut diagnostics, &outcome.exit.server_workspace_root);
-    if let Some(subdir) = &subdir {
-        let subdir = Path::new(subdir);
-        for diagnostic in &mut diagnostics {
-            if let Some(file) = diagnostic.file.as_mut() {
-                let path = Path::new(file);
-                if !path.is_absolute() && !path.starts_with(subdir) {
-                    *file = subdir.join(path).to_string_lossy().replace('\\', "/");
-                }
-            }
-        }
-    }
+    localize(
+        &mut diagnostics,
+        &outcome.exit.server_workspace_root,
+        subdir.as_deref(),
+    );
     for failure in &mut failures {
         let prefix = format!(
             "{}/",
@@ -168,4 +166,30 @@ pub async fn run_verify_with(
         usage: outcome.exit.usage,
         platform: outcome.exit.platform.clone(),
     })
+}
+
+/// Diagnostic paths as the checkout names them: the node's copy at `server_root`, and the
+/// project `subdir` the command ran in, made relative to the checkout. The final report and
+/// each streamed event go through it, so both name a file the same way (#1479).
+pub(crate) fn localize(
+    diagnostics: &mut [crate::verify::types::Diagnostic],
+    server_root: &str,
+    subdir: Option<&str>,
+) {
+    if let Some(sub) = subdir {
+        let nested = format!("{}/{sub}", server_root.trim_end_matches('/'));
+        relativize_diagnostics(diagnostics, &nested);
+    }
+    relativize_diagnostics(diagnostics, server_root);
+    if let Some(subdir) = subdir {
+        let subdir = Path::new(subdir);
+        for diagnostic in diagnostics {
+            if let Some(file) = diagnostic.file.as_mut() {
+                let path = Path::new(file);
+                if !path.is_absolute() && !path.starts_with(subdir) {
+                    *file = subdir.join(path).to_string_lossy().replace('\\', "/");
+                }
+            }
+        }
+    }
 }

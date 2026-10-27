@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Streamed Check Diagnostics Name Files Like the Final Report** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1479):
+  `prod-code check --events` printed each diagnostic as soon as its line arrived, with the node's absolute path, while the final report gave the checkout-relative one. The pre-flight sync already knows where the node keeps the copy. That root, and the nested project the command ran in, now localize each streamed diagnostic before it is emitted, so an event and the report name the same file. Streaming is unchanged.
 - **Pulling a File Takes the Node's Executable Bit Both Ways** (`crates/prod-code-mcp`, #1477):
   A file the node reports as not executable, pulled over a local executable copy, kept its executable bits, because only `true` was applied. The executable bits are now cleared, and the other permission bits are kept. A shebang has no say, as before.
 - **The Divergent-Worktree Benchmark Checks Every Copy and Seeds From the Whole Origin Name** (`crates/prod-code-client`, test, #1522):
