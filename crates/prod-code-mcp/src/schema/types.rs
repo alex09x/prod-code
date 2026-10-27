@@ -151,6 +151,9 @@ pub struct AcrossRepos {
     pub repos: Vec<SchemaRename>,
     /// The repositories it does not appear in.
     pub missing: Vec<PathBuf>,
+    /// For each repository whose language server was still loading or indexing when asked,
+    /// what it said: that repository's plan may be incomplete (#1425).
+    pub incomplete: Vec<(PathBuf, String)>,
     pub applied: bool,
 }
 
@@ -166,9 +169,10 @@ impl AcrossRepos {
         make_workspace_edit_with_ends(&all_rewritten, &all_ends)
     }
 
-    /// Every repository's analyzers accept its result.
+    /// Every repository's analyzers accept its result, and every one answered from a loaded
+    /// index.
     pub fn clean(&self) -> bool {
-        self.repos.iter().all(|r| r.diagnostics.is_empty())
+        self.incomplete.is_empty() && self.repos.iter().all(|r| r.diagnostics.is_empty())
     }
 
     pub fn render(&self, diff_budget: usize) -> String {
@@ -184,6 +188,13 @@ impl AcrossRepos {
         for root in &self.missing {
             out.push_str(&format!(
                 "## {}\n\nthe field does not appear here\n\n",
+                root.display()
+            ));
+        }
+        for (root, note) in &self.incomplete {
+            out.push_str(&format!(
+                "(in {}, the language server was still {note} when asked: its plan may be \
+                 incomplete)\n",
                 root.display()
             ));
         }

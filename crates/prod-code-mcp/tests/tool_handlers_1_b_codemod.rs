@@ -305,3 +305,67 @@ async fn a_schema_rename_across_repositories_lands_in_all_of_them_or_none() {
     assert_eq!(b.read("src/lib.rs"), after);
     assert_eq!(c.read("src/lib.rs"), "pub struct Other;\n");
 }
+
+/// A secondary repository whose language server is still indexing when its rename is asked:
+/// the result names it, is not clean, and nothing is written without `force` (#1425).
+#[tokio::test]
+async fn a_secondary_repository_still_indexing_is_reported_and_blocks_the_write() {
+    let (a, before, after) = order_workspace();
+    let (b, _, _) = order_workspace();
+    let plans: Vec<(Value, Value)> = [&a, &b]
+        .iter()
+        .map(|ws| {
+            let path = ws.root().join("src/lib.rs");
+            (
+                json!(answers::uri(&path)),
+                answers::whole_file(&path, before, after),
+            )
+        })
+        .collect();
+    let renames = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gw = ScriptedGateway::start(move |method, params| match method {
+        // The repositories are asked in order: the second rename is the secondary's.
+        "prod-code/busy" if params["method"] == "textDocument/rename" => {
+            let n = renames.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n % 2 == 1 {
+                json!({ "title": "indexing", "message": "10/400", "percentage": 2, "for_ms": 1500 })
+            } else {
+                Value::Null
+            }
+        }
+        "textDocument/rename" => plans
+            .iter()
+            .find(|(uri, _)| *uri == params["textDocument"]["uri"])
+            .map_or(Value::Null, |(_, edit)| edit.clone()),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+    let args = |apply: bool| {
+        json!({
+            "field": "order_id", "to": "trade_id", "apply": apply,
+            "repos": [b.root().display().to_string()]
+        })
+    };
+
+    let (is_error, dry) = call(&gw, &a.root(), "code_schema_rename", args(false)).await;
+    assert!(is_error, "incomplete evidence is not a clean result: {dry}");
+    assert!(
+        dry.contains(&format!(
+            "(in {}, the language server was still indexing",
+            std::fs::canonicalize(b.root()).unwrap().display()
+        )),
+        "{dry}"
+    );
+
+    let refused = execute_tool(gw.addr(), &a.root(), "code_schema_rename", args(true))
+        .await
+        .expect_err("incomplete evidence writes nothing");
+    let refused = format!("{refused:#}");
+    assert!(
+        refused.contains("the rename's evidence is incomplete"),
+        "{refused}"
+    );
+    assert_eq!(a.read("src/lib.rs"), before);
+    assert_eq!(b.read("src/lib.rs"), before);
+}
