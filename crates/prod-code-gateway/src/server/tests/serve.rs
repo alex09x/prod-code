@@ -297,3 +297,58 @@ async fn a_gateway_with_a_token_serves_only_connections_that_open_with_it_and_st
     .await;
     result.unwrap();
 }
+
+/// #1486: SIGTERM stops accepting, but a session that is open goes on being answered, and `run`
+/// returns only once it has finished, not while it is still being served.
+#[tokio::test]
+async fn sigterm_waits_for_open_sessions_before_returning() {
+    crate::test_cache_support::isolated!();
+    configure_environment(None);
+    let temp = tempfile::tempdir().unwrap();
+    let mut cli =
+        ServerCli::try_parse_from(["gateway", "--bind", "127.0.0.1:0", "--no-admission"]).unwrap();
+    cli.storage = temp.path().join("storage");
+    let closed = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+    let closed_by_client = std::sync::Arc::clone(&closed);
+    let (announce, announced) = tokio::sync::oneshot::channel();
+    let closed_at_return = std::sync::Arc::clone(&closed);
+    // What the session had done when `run` returned.
+    let server = async move {
+        let result = run_announcing(cli, Some(announce)).await;
+        (result, closed_at_return.lock().unwrap().is_some())
+    };
+    let driver = async move {
+        let addr = tokio::time::timeout(Duration::from_secs(20), announced)
+            .await
+            .expect("the gateway starts")
+            .expect("the gateway announces its address");
+        let mut session = tcp(addr).await;
+        assert!(matches!(
+            ask(&mut session, WireMessage::StatusRequest).await,
+            WireMessage::StatusResponse(_)
+        ));
+        assert_eq!(unsafe { libc::kill(libc::getpid(), libc::SIGTERM) }, 0);
+        // Still served after the signal.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(matches!(
+            ask(&mut session, WireMessage::StatusRequest).await,
+            WireMessage::StatusResponse(_)
+        ));
+        // A new connection is no longer accepted.
+        let refused =
+            tokio::net::TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], addr.port()))).await;
+        assert!(refused.is_err(), "the listener is closed after SIGTERM");
+        *closed_by_client.lock().unwrap() = Some(std::time::Instant::now());
+        drop(session);
+    };
+    let ((result, session_done), ()) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(server, driver)
+    })
+    .await
+    .expect("the gateway stops once its session is done");
+    result.unwrap();
+    assert!(
+        session_done,
+        "run returned before its open session was done"
+    );
+}

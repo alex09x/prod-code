@@ -99,6 +99,12 @@ impl Metrics {
         self.rx.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
+    /// Closes the queue at shutdown: what is queued is still written, then [`run_writer`]
+    /// returns; a record made after this is dropped (#1486).
+    pub fn close_writer(&self) {
+        self.tx.close();
+    }
+
     /// Records one event: into the in-memory ring and into today's JSONL file via disk writer.
     pub fn record(&self, event: Event) {
         let node = self.node();

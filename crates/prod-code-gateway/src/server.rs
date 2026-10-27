@@ -172,9 +172,11 @@ pub(crate) async fn run_announcing(
     tracing::info!(advertise, peers = ?peers, "cluster identity");
     tokio::spawn(gossip_loop(Arc::clone(&state)));
     tokio::spawn(discovery_loop(Arc::clone(&state)));
-    if let Some(rx) = state.metrics.take_receiver() {
-        tokio::spawn(metrics::run_writer(state.metrics.dir().to_path_buf(), rx));
-    }
+    // Kept, so that a shutdown waits for the queued telemetry to reach disk (#1486).
+    let metrics_writer = state
+        .metrics
+        .take_receiver()
+        .map(|rx| tokio::spawn(metrics::run_writer(state.metrics.dir().to_path_buf(), rx)));
 
     let initial_node = advertise.clone();
     let initial_engines = engines.clone();
@@ -265,9 +267,12 @@ pub(crate) async fn run_announcing(
 
     // A gateway is stopped by its supervisor (launchd, systemd) and by a deploy script, both
     // of which send SIGTERM and then wait. Without a handler the process dies where it stands:
-    // in-flight queries are cut, and nothing that runs at exit runs. Stopping the accept loop
-    // and returning normally is all that is needed — every session is a task holding its own
-    // socket, and the client treats a closed connection as a session to re-open.
+    // in-flight queries are cut, and nothing that runs at exit runs. On the signal the accept
+    // loop stops, the sessions it started get `SHUTDOWN_GRACE` to finish (`main` drops the
+    // runtime once `run` returns, and a detached task would die with it), the rest are cut, and
+    // the queued telemetry is written (#1486). The client treats a closed connection as a
+    // session to re-open.
+    let mut sessions = tokio::task::JoinSet::new();
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     async fn accept_unix(
@@ -307,7 +312,7 @@ pub(crate) async fn run_announcing(
                 let tls_acceptor = tls_acceptor.clone();
                 let addr_str = addr.to_string();
 
-                tokio::spawn(async move {
+                sessions.spawn(async move {
                     let _permit = permit;
                     let stream = if let Some(ref acceptor) = tls_acceptor {
                         let mut peek_buf = [0u8; 1];
@@ -376,20 +381,63 @@ pub(crate) async fn run_announcing(
                     }
                 };
                 let state_clone = Arc::clone(&state);
-                tokio::spawn(async move {
+                sessions.spawn(async move {
                     if let Err(err) = handle_client(AnyStream::Unix(socket), "unix-socket".to_string(), state_clone).await {
                         tracing::error!(addr = "unix-socket", %err, "Error in client connection");
                     }
                 });
             }
+            // Finished sessions are reaped as they end, so the set holds only open ones.
+            Some(_) = sessions.join_next(), if !sessions.is_empty() => {}
             _ = terminate.recv() => {
                 tracing::info!("SIGTERM: no longer accepting connections");
-                return Ok(());
+                break;
             }
             _ = interrupt.recv() => {
                 tracing::info!("SIGINT: no longer accepting connections");
-                return Ok(());
+                break;
             }
         }
+    }
+    drop(listener);
+    drop(unix_listener);
+    shutdown(sessions, metrics_writer, &state).await;
+    Ok(())
+}
+
+/// How long open sessions get to finish once a stop signal came.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Waits up to [`SHUTDOWN_GRACE`] for the open sessions, cuts the rest, then lets the telemetry
+/// writer drain what is queued, up to 5 seconds.
+async fn shutdown(
+    mut sessions: tokio::task::JoinSet<()>,
+    metrics_writer: Option<tokio::task::JoinHandle<()>>,
+    state: &ServerState,
+) {
+    let open = sessions.len();
+    if open > 0 {
+        tracing::info!(open, "waiting for open sessions to finish");
+    }
+    let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
+        while sessions.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_err() {
+        tracing::warn!(
+            cut = sessions.len(),
+            grace_secs = SHUTDOWN_GRACE.as_secs(),
+            "sessions still open after the grace period are cut"
+        );
+        sessions.abort_all();
+        while sessions.join_next().await.is_some() {}
+    }
+    state.metrics.close_writer();
+    if let Some(writer) = metrics_writer
+        && tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+            .await
+            .is_err()
+    {
+        tracing::warn!("queued telemetry was not all written within 5 s");
     }
 }
