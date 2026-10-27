@@ -79,6 +79,26 @@ fn the_probe_file_is_the_first_swift_source_by_path_and_hidden_dirs_are_skipped(
     assert_eq!(path, dir.path().join("Sources/b.swift"));
 }
 
+/// #1500: a SwiftPM target with a custom `path:` and no `Sources/` still has a probe file,
+/// from the directory its manifest names; a path outside the package is not followed.
+#[test]
+fn a_target_with_a_custom_path_has_a_probe_file() {
+    let manifest = "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(\n    name: \"Shop\",\n    targets: [\n        .target(name: \"Escape\", path: \"../elsewhere\"),\n        .executableTarget(name: \"Shop\", path: \"App/Code\"),\n    ]\n)\n";
+    let dir = package(&[
+        ("Package.swift", manifest),
+        ("App/Code/main.swift", "print(1)\n"),
+        ("App/Code/.hidden/x.swift", "hidden"),
+    ]);
+    let (path, text) = swift_probe_file(dir.path()).expect("the custom target's source");
+    assert_eq!(path, dir.path().join("App/Code/main.swift"));
+    assert_eq!(text, "print(1)\n");
+    assert_eq!(
+        declared_target_paths(manifest).collect::<Vec<_>>(),
+        ["App/Code"],
+        "`../elsewhere` is outside the package"
+    );
+}
+
 #[tokio::test]
 async fn cmake_is_not_run_without_a_project_or_when_a_database_exists() {
     let plain = package(&[("main.c", "int main(void) { return 0; }")]);

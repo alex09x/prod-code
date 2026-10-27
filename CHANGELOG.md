@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **The Swift Settings Probe Finds Custom Target Paths and Keeps Its Deadline** (`crates/prod-code-gateway`, `crates/prod-code-engine-generic`, #1500):
+  Before validating Swift, the gateway waits until sourcekit-lsp reports a type error on a probe line, which shows it has the package's build settings. The probe file was looked for under `Sources/` only. A package whose targets set `path: "…"` had no probe, and the wait was skipped. Directories the manifest names with `path:` are now searched after `Sources/`; relative ones inside the package only. The wait also asked each diagnostic pull with the full request timeout, so a server that never answered a pull made a 1 s wait last 20 s. Each pull is now bounded by what is left of the wait.
 - **A Rename That Moves a File Is Validated on the File at Its New Path** (`crates/prod-code-mcp`, #1469):
   The in-memory preview of a `WorkspaceEdit` (`refactor::planned_texts`), which `code_rename` and other tools validate before writing, applied text edits only. A rename of `old_name.rs` to `new_name.rs` was therefore checked with an edit to the new path applied to an empty file (the preview held just `g` for `pub fn g() {}`), so a valid module rename could be refused. The preview now follows the edit's operations in order: a renamed file's text moves to its new path and later edits apply to it, a created file starts empty, and a deleted or moved-away path is left out. Removing files is still not checked by the analyzer, and callers are told so as before.
 - **A Validation Engine Catches Up on Changes Made While It Loaded** (`crates/prod-code-gateway`, #1490):

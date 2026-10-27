@@ -267,7 +267,14 @@ impl GenericLspEngine {
         let mut reported = false;
         let mut missing = None;
         loop {
-            let items = match self.pull_diagnostics(&uri).await {
+            // A pull is bounded by what is left of `timeout`, not by the request timeout: one
+            // asked near the end could otherwise wait a whole request budget past it (#1500).
+            let remaining = timeout.saturating_sub(started.elapsed());
+            let pulled = tokio::time::timeout(remaining, self.pull_diagnostics(&uri))
+                .await
+                .ok()
+                .flatten();
+            let items = match pulled {
                 Some(items) => Some(items),
                 None => match self.current_diagnostics_for(&uri, SEMANTIC_POLL).await {
                     Ok(items) => Some(items),
