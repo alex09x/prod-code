@@ -279,3 +279,34 @@ fn a_seeded_copy_goes_without_a_build_cache_it_has_no_room_for() {
     );
     assert!(disk_space(&dir.path().join("not/yet/created")).is_some());
 }
+
+/// #1527: seed copies into different worktrees share one ledger. Each copy is checked against
+/// the free space less what copies still in flight hold, so three 48 GiB copies on a 980 GiB
+/// filesystem with 290 GiB free cannot all pass the 20% floor that each one passes alone
+/// (together they would leave 146 GiB, under 196). A finished copy returns its share.
+#[test]
+fn concurrent_seed_copies_are_checked_against_one_another() {
+    use crate::seed_cache::build_cache::reserve_seed;
+    let gib = 1u64 << 30;
+    let space = || {
+        Some(DiskSpace {
+            free: 290 * gib,
+            total: 980 * gib,
+        })
+    };
+    let first = reserve_seed("target/debug", 48 * gib, space());
+    assert!(first.is_some(), "one copy leaves 242 GiB, above the floor");
+    assert!(
+        reserve_seed("node_modules", 48 * gib, space()).is_none(),
+        "a second, while the first still copies, would leave 194 GiB"
+    );
+    drop(first);
+    // Once the first copy is done, its bytes are in what the filesystem reports.
+    let after = || {
+        Some(DiskSpace {
+            free: 242 * gib,
+            total: 980 * gib,
+        })
+    };
+    assert!(reserve_seed("node_modules", 20 * gib, after).is_some());
+}
