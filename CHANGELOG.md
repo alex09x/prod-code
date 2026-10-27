@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Rust Parameter Is Selected by Its Name, Not by a Type Spelled Like It** (`crates/prod-code-mcp`, #1503):
+  `code_safe_delete` and `code_inline_parameter` decide that the cursor is on a Rust parameter with `signature::parameter_at`. It took the word under the cursor and checked only that some parameter had that name. In `type id = u32; fn f(id: id, n: u8)`, a cursor on the type `id` therefore selected the parameter `id`, and safe delete went on to remove it. The cursor must now be in a parameter's part before its top-level `:`, which is its name or the pattern that binds it. A function type's `->` is not taken for a closing bracket.
 - **The C/C++ Compiler Cache Keeps Debug Builds' Directories and Runs Without the Command's `PATH`** (`crates/prod-code-gateway`, #1482):
   The gateway gives commands ccache settings that share one cache across a project's worktrees (#243). It also set `CCACHE_NOHASHDIR=1`, which drops the working directory from the hash of a compile with debug info. Such an object records that directory, so a debug build could be served another worktree's object, and a debugger would open that worktree's sources. ccache's default is kept now. Builds without `-g` share the cache as before, and a debug build that passes `-fdebug-prefix-map` is shared too, as ccache documents. CMake's launcher was also set to the bare name `ccache`, found in the gateway's `PATH`, which a command's own `PATH` need not contain. It is now set to the path where the gateway found it (`/usr/bin/ccache` on a Linux build node).
 - **Failing unittest, Jest and Vitest Tests Find Their Suspects** (`crates/prod-code-mcp`, #1472):
