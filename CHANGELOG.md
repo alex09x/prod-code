@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **SourceKit Is Found Through `xcrun` Only When the Selected Toolchain Has It** (`crates/prod-code-engine-generic`, test, #1449):
+  The optional native SourceKit test took an installed `xcrun` as proof that `sourcekit-lsp` exists. On a Mac whose selected developer toolchain lacks SourceKit, the test then failed while starting the engine, instead of skipping it as unavailable. The test and the gateway's installed-server check now share one probe, `xcrun --find sourcekit-lsp`, bounded to 10 seconds; the gateway's own check had no time limit before. A launcher that is missing, hangs or cannot find the server finds nothing.
 - **Schema Rename Reads OpenAPI JSON by Its Root Key and GraphQL Descriptions by Their Real Delimiters** (`crates/prod-code-mcp`, #1452):
   - A JSON document is OpenAPI when its root object has an `openapi` or `swagger` key, whatever the key order or layout. A minified document such as `{"info":…,"openapi":"3.1.0",…}` used to be read as plain JSON, so renaming a property left its `required` entry stale.
   - In a GraphQL description, an escaped `\"""` no longer ends the block string, so a later mention of the field in the same description stays prose.
