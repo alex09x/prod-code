@@ -2534,6 +2534,7 @@ dependencies = [
  "oxc_span",
  "prod-code-protocol",
  "prod-code-testkit",
+ "ra-ap-rustc_lexer",
  "regex",
  "serde",
  "serde_json",

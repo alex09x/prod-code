@@ -34,79 +34,38 @@ pub enum Token {
     Punct,
 }
 
-/// The tokens of `text`, as (kind, start, end): names and keywords, number, string and char
-/// literals, and every other character on its own. Whitespace and `//` comments are skipped.
+/// The tokens of `text`, as (kind, start, end), as Rust's own lexer reads them (#1438): names,
+/// keywords and lifetimes, number, string and char literals (raw, byte and C strings included),
+/// and every other character on its own. Whitespace and comments, `/* */` blocks among them,
+/// are skipped, so nothing inside a comment or a literal is a token of its own.
 pub fn tokens(text: &str) -> Vec<(Token, usize, usize)> {
-    let bytes = text.as_bytes();
+    use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind};
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = text[i..].chars().next().unwrap_or(' ');
-        let len = c.len_utf8();
-        if c.is_whitespace() {
-            i += len;
-        } else if text[i..].starts_with("//") {
-            i = text[i..].find('\n').map_or(text.len(), |n| i + n);
-        } else if c.is_ascii_digit() {
-            let mut j = i;
-            while j < bytes.len()
-                && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'.')
-            {
-                // `1..3` is two numbers and a range, not one number.
-                if bytes[j] == b'.' && bytes.get(j + 1) == Some(&b'.') {
-                    break;
-                }
-                j += 1;
-            }
-            out.push((Token::Number, i, j));
-            i = j;
-        } else if c == '"' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] != b'"' {
-                j += if bytes[j] == b'\\' { 2 } else { 1 };
-            }
-            let j = (j + 1).min(bytes.len());
-            out.push((Token::Str, i, j));
-            i = j;
-        } else if c == '\'' {
-            // A char literal closes within a few bytes; a lifetime does not close at all.
-            let close = text[i + 1..]
-                .char_indices()
-                .take(4)
-                .find(|(k, ch)| *ch == '\'' && *k > 0)
-                .map(|(k, _)| i + 1 + k);
-            match close {
-                Some(end)
-                    if !text[i + 1..end].starts_with(|ch: char| ch.is_alphabetic())
-                        || end - i <= 3 =>
-                {
-                    out.push((Token::Char, i, end + 1));
-                    i = end + 1;
-                }
-                _ => {
-                    let mut j = i + 1;
-                    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
-                    {
-                        j += 1;
-                    }
-                    out.push((Token::Word, i, j));
-                    i = j;
-                }
-            }
-        } else if is_ident(c) {
-            let mut j = i;
-            while let Some(ch) = text[j..].chars().next() {
-                if !is_ident(ch) {
-                    break;
-                }
-                j += ch.len_utf8();
-            }
-            out.push((Token::Word, i, j));
-            i = j;
-        } else {
-            out.push((Token::Punct, i, i + len));
-            i += len;
-        }
+    let mut at = 0;
+    for token in ra_ap_rustc_lexer::tokenize(text, FrontmatterAllowed::No) {
+        let (start, end) = (at, at + token.len as usize);
+        at = end;
+        let kind = match token.kind {
+            TokenKind::Whitespace
+            | TokenKind::LineComment { .. }
+            | TokenKind::BlockComment { .. }
+            | TokenKind::Frontmatter { .. } => continue,
+            TokenKind::Eof => break,
+            TokenKind::Ident
+            | TokenKind::RawIdent
+            | TokenKind::InvalidIdent
+            | TokenKind::UnknownPrefix
+            | TokenKind::Lifetime { .. }
+            | TokenKind::RawLifetime
+            | TokenKind::UnknownPrefixLifetime => Token::Word,
+            TokenKind::Literal { kind, .. } => match kind {
+                LiteralKind::Int { .. } | LiteralKind::Float { .. } => Token::Number,
+                LiteralKind::Char { .. } | LiteralKind::Byte { .. } => Token::Char,
+                _ => Token::Str,
+            },
+            _ => Token::Punct,
+        };
+        out.push((kind, start, end));
     }
     out
 }

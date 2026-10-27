@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Function Extraction Finds Duplicates by Rust's Own Tokens and Real Local Reads** (`crates/prod-code-mcp`, #1438):
+  - Duplicate copies of the selection are matched on the tokens of Rust's own lexer, so code inside a `/* */` comment or a raw, byte or C string is no longer taken for a copy and rewritten.
+  - A `let` binding is told by its role in the pattern, not by its case: `let Gross = …` is a binding, while the `Some`, `P` and `E::V` of `let Some(n)`, `let P { x }` and `let E::V(y)` are not. A path pattern with `::` is no longer cut as if it were a type annotation.
+  - The guard against a later read of a name that the extracted call does not return counts only real reads of the local. A field or method (`o.gross`), a path segment, a struct-field label, a string, a comment, and the code after a later `let gross` no longer block a safe duplicate. That `let`'s initializer and the body of an `if let` still count.
 - **Symbol Search Skips Virtual-Document Hits Instead of Failing** (`crates/prod-code-mcp`, #1437):
   A workspace-symbol hit in a valid URI of another scheme, such as a `jar:` class inside an archive, is skipped, and the file hits after it are still found. Before, an exact-name hit like that made the whole search fail as a malformed answer. Text that is not a URI at all still fails.
 - **Compiler-Validation Isolation Test Checks the Gateway's Copy, Not Only the Client's** (`crates/prod-code-gateway`, test, #1435):
