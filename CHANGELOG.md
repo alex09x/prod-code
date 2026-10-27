@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Failing unittest, Jest and Vitest Tests Find Their Suspects** (`crates/prod-code-mcp`, #1472):
+  A failure dossier matches a failing test to the changed functions that reach it, by the test's name. The name was normalized only by `::`, the last `.` and a trailing `()`. unittest's `test_add (mod.C.test_add)` became `test_add)`, and Vitest's `src/math.test.ts > doubles` became `ts > doubles`, so neither matched the analyzer's `test_add` or `doubles` and no suspect was found. The runner decoration is now dropped first: unittest's parenthesized id (also the older `(mod.C)` form), and the suite path that Vitest and Bun write with ` > ` and Jest with ` › `.
 - **Every Shadow Hypothesis Gets a Directory of Its Own** (`crates/prod-code-gateway`, #1466):
   An overlay hypothesis's directory name keeps its name's first 48 characters with punctuation folded to `_`, plus a nonce, and every hypothesis of a request shared one millisecond nonce. `fix/a` and `fix:a`, or two names that share their first 48 characters, therefore staged into the same directory. Each hypothesis now gets a nonce of its own (the time above a process-wide count), and its directory is taken exclusively. If it is already there, the hypothesis fails without staging into it or removing it. Not covered here: migrating directories that gateways before the hypothesis prefix left in kept shadow roots.
 - **In-Place Shadow Runs Keep Hard Links and Report Directories They Leave Behind** (`crates/prod-code-gateway`, #1467):
