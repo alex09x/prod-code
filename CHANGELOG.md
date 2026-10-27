@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Loop-to-Iterator Keeps Rust's `for` Semantics and Binds Swift's Copied Element** (`crates/prod-code-mcp`, #1460, #1461):
+  - Rust: a source whose type is not a known standard collection is iterated with `IntoIterator::into_iter(source)`, which is what the `for` loop called. Before, `source.into_iter()` could pick an inherent `into_iter` of a custom type with other items.
+  - Rust: a vector started with `Vec::with_capacity(…)` is refused. `collect()` would neither call the initializer nor ask for that capacity.
+  - Swift: a loop that appends every element unchanged becomes `Array(source)`. Before, it became `source.map { p }`, with `p` bound by nothing.
 - **`prod-code safe-delete` Applies the Edit in the Checkout That Holds the File** (`crates/prod-code-client`, #1455):
   A safe delete named by an absolute path in another checkout ran against the checkout of the current directory, so the edit the analyzer returned for the other checkout was refused at that boundary. The command now uses the checkout that holds the file, and falls back to the current directory's only when the file is in none. Edits outside the chosen checkout are still refused.
 - **Search Returns as Many Hits as Asked, Up to 500** (`crates/prod-code-gateway`, #1458):
