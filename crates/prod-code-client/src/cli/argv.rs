@@ -48,6 +48,25 @@ pub fn normalize_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
     args
 }
 
+/// The parsed command line, and whether `-r`/`--remote` was given on it, before or after the
+/// subcommand. Clap says where the value came from, so a `-r` inside a trailing command, as
+/// in `prod-code exec -- grep -r x .`, does not pin the client to its seed (#1454).
+pub fn parse(args: impl IntoIterator<Item = String>) -> (super::Cli, bool) {
+    use clap::{CommandFactory, FromArgMatches};
+    let mut matches = super::Cli::command().get_matches_from(normalize_args(args));
+    let pinned = remote_given(&matches);
+    let cli = super::Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|e| e.exit());
+    (cli, pinned)
+}
+
+/// Whether the global `remote` option was typed at this level or a subcommand below it.
+fn remote_given(matches: &clap::ArgMatches) -> bool {
+    matches.value_source("remote") == Some(clap::parser::ValueSource::CommandLine)
+        || matches
+            .subcommand()
+            .is_some_and(|(_, sub)| remote_given(sub))
+}
+
 /// The index of the subcommand: the first argument after the program name that is neither an
 /// option nor the value of the global `-r`/`--remote` option.
 fn command_index(args: &[String]) -> Option<usize> {
@@ -118,6 +137,48 @@ mod tests {
                         assert_eq!(symbol, ["f"]);
                     }
                     other => panic!("not a def: {other:?}"),
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Only a `-r`/`--remote` of prod-code's own pins the client; one inside the trailing
+    /// command of `exec` does not (#1454).
+    #[test]
+    fn only_prod_codes_own_remote_option_pins_the_client() {
+        let cases: Vec<(Vec<&str>, bool)> = vec![
+            (
+                vec!["prod-code", "exec", "--", "grep", "-r", "x", "."],
+                false,
+            ),
+            (
+                vec!["prod-code", "exec", "--", "tool", "--remote", "h:2"],
+                false,
+            ),
+            (
+                vec!["prod-code", "exec", "--", "tool", "--remote=h:2"],
+                false,
+            ),
+            (vec!["prod-code", "-r", "h:1", "exec", "--", "ls"], true),
+            (vec!["prod-code", "--remote=h:1", "exec", "--", "ls"], true),
+            (
+                vec!["prod-code", "exec", "-r", "h:1", "--", "grep", "-r", "x"],
+                true,
+            ),
+            (vec!["prod-code", "status"], false),
+        ];
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                for (args, pinned) in cases {
+                    let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                    let (cli, got) = super::parse(owned);
+                    assert_eq!(got, pinned, "{args:?}");
+                    if pinned {
+                        assert_eq!(cli.remote, "h:1", "{args:?}");
+                    }
                 }
             })
             .unwrap()
