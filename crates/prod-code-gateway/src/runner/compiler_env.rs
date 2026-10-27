@@ -139,6 +139,14 @@ pub fn polyglot_compiler_cache_env(
             "CARGO_TARGET_DIR".to_string(),
             target.to_string_lossy().into_owned(),
         ));
+    } else if prod_code_engine_rust::target_dir::shared_target_dir(workspace).is_some() {
+        // An inherited `CARGO_TARGET_DIR` or an absolute `build.target-dir` would build every
+        // worktree's copy into one directory; this copy builds into its own (#1446). A request's
+        // own `CARGO_TARGET_DIR` is applied after this and still wins.
+        env.push((
+            "CARGO_TARGET_DIR".to_string(),
+            workspace.join("target").to_string_lossy().into_owned(),
+        ));
     }
     if let Some(home) = std::env::var_os("HOME") {
         let home_path = PathBuf::from(home);
