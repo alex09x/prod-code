@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Shadow Run's Environment Reaches Only the Command, After the Capability Drop** (`crates/prod-code-gateway`, #1468):
+  An overlay hypothesis's requested environment was set on `unshare`, so the namespace shell and `setpriv` started with it while they still held the namespace's capabilities. A `PATH` entry or a loader variable such as `LD_PRELOAD` could run code before the drop: a `mount` found through the request's `PATH` ran with `CapEff: 000001ffffffffff`. The bootstrap now keeps the gateway's environment, and `setpriv` starts `env NAME=VALUE… COMMAND` once the capabilities are gone. A command whose name contains `=` is refused when variables are set, because `env` would read it as one.
 - **A Public Swift Parameter Object Can Be Constructed From Another Module** (`crates/prod-code-mcp`, #1511):
   Bundling the parameters of a `public` Swift function made a `public struct` with internal fields and no initializer of its own. Swift's memberwise initializer is internal, so a client in another module could not build the new argument. The struct now has `public` fields and a `public init`, with the same defaults. An internal struct is unchanged.
 - **Parameter Objects Are Not Made Where They Would Change Writes or `eval`** (`crates/prod-code-mcp`, #1509, #1510):

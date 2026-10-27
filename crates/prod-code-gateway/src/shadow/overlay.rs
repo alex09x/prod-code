@@ -90,15 +90,19 @@ pub async fn run_overlay(
     tokio::task::spawn_blocking(ensure_sccache_server)
         .await
         .ok();
+    let argv = match command_after_drop(&job.env, &job.argv) {
+        Ok(argv) => argv,
+        Err(why) => return failed(&job.name, why),
+    };
     let mut cmd = tokio::process::Command::new("unshare");
     cmd.args(["-Urm", "--propagation", "private", "sh"])
         .arg(&script)
-        .args(&job.argv)
+        .args(&argv)
         // Ensure sccache compiles in the client process inside the mount namespace (#426);
         // a request may override it, and `check_isolation_conflicts` has judged the result.
         .env("SCCACHE_CLIENT_SIDE", "1")
-        .envs(job.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        // Set after the request's env: the run script's own variables are not its to replace.
+        // The request's env is not here: `unshare`, the run script and `setpriv` keep the
+        // gateway's, and `command_after_drop` gives it to the command alone (#1468).
         .env("SHADOW_LOWER", &job.workspace)
         .env("SHADOW_UPPER", &upper)
         .env("SHADOW_WORK", &work)
@@ -148,6 +152,38 @@ pub async fn run_overlay(
         }
     }
     result
+}
+
+/// The argv `setpriv` runs once it has dropped the capabilities: the request's command, behind
+/// `env NAME=VALUE…` when the request sets variables. Given to `unshare` instead, a loader
+/// variable (`LD_PRELOAD`) or `PATH` would act on the shell and `setpriv` while they still
+/// hold the namespace's capabilities (#1468).
+pub(crate) fn command_after_drop(
+    env: &[(String, String)],
+    argv: &[String],
+) -> Result<Vec<String>, String> {
+    // Without a command, `env` would print the variables and succeed.
+    if env.is_empty() || argv.is_empty() {
+        return Ok(argv.to_vec());
+    }
+    if let Some((name, _)) = env
+        .iter()
+        .find(|(name, _)| name.is_empty() || name.contains(['=', '\0']))
+    {
+        return Err(format!("invalid environment variable name {name:?}"));
+    }
+    // `env` takes every leading `NAME=VALUE` as a variable, so a command spelled like one would
+    // be set instead of run.
+    if argv.first().is_some_and(|program| program.contains('=')) {
+        return Err(format!(
+            "the command {:?} has an `=` in its name; run it by a path without one",
+            argv[0]
+        ));
+    }
+    let mut out = vec!["env".to_string(), "--".to_string()];
+    out.extend(env.iter().map(|(name, value)| format!("{name}={value}")));
+    out.extend(argv.iter().cloned());
+    Ok(out)
 }
 
 /// Whether a hypothesis ran and left nothing to report: exit 0, in time, and (in place) the
