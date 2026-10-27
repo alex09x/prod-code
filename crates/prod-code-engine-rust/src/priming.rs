@@ -22,14 +22,30 @@ pub struct PrimingJob {
     /// The files whose full diagnostics are computed after the inference, each on its own
     /// snapshot: rust-analyzer caches them, and a validation asks for exactly these.
     pub(crate) files: Vec<(Analysis, FileId)>,
+    /// The engine and database revision the snapshots were taken from, for the log: a file
+    /// id alone is ambiguous across engines (#1499).
+    pub(crate) label: &'static str,
+    pub(crate) changes: u64,
 }
 
 impl PrimingJob {
     pub(crate) fn new(
         shares: Vec<(Analysis, Vec<FileRange>)>,
         files: Vec<(Analysis, FileId)>,
+        label: &'static str,
+        changes: u64,
     ) -> Self {
-        Self { shares, files }
+        Self {
+            shares,
+            files,
+            label,
+            changes,
+        }
+    }
+
+    /// The engine label and database change count the job was made at.
+    pub fn identity(&self) -> (&'static str, u64) {
+        (self.label, self.changes)
     }
 
     /// How many threads the job runs on (0 when there is nothing to infer).
@@ -46,6 +62,7 @@ impl PrimingJob {
     /// would block the next write.
     pub fn run(self) -> usize {
         let files = self.files;
+        let (label, changes) = (self.label, self.changes);
         let workers: Vec<_> = self
             .shares
             .into_iter()
@@ -86,6 +103,8 @@ impl PrimingJob {
                         file_id,
                     );
                     tracing::debug!(
+                        engine = label,
+                        changes,
                         ?file_id,
                         done = outcome.is_ok(),
                         ms = started.elapsed().as_millis() as u64,

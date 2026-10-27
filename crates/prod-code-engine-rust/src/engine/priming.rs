@@ -114,6 +114,8 @@ impl RustEngine {
                 .into_iter()
                 .map(|file_id| (self.host.analysis(), file_id))
                 .collect(),
+            self.label,
+            self.changes,
         )
     }
 }

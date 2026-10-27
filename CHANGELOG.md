@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Background Priming Logs Name Their Engine and Revision** (`crates/prod-code-engine-rust`, #1499):
+  The diagnostics warm-up of a priming job logged only a file id, done and milliseconds, and file ids repeat across engines. The job now records the engine label and database change count at the moment its snapshots are taken, and its log line carries both, as ordinary snapshot diagnostics already did.
 - **A Refactoring Preview Is Diffed Against the File as It Is** (`crates/prod-code-mcp`, #1470):
   After an edit was applied, a later dry run on the unchanged result, such as a signature change, an inversion or a move, was diffed against the text from before that earlier edit, so its diff and counts included changes already made. Only the report of an applied edit now shows that edit's old text, however often it is rendered. A preview is diffed against the file on disk.
 - **Checks Refuse a `--path` Outside the Checkout, and `validate --compile` Checks the File's Own Checkout** (`crates/prod-code-client`, #1478):
