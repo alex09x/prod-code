@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Symlinked External Checkouts Are Asked by Their Real Paths** (`crates/prod-code-mcp`, #1423):
+  A query about a file of another checkout reached through a symlink alias now opens and asks about the document by its real path. Every URI of the alias in the request becomes the real one. Before, the session opened on that checkout's real root, but `didOpen` and the request kept the alias URI, which the node cannot translate into its copy of the checkout, so the server lost the project context.
 - **Symbol Search Retries an Empty Answer Right After Synced Changes** (`crates/prod-code-mcp`, #1422):
   A pooled session now records when a refresh last synced changed files. Symbol search counts its 30-second indexing grace from that moment or from the engine load, whichever is later. Before, a session whose non-gated engine was loaded more than 30 s earlier never asked again. A function in a file synced a moment before was reported as `no symbol named fresh` while the server was still indexing it.
 - **Unindexed Declarations Are Reported Beside Fuzzy Matches, Not From Comments** (`crates/prod-code-mcp`, #1421):

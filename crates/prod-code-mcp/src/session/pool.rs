@@ -58,6 +58,46 @@ pub(crate) fn pool_key(remote: SocketAddr, root: &Path, file: &Path) -> (PathBuf
     (root, key)
 }
 
+/// `file` and `params` with the file's real path when only that path is inside `root`, the
+/// checkout's real root: every URI of the alias in `params` becomes the real one. A path already
+/// under `root`, or one only the node has, is left as it is.
+fn real_request(
+    root: &Path,
+    file: &Path,
+    mut params: serde_json::Value,
+) -> (PathBuf, serde_json::Value) {
+    let Some(real) = std::fs::canonicalize(file)
+        .ok()
+        .filter(|real| !file.starts_with(root) && real.starts_with(root) && real != file)
+    else {
+        return (file.to_path_buf(), params);
+    };
+    if let (Ok(alias), Ok(actual)) = (
+        url::Url::from_file_path(file),
+        url::Url::from_file_path(&real),
+    ) {
+        replace_string(&mut params, alias.as_str(), actual.as_str());
+    }
+    (real, params)
+}
+
+fn replace_string(value: &mut serde_json::Value, from: &str, to: &str) {
+    match value {
+        serde_json::Value::String(s) if s == from => *s = to.to_string(),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                replace_string(item, from, to);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                replace_string(item, from, to);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// [`LspSession::engine_age`] of the pooled session that answers about `file` in the checkout
 /// at `root`; `None` when there is none yet or its gateway does not say (#381).
 pub async fn pooled_engine_age(
@@ -144,6 +184,10 @@ pub(crate) async fn pooled_query_with_budget(
 ) -> Result<serde_json::Value> {
     let deadline = tokio::time::Instant::now() + budget;
     let (root, key) = pool_key(remote, root, file);
+    // A file reached through a symlink alias of the checkout is asked about by its real path,
+    // in the request too: the node translates paths under `root`, never under the alias (#1423).
+    let (file, params) = real_request(&root, file, params);
+    let file = file.as_path();
     let slot = QueryLease::new(session_slot(&key).await);
     let mut stored = tokio::time::timeout_at(deadline, slot.lock())
         .await
