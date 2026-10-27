@@ -270,3 +270,41 @@ fn the_new_type_goes_above_the_outermost_declaration_that_is_not_a_namespace() {
     assert_eq!(outermost_container(symbols, 7), Some(7));
     assert_eq!(outermost_container(symbols, 2), None);
 }
+
+/// #1513: each file is compiled under its own entry's standard, the last `-std` given is the one
+/// that counts, and a header that no entry names gets the oldest standard of its possible
+/// translation units.
+#[test]
+fn the_cpp_standard_is_each_file_own_and_its_last_flag() {
+    use super::super::cpp_std::{cpp_standard, std_in_database};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let database = format!(
+        r#"[
+  {{ "directory": "{dir}", "file": "a.cpp", "command": "c++ -std=c++20 -c a.cpp" }},
+  {{ "directory": "{dir}", "file": "{dir}/b.cpp", "command": "c++ -std=c++17 -pedantic-errors -c b.cpp" }},
+  {{ "directory": "{dir}", "file": "c.cpp", "arguments": ["c++", "-std=c++20", "-std=c++17", "-c", "c.cpp"] }}
+]"#,
+        dir = root.display()
+    );
+    std::fs::write(root.join("compile_commands.json"), &database).unwrap();
+    assert_eq!(cpp_standard(root, &root.join("a.cpp")), Some(2020));
+    assert_eq!(cpp_standard(root, &root.join("b.cpp")), Some(2017));
+    assert_eq!(
+        cpp_standard(root, &root.join("c.cpp")),
+        Some(2017),
+        "the last -std wins"
+    );
+    assert_eq!(
+        cpp_standard(root, &root.join("shapes.h")),
+        Some(2017),
+        "a header gets the oldest"
+    );
+    assert_eq!(std_in_flags("-std=c++17 -std=gnu++2a"), Some(2020));
+    // An entry without a standard is the compiler's default.
+    let only = format!(
+        r#"[{{ "directory": "{}", "file": "d.cpp", "command": "c++ -c d.cpp" }}]"#,
+        root.display()
+    );
+    assert_eq!(std_in_database(&only, &root.join("d.cpp")), Some(2017));
+}

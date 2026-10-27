@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **C++ Parameter Objects Use Each Caller's Own Standard for Their Literals** (`crates/prod-code-mcp`, #1513):
+  `code_introduce_parameter_object` writes a C++ call's bundled arguments as `{.a = x, .b = y}`, C++20's designated initialisers, or as `{x, y}` before C++20. It took the standard from the first `-std` anywhere in `compile_commands.json`, and used that one standard for every caller. So a function defined in `b.cpp`, built with `-std=c++17 -pedantic-errors`, got `{.field = value}` because `a.cpp` came first with `-std=c++20`. A command with `-std=c++20 -std=c++17` also counted as C++20. Each caller file now gets its own compilation database entry, judged by the last `-std` it gives, the one the compiler obeys. An entry without one counts as C++17. A header no entry names gets the oldest standard of all entries.
 - **A Gateway Stopped by SIGTERM Lets Its Open Sessions Finish and Writes Its Queued Telemetry** (`crates/prod-code-gateway`, #1486):
   On SIGTERM or SIGINT, the gateway's accept loop returned at once. Its client sessions and its telemetry writer were detached tasks, and `main` drops the runtime when the gateway returns. A request in flight was therefore cut where it stood, and telemetry still queued was lost. Now the gateway stops accepting, gives its open sessions up to 10 seconds to finish, and cuts the ones still open after that. It then closes the telemetry queue and waits up to 5 seconds while what is queued is written. A session is still answered during the grace period, and a new connection is refused.
 - **Each Worktree's Copy Builds Into Its Own Cargo Target, Even When a Shared One Is Configured** (`crates/prod-code-engine-rust`, `crates/prod-code-gateway`, #1446):
