@@ -336,7 +336,11 @@ pub async fn extract(
         Vec::new()
     } else {
         let checked: Vec<PathBuf> = rewritten.keys().cloned().collect();
-        crate::signature::unreported_callers(root, file, &bare, &checked)
+        let (files, more) =
+            crate::signature::unreported_callers_counted(root, file, &bare, &checked);
+        // Callers left out of the check are named, so the write is not taken for complete (#1505).
+        unmatched.extend(crate::signature::unreported_note(&bare, more));
+        files
     };
     let reports = crate::diagnostics::validate_texts(remote, root, &to_check, &unreported).await?;
     let diagnostics: Vec<String> = reports

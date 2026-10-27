@@ -278,7 +278,9 @@ pub(crate) async fn reorder_or_remove_parameters(
         .cloned()
         .collect();
     let checked: Vec<PathBuf> = originals.keys().cloned().collect();
-    let unreported = crate::signature::unreported_callers(root, file, &decl.name, &checked);
+    let (unreported, more) =
+        crate::signature::unreported_callers_counted(root, file, &decl.name, &checked);
+    unmatched.extend(crate::signature::unreported_note(&decl.name, more));
     // Compiling such a caller with the change does not show its arguments were permuted.
     unmatched.extend(unreported_calls(root, file, &text, &decl, &unreported));
     also.extend(unreported);

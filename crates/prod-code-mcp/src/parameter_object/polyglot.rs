@@ -189,7 +189,7 @@ pub(crate) async fn introduce_in(
     .await?;
 
     let mut edits = callers.edits;
-    let unmatched = callers.unmatched;
+    let mut unmatched = callers.unmatched;
     let mut imports = Vec::new();
     let call_sites = callers.call_sites;
     let consumed = callers.consumed;
@@ -306,7 +306,9 @@ pub(crate) async fn introduce_in(
     // A caller the analyzer did not report was not rewritten; checked with the rest, it shows
     // up as an error instead of breaking unseen (#294).
     let checked: Vec<PathBuf> = rewritten.keys().cloned().collect();
-    let unreported = crate::signature::unreported_callers(root, file, &callee, &checked);
+    let (unreported, more) =
+        crate::signature::unreported_callers_counted(root, file, &callee, &checked);
+    unmatched.extend(crate::signature::unreported_note(&callee, more));
     let (diagnostics, applied) = check_and_apply(
         remote,
         root,
