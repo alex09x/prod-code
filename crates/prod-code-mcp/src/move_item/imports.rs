@@ -280,6 +280,37 @@ pub(crate) fn has_use_super_glob(text: &str) -> bool {
     })
 }
 
+/// Whether `text` declares an item called `name` itself: an import of it there would name it
+/// twice (E0255), as moving a function next to the helper it calls did (#1502).
+pub(crate) fn defines(text: &str, name: &str) -> bool {
+    const KINDS: &[&str] = &[
+        "fn",
+        "struct",
+        "enum",
+        "trait",
+        "type",
+        "const",
+        "static",
+        "mod",
+        "union",
+        "macro_rules!",
+    ];
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.lines().any(|line| {
+        let mut previous: Option<&str> = None;
+        for word in line.split_whitespace() {
+            if previous.is_some_and(|p| KINDS.contains(&p)) {
+                let declared: String = word.chars().take_while(|c| is_ident(*c)).collect();
+                if declared == name {
+                    return true;
+                }
+            }
+            previous = Some(word);
+        }
+        false
+    })
+}
+
 /// The imports the moved item takes with it.
 ///
 /// An item does not carry its old module's whole header, only the statements that bring in a
@@ -297,7 +328,9 @@ pub fn carry_imports(source_text: &str, item: &str, target_text: &str) -> (Strin
             .collect();
         let needed: Vec<String> = leaf_names(stmt)
             .into_iter()
-            .filter(|leaf| mentions(item, leaf) && !held.contains(leaf))
+            .filter(|leaf| {
+                mentions(item, leaf) && !held.contains(leaf) && !defines(target_text, leaf)
+            })
             .collect();
         if needed.is_empty() {
             continue;

@@ -337,4 +337,23 @@ mod tests {
             "use super::*;\n\n#[test]\nfn ema_returns_seven() {\n    assert_eq!(ema(), 7);\n}\n"
         );
     }
+
+    /// #1502: an import of a name the target module defines itself is not carried there; it
+    /// would name the item twice (E0255).
+    #[test]
+    fn an_import_of_a_name_the_target_defines_is_not_carried() {
+        let source = "use crate::codemod::boundaries::opens_turbofish;\n\nfn ends_receiver(s: &str) -> bool {\n    opens_turbofish(s)\n}\n";
+        let item = "fn ends_receiver(s: &str) -> bool {\n    opens_turbofish(s)\n}\n";
+        let target = "//! Boundaries.\n\npub(crate) fn opens_turbofish(s: &str) -> bool {\n    s.starts_with(\"::<\")\n}\n";
+        let (out, notes) = carry_imports(source, item, target);
+        assert_eq!(out, target, "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+        // Into a module that does not define it, the import is still carried.
+        let (out, notes) = carry_imports(source, item, "//! Empty.\n");
+        assert!(
+            out.contains("use crate::codemod::boundaries::opens_turbofish;"),
+            "{out}"
+        );
+        assert_eq!(notes.len(), 1, "{notes:?}");
+    }
 }
