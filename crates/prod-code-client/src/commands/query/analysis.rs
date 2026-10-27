@@ -36,7 +36,9 @@ pub async fn run_impact(
             started.elapsed().as_secs_f64()
         );
     }
-    let (command, why) = if ci {
+    // `--run` and `--ci` run the same thing: the selection only when it can be trusted, the
+    // whole suite otherwise (#1471).
+    let (command, why) = if ci || run {
         let decision = report.ci_decision();
         let command = match decision.run {
             prod_code_mcp::impact::CiRun::WholeSuite => Some(
@@ -48,7 +50,7 @@ pub async fn run_impact(
                 )
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "impact --ci has to run {}, but there is no test command for {}: {e:#}",
+                        "impact has to run {}, but there is no test command for {}: {e:#}",
                         decision.why,
                         report.language
                     )
@@ -59,8 +61,11 @@ pub async fn run_impact(
         };
         (command, decision.why)
     } else {
-        (report.test_command.clone(), String::new())
+        (None, String::new())
     };
+    if run && !ci {
+        println!("[prod-code impact --run] {why}");
+    }
     if ci {
         println!("[prod-code impact --ci] {why}");
         if let Ok(path) = env::var("GITHUB_STEP_SUMMARY") {

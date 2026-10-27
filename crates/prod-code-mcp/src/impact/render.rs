@@ -37,9 +37,12 @@ impl ImpactReport {
                 self.unattributed_files.join(", ")
             ));
         }
+        // Only Rust tests become `cargo test` filters; another language's tests in a Rust-root
+        // repository run under their own command (#1471).
         let rust_filter_count = self
             .tests
             .iter()
+            .filter(|test| test.file.ends_with(".rs"))
             .map(|test| test.name.rsplit("::").next().unwrap_or(&test.name))
             .collect::<BTreeSet<_>>()
             .len();
@@ -263,8 +266,12 @@ impl ImpactReport {
                 self.unattributed_files.join(", ")
             ));
         }
-        if let Some(cmd) = &self.test_command {
-            out.push_str(&format!("run: {}\n", shell_words(cmd)));
+        // An untrusted selection is not offered as the command: the tests it found are listed
+        // above, and what `--run` runs is the whole suite (#1471).
+        match (self.full_suite_reason(), &self.test_command) {
+            (Some(reason), _) => out.push_str(&format!("run: the whole suite ({reason})\n")),
+            (None, Some(cmd)) => out.push_str(&format!("run: {}\n", shell_words(cmd))),
+            (None, None) => {}
         }
         out
     }

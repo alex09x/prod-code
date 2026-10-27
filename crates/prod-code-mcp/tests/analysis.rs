@@ -390,8 +390,17 @@ async fn impact_report_render_lists_every_section_and_quotes_the_run_command() {
     assert!(text.contains("it works  src/lib.rs:12:8"));
     assert!(text.contains("changes outside functions"));
     assert!(text.contains("Cargo.toml"));
-    // The test name has a space, so the run command quotes it.
-    assert!(text.contains("run: cargo test 'it works'"));
+    // A change outside functions makes the selection untrusted: the whole suite runs (#1471).
+    assert!(
+        text.contains("run: the whole suite (lines changed outside any function in Cargo.toml)"),
+        "{text}"
+    );
+    // Trusted, the selection runs; the test name has a space, so the run command quotes it.
+    let report = ImpactReport {
+        unattributed_files: vec![],
+        ..report
+    };
+    assert!(report.render().contains("run: cargo test 'it works'"));
 }
 
 /// When a function changed but nothing reaches it through the call hierarchy, the report says
