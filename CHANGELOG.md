@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **The C/C++ Compiler Cache Keeps Debug Builds' Directories and Runs Without the Command's `PATH`** (`crates/prod-code-gateway`, #1482):
+  The gateway gives commands ccache settings that share one cache across a project's worktrees (#243). It also set `CCACHE_NOHASHDIR=1`, which drops the working directory from the hash of a compile with debug info. Such an object records that directory, so a debug build could be served another worktree's object, and a debugger would open that worktree's sources. ccache's default is kept now. Builds without `-g` share the cache as before, and a debug build that passes `-fdebug-prefix-map` is shared too, as ccache documents. CMake's launcher was also set to the bare name `ccache`, found in the gateway's `PATH`, which a command's own `PATH` need not contain. It is now set to the path where the gateway found it (`/usr/bin/ccache` on a Linux build node).
 - **Failing unittest, Jest and Vitest Tests Find Their Suspects** (`crates/prod-code-mcp`, #1472):
   A failure dossier matches a failing test to the changed functions that reach it, by the test's name. The name was normalized only by `::`, the last `.` and a trailing `()`. unittest's `test_add (mod.C.test_add)` became `test_add)`, and Vitest's `src/math.test.ts > doubles` became `ts > doubles`, so neither matched the analyzer's `test_add` or `doubles` and no suspect was found. The runner decoration is now dropped first: unittest's parenthesized id (also the older `(mod.C)` form), and the suite path that Vitest and Bun write with ` > ` and Jest with ` › `.
 - **Every Shadow Hypothesis Gets a Directory of Its Own** (`crates/prod-code-gateway`, #1466):
