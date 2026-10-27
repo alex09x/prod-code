@@ -81,10 +81,27 @@ pub async fn handle_handshake(
 
     // An editor gets the language server it would run locally, a process of its own
     // on this node (#332); without one here, the shared engines answer it.
+    // Its server is admitted like an engine (#1528): without room for one, the shared engines
+    // answer it, with their own capacity handling.
     if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR)
         && editor_proxy::enabled()
         && let Some(command) = editor_proxy::server_command_for_workspace(engine, &server_workspace)
+        && let Some(reservation) = state
+            .workspace_manager
+            .admission()
+            .try_reserve(engine)
+            .inspect_err(|shortfall| {
+                tracing::warn!(
+                    session_id,
+                    engine,
+                    needed_mb = shortfall.needed / (1024 * 1024),
+                    "no memory for an editor's own server; the shared engines answer it"
+                )
+            })
+            .ok()
     {
+        // Held until the server's memory shows in what the host reports.
+        reservation.release_after_settling();
         framed
             .send(WireMessage::HandshakeResponse(HandshakeResponse {
                 protocol_version,
