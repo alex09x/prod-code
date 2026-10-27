@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Public Swift Parameter Object Can Be Constructed From Another Module** (`crates/prod-code-mcp`, #1511):
+  Bundling the parameters of a `public` Swift function made a `public struct` with internal fields and no initializer of its own. Swift's memberwise initializer is internal, so a client in another module could not build the new argument. The struct now has `public` fields and a `public init`, with the same defaults. An internal struct is unchanged.
 - **Parameter Objects Are Not Made Where They Would Change Writes or `eval`** (`crates/prod-code-mcp`, #1509, #1510):
   - Python: a bundled parameter assigned in the body (`width = width + 1`, `width += 1`) was taken for a keyword argument and left as a local, while its reads became `options.width`, which changed the result. Only a name after `(` or `,` is a keyword argument now, and a function that assigns a parameter it would bundle is refused: the write would otherwise go to the caller's object.
   - JavaScript: a function that calls `eval(…)` directly is refused, since the string can read the parameters by name and would find them gone. An indirect `obj.eval(…)` or `(0, eval)(…)`, and `eval` inside a string, still allow the bundling.

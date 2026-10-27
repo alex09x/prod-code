@@ -205,7 +205,24 @@ fn c_cpp_and_swift_declare_a_struct_their_own_way() {
             "    ",
             true
         ),
-        "/// The parameters `draw` takes together.\npublic struct Point {\n    let x: Int\n    var y: Int = 0\n}\n"
+        // Public, with a public initialiser keeping the default: Swift's memberwise one is
+        // internal, so another module could not construct it (#1511).
+        "/// The parameters `draw` takes together.\npublic struct Point {\n    public let x: Int\n    public var y: Int = 0\n\n    public init(x: Int, y: Int = 0) {\n        self.x = x\n        self.y = y\n    }\n}\n"
+    );
+    assert_eq!(
+        type_text(
+            Language::Swift,
+            "Point",
+            "draw",
+            &[
+                field("x", Some("Int"), None),
+                field("y", Some("Int"), Some("0"))
+            ],
+            "    ",
+            false
+        ),
+        "/// The parameters `draw` takes together.\nstruct Point {\n    let x: Int\n    var y: Int = 0\n}\n",
+        "an internal type keeps the memberwise initialiser"
     );
 }
 
