@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Moving a Rust Item Does Not Carry an Import of a Name the Target Defines** (`crates/prod-code-mcp`, #1502):
+  `code_move` carries the imports a moved item spells. When an earlier move had put a helper into the target, and the old module had gained `use crate::…::target::helper;` for it, moving a function that calls the helper carried that line into the target itself. rustc rejects the result with E0255 (the name is defined twice). rust-analyzer does not report that error, so the tool said "the analyzer accepts the result". An import of a name the target module declares at the top level (`fn`, `struct`, `enum`, `trait`, `type`, `const`, `static`, `mod`, `union`, `macro_rules!`) is no longer carried.
 - **An Active Workspace on a Mac Is Not Placed Elsewhere Under Its Sessions** (`crates/prod-code-gateway`, #1494):
   Placement prefers any other node to a developer's Mac for work that does not need macOS (#308). The node that already holds a workspace was looked up with the same filter. A Mac holding a workspace with live sessions was therefore invisible as its holder, the workspace was placed on Linux while its sessions went on there, and the session-aware rule for when a workspace may move was skipped. The holder is now found among every node that serves the workspace. A Mac holder keeps an active workspace unless the usual reasons apply: memory or disk pressure, congestion, or a requested rebalance. It gives up an idle one to a node that serves it without macOS, as before.
 - **A Rust Parameter Is Selected by Its Name, Not by a Type Spelled Like It** (`crates/prod-code-mcp`, #1503):
