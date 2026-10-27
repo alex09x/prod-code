@@ -184,7 +184,66 @@ async fn fallback_auto_replies_do_not_cross_the_session_boundary() {
         .expect("fallback exchange finishes within its watchdog");
 }
 
-async fn exchange(gateway: &Gateway, client_root: &tempfile::TempDir, log: &Path) {
+/// The Go fallback answers a diagnostic pull the way the managed engine does: gopls's empty
+/// `kind` on a complete report becomes `full`; an incomplete report, an error, an unchanged
+/// report and another method's look-alike reach the client as gopls sent them (#1448).
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_go_diagnostic_reports_are_normalized_like_the_managed_engine() {
+    let log_dir = tempfile::tempdir().expect("fake log directory");
+    let gateway = Gateway::start(&log_dir.path().join("gopls.jsonl"));
+    let client_root = tempfile::tempdir().expect("client workspace");
+    std::fs::write(
+        client_root.path().join("go.mod"),
+        "module example.com/fallback\n\ngo 1.22\n",
+    )
+    .expect("go module");
+    let mut framed = timeout(WATCHDOG, session(&gateway, &client_root))
+        .await
+        .expect("fallback session starts");
+    let cases = [
+        (801, "textDocument/diagnostic", "complete"),
+        (802, "textDocument/diagnostic", "no-items"),
+        (803, "textDocument/diagnostic", "error"),
+        (804, "textDocument/diagnostic", "unchanged"),
+        (805, "textDocument/hover", "complete"),
+    ];
+    for (id, method, case) in cases {
+        let request = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method,
+            "params": {"case": case}});
+        framed
+            .send(WireMessage::LspPayload(request.to_string()))
+            .await
+            .expect("request reaches fallback");
+    }
+    let mut kinds = std::collections::BTreeMap::new();
+    timeout(WATCHDOG, async {
+        while kinds.len() < cases.len() {
+            let Some(Ok(WireMessage::LspPayload(payload))) = framed.next().await else {
+                panic!("gateway closed while forwarding fallback answers");
+            };
+            let value: serde_json::Value = serde_json::from_str(&payload).expect("JSON answer");
+            if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64)
+                && (801..=805).contains(&id)
+            {
+                let kind = value.pointer("/result/kind").cloned();
+                kinds.insert(id, (kind, value.get("error").is_some()));
+            }
+        }
+    })
+    .await
+    .expect("every answer arrives");
+    let kind = |k: &str| (Some(serde_json::json!(k)), false);
+    assert_eq!(kinds[&801], kind("full"), "complete empty-kind report");
+    assert_eq!(kinds[&802], kind(""), "a report without items stays strict");
+    assert_eq!(kinds[&803], (None, true), "an error stays an error");
+    assert_eq!(kinds[&804], kind("unchanged"));
+    assert_eq!(kinds[&805], kind(""), "only diagnostic answers are touched");
+}
+
+async fn session(
+    gateway: &Gateway,
+    client_root: &tempfile::TempDir,
+) -> Framed<TcpStream, ProdCodeCodec> {
     let stream = TcpStream::connect(gateway.addr)
         .await
         .expect("gateway connection");
@@ -212,7 +271,11 @@ async fn exchange(gateway: &Gateway, client_root: &tempfile::TempDir, log: &Path
         panic!("fallback session was not initialized");
     };
     assert_eq!(response.detected_engine, "go");
+    framed
+}
 
+async fn exchange(gateway: &Gateway, client_root: &tempfile::TempDir, log: &Path) {
+    let mut framed = session(gateway, client_root).await;
     framed
         .send(WireMessage::LspPayload(
             serde_json::json!({
@@ -382,4 +445,14 @@ while True:
         write({"jsonrpc":"2.0", "id":None, "method":"client/registerCapability", "params":{}})
         write({"jsonrpc":"2.0", "id":"unknown", "method":"workspace/unknown", "params":{}})
         write({"jsonrpc":"2.0", "id":700, "result":{"from":"fake"}})
+    elif message.get("method") in ("textDocument/diagnostic", "textDocument/hover"):
+        case = message.get("params", {}).get("case")
+        if case == "error":
+            write({"jsonrpc":"2.0", "id":message["id"], "error":{"code":-32603, "message":"boom"}})
+        elif case == "unchanged":
+            write({"jsonrpc":"2.0", "id":message["id"], "result":{"kind":"unchanged", "resultId":"1"}})
+        elif case == "no-items":
+            write({"jsonrpc":"2.0", "id":message["id"], "result":{"kind":""}})
+        else:
+            write({"jsonrpc":"2.0", "id":message["id"], "result":{"kind":"", "items":[]}})
 "#;

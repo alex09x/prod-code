@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **The Go Fallback Backend Normalizes gopls Diagnostic Reports Like the Managed Engine** (`crates/prod-code-gateway`, `crates/prod-code-engine-go`, #1448):
+  gopls answers a diagnostic pull with an empty `kind` on a complete report. The managed Go engine already turned that into `full`, but when it failed to start and the gateway fell back to a plain gopls process, the answer reached the client unchanged and its strict parser rejected it. The fallback now applies the same rule, using the method of the request each answer belongs to. Only a complete `textDocument/diagnostic` report from a Go backend is touched; a report without items, an error, an unchanged report and other methods' answers pass as gopls sent them.
 - **Roadmap Marks the Client Hot-Path Milestone Partial** (`ROADMAP.md`, `ROADMAP-AUDIT.md`, documentation, #1445):
   Milestone 1.3 claimed "zero allocations on hot paths", which is not met, so it is back to `[~]`. The required item stays visible, next to what is verified: the stack-buffered frame header, and no JSON parse for editor messages that name no mirrored file (#1433). The audit row no longer says recovery needs an editor restart: in-process reconnect with LSP state replay is implemented.
 - **Rust Function Extraction No Longer Reports the Old Selection as the New Call** (`crates/prod-code-mcp`, #1441):

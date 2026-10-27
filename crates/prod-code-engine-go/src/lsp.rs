@@ -28,7 +28,8 @@ mod queries;
 /// gopls v0.23.0 sends a complete diagnostic report with an empty discriminator (#475).
 /// Canonicalize only that shape. Missing/malformed items and unchanged reports still reach the
 /// client unchanged so its strict evidence checks can reject them; errors are never hidden.
-pub(crate) fn normalize_diagnostic_response(method: &str, reply: &mut serde_json::Value) {
+/// The gateway's fallback gopls backend applies the same rule to its replies (#1448).
+pub fn normalize_diagnostic_response(method: &str, reply: &mut serde_json::Value) {
     if method == "textDocument/diagnostic"
         && reply.get("error").is_none()
         && reply["result"]["kind"].as_str() == Some("")
