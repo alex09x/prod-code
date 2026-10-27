@@ -37,7 +37,7 @@ pub struct Extracted {
     #[serde(skip)]
     pub root: PathBuf,
     pub file: String,
-    /// What the selection now reads.
+    /// What the selection now reads; empty when it could not be read off the rewrite (#1441).
     pub call: String,
     /// Parameters the new function gained for literals the duplicates differ in, `name: type`.
     pub parameters: Vec<String>,
@@ -81,12 +81,19 @@ impl Extracted {
             Some("ts" | "tsx" | "js" | "jsx") => "function",
             _ => "fn",
         };
-        let mut out = format!(
-            "`{kw} {}` extracted ({}); the selection now reads `{}`\n",
-            self.name,
-            self.file,
-            self.call.trim()
-        );
+        let mut out = if self.call.trim().is_empty() {
+            format!(
+                "`{kw} {}` extracted ({}); the new call is in the diff below\n",
+                self.name, self.file
+            )
+        } else {
+            format!(
+                "`{kw} {}` extracted ({}); the selection now reads `{}`\n",
+                self.name,
+                self.file,
+                self.call.trim()
+            )
+        };
         if !self.parameters.is_empty() {
             out.push_str(&format!(
                 "- new parameter(s) for the literals the copies differ in: {}\n",

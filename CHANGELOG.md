@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Function Extraction No Longer Reports the Old Selection as the New Call** (`crates/prod-code-mcp`, #1441):
+  When rust-analyzer's assist also changes text outside the selection, for example by making a variable `mut`, the call it put in cannot be read off the rewrite. `code_extract_function` then said that the selection "now reads" the old selected code. It now says the new call is in the diff, which still shows the extraction. Nothing else changes: the extraction still succeeds.
 - **Overlay Lifecycle Tests Run Only on Linux** (`crates/prod-code-gateway`, test, #1436):
   The three `shadow_lifecycle` tests that need overlay shadows are compiled only on Linux, the one platform that has them. On macOS they panicked with "overlay unavailable". On Linux they still fail loudly when overlays are missing. The rest of the suite still runs on macOS.
 - **Rust Function Extraction Keeps Other Files' Text and Picks Unshadowed Parameter Names** (`crates/prod-code-mcp`, #1439):
