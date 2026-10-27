@@ -189,3 +189,95 @@ async fn a_workspace_warm_on_another_node_sends_a_client_that_follows_redirects_
         assert_eq!((outcome, sent), (None, None), "{name}");
     }
 }
+
+/// #1495: a validation handshake refused for capacity is sent to a roomy peer only when the
+/// client follows redirects; an older client is refused with the reason, since it cannot read
+/// the frame. A session moved by rebalancing tells such a client where to reconnect instead.
+#[tokio::test]
+async fn validation_and_rebalance_redirects_reach_only_clients_that_follow_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(ServerState::new(dir.path().join("storage")));
+    state
+        .absorb_gossip(roomy_peer("roomy:9400", &["rust (ra_ap_ide)"], &[]))
+        .await;
+    let capacity = anyhow::anyhow!("capacity: this node has no memory for a new rust engine");
+    let (state, capacity) = (&state, &capacity);
+    let target = |req: HandshakeRequest| async move {
+        validation_redirect_target(&req, state, "rust", capacity).await
+    };
+    assert_eq!(
+        target(request(true, 0)).await.as_deref(),
+        Some("roomy:9400")
+    );
+    assert_eq!(target(request(false, 0)).await, None, "no redirect support");
+    let mut legacy = request(true, 0);
+    legacy.capabilities = None;
+    assert_eq!(target(legacy).await, None, "no capabilities at all");
+    assert_eq!(target(request(true, 2)).await, None, "out of hops");
+    let other = anyhow::anyhow!("the engine failed to load");
+    assert_eq!(
+        validation_redirect_target(&request(true, 0), state, "rust", &other).await,
+        None,
+        "not a capacity refusal"
+    );
+
+    // #1496: peers are ranked by what they would admit, not by their raw free memory. A large,
+    // nearly full host (40 of 256 GiB free: 1.6 GiB under its 85% limit) loses to a small idle
+    // one (20 of 32 GiB free: 15.2 GiB), and a cold peer needs room for the main engine too.
+    let gib = 1u64 << 30;
+    let sized = |addr: &str, available: u64, total: u64, warm: &[&str]| {
+        let mut peer = roomy_peer(addr, &["rust (ra_ap_ide)"], warm);
+        peer.status.host.memory_available_bytes = Some(available * gib);
+        peer.status.host.memory_total_bytes = Some(total * gib);
+        peer
+    };
+    for (name, peers, expected) in [
+        (
+            "admissible headroom, not free bytes",
+            vec![
+                sized("big:9400", 40, 256, &[]),
+                sized("small:9400", 20, 32, &[]),
+            ],
+            Some("small:9400"),
+        ),
+        (
+            // Warm: 5 GiB under the limit takes the 4 GiB validation engine. Cold: 7 GiB, and
+            // more free memory, cannot take it and the 4 GiB main engine both.
+            "a cold peer needs two engines' room",
+            vec![
+                sized("cold:9400", 22, 100, &[]),
+                sized("warm:9400", 20, 100, &["unit-ws"]),
+            ],
+            Some("warm:9400"),
+        ),
+        (
+            "no peer can admit it",
+            vec![sized("full:9400", 40, 256, &[])],
+            None,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(ServerState::new(dir.path().join("storage")));
+        for gossip in peers {
+            state.absorb_gossip(gossip).await;
+        }
+        let chosen = validation_redirect_target(&request(true, 0), &state, "rust", capacity).await;
+        assert_eq!(chosen.as_deref(), expected, "{name}");
+    }
+
+    let reason = Some("memory pressure".to_string());
+    assert_eq!(
+        rebalance_frame(true, "roomy:9400".to_string(), reason.clone()),
+        WireMessage::Redirect {
+            target_addr: "roomy:9400".to_string(),
+            reason: reason.clone(),
+        }
+    );
+    assert_eq!(
+        rebalance_frame(false, "roomy:9400".to_string(), reason),
+        WireMessage::Disconnect {
+            reason: "this workspace moved to roomy:9400 (memory pressure); reconnect there"
+                .to_string(),
+        }
+    );
+}

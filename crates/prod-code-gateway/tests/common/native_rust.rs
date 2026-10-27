@@ -107,6 +107,7 @@ impl Fixture {
             storage_root: root.clone(),
             metrics: Arc::clone(&self.state.metrics),
             editor: false,
+            redirects: false,
             edits: Arc::default(),
         });
         let (tx, rx) = rapidfire::mpsc::bounded(32);

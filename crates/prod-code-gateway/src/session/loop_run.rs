@@ -141,7 +141,9 @@ pub async fn run_session_loop(
                             ?reason,
                             "Session rebalanced: sending Redirect frame to active client"
                         );
-                        let _ = out_tx.send(WireMessage::Redirect { target_addr, reason }).await;
+                        let frame =
+                            super::redirect::rebalance_frame(meta.redirects, target_addr, reason);
+                        let _ = out_tx.send(frame).await;
                         break;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,

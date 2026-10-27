@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Validation Redirect Goes to a Peer That Would Admit the Engine** (`crates/prod-code-gateway`, #1496):
+  A validation session refused for capacity went to the peer with the most free memory, as long as that was at least one engine's reserve. A peer's admission counts what it holds against 85% of its total memory, though, and a large, nearly full host with more free bytes could admit less than a small idle one. Peers are now ranked by the room left under their limit after the load. A peer that does not have the workspace warm must have room for the main engine as well as the validation one.
+- **Clients That Do Not Follow Redirects Are Never Sent One** (`crates/prod-code-gateway`, #1495):
+  Two gateway paths sent a `Redirect` frame without checking that the client had said it follows redirects: a validation handshake refused for capacity, and a running session moved by rebalancing. An older client cannot decode that frame. The validation path now refuses such a client with the capacity reason, as before redirects existed. A moved session tells it `this workspace moved to <node> (<reason>); reconnect there` in a `Disconnect`. Clients that follow redirects still get them.
 - **A Timed-Out Command Reports No Resource Use Rather Than the Shim's** (`crates/prod-code-gateway`, #1483):
   When `exec` killed a command at its timeout, the exec shim died before it could reap the command and write its report. The result then carried the shim's own CPU time and memory as the command's. That usage is now left out. A command started directly (without the shim) still reports what `wait4` measured for it, and a shim that could not write its report still reports exit 74 with its error. The choice is made in one place, `exec_shim::outcome`, which both runners call.
 - **A Shadow Run's Environment Reaches Only the Command, After the Capability Drop** (`crates/prod-code-gateway`, #1468):

@@ -25,6 +25,9 @@ pub struct SessionMeta {
     /// The session is an editor's ([`prod_code_protocol::PURPOSE_EDITOR`]): the Rust engine
     /// pushes the diagnostics of every document it opens or changes.
     pub editor: bool,
+    /// The client said it follows a `Redirect` frame; one that did not is disconnected with
+    /// the new node's address when its workspace moves (#1495).
+    pub redirects: bool,
     /// Per document, how many edits the session has sent: a diagnostics pass waits out a burst
     /// of typing and runs only for the last edit of it.
     pub edits: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>>,
