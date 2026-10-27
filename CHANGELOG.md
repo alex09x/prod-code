@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **An Active Workspace on a Mac Is Not Placed Elsewhere Under Its Sessions** (`crates/prod-code-gateway`, #1494):
+  Placement prefers any other node to a developer's Mac for work that does not need macOS (#308). The node that already holds a workspace was looked up with the same filter. A Mac holding a workspace with live sessions was therefore invisible as its holder, the workspace was placed on Linux while its sessions went on there, and the session-aware rule for when a workspace may move was skipped. The holder is now found among every node that serves the workspace. A Mac holder keeps an active workspace unless the usual reasons apply: memory or disk pressure, congestion, or a requested rebalance. It gives up an idle one to a node that serves it without macOS, as before.
 - **A Rust Parameter Is Selected by Its Name, Not by a Type Spelled Like It** (`crates/prod-code-mcp`, #1503):
   `code_safe_delete` and `code_inline_parameter` decide that the cursor is on a Rust parameter with `signature::parameter_at`. It took the word under the cursor and checked only that some parameter had that name. In `type id = u32; fn f(id: id, n: u8)`, a cursor on the type `id` therefore selected the parameter `id`, and safe delete went on to remove it. The cursor must now be in a parameter's part before its top-level `:`, which is its name or the pattern that binds it. A function type's `->` is not taken for a closing bracket.
 - **The C/C++ Compiler Cache Keeps Debug Builds' Directories and Runs Without the Command's `PATH`** (`crates/prod-code-gateway`, #1482):

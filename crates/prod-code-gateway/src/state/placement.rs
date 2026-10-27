@@ -90,7 +90,11 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
             .nodes
             .iter()
             .any(|n| n.alive && capable(n) && !on_macos(n));
-    let capable = |n: &PeerInfo| capable(n) && !(other_than_macos && on_macos(n));
+    // Any node that serves the workspace, macOS included: the one that holds it is found among
+    // these, so an active Mac holder keeps it unless it may move (#1494). Only a new placement
+    // prefers another node to a Mac.
+    let serves = capable;
+    let capable = |n: &PeerInfo| serves(n) && !(other_than_macos && on_macos(n));
     // A node short of memory or disk takes no new workspace while a capable one that is not can
     // (#396): a full disk truncates the files synced to it (#385), and an engine loaded into a
     // host out of memory pushes it into swap.
@@ -111,7 +115,7 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     let holder = view.nodes.iter().find(|n| {
-        n.alive && capable(n) && n.workspaces.iter().any(|w| w.name == req.workspace_name)
+        n.alive && serves(n) && n.workspaces.iter().any(|w| w.name == req.workspace_name)
     });
     if let Some(h) = holder {
         let (idle, sessions) = h
@@ -148,6 +152,17 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
                         q.addr,
                         score(q),
                         q.status.load_per_cpu().unwrap_or(0.0)
+                    ),
+                };
+            }
+            // A Mac holding work that does not need macOS gives it up once it may move.
+            if !capable(h) {
+                return PlaceResponse {
+                    node: Some(q.addr.clone()),
+                    reason: format!(
+                        "moved from the macOS node {} ({state_str}) to {}, which serves it \
+                         without macOS",
+                        h.addr, q.addr
                     ),
                 };
             }
