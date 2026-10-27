@@ -230,7 +230,12 @@ pub fn attribute(
         let now = &new[pn..end];
         for j in nested {
             let inner = &calls[*j];
-            if inner.needs && now.contains(&old[inner.start..inner.end]) {
+            // The old text is still there when the inner call was awaited in place,
+            // `load(1)` → `load(1).await`: only an occurrence not followed by the new
+            // `.await` is the call left as it was (#1504).
+            let text = &old[inner.start..inner.end];
+            let left = now.matches(text).count() > now.matches(&format!("{text}.await")).count();
+            if inner.needs && left {
                 unmatched.push(format!(
                     "{} (a call inside another call, left as it was)",
                     inner.place
