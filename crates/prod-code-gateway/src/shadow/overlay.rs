@@ -48,6 +48,23 @@ pub async fn run_overlay(
         (None, None)
     };
     let script = dir.join("run.sh");
+    // Taken exclusively: a directory already there belongs to another hypothesis, and is
+    // neither staged into nor removed (#1466). Other failures go to the staging below, which
+    // falls back to the disk root.
+    if let Some(parent) = dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::create_dir(&dir)
+        && e.kind() == std::io::ErrorKind::AlreadyExists
+    {
+        return failed(
+            &job.name,
+            format!(
+                "cannot stage hypothesis: its directory {} is already in use",
+                dir.display()
+            ),
+        );
+    }
     let staged = (|| -> Result<()> {
         std::fs::create_dir_all(&upper)?;
         std::fs::create_dir_all(&work)?;

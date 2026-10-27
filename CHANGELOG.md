@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Every Shadow Hypothesis Gets a Directory of Its Own** (`crates/prod-code-gateway`, #1466):
+  An overlay hypothesis's directory name keeps its name's first 48 characters with punctuation folded to `_`, plus a nonce, and every hypothesis of a request shared one millisecond nonce. `fix/a` and `fix:a`, or two names that share their first 48 characters, therefore staged into the same directory. Each hypothesis now gets a nonce of its own (the time above a process-wide count), and its directory is taken exclusively. If it is already there, the hypothesis fails without staging into it or removing it. Not covered here: migrating directories that gateways before the hypothesis prefix left in kept shadow roots.
 - **In-Place Shadow Runs Keep Hard Links and Report Directories They Leave Behind** (`crates/prod-code-gateway`, #1467):
   An in-place hypothesis removes each touched file and recreates it, and does the same when it puts the file back. A file with another hard link therefore came back as a new inode with the same bytes, and the link no longer shared writes with it. Such a file is now refused before anything is changed, with a pointer to the overlay mode. Restore also only logged a failure to remove a directory the run had created, so an `EACCES` there left the directory behind while the run reported success. Now that failure is one of the restore problems. A directory the command filled with output is still kept without one.
 - **Signature Impact Reports Only Calls as Unadjusted Call Sites** (`crates/prod-code-mcp`, #1474):
