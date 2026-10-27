@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Roadmap Marks the Client Hot-Path Milestone Partial** (`ROADMAP.md`, `ROADMAP-AUDIT.md`, documentation, #1445):
+  Milestone 1.3 claimed "zero allocations on hot paths", which is not met, so it is back to `[~]`. The required item stays visible, next to what is verified: the stack-buffered frame header, and no JSON parse for editor messages that name no mirrored file (#1433). The audit row no longer says recovery needs an editor restart: in-process reconnect with LSP state replay is implemented.
 - **Rust Function Extraction No Longer Reports the Old Selection as the New Call** (`crates/prod-code-mcp`, #1441):
   When rust-analyzer's assist also changes text outside the selection, for example by making a variable `mut`, the call it put in cannot be read off the rewrite. `code_extract_function` then said that the selection "now reads" the old selected code. It now says the new call is in the diff, which still shows the extraction. Nothing else changes: the extraction still succeeds.
 - **Overlay Lifecycle Tests Run Only on Linux** (`crates/prod-code-gateway`, test, #1436):

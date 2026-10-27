@@ -52,9 +52,14 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - The editor's remote-file mirror shares the structured location traversal (#568): source,
     edit and documentation text remain unchanged, encoded paths round-trip, and URI keys in
     workspace edits are translated alongside location values.
-- [x] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
+- [~] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
   - Drop-in executable replacing language servers in IDEs (`prod-code lsp`).
-  - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths (stack-buffered header formatting and direct slice writes in `write_frame`).
+  - Stdio-to-TCP bidirectional streaming. Required and not yet met: zero allocations on hot
+    paths (#1445). Verified so far: frame headers are formatted on the stack and written with
+    the body in direct slice writes (`write_frame`), and editor messages that name no
+    mirrored file are no longer parsed into a JSON tree (#1433). Each message is still read
+    into an owned buffer and copied into a wire message, and no allocation benchmark has been
+    recorded.
   - Non-blocking watchdog (`--watchdog-secs`, `PROD_CODE_WATCHDOG_SECS`, default 30s) sending periodic idle pings over the TCP session.
   - In-process auto-reconnect logic (`--reconnect`, `PROD_CODE_RECONNECT`) with bounded backoff and LSP state replay (`initialize`, `initialized`, `workspace/didChangeConfiguration`, and active `textDocument/didOpen` buffer restoration).
   - Strict exit codes and stderr reporting (fail loudly, never exit 0 on unhandled daemon death or exhausted reconnect retries).
