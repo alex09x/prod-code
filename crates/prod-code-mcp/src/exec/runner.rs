@@ -16,7 +16,7 @@ use futures_util::SinkExt;
 use prod_code_protocol::{ExecRequest, RemoteExecRequest, RemoteExecStream, WireMessage};
 
 use super::layout::rust_formatter;
-use super::progress::{ExecMonitor, prepare};
+use super::progress::{ExecMonitor, prepare, prepare_rooted};
 use super::types::{PolyglotRemoteOutcome, RemoteOutcome};
 use super::writeback::Writeback;
 use crate::sync::{WorkspaceIdentity, workspace_identity};
@@ -33,12 +33,41 @@ pub async fn run_remote(
     env: Vec<(String, String)>,
     timeout_secs: u64,
     pull_changes: bool,
+    on_output: impl FnMut(bool, &[u8]),
+) -> Result<RemoteOutcome> {
+    run_remote_rooted(
+        remote,
+        root,
+        subdir,
+        command,
+        env,
+        timeout_secs,
+        pull_changes,
+        |_| {},
+        on_output,
+    )
+    .await
+}
+
+/// [`run_remote`], telling `on_root` where the workspace's copy lives on the node before the
+/// command's first output, so streamed paths can be made local as they arrive (#1479).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_remote_rooted(
+    remote: SocketAddr,
+    root: &Path,
+    subdir: Option<&str>,
+    command: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout_secs: u64,
+    pull_changes: bool,
+    on_root: impl FnOnce(&str),
     mut on_output: impl FnMut(bool, &[u8]),
 ) -> Result<RemoteOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
     let mut writeback = Writeback::capture(root, pull_changes, rust_formatter(&command))?;
-    let mut framed = prepare(remote, root, &identity, &mut on_output).await?;
+    let (mut framed, server_root) = prepare_rooted(remote, root, &identity, &mut on_output).await?;
+    on_root(&server_root);
     let mut monitor = ExecMonitor::new(timeout_secs);
     monitor
         .send(
