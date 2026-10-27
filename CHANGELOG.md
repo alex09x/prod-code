@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Pulling a File Takes the Node's Executable Bit Both Ways** (`crates/prod-code-mcp`, #1477):
+  A file the node reports as not executable, pulled over a local executable copy, kept its executable bits, because only `true` was applied. The executable bits are now cleared, and the other permission bits are kept. A shebang has no say, as before.
 - **The Divergent-Worktree Benchmark Checks Every Copy and Seeds From the Whole Origin Name** (`crates/prod-code-client`, test, #1522):
   - Each benchmark worker queries one copy. With fewer workers than `--worktrees` some copies were never asked, and their kind still passed on the other copies. Such a run is now refused, and the report fails for any copy that gave no successful response.
   - A copy's warm seed is taken from everything before its last `--wt-`, so an origin whose own name holds `--wt-` is no longer cut short.
