@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Java Gradle Project That Uses the Kotlin Standard Library Stays Java** (`crates/prod-code-mcp`, `cluster`, #1476):
+  The client took any `org.jetbrains.kotlin` text in a Gradle file as a Kotlin project, a `kotlin-stdlib` dependency included, and so placed and routed a Java-only project as Kotlin. It now uses the gateway's rule: Kotlin sources, or an applied Kotlin plugin in one of its spellings, outside comments.
 - **Background Priming Logs Name Their Engine and Revision** (`crates/prod-code-engine-rust`, #1499):
   The diagnostics warm-up of a priming job logged only a file id, done and milliseconds, and file ids repeat across engines. The job now records the engine label and database change count at the moment its snapshots are taken, and its log line carries both, as ordinary snapshot diagnostics already did.
 - **A Refactoring Preview Is Diffed Against the File as It Is** (`crates/prod-code-mcp`, #1470):

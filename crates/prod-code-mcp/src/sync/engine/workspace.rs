@@ -303,13 +303,33 @@ pub(crate) fn mcp_has_kotlin_project(root: &Path) -> bool {
     .iter()
     .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
     .any(|text| {
-        [
-            "org.jetbrains.kotlin",
+        // An applied Kotlin plugin, as the gateway reads it (`detect/heuristics/jvm.rs`): a
+        // dependency such as `org.jetbrains.kotlin:kotlin-stdlib` in a Java project is not
+        // one (#1476).
+        const KOTLIN_PLUGIN_MARKERS: &[&str] = &[
             "kotlin(\"jvm\")",
             "kotlin(\"android\")",
             "kotlin(\"multiplatform\")",
-        ]
-        .iter()
-        .any(|marker| text.contains(marker))
+            "id(\"org.jetbrains.kotlin.jvm\")",
+            "id(\"org.jetbrains.kotlin.android\")",
+            "id(\"org.jetbrains.kotlin.multiplatform\")",
+            "id 'org.jetbrains.kotlin.jvm'",
+            "id 'org.jetbrains.kotlin.android'",
+            "id 'org.jetbrains.kotlin.multiplatform'",
+            "apply plugin: 'org.jetbrains.kotlin.jvm'",
+            "apply plugin: 'org.jetbrains.kotlin.android'",
+            "apply plugin: 'org.jetbrains.kotlin.multiplatform'",
+            "apply plugin: 'kotlin'",
+        ];
+        text.lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                !line.starts_with("//") && !line.starts_with('*')
+            })
+            .any(|line| {
+                KOTLIN_PLUGIN_MARKERS
+                    .iter()
+                    .any(|marker| line.contains(marker))
+            })
     })
 }
