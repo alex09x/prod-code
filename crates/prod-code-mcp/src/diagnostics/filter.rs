@@ -318,29 +318,81 @@ pub const SYMBOL_KIND_VARIABLE: u64 = 13;
 /// Declarations and returned properties nested inside a function, method, or constructor
 /// are local execution details that external files cannot refer to (#818).
 pub fn symbol_names(result: &serde_json::Value) -> BTreeSet<String> {
-    fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
+    symbol_identities(result)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// A declaration another file could refer to: the names of the symbols it is declared in, and
+/// its own. `A::new` and `B::new` are two, so removing one is seen while the other stays (#1463).
+pub type SymbolIdentity = (Vec<String>, String);
+
+/// [`symbol_names`] with each name's owners. A variable is left out only when it is proven a
+/// function's local: nested under a function, method or constructor (whose children are not
+/// walked), or, in a flat result, naming a function as its `containerName`. A top-level static
+/// or global variable is kept (#1463).
+pub fn symbol_identities(result: &serde_json::Value) -> BTreeSet<SymbolIdentity> {
+    fn is_scoped(kind: Option<u64>) -> bool {
+        matches!(
+            kind,
+            Some(SYMBOL_KIND_FUNCTION | SYMBOL_KIND_METHOD | SYMBOL_KIND_CONSTRUCTOR)
+        )
+    }
+    fn walk(
+        value: &serde_json::Value,
+        owners: &mut Vec<String>,
+        functions: &BTreeSet<String>,
+        out: &mut BTreeSet<SymbolIdentity>,
+    ) {
         match value {
-            serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            serde_json::Value::Array(items) => {
+                items.iter().for_each(|i| walk(i, owners, functions, out))
+            }
             serde_json::Value::Object(map) => {
                 let kind = map.get("kind").and_then(|k| k.as_u64());
-                let is_local = kind == Some(SYMBOL_KIND_VARIABLE);
-                let is_scoped = matches!(
-                    kind,
-                    Some(SYMBOL_KIND_FUNCTION | SYMBOL_KIND_METHOD | SYMBOL_KIND_CONSTRUCTOR)
-                );
-                if let Some(name) = map.get("name").and_then(|n| n.as_str())
-                    && !is_local
-                {
-                    out.insert(name.to_string());
+                let container = map.get("containerName").and_then(|c| c.as_str());
+                let is_local = kind == Some(SYMBOL_KIND_VARIABLE)
+                    && container.is_some_and(|c| functions.contains(c));
+                let Some(name) = map.get("name").and_then(|n| n.as_str()) else {
+                    return;
+                };
+                if !is_local {
+                    let owner = match container {
+                        Some(c) if owners.is_empty() && !c.is_empty() => vec![c.to_string()],
+                        _ => owners.clone(),
+                    };
+                    out.insert((owner, name.to_string()));
                 }
-                if !is_scoped && let Some(children) = map.get("children") {
-                    walk(children, out);
+                if !is_scoped(kind)
+                    && let Some(children) = map.get("children")
+                {
+                    owners.push(name.to_string());
+                    walk(children, owners, functions, out);
+                    owners.pop();
                 }
             }
             _ => {}
         }
     }
+    // The functions of a flat result, which its variables name as their container.
+    let functions: BTreeSet<String> = result
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| is_scoped(s.get("kind").and_then(|k| k.as_u64())))
+        .filter_map(|s| s.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .collect();
     let mut out = BTreeSet::new();
-    walk(result, &mut out);
+    walk(result, &mut Vec::new(), &functions, &mut out);
     out
+}
+
+/// The names of the declarations in `before` that `after` no longer has, once each.
+pub fn removed_names(
+    before: &BTreeSet<SymbolIdentity>,
+    after: &BTreeSet<SymbolIdentity>,
+) -> Vec<String> {
+    let gone: BTreeSet<&String> = before.difference(after).map(|(_, name)| name).collect();
+    gone.into_iter().cloned().collect()
 }

@@ -362,3 +362,40 @@ fn an_unlinked_file_is_never_set_aside() {
     refuse_unchecked(&mut report);
     assert_eq!(report.errors, 1);
 }
+
+/// #1463: a declaration is known by its owners too. Removing `A::new` while `B::new` stays is a
+/// removal; a top-level static or global variable is kept, and only a variable proven local to a
+/// function is left out.
+#[test]
+fn removed_declarations_keep_their_owner_and_globals_count() {
+    use crate::diagnostics::filter::{removed_names, symbol_identities};
+    let before = serde_json::json!([
+        { "name": "A", "kind": 23, "children": [ { "name": "new", "kind": 6 } ] },
+        { "name": "B", "kind": 23, "children": [ { "name": "new", "kind": 6 } ] },
+        { "name": "COUNTER", "kind": 13 },
+        { "name": "run", "kind": 12, "children": [ { "name": "edit", "kind": 13 } ] }
+    ]);
+    let after = serde_json::json!([
+        { "name": "A", "kind": 23, "children": [] },
+        { "name": "B", "kind": 23, "children": [ { "name": "new", "kind": 6 } ] },
+        { "name": "run", "kind": 12, "children": [] }
+    ]);
+    assert_eq!(
+        removed_names(&symbol_identities(&before), &symbol_identities(&after)),
+        vec!["COUNTER".to_string(), "new".to_string()]
+    );
+
+    // A flat result: `x` names the function `f` as its container and is its local; `G` is a
+    // package-level variable.
+    let flat = serde_json::json!([
+        { "name": "f", "kind": 12, "containerName": "pkg" },
+        { "name": "x", "kind": 13, "containerName": "f" },
+        { "name": "G", "kind": 13, "containerName": "pkg" }
+    ]);
+    let ids = symbol_identities(&flat);
+    assert!(
+        ids.contains(&(vec!["pkg".to_string()], "G".to_string())),
+        "{ids:?}"
+    );
+    assert!(!ids.iter().any(|(_, n)| n == "x"), "{ids:?}");
+}
