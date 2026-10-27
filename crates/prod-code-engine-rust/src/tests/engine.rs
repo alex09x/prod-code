@@ -16,9 +16,12 @@ use crate::engine::RustEngine;
 #[test]
 fn a_priming_job_infers_the_functions_of_its_files() {
     let (temp, lib_path) = create_test_fixture();
-    let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+    let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+    engine.set_label("fixture-engine");
     let unknown = temp.path().join("src/nowhere.rs");
     let job = engine.priming_job(&[lib_path.as_path(), unknown.as_path()]);
+    // The job names the engine and revision it was made at, for its log (#1499).
+    assert_eq!(job.identity(), ("fixture-engine", engine.changes));
     assert_eq!(job.threads(), 1, "one function, one thread");
     assert_eq!(job.files.len(), 1, "the unknown file is left out");
     assert_eq!(job.run(), 1);
