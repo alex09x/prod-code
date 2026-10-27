@@ -43,7 +43,23 @@ pub(crate) async fn release(workspaces: Vec<Arc<SharedWorkspace>>) {
             ws.detach_overlay().await;
         }
     }
-    let _ = tokio::task::spawn_blocking(move || drop(workspaces)).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        let count = workspaces.len();
+        drop(workspaces);
+        // What the engines freed goes back to the system, or it stays counted as in use and
+        // admission refuses the next engine for it (#1590).
+        let (before, after) = crate::memory::return_freed_memory();
+        if let (Some(before), Some(after)) = (before, after) {
+            let mb = |bytes: u64| bytes / (1024 * 1024);
+            tracing::info!(
+                unloaded = count,
+                rss_before_mb = mb(before),
+                rss_after_mb = mb(after),
+                "🧹 [MEMORY] freed heap returned to the system after unloading"
+            );
+        }
+    })
+    .await;
 }
 
 /// Leads the load of `key` to its end: makes it Ready, or takes its Loading entry out of

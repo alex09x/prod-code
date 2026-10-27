@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Unloading Engines Gives Their Freed Heap Back to the System** (`crates/prod-code-gateway`, #1590):
+  A Linux node's gateway reported 33 GB of RSS with no workspace loaded, and the capacity check, which reads host memory, refused every new engine until a restart. glibc's malloc keeps memory freed in its per-thread arenas, and an unloaded analysis database is freed from many threads. After unloaded workspaces are dropped, the gateway now calls `malloc_trim(0)` and logs its RSS before and after (`🧹 [MEMORY] freed heap returned to the system after unloading`). A test shows the retention and its release: 256 MiB freed in 4 KiB blocks under one still held stays resident (277 → 278 MB) without the call and drops by more than 128 MB with it. Whether this accounts for all of the 33 GB is to be measured on a node.
 - **Moving a Rust Item Does Not Carry an Import of a Name the Target Defines** (`crates/prod-code-mcp`, #1502):
   `code_move` carries the imports a moved item spells. When an earlier move had put a helper into the target, and the old module had gained `use crate::…::target::helper;` for it, moving a function that calls the helper carried that line into the target itself. rustc rejects the result with E0255 (the name is defined twice). rust-analyzer does not report that error, so the tool said "the analyzer accepts the result". An import of a name the target module declares at the top level (`fn`, `struct`, `enum`, `trait`, `type`, `const`, `static`, `mod`, `union`, `macro_rules!`) is no longer carried.
 - **An Active Workspace on a Mac Is Not Placed Elsewhere Under Its Sessions** (`crates/prod-code-gateway`, #1494):
