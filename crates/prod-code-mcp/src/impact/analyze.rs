@@ -242,13 +242,19 @@ pub async fn analyze(
         {
             let mut answer = incoming_calls(first_session, root, first_lang, first, None).await;
             for _ in 0..COLD_RETRIES {
-                if matches!(&answer, Incoming::Callers(found) if !found.is_empty()) {
-                    break;
+                match &answer {
+                    Incoming::Callers(found) if !found.is_empty() => break,
+                    // A request that failed, timed out or answered out of shape is not a cold
+                    // index: asking again only spends the wait, and the failure is kept as the
+                    // reason the analysis is incomplete (#1473).
+                    Incoming::Failed(_) => break,
+                    _ => {}
                 }
                 tokio::time::sleep(COLD_WAIT).await;
-                if let Ok(first_session) = session_pool.session_for_file(&first_abs).await {
-                    answer = incoming_calls(first_session, root, first_lang, first, None).await;
-                }
+                let Ok(first_session) = session_pool.session_for_file(&first_abs).await else {
+                    break;
+                };
+                answer = incoming_calls(first_session, root, first_lang, first, None).await;
             }
             cache.insert(key(first), answer);
         }

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Impact Does Not Retry a Failed Call-Hierarchy Request as a Cold Index** (`crates/prod-code-mcp`, #1473):
+  A language server that has just started can answer "no callers" until it has read the project, so `code_impact` asks again up to three times, 800 ms apart. It did so for every answer other than a non-empty list of callers, including a request that failed or timed out, which only spent the waits. Now only a successful empty answer is asked again. A failed request stops the retries and stays the reason the analysis is incomplete, and so does a session that cannot be opened again.
 - **The Swift Settings Probe Finds Custom Target Paths and Keeps Its Deadline** (`crates/prod-code-gateway`, `crates/prod-code-engine-generic`, #1500):
   Before validating Swift, the gateway waits until sourcekit-lsp reports a type error on a probe line, which shows it has the package's build settings. The probe file was looked for under `Sources/` only. A package whose targets set `path: "…"` had no probe, and the wait was skipped. Directories the manifest names with `path:` are now searched after `Sources/`; relative ones inside the package only. The wait also asked each diagnostic pull with the full request timeout, so a server that never answered a pull made a 1 s wait last 20 s. Each pull is now bounded by what is left of the wait.
 - **A Rename That Moves a File Is Validated on the File at Its New Path** (`crates/prod-code-mcp`, #1469):
