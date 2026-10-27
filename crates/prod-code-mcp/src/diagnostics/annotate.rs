@@ -62,8 +62,7 @@ pub fn annotate_missing_symbols(
                     continue;
                 }
                 for (name, from) in &relevant {
-                    let clean_name = name.strip_prefix("r#").unwrap_or(name);
-                    if tok.name == clean_name {
+                    if super::ident::names_removed(tok, name) {
                         line_matches.entry(tok.line).or_default().push((
                             name.as_str(),
                             from.as_str(),
@@ -162,5 +161,21 @@ pub fn annotate_missing_symbols(
             }
         }
         report.items.sort_by_key(|d| (d.line, d.col));
+    }
+}
+
+/// Notes on each stale-reference warning that the definition check behind it did not finish:
+/// its deadline passed or a request failed, so the use may be of another symbol of that name
+/// that was never asked about (#1465).
+pub fn mark_unfinished_resolution(reports: &mut [DiagnosticsReport]) {
+    for item in reports
+        .iter_mut()
+        .flat_map(|r| r.items.iter_mut())
+        .filter(|d| d.code.as_deref() == Some(STALE_REFERENCE))
+    {
+        let note = item.note.take().unwrap_or_default();
+        item.note = Some(format!(
+            "{note} (the analyzer was not asked about every use before its deadline or a failed request, so this may name another symbol of that name)"
+        ).trim_start().to_string());
     }
 }

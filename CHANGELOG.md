@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Removed-Symbol Warnings: Raw Keyword Names, Complete Definition Proof, and Unfinished Checks** (`crates/prod-code-mcp`, #1464, #1465):
+  - A removed function written as a raw keyword, such as `r#match`, is looked for only where `r#match` is written. An ordinary `match` expression is the keyword and is no longer warned about as its use. Other names match whether written raw or not.
+  - A `LocationLink` proves that a same-name use resolves only when it is whole: `targetRange` and `targetSelectionRange` both present and valid, the name's range inside the declaration's. Before, a link without `targetRange` was taken as proof and silenced the warning.
+  - What the definition check found before its deadline now still counts. Before, a deadline threw away every resolved use, and the warnings were then skipped altogether. The check also stops at the first failed request. The uses it did not reach are warned about, with a note that the check was cut short.
 - **`prod-code metrics` Works When the Checkout Cannot Be Placed** (`crates/prod-code-client`, `cluster`, #1493):
   Metrics ask every node, yet the command failed before it ran whenever no node could take the current checkout, for example a macOS-only Go module with only Linux nodes, which is just when metrics help to see why. Like `status`, it now runs before placement. Errors of the metrics queries themselves still show.
 - **Search Stops Promising Background Embedding When the Model for Declarations Failed** (`crates/prod-code-gateway`, `crates/prod-code-protocol`, `crates/prod-code-mcp`, #1485):

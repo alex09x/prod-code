@@ -297,13 +297,27 @@ pub(super) async fn validate_texts_single_engine(
             Ok(())
         })
         .await;
-    if let Ok(resolved) = budget
+    // What the definition check found before its deadline or a failed request still counts,
+    // and the tokens it did not reach are warned about as unresolved, with a note that the
+    // check was cut short (#1465).
+    let mut resolved = BTreeSet::new();
+    let complete = budget
         .run(budget.auxiliary, "resolving moved symbols", async {
-            Ok(resolved_tokens(&mut session, root, &reports, &sources, &missing).await)
+            Ok(resolved_tokens(
+                &mut session,
+                root,
+                &reports,
+                &sources,
+                &missing,
+                &mut resolved,
+            )
+            .await)
         })
         .await
-    {
-        annotate_missing_symbols(&mut reports, &sources, &missing, &resolved);
+        .unwrap_or(false);
+    annotate_missing_symbols(&mut reports, &sources, &missing, &resolved);
+    if !complete {
+        crate::diagnostics::annotate::mark_unfinished_resolution(&mut reports);
     }
     let _ = budget
         .run(

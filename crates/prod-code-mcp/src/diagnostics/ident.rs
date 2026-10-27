@@ -15,6 +15,25 @@ pub struct RustIdent {
     pub name: String,
     pub line: u32,
     pub col: u32,
+    /// Written as a raw identifier, `r#name`.
+    pub raw: bool,
+}
+
+/// Rust's keywords: written bare, such a word is the keyword, never a name (#1464).
+const KEYWORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern", "false",
+    "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "static", "struct", "trait", "true", "try", "type", "unsafe", "use", "where",
+    "while", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof",
+    "unsized", "virtual", "yield",
+];
+
+/// Whether `token` may be a use of the removed name `removed` (`r#match` or `helper`): a
+/// name that is a keyword only as the raw token, since a bare `match` is the keyword, and any
+/// other name written either way (#1464).
+pub fn names_removed(token: &RustIdent, removed: &str) -> bool {
+    let clean = removed.strip_prefix("r#").unwrap_or(removed);
+    token.name == clean && (token.raw || !KEYWORDS.contains(&clean))
 }
 
 /// Converts a 0-based byte offset in `text` to 1-based (line, UTF-16 column).
@@ -203,6 +222,7 @@ pub fn rust_code_identifiers(text: &str) -> Vec<RustIdent> {
                 name: name.to_string(),
                 line,
                 col,
+                raw: true,
             });
         } else if ident_start(c) {
             // Normal identifier: foo
@@ -217,6 +237,7 @@ pub fn rust_code_identifiers(text: &str) -> Vec<RustIdent> {
                 name: name.to_string(),
                 line,
                 col,
+                raw: false,
             });
         } else if c.is_ascii_digit() {
             // Number literal: 123, 0x1f, 1.5e3

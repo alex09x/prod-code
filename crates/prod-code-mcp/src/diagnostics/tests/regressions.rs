@@ -36,6 +36,31 @@ mod identifier_boundary_regressions {
         );
         assert!(!mentions_identifier("covers()", ""));
     }
+
+    /// A removed `r#match` is used only where `r#match` is written: an ordinary `match`
+    /// expression is the keyword. A removed non-keyword name is matched either way (#1464).
+    #[test]
+    fn a_removed_raw_keyword_name_is_not_the_keyword() {
+        use crate::diagnostics::ident::names_removed;
+        let tokens = rust_code_identifiers(
+            "fn f(x: u8) -> u8 { match x { _ => r#match(x) } }\nfn g() { r#helper(); helper(); }",
+        );
+        let found = |removed: &str| -> Vec<(u32, u32, bool)> {
+            tokens
+                .iter()
+                .filter(|t| names_removed(t, removed))
+                .map(|t| (t.line, t.col, t.raw))
+                .collect()
+        };
+        assert_eq!(
+            found("r#match"),
+            [(1, 36, true)],
+            "only the raw call, not the keyword"
+        );
+        assert_eq!(found("match"), [(1, 36, true)]);
+        assert_eq!(found("helper"), [(2, 10, true), (2, 22, false)]);
+        assert_eq!(found("r#helper"), found("helper"));
+    }
 }
 
 mod definition_evidence_tests {
@@ -47,9 +72,22 @@ mod definition_evidence_tests {
         let location = json!({"uri":"file:///tmp/decl.rs","range":range});
         assert!(has_definition(&location));
         assert!(has_definition(&json!([location])));
+        // A LocationLink needs both ranges, valid, with the name's inside the declaration's
+        // (#1465).
+        let target = json!({"start":{"line":0,"character":0},"end":{"line":2,"character":1}});
         assert!(has_definition(
-            &json!({"targetUri":"file:///tmp/decl.rs","targetSelectionRange":range})
+            &json!({"targetUri":"file:///tmp/decl.rs","targetRange":target,"targetSelectionRange":range})
         ));
+        let outside = json!({"start":{"line":3,"character":0},"end":{"line":3,"character":4}});
+        let reversed = json!({"start":{"line":2,"character":1},"end":{"line":0,"character":0}});
+        for value in [
+            json!({"targetUri":"file:///tmp/decl.rs","targetSelectionRange":range}),
+            json!({"targetUri":"file:///tmp/decl.rs","targetRange":target}),
+            json!({"targetUri":"file:///tmp/decl.rs","targetRange":target,"targetSelectionRange":outside}),
+            json!({"targetUri":"file:///tmp/decl.rs","targetRange":reversed,"targetSelectionRange":range}),
+        ] {
+            assert!(!has_definition(&value), "{value}");
+        }
         for value in [
             json!(null),
             json!([]),
