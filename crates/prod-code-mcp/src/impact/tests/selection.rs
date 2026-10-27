@@ -316,3 +316,69 @@ fn the_whole_suite_runs_when_the_selection_cannot_be_trusted() {
     });
     assert!(report.full_suite_reason().unwrap().contains("index"));
 }
+
+/// #1471: a selection that cannot be trusted is not offered as the command to run, and only
+/// tests in Rust files count toward the Rust whole-suite threshold.
+#[test]
+fn an_untrusted_selection_is_not_the_command_and_foreign_tests_do_not_count_as_rust_filters() {
+    let test = |name: &str, file: &str| Symbol {
+        name: name.into(),
+        file: file.into(),
+        line: 1,
+        col: 1,
+    };
+    let mut report = ImpactReport {
+        language: "swift".into(),
+        base: "HEAD".into(),
+        changed_files: vec!["Sources/App/Price.swift".into()],
+        changed: vec![test("price", "Sources/App/Price.swift")],
+        callers: Vec::new(),
+        tests: vec![test("testPrice", "Tests/AppTests/PriceTests.swift")],
+        test_command: Some(vec![
+            "swift".into(),
+            "test".into(),
+            "--filter".into(),
+            "testPrice".into(),
+        ]),
+        unattributed_files: Vec::new(),
+        index: Some(IndexBuild {
+            command: "swift build".into(),
+            ok: false,
+            duration_ms: 1,
+        }),
+        reaches: Vec::new(),
+        incomplete: Vec::new(),
+        signature_warnings: Vec::new(),
+    };
+    let text = report.render();
+    assert!(!text.contains("run: swift test --filter"), "{text}");
+    assert!(text.contains("run: the whole suite"), "{text}");
+    assert!(
+        text.contains("testPrice"),
+        "the tests found are still listed: {text}"
+    );
+    assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+
+    // A Rust root with 30 Python tests: one pytest command, not 30 Rust filters.
+    report.language = "rust".into();
+    report.index = None;
+    report.tests = (0..30)
+        .map(|i| test(&format!("test_case_{i}"), "tools/test_tools.py"))
+        .collect();
+    assert_eq!(
+        report.full_suite_reason(),
+        None,
+        "{:?}",
+        report.full_suite_reason()
+    );
+    report
+        .tests
+        .extend((0..26).map(|i| test(&format!("t{i}"), "src/lib.rs")));
+    assert!(
+        report
+            .full_suite_reason()
+            .is_some_and(|r| r.starts_with("26 distinct Rust test filters")),
+        "{:?}",
+        report.full_suite_reason()
+    );
+}
