@@ -77,10 +77,16 @@ pub(crate) async fn resolve_symbol_ties(
                     .filter(|hit| !qualifier_matches(root, hit, qualifiers))
                     .cloned(),
             );
-            let eligible: Vec<SymbolHit> = exact
+            let (mut eligible, exact): (Vec<SymbolHit>, Vec<SymbolHit>) = exact
                 .into_iter()
-                .filter(|hit| qualifier_matches(root, hit, qualifiers))
-                .collect();
+                .partition(|hit| qualifier_matches(root, hit, qualifiers));
+            if eligible.is_empty() {
+                // A path copied from a `use` line names the item where it is re-exported (#1582).
+                eligible = exact
+                    .into_iter()
+                    .filter(|hit| super::reexport::reexported_as(root, hit, qualifiers, name))
+                    .collect();
+            }
             if !eligible.is_empty() {
                 eligible
             } else {
