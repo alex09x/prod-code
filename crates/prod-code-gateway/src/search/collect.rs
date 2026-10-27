@@ -21,8 +21,10 @@ pub(crate) fn normalize_relative_path(raw: &str) -> Option<String> {
     if raw.starts_with(['/', '\\']) {
         return None;
     }
+    // `C:` starts an absolute path only on Windows; on Unix `a:module.rs` is an ordinary file
+    // name, which indexing accepts and invalidation must too (#1459).
     let bytes = raw.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+    if cfg!(windows) && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         return None;
     }
     let mut components = Vec::new();
