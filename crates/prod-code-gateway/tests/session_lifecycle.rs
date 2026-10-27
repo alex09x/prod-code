@@ -1431,3 +1431,72 @@ async fn check_editor_rebalance_redirect(wait_for_subscription: bool) {
     drop(client);
     let _ = server.join().await;
 }
+
+/// #1528: an editor's own language server is admitted like an engine. With no memory for one,
+/// the editor is not given a dedicated server: the shared engines' path answers it, and that
+/// path refuses with the capacity reason too, instead of a handshake followed by a spawn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_editor_server_is_not_spawned_without_memory_for_it() {
+    let storage = tempfile::tempdir().unwrap();
+    let client = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        None,
+    );
+    std::fs::create_dir_all(&server_root).unwrap();
+    // 90% of the host's memory is in use, above the 85% admission limit.
+    let admission = Arc::new(prod_code_gateway::admission::Admission::with_probe(
+        Arc::new(|| Some((10 * 1024 * 1024, 100 * 1024 * 1024))),
+        0,
+        Duration::ZERO,
+    ));
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::new(WorkspaceManager::with_admission(admission));
+    let state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = Arc::clone(&state);
+    let server = OwnedTask::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+    let mut client = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
+            client_name: "editor-admission-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("rust".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+            redirect_count: 0,
+        }))
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(10), client.next())
+        .await
+        .expect("the editor handshake is answered")
+        .expect("response frame")
+        .expect("wire message");
+    match response {
+        WireMessage::Disconnect { reason } => {
+            assert!(reason.contains("capacity"), "{reason}")
+        }
+        other => panic!("an editor server was started without memory for it: {other:?}"),
+    }
+    drop(client);
+    let _ = server.join().await;
+}

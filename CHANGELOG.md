@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **An Editor's Own Language Server Is Admitted Like an Engine** (`crates/prod-code-gateway`, #1528):
+  An editor session gets a language server process of its own (#332). That branch of the handshake started the server without the memory admission every engine load goes through, so concurrent cold editor sessions could together overcommit a node that the ledger would have refused. The server now takes an engine's reservation for its language first, held until the settle time has passed. Without room, the editor is answered by the shared engines' path, which refuses or redirects with the capacity reason as it does for any session.
 - **A Seeded Worktree Gets Dependency Trees Only for Its Own Lockfile, and Never Half a Tree** (`crates/prod-code-gateway`, #1525):
   Seeding a fresh worktree copied the origin copy's `node_modules` trees and virtual environments without comparing the worktree's package manifest. A worktree with another `package.json` or lockfile therefore started with packages installed for the old one, and nothing repaired them, because those trees are not synced. A tree is now taken only when every package-manager input beside it is the same in the incoming manifest as in the seed copy, or absent from both: `package.json`, the npm/yarn/pnpm/bun lockfiles, `pyproject.toml`, `poetry.lock`, `uv.lock`, `Pipfile(.lock)`, `requirements.txt`, `setup.py`, `setup.cfg`. A copy that fails half way, or a venv that cannot be relocated, is removed instead of being left to pass for an installed tree. The same applies to a failed `target/debug` part.
 - **Exported-Only Rust Outlines Leave Out `impl` Blocks of Private Types** (`crates/prod-code-mcp`, #1587):
