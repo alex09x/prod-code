@@ -243,3 +243,63 @@ fn test_reverted_dirty_file_is_resent_clean() {
     assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
     clear_sync_cache(root);
 }
+
+/// #1257: a file an exec wrote back, then restored to HEAD before any sync, is sent again.
+/// Git reports nothing for it, so only the record that the node holds another version tells
+/// the next sync that the node copy differs from the checkout.
+#[test]
+fn a_written_back_file_restored_to_head_is_resent() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    clear_sync_cache(root);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    if !git(&["init", "-q"]) {
+        return;
+    }
+    assert!(git(&["config", "user.name", "Test"]));
+    assert!(git(&["config", "user.email", "test@example.com"]));
+    let committed = "pub fn version() -> u8 { 1 }";
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), committed).unwrap();
+    assert!(git(&["add", "src"]) && git(&["commit", "-qm", "initial"]));
+    let initial = prepare_workspace_sync(root, None).unwrap();
+    commit_workspace_sync(root, &initial);
+
+    // The node's formatter rewrote the file, and the exec wrote its version back.
+    let rewritten = "pub fn version() -> u8 {\n    1\n}\n";
+    apply_pulled_files(
+        root,
+        &[prod_code_protocol::FileDelta {
+            relative_path: "src/lib.rs".into(),
+            content: Some(rewritten.as_bytes().to_vec()),
+            is_executable: false,
+        }],
+    )
+    .unwrap();
+    assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
+
+    // Restored to HEAD before any sync: the committed text must reach the node again.
+    assert!(git(&["checkout", "--", "src/lib.rs"]));
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        committed
+    );
+    let restored = prepare_workspace_sync(root, None).unwrap();
+    assert_eq!(
+        restored
+            .files
+            .iter()
+            .map(|f| (f.relative_path.as_str(), f.content.as_deref()))
+            .collect::<Vec<_>>(),
+        [("src/lib.rs", Some(committed.as_bytes()))]
+    );
+    commit_workspace_sync(root, &restored);
+    assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
+    clear_sync_cache(root);
+}

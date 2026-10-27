@@ -76,6 +76,10 @@ pub fn apply_pulled_files_for(root: &Path, node: &str, files: &[FileDelta]) -> R
                 state.files.remove(&delta.relative_path);
             }
         }
+        // The node now holds this version, which the checkout's HEAD may not: remembered as
+        // dirty, a later `git checkout` of the file is seen as a revert and sent (#1257).
+        // Otherwise git reports nothing for it, and the node copy stays different for good.
+        state.dirty_paths.insert(delta.relative_path.clone());
         touched.push(delta.relative_path.clone());
     }
     if !touched.is_empty() {

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A File Restored to HEAD After an Exec Write-Back Is Synced Again** (`crates/prod-code-mcp`, #1257):
+  A file a `prod-code exec` command changed on the node, and wrote back into the checkout, was never sent again if it was then restored to its committed content (`git checkout -- FILE`) before the next sync. Git reported nothing for it, and the client had recorded only the node's version, so the node copy stayed different, and every later `exec`, `test`, `check` and `lint` ran on code that is not in the checkout. A write-back now marks the file dirty, as a local edit would be. A later revert is then seen as one and the committed text is sent.
 - **An Editor's Own Language Server Is Admitted Like an Engine** (`crates/prod-code-gateway`, #1528):
   An editor session gets a language server process of its own (#332). That branch of the handshake started the server without the memory admission every engine load goes through, so concurrent cold editor sessions could together overcommit a node that the ledger would have refused. The server now takes an engine's reservation for its language first, held until the settle time has passed. Without room, the editor is answered by the shared engines' path, which refuses or redirects with the capacity reason as it does for any session.
 - **A Seeded Worktree Gets Dependency Trees Only for Its Own Lockfile, and Never Half a Tree** (`crates/prod-code-gateway`, #1525):
