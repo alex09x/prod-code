@@ -80,7 +80,7 @@ fn a_comment_marker_depends_on_the_language() {
     let mut texts = BTreeMap::new();
     texts.insert(
         rust.clone(),
-        "#[derive(Debug)] // order_id
+        "#[order_id] // order_id
 let order_id = 1;
 "
         .to_string(),
@@ -91,11 +91,12 @@ let order_id = 1;
 "
         .to_string(),
     );
-    // `#` starts an attribute in Rust, not a comment: the attribute line is not prose.
+    // `#` starts an attribute in Rust, not a comment: a name inside the attribute, after `#`
+    // and before any `//`, is not prose (#1451).
     let attribute = Occurrence {
         file: rust.clone(),
-        line: 2,
-        col: 5,
+        line: 1,
+        col: 3,
         len: 8,
         variant: 0,
         in_string: false,
@@ -104,7 +105,7 @@ let order_id = 1;
     let after_slashes = Occurrence {
         file: rust,
         line: 1,
-        col: 21,
+        col: 16,
         len: 8,
         variant: 0,
         in_string: false,

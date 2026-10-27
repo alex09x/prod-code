@@ -109,10 +109,23 @@ pub fn variants(field: &str, to: &str) -> Vec<Variant> {
     for (style, render) in styles {
         let from = render(&f);
         let to = render(&t);
-        if from.is_empty() || out.iter().any(|v| v.from == from) {
+        if from.is_empty() {
             continue;
         }
-        out.push(Variant { from, to, style });
+        // Another style that spells the field the same way may spell the new name otherwise:
+        // `status` is snake_case and camelCase, `order_status` and `orderStatus` (#1450).
+        if let Some(same) = out.iter_mut().find(|v| v.from == from) {
+            if same.to != to && !same.alternatives.iter().any(|(_, t)| *t == to) {
+                same.alternatives.push((style, to));
+            }
+            continue;
+        }
+        out.push(Variant {
+            from,
+            to,
+            style,
+            alternatives: Vec::new(),
+        });
     }
     out
 }

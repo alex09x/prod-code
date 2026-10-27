@@ -101,9 +101,13 @@ pub(crate) fn overlaps(a: (u32, u32, u32, u32), b: (u32, u32, u32, u32)) -> bool
 /// Which marker starts a comment depends on the language, and `#` in particular is a comment
 /// in Python and an attribute in Rust, so it is not treated as one for a Rust file.
 pub(crate) fn in_comment(texts: &BTreeMap<PathBuf, String>, o: &Occurrence) -> bool {
-    let Some(text) = texts.get(&o.file) else {
-        return false;
-    };
+    texts
+        .get(&o.file)
+        .is_some_and(|text| in_comment_of(text, o))
+}
+
+/// [`in_comment`] for an occurrence of `text`, the file's contents.
+pub(crate) fn in_comment_of(text: &str, o: &Occurrence) -> bool {
     let Some(line) = text.lines().nth(o.line as usize - 1) else {
         return false;
     };

@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Fixed
+- **Schema Rename Reads OpenAPI JSON by Its Root Key and GraphQL Descriptions by Their Real Delimiters** (`crates/prod-code-mcp`, #1452):
+  - A JSON document is OpenAPI when its root object has an `openapi` or `swagger` key, whatever the key order or layout. A minified document such as `{"info":…,"openapi":"3.1.0",…}` used to be read as plain JSON, so renaming a property left its `required` entry stale.
+  - In a GraphQL description, an escaped `\"""` no longer ends the block string, so a later mention of the field in the same description stays prose.
+- **Schema Rename Leaves SQL and Protobuf Comments Alone** (`crates/prod-code-mcp`, test, #1451):
+  A field mentioned in a SQL (`--`, `/* */`) or Protobuf (`//`, `/* */`) comment is now reported among the occurrences left as they are, instead of being rewritten with the schema. Comment markers inside quoted text start nothing, and a quoted name inside a code comment is prose too. The Rust-attribute test now really covers a name after `#`.
+- **Schema Rename Gives Each Language Its Own Spelling and Refuses Empty Targets** (`crates/prod-code-mcp`, #1450):
+  - Renaming a one-word field such as `status` to `order_status` turns the lowercase `status` into `orderStatus` in TypeScript, JavaScript, Swift and Go, and into `order_status` in SQL, Rust and Python. Before, every lowercase occurrence got the snake_case name.
+  - A target with no words (`""`, `---`) is refused before anything is read or written, even with `force`. Before, it could delete the name from SQL or Protobuf files.
 - **The Go Fallback Backend Normalizes gopls Diagnostic Reports Like the Managed Engine** (`crates/prod-code-gateway`, `crates/prod-code-engine-go`, #1448):
   gopls answers a diagnostic pull with an empty `kind` on a complete report. The managed Go engine already turned that into `full`, but when it failed to start and the gateway fell back to a plain gopls process, the answer reached the client unchanged and its strict parser rejected it. The fallback now applies the same rule, using the method of the request each answer belongs to. Only a complete `textDocument/diagnostic` report from a Go backend is touched; a report without items, an error, an unchanged report and other methods' answers pass as gopls sent them.
 - **Roadmap Marks the Client Hot-Path Milestone Partial** (`ROADMAP.md`, `ROADMAP-AUDIT.md`, documentation, #1445):

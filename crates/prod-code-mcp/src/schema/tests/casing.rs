@@ -80,3 +80,53 @@ fn a_file_is_classified_by_what_owns_it() {
     assert_eq!(kind_of(Path::new("a/b.proto")), Kind::Text("protobuf"));
     assert_eq!(kind_of(Path::new("a/b.png")), Kind::Skip);
 }
+
+/// A one-word field that snake_case and camelCase both spell keeps both new spellings, and an
+/// occurrence takes the one its language writes (#1450).
+#[test]
+fn a_one_word_field_takes_each_languages_target() {
+    let v = variants("status", "order_status");
+    let lower = v
+        .iter()
+        .find(|x| x.from == "status")
+        .expect("lowercase spelling");
+    assert_eq!(lower.to, "order_status");
+    assert_eq!(lower.target_for(Path::new("db/schema.sql")), "order_status");
+    assert_eq!(lower.target_for(Path::new("src/model.rs")), "order_status");
+    assert_eq!(lower.target_for(Path::new("web/order.ts")), "orderStatus");
+    assert_eq!(lower.target_for(Path::new("api/order.go")), "orderStatus");
+    let pascal = v
+        .iter()
+        .find(|x| x.from == "Status")
+        .expect("Pascal spelling");
+    assert_eq!(pascal.target_for(Path::new("web/order.ts")), "OrderStatus");
+    // A two-word field has no shared spelling, so nothing changes for it.
+    assert!(
+        variants("order_id", "trade_id")
+            .iter()
+            .all(|x| x.alternatives.is_empty())
+    );
+}
+
+/// A new name with no words is refused before anything is read or written, even with `force`.
+#[tokio::test]
+async fn a_target_without_words_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let sql = dir.path().join("schema.sql");
+    std::fs::write(&sql, "CREATE TABLE t (status TEXT);\n").unwrap();
+    let remote: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+    for to in ["", "---", "_ _"] {
+        let error =
+            super::super::execute::rename(remote, dir.path(), "status", to, true, true, None)
+                .await
+                .expect_err("an empty target is an input error");
+        assert!(
+            error.to_string().contains("has no words"),
+            "{to:?}: {error}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&sql).unwrap(),
+        "CREATE TABLE t (status TEXT);\n"
+    );
+}

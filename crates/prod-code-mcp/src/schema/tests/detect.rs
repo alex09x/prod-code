@@ -206,3 +206,28 @@ fn comments_in_yaml_and_json_are_found_before_an_occurrence() {
         );
     }
 }
+
+/// An escaped `\"""` inside a description does not end it, so a later mention in the same
+/// description is still prose, and the field after the real end is not (#1452).
+#[test]
+fn an_escaped_triple_quote_does_not_end_a_description() {
+    let sdl = "\"\"\"\nquote \\\"\"\" here\norderId stays prose\n\"\"\"\ntype T { orderId: ID }\n";
+    assert!(in_block_string(sdl, &occ(3, 1, 7)), "after the escape");
+    assert!(!in_block_string(sdl, &occ(5, 10, 7)), "after the real end");
+    assert!(!is_structural(Schema::GraphQl, sdl, &occ(3, 1, 7)));
+    assert!(is_structural(Schema::GraphQl, sdl, &occ(5, 10, 7)));
+}
+
+/// A JSON OpenAPI document is recognized by its root key wherever that key is (#1452).
+#[test]
+fn minified_json_openapi_is_openapi_whatever_the_key_order() {
+    let json = Path::new("/w/api/spec.json");
+    let doc = r#"{"info":{"title":"demo","version":"1"},"openapi":"3.1.0","paths":{}}"#;
+    assert_eq!(schema_of(json, doc), Some(Schema::OpenApi));
+    let nested = r#"{"info":{"openapi":"not the root"},"paths":{}}"#;
+    assert_eq!(schema_of(json, nested), Some(Schema::Json));
+    assert_eq!(
+        schema_of(json, "{\n  \"swagger\": \"2.0\",\n"),
+        Some(Schema::OpenApi)
+    );
+}

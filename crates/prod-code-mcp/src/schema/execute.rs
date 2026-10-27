@@ -37,6 +37,12 @@ pub async fn rename(
         "`{field}` is too short to look for safely; pass `force: true` if you mean it"
     );
     anyhow::ensure!(field != to, "`{field}` and `{to}` are the same name");
+    // A target without words would turn every spelling into nothing: that is a deletion, not
+    // a rename, and `force` does not make it one (#1450).
+    anyhow::ensure!(
+        !super::casing::words(to).is_empty(),
+        "`{to}` has no words to rename `{field}` to"
+    );
     let variants = variants(field, to);
     anyhow::ensure!(
         !variants.is_empty(),
@@ -99,7 +105,7 @@ pub async fn rename(
             break;
         };
         tried.push((o.file.clone(), o.line, o.col));
-        let new_name = &variants[o.variant].to;
+        let new_name = variants[o.variant].target_for(&o.file);
         let (line, character) = originals
             .get(&o.file)
             .map(|text| lsp_position(text, &o))
