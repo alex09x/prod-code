@@ -9,6 +9,9 @@
  */
 
 #![cfg(unix)]
+// The overlay lifecycle tests run only on Linux, the one platform with overlay shadows; their
+// helpers are idle elsewhere (#1436).
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_gateway::shadow::{
@@ -468,6 +471,7 @@ async fn gateway_drop_retires_descendants_after_the_leader_exits() {
     .await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_a_shadow_request_cleans_its_active_hypothesis() {
     require_overlay();
@@ -509,6 +513,7 @@ async fn dropping_a_shadow_request_cleans_its_active_hypothesis() {
     gateway.stop().await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sibling_default_gateways_cannot_sweep_each_others_active_hypotheses() {
     require_overlay();
@@ -555,6 +560,7 @@ async fn sibling_default_gateways_cannot_sweep_each_others_active_hypotheses() {
     first.stop().await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_root_owner_refuses_alias_then_releases_for_stale_cleanup() {
     require_overlay();

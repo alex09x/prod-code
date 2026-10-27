@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Overlay Lifecycle Tests Run Only on Linux** (`crates/prod-code-gateway`, test, #1436):
+  The three `shadow_lifecycle` tests that need overlay shadows are compiled only on Linux, the one platform that has them. On macOS they panicked with "overlay unavailable". On Linux they still fail loudly when overlays are missing. The rest of the suite still runs on macOS.
 - **Rust Function Extraction Keeps Other Files' Text and Picks Unshadowed Parameter Names** (`crates/prod-code-mcp`, #1439):
   - When a duplicate in another file is replaced, only the inserted call is renamed from `fun_name` to the requested name. That file's own text, such as a `"fun_name"` string, a comment, or a function of its own with that name, stays as it was.
   - In the file the helper is made in, only name tokens are renamed, so strings and comments keep the placeholder's spelling.
