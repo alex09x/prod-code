@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Document the Language Server Refuses Ends the Session Instead of Going Stale** (`crates/prod-code-gateway`, #1518):
+  A session on a managed language server (Python, TypeScript, C/C++ and the like) ignored the result of a document notification. When the server refused a `didOpen`, for example because its retained-document generation was full or the open had no text, the session went on. Its next queries then answered from disk or an old text of a document the server never took. A refused `didOpen`, `didChange` or `didClose` now ends the session with `the language server refused `textDocument/didOpen`: …; reconnect to open the documents afresh`. Other sessions' documents are untouched.
 - **Making a Rust Function Async Accepts an Awaited Nested Call** (`crates/prod-code-mcp`, #1504, part 2):
   `code_change_signature` with `async: true` on `load` rewrites `load(load(1))` to `load(load(1).await).await`, which is right. Its check of nested calls then looked for the old inner text `load(1)` in the new outer call, found it as the start of `load(1).await`, and reported the inner call as "left as it was". That note blocks the write even with `force`. An occurrence of the old text now counts as left only if it is not followed by the `.await` the change added. An inner call that really was not awaited is still named.
 - **The Fallback Caller Scan No Longer Stops Silently at Its First 20 Files** (`crates/prod-code-mcp`, #1505):

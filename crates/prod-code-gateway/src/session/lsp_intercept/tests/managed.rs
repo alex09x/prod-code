@@ -130,3 +130,65 @@ async fn managed_assists_return_translated_edits_and_exact_refusals() {
     assert!(rx.recv().await.is_err());
     view.retire().await;
 }
+
+/// #1518: a document notification the language server refuses ends the session with the
+/// reason, rather than leaving later queries to answer from a document it never took. One it
+/// takes goes on as before.
+#[tokio::test]
+async fn a_refused_document_notification_ends_the_session() {
+    let (dir, mut view, out, mut rx) = bare_session().await;
+    let engine = Arc::new(crate::lsp::test_support::server(dir.path(), json!({})).await);
+    view.workspace = Arc::new(workspace::SharedWorkspace::new(
+        view.workspace.root.clone(),
+        "python".into(),
+        None,
+        None,
+        Some(engine),
+        None,
+    ));
+    let translator = PathTranslator::new("/client/ws", "/server/ws");
+    let uri = url::Url::from_file_path(view.workspace.root.join("a.py"))
+        .unwrap()
+        .to_string();
+    let open = |document: Value| json!({ "method": "textDocument/didOpen", "params": { "textDocument": document } });
+
+    let taken =
+        open(json!({ "uri": uri, "languageId": "python", "version": 1, "text": "x = 1\n" }));
+    assert!(matches!(
+        handle_generic_lsp(
+            Some("textDocument/didOpen"),
+            &None,
+            &taken,
+            &view,
+            &out,
+            &translator
+        )
+        .await,
+        Some(Flow::Next)
+    ));
+
+    // An open with no text is refused by the engine.
+    let refused =
+        open(json!({ "uri": uri.replace("a.py", "b.py"), "languageId": "python", "version": 1 }));
+    assert!(matches!(
+        handle_generic_lsp(
+            Some("textDocument/didOpen"),
+            &None,
+            &refused,
+            &view,
+            &out,
+            &translator
+        )
+        .await,
+        Some(Flow::Stop)
+    ));
+    match rx.recv().await.unwrap().message {
+        WireMessage::Disconnect { reason } => {
+            assert!(
+                reason.contains("refused `textDocument/didOpen`"),
+                "{reason}"
+            )
+        }
+        other => panic!("expected a disconnect, got {other:?}"),
+    }
+}
