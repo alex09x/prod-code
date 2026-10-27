@@ -197,3 +197,37 @@ fn an_old_path_created_again_after_a_move_is_a_new_file() {
     assert_eq!(read("dst/x.rs"), "old x\n");
     crate::sync::clear_sync_cache(&root);
 }
+
+/// #1469: the preview a rename is validated on follows the edit's resource operations in
+/// order. A module renamed from `old_name.rs` to `new_name.rs`, with `mod new_name;` and an edit
+/// inside the moved file, is previewed with the file at its new path and the edit applied
+/// there; the old path is left out, and nothing is written.
+#[test]
+fn a_preview_follows_a_renamed_file_to_its_new_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "mod old_name;\n").unwrap();
+    std::fs::write(root.join("src/old_name.rs"), "pub fn f() {}\n").unwrap();
+    let before = tree(&root);
+    let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+    let edit = serde_json::json!({ "documentChanges": [
+        { "textDocument": { "uri": uri("src/lib.rs"), "version": null },
+          "edits": at(0, 4, 12, "new_name") },
+        { "kind": "rename", "oldUri": uri("src/old_name.rs"), "newUri": uri("src/new_name.rs") },
+        { "textDocument": { "uri": uri("src/new_name.rs"), "version": null },
+          "edits": at(0, 7, 8, "g") },
+    ]});
+    let (planned, moves) = crate::refactor::planned_texts(&root, &edit).unwrap();
+    assert!(moves);
+    let rel = |p: &std::path::Path| p.strip_prefix(&root).unwrap().display().to_string();
+    let planned: Vec<(String, String)> = planned.iter().map(|(p, t)| (rel(p), t.clone())).collect();
+    assert_eq!(
+        planned,
+        [
+            ("src/lib.rs".to_string(), "mod new_name;\n".to_string()),
+            ("src/new_name.rs".to_string(), "pub fn g() {}\n".to_string()),
+        ]
+    );
+    assert_eq!(tree(&root), before, "a preview writes nothing");
+}

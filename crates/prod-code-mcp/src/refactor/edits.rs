@@ -159,12 +159,13 @@ pub fn text_for_edit(abs: &Path) -> Result<(Option<Vec<u8>>, String)> {
     Ok((bytes, text))
 }
 
-/// What every file an edit rewrites would contain, without writing anything: the text edits of
-/// a `WorkspaceEdit` applied in memory to the files as they are, each at the path it names. File
-/// renames, creations and deletions are not modelled, so an edit that follows one in the same
-/// batch is read from whatever that path holds now; this is a preview, not the ordered,
-/// transactional check [`crate::refactor::apply_workspace_edit`] makes. The second value says whether the edit
-/// had any resource operation, so a caller can say that part was not checked.
+/// What every file an edit rewrites would contain, without writing anything: the operations of
+/// a `WorkspaceEdit` applied in memory, in order, to the files as they are. A renamed file's
+/// text moves to its new path and later edits of that path apply to it, and a created one starts
+/// empty (#1469). A deleted or moved-away path is left out of the result, since an overlay
+/// cannot remove a file. This is a preview, not the transactional apply
+/// [`crate::refactor::apply_workspace_edit`] makes. The second value says whether the edit had
+/// any resource operation, so a caller can say that the removal of files was not checked.
 pub fn planned_texts(
     root: &Path,
     edit: &serde_json::Value,
@@ -182,16 +183,59 @@ pub fn planned_multi_texts(
         .iter()
         .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf()))
         .collect();
-    let mut out = Vec::new();
+    // Each path's proposed text, in the order the edit first names it, and the paths it removed.
+    let mut out: Vec<(PathBuf, String)> = Vec::new();
+    let mut gone: Vec<PathBuf> = Vec::new();
     let mut moves_files = false;
+    let current = |out: &[(PathBuf, String)], gone: &[PathBuf], abs: &Path| -> Result<String> {
+        if let Some((_, text)) = out.iter().find(|(p, _)| p == abs) {
+            return Ok(text.clone());
+        }
+        if gone.iter().any(|p| abs.starts_with(p)) {
+            return Ok(String::new());
+        }
+        Ok(text_for_edit(abs)?.1)
+    };
+    let set = |out: &mut Vec<(PathBuf, String)>, gone: &mut Vec<PathBuf>, abs: PathBuf, text| {
+        gone.retain(|p| *p != abs);
+        match out.iter_mut().find(|(p, _)| *p == abs) {
+            Some((_, slot)) => *slot = text,
+            None => out.push((abs, text)),
+        }
+    };
     for op in multi_operations(&canonical_roots, edit)? {
         match op {
             MultiOp::Text { root, rel, edits } => {
                 let abs = root.join(&rel);
-                let (_, current) = text_for_edit(&abs)?;
-                out.push((abs, apply_text_edits(&current, &edits)?));
+                let text = apply_text_edits(&current(&out, &gone, &abs)?, &edits)?;
+                set(&mut out, &mut gone, abs, text);
             }
-            _ => moves_files = true,
+            MultiOp::Create { root, rel, .. } => {
+                moves_files = true;
+                let abs = root.join(&rel);
+                let text = current(&out, &gone, &abs)?;
+                set(&mut out, &mut gone, abs, text);
+            }
+            MultiOp::Rename {
+                from_root,
+                from_rel,
+                to_root,
+                to_rel,
+                ..
+            } => {
+                moves_files = true;
+                let from = from_root.join(&from_rel);
+                let text = current(&out, &gone, &from)?;
+                out.retain(|(p, _)| *p != from);
+                gone.push(from);
+                set(&mut out, &mut gone, to_root.join(&to_rel), text);
+            }
+            MultiOp::Delete { root, rel, .. } => {
+                moves_files = true;
+                let abs = root.join(&rel);
+                out.retain(|(p, _)| !p.starts_with(&abs));
+                gone.push(abs);
+            }
         }
     }
     Ok((out, moves_files))
