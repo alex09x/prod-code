@@ -66,7 +66,14 @@ pub struct SharedWorkspace {
     pub rebalance_tx: broadcast::Sender<(String, Option<String>)>,
     /// Recorded modification timestamps for project manifests when loaded.
     pub manifest_mtimes: HashMap<PathBuf, Option<std::time::SystemTime>>,
+    /// While a validation engine of this root loads, the files changed meanwhile, which the
+    /// engine read before they changed and catches up on once published (#1490). `None` when
+    /// nothing is loading. Shared like `rust_engines` with the views of this root.
+    pub(crate) loading_changes: LoadingChanges,
 }
+
+/// See [`SharedWorkspace::loading_changes`].
+pub(crate) type LoadingChanges = Arc<std::sync::Mutex<Option<std::collections::BTreeSet<PathBuf>>>>;
 
 impl SharedWorkspace {
     pub fn new(
@@ -116,6 +123,10 @@ impl SharedWorkspace {
                     default_max_concurrent_engine_loads(),
                 ))
             });
+        let loading_changes = base_workspace
+            .as_ref()
+            .map(|base| Arc::clone(&base.loading_changes))
+            .unwrap_or_default();
         let mut manifest_mtimes = HashMap::new();
         for cfg in [
             "Cargo.lock",
@@ -158,6 +169,18 @@ impl SharedWorkspace {
             validation_attached: AtomicBool::new(false),
             rebalance_tx,
             manifest_mtimes,
+            loading_changes,
+        }
+    }
+
+    /// Records that `changed` (absolute paths) changed on disk, for a validation engine of this
+    /// root that is loading now and read them before (#1490). Called before the engines a
+    /// change reaches are listed, so a change either reaches a published engine or is here.
+    pub(crate) fn note_changes(&self, changed: &[PathBuf]) {
+        if let Ok(mut pending) = self.loading_changes.lock()
+            && let Some(pending) = pending.as_mut()
+        {
+            pending.extend(changed.iter().cloned());
         }
     }
 

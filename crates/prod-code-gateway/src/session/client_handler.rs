@@ -186,14 +186,23 @@ pub async fn handle_client(
                 // The files an agent is editing are the ones it validates next: warm them now
                 // (#233).
                 let synced_rust = priming::synced_rust_files(&workspace, &touched);
-                if !synced_rust.is_empty()
-                    && let Some(loaded) = state.workspace_manager.get_loaded(&workspace).await
-                    && let Some(engine) = loaded.loaded_validation_engine()
-                {
+                // The checkout's own workspace and every nested project loaded under it, each
+                // with the synced files it holds: a nested key is not the checkout's (#1488).
+                for loaded in state.workspace_manager.loaded_under(&workspace).await {
+                    let root = loaded.key.0.clone();
+                    let files: Vec<_> = synced_rust
+                        .iter()
+                        .filter(|path| path.starts_with(&root))
+                        .cloned()
+                        .collect();
                     // Validation runs on its own engine: warm it only once it has been loaded,
                     // without spawning a second RustEngine::load on sync or falling back to
                     // the main engine (#1118).
-                    priming::warm_in_background(engine, workspace.clone(), synced_rust);
+                    if !files.is_empty()
+                        && let Some(engine) = loaded.loaded_validation_engine()
+                    {
+                        priming::warm_in_background(engine, root, files);
+                    }
                 }
                 // The search index is kept current by what the sync wrote, so a query never
                 // has to walk the tree.

@@ -238,12 +238,11 @@ pub async fn apply_sync_with_metrics(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("default");
-    // A workspace that is already warm in RAM must see the synced files as its new base.
+    // A workspace that is already warm in RAM must see the synced files as its new base, and so
+    // must a nested project's engine loaded under it (#1488).
     let loaded_rust = workspace_manager
-        .get_loaded(&server_workspace)
-        .await
-        .map(|ws| ws.mirrored_rust_engines())
-        .unwrap_or_default();
+        .rust_engines_for_changes(&server_workspace, &base_paths)
+        .await;
     // The files are on disk: the answer does not wait on an engine that a stuck query keeps
     // locked (#1143).
     crate::sync::base_updates::push_base_updates(
