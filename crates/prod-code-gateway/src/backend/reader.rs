@@ -40,7 +40,7 @@ pub(crate) fn spawn_reader_loop(
     OwnedTask(tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
         loop {
-            let json = match prod_code_protocol::transport::read_lsp_frame(&mut reader).await {
+            let mut json = match prod_code_protocol::transport::read_lsp_frame(&mut reader).await {
                 Ok(Some(json)) => json,
                 Ok(None) => break,
                 Err(error) => {
@@ -91,10 +91,24 @@ pub(crate) fn spawn_reader_loop(
                 }
 
                 if method.is_none() {
-                    if valid_dispatch_response(&val)
-                        && id.is_some_and(|id| lock_unpoisoned(&issued_requests).take(id))
-                    {
+                    let answered = valid_dispatch_response(&val)
+                        .then(|| id.and_then(|id| lock_unpoisoned(&issued_requests).take(id)))
+                        .flatten();
+                    if let Some(request) = answered {
                         record_dispatch_liveness(&ordinary_epoch, &last_activity, &probe_state);
+                        // The managed Go engine's gopls workaround applies here too: a
+                        // fallback gopls answers a diagnostic pull with an empty `kind`
+                        // (#1448). Only that method's answer from a Go backend is touched.
+                        if &*writer.engine == "go" {
+                            let mut normalized = val.clone();
+                            prod_code_engine_go::lsp::normalize_diagnostic_response(
+                                &request,
+                                &mut normalized,
+                            );
+                            if normalized != val {
+                                json = normalized.to_string();
+                            }
+                        }
                     }
                 } else if probe_identity_sequence.is_none()
                     && val.get("jsonrpc").and_then(serde_json::Value::as_str) == Some("2.0")

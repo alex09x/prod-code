@@ -95,7 +95,8 @@ impl FrameWriter {
         *lock_unpoisoned(&self.last_activity) = Instant::now();
         lock_unpoisoned(&self.probe_state).consecutive_timeouts = 0;
         let mut registration = ordinary_request.map(|value| {
-            let token = lock_unpoisoned(&self.issued_requests).insert(value["id"].clone());
+            let method = value["method"].as_str().unwrap_or_default();
+            let token = lock_unpoisoned(&self.issued_requests).insert(value["id"].clone(), method);
             IssuedRequestRegistration {
                 history: Arc::downgrade(&self.issued_requests),
                 token,
