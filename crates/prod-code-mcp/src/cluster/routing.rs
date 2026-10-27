@@ -59,15 +59,39 @@ pub async fn route_for_path(
     let (Some(routing), Some(path)) = (ROUTING.get(), path) else {
         return Ok(default);
     };
-    route_in(
+    route_with(routing, default, root, path, placement_path().as_deref()).await
+}
+
+/// [`route_for_path`] in `routing`'s cluster. A nested placement is remembered under the
+/// checkout at `root`, the one being asked about, not the checkout this process started in:
+/// an `also_in` root's nested project gets its own `<workspace>#<engine>` (#1424).
+pub(crate) async fn route_with(
+    routing: &Routing,
+    default: SocketAddr,
+    root: &Path,
+    path: &str,
+    placement_file: Option<&Path>,
+) -> Result<SocketAddr> {
+    let workspace = placement_workspace(root);
+    // On the heap: every tool call that names a path awaits this, and in a debug build the
+    // extra layer of an inline future overflowed the stack of deep callers such as the Go
+    // reorder tool.
+    Box::pin(route_in(
         &routing.nodes,
-        &routing.workspace,
+        &workspace,
         default,
         root,
         path,
-        placement_path().as_deref(),
-    )
+        placement_file,
+    ))
     .await
+}
+
+/// The name placements of the checkout at `root` are remembered under: its origin repository's
+/// for a worktree, as the CLI names the checkout it starts in.
+pub(crate) fn placement_workspace(root: &Path) -> String {
+    let identity = crate::sync::workspace_identity(root);
+    identity.base.unwrap_or(identity.name)
 }
 
 /// The node for a query about another whole checkout at `root`: the one its own workspace is
