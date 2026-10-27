@@ -138,7 +138,14 @@ pub(super) fn parse_workspace_symbol_hits(
             }
             continue;
         };
-        let Some(path) = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok()) else {
+        // A valid URI of another scheme, such as a `jar:` class inside an archive, names no file
+        // to show: it is skipped, and later file hits still count (#1437). Text that is no URI,
+        // or a `file:` URI with no local path, stays malformed.
+        let parsed = Url::parse(uri).ok();
+        if parsed.as_ref().is_some_and(|u| u.scheme() != "file") {
+            continue;
+        }
+        let Some(path) = parsed.and_then(|u| u.to_file_path().ok()) else {
             if bare_symbol_name(name).eq_ignore_ascii_case(bare_symbol_name(query)) {
                 return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
                     "malformed LSP {context}: invalid location URI"
@@ -376,3 +383,7 @@ fn inferred_declaration_kind(trimmed: &str, in_container: bool) -> &'static str 
     }
     if in_container { "Field" } else { "Variable" }
 }
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod tests;

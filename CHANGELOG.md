@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Symbol Search Skips Virtual-Document Hits Instead of Failing** (`crates/prod-code-mcp`, #1437):
+  A workspace-symbol hit in a valid URI of another scheme, such as a `jar:` class inside an archive, is skipped, and the file hits after it are still found. Before, an exact-name hit like that made the whole search fail as a malformed answer. Text that is not a URI at all still fails.
 - **Compiler-Validation Isolation Test Checks the Gateway's Copy, Not Only the Client's** (`crates/prod-code-gateway`, test, #1435):
   The linked Rust compiler-validation regressions, cold and warm, compared only the client checkout after each validation. An overlay leak would land in the gateway's synced copy, where the compiler runs, and the next sync could hide it. They now also compare the gateway's copy of the fixture right after each validation, before another call. A control in the test changes that copy and confirms the comparison catches it. The cold case finds the copy only after its first validation, so nothing warms its first compile.
 - **Agent Guidance Files a Recurrence of a Closed Issue Instead of Only Commenting on It** (`crates/prod-code-mcp`, #1434):
