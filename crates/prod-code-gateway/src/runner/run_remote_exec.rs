@@ -233,31 +233,9 @@ pub async fn run_remote_exec_with_ram(
     let shim_raw_status = status;
     let had_report = report.is_some();
     drop(report);
-    let (exit_code, usage, exec_err) = if let Some((raw, usage)) = report_status {
-        use std::os::unix::process::ExitStatusExt;
-        (
-            std::process::ExitStatus::from_raw(raw).code(),
-            Some(usage),
-            None,
-        )
-    } else if let Some((raw, usage)) = shim_raw_status {
-        use std::os::unix::process::ExitStatusExt;
-        let exit_status = std::process::ExitStatus::from_raw(raw);
-        if exit_status.code() == Some(74) && had_report && !timed_out {
-            (
-                Some(74),
-                Some(usage),
-                Some(
-                    "exec shim failed to write process report (disk full or write error)"
-                        .to_string(),
-                ),
-            )
-        } else {
-            (exit_status.code(), Some(usage), None)
-        }
-    } else {
-        (None, None, None)
-    };
+    // Killed on a timeout, the shim wrote no report and its own usage is not reported (#1483).
+    let (exit_code, usage, exec_err) =
+        exec_shim::outcome(report_status, shim_raw_status, had_report, timed_out);
 
     if exit_code == Some(254) {
         tokio::task::spawn_blocking(crate::shadow::ensure_sccache_server)

@@ -243,6 +243,36 @@ impl Drop for ReportFile {
     }
 }
 
+/// How a command started with [`command`] ended: its exit code, its resource use and an error.
+/// They come from the shim's `report` when it wrote one, and otherwise from `wait4` on the
+/// process that was `started` (raw status and usage); `shim` says whether that was the shim.
+pub fn outcome(
+    report: Option<(i32, ExecUsage)>,
+    started: Option<(i32, ExecUsage)>,
+    shim: bool,
+    timed_out: bool,
+) -> (Option<i32>, Option<ExecUsage>, Option<String>) {
+    use std::os::unix::process::ExitStatusExt;
+    let code = |raw| std::process::ExitStatus::from_raw(raw).code();
+    if let Some((raw, usage)) = report {
+        return (code(raw), Some(usage), None);
+    }
+    let Some((raw, usage)) = started else {
+        return (None, None, None);
+    };
+    if code(raw) == Some(74) && shim && !timed_out {
+        return (
+            Some(74),
+            Some(usage),
+            Some("exec shim failed to write process report (disk full or write error)".to_string()),
+        );
+    }
+    // Killed on a timeout, the shim had not reaped the command, so `wait4` measured the shim
+    // alone; a command started directly was measured itself (#1483).
+    let usage = (!(shim && timed_out)).then_some(usage);
+    (code(raw), usage, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +347,45 @@ mod tests {
         let path = first.0.clone();
         drop(first);
         assert!(!path.exists());
+    }
+
+    /// #1483: a shim killed on a timeout wrote no report and had not reaped the command, so its
+    /// own usage is not passed off as the command's; a direct child's still is.
+    #[test]
+    fn the_outcome_reports_only_usage_that_measured_the_command() {
+        let usage = |rss| ExecUsage {
+            cpu_user_ms: 1,
+            cpu_sys_ms: 1,
+            max_rss_kb: rss,
+        };
+        let killed = libc::SIGKILL;
+        let rss = |o: (Option<i32>, Option<ExecUsage>, Option<String>)| {
+            (o.0, o.1.map(|u| u.max_rss_kb), o.2)
+        };
+        assert_eq!(
+            rss(outcome(
+                Some((3 << 8, usage(900))),
+                Some((0, usage(5))),
+                true,
+                false
+            )),
+            (Some(3), Some(900), None),
+            "the report describes the command"
+        );
+        assert_eq!(
+            rss(outcome(None, Some((killed, usage(5))), true, true)),
+            (None, None, None),
+            "the timed-out shim measured only itself"
+        );
+        assert_eq!(
+            rss(outcome(None, Some((killed, usage(700))), false, true)),
+            (None, Some(700), None),
+            "a direct child killed on the timeout was measured itself"
+        );
+        let (code, used, error) = rss(outcome(None, Some((74 << 8, usage(800))), true, false));
+        assert_eq!((code, used), (Some(74), Some(800)));
+        assert!(error.is_some_and(|e| e.contains("failed to write process report")));
+        assert_eq!(rss(outcome(None, None, true, true)), (None, None, None));
     }
 
     #[test]

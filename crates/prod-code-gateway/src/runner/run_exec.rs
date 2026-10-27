@@ -222,36 +222,14 @@ pub async fn run_exec_with_ram(
         return Ok(());
     }
     // The shim's report describes the command itself. There is none when the group was killed
-    // on a timeout, and then what `wait4` said about the shim stands in for it.
+    // on a timeout, and then `wait4` described only the shim, which had not reaped the command:
+    // its exit stands in, its usage is not reported as the command's (#1483).
     let report_status = report.as_ref().and_then(exec_shim::ReportFile::read);
     let shim_raw_status = status;
     let had_report = report.is_some();
     drop(report);
-    let (exit_code, usage, exec_err) = if let Some((raw, usage)) = report_status {
-        use std::os::unix::process::ExitStatusExt;
-        (
-            std::process::ExitStatus::from_raw(raw).code(),
-            Some(usage),
-            None,
-        )
-    } else if let Some((raw, usage)) = shim_raw_status {
-        use std::os::unix::process::ExitStatusExt;
-        let exit_status = std::process::ExitStatus::from_raw(raw);
-        if exit_status.code() == Some(74) && had_report && !timed_out {
-            (
-                Some(74),
-                Some(usage),
-                Some(
-                    "exec shim failed to write process report (disk full or write error)"
-                        .to_string(),
-                ),
-            )
-        } else {
-            (exit_status.code(), Some(usage), None)
-        }
-    } else {
-        (None, None, None)
-    };
+    let (exit_code, usage, exec_err) =
+        exec_shim::outcome(report_status, shim_raw_status, had_report, timed_out);
     if exit_code == Some(254) {
         tracing::warn!(
             "exec command exited with 254; ensuring sccache server is running cleanly on host"

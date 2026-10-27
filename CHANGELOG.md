@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Timed-Out Command Reports No Resource Use Rather Than the Shim's** (`crates/prod-code-gateway`, #1483):
+  When `exec` killed a command at its timeout, the exec shim died before it could reap the command and write its report. The result then carried the shim's own CPU time and memory as the command's. That usage is now left out. A command started directly (without the shim) still reports what `wait4` measured for it, and a shim that could not write its report still reports exit 74 with its error. The choice is made in one place, `exec_shim::outcome`, which both runners call.
 - **A Shadow Run's Environment Reaches Only the Command, After the Capability Drop** (`crates/prod-code-gateway`, #1468):
   An overlay hypothesis's requested environment was set on `unshare`, so the namespace shell and `setpriv` started with it while they still held the namespace's capabilities. A `PATH` entry or a loader variable such as `LD_PRELOAD` could run code before the drop: a `mount` found through the request's `PATH` ran with `CapEff: 000001ffffffffff`. The bootstrap now keeps the gateway's environment, and `setpriv` starts `env NAME=VALUE… COMMAND` once the capabilities are gone. A command whose name contains `=` is refused when variables are set, because `env` would read it as one.
 - **A Public Swift Parameter Object Can Be Constructed From Another Module** (`crates/prod-code-mcp`, #1511):
