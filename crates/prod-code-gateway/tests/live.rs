@@ -1235,10 +1235,9 @@ async fn the_gateway_supervises_a_generic_language_server() {
             gateway.addr,
             &root,
             "code_rename",
-            // `force`: fixable.ts, which the rename also rewrites, keeps its deliberate type
-            // error, and a TypeScript error without a proven owner is not subtracted as
-            // pre-existing (#1314; tracked in #1491).
-            serde_json::json!({ "path": "src/quantity.ts", "line": 7, "character": 17, "new_name": "sumAll", "force": true }),
+            // No `force`: fixable.ts, which the rename also rewrites, keeps its deliberate type
+            // error on an untouched line, which is pre-existing and does not block (#1491).
+            serde_json::json!({ "path": "src/quantity.ts", "line": 7, "character": 17, "new_name": "sumAll" }),
         )
         .await,
     );

@@ -77,6 +77,45 @@ pub(super) fn whole_snapshot_embedding(before: &str, after: &str, file: &str) ->
         .eq(after.lines().filter(significant))
 }
 
+/// Whether `after` differs from `before` only inside lines, without touching their lexical
+/// shape, as a rename's edits do (#1491). There are as many lines, no line continuation, and
+/// each changed line keeps its sequence of brackets, quotes and comment markers. No scope can
+/// open, close or move then, so a line left byte-for-byte as it was is the same line.
+pub(super) fn in_line_token_edit(before: &str, after: &str) -> bool {
+    if [before, after]
+        .iter()
+        .any(|text| text.contains("\\\n") || text.contains("\\\r\n"))
+    {
+        return false;
+    }
+    let shape = |line: &str| -> String {
+        line.chars()
+            .filter(|c| {
+                matches!(
+                    c,
+                    '{' | '}' | '(' | ')' | '[' | ']' | '"' | '\'' | '`' | '/' | '*' | '#'
+                )
+            })
+            .collect()
+    };
+    let (old, new): (Vec<_>, Vec<_>) = (before.lines().collect(), after.lines().collect());
+    old.len() == new.len()
+        && old
+            .iter()
+            .zip(&new)
+            .all(|(a, b)| a == b || shape(a) == shape(b))
+}
+
+/// For an [`in_line_token_edit`]: each new line's old line, where the line did not change.
+pub(super) fn same_lines(before: &str, after: &str) -> Vec<Option<u32>> {
+    before
+        .lines()
+        .zip(after.lines())
+        .enumerate()
+        .map(|(i, (a, b))| (a == b).then_some(i as u32 + 1))
+        .collect()
+}
+
 /// A one-based old line for each new line, only when its correspondence is unambiguous.
 /// Full-line equality is necessary but is never by itself the occurrence identity.
 pub(super) fn unchanged_lines(before: &str, after: &str) -> Vec<Option<u32>> {

@@ -180,12 +180,14 @@ async fn an_analyzer_error_blocks_the_write_unless_forced() {
     let mut request = Request::new("math.ts", "clamp", "max");
     request.apply = true;
 
-    // Only the first line of the message is kept. An error past the end of its line (client.ts
-    // has an empty line 2) still counts: an analyzer error is never dropped for its position.
+    // Only the first line of the message is kept. The gateway answers the same error for every
+    // text, so client.ts had it before the edit too: its calls change only inside line 4, its
+    // empty line 2 is untouched, and the error there is the file's own (#1491). math.ts gains a
+    // line, and its error is the edit's.
     let err = request.run(gw.addr(), &ws).await.unwrap_err();
     assert_eq!(
         err.to_string(),
-        "the change does not compile (2 error(s)); nothing was written. Pass `force: true` to write it anyway:\n  Cannot find name 'max'. [TS2304] (client.ts:2:12)\n  Cannot find name 'max'. [TS2304] (math.ts:2:12)"
+        "the change does not compile (1 error(s)); nothing was written. Pass `force: true` to write it anyway:\n  Cannot find name 'max'. [TS2304] (math.ts:2:12)"
     );
     assert_eq!(ws.read("math.ts"), MATH_TS);
     assert_eq!(ws.read("client.ts"), CLIENT_TS);
@@ -195,10 +197,7 @@ async fn an_analyzer_error_blocks_the_write_unless_forced() {
     assert!(res.applied);
     assert_eq!(
         res.diagnostics,
-        [
-            "Cannot find name 'max'. [TS2304] (client.ts:2:12)",
-            "Cannot find name 'max'. [TS2304] (math.ts:2:12)"
-        ]
+        ["Cannot find name 'max'. [TS2304] (math.ts:2:12)"]
     );
     assert!(
         res.render(10_000)
