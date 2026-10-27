@@ -3385,6 +3385,9 @@ async fn a_constant_every_caller_passes_moves_into_the_body() {
         scripted_gateway(Arc::new(move |method, _params| match method {
             "textDocument/references" => answers::locations(&l, &refs),
             "textDocument/diagnostic" => answers::no_diagnostics(),
+            // Each call's `LIMIT` is the crate's, declared in the callee's own module (#1508).
+            "textDocument/definition" => answers::locations(&l, &[(1, 11)]),
+            "textDocument/documentSymbol" => serde_json::json!([]),
             _ => serde_json::Value::Null,
         }))
     };

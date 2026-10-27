@@ -55,6 +55,7 @@ pub async fn inline_parameter(
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     let mut unmatched = Vec::new();
     let mut values: Vec<(String, String)> = Vec::new();
+    let mut names: Vec<(PathBuf, String, usize)> = Vec::new();
     let (fl, fc) = crate::signature::position_at(&text, fn_at)?;
     let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let refs = crate::signature::references(remote, root, file, fl, fc)
@@ -101,6 +102,13 @@ pub async fn inline_parameter(
             unmatched.push(format!("{site} (the call has no argument for `{param}`)"));
             continue;
         };
+        // Where the argument's name is, for asking what it names (#1508): the parts are the raw
+        // text between top-level commas.
+        let arg_at = args_start
+            + args[..arg_index].iter().map(|a| a.len() + 1).sum::<usize>()
+            + (arg.len() - arg.trim_start().len());
+        let last_segment = arg.trim().rfind("::").map_or(0, |i| i + 2);
+        names.push((path.clone(), body.clone(), arg_at + last_segment));
         values.push((site, arg.trim().to_string()));
         let remaining: Vec<&str> = args
             .iter()
@@ -135,6 +143,15 @@ pub async fn inline_parameter(
         "every call passes `{first}` for `{param}`, but it may name something of the caller's \
          (a local, or an expression over one); only a literal, a constant or a path is inlined"
     );
+    // A name the calls spell alike can still be different items in their modules, and another
+    // in the callee's: each call's must be one item, bound so it means that item here (#1508).
+    let names_an_item = first.starts_with(|c: char| c.is_alphabetic() || c == '_')
+        && !matches!(first.as_str(), "true" | "false");
+    let first = if names_an_item {
+        super::identity::bound_text(remote, root, &first, &names, (file, fl - 1)).await?
+    } else {
+        first
+    };
 
     // The declaration: without the parameter, and the value bound at the top of the body.
     let mut kept: Vec<String> = receiver.into_iter().collect();
