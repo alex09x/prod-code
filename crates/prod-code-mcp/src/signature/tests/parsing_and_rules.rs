@@ -33,6 +33,23 @@ fn a_parameter_is_found_with_its_function_and_the_ones_that_stay() {
     );
 }
 
+/// #1503: a parameter is found by where its name is, not by its spelling: the type `id` in
+/// `id: id` is not the parameter `id`.
+#[test]
+fn a_parameter_is_found_at_its_name_and_not_at_a_type_spelled_like_it() {
+    let t = "type id = u32;\nfn f(id: id, n: u8) {}\n";
+    // `fn f(id: id, n: u8)`: the name at column 6, the type at column 10.
+    assert_eq!(parameter_at(t, 2, 6).map(|p| p.1).as_deref(), Some("id"));
+    assert!(
+        parameter_at(t, 2, 10).is_none(),
+        "the type is not the parameter"
+    );
+    assert_eq!(parameter_at(t, 2, 14).map(|p| p.1).as_deref(), Some("n"));
+    // A function type's `->` closes no bracket, so the parameter after it is still found.
+    let g = "fn g((a, b): (u8, u8), f: fn(u8) -> u8, c: u8) {}\n";
+    assert_eq!(parameter_at(g, 1, 41).map(|p| p.1).as_deref(), Some("c"));
+}
+
 #[test]
 fn a_return_type_is_replaced_added_and_removed() {
     let t = "pub fn total(xs: &[u32]) -> u32 {\n    0\n}\n";

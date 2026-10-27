@@ -290,6 +290,15 @@ pub fn parameter_at(text: &str, line: u32, col: u32) -> Option<(usize, String, V
     if list_open != open + 1 || at > list_close {
         return None;
     }
+    // The cursor must be on the name itself: the part of a parameter before its top-level `:`.
+    // A type or a generic spelled like a parameter (`fn f(id: id)`) is not one (#1503).
+    let rel = start - list_open;
+    if !name_parts(&text[list_open..list_close])
+        .iter()
+        .any(|part| part.contains(&rel))
+    {
+        return None;
+    }
     let (_, declared) = parse_declared(&text[list_open..list_close]);
     declared.iter().find(|d| d.name == name)?;
     let kept = declared
@@ -298,6 +307,39 @@ pub fn parameter_at(text: &str, line: u32, col: u32) -> Option<(usize, String, V
         .map(|d| d.name.clone())
         .collect();
     Some((fn_name_start, name, kept))
+}
+
+/// The byte range, in a parameter list, of each parameter's part before its top-level `:`: its
+/// name, or the pattern that binds it.
+fn name_parts(list: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = list.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    let mut colon = None;
+    for (i, c) in list.char_indices() {
+        match c {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            // `->` in a function type is no closing bracket.
+            '>' if i == 0 || bytes[i - 1] != b'-' => depth -= 1,
+            ':' if depth == 0
+                && colon.is_none()
+                && bytes.get(i + 1) != Some(&b':')
+                && (i == 0 || bytes[i - 1] != b':') =>
+            {
+                colon = Some(i)
+            }
+            ',' if depth == 0 => {
+                parts.push(start..colon.unwrap_or(i));
+                start = i + 1;
+                colon = None;
+            }
+            _ => {}
+        }
+    }
+    parts.push(start..colon.unwrap_or(list.len()));
+    parts
 }
 
 /// The receiver (`&self` and friends, kept verbatim) and the parameters of a parameter list.
