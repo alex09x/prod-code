@@ -203,8 +203,12 @@ pub fn execute_tool<'a>(
 
         // A path in a nested project of another language goes to a node that serves it (#125, #673).
         // Route before resolving symbols so cross-language symbol lookups hit the right language engine.
-        let remote =
-            crate::cluster::route_for_path(remote, workspace_root, initial_path.as_deref()).await?;
+        let remote = crate::cluster::route_for_path(
+            remote,
+            workspace_root,
+            routed_path(tool_name, initial_path.as_deref()),
+        )
+        .await?;
 
         // `symbol` instead of line/character: resolve the name through the workspace symbol
         // index, then run the tool at that position.
@@ -374,10 +378,17 @@ pub fn execute_tool<'a>(
         let remote = crate::cluster::route_for_path(
             remote,
             workspace_root,
-            args.get("path").and_then(|v| v.as_str()),
+            routed_path(tool_name, args.get("path").and_then(|v| v.as_str())),
         )
         .await?;
         let result = Box::pin(dispatch_tool(remote, workspace_root, tool_name, args)).await;
         with_indexing_notes(result, workspace_root)
     })
+}
+
+/// The path a tool is routed by. A text search reads the synced copy, which every node holding
+/// the workspace has: a Markdown file needs no node that serves Markdown, nor a Swift one a Mac
+/// (#1558).
+pub(crate) fn routed_path<'a>(tool_name: &str, path: Option<&'a str>) -> Option<&'a str> {
+    (tool_name != "code_grep").then_some(path).flatten()
 }
