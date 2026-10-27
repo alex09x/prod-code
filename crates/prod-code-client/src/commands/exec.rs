@@ -16,13 +16,23 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 /// Where a check, lint, test or benchmark run is scoped: `--path`, relative to `cwd`, or `cwd`.
-pub fn verify_scope(cwd: &Path, path: Option<&Path>) -> Result<PathBuf> {
+/// The run belongs to the checkout at `root`, so a path outside it is refused rather than
+/// quietly replaced by that checkout's own project (#1478).
+pub fn verify_scope(cwd: &Path, root: &Path, path: Option<&Path>) -> Result<PathBuf> {
     let Some(path) = path else {
         return Ok(cwd.to_path_buf());
     };
     let path = cwd.join(path);
     anyhow::ensure!(path.exists(), "--path {} does not exist", path.display());
-    Ok(std::fs::canonicalize(&path).unwrap_or(path))
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    anyhow::ensure!(
+        path.starts_with(&root),
+        "--path {} is outside this checkout ({}); run the command from the checkout that holds it",
+        path.display(),
+        root.display()
+    );
+    Ok(path)
 }
 
 /// The arguments of `check`, `lint`, `test` and `benchmarks`, as given.
@@ -45,7 +55,7 @@ pub async fn run_verify(
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let scope = verify_scope(&cwd, args.path.as_deref())?;
+    let scope = verify_scope(&cwd, &root, args.path.as_deref())?;
     let env = args
         .env
         .iter()
@@ -303,4 +313,29 @@ pub async fn run_exec(
             .unwrap_or_default()
     );
     std::process::exit(exit.exit_code.unwrap_or(1));
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::verify_scope;
+
+    /// A `--path` inside this checkout scopes the run; one in another project is refused,
+    /// instead of this checkout's own project being checked under its name (#1478).
+    #[test]
+    fn a_path_outside_the_checkout_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let this = dir.path().join("this");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(this.join("crates/inner")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let inner = verify_scope(&this, &this, Some(std::path::Path::new("crates/inner"))).unwrap();
+        assert!(inner.ends_with("crates/inner"), "{inner:?}");
+        assert!(verify_scope(&this.join("crates"), &this, None).is_ok());
+        let error = verify_scope(&this, &this, Some(std::path::Path::new("../other")))
+            .expect_err("another project");
+        assert!(
+            error.to_string().contains("outside this checkout"),
+            "{error}"
+        );
+    }
 }

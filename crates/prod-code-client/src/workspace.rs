@@ -21,6 +21,14 @@ pub fn detect_workspace_name(dir: &Path) -> Option<String> {
     Some(prod_code_mcp::sync::workspace_identity(dir).name)
 }
 
+/// The checkout a command about `file` works in: the one holding the file, else the one of
+/// `cwd`, else `cwd` itself (#1455, #1478).
+pub fn checkout_of(file: &Path, cwd: &Path) -> PathBuf {
+    find_workspace_root(file)
+        .or_else(|| find_workspace_root(cwd))
+        .unwrap_or_else(|| cwd.to_path_buf())
+}
+
 /// Find the root of the workspace or git worktree containing the specified file.
 pub fn find_workspace_root(file_path: &Path) -> Option<PathBuf> {
     let abs_path = if file_path.is_absolute() {

@@ -12,8 +12,7 @@ use super::session_state::{
     cli_stream_session_dir, cli_stream_session_path, load_cli_stream_session,
     prune_expired_cli_stream_sessions, write_cli_stream_session,
 };
-use crate::commands::run_tool;
-use crate::workspace::find_workspace_root;
+use crate::workspace::{checkout_of, find_workspace_root};
 use anyhow::{Context, Result};
 use std::env;
 use std::net::SocketAddr;
@@ -57,8 +56,13 @@ pub async fn run_validate_compiled(
     } else {
         eprintln!("Running the remote compiler check for the proposed changes...");
     }
-    run_tool(
+    // The compiler checks the checkout the proposed file belongs to, as validation without
+    // `--compile` does, not the one the command runs from (#1478).
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = checkout_of(&abs(file), &cwd);
+    crate::commands::common::run_tool_in(
         remote,
+        &root,
         "code_validate_edits",
         serde_json::json!({
             "edits": edits,
