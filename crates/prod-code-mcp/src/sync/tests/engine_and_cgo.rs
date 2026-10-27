@@ -393,3 +393,37 @@ fn go_package_with_embedded_schema_sql_stays_in_root_go_project() {
         (Some("web/vue-app".to_string()), Some("vue"))
     );
 }
+
+/// A Java project that depends on the Kotlin standard library stays Java; an applied Kotlin
+/// plugin, in any of its spellings, or a Kotlin source makes it Kotlin (#1476).
+#[test]
+fn only_a_kotlin_plugin_or_source_makes_a_gradle_project_kotlin() {
+    use crate::sync::engine::workspace::mcp_has_kotlin_project;
+    let project = |gradle: &str, kotlin_source: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("build.gradle"), gradle).unwrap();
+        let java = dir.path().join("src/main/java/demo");
+        std::fs::create_dir_all(&java).unwrap();
+        std::fs::write(java.join("App.java"), "class App {}\n").unwrap();
+        if kotlin_source {
+            let kotlin = dir.path().join("src/main/kotlin/demo");
+            std::fs::create_dir_all(&kotlin).unwrap();
+            std::fs::write(kotlin.join("App.kt"), "class Kt\n").unwrap();
+        }
+        mcp_has_kotlin_project(dir.path())
+    };
+    let stdlib = "plugins { id 'java' }\ndependencies {\n    implementation \"org.jetbrains.kotlin:kotlin-stdlib:1.9.0\"\n}\n";
+    assert!(!project(stdlib, false), "a stdlib dependency is no plugin");
+    assert!(!project(
+        "plugins { id 'java' }\n// id 'org.jetbrains.kotlin.jvm'\n",
+        false
+    ));
+    for plugin in [
+        "plugins { id 'org.jetbrains.kotlin.jvm' version '1.9.0' }\n",
+        "plugins { kotlin(\"jvm\") version \"1.9.0\" }\n",
+        "apply plugin: 'kotlin'\n",
+    ] {
+        assert!(project(plugin, false), "{plugin}");
+    }
+    assert!(project(stdlib, true), "a Kotlin source");
+}
