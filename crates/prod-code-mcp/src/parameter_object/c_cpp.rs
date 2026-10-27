@@ -187,14 +187,13 @@ pub(crate) async fn introduce_c(
     uses.dedup();
     let body_uses = uses.len();
 
-    let designated =
-        language == Language::C || cpp_standard(root, &def_path).is_some_and(|year| year >= 2020);
-    let literal = |pairs: &[(String, String)]| {
-        if designated {
-            literal_text(language, name, pairs)
-        } else {
-            aggregate_text(pairs)
-        }
+    // Each caller is compiled under its own standard: `{.a = x}` only where it is C++20 or C
+    // (#1513).
+    let mut standards: BTreeMap<PathBuf, bool> = BTreeMap::new();
+    let mut designated_in = |path: &Path| {
+        *standards.entry(path.to_path_buf()).or_insert_with(|| {
+            language == Language::C || cpp_standard(root, path).is_some_and(|year| year >= 2020)
+        })
     };
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     let mut unmatched = Vec::new();
@@ -251,6 +250,14 @@ pub(crate) async fn introduce_c(
             let place = format!("{}:{rl}:{rc}", display(root, &path));
             return Err(reordered(&callee, &place, moved, passed, language));
         }
+        let designated = designated_in(&path);
+        let literal = |pairs: &[(String, String)]| {
+            if designated {
+                literal_text(language, name, pairs)
+            } else {
+                aggregate_text(pairs)
+            }
+        };
         let new_args = rewritten_call_with(
             &args, &bound, &bundled, &declared, language, binding, literal,
         );
