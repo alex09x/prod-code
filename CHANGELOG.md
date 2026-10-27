@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **The Editor Bridge Ends Cleanly After the Editor's `exit`** (`crates/prod-code-client`, #1521):
+  Once the editor had sent `exit`, the language server leaving and the gateway closing the session were treated like a broken connection: exit 1, or a new session with `--reconnect`. The bridge now notes `shutdown` and `exit`, and a closure after `exit` ends it with 0 when `shutdown` came first and 1 when it did not, as the protocol has a server exit. An unexpected closure is still reported or reconnected.
+- **A Save Whose File Did Not Reach the Node Waits Before the Server Sees It** (`crates/prod-code-client`, #1517):
+  When the sync before a `textDocument/didSave` failed, the bridge warned and forwarded the save anyway, so check-on-save ran against the node's old copy, and nothing checked again once a later sync brought the new text. Such a save is now held. It goes out, in order, right after the next sync that succeeds. While a save waits, other editor traffic retries that sync at most once a second, and at most 64 saves are held.
 - **Search Reindexes Unix Files Whose Names Look Like a Drive** (`crates/prod-code-gateway`, #1459):
   On Unix, a file such as `a:module.rs` was indexed at first, but every later change to it was dropped as if `a:` were a Windows drive, so its declarations and vectors stayed stale after edits and deletion. The drive-letter rule now applies on Windows only. Traversal (`..`) and absolute paths are still refused everywhere.
 - **Loop-to-Iterator Keeps Rust's `for` Semantics and Binds Swift's Copied Element** (`crates/prod-code-mcp`, #1460, #1461):

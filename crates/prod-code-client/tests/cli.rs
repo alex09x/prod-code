@@ -3961,9 +3961,9 @@ async fn lsp_asks_for_its_language_pushes_a_save_first_and_mirrors_node_files() 
     );
 }
 
-/// A save whose push to the node fails still reaches the server, whose state follows the
-/// editor's, and the editor is told that the check it starts sees the node's previous copy
-/// (#350).
+/// A save whose push to the node fails is held instead of reaching the server, which would
+/// check the node's previous copy and never again (#1517); the editor is still told that the
+/// save did not reach the node (#350).
 #[tokio::test]
 async fn lsp_tells_the_editor_when_a_save_did_not_reach_the_node() {
     use tokio::io::AsyncWriteExt;
@@ -4007,9 +4007,10 @@ async fn lsp_tells_the_editor_when_a_save_did_not_reach_the_node() {
     assert!(text.contains("previous copy"), "{text}");
     let seen = seen.lock().expect("log").clone();
     assert!(
-        seen.iter()
+        !seen
+            .iter()
             .any(|(_, event)| event == "lsp textDocument/didSave"),
-        "the save still reaches the server: {seen:?}"
+        "a save whose file did not arrive waits for a sync that succeeds: {seen:?}"
     );
 }
 

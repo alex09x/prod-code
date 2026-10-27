@@ -94,6 +94,8 @@ pub async fn run_lsp_bridge(
     let mut replay_state_after_initialize = false;
     let (editor_frame_reader, editor_frames) = spawn_editor_frame_reader();
     let mut deferred_editor_frames = VecDeque::new();
+    let mut save_gate = super::save_gate::SaveGate::default();
+    let mut teardown = super::teardown::Teardown::default();
 
     let mut watchdog_interval = if watchdog_secs > 0 {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(watchdog_secs));
@@ -133,6 +135,15 @@ pub async fn run_lsp_bridge(
                     }
                 }
                 closed = &mut closed_rx => match closed {
+                    // The editor sent `exit`: the server left as asked (#1521).
+                    Ok(_) if teardown.expected_exit().is_some() => {
+                        keeper.abort();
+                        let code = teardown.expected_exit().unwrap_or(1);
+                        if code == 0 {
+                            break;
+                        }
+                        std::process::exit(code);
+                    }
                     Ok((why, redirect_target)) => {
                         let is_redirect = redirect_target.is_some();
                         if reconnect || is_redirect {
@@ -233,6 +244,7 @@ pub async fn run_lsp_bridge(
         };
 
         let client_method = prod_code_client::editor_files::method_of(&json_payload);
+        teardown.observe(client_method.as_deref());
         tracker.record_client_message(&json_payload, position_encoding.load(Ordering::Acquire));
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_payload) {
             if let (Some(id), Some(method)) =
@@ -256,24 +268,46 @@ pub async fn run_lsp_bridge(
         }
         trace_message(&trace, "->", &json_payload);
 
-        if matches!(
-            client_method.as_deref(),
-            Some("textDocument/didSave" | "workspace/didChangeWatchedFiles")
-        ) {
+        let is_save = client_method.as_deref() == Some("textDocument/didSave");
+        let saves_or_watches =
+            is_save || client_method.as_deref() == Some("workspace/didChangeWatchedFiles");
+        if save_gate.needs_sync(saves_or_watches) {
             let generation = prod_code_mcp::watch::current_generation(&cwd);
             let pushed = {
                 let _one_at_a_time = pushing.lock().await;
                 push_checkout(remote, &cwd).await
             };
-            match pushed {
-                Ok(()) => prod_code_mcp::watch::mark_synced(&cwd, generation),
+            let synced = match pushed {
+                Ok(()) => {
+                    prod_code_mcp::watch::mark_synced(&cwd, generation);
+                    true
+                }
                 Err(err) => {
                     tracing::debug!(error = %format!("{err:#}"), "sync before a save failed");
-                    let warning = prod_code_client::editor_files::push_failed_warning(&err);
-                    trace_message(&trace, "<-", &warning);
-                    let mut stdout = editor_out.lock().await;
-                    let _ =
-                        prod_code_client::editor_files::write_frame(&mut *stdout, &warning).await;
+                    if saves_or_watches {
+                        let warning = prod_code_client::editor_files::push_failed_warning(&err);
+                        trace_message(&trace, "<-", &warning);
+                        let mut stdout = editor_out.lock().await;
+                        let _ = prod_code_client::editor_files::write_frame(&mut *stdout, &warning)
+                            .await;
+                    }
+                    false
+                }
+            };
+            // A save whose file did not reach the node waits for a sync that succeeds, and
+            // then goes out before the message that found it (#1517).
+            let mut outgoing = save_gate.after_sync(synced, is_save, json_payload.clone());
+            if outgoing.pop().is_none() {
+                continue;
+            }
+            for held in outgoing {
+                trace_message(&trace, "->", &held);
+                if socket_tx
+                    .send(WireMessage::LspPayload(files.to_node(&held)))
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
         }
