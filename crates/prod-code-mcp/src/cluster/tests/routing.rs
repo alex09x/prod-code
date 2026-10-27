@@ -281,3 +281,29 @@ async fn test_single_node_refuses_when_it_does_not_serve_requested_engine() {
     let text = format!("{err:#}");
     assert!(text.contains("no reachable gateway serves swift"), "{text}");
 }
+
+/// #1558: a Markdown file in a checkout no node serves Markdown for has no node to route to, and
+/// that stays an error for a tool that asks a language server about it. A text search is not
+/// routed by the path's engine: it reads the synced copy, which every node of the checkout has.
+#[tokio::test]
+async fn a_text_search_is_not_routed_by_the_files_engine() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    std::fs::write(root.join("notes.md"), "publication\n").unwrap();
+    let rust = node_serving(&["rust"]).await;
+    let other = node_serving(&["rust"]).await;
+    let err = route_in(&[rust, other], "docs", rust, &root, "notes.md", None)
+        .await
+        .expect_err("no node serves Markdown");
+    assert!(
+        format!("{err:#}").contains("is in a markdown project"),
+        "{err:#}"
+    );
+    use crate::tools::execution::routed_path;
+    assert_eq!(routed_path("code_grep", Some("notes.md")), None);
+    assert_eq!(
+        routed_path("code_outline", Some("notes.md")),
+        Some("notes.md")
+    );
+    assert_eq!(routed_path("code_definition", None), None);
+}

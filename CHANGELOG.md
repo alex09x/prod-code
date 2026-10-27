@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **`code_grep` Searches a Markdown File Without a Node That Serves Markdown** (`crates/prod-code-mcp`, #1558):
+  `code_grep` with a single Markdown file as its `path` answered "`notes.md` is in a markdown project" and searched nothing, while the same search over the file's directory worked. Tools are routed by the engine of their `path`, so a node that serves that language is asked, and no node served Markdown. A text search reads the synced copy, which every node holding the checkout has, so `code_grep` is no longer routed by its path's engine. Language-server tools on such a file are still routed, and still refused when no node serves the language.
 - **Inline-Parameter Inlines a Named Constant Only When Every Call Names the Same One** (`crates/prod-code-mcp`, #1508):
   `code_inline_parameter` on Rust accepted an all-caps argument such as `LIMIT` by its spelling and copied the text into the callee. Two modules each passing their own `LIMIT` (1 and 2) to a callee whose module has `LIMIT = 100` were both accepted, and afterwards both got 100. A bare name is now resolved with the analyzer at every call. Calls that name different items are refused, and nothing is written. When the item is declared outside the callee's module, it is bound by its absolute path (`crate::LIMIT`), so the callee's own constant cannot take its place. A name declared in the callee's module stays as written. A path argument must name one item at every call, and is kept as written.
 - **Unloading Engines Gives Their Freed Heap Back to the System** (`crates/prod-code-gateway`, #1590):
