@@ -18,7 +18,9 @@ use super::go_imports::{
     add_go_import, get_go_package, go_module_import_path, go_package_is_used,
     rewrite_go_cross_pkg_in_source,
 };
-use super::imports::{py_from_module, remove_from_braced_ts_import, remove_from_py_from_import};
+use super::imports::{
+    py_from_module, remove_from_braced_ts_import, remove_from_py_from_import, split_default_import,
+};
 use super::specifiers::{
     display, display_relative_or_name, is_ident, is_symbol_used, python_module_specifier,
     relative_import_specifier,
@@ -104,17 +106,32 @@ pub(crate) fn rewrite_caller_imports_checked(
                 let matches_source = trimmed.starts_with("import ")
                     && (trimmed.contains(&rel_to_source)
                         || trimmed.contains(&rel_to_source.replace("./", "")));
+                // A default import names the moved default export whatever its local name, and
+                // may share its clause with named imports that stay at the source (#1431).
+                if matches_source
+                    && moved_default_export
+                    && let Some((local, rest)) = split_default_import(line)
+                {
+                    found = true;
+                    let indent = &line[..line.len() - line.trim_start().len()];
+                    match rest {
+                        Some(rest) => {
+                            let from = trimmed.split_once(" from ").map_or("", |(_, from)| from);
+                            lines.push(format!("{indent}import {rest} from {from}"));
+                            lines.push(format!("{indent}import {local} from \"{rel_to_target}\";"));
+                            notes.push(format!(
+                                "moved default import `{local}` to `{rel_to_target}`"
+                            ));
+                        }
+                        None => {
+                            lines.push(retarget_import(line, &rel_to_source, &rel_to_target));
+                            notes.push(format!("rewrote default import to `{rel_to_target}`"));
+                        }
+                    }
+                    continue;
+                }
                 if matches_source && is_symbol_used(line, decl_name) {
                     found = true;
-                    let default_binding = trimmed
-                        .strip_prefix("import ")
-                        .and_then(|clause| clause.split_once(" from "))
-                        .map(|(bindings, _)| bindings.trim());
-                    if moved_default_export && default_binding == Some(decl_name) {
-                        lines.push(retarget_import(line, &rel_to_source, &rel_to_target));
-                        notes.push(format!("rewrote default import to `{rel_to_target}`"));
-                        continue;
-                    }
                     let (shrunk, _) = remove_from_braced_ts_import(line, decl_name);
                     if shrunk.is_empty() {
                         lines.push(retarget_import(line, &rel_to_source, &rel_to_target));

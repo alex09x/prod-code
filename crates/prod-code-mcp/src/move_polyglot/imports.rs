@@ -61,6 +61,47 @@ fn ts_import_is_from(line: &str, rel_path: &str) -> bool {
     spec == rel_path
 }
 
+/// `content` with `import <sym> from "<rel_path>";`, the default import of a module whose
+/// default export is `sym`, unless it is already there (#1431).
+pub fn insert_ts_default_import(content: &str, sym: &str, rel_path: &str) -> (String, bool) {
+    if content.lines().any(|line| {
+        ts_import_is_from(line, rel_path)
+            && default_import_binding(line).is_some_and(|binding| binding == sym)
+    }) {
+        return (content.to_string(), false);
+    }
+    let import_line = format!("import {sym} from \"{rel_path}\";\n");
+    let insert_pos = top_import_insertion_pos(content);
+    let mut out = String::with_capacity(content.len() + import_line.len());
+    out.push_str(&content[..insert_pos]);
+    out.push_str(&import_line);
+    out.push_str(&content[insert_pos..]);
+    (out, true)
+}
+
+/// The default binding of a TypeScript/JavaScript import line and the rest of its clause:
+/// `Foo` and `{ other }` for `import Foo, { other } from "./m";`, `Foo` and nothing for
+/// `import Foo from "./m";`, `None` when the import has no default binding.
+pub(crate) fn split_default_import(line: &str) -> Option<(String, Option<String>)> {
+    let clause = line.trim().strip_prefix("import ")?;
+    let clause = clause.strip_prefix("type ").unwrap_or(clause);
+    let (bindings, _) = clause.split_once(" from ")?;
+    let bindings = bindings.trim();
+    if bindings.starts_with('{') || bindings.starts_with('*') {
+        return None;
+    }
+    let (default, rest) = match bindings.split_once(',') {
+        Some((default, rest)) => (default.trim(), Some(rest.trim().to_string())),
+        None => (bindings, None),
+    };
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    (!default.is_empty() && default.chars().all(ident)).then(|| (default.to_string(), rest))
+}
+
+pub(crate) fn default_import_binding(line: &str) -> Option<String> {
+    split_default_import(line).map(|(default, _)| default)
+}
+
 pub fn insert_or_merge_ts_import(content: &str, sym: &str, rel_path: &str) -> (String, bool) {
     for line in content.lines() {
         if ts_import_is_from(line, rel_path) {

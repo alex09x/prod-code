@@ -20,8 +20,11 @@ use crate::parameter_object::Language;
 use super::callers::rewrite_caller_imports_checked;
 use super::decl::{find_polyglot_decl, with_doc_comment_polyglot};
 use super::go_imports::remove_unused_go_imports;
-use super::imports::{carry_imports_polyglot, update_source_imports};
-use super::specifiers::{display, is_compatible_language_family, module_display_name};
+use super::imports::{carry_imports_polyglot, insert_ts_default_import, update_source_imports};
+use super::specifiers::{
+    display, is_compatible_language_family, is_symbol_used, module_display_name,
+    relative_import_specifier,
+};
 use super::target::{
     check_target_collision, cpp_move_target_is_implementation, format_item_for_target,
     initial_file_header,
@@ -104,8 +107,28 @@ pub async fn move_item(
         crate::move_item::append_item(&target_with_carried, &item)
     };
 
+    // A moved `export default` stays the destination's default export: the source's own
+    // remaining uses import it by default, not by a name the destination does not export
+    // (#1431).
+    let moved_default = matches!(lang, Language::TypeScript | Language::JavaScript)
+        && item_raw
+            .lines()
+            .map(str::trim)
+            .find(|l| {
+                !l.is_empty() && !l.starts_with("//") && !l.starts_with("/*") && !l.starts_with('*')
+            })
+            .is_some_and(|l| l.starts_with("export default "));
     let (source_new, source_import_note) =
-        update_source_imports(&source_new_cut, &name, file, target, root, lang)?;
+        if moved_default && is_symbol_used(&source_new_cut, &name) {
+            let rel = relative_import_specifier(file, target);
+            let (text, added) = insert_ts_default_import(&source_new_cut, &name, &rel);
+            (
+                text,
+                added.then(|| format!("imported default `{name}` from `{rel}`")),
+            )
+        } else {
+            update_source_imports(&source_new_cut, &name, file, target, root, lang)?
+        };
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
