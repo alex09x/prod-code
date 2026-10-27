@@ -16,7 +16,7 @@ use anyhow::Result;
 
 use crate::extract_function::binding::{read_after_but_not_returned, uncaptured_enclosing_locals};
 use crate::extract_function::rewrite::{
-    apply_edits, errors_in, indent_at, rename_placeholder, with_arguments,
+    apply_edits, errors_in, indent_at, rename_placeholder, with_arguments, with_calls,
 };
 use crate::extract_function::tokens::Token;
 use crate::extract_function::types::{Duplicate, MAX_DUPLICATES, Occurrence, PLACEHOLDER, Rewrite};
@@ -197,10 +197,7 @@ pub async fn process_and_validate_duplicates(
         )];
         for (path, edits) in others {
             let original = std::fs::read_to_string(&path).unwrap_or_default();
-            files.push((
-                path,
-                rename_placeholder(&apply_edits(&original, &edits), name),
-            ));
+            files.push((path, with_calls(&original, &edits, name)));
         }
         files
     };
