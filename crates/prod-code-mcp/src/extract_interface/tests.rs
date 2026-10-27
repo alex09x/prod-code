@@ -113,3 +113,60 @@ fn test_extract_interface_swift() {
     assert!(res.contains("func pay(amount: Double) -> Bool"));
     assert!(res.contains("struct PaymentService: PaymentProtocol {"));
 }
+
+/// #1462: JavaScript gets a contract it can hold: a JSDoc `@typedef` of the public instance
+/// methods and `@implements` on the class. No TypeScript syntax is written into the file.
+#[test]
+fn test_extract_interface_js() {
+    let js = r#"export class UserService {
+    constructor(db) {
+        this.db = db;
+    }
+
+    async getUser(id, opts = {}) {
+        return this.db.find(id, opts);
+    }
+
+    deleteUser(id, ...reasons) {
+        if (reasons.length) {
+            log(reasons);
+        }
+        return true;
+    }
+
+    static create() {
+        return new UserService(null);
+    }
+
+    #secret() {}
+}
+"#;
+    let (res, methods) = extract_interface_js(js, "UserService", "UserStore", &[]).unwrap();
+    assert_eq!(methods, vec!["getUser", "deleteUser"]);
+    assert!(res.contains(" * @typedef {object} UserStore\n"), "{res}");
+    assert!(
+        res.contains(" * @property {(id: any, opts?: any) => any} getUser\n"),
+        "{res}"
+    );
+    assert!(
+        res.contains(" * @property {(id: any, ...reasons: any[]) => any} deleteUser\n"),
+        "{res}"
+    );
+    assert!(
+        res.contains("/** @implements {UserStore} */\nexport class UserService {"),
+        "{res}"
+    );
+    assert!(!res.contains("interface UserStore") && !res.contains("implements UserStore {"));
+    // The class itself is unchanged.
+    assert!(res.ends_with(js), "{res}");
+
+    let (_, only) =
+        extract_interface_js(js, "UserService", "Reader", &["getUser".to_string()]).unwrap();
+    assert_eq!(only, vec!["getUser"]);
+    let err = extract_interface_js(js, "UserService", "X", &["create".to_string()]).unwrap_err();
+    assert!(
+        err.to_string().contains("`create` is not a public method"),
+        "{err}"
+    );
+    assert!(extract_interface_js(js, "UserServiceX", "X", &[]).is_err());
+}

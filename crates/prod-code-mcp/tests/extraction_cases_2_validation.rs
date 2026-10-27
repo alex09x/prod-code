@@ -54,7 +54,8 @@ async fn rust_interface_dispatch_returns_trait_edits_and_preserves_preview() {
     assert_eq!(result.files_modified, [file.to_string_lossy().to_string()]);
     assert_eq!(result.diagnostics, Vec::<String>::new());
     assert!(!result.applied);
-    assert!(result.verified);
+    // No compiler ran: the analyzer's word is not a verification (#1462).
+    assert!(!result.verified);
     assert_eq!(std::fs::read_to_string(file).unwrap(), source);
 }
 
@@ -152,15 +153,11 @@ async fn interface_validation_rejects_writes_but_preserves_preview_and_force() {
 #[tokio::test]
 async fn interface_dispatch_refusals_do_not_modify_files() {
     for (filename, verify, expected) in [
-        (
-            "store.ts",
-            Some("compile"),
-            "verify: compile is only supported for Rust extract_interface; no files were written",
-        ),
+        // JavaScript is extracted now (#1462); a class with no method has nothing to extract.
         (
             "store.js",
             None,
-            "extract_interface does not support JavaScript; TypeScript interface syntax cannot be emitted into JavaScript",
+            "no matching methods found in class `Store` to extract",
         ),
         (
             "store.java",

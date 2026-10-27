@@ -355,14 +355,14 @@ async fn test_extract_interface_not_found_error() {
 }
 
 #[tokio::test]
-async fn extract_interface_rejects_javascript_without_writing_typescript_syntax() {
+async fn extract_interface_writes_a_jsdoc_contract_into_javascript() {
     let source = "export class UserService {\n    getUser() { return {}; }\n}\n";
     let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.js", source)]);
     let root = ws.root().to_path_buf();
     let file = root.join("service.js");
     let gw = fake_gateway().await;
 
-    let err = extract_interface_impl(
+    let res = extract_interface_impl(
         gw.addr(),
         &root,
         &file,
@@ -377,39 +377,74 @@ async fn extract_interface_rejects_javascript_without_writing_typescript_syntax(
         None,
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
-    assert!(err.to_string().contains("does not support JavaScript"));
-    assert_eq!(fs::read_to_string(file).unwrap(), source);
+    assert!(res.applied);
+    assert_eq!(res.methods, vec!["getUser"]);
+    let written = fs::read_to_string(&file).unwrap();
+    assert!(
+        written.contains(" * @typedef {object} IUserService\n"),
+        "{written}"
+    );
+    assert!(
+        written.contains(" * @property {() => any} getUser\n"),
+        "{written}"
+    );
+    assert!(
+        written.contains("/** @implements {IUserService} */\nexport class UserService {"),
+        "{written}"
+    );
+    // No TypeScript syntax in a JavaScript file (#1462).
+    assert!(!written.contains("interface IUserService"), "{written}");
+    assert!(!written.contains("implements IUserService {"), "{written}");
 }
 
+/// `verify: compile` runs the project's compiler in a shadow before writing: a failure writes
+/// nothing, a pass writes and says it was verified (#1462).
 #[tokio::test]
-async fn extract_interface_rejects_compile_verification_for_typescript() {
+async fn extract_interface_compile_verification_runs_the_compiler_before_writing() {
     let source = "export class UserService {\n    getUser(): string { return \"user\"; }\n}\n";
-    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.ts", source)]);
-    let root = ws.root().to_path_buf();
-    let file = root.join("service.ts");
-    let gw = fake_gateway().await;
+    for exit_code in [1, 0] {
+        let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("service.ts", source)]);
+        let root = ws.root().to_path_buf();
+        let file = root.join("service.ts");
+        let gw = ScriptedGateway::start(move |method, _params| match method {
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            "prod-code/shadow-run" => serde_json::json!({ "exit_code": exit_code }),
+            _ => serde_json::Value::Null,
+        })
+        .await;
 
-    let err = extract_interface_impl(
-        gw.addr(),
-        &root,
-        &file,
-        "UserService",
-        "IUserService",
-        &[],
-        1,
-        1,
-        false,
-        true,
-        false,
-        Some("compile"),
-    )
-    .await
-    .unwrap_err();
+        let res = extract_interface_impl(
+            gw.addr(),
+            &root,
+            &file,
+            "UserService",
+            "IUserService",
+            &[],
+            1,
+            1,
+            false,
+            true,
+            false,
+            Some("compile"),
+        )
+        .await;
 
-    assert!(err.to_string().contains("only supported for Rust"));
-    assert_eq!(fs::read_to_string(file).unwrap(), source);
+        if exit_code == 0 {
+            let res = res.unwrap();
+            assert!(res.applied && res.verified, "{res:?}");
+            assert!(
+                fs::read_to_string(&file)
+                    .unwrap()
+                    .contains("implements IUserService")
+            );
+        } else {
+            let err = res.unwrap_err().to_string();
+            assert!(err.contains("compiler verification failed"), "{err}");
+            assert_eq!(fs::read_to_string(&file).unwrap(), source);
+        }
+    }
 }
 
 #[tokio::test]
