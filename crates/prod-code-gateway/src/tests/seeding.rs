@@ -310,3 +310,64 @@ fn concurrent_seed_copies_are_checked_against_one_another() {
     };
     assert!(reserve_seed("node_modules", 20 * gib, after).is_some());
 }
+
+/// #1525: a dependency tree is seeded only when the new worktree's package manifest and
+/// lockfile beside it are those of the seed copy, and a copy that fails half way leaves
+/// nothing behind that would pass for an installed tree.
+#[test]
+fn a_dependency_tree_is_seeded_only_for_the_same_manifest_and_never_half() {
+    use crate::seed_cache::virtualenv::seed_trees;
+    use prod_code_protocol::content_hash;
+    use std::collections::HashMap;
+    let dir = tempfile::tempdir().unwrap();
+    let seed = dir.path().join("seed");
+    for (rel, text) in [
+        ("package.json", "{\"dependencies\":{\"zod\":\"3\"}}"),
+        ("package-lock.json", "{\"lockfileVersion\":3}"),
+        ("node_modules/zod/index.js", "module.exports = {};"),
+    ] {
+        std::fs::create_dir_all(seed.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(seed.join(rel), text).unwrap();
+    }
+    let hash = |rel: &str| content_hash(&std::fs::read(seed.join(rel)).unwrap());
+    let same: HashMap<&str, u64> = [
+        ("package.json", hash("package.json")),
+        ("package-lock.json", hash("package-lock.json")),
+    ]
+    .into();
+    let mut other_lock = same.clone();
+    other_lock.insert("package-lock.json", hash("package-lock.json") ^ 1);
+    let mut no_lock = same.clone();
+    no_lock.remove("package-lock.json");
+    for (name, incoming, copied) in [
+        ("another lockfile", &other_lock, false),
+        ("no lockfile", &no_lock, false),
+        ("the same inputs", &same, true),
+    ] {
+        let fresh = dir.path().join(name.replace(' ', "-"));
+        let seeded = seed_trees(&seed, &fresh, roomy(), Some(incoming)).unwrap();
+        assert_eq!(seeded.is_some(), copied, "{name}");
+        assert_eq!(
+            fresh.join("node_modules/zod/index.js").is_file(),
+            copied,
+            "{name}"
+        );
+    }
+
+    // An unreadable file makes `cp -a` fail after it has written part of the tree.
+    let unreadable = seed.join("node_modules/zod/secret.js");
+    std::fs::write(&unreadable, "x").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&unreadable).is_ok() {
+        eprintln!("skipped the failed-copy half: this user reads a mode-000 file");
+        return;
+    }
+    let broken = dir.path().join("broken");
+    assert!(seed_trees(&seed, &broken, roomy(), Some(&same)).is_err());
+    assert!(
+        !broken.join("node_modules").exists(),
+        "the partial tree is removed"
+    );
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+}

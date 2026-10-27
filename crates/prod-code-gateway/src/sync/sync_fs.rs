@@ -191,6 +191,7 @@ pub async fn apply_sync_probe(
         let seed_dir = storage_root.join(workspace::sanitize_identifier(seed.trim()));
         if seed_dir.is_dir() && seed_dir != target {
             let (from, to) = (seed_dir.clone(), target.clone());
+            let incoming = req.files.clone();
             match tokio::task::spawn_blocking(move || {
                 let files = copy_tree(&from, &to)?;
                 if let Err(error) = crate::sync::config_meta::copy_workspace(&from, &to) {
@@ -203,7 +204,7 @@ pub async fn apply_sync_probe(
                 });
                 let cache_took = started.elapsed();
                 let started = Instant::now();
-                let packages = seed_dependency_trees(&from, &to).unwrap_or_else(|e| {
+                let packages = seed_dependency_trees(&from, &to, &incoming).unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "seeding node_modules and virtual environments failed");
                     None
                 });

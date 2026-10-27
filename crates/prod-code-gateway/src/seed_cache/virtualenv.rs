@@ -51,19 +51,87 @@ pub(crate) fn dependency_trees(root: &std::path::Path) -> Vec<PathBuf> {
 /// of pnpm's layout and of a venv (`lib64 -> lib`, `bin/python`); a venv's scripts are then
 /// rewritten to name the copy. The trees are the worktree's own afterwards, so an install in one
 /// worktree never changes another's.
+///
+/// Only a tree whose package-manager inputs (`PACKAGE_INPUTS`, beside it) are the same in the
+/// `incoming` manifest as in the seed copy is taken: one installed for another lockfile would
+/// pass for the new worktree's own (#1525).
 pub fn seed_dependency_trees(
     from: &std::path::Path,
     to: &std::path::Path,
+    incoming: &[prod_code_protocol::FileStamp],
 ) -> std::io::Result<Option<u64>> {
-    seed_dependency_trees_within(from, to, || disk_space(to))
+    let incoming: std::collections::HashMap<&str, u64> = incoming
+        .iter()
+        .map(|stamp| (stamp.relative_path.as_str(), stamp.hash))
+        .collect();
+    seed_trees(from, to, || disk_space(to), Some(&incoming))
 }
 
+#[cfg(test)]
 pub(crate) fn seed_dependency_trees_within(
     from: &std::path::Path,
     to: &std::path::Path,
     space: impl super::build_cache::SpaceProbe,
 ) -> std::io::Result<Option<u64>> {
-    let trees = dependency_trees(from);
+    seed_trees(from, to, space, None)
+}
+
+/// The files a package manager installs a `node_modules` tree or a virtual environment from, in
+/// the directory that holds it.
+pub(crate) const PACKAGE_INPUTS: &[&str] = &[
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "pyproject.toml",
+    "poetry.lock",
+    "uv.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "requirements.txt",
+    "setup.py",
+    "setup.cfg",
+];
+
+/// Whether every package-manager input beside the tree `rel` is the same, or as absent, in the
+/// `incoming` manifest (relative path to content hash) as in the seed copy at `from`.
+pub(crate) fn inputs_match(
+    from: &std::path::Path,
+    rel: &std::path::Path,
+    incoming: &std::collections::HashMap<&str, u64>,
+) -> bool {
+    let dir = rel.parent().unwrap_or(std::path::Path::new(""));
+    PACKAGE_INPUTS.iter().all(|name| {
+        let file = dir.join(name);
+        let seed = std::fs::read(from.join(&file))
+            .ok()
+            .map(|bytes| prod_code_protocol::content_hash(&bytes));
+        seed == incoming.get(file.to_string_lossy().as_ref()).copied()
+    })
+}
+
+pub(crate) fn seed_trees(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    space: impl super::build_cache::SpaceProbe,
+    incoming: Option<&std::collections::HashMap<&str, u64>>,
+) -> std::io::Result<Option<u64>> {
+    let trees: Vec<PathBuf> = dependency_trees(from)
+        .into_iter()
+        .filter(|rel| {
+            let same = incoming.is_none_or(|incoming| inputs_match(from, rel, incoming));
+            if !same {
+                tracing::info!(
+                    tree = %rel.display(),
+                    "🌱 [SEED] skipped: the worktree's package manifest or lockfile differs"
+                );
+            }
+            same
+        })
+        .collect();
     if trees.is_empty() {
         return Ok(None);
     }
@@ -79,20 +147,29 @@ pub(crate) fn seed_dependency_trees_within(
             continue;
         };
         std::fs::create_dir_all(parent)?;
-        let status = std::process::Command::new("cp")
-            .arg("-a")
-            .arg(from.join(&rel))
-            .arg(parent)
-            .status()?;
-        if !status.success() {
-            return Err(std::io::Error::other(format!(
-                "copying {} failed: {status}",
-                from.join(&rel).display()
-            )));
-        }
-        if is_virtualenv(&dest) {
-            relocate_virtualenv(&from.join(&rel), &dest)?;
-            let _ = prewarm_virtualenv_pycache(&dest);
+        let copied = (|| {
+            let status = std::process::Command::new("cp")
+                .arg("-a")
+                .arg(from.join(&rel))
+                .arg(parent)
+                .status()?;
+            if !status.success() {
+                return Err(std::io::Error::other(format!(
+                    "copying {} failed: {status}",
+                    from.join(&rel).display()
+                )));
+            }
+            if is_virtualenv(&dest) {
+                relocate_virtualenv(&from.join(&rel), &dest)?;
+                let _ = prewarm_virtualenv_pycache(&dest);
+            }
+            Ok(())
+        })();
+        // A tree half copied, or a venv still naming the seed's paths, would pass for an
+        // installed one; later probes do not repair it, since the trees are not synced (#1525).
+        if let Err(error) = copied {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(error);
         }
     }
     Ok(Some(size))
