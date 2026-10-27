@@ -130,9 +130,12 @@ pub(crate) async fn load_as_leader(
     } else if engine == "go" {
         let (ge, be) = go::load_go(workspace_root).await;
         (None, ge, None, be)
-    } else if let Some((ge, be)) = generic::load_generic(workspace_root, engine).await {
+    } else if let Some(loaded) = generic::load_generic(workspace_root, engine).await {
+        let (ge, be) = loaded?;
         (None, None, ge, be)
     } else {
+        // No language server exists for this engine: the workspace serves sync and exec with
+        // no engine, by design. A configured server that fails to start fails above (#1427).
         let be = backend::load_backend_fallback(workspace_root, engine).await;
         (None, None, None, be)
     };
