@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Qualified Rust Name Resolves Through Its `pub use` Path** (`crates/prod-code-mcp`, #1582):
+  `code_definition` and the other `symbol:` lookups now accept a name copied from a `use` line, such as `tools::render_outline` for an item defined in `tools/outline/render.rs` and re-exported by `tools.rs`. Before, they answered `no symbol named …; did you mean` the defining path. When no hit's own module path matches the qualifiers, a hit counts if a module that encloses it, and whose path ends with the qualifiers, has a `pub use` naming the item (not renamed with `as`). Glob re-exports are not followed, and a name the module does not re-export is still refused.
 - **Concurrent Seed Copies Cannot Together Break the Free-Space Floor** (`crates/prod-code-gateway`, #1527):
   The build-cache and dependency-tree copies that seed a new worktree each checked the 20% free-space floor against their own snapshot of the filesystem. Copies into different worktrees could therefore all pass and together go below it: three 48 GiB copies with 290 GiB of 980 GiB free would leave 146 GiB. They now share one ledger. A copy reads the free space under its lock, less what copies still in flight hold, and holds its own size until it has finished.
 - **A Validation Redirect Goes to a Peer That Would Admit the Engine** (`crates/prod-code-gateway`, #1496):
