@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Exported-Only Rust Outlines Leave Out `impl` Blocks of Private Types** (`crates/prod-code-mcp`, #1587):
+  `code_outline` with `exported_only` listed the `impl Hidden` block of a private `struct Hidden`, and its `pub fn new`, although nothing outside the crate can reach them. An `impl` now exports nothing when the type it implements, or its trait, is declared in the file and is not exported. Generic headers such as `impl<T: Clone> Shown<T>` and `impl fmt::Display for W<'a>` are read by their last path segment. A type the file does not declare is not judged.
 - **A Qualified Rust Name Resolves Through Its `pub use` Path** (`crates/prod-code-mcp`, #1582):
   `code_definition` and the other `symbol:` lookups now accept a name copied from a `use` line, such as `tools::render_outline` for an item defined in `tools/outline/render.rs` and re-exported by `tools.rs`. Before, they answered `no symbol named …; did you mean` the defining path. When no hit's own module path matches the qualifiers, a hit counts if a module that encloses it, and whose path ends with the qualifiers, has a `pub use` naming the item (not renamed with `as`). Glob re-exports are not followed, and a name the module does not re-export is still refused.
 - **Concurrent Seed Copies Cannot Together Break the Free-Space Floor** (`crates/prod-code-gateway`, #1527):

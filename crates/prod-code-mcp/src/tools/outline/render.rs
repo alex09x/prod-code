@@ -88,6 +88,24 @@ pub fn render_outline_with(
             .map(symbol_span)
             .collect();
         let mut skipped_locals = 0usize;
+        // Whether each type the file declares at the top level is exported: an `impl` of a
+        // private type exports nothing, whatever its members say (#1587).
+        let types: std::collections::HashMap<&str, bool> = entries
+            .iter()
+            .filter(|(depth, sym, _)| {
+                *depth == 1
+                    && matches!(
+                        sym.get("kind").and_then(|k| k.as_u64()),
+                        Some(5 | 10 | 11 | 23)
+                    )
+            })
+            .filter_map(|(_, sym, _)| {
+                let name = sym.get("name").and_then(|n| n.as_str())?;
+                let (line, _) = symbol_lines(sym);
+                let declaration = source_lines.get(line as usize).copied().unwrap_or("");
+                Some((name, is_exported(language, name, declaration, 1)))
+            })
+            .collect();
         // Whether each enclosing symbol is exported, and its kind, by depth (#1418).
         let mut owners: Vec<(bool, u64)> = Vec::new();
         for (depth, sym, in_body) in entries {
@@ -97,7 +115,8 @@ pub fn render_outline_with(
             let (line, _) = symbol_lines(sym);
             let declaration = source_lines.get(line as usize).copied().unwrap_or("");
             owners.truncate(depth.saturating_sub(1));
-            let exported = exported_with_owners(language, name, declaration, depth, &owners);
+            let exported =
+                exported_with_owners(language, name, declaration, depth, &owners, &types);
             owners.push((exported, kind));
             // Locals (LSP kind 13, Variable, inside a body) are noise for a structural
             // outline: a 2000-line file lists hundreds of them.
@@ -157,13 +176,15 @@ pub fn render_outline_with(
 /// is not exported is not, and in Rust a trait's items and an enum's variants are as visible as
 /// their owner without a `pub` of their own. `owners` holds each enclosing symbol's verdict and
 /// kind. A Rust `impl` and a Swift `extension` have no visibility of their own and pass their
-/// owners' on.
+/// owners' on, unless the type it implements, or the trait, is declared in the file and not
+/// exported (`types`, #1587).
 fn exported_with_owners(
     language: Option<&str>,
     name: &str,
     declaration: &str,
     depth: usize,
     owners: &[(bool, u64)],
+    types: &std::collections::HashMap<&str, bool>,
 ) -> bool {
     let owners_exported = owners.iter().all(|(exported, _)| *exported);
     let head = declaration.trim_start();
@@ -173,10 +194,49 @@ fn exported_with_owners(
         _ => false,
     };
     if transparent {
-        return owners_exported;
+        let header = if name.starts_with("impl") { name } else { head };
+        let private = |ty: &str| types.get(ty).is_some_and(|exported| !exported);
+        let hidden = language == Some("rust") && {
+            let (implemented, self_type) = impl_types(header);
+            private(self_type) || implemented.is_some_and(private)
+        };
+        return owners_exported && !hidden;
     }
     let inherited = language == Some("rust") && matches!(owners.last(), Some((true, 10 | 11)));
     owners_exported && (inherited || is_exported(language, name, declaration, depth))
+}
+
+/// The trait and the self type a Rust `impl` header names, each by its last path segment
+/// without generic arguments: `impl<'a> fmt::Display for Wrapper<'a> {` is
+/// `(Some("Display"), "Wrapper")`, `impl Hidden` is `(None, "Hidden")`.
+fn impl_types(header: &str) -> (Option<&str>, &str) {
+    let mut rest = header.trim_start().strip_prefix("impl").unwrap_or(header);
+    // The impl's own generic parameters, `<T: Clone, U>`, nested brackets included.
+    if let Some(generics) = rest.trim_start().strip_prefix('<') {
+        let mut depth = 1;
+        let end = generics.char_indices().find_map(|(i, c)| {
+            match c {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(i + 1)
+        });
+        rest = &generics[end.unwrap_or(generics.len())..];
+    }
+    let rest = rest.split(['{', '\n']).next().unwrap_or("");
+    let rest = rest.split(" where ").next().unwrap_or(rest);
+    fn type_name(ty: &str) -> &str {
+        let ty = ty.trim().trim_start_matches(['&', '!']).trim_start();
+        let ty = ty.strip_prefix("mut ").unwrap_or(ty);
+        let ty = ty.strip_prefix("dyn ").unwrap_or(ty);
+        let path = ty.split('<').next().unwrap_or(ty);
+        path.rsplit("::").next().unwrap_or(path).trim()
+    }
+    match rest.split_once(" for ") {
+        Some((implemented, self_type)) => (Some(type_name(implemented)), type_name(self_type)),
+        None => (None, type_name(rest)),
+    }
 }
 
 /// Whether a symbol is part of what its file exports, by its language's rule (#368): Go's
