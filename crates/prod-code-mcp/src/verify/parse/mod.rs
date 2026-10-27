@@ -117,6 +117,8 @@ pub fn parse_verification_output(
             diagnostics.extend(script_notes(stderr));
             diagnostics.extend(parse_go_text(stderr));
             diagnostics.extend(parse_go_text(stdout));
+            // A project whose golangci-lint config prints JSON is read as JSON (#1480).
+            diagnostics.extend(go::parse_golangci_json(stdout));
         }
         ("typescript", VerifyKind::Check) => {
             diagnostics.extend(parse_tsc_text(stdout));

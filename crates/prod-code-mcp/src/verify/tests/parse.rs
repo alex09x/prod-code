@@ -160,6 +160,30 @@ fn go_text_and_json() {
         "error: Error return value of `os.Remove` is not checked (errcheck) (main.go:9:10)"
     );
     assert_eq!(d[1].file.as_deref(), Some("calc/calc.go"));
+    // A config that makes golangci-lint print JSON is read as such (#1480); the text parser
+    // finds nothing in it, and plain text gives no JSON findings.
+    let json = r#"{"Issues":[{"FromLinter":"errcheck","Text":"Error return value is not checked","Pos":{"Filename":"main.go","Line":9,"Column":10}},{"FromLinter":"unused","Text":"func `f` is unused","Pos":{"Filename":"calc/calc.go","Line":3,"Column":0}}],"Report":{}}"#;
+    assert!(parse_go_text(json).is_empty());
+    let d = crate::verify::parse::go::parse_golangci_json(json);
+    assert_eq!(d.len(), 2, "{d:?}");
+    assert_eq!(
+        d[0].render(),
+        "error: Error return value is not checked (errcheck) (main.go:9:10)"
+    );
+    assert_eq!((d[1].line, d[1].column), (Some(3), None));
+    assert!(crate::verify::parse::go::parse_golangci_json(golangci).is_empty());
+    let (lint, ..) = crate::verify::parse::parse_verification_output(
+        "go",
+        crate::verify::types::VerifyKind::Lint,
+        json,
+        "",
+        &crate::verify::types::ProjectTools::default(),
+    );
+    assert_eq!(
+        lint.len(),
+        2,
+        "a Go lint run reads the JSON report: {lint:?}"
+    );
     let events = r#"{"Action":"run","Package":"p","Test":"TestA"}
 {"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:7: boom\n"}
 {"Action":"fail","Package":"p","Test":"TestA","Elapsed":0}
