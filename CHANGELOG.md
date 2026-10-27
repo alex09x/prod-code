@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Concurrent Seed Copies Cannot Together Break the Free-Space Floor** (`crates/prod-code-gateway`, #1527):
+  The build-cache and dependency-tree copies that seed a new worktree each checked the 20% free-space floor against their own snapshot of the filesystem. Copies into different worktrees could therefore all pass and together go below it: three 48 GiB copies with 290 GiB of 980 GiB free would leave 146 GiB. They now share one ledger. A copy reads the free space under its lock, less what copies still in flight hold, and holds its own size until it has finished.
 - **A Validation Redirect Goes to a Peer That Would Admit the Engine** (`crates/prod-code-gateway`, #1496):
   A validation session refused for capacity went to the peer with the most free memory, as long as that was at least one engine's reserve. A peer's admission counts what it holds against 85% of its total memory, though, and a large, nearly full host with more free bytes could admit less than a small idle one. Peers are now ranked by the room left under their limit after the load. A peer that does not have the workspace warm must have room for the main engine as well as the validation one.
 - **Clients That Do Not Follow Redirects Are Never Sent One** (`crates/prod-code-gateway`, #1495):

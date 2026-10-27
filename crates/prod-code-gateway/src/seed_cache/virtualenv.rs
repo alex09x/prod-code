@@ -55,22 +55,24 @@ pub fn seed_dependency_trees(
     from: &std::path::Path,
     to: &std::path::Path,
 ) -> std::io::Result<Option<u64>> {
-    seed_dependency_trees_within(from, to, disk_space(to))
+    seed_dependency_trees_within(from, to, || disk_space(to))
 }
 
 pub(crate) fn seed_dependency_trees_within(
     from: &std::path::Path,
     to: &std::path::Path,
-    space: Option<DiskSpace>,
+    space: impl super::build_cache::SpaceProbe,
 ) -> std::io::Result<Option<u64>> {
     let trees = dependency_trees(from);
     if trees.is_empty() {
         return Ok(None);
     }
     let size: u64 = trees.iter().map(|rel| tree_size(&from.join(rel))).sum();
-    if !seed_fits("node_modules and virtual environments", size, space) {
+    let Some(_reservation) =
+        super::build_cache::reserve_seed("node_modules and virtual environments", size, space)
+    else {
         return Ok(None);
-    }
+    };
     for rel in trees {
         let dest = to.join(&rel);
         let Some(parent) = dest.parent() else {

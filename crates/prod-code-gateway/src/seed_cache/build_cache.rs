@@ -53,6 +53,60 @@ pub fn seed_fits(what: &str, size: u64, space: Option<DiskSpace>) -> bool {
     fits
 }
 
+/// Bytes that seed copies were admitted for and are still writing, across every target: each
+/// copy is checked against the free space less these, so concurrent copies into different
+/// worktrees cannot together go below the floor that each passes alone (#1527).
+static SEEDS_IN_FLIGHT: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+
+/// Where a seed reads its filesystem's free space: a snapshot (tests), or a probe read only
+/// once the copy holds the in-flight ledger, so it sees every copy that finished before it.
+pub(crate) trait SpaceProbe {
+    fn read(self) -> Option<DiskSpace>;
+}
+
+impl SpaceProbe for Option<DiskSpace> {
+    fn read(self) -> Option<DiskSpace> {
+        self
+    }
+}
+
+impl<F: FnOnce() -> Option<DiskSpace>> SpaceProbe for F {
+    fn read(self) -> Option<DiskSpace> {
+        self()
+    }
+}
+
+/// Disk held for one admitted seed copy until it is dropped, when the copy has finished.
+#[must_use]
+pub(crate) struct SeedReservation(u64);
+
+impl Drop for SeedReservation {
+    fn drop(&mut self) {
+        let mut held = SEEDS_IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        *held = held.saturating_sub(self.0);
+    }
+}
+
+/// Admits a copy of `size` bytes of `what` when it fits (`seed_fits`) in the space `probe`
+/// reads less what other seed copies still hold, and holds the bytes until the reservation is
+/// dropped. The probe and the check run under the ledger's lock, never the copy itself.
+pub(crate) fn reserve_seed(
+    what: &str,
+    size: u64,
+    probe: impl SpaceProbe,
+) -> Option<SeedReservation> {
+    let mut held = SEEDS_IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    let space = probe.read().map(|space| DiskSpace {
+        free: space.free.saturating_sub(*held),
+        total: space.total,
+    });
+    if !seed_fits(what, size, space) {
+        return None;
+    }
+    *held = held.saturating_add(size);
+    Some(SeedReservation(size))
+}
+
 /// Copies the seed copy's `target/debug` build cache into the new copy at `to`, when there is
 /// one and it fits (`seed_fits`). Returns the bytes copied, or `None` when there was nothing to
 /// copy or no room for it.
@@ -60,13 +114,13 @@ pub fn seed_build_cache(
     from: &std::path::Path,
     to: &std::path::Path,
 ) -> std::io::Result<Option<u64>> {
-    seed_build_cache_within(from, to, disk_space(to))
+    seed_build_cache_within(from, to, || disk_space(to))
 }
 
 pub(crate) fn seed_build_cache_within(
     from: &std::path::Path,
     to: &std::path::Path,
-    space: Option<DiskSpace>,
+    space: impl SpaceProbe,
 ) -> std::io::Result<Option<u64>> {
     let source = from.join("target").join("debug");
     let parts: Vec<&str> = SEEDED_BUILD_DIRS
@@ -78,9 +132,9 @@ pub(crate) fn seed_build_cache_within(
         return Ok(None);
     }
     let size: u64 = parts.iter().map(|part| tree_size(&source.join(part))).sum();
-    if !seed_fits("target/debug", size, space) {
+    let Some(_reservation) = reserve_seed("target/debug", size, space) else {
         return Ok(None);
-    }
+    };
     let dest = to.join("target").join("debug");
     std::fs::create_dir_all(&dest)?;
     for part in parts {
