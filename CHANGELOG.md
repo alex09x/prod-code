@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **`prod-code metrics` Works When the Checkout Cannot Be Placed** (`crates/prod-code-client`, `cluster`, #1493):
+  Metrics ask every node, yet the command failed before it ran whenever no node could take the current checkout, for example a macOS-only Go module with only Linux nodes, which is just when metrics help to see why. Like `status`, it now runs before placement. Errors of the metrics queries themselves still show.
 - **Search Stops Promising Background Embedding When the Model for Declarations Failed** (`crates/prod-code-gateway`, `crates/prod-code-protocol`, `crates/prod-code-mcp`, #1485):
   When the model that embeds declarations could not be loaded, it stayed missing, but every later search still started a background pass that embedded nothing, and the answer still said the rest were being embedded. The gateway now remembers that failure. Searches start no such pass, and the dense status carries a new `embedding` flag (true by default, so older gateways read as before). `code_search` then says that no more declarations are being embedded. Lexical search and the declarations already embedded work as before.
 - **The Engine-Cache Test No Longer Races Other Tests' Status Requests** (`crates/prod-code-gateway`, test, #1487):

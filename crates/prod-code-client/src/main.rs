@@ -294,6 +294,12 @@ async fn run_cli() -> Result<()> {
         };
         return run_status_probe(target, json, note).await;
     }
+    // Metrics ask every node and need no node for this checkout: a checkout no node can take
+    // is just when they help to see why (#1493). Errors of the queries themselves still show.
+    if let Some(Commands::Metrics { since, json }) = cli.command {
+        startup.report();
+        return run_metrics(&remotes, since, json).await;
+    }
     // An editor learns why its server could not start from the answer to its `initialize`,
     // not from a process that is gone before it asks (#338).
     if let (true, Err(err)) = (cli::argv::starts_an_editor_session(&cli), &picked) {

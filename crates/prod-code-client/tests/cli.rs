@@ -736,6 +736,27 @@ async fn cli_reports_metrics_in_human_readable_and_json_formats() {
     assert!(parsed.is_array());
 }
 
+/// Metrics need no node for the current checkout: a macOS-only checkout that the only (Linux)
+/// node cannot take still gets them (#1493).
+#[tokio::test]
+async fn metrics_are_shown_when_the_checkout_cannot_be_placed() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/cgo-metrics\n\ngo 1.20\n"),
+        (
+            "cgo.go",
+            "package main\n/*\n#cgo LDFLAGS: -framework Cocoa\n*/\nimport \"C\"\nfunc main() {}\n",
+        ),
+    ]);
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.reported_platform.lock().unwrap() = Some("linux x86_64".to_string());
+
+    let out = run_cli(&ws, gw.addr, &["metrics", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_of(&out)).expect("metrics json parse");
+    assert!(parsed.is_array(), "{parsed}");
+}
+
 #[tokio::test]
 async fn cli_syncs_workspace_delta_to_gateway() {
     let ws = make_workspace();
