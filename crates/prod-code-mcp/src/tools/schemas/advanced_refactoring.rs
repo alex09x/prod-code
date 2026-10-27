@@ -95,7 +95,7 @@ pub fn advanced_refactoring_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_extract_interface".to_string(),
-            description: "Extract an interface, protocol, or abstract class from a class or struct across TypeScript/JavaScript, Go, Python, C++, Swift, and Rust (Roadmap 7.1). Extracts selected public method contracts, generates the interface definition, updates the class/struct to implement or conform to it, and migrates caller type annotations across the workspace where safe unless migrate_callers: false. Type-checked via analyzer overlays before writing."
+            description: "Extract an interface, protocol, or abstract class from a class or struct across TypeScript/JavaScript, Go, Python, C++, Swift, and Rust (Roadmap 7.1). Extracts selected public method contracts, generates the interface definition (in JavaScript, a JSDoc `@typedef` and `@implements` that `tsc --checkJs` checks), updates the class/struct to implement or conform to it, and migrates caller type annotations across the workspace where safe unless migrate_callers: false. Type-checked via analyzer overlays before writing."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -106,8 +106,8 @@ pub fn advanced_refactoring_tools() -> Vec<McpTool> {
                     "methods": { "type": "array", "items": { "type": "string" }, "description": "Optional subset of method names to include in the interface (defaults to all public methods)" },
                     "line": { "type": "integer", "description": "Optional 1-based line of the type declaration" },
                     "character": { "type": "integer", "description": "Optional 1-based column of the type declaration" },
-                    "migrate_callers": { "type": "boolean", "description": "Update caller functions/methods across the workspace that accept the concrete class/struct to accept the new interface/trait when safe (default true)" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks on the result in a shadow of the workspace before writing it" },
+                    "migrate_callers": { "type": "boolean", "description": "Update caller functions/methods across the workspace that accept the concrete class/struct to accept the new interface/trait when safe (default true; JavaScript callers declare no types and are left as they are)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run the project's compiler (`cargo check`, `go build`, `tsc`, …, chosen by the file's language and project) on the result in a shadow of the workspace before writing it; its errors refuse the write unless `force`. `verified` in the result is true only when it ran and accepted the result" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
                     "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
                 },

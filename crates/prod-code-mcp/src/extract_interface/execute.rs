@@ -9,8 +9,8 @@
  */
 
 use super::languages::{
-    extract_interface_cpp, extract_interface_go, extract_interface_python, extract_interface_swift,
-    extract_interface_ts,
+    extract_interface_cpp, extract_interface_go, extract_interface_js, extract_interface_python,
+    extract_interface_swift, extract_interface_ts,
 };
 use super::types::ExtractInterfaceResult;
 use anyhow::{Context, Result, bail};
@@ -34,9 +34,12 @@ pub async fn extract_interface_impl(
     verify: Option<&str>,
 ) -> Result<ExtractInterfaceResult> {
     let language = crate::lang::language_id_for_path(file).to_string();
+    let compile = verify == Some("compile");
 
     // If Rust, dispatch to existing extract_trait
     if language == "rust" {
+        // With `verify: compile`, extract_trait only plans; the compiler sees the result before
+        // anything is written (#1462).
         let res = crate::extract_trait::extract_trait_ext(
             remote,
             root,
@@ -46,7 +49,7 @@ pub async fn extract_interface_impl(
             methods,
             interface_name,
             migrate_callers,
-            apply,
+            apply && !compile,
             force,
         )
         .await?;
@@ -58,6 +61,22 @@ pub async fn extract_interface_impl(
             .into_iter()
             .map(|(p, t)| (PathBuf::from(p), t))
             .collect();
+        let mut diagnostics = res.diagnostics;
+        let mut applied = res.applied;
+        let mut verified = false;
+        if compile {
+            verified = compiler_accepts(remote, root, &overlays, force, &mut diagnostics).await?;
+            if apply {
+                anyhow::ensure!(
+                    diagnostics.is_empty() || force,
+                    "the change does not compile ({} error(s)); nothing was written:\n  {}",
+                    diagnostics.len(),
+                    diagnostics.join("\n  ")
+                );
+                write_proposal(root, &overlays)?;
+                applied = true;
+            }
+        }
 
         return Ok(ExtractInterfaceResult {
             type_name: res.type_name,
@@ -66,15 +85,10 @@ pub async fn extract_interface_impl(
             files_modified,
             overlays,
             diff,
-            applied: res.applied,
-            verified: true,
-            diagnostics: res.diagnostics,
+            applied,
+            verified,
+            diagnostics,
         });
-    }
-    if verify == Some("compile") {
-        anyhow::bail!(
-            "verify: compile is only supported for Rust extract_interface; no files were written"
-        );
     }
 
     let file_text = std::fs::read_to_string(file)
@@ -82,9 +96,7 @@ pub async fn extract_interface_impl(
 
     let (mut transformed_text, extracted_methods) = match language.as_str() {
         "typescript" => extract_interface_ts(&file_text, symbol, interface_name, methods)?,
-        "javascript" => bail!(
-            "extract_interface does not support JavaScript; TypeScript interface syntax cannot be emitted into JavaScript"
-        ),
+        "javascript" => extract_interface_js(&file_text, symbol, interface_name, methods)?,
         "go" => extract_interface_go(&file_text, symbol, interface_name, methods)?,
         "python" => extract_interface_python(&file_text, symbol, interface_name, methods)?,
         "cpp" | "c" => extract_interface_cpp(&file_text, symbol, interface_name, methods)?,
@@ -95,7 +107,8 @@ pub async fn extract_interface_impl(
     let mut overlays: Vec<(PathBuf, String)> = Vec::new();
     let mut files_modified: Vec<String> = Vec::new();
 
-    if migrate_callers {
+    // A JavaScript caller declares no parameter types to migrate.
+    if migrate_callers && language != "javascript" {
         let lang = crate::parameter_object::Language::of(file)
             .unwrap_or(crate::parameter_object::Language::TypeScript);
         let modified_files = crate::caller_migration::migrate_callers_in_workspace(
@@ -157,8 +170,14 @@ pub async fn extract_interface_impl(
             )
         })
         .collect();
+    let mut diagnostics = diagnostics;
 
-    let verified = false;
+    // The project's own compiler, chosen by language and project (#1462).
+    let verified = if compile {
+        compiler_accepts(remote, root, &overlays, force, &mut diagnostics).await?
+    } else {
+        false
+    };
 
     let has_fatal = !diagnostics.is_empty();
     if has_fatal && !force && apply {
@@ -169,12 +188,7 @@ pub async fn extract_interface_impl(
     }
 
     let applied = if apply {
-        let mut file_map = BTreeMap::new();
-        for (p, t) in &overlays {
-            file_map.insert(p.clone(), t.clone());
-        }
-        let edit = crate::signature::whole_file_edit(&file_map);
-        crate::refactor::apply_workspace_edit(root, &edit)?;
+        write_proposal(root, &overlays)?;
         true
     } else {
         false
@@ -191,4 +205,32 @@ pub async fn extract_interface_impl(
         verified,
         diagnostics,
     })
+}
+
+/// Runs the project's compiler on `overlays` in a shadow of the workspace: `cargo check`, `go
+/// build`, `tsc` and the others, chosen by the files' language and project. Whether it accepts
+/// them; its errors are added to `diagnostics`, and refuse the change unless `force` (#1462).
+async fn compiler_accepts(
+    remote: SocketAddr,
+    root: &Path,
+    overlays: &[(PathBuf, String)],
+    force: bool,
+    diagnostics: &mut Vec<String>,
+) -> Result<bool> {
+    let (errors, report) = crate::tools::compile_check(remote, root, overlays).await?;
+    if errors == 0 {
+        return Ok(true);
+    }
+    if !force {
+        bail!("compiler verification failed ({errors} error(s)); no files were written:\n{report}");
+    }
+    diagnostics.push(format!("compiler: {errors} error(s): {report}"));
+    Ok(false)
+}
+
+/// Writes the proposed texts.
+fn write_proposal(root: &Path, overlays: &[(PathBuf, String)]) -> Result<()> {
+    let files: BTreeMap<PathBuf, String> = overlays.iter().cloned().collect();
+    crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files))?;
+    Ok(())
 }

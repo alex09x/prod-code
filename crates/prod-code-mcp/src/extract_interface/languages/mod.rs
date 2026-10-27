@@ -10,12 +10,14 @@
 
 pub mod cpp;
 pub mod go;
+pub mod js;
 pub mod python;
 pub mod swift;
 pub mod ts;
 
 pub use cpp::extract_interface_cpp;
 pub use go::extract_interface_go;
+pub use js::extract_interface_js;
 pub use python::extract_interface_python;
 pub use swift::extract_interface_swift;
 pub use ts::extract_interface_ts;
