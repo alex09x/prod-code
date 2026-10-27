@@ -205,10 +205,6 @@ pub async fn run_shadow(
     let start = Instant::now();
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel));
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
     let ran_in_ram = is_ram.then(|| Arc::new(std::sync::atomic::AtomicBool::new(true)));
     let mut handles = Vec::with_capacity(count);
     for hypothesis in req.hypotheses {
@@ -224,7 +220,8 @@ pub async fn run_shadow(
             shadow_root: effective_shadow_root.clone(),
             fallback_shadow_root: fallback_shadow_root.clone(),
             ran_in_ram: ran_in_ram.clone(),
-            nonce,
+            // One per hypothesis: a request-wide one gave alike names one directory (#1466).
+            nonce: super::staging::unique_nonce(),
         };
         let semaphore = Arc::clone(&semaphore);
         let cancel = cancel_rx.clone();

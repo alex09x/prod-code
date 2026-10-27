@@ -125,6 +125,19 @@ pub(crate) fn stage_upper(upper: &Path, files: &[FileDelta]) -> Result<Vec<PathB
     Ok(deleted)
 }
 
+/// A nonce no other hypothesis of this process shares, for [`dir_name`]: the time in
+/// milliseconds above a process-wide count. Names that `dir_name` makes alike (`fix/a` and
+/// `fix:a`, or two sharing their first 48 characters) then still get directories of their own,
+/// also within one request and one millisecond (#1466).
+pub(crate) fn unique_nonce() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    (millis << 20) | (NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xf_ffff)
+}
+
 pub(crate) fn dir_name(workspace: &Path, hypothesis: &str, nonce: u64) -> String {
     let ws = workspace
         .file_name()
