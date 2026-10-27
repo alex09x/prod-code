@@ -188,6 +188,9 @@ while True:
             items = [{"range": {"start": {"line": last, "character": 0}, "end": {"line": last, "character": 1}},
                       "severity": 1, "message": "cannot convert value of type 'String' to specified type 'Int'"}]
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"kind": "full", "items": items}})
+    elif method == "textDocument/diagnostic" and os.environ.get("FAKE_SILENT_PULL"):
+        # A server that takes a pull and never answers it.
+        pass
     elif method == "textDocument/diagnostic" and os.environ.get("FAKE_RESPONSE"):
         response = json.loads(os.environ["FAKE_RESPONSE"])
         response.update({"jsonrpc": "2.0", "id": message["id"]})
@@ -1132,6 +1135,29 @@ async fn a_semantic_check_the_server_never_reports_on_is_an_error() {
         .await
         .expect_err("a path that is no file URI is never opened");
     assert_eq!(err.kind, Unavailable::NeverPublished, "{err}");
+}
+
+/// #1500: a pull the server never answers is bounded by what is left of the wait, not by the
+/// request timeout. With a 20 s request timeout, a 1 s wait used to take the full 20 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_silent_pull_does_not_overrun_the_semantic_check_wait() {
+    let (dir, script) = workspace();
+    let path = dir.path().join("Sources/Shop/main.swift");
+    let mut silent = config(&script);
+    silent
+        .env
+        .insert("FAKE_SILENT_PULL".to_string(), "1".to_string());
+    silent.request_timeout = Duration::from_secs(20);
+    let engine = GenericLspEngine::spawn(dir.path(), silent)
+        .await
+        .expect("the fake server starts");
+    let started = std::time::Instant::now();
+    let outcome = engine
+        .wait_for_semantic_check(&path, "swift", "// silent\n", 1, Duration::from_secs(1))
+        .await;
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(5), "the wait took {took:?}");
+    assert!(outcome.is_err(), "nothing was reported: {outcome:?}");
 }
 
 /// A server that answers a diagnostic pull is asked, whether or not it advertised one

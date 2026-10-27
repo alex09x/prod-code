@@ -153,13 +153,36 @@ async fn wait_for_swift_settings_within(
     Some(checked.map_err(|err| err.to_string()))
 }
 
-/// A Swift source of the SwiftPM package at `root`, and its text: the first under `Sources/` by
-/// path, hidden directories (`.build`) aside.
+/// A Swift source of the SwiftPM package at `root`, and its text: the first by path under
+/// `Sources/`, else under a target directory the manifest names with `path:` (#1500), hidden
+/// directories (`.build`) aside.
 pub(crate) fn swift_probe_file(root: &Path) -> Option<(PathBuf, String)> {
-    if !root.join("Package.swift").is_file() {
-        return None;
-    }
-    let mut pending = vec![root.join("Sources")];
+    let manifest = std::fs::read_to_string(root.join("Package.swift")).ok()?;
+    std::iter::once(root.join("Sources"))
+        .chain(declared_target_paths(&manifest).map(|rel| root.join(rel)))
+        .find_map(|dir| first_swift_file(&dir))
+}
+
+/// The directories a SwiftPM manifest gives its targets with `path: "…"`, in order: relative
+/// ones inside the package only.
+fn declared_target_paths(manifest: &str) -> impl Iterator<Item = &str> {
+    manifest.match_indices("path:").filter_map(|(at, _)| {
+        let rest = manifest[at + "path:".len()..]
+            .trim_start()
+            .strip_prefix('"')?;
+        let rel = &rest[..rest.find('"')?];
+        let inside = !rel.is_empty()
+            && !rel.starts_with('/')
+            && !Path::new(rel)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+        inside.then_some(rel)
+    })
+}
+
+/// The first `.swift` file under `dir` by path, and its text.
+fn first_swift_file(dir: &Path) -> Option<(PathBuf, String)> {
+    let mut pending = vec![dir.to_path_buf()];
     let mut found = Vec::new();
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
