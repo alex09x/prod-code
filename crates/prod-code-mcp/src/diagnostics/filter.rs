@@ -10,7 +10,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::diagnostics::correspondence::{old_range, unchanged_lines, whole_snapshot_embedding};
+use crate::diagnostics::correspondence::{
+    in_line_token_edit, old_range, same_lines, unchanged_lines, whole_snapshot_embedding,
+};
 pub use crate::diagnostics::ident::mentions_identifier;
 use crate::diagnostics::parse::{INVALID_DIAGNOSTICS, classify_hallucination};
 use crate::diagnostics::scope::RustContexts;
@@ -57,6 +59,10 @@ pub fn set_aside_preexisting(
         || whole_snapshot_embedding(before_text, text, &report.file)
     {
         unchanged_lines(before_text, text)
+    } else if in_line_token_edit(before_text, text) {
+        // Edits inside lines that keep every line's shape, as a rename's: an untouched line is
+        // the same line, so its unchanged error is the file's own (#1491).
+        same_lines(before_text, text)
     } else {
         Vec::new()
     };

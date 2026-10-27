@@ -283,3 +283,45 @@ mod hallucination_interception_phase77_tests {
         assert_eq!(deserialized.intercepted, true);
     }
 }
+
+/// #1491: a rename rewrites `total` to `sumAll` in a TypeScript file that has an unrelated
+/// error. The error is on an untouched line, with the same code, message and position, so it
+/// is the file's own and does not block. An edit that changes a line's bracket shape could move
+/// a scope, and leaves it blocking.
+#[test]
+fn a_renames_untouched_typescript_error_is_preexisting() {
+    use crate::diagnostics::filter::set_aside_preexisting;
+    let error = |line| DocDiagnostic {
+        severity: "error".to_string(),
+        code: Some("2322".to_string()),
+        message: "Type 'number' is not assignable to type 'string'.".to_string(),
+        line,
+        col: 14,
+        source: Some("typescript".to_string()),
+        note: None,
+        end: None,
+    };
+    let report = |items: Vec<DocDiagnostic>| DiagnosticsReport {
+        file: "src/fixable.ts".to_string(),
+        errors: items.len(),
+        warnings: 0,
+        items,
+        preexisting: vec![],
+        in_derive: vec![],
+        auto_trait: vec![],
+        hallucinations: vec![],
+    };
+    let before_text = "import { total } from \"./math\";\nexport const n = total([1]);\nexport const wrong: string = 1;\n";
+    let renamed = before_text.replace("total", "sumAll");
+    let before = report(vec![error(3)]);
+
+    let mut after = report(vec![error(3)]);
+    set_aside_preexisting(&mut after, &renamed, &before, before_text);
+    assert_eq!((after.errors, after.preexisting.len()), (0, 1), "{after:?}");
+
+    // A changed line that opens a block: the old line's error may now sit in another scope.
+    let reshaped = renamed.replace("[1]);", "[1]); {");
+    let mut after = report(vec![error(3)]);
+    set_aside_preexisting(&mut after, &reshaped, &before, before_text);
+    assert_eq!((after.errors, after.preexisting.len()), (1, 0), "{after:?}");
+}
