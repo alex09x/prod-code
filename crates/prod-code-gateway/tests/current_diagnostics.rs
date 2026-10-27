@@ -575,6 +575,30 @@ async fn check_linked_rust_test_proposals(warm: bool) {
         );
     }
 
+    /// The gateway's synced copy of the checkout: the one directory in its storage, outside
+    /// hidden shadow and cache directories, that holds the fixture's linked test (#1435).
+    fn server_copy(storage: &Path) -> PathBuf {
+        let mut found = Vec::new();
+        let mut dirs = vec![(storage.to_path_buf(), 0)];
+        while let Some((dir, depth)) = dirs.pop() {
+            if dir.join("tests/linked/runtime.rs").is_file() && dir.join("Cargo.toml").is_file() {
+                found.push(dir);
+                continue;
+            }
+            if depth == 4 {
+                continue;
+            }
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let hidden = entry.file_name().to_string_lossy().starts_with('.');
+                if !hidden && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    dirs.push((entry.path(), depth + 1));
+                }
+            }
+        }
+        assert_eq!(found.len(), 1, "one server copy of the fixture: {found:?}");
+        found.remove(0)
+    }
+
     fn require_external_sccache() -> PathBuf {
         let found = Command::new("sh")
             .args(["-c", "command -v sccache"])
@@ -656,6 +680,7 @@ pub fn base() -> Base {
             "the warm base used cargo check: {warm_base}"
         );
         assert_snapshot(&root, &before);
+        assert_snapshot(&server_copy(gateway._storage.path()), &before);
     }
 
     let proposed_root = r#"#[path = "linked/models.rs"]
@@ -713,6 +738,17 @@ pub fn external_types() -> ExternalTypes {
         "the compiler accepted all three linked proposals: {accepted}"
     );
     assert_snapshot(&root, &before);
+    // The compiler ran on the gateway's copy, where an overlay leak would land, and the next
+    // call's sync would repair it: that copy is compared now, before another call (#1435). The
+    // cold case finds it only here, so nothing warms its first compile.
+    let server = server_copy(gateway._storage.path());
+    assert_snapshot(&server, &before);
+    // Control: a changed server-side source is caught by that comparison.
+    let runtime = server.join("tests/linked/runtime.rs");
+    std::fs::write(&runtime, proposed_runtime).expect("change the server copy");
+    assert_ne!(snapshot(&server, &source_paths), before);
+    std::fs::write(&runtime, base_runtime).expect("restore the server copy");
+    assert_snapshot(&server, &before);
 
     let compiler_only_refusal = format!(
         "{proposed_runtime}\npub fn compiler_only_borrow_error() -> &'static str {{\n    let local = String::from(\"borrowed\");\n    &local\n}}\n"
@@ -742,4 +778,5 @@ pub fn external_types() -> ExternalTypes {
         "rust-analyzer accepts the borrow but cargo rejects it: {refused}"
     );
     assert_snapshot(&root, &before);
+    assert_snapshot(&server, &before);
 }
