@@ -20,6 +20,12 @@ use super::symbols::one_based;
 use super::test_cmd::{file_language, rel};
 use super::types::{CallSite, SignatureWarning, Symbol};
 
+#[path = "call_site_syntax.rs"]
+mod call_site_syntax;
+#[cfg(test)]
+pub(crate) use call_site_syntax::call_expression_end_line;
+use call_site_syntax::{call_hierarchy_call_end_line, call_site_end_line};
+
 pub(crate) async fn discover_call_sites(
     session: &mut LspSession,
     root: &Path,
@@ -34,6 +40,7 @@ pub(crate) async fn discover_call_sites(
         "line": sym.line.saturating_sub(1),
         "character": sym.col.saturating_sub(1)
     });
+    let mut source_cache: HashMap<String, String> = HashMap::new();
 
     if let Ok(serde_json::Value::Array(locs)) = session
         .query(
@@ -47,7 +54,6 @@ pub(crate) async fn discover_call_sites(
         )
         .await
     {
-        let mut source_cache: HashMap<String, String> = HashMap::new();
         for loc in locs {
             let Some(loc_uri) = loc.get("uri").and_then(|u| u.as_str()) else {
                 continue;
@@ -64,17 +70,10 @@ pub(crate) async fn discover_call_sites(
                     std::fs::read_to_string(root.join(&rel_file)).unwrap_or_default()
                 });
                 let file_lang = file_language(root, &rel_file).unwrap_or("generic");
-                let end_line =
-                    match call_expression_end_line(source, line, col, &sym.name, file_lang) {
-                        Some(end_line) => end_line,
-                        // The name is there with no argument list after it: an import, a re-export
-                        // or the function used as a value, which a signature change does not
-                        // adjust (#1474).
-                        None if names_at(source, line, col, &sym.name) => continue,
-                        // The text there is not the name (the reference starts at a path, or the
-                        // file changed): not shown to be no call, so it stays a call site.
-                        None => line,
-                    };
+                let Some(end_line) = call_site_end_line(source, line, col, &sym.name, file_lang)
+                else {
+                    continue;
+                };
                 sites.push((rel_file, line, col, end_line, None));
             }
         }
@@ -114,15 +113,29 @@ pub(crate) async fn discover_call_sites(
                                 && let Some(line) = one_based(start, "line")
                                 && let Some(col) = one_based(start, "character")
                             {
-                                let end_line = range
-                                    .get("end")
-                                    .and_then(|end| one_based(end, "line"))
-                                    .unwrap_or(line);
+                                let source =
+                                    source_cache.entry(rel_file.clone()).or_insert_with(|| {
+                                        std::fs::read_to_string(root.join(rel_file))
+                                            .unwrap_or_default()
+                                    });
+                                let file_lang = file_language(root, rel_file).unwrap_or("generic");
+                                let reported_end =
+                                    range.get("end").and_then(|end| one_based(end, "line"));
+                                let Some(end_line) = call_hierarchy_call_end_line(
+                                    source,
+                                    line,
+                                    col,
+                                    reported_end,
+                                    &sym.name,
+                                    file_lang,
+                                ) else {
+                                    continue;
+                                };
                                 sites.push((
                                     rel_file.clone(),
                                     line,
                                     col,
-                                    end_line.max(line),
+                                    end_line,
                                     caller_name.clone(),
                                 ));
                             }
@@ -135,13 +148,15 @@ pub(crate) async fn discover_call_sites(
                         && let Some(line) = one_based(start, "line")
                         && let Some(col) = one_based(start, "character")
                     {
-                        let source =
-                            std::fs::read_to_string(root.join(&rel_file)).unwrap_or_default();
+                        let source = source_cache.entry(rel_file.clone()).or_insert_with(|| {
+                            std::fs::read_to_string(root.join(&rel_file)).unwrap_or_default()
+                        });
                         let file_lang = file_language(root, &rel_file).unwrap_or("generic");
-                        let end_line =
-                            call_expression_end_line(&source, line, col, &sym.name, file_lang)
-                                .unwrap_or(line);
-                        sites.push((rel_file, line, col, end_line, caller_name.clone()));
+                        if let Some(end_line) =
+                            call_site_end_line(source, line, col, &sym.name, file_lang)
+                        {
+                            sites.push((rel_file, line, col, end_line, caller_name.clone()));
+                        }
                     }
                 }
             }
@@ -162,100 +177,6 @@ pub(crate) async fn discover_call_sites(
     map.into_iter()
         .map(|((file, line, col), (end_line, caller))| (file, line, col, end_line, caller))
         .collect()
-}
-
-pub(crate) fn lsp_position_to_byte_offset(text: &str, line: u32, character: u32) -> Option<usize> {
-    if line == 0 || character == 0 {
-        return None;
-    }
-    let mut offset = 0usize;
-    for (index, raw_line) in text.split_inclusive('\n').enumerate() {
-        if index as u32 + 1 != line {
-            offset += raw_line.len();
-            continue;
-        }
-        let line_text = raw_line
-            .strip_suffix('\n')
-            .unwrap_or(raw_line)
-            .strip_suffix('\r')
-            .unwrap_or_else(|| raw_line.strip_suffix('\n').unwrap_or(raw_line));
-        let target = (character - 1) as usize;
-        let mut units = 0usize;
-        for (byte, ch) in line_text.char_indices() {
-            if units == target {
-                return Some(offset + byte);
-            }
-            let next = units + ch.len_utf16();
-            if target < next {
-                return None;
-            }
-            units = next;
-        }
-        return (units == target).then_some(offset + line_text.len());
-    }
-    None
-}
-
-/// Whether `name` is written at the 1-based `line` and `col` of `text`.
-fn names_at(text: &str, line: u32, col: u32, name: &str) -> bool {
-    lsp_position_to_byte_offset(text, line, col)
-        .and_then(|at| text.get(at..))
-        .is_some_and(|rest| rest.starts_with(name))
-}
-
-pub(crate) fn call_expression_end_line(
-    text: &str,
-    line: u32,
-    col: u32,
-    name: &str,
-    language: &str,
-) -> Option<u32> {
-    let start = lsp_position_to_byte_offset(text, line, col)?;
-    let rest = text.get(start..)?;
-    if !rest.starts_with(name) {
-        return None;
-    }
-    let mut cursor = start + name.len();
-    while text[cursor..]
-        .chars()
-        .next()
-        .is_some_and(char::is_whitespace)
-    {
-        cursor += text[cursor..].chars().next()?.len_utf8();
-    }
-    if language == "rust" && text[cursor..].starts_with("::<") {
-        cursor += 2;
-    }
-    if text[cursor..].starts_with('<') {
-        let mut depth = 0usize;
-        let mut close = None;
-        for (offset, ch) in text[cursor..].char_indices() {
-            match ch {
-                '<' => depth += 1,
-                '>' => {
-                    depth = depth.checked_sub(1)?;
-                    if depth == 0 {
-                        close = Some(cursor + offset + ch.len_utf8());
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        cursor = close?;
-    }
-    while text[cursor..]
-        .chars()
-        .next()
-        .is_some_and(char::is_whitespace)
-    {
-        cursor += text[cursor..].chars().next()?.len_utf8();
-    }
-    if text.as_bytes().get(cursor) != Some(&b'(') {
-        return None;
-    }
-    let close = crate::parameter_object::matching_bracket(text, cursor)?;
-    Some(text[..=close].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1)
 }
 
 pub(crate) async fn check_signature_warnings(
