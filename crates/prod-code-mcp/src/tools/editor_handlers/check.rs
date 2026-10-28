@@ -94,6 +94,19 @@ pub(crate) async fn handle_check(
     )
     .await?;
     let text = report.render(40);
+    let filtered_rust_test_matched_nothing = kind == crate::verify::VerifyKind::Test
+        && report.language == "rust"
+        && filter
+            .as_deref()
+            .is_some_and(|filter| !filter.trim().is_empty())
+        && report.tests_passed == 0
+        && report.tests_failed == 0;
+    if filtered_rust_test_matched_nothing {
+        return Ok(McpToolCallResult::error(format!(
+            "No Rust tests matched filter `{}` in the selected workspace; check the `workspace` argument when testing another Git worktree.\n{text}",
+            filter.as_deref().unwrap_or_default()
+        )));
+    }
     Ok(if report.ok() {
         McpToolCallResult::text(text)
     } else {

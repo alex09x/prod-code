@@ -33,6 +33,9 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+#[path = "tools/workspace_selection.rs"]
+mod workspace_selection;
+
 fn workspace() -> Workspace {
     Workspace::empty()
 }
@@ -75,6 +78,7 @@ type SyncProbeRecord = (Option<String>, Option<String>, Vec<String>);
 type SyncRequestRecord = (Option<String>, Vec<String>);
 type SyncProbeLog = Arc<std::sync::Mutex<Vec<SyncProbeRecord>>>;
 type SyncRequestLog = Arc<std::sync::Mutex<Vec<SyncRequestRecord>>>;
+type WorkspaceRootLog = Arc<std::sync::Mutex<Vec<String>>>;
 
 /// What `code_exec`, `code_check`/`code_lint`/`code_test`, `code_search`, `code_shadow_run`,
 /// `code_status` and `code_source` need beyond the LSP protocol.
@@ -95,6 +99,7 @@ struct Script {
     exec_changes_only_for: Option<&'static str>,
     sync_probe_requests: SyncProbeLog,
     sync_requests: SyncRequestLog,
+    workspace_roots: WorkspaceRootLog,
     /// What the command used, as the gateway reports it from `wait4`.
     exec_usage: Option<prod_code_protocol::ExecUsage>,
     /// The node's platform, as the gateway reports it (#140).
@@ -119,6 +124,7 @@ impl Default for Script {
             exec_changes_only_for: None,
             sync_probe_requests: Arc::default(),
             sync_requests: Arc::default(),
+            workspace_roots: Arc::default(),
             exec_usage: None,
             exec_platform: None,
             exec_env: Arc::default(),
@@ -151,6 +157,11 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
     while let Some(msg) = framed.next().await {
         match msg? {
             WireMessage::SyncProbeRequest(req) => {
+                script
+                    .workspace_roots
+                    .lock()
+                    .unwrap()
+                    .push(req.client_workspace_root.clone());
                 let missing: Vec<String> = req
                     .files
                     .iter()

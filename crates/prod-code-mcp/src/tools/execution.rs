@@ -25,7 +25,10 @@ pub(crate) use super::workspace_writer::workspace_mutation_lock;
 use super::workspace_writer::{WorkspaceMutationGuard, workspace_writer_gate};
 use crate::protocol::McpToolCallResult;
 
+mod context;
 mod positions;
+use self::context::resolve_workspace_root;
+pub(crate) use self::context::routed_path;
 use positions::validate_position_arguments;
 
 fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
@@ -41,7 +44,6 @@ fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
             | "code_supertypes"
     )
 }
-
 pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -> Result<u32> {
     value
         .as_u64()
@@ -117,7 +119,10 @@ pub fn execute_tool<'a>(
     tool_name: &'a str,
     args: serde_json::Value,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
+    let configured_workspace_root = workspace_root.to_path_buf();
     Box::pin(async move {
+        let workspace_root = resolve_workspace_root(&configured_workspace_root, tool_name, &args)?;
+        let workspace_root = workspace_root.as_path();
         // Invalid explicit positions are refused before symbol lookup, routing or any write.
         validate_position_arguments(tool_name, &args)?;
         validate_verify_mode(&args)?;
@@ -390,11 +395,4 @@ pub fn execute_tool<'a>(
         let result = Box::pin(dispatch_tool(remote, workspace_root, tool_name, args)).await;
         with_indexing_notes(result, workspace_root)
     })
-}
-
-/// The path a tool is routed by. A text search reads the synced copy, which every node holding
-/// the workspace has: a Markdown file needs no node that serves Markdown, nor a Swift one a Mac
-/// (#1558).
-pub(crate) fn routed_path<'a>(tool_name: &str, path: Option<&'a str>) -> Option<&'a str> {
-    (tool_name != "code_grep").then_some(path).flatten()
 }
