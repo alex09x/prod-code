@@ -18,8 +18,58 @@ use crate::verify::{ProjectTools, VerifyKind, detect_tools, plan_command_with};
 
 type Scope = (String, String);
 
+fn configuration_scope(root: &Path, file: &str, default_language: &str) -> Scope {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let path = root.join(file);
+    let parent = path.parent().unwrap_or(&root);
+    let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    if !parent.starts_with(&root) {
+        return (file.to_string(), "unknown".into());
+    }
+    let root_engine = crate::sync::engine::detect::engine_at(&root);
+    for dir in parent
+        .ancestors()
+        .take_while(|dir| dir.starts_with(&root) && *dir != root)
+    {
+        if crate::sync::is_in_dependency_dir(dir) {
+            continue;
+        }
+        if let Some(engine) = crate::sync::manifest_engine_at(dir) {
+            if engine == "rust"
+                && Some(engine) == root_engine
+                && !crate::sync::engine::workspace::excluded_from_root_workspace(&root, dir)
+            {
+                break;
+            }
+            if let Ok(relative) = dir.strip_prefix(&root) {
+                return (
+                    relative.to_string_lossy().replace('\\', "/"),
+                    engine.to_string(),
+                );
+            }
+        }
+    }
+    (String::new(), default_language.to_string())
+}
+
 fn scope(root: &Path, file: &str, default_language: &str) -> Scope {
+    let path = Path::new(file);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return (file.to_string(), "unknown".into());
+    }
+    if !super::symbols::is_source_file(file) {
+        return configuration_scope(root, file, default_language);
+    }
     let abs = root.join(file);
+    let configured = configuration_scope(root, file, default_language);
+    if !configured.0.is_empty() && crate::sync::engine_for_file(&abs) == Some(configured.1.as_str())
+    {
+        return configured;
+    }
     let (subpath, mut language) = crate::sync::engine_project(root, &abs);
     let root_language = crate::sync::expected_engine(root);
     if let Some(own) = crate::sync::engine_for_file(&abs)
@@ -118,6 +168,9 @@ pub(super) fn build_test_plan(
             .iter()
             .map(|file| scope(root, file, default_language)),
     );
+    if scopes.is_empty() {
+        scopes.insert((String::new(), default_language.to_string()));
+    }
     plan.whole_is_root_only = scopes.len() == 1
         && scopes
             .iter()

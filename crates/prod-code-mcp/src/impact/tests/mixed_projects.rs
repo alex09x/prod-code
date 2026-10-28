@@ -251,3 +251,93 @@ fn supported_go_and_typescript_groups_keep_their_selectors() {
         "{command}"
     );
 }
+
+#[test]
+fn non_source_changes_keep_enclosing_projects_without_bogus_engines() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname='demo'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("web")).unwrap();
+    std::fs::write(
+        root.path().join("web/package.json"),
+        r#"{"scripts":{"test":"vitest run"},"devDependencies":{"vitest":"1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(root.path().join("web/tsconfig.json"), "{}\n").unwrap();
+    std::fs::create_dir_all(root.path().join("python")).unwrap();
+    std::fs::write(
+        root.path().join("python/pyproject.toml"),
+        "[project]\nname='demo'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("scripts")).unwrap();
+    std::fs::write(root.path().join("scripts/check.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+    let files = [
+        "Cargo.toml",
+        "web/package.json",
+        "web/tsconfig.json",
+        "python/pyproject.toml",
+        "scripts/check.sh",
+        "Dockerfile",
+    ]
+    .map(str::to_string);
+    let tools = crate::verify::detect_tools(root.path());
+    let plan = crate::impact::test_plan::build_test_plan(root.path(), "rust", &tools, &[], &files);
+    assert!(
+        plan.unsupported_whole.is_empty(),
+        "{:?}",
+        plan.unsupported_whole
+    );
+    let mut report = impact_report(vec![], plan);
+    report.unattributed_files = vec!["web/package.json".into()];
+    let decision = report.ci_decision();
+    let CiRun::PlannedSuite(command) = decision.run else {
+        panic!("{decision:?}")
+    };
+    let script = command.join(" ");
+    assert!(
+        script.contains("cargo")
+            && script.contains("(cd web &&")
+            && script.contains("vitest")
+            && script.contains("(cd python &&"),
+        "{script}"
+    );
+}
+
+#[test]
+fn empty_scope_fallback_still_plans_the_root_suite() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname='demo'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    let tools = crate::verify::detect_tools(root.path());
+    let plan = crate::impact::test_plan::build_test_plan(root.path(), "rust", &tools, &[], &[]);
+    assert!(plan.whole_is_root_only);
+    assert!(plan.whole.unwrap().contains(&"cargo".to_string()));
+}
+
+#[test]
+fn external_paths_do_not_become_executable_project_scopes() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname='demo'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    let tools = crate::verify::detect_tools(root.path());
+    let plan = crate::impact::test_plan::build_test_plan(
+        root.path(),
+        "rust",
+        &tools,
+        &[],
+        &["../outside/Cargo.toml".into()],
+    );
+    assert!(plan.whole.is_none());
+    assert_eq!(plan.unsupported_whole, ["../outside/Cargo.toml (unknown)"]);
+}
