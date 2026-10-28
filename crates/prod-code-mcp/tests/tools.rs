@@ -8166,6 +8166,90 @@ async fn code_definition_body_returns_symbol_body_without_dropping_connection() 
 }
 
 #[tokio::test]
+async fn code_definition_reads_body_from_another_local_git_worktree() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"worktree_body\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub struct Overlay { pub active: bool }\n"),
+    ]);
+    ws.commit();
+    let sibling_parent = tempfile::tempdir().unwrap();
+    let sibling_root = sibling_parent.path().join("sibling");
+    let add = std::process::Command::new("git")
+        .args(["worktree", "add", "--detach"])
+        .arg(&sibling_root)
+        .arg("HEAD")
+        .current_dir(ws.root())
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "creating the sibling git worktree failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let sibling_source = sibling_root.join("src/lib.rs");
+    std::fs::write(
+        &sibling_source,
+        "/// Body read from the sibling checkout.\npub struct Overlay {\n    pub sibling: u32,\n}\n",
+    )
+    .unwrap();
+    let uri = url::Url::from_file_path(&sibling_source)
+        .unwrap()
+        .to_string();
+    let uri_for_symbol = uri.clone();
+    let sibling_source_for_definition = sibling_source.clone();
+    let lsp: Answer = Arc::new(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([{
+            "name": "Overlay",
+            "kind": 23,
+            "location": {
+                "uri": uri_for_symbol,
+                "range": { "start": { "line": 1, "character": 11 }, "end": { "line": 1, "character": 18 } }
+            }
+        }]),
+        "textDocument/definition" => answers::locations(&sibling_source_for_definition, &[(2, 12)]),
+        "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    });
+    let remote = mock_gateway(Script {
+        lsp,
+        read_file: None,
+        ..Script::default()
+    })
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "Overlay", "path": "src/lib.rs", "body": true }),
+    )
+    .await
+    .expect("definition lookup returns a body from the sibling worktree");
+    let text = text_of(&result);
+    assert!(
+        text.contains("Body read from the sibling checkout"),
+        "{text}"
+    );
+    assert!(text.contains("pub sibling: u32"), "{text}");
+    assert!(!text.contains("pub active: bool"), "{text}");
+
+    let remove = std::process::Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(&sibling_root)
+        .current_dir(ws.root())
+        .output()
+        .unwrap();
+    assert!(
+        remove.status.success(),
+        "removing the sibling git worktree failed: {}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+}
+
+#[tokio::test]
 async fn code_definition_empty_symbol_handled_gracefully() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn existing() {}\n");

@@ -11,6 +11,7 @@
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::range::outlined_range;
 
@@ -39,8 +40,11 @@ pub(crate) async fn definition_body(
                 None
             }
         });
-    let (text, local_path) = match resolved_local {
-        Some(local) if local.exists() => {
+    let local_path = resolved_local
+        .filter(|local| local.is_file())
+        .or_else(|| local_file_in_same_git_worktree(root, &path_str));
+    let (text, local_path) = match local_path {
+        Some(local) => {
             let text = std::fs::read_to_string(&local)
                 .with_context(|| format!("reading {}", local.display()))?;
             (text, Some(local))
@@ -79,6 +83,58 @@ pub(crate) async fn definition_body(
         with_leading_docs(&lines, first),
         last,
     ))
+}
+
+fn local_file_in_same_git_worktree(root: &Path, path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    if !path.is_absolute() || !path.is_file() {
+        return None;
+    }
+    if std::fs::symlink_metadata(path)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        return None;
+    }
+    let (_, root_common) = git_worktree_dirs(root)?;
+    let (candidate_root, candidate_common) = git_worktree_dirs(path.parent()?)?;
+    if root_common != candidate_common {
+        return None;
+    }
+    let candidate = std::fs::canonicalize(path).ok()?;
+    candidate.starts_with(candidate_root).then_some(candidate)
+}
+
+fn git_worktree_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let path = if path.is_file() { path.parent()? } else { path };
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let top = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    let top = std::fs::canonicalize(top).ok()?;
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(&top)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let common = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    let common = if common.is_absolute() {
+        common
+    } else {
+        top.join(common)
+    };
+    Some((top, std::fs::canonicalize(common).ok()?))
 }
 
 /// The last line of the item that starts on 0-based line `start`: where its first `{` is
