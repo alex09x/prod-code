@@ -175,9 +175,12 @@ async fn runtime_paths_2_rebalance_direct_probe_and_unreachable_current() {
             )
         )
     );
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let dead = closed.local_addr().unwrap();
-    drop(closed);
+    // Keep the port bound but not listening, so a parallel test cannot reuse it.
+    let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+    reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let dead = reserved.local_addr().unwrap();
+    assert!(tokio::net::TcpStream::connect(dead).await.is_err());
+    assert!(tokio::net::TcpListener::bind(dead).await.is_err());
     for (nodes, expected) in [
         (vec![dead, mac.addr, linux.addr], Some(linux.addr)),
         (vec![dead, mac.addr], Some(mac.addr)),
