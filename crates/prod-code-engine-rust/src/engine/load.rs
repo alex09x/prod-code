@@ -24,7 +24,7 @@ use std::sync::Arc;
 use super::RustEngine;
 use crate::config::{ProcMacroServerKind, ProdCodeConfig};
 use crate::load_budget;
-use crate::proc_macro_farm::{self, FarmMetrics};
+use crate::proc_macro_farm::{self, FarmMetrics, ProcMacroWorkerFarm};
 use crate::session_overlays::SessionOverlays;
 use crate::vfs::is_rust_source;
 
@@ -104,6 +104,13 @@ impl RustEngine {
 
     /// Load and index a Cargo workspace directly into in-memory Salsa DB using multi-core worker threads.
     pub fn load(workspace_root: &Path) -> Result<Self> {
+        Self::load_with_proc_macro_farm(workspace_root, Arc::clone(proc_macro_farm::shared()))
+    }
+
+    fn load_with_proc_macro_farm(
+        workspace_root: &Path,
+        farm: Arc<ProcMacroWorkerFarm>,
+    ) -> Result<Self> {
         let config = ProdCodeConfig::load(workspace_root);
         tracing::info!(?workspace_root, rust = ?config.rust, "analysis options");
         let budget = load_budget::shared();
@@ -117,7 +124,6 @@ impl RustEngine {
             .extra_args
             .push(format!("--jobs={num_threads}"));
         let build_scripts = config.rust.build_scripts;
-        let farm = proc_macro_farm::shared();
         let desired_workers = config.rust.proc_macro_workers.unwrap_or(1);
 
         tracing::info!(
@@ -169,12 +175,13 @@ impl RustEngine {
                     desired_workers,
                     std::time::Duration::from_millis(2000),
                 );
-                ensure_requested_proc_macro_workers(desired_workers, workers, farm.capacity())?;
                 if workers == 0 {
+                    // Keep structural navigation available without exceeding the
+                    // node-wide farm limit; this load simply omits macro expansion.
                     tracing::warn!(
                         workspace = %workspace_root.display(),
                         capacity = farm.capacity(),
-                        "Proc-macro farm is at capacity; proc-macro server disabled for workspace"
+                        "Proc-macro farm is at capacity; loading workspace without proc-macro expansion"
                     );
                     (ProcMacroServerChoice::None, 0, None)
                 } else {
