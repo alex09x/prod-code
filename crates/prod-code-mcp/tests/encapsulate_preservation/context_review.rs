@@ -42,24 +42,36 @@ fn refs_for(owner_file: &str, owner: &str, file: &str, body: &str) -> Vec<(Strin
     out
 }
 
+fn compiler_available(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 fn check_runtime(ws: &Workspace, file: &str) -> bool {
     match file {
         "main.py" => run(ws, "python3", &[file]).status.success(),
         "main.cpp" => {
-            let strict_args = [
-                "c++",
-                "-std=c++17",
-                "-pedantic-errors",
-                file,
-                "-o",
-                "probe_strict",
-            ];
-            let gnu_args = ["-std=c++17", "-pedantic-errors", file, "-o", "probe_gnu"];
-            let strict = run(ws, "zig", &strict_args).status.success()
-                && run(ws, "./probe_strict", &[]).status.success();
-            let gnu = run(ws, "g++", &gnu_args).status.success()
-                && run(ws, "./probe_gnu", &[]).status.success();
-            strict && gnu
+            let mut passed = true;
+            for (program, prefix) in [("zig", Some("c++")), ("g++", None)] {
+                let probe: Vec<_> = prefix.into_iter().chain(["--version"]).collect();
+                if !compiler_available(program, &probe) {
+                    eprintln!("skipping unavailable C++ compiler: {program}");
+                    continue;
+                }
+                let args: Vec<_> = prefix
+                    .into_iter()
+                    .chain(["-std=c++17", "-pedantic-errors", file, "-o", "probe_cpp"])
+                    .collect();
+                let compiled = run(ws, program, &args).status.success();
+                let executed = compiled && run(ws, "./probe_cpp", &[]).status.success();
+                if !executed {
+                    eprintln!("C++ compiler or runtime failed: {program}");
+                }
+                passed &= executed;
+            }
+            passed
         }
         _ => {
             run(ws, "rustc", &["--edition=2024", file, "-o", "probe"])
@@ -71,8 +83,8 @@ fn check_runtime(ws: &Workspace, file: &str) -> bool {
 }
 
 async fn verify_aggregate_review_repairs(ws: &Workspace, failures: &mut Vec<String>) {
-    let _ = run(ws, "zig", &["c++", "--version"]);
-    let _ = run(ws, "g++", &["--version"]);
+    let cpp_available = compiler_available("zig", &["c++", "--version"])
+        || compiler_available("g++", &["--version"]);
     let py = "class Box:\n def __init__(self):\n  self.count = 0\n";
     let cpp = "class Box {\npublic:\n int count;\n};\n";
     let cpp_payload = "struct Payload {\n int value = 0;\n Payload() = default;\n Payload(int v) : value(v) {}\n Payload(const Payload&) = delete;\n Payload& operator=(const Payload&) = default;\n};\nclass Box {\npublic:\n Payload count;\n};\n";
@@ -184,6 +196,10 @@ async fn verify_aggregate_review_repairs(ws: &Workspace, failures: &mut Vec<Stri
         ),
     ];
     for (shape, owner, file, body) in cases {
+        if file == "main.cpp" && !cpp_available {
+            eprintln!("skipping {shape}: no C++ compiler available");
+            continue;
+        }
         let (owner_file, anchor) = match file {
             "main.rs" => ("model.rs", "pub count:"),
             "main.cpp" => ("box.hpp", " count;"),
@@ -330,6 +346,13 @@ async fn rust_consuming_receiver_keeps_unconditional_rhs() {
             }
         }
     }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[tokio::test]
+async fn aggregate_review_repairs() {
+    let ws = Workspace::new(&[]);
+    let mut failures = Vec::new();
     verify_aggregate_review_repairs(&ws, &mut failures).await;
     assert!(failures.is_empty(), "{failures:?}");
 }
