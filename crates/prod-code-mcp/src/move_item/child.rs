@@ -88,8 +88,8 @@ fn rebase(text: &str, edition: ra_ap_syntax::Edition) -> Result<String> {
     Ok(out)
 }
 
-/// Integration tests retain their original scope, including private helpers. Ordinary moves
-/// carry only their explicit imports, rebased separately from the target's existing text.
+/// A child module has its own item scope. Carry explicit imports, and import the parent scope
+/// when the move must retain unqualified names from that parent.
 pub(super) fn move_to_child(
     source: &str,
     item: &str,

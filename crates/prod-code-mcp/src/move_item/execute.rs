@@ -164,13 +164,7 @@ pub async fn move_item(
         } else {
             let (source_new, item) = cut(&source_text, start, decl_end);
             let (target_with_imports, item, carried) = if child {
-                move_to_child(
-                    &source_text,
-                    &item,
-                    &target_text,
-                    from_owners[0].test_crate,
-                    edition,
-                )?
+                move_to_child(&source_text, &item, &target_text, true, edition)?
             } else if to_owners.iter().any(|owner| {
                 owner
                     .declaration
