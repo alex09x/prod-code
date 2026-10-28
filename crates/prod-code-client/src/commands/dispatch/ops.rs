@@ -66,7 +66,7 @@ pub async fn dispatch_ops(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()>
                 run_sync(cx.remote, path).await
             }
         }
-        Commands::Pull { files } => {
+        Commands::Pull { files, list } => {
             let root = cx.cwd_root.context("Failed to resolve workspace root")?;
             let current_dir = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
             let files: Vec<PathBuf> = files
@@ -79,7 +79,19 @@ pub async fn dispatch_ops(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()>
                     }
                 })
                 .collect();
-            run_pull(cx.remote, root, files).await
+            if list {
+                anyhow::ensure!(
+                    files.len() == 1,
+                    "pull --list requires exactly one directory"
+                );
+                let outcome =
+                    prod_code_mcp::sync::list_remote_artifacts_from(cx.remote, root, &files[0])
+                        .await?;
+                print!("{}", outcome.render());
+                Ok(())
+            } else {
+                run_pull(cx.remote, root, files).await
+            }
         }
         Commands::ProposeExpression {
             file,

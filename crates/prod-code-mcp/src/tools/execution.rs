@@ -105,6 +105,7 @@ pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bo
         | "code_benchmarks"
         | "code_diagnose_failure" => true,
         "code_shadow_run" => args.get("apply").and_then(|v| v.as_bool()) != Some(true),
+        "code_pull" => args.get("list").and_then(|v| v.as_bool()) == Some(true),
         "code_check" | "code_lint" => args.get("fix").and_then(|v| v.as_bool()) != Some(true),
         _ => false,
     }

@@ -33,7 +33,10 @@ pub use handshake::{
     ANALYZER_PANIC_CODE, ClientCapabilities, HandshakeRequest, HandshakeResponse, PURPOSE_EDITOR,
     PURPOSE_VALIDATION, ServerCapabilities,
 };
-pub use pull::{PULL_CHUNK_BYTES, PullFileRequest, PullFileResponse};
+pub use pull::{
+    ARTIFACT_LIST_LIMIT, ArtifactEntry, ArtifactListing, PULL_CHUNK_BYTES, PullFileRequest,
+    PullFileResponse,
+};
 pub use remote_exec::{
     RemoteExecCommand, RemoteExecDiagnostic, RemoteExecFormat, RemoteExecLanguage,
     RemoteExecRequest, RemoteExecResult, RemoteExecSpan, RemoteExecStream, RemoteExecTestEvent,

@@ -71,6 +71,20 @@ pub fn pull_workspace_file(storage_root: &Path, req: &PullFileRequest) -> PullFi
             canonical.starts_with(&read_root),
             "refused: path is outside this checkout's copy"
         );
+        if req.list_directory {
+            anyhow::ensure!(
+                req.offset == 0,
+                "directory listing does not support offsets"
+            );
+            let listing = super::artifact_list::list_directory(&canonical)?;
+            let bytes = serde_json::to_vec(&listing)?;
+            let total = bytes.len() as u64;
+            anyhow::ensure!(
+                total <= PULL_CHUNK_BYTES,
+                "directory listing exceeds frame limit"
+            );
+            return Ok((bytes, total, false));
+        }
         let mut file = std::fs::File::open(canonical)?;
         let metadata = file.metadata()?;
         anyhow::ensure!(
@@ -97,7 +111,7 @@ pub fn pull_workspace_file(storage_root: &Path, req: &PullFileRequest) -> PullFi
         Ok((bytes, total, executable)) => {
             response.file.truncated = req.offset + (bytes.len() as u64) < total;
             response.file.content = Some(bytes);
-            response.file.is_executable = Some(executable);
+            response.file.is_executable = (!req.list_directory).then_some(executable);
             response.total_bytes = total;
         }
         Err(error) => {

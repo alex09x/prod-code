@@ -59,6 +59,52 @@ impl Served {
     }
 }
 
+#[tokio::test]
+async fn artifact_directory_listing_is_served_before_handshake() {
+    let mut served = serve(None).await;
+    let client_root = "/checkout/project";
+    let copy = crate::workspace::server_workspace_path(
+        &served._dir.path().join("storage"),
+        client_root,
+        Some("listing-fixture"),
+    );
+    std::fs::create_dir_all(copy.join("evidence/run")).unwrap();
+    std::fs::write(copy.join("evidence/run/result.txt"), "result").unwrap();
+    let answer = served
+        .ask(WireMessage::PullFileRequest(PullFileRequest {
+            client_workspace_root: client_root.into(),
+            base_workspace_name: Some("listing-fixture".into()),
+            path: "evidence/run".into(),
+            offset: 0,
+            list_directory: true,
+        }))
+        .await;
+    let WireMessage::PullFileResponse(response) = answer else {
+        panic!("unexpected response")
+    };
+    let listing: prod_code_protocol::ArtifactListing =
+        serde_json::from_slice(&response.file.content.unwrap()).unwrap();
+    assert!(
+        listing
+            .entries
+            .iter()
+            .any(|entry| entry.name == "result.txt" && entry.kind == "file")
+    );
+    assert!(!listing.truncated);
+    assert_eq!(
+        std::fs::read_to_string(copy.join("evidence/run/result.txt")).unwrap(),
+        "result"
+    );
+    served
+        .client
+        .send(WireMessage::Disconnect {
+            reason: "done".into(),
+        })
+        .await
+        .unwrap();
+    served.server.await.unwrap().unwrap();
+}
+
 /// Sends a plain HTTP request line and returns the status code and JSON body of the reply.
 async fn http_get(s: Served, path: &str) -> (u16, serde_json::Value) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -197,6 +243,7 @@ async fn every_pre_handshake_request_gets_its_own_kind_of_answer() {
             base_workspace_name: Some("unit-ws".to_string()),
             path: "missing.bin".to_string(),
             offset: 0,
+            list_directory: false,
         }))
         .await;
     assert!(

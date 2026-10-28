@@ -69,6 +69,9 @@ pub enum Commands {
         /// Files or relative paths to pull from the remote gateway workspace.
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// List one artifact directory without syncing or writing local files.
+        #[arg(long)]
+        list: bool,
     },
     /// Jump to symbol definition: prod-code def <file> <line> <col>, or --symbol NAME
     Def {
