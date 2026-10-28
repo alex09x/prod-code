@@ -1250,6 +1250,7 @@ async fn cluster_probe_server() -> SocketAddr {
                             .send(WireMessage::PlaceResponse(PlaceResponse {
                                 node: Some(addr.to_string()),
                                 reason: format!("chosen for {}", req.workspace_name),
+                                notified_sessions: 0,
                             }))
                             .await;
                     }
@@ -1329,6 +1330,7 @@ async fn placement_server() -> SocketAddr {
                             .send(WireMessage::PlaceResponse(PlaceResponse {
                                 node,
                                 reason: "gossip".to_string(),
+                                notified_sessions: 0,
                             }))
                             .await;
                     }

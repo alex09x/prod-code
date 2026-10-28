@@ -16,10 +16,10 @@
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ClusterResponse, ExecChunk, ExecExit, ExecMetric, HandshakeResponse, MetricsResponse,
-    PROTOCOL_VERSION, PeerInfo, PlaceResponse, ProdCodeCodec, QueryMetric, ReadFileResponse,
-    SearchHit, SearchResponse, ShadowHypothesisResult, ShadowRunResponse, StatusResponse,
-    SyncProbeResponse, SyncResponse, WireMessage,
+    ClusterResponse, ExecChunk, ExecExit, ExecMetric, HandshakeResponse, LoadedWorkspaceInfo,
+    MetricsResponse, PROTOCOL_VERSION, PeerInfo, PlaceResponse, ProdCodeCodec, QueryMetric,
+    ReadFileResponse, SearchHit, SearchResponse, ShadowHypothesisResult, ShadowRunResponse,
+    StatusResponse, SyncProbeResponse, SyncResponse, WireMessage,
 };
 use prod_code_testkit::{Answer, ScriptedGateway, Workspace, answers};
 use std::collections::HashMap;
@@ -50,6 +50,9 @@ pub struct MockGateway {
     pub place_request_active: Arc<std::sync::Mutex<Vec<Option<bool>>>>,
     pub supports_place_preview: Arc<AtomicBool>,
     pub reported_platform: Arc<std::sync::Mutex<Option<String>>>,
+    pub placement_target: Arc<std::sync::Mutex<Option<String>>>,
+    pub notified_sessions: Arc<AtomicUsize>,
+    pub reported_workspaces: Arc<std::sync::Mutex<Vec<LoadedWorkspaceInfo>>>,
 }
 
 struct MockState {
@@ -63,6 +66,9 @@ struct MockState {
     place_request_active: Arc<std::sync::Mutex<Vec<Option<bool>>>>,
     supports_place_preview: Arc<AtomicBool>,
     reported_platform: Arc<std::sync::Mutex<Option<String>>>,
+    placement_target: Arc<std::sync::Mutex<Option<String>>>,
+    notified_sessions: Arc<AtomicUsize>,
+    reported_workspaces: Arc<std::sync::Mutex<Vec<LoadedWorkspaceInfo>>>,
 }
 
 impl MockGateway {
@@ -88,6 +94,9 @@ impl MockGateway {
         let place_request_active = Arc::new(std::sync::Mutex::new(Vec::new()));
         let supports_place_preview = Arc::new(AtomicBool::new(true));
         let reported_platform = Arc::new(std::sync::Mutex::new(None));
+        let placement_target = Arc::new(std::sync::Mutex::new(None));
+        let notified_sessions = Arc::new(AtomicUsize::new(0));
+        let reported_workspaces = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let state = Arc::new(MockState {
             protocol_version,
@@ -100,6 +109,9 @@ impl MockGateway {
             place_request_active: Arc::clone(&place_request_active),
             supports_place_preview: Arc::clone(&supports_place_preview),
             reported_platform: Arc::clone(&reported_platform),
+            placement_target: Arc::clone(&placement_target),
+            notified_sessions: Arc::clone(&notified_sessions),
+            reported_workspaces: Arc::clone(&reported_workspaces),
         });
 
         tokio::spawn(async move {
@@ -125,6 +137,9 @@ impl MockGateway {
             place_request_active,
             supports_place_preview,
             reported_platform,
+            placement_target,
+            notified_sessions,
+            reported_workspaces,
         }
     }
 }
@@ -180,6 +195,7 @@ async fn handle_client(
                     .await?;
             }
             WireMessage::ClusterRequest => {
+                let workspaces = state.reported_workspaces.lock().unwrap().clone();
                 framed
                     .send(WireMessage::ClusterResponse(ClusterResponse {
                         this_node: local_addr.to_string(),
@@ -203,7 +219,7 @@ async fn handle_client(
                                 git_commit: None,
                             },
                             last_seen_secs: 0,
-                            workspaces: vec![],
+                            workspaces,
                             alive: true,
                         }],
                     }))
@@ -216,14 +232,21 @@ async fn handle_client(
                     .lock()
                     .unwrap()
                     .push(Some(req.rebalance_active));
+                let target = state
+                    .placement_target
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| local_addr.to_string());
                 framed
                     .send(WireMessage::PlaceResponse(PlaceResponse {
-                        node: Some(local_addr.to_string()),
+                        node: Some(target),
                         reason: if req.rebalance_active {
                             "rebalanced to local mock".to_string()
                         } else {
                             "placed on local mock".to_string()
                         },
+                        notified_sessions: state.notified_sessions.load(Ordering::SeqCst),
                     }))
                     .await?;
             }
@@ -233,10 +256,17 @@ async fn handle_client(
                 }
                 state.place_request_os.lock().unwrap().push(req.os.clone());
                 state.place_request_active.lock().unwrap().push(None);
+                let target = state
+                    .placement_target
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| local_addr.to_string());
                 framed
                     .send(WireMessage::PlacePreviewResponse(PlaceResponse {
-                        node: Some(local_addr.to_string()),
+                        node: Some(target),
                         reason: "preview to local mock".to_string(),
+                        notified_sessions: 0,
                     }))
                     .await?;
             }
@@ -505,11 +535,20 @@ fn make_workspace() -> Workspace {
 }
 
 async fn run_cli(ws: &Workspace, remote: SocketAddr, args: &[&str]) -> Output {
+    run_cli_with_remotes(ws, &[remote], args).await
+}
+
+async fn run_cli_with_remotes(ws: &Workspace, remotes: &[SocketAddr], args: &[&str]) -> Output {
+    let remote_spec = remotes
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
         .arg("--remote")
-        .arg(remote.to_string())
+        .arg(&remote_spec)
         .args(args)
-        .env("PROD_CODE_REMOTE", remote.to_string())
+        .env("PROD_CODE_REMOTE", &remote_spec)
         .env("HOME", ws.root())
         .current_dir(ws.root())
         .output()
@@ -648,12 +687,14 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
     ]);
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
     *gw.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
+    gw.notified_sessions.store(2, Ordering::SeqCst);
     let out = run_cli(&ws, gw.addr, &["cluster", "--rebalance", "--json"]).await;
     assert!(out.status.success(), "{}", stderr_of(&out));
     let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out))
         .expect("cluster --rebalance --json is one JSON object");
     assert!(snapshot["rebalanced"].is_object(), "{snapshot}");
     assert_eq!(snapshot["rebalanced"]["target"], gw.addr.to_string());
+    assert_eq!(snapshot["rebalanced"]["notified_sessions"], 2);
     assert!(
         snapshot["rebalanced"]["reason"]
             .as_str()
@@ -663,7 +704,8 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
 
     let out_text = run_cli(&ws, gw.addr, &["cluster", "--rebalance"]).await;
     assert!(out_text.status.success(), "{}", stderr_of(&out_text));
-    assert!(stdout_of(&out_text).contains("Active workload rebalanced to"));
+    assert!(stdout_of(&out_text).contains("2 active session(s) notified"));
+    assert!(stdout_of(&out_text).contains("completion is not confirmed"));
     assert_eq!(
         *gw.place_request_os.lock().unwrap(),
         vec![
@@ -677,6 +719,72 @@ async fn cli_rebalances_cluster_workload_and_reports_as_json() {
         *gw.place_request_active.lock().unwrap(),
         vec![None, Some(true), None, Some(true)]
     );
+}
+
+#[tokio::test]
+async fn cli_rebalance_contacts_each_active_workspace_holder_after_a_non_holder_seed() {
+    let ws = Workspace::new(&[(
+        "Cargo.toml",
+        "[package]\nname='rebalance'\nversion='0.1.0'\nedition='2021'\n",
+    )]);
+    let gateways = vec![
+        MockGateway::start(|_, _| serde_json::Value::Null).await,
+        MockGateway::start(|_, _| serde_json::Value::Null).await,
+        MockGateway::start(|_, _| serde_json::Value::Null).await,
+    ];
+    let workspace_name = ws.root().file_name().unwrap().to_string_lossy().to_string();
+    let addresses = gateways
+        .iter()
+        .map(|gateway| gateway.addr)
+        .collect::<Vec<_>>();
+    let order = prod_code_mcp::cluster::rendezvous_order(&addresses, &workspace_name);
+    let seed = gateways
+        .iter()
+        .find(|gateway| gateway.addr == order[0])
+        .unwrap();
+    let holders = order[1..]
+        .iter()
+        .map(|addr| {
+            gateways
+                .iter()
+                .find(|gateway| gateway.addr == *addr)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for gateway in &gateways {
+        *gateway.placement_target.lock().unwrap() = Some(seed.addr.to_string());
+    }
+    for (index, holder) in holders.iter().enumerate() {
+        let sessions = index + 2;
+        holder.notified_sessions.store(sessions, Ordering::SeqCst);
+        *holder.reported_workspaces.lock().unwrap() = vec![LoadedWorkspaceInfo {
+            name: workspace_name.clone(),
+            engine: "rust".to_string(),
+            sessions,
+        }];
+    }
+
+    let out = run_cli_with_remotes(&ws, &addresses, &["cluster", "--rebalance", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+
+    assert_eq!(
+        *seed.place_request_active.lock().unwrap(),
+        Vec::<Option<bool>>::new(),
+        "the non-holder seed should not receive a local migration request"
+    );
+    for holder in &holders {
+        assert_eq!(
+            *holder.place_request_active.lock().unwrap(),
+            vec![None, Some(true)],
+            "each active holder must receive its own rebalance request; stdout={} stderr={}",
+            stdout_of(&out),
+            stderr_of(&out)
+        );
+    }
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    assert_eq!(snapshot["rebalanced"]["target"], seed.addr.to_string());
+    assert_eq!(snapshot["rebalanced"]["notified_sessions"], 5);
+    assert_eq!(snapshot["rebalanced"]["completion_confirmed"], false);
 }
 
 #[tokio::test]

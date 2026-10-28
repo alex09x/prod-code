@@ -8,6 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod rebalance;
+
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, WireMessage};
@@ -159,19 +161,17 @@ pub async fn cluster_snapshot(
         });
     }
     let mut rebalance_info = None;
-    if rebalance {
-        for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
-            if let Some((target, reason)) =
-                ask_rebalance_target(seed, workspace_name, engine, required_os).await
-            {
-                prod_code_mcp::cluster::remember_placement(workspace_name, target);
-                rebalance_info = Some(serde_json::json!({
-                    "target": target.to_string(),
-                    "reason": reason,
-                }));
-                break;
-            }
-        }
+    if rebalance
+        && let Some((target, reason, notified_sessions)) =
+            rebalance::ask_rebalance_cluster(nodes, workspace_name, engine, required_os).await
+    {
+        prod_code_mcp::cluster::remember_placement(workspace_name, target);
+        rebalance_info = Some(serde_json::json!({
+            "target": target.to_string(),
+            "reason": reason,
+            "notified_sessions": notified_sessions,
+            "completion_confirmed": false,
+        }));
     }
     let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
         .first()
@@ -212,17 +212,13 @@ pub async fn run_cluster(
         println!("{}", serde_json::to_string_pretty(&snapshot)?);
         return Ok(());
     }
-    let mut rebalanced_target = None;
-    if rebalance {
-        for seed in prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name) {
-            if let Some((target, reason)) =
-                ask_rebalance_target(seed, workspace_name, engine, required_os).await
-            {
-                prod_code_mcp::cluster::remember_placement(workspace_name, target);
-                rebalanced_target = Some((target, reason));
-                break;
-            }
-        }
+    let rebalanced_target = if rebalance {
+        rebalance::ask_rebalance_cluster(nodes, workspace_name, engine, required_os).await
+    } else {
+        None
+    };
+    if let Some((target, _, _)) = &rebalanced_target {
+        prod_code_mcp::cluster::remember_placement(workspace_name, *target);
     }
     println!("⚡ prod-code cluster ({} node(s))", nodes.len());
     println!("────────────────────────────────────────────────────");
@@ -310,8 +306,14 @@ pub async fn run_cluster(
         println!("Home node (hash):    {home}");
     }
     let remembered = prod_code_mcp::cluster::remembered_node(workspace_name);
-    if let Some((target, ref reason)) = rebalanced_target {
-        println!("Rebalance:           Active workload rebalanced to {target} ({reason})");
+    if let Some((target, ref reason, notified_sessions)) = rebalanced_target {
+        println!(
+            "Rebalance:           Target selected {target} ({reason}); {notified_sessions} active session(s) notified; completion is not confirmed"
+        );
+    } else if rebalance {
+        println!(
+            "Rebalance:           No consistent holder/target response; active migration is not reported"
+        );
     }
     match remembered {
         Some(node) if nodes.contains(&node) => println!("Placed on:           {node}"),
@@ -319,53 +321,4 @@ pub async fn run_cluster(
         None => println!("Placed on:           (not yet)"),
     }
     Ok(())
-}
-
-async fn rebalance_target_satisfies_os(target: SocketAddr, required_os: Option<&str>) -> bool {
-    let Some(required_os) = required_os else {
-        return true;
-    };
-    prod_code_mcp::cluster::node_status(target)
-        .await
-        .is_ok_and(|status| prod_code_mcp::cluster::runs_os(&status, required_os))
-}
-
-async fn ask_rebalance_target(
-    seed: SocketAddr,
-    workspace_name: &str,
-    engine: Option<&str>,
-    required_os: Option<&str>,
-) -> Option<(SocketAddr, String)> {
-    if required_os.is_some() {
-        // Only gateways that understand this side-effect-free preview can safely rebalance
-        // OS-constrained active sessions during a rolling upgrade.
-        let preview = prod_code_mcp::cluster::ask_placement_preview(
-            seed,
-            workspace_name,
-            engine,
-            required_os,
-        )
-        .await
-        .ok()?;
-        let preview_target = preview
-            .node
-            .as_deref()
-            .and_then(|addr| addr.parse::<SocketAddr>().ok())?;
-        if !rebalance_target_satisfies_os(preview_target, required_os).await {
-            return None;
-        }
-    }
-
-    let response =
-        prod_code_mcp::cluster::ask_placement_opt(seed, workspace_name, engine, required_os, true)
-            .await
-            .ok()?;
-    let target = response
-        .node
-        .as_deref()
-        .and_then(|addr| addr.parse::<SocketAddr>().ok())?;
-    if !rebalance_target_satisfies_os(target, required_os).await {
-        return None;
-    }
-    Some((target, response.reason))
 }
