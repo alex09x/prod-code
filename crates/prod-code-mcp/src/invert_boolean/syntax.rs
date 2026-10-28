@@ -95,7 +95,40 @@ pub fn is_import_export_call_context(text: &str, at: usize, lang: Language) -> b
 
 pub fn nested_method_header(header: &str) -> bool {
     let header = header.rsplit('{').next().unwrap_or(header).trim();
-    let Some(open) = header.rfind('(') else {
+    let first_word = header.split_whitespace().next().unwrap_or_default();
+    if matches!(
+        first_word,
+        "if" | "else"
+            | "for"
+            | "while"
+            | "switch"
+            | "match"
+            | "catch"
+            | "with"
+            | "guard"
+            | "loop"
+            | "select"
+            | "case"
+            | "do"
+    ) {
+        return false;
+    }
+    let keyword = ["function ", "fn ", "func ", "fun "]
+        .iter()
+        .filter_map(|keyword| header.rfind(keyword))
+        .max();
+    let open = if let Some(keyword) = keyword {
+        let Some(open) = header[keyword..].find('(') else {
+            return false;
+        };
+        keyword + open
+    } else {
+        let Some(open) = header.find('(') else {
+            return false;
+        };
+        open
+    };
+    let Some(close) = crate::parameter_object::matching_bracket(header, open) else {
         return false;
     };
     let name = header[..open]
@@ -107,19 +140,55 @@ pub fn nested_method_header(header: &str) -> bool {
     if matches!(name, "if" | "for" | "while" | "switch" | "catch" | "with") {
         return false;
     }
-    let rest = header[open..].trim_end();
-    rest.ends_with(')')
+    if keyword.is_some() {
+        return true;
+    }
+    let suffix = header[close + 1..].trim();
+    suffix.is_empty()
+        || suffix.starts_with(':')
+        || suffix.starts_with("->")
+        || suffix.starts_with("where ")
         || [
-            " const",
-            " async",
-            " throws",
-            " rethrows",
-            " noexcept",
-            " override",
-            " final",
+            "const", "async", "throws", "rethrows", "noexcept", "override", "final",
         ]
         .iter()
-        .any(|suffix| rest.ends_with(suffix))
+        .any(|qualifier| suffix.starts_with(qualifier))
+}
+
+fn control_flow_block_header(header: &str) -> bool {
+    let line = header
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(header)
+        .trim_start();
+    let word = line
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or_default();
+    matches!(
+        word,
+        "if" | "else"
+            | "for"
+            | "while"
+            | "switch"
+            | "match"
+            | "catch"
+            | "with"
+            | "guard"
+            | "loop"
+            | "select"
+            | "case"
+            | "do"
+    )
+}
+
+fn match_block_header(header: &str) -> bool {
+    let header = header.trim();
+    header.starts_with("match ")
+        || header.starts_with("return match ")
+        || header.contains("= match ")
+        || header.contains("=> match ")
 }
 
 /// The `return` keywords that return from the function whose body is `inner`: not one inside a
@@ -127,7 +196,15 @@ pub fn nested_method_header(header: &str) -> bool {
 pub fn own_returns(inner: &str) -> Vec<usize> {
     let bytes = inner.as_bytes();
     let mut out = Vec::new();
-    let mut stack: Vec<bool> = Vec::new(); // true: a closure or async block
+    #[derive(Clone, Copy)]
+    struct Scope {
+        opaque: bool,
+        match_block: bool,
+    }
+    let mut stack: Vec<Scope> = Vec::new();
+    let mut statement_start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
         let c = bytes[i];
@@ -169,33 +246,57 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
             }
             continue;
         }
+        if c == b'(' {
+            paren_depth += 1;
+            i += 1;
+            continue;
+        }
+        if c == b')' {
+            paren_depth = paren_depth.saturating_sub(1);
+            i += 1;
+            continue;
+        }
+        if c == b'[' {
+            bracket_depth += 1;
+            i += 1;
+            continue;
+        }
+        if c == b']' {
+            bracket_depth = bracket_depth.saturating_sub(1);
+            i += 1;
+            continue;
+        }
         if c == b'{' {
-            let head = inner[..i].trim_end();
-            let line = &head[head.rfind('\n').map_or(0, |n| n + 1)..];
+            let header = inner[statement_start..i].trim_end();
+            let in_match_block = stack.iter().any(|scope| scope.match_block);
             // A closure, an `async` block or a nested `fn` has returns of its own.
-            let opaque = head.ends_with("async")
-                || head.ends_with("async move")
-                || head.ends_with('|')
-                || (line.contains('|') && line.contains("->"))
-                || line.trim_start().starts_with("fn ")
-                || line.contains(" fn ")
-                || line.contains("func ")
-                || line.contains("function ")
-                || line.contains("=>")
-                || nested_method_header(line);
-            stack.push(opaque);
+            let opaque = header.ends_with("async")
+                || header.ends_with("async move")
+                || header.ends_with('|')
+                || (header.contains('|') && header.contains("->"))
+                || (header.trim_end().ends_with("=>") && !in_match_block)
+                || (!control_flow_block_header(header) && nested_method_header(header));
+            stack.push(Scope {
+                opaque,
+                match_block: match_block_header(header),
+            });
+            statement_start = i + 1;
             i += 1;
             continue;
         }
         if c == b'}' {
             stack.pop();
+            statement_start = i + 1;
             i += 1;
             continue;
+        }
+        if c == b';' && paren_depth == 0 && bracket_depth == 0 {
+            statement_start = i + 1;
         }
         if inner[i..].starts_with("return")
             && !inner[..i].chars().next_back().is_some_and(is_ident)
             && !inner[i + 6..].chars().next().is_some_and(is_ident)
-            && !stack.iter().any(|opaque| *opaque)
+            && !stack.iter().any(|scope| scope.opaque)
             && !inner[..i].trim_end().ends_with('|')
         {
             out.push(i);

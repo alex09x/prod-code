@@ -9,7 +9,7 @@
  */
 
 use crate::parameter_object::Language;
-use crate::wrap_return::utils::{format_constructor_call, is_ident};
+use crate::wrap_return::utils::format_constructor_call;
 
 /// Rewrites explicit return statements and the trailing expression in a Rust function body.
 pub(crate) fn rewrite_rust_body(
@@ -20,36 +20,13 @@ pub(crate) fn rewrite_rust_body(
 ) -> String {
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let bytes = body.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'r' if body[i..].starts_with("return") => {
-                let before = if i > 0 { bytes[i - 1] as char } else { ' ' };
-                let after = if i + 6 < bytes.len() {
-                    bytes[i + 6] as char
-                } else {
-                    ' '
-                };
-                if !is_ident(before) && !is_ident(after) {
-                    let end_stmt = body[i..].find(';').map_or(body.len(), |e| i + e);
-                    let ret_stmt = &body[i..end_stmt];
-                    let expr = ret_stmt.strip_prefix("return").unwrap().trim();
-                    let wrapped = format_constructor_call(
-                        constructor,
-                        envelope_base,
-                        expr,
-                        Language::Rust,
-                        was,
-                    );
-                    edits.push((i, end_stmt - i, format!("return {wrapped}")));
-                    i = end_stmt;
-                    continue;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
+    for i in crate::invert_boolean::own_returns(body) {
+        let end_stmt = body[i..].find(';').map_or(body.len(), |e| i + e);
+        let ret_stmt = &body[i..end_stmt];
+        let expr = ret_stmt.strip_prefix("return").unwrap().trim();
+        let wrapped =
+            format_constructor_call(constructor, envelope_base, expr, Language::Rust, was);
+        edits.push((i, end_stmt - i, format!("return {wrapped}")));
     }
 
     // Check if the body has a tail expression (not terminated by semicolon)

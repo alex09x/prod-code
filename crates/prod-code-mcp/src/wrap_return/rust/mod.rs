@@ -9,6 +9,7 @@
  */
 
 mod rewrite;
+mod selection;
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -19,6 +20,7 @@ use crate::parameter_object::Language;
 use crate::wrap_return::types::{WrappedReturn, Wrapper};
 use crate::wrap_return::utils::{declared_return, display, enclosing_return_type, propagates};
 use rewrite::rewrite_rust_body;
+use selection::selected_function_name_position;
 
 /// Wraps the return type of the function declared at `line`:`col` (or `symbol`) of `file` for Rust.
 #[allow(clippy::too_many_arguments)]
@@ -60,6 +62,23 @@ pub async fn wrap_rust_ext(
     let at = if line > 0 && col > 0 {
         crate::signature::offset_of(&text, line, col)
             .context("the position is not inside the file")?
+    } else if line > 0 {
+        let uri = url::Url::from_file_path(file)
+            .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
+            .to_string();
+        let symbols = crate::tools::execute_lsp_query(
+            remote,
+            root,
+            file,
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await?;
+        let wanted = symbol.map(|name| name.rsplit("::").next().unwrap_or(name));
+        let (selected_line, selected_col) = selected_function_name_position(&symbols, line, wanted)
+            .with_context(|| format!("no Rust function declaration at line {line}"))?;
+        crate::signature::offset_of(&text, selected_line, selected_col)
+            .context("the function name position is not inside the file")?
     } else if let Some(sym) = symbol {
         let needle = format!("fn {sym}");
         let pos = text
@@ -159,7 +178,9 @@ pub async fn wrap_rust_ext(
                 .context("the assist did not rewrite the declaring file")?;
             let now = match error {
                 Some(error) => {
-                    let sig_at = decl_text.find(&format!("fn {name}")).unwrap_or(0);
+                    // The assist changes text at or after this return type, leaving the selected
+                    // function name at its original offset even when another function shares it.
+                    let sig_at = start.min(decl_text.len());
                     let body_at = decl_text[sig_at..]
                         .find('{')
                         .map_or(decl_text.len(), |i| sig_at + i);

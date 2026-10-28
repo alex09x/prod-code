@@ -12,8 +12,9 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
+use super::search::CopyOwnership;
 use crate::extract_function::binding::{read_after_but_not_returned, uncaptured_enclosing_locals};
 use crate::extract_function::rewrite::{
     apply_edits, errors_in, indent_at, rename_placeholder, with_arguments, with_calls,
@@ -52,8 +53,87 @@ pub async fn process_and_validate_duplicates(
     Vec<String>,
     Option<String>,
 )> {
-    let home = if other_files {
-        Some(crate::move_item::module_of(file)?.1)
+    let ownership = if other_files {
+        let graph = crate::move_item::ownership::Graph::load(root, file)
+            .context("could not establish Cargo target membership for duplicate validation")?;
+        let owners = graph.owners(file, Some(start))?;
+        anyhow::ensure!(
+            owners.len() == 1,
+            "selected declaration belongs to multiple Cargo targets or module scopes; refusing cross-file duplicate validation"
+        );
+        Some(CopyOwnership {
+            graph,
+            selected: owners[0].clone(),
+        })
+    } else {
+        None
+    };
+    process_and_validate_duplicates_with_ownership(
+        remote,
+        root,
+        file,
+        name,
+        extracted,
+        selection,
+        sel_tokens,
+        start,
+        end,
+        rewrite,
+        call,
+        call_indent,
+        copies,
+        varying,
+        own_literals,
+        parameters,
+        untyped,
+        parameterized,
+        base_edits,
+        other_files,
+        function,
+        ownership.as_ref(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn process_and_validate_duplicates_with_ownership(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    name: &str,
+    extracted: &str,
+    selection: &str,
+    sel_tokens: &[(Token, usize, usize)],
+    start: usize,
+    end: usize,
+    rewrite: Option<&Rewrite>,
+    call: Option<String>,
+    call_indent: &str,
+    copies: &[(PathBuf, String, Occurrence)],
+    varying: &[usize],
+    own_literals: &[String],
+    parameters: &mut Vec<(String, String)>,
+    untyped: Option<&str>,
+    parameterized: bool,
+    base_edits: &[(usize, usize, String)],
+    _other_files: bool,
+    function: Option<(usize, usize)>,
+    ownership: Option<&CopyOwnership>,
+) -> Result<(
+    Vec<Duplicate>,
+    Vec<(PathBuf, String)>,
+    Vec<String>,
+    Option<String>,
+)> {
+    let has_cross_file_copies = copies.iter().any(|(path, _, _)| path != file);
+    let home = if has_cross_file_copies {
+        Some(
+            ownership
+                .context("Cargo target ownership is required for cross-file duplicate validation")?
+                .selected
+                .module
+                .clone(),
+        )
     } else {
         None
     };
@@ -96,15 +176,21 @@ pub async fn process_and_validate_duplicates(
         } else {
             Some((c.from, c.to))
         };
+        if !same_file && let Some(ownership) = ownership {
+            let owners = ownership.graph.owners(path, Some(c.from))?;
+            anyhow::ensure!(
+                owners.len() == 1
+                    && owners[0].identity == ownership.selected.identity
+                    && owners[0].module.krate == ownership.selected.module.krate
+                    && owners[0].condition.implies(&ownership.selected.condition),
+                "duplicate at {shown}:{line} has ambiguous Cargo or module ownership"
+            );
+        }
         let qualify = |t: String| match &home {
-            Some(home) if !same_file => {
-                let (_, module) = crate::move_item::module_of(path)
-                    .unwrap_or_else(|_| (PathBuf::new(), home.clone()));
-                t.replace(
-                    &format!("{PLACEHOLDER}("),
-                    &format!("{}::{PLACEHOLDER}(", home.spelled_from(&module.krate)),
-                )
-            }
+            Some(home) if !same_file => t.replace(
+                &format!("{PLACEHOLDER}("),
+                &format!("{}::{PLACEHOLDER}(", home.spelled_from(&home.krate)),
+            ),
             _ => t,
         };
         let plain_call = call.clone().map(qualify);
