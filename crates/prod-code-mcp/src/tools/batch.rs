@@ -80,11 +80,17 @@ where
         .and_then(|v| v.as_u64())
         .is_some()
         || base_args
+            .get("timeout_millis")
+            .and_then(|v| v.as_u64())
+            .is_some()
+        || base_args
             .get("budget_secs")
             .or_else(|| base_args.get("timeout_secs"))
             .and_then(|v| v.as_u64())
             .is_some();
     let shared_budget = if let Some(ms) = base_args.get("budget_ms").and_then(|v| v.as_u64()) {
+        std::time::Duration::from_millis(ms.max(1))
+    } else if let Some(ms) = base_args.get("timeout_millis").and_then(|v| v.as_u64()) {
         std::time::Duration::from_millis(ms.max(1))
     } else if let Some(secs) = base_args
         .get("budget_secs")
@@ -202,7 +208,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn symbol_timeout_regression_preserves_later_results() {
+    async fn definition_timeout_batch_preserves_partial_results() {
         let symbols = vec!["Slow".into(), "Fast".into(), "Last".into()];
         let mut attempted = Vec::new();
         let result = run_symbol_batch(

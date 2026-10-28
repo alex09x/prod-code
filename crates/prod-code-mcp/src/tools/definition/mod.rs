@@ -107,7 +107,8 @@ pub(crate) async fn handle_definition(
                             out.push_str(&text);
                         }
                         Err(e) => out.push_str(&format!(
-                            "\n   (the definition's code could not be read: {e:#})"
+                            "\n   ({})",
+                            body_read_error(workspace_root, uri, &e)
                         )),
                     }
                     continue;
@@ -122,9 +123,10 @@ pub(crate) async fn handle_definition(
                             out.push('\n');
                             out.push_str(&crate::remote_fs::snippet(&text, start_line as u32, 8));
                         }
-                        Err(e) => {
-                            out.push_str(&format!("\n   (external source not readable: {e})"))
-                        }
+                        Err(e) => out.push_str(&format!(
+                            "\n   ({})",
+                            body_read_error(workspace_root, uri, &e)
+                        )),
                     }
                 }
             }
@@ -163,7 +165,8 @@ pub(crate) async fn handle_definition(
                         out.push_str(&text);
                     }
                     Err(e) => out.push_str(&format!(
-                        "\n   (the definition's code could not be read: {e:#})"
+                        "\n   ({})",
+                        body_read_error(workspace_root, uri, &e)
                     )),
                 }
             } else {
@@ -175,9 +178,10 @@ pub(crate) async fn handle_definition(
                             out.push('\n');
                             out.push_str(&crate::remote_fs::snippet(&text, start_line as u32, 8));
                         }
-                        Err(e) => {
-                            out.push_str(&format!("\n   (external source not readable: {e})"))
-                        }
+                        Err(e) => out.push_str(&format!(
+                            "\n   ({})",
+                            body_read_error(workspace_root, uri, &e)
+                        )),
                     }
                 }
             }
@@ -197,8 +201,24 @@ pub(crate) async fn handle_definition(
                         out.push_str(&text);
                     }
                     Err(e) => out.push_str(&format!(
-                        "\n   (the definition's code could not be read: {e:#})"
+                        "\n   ({})",
+                        body_read_error(workspace_root, &file_uri, &e)
                     )),
+                }
+            } else {
+                let path = crate::remote_fs::uri_to_path(&file_uri);
+                if crate::remote_fs::is_external(workspace_root, &path) {
+                    match crate::remote_fs::read_remote_file(remote, &path, 0).await {
+                        Ok((bytes, _)) => {
+                            let text = String::from_utf8_lossy(&bytes);
+                            out.push('\n');
+                            out.push_str(&crate::remote_fs::snippet(&text, line, 8));
+                        }
+                        Err(e) => out.push_str(&format!(
+                            "\n   ({})",
+                            body_read_error(workspace_root, &file_uri, &e)
+                        )),
+                    }
                 }
             }
         } else {
@@ -206,4 +226,33 @@ pub(crate) async fn handle_definition(
         }
     }
     Ok(McpToolCallResult::text(out))
+}
+
+fn body_read_error(workspace_root: &Path, uri: &str, error: &anyhow::Error) -> String {
+    let path = crate::remote_fs::uri_to_path(uri);
+    if crate::remote_fs::is_external(workspace_root, &path) {
+        format!(
+            "The source body is outside the workspace synced to this gateway and could not be fetched. For a linked worktree, sync or select the worktree containing the definition; otherwise use a source path the gateway exposes. Cause: {error:#}"
+        )
+    } else {
+        format!("the definition's code could not be read: {error:#}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::body_read_error;
+
+    #[test]
+    fn an_unreadable_linked_worktree_source_explains_how_to_read_it() {
+        let root = tempfile::tempdir().unwrap();
+        let uri = "file:///private/tmp/linked-worktree/src/lib.rs";
+        let error = anyhow::anyhow!("not a readable source location on this gateway");
+
+        let message = body_read_error(root.path(), uri, &error);
+
+        assert!(message.contains("outside the workspace synced to this gateway"));
+        assert!(message.contains("sync or select the worktree"));
+        assert!(message.contains("source path the gateway exposes"));
+    }
 }

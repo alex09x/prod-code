@@ -47,15 +47,12 @@ pub async fn run_shadow(
         return Ok(first);
     }
 
-    let target_dir = metadata_target_dir(&first.server_workspace_root)?;
-    let retry_command = command_with_target_dir(&command, &target_dir);
-    let retry_env = environment_with_target_dir(&env, &target_dir);
     let warmup = crate::exec::run_remote(
         remote,
         root,
         subdir,
-        warmup_command(root, subdir, &retry_command),
-        retry_env.clone(),
+        warmup_command(root, subdir, &command, &env, &first.server_workspace_root)?,
+        env.clone(),
         timeout_secs,
         false,
         |_, _| {},
@@ -73,8 +70,8 @@ pub async fn run_shadow(
         root,
         subdir,
         specs,
-        retry_command,
-        retry_env,
+        command,
+        env,
         timeout_secs,
         parallel,
         tail_bytes,
@@ -97,7 +94,19 @@ pub async fn run_shadow(
 
 /// Runs Cargo in a disposable source copy, preserving reusable artifacts in a sibling target
 /// cache instead of letting Cargo or build scripts mutate the persistent workspace (#1443).
-fn warmup_command(root: &Path, subdir: Option<&str>, command: &[String]) -> Vec<String> {
+fn warmup_command(
+    root: &Path,
+    subdir: Option<&str>,
+    command: &[String],
+    env: &[(String, String)],
+    server_workspace_root: &str,
+) -> Result<Vec<String>> {
+    let server_root = Path::new(server_workspace_root);
+    anyhow::ensure!(
+        server_root.is_absolute(),
+        "gateway did not report an absolute workspace root for metadata warm-up"
+    );
+    let server_cwd = server_root.join(subdir.unwrap_or_default());
     let start = subdir.map_or_else(|| root.to_path_buf(), |s| root.join(s));
     let locked = start
         .ancestors()
@@ -115,87 +124,117 @@ fn warmup_command(root: &Path, subdir: Option<&str>, command: &[String]) -> Vec<
     {
         cargo_command.insert(check + 1, "--locked".to_string());
     }
+
+    for index in 0..cargo_command.len() {
+        if cargo_command[index] == "--manifest-path" && index + 1 < cargo_command.len() {
+            cargo_command[index + 1] =
+                copied_argument_path(&server_root, &server_cwd, &cargo_command[index + 1])?;
+        } else if let Some(manifest) = cargo_command[index].strip_prefix("--manifest-path=") {
+            cargo_command[index] = format!(
+                "--manifest-path={}",
+                copied_argument_path(&server_root, &server_cwd, manifest)?
+            );
+        }
+        if cargo_command[index] == "--target-dir" && index + 1 < cargo_command.len() {
+            cargo_command[index + 1] =
+                absolute_from_workspace(&server_cwd, &cargo_command[index + 1]);
+        } else if let Some(target) = cargo_command[index].strip_prefix("--target-dir=") {
+            cargo_command[index] = format!(
+                "--target-dir={}",
+                absolute_from_workspace(&server_cwd, target)
+            );
+        }
+    }
+
+    let has_target_override = env.iter().any(|(name, _)| name == "CARGO_TARGET_DIR")
+        || command
+            .iter()
+            .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="));
     let mut out: Vec<String> = [
         "sh",
         "-c",
         "set -eu
-         manifest=$(cargo locate-project --workspace --message-format plain)
-         workspace=${manifest%/Cargo.toml}
+         workspace=$1
+         relative=$2
+         set_target_dir=$3
+         shift 3
          workspace=$(cd \"$workspace\" && pwd -P)
          current=$(pwd -P)
-         case \"$current\" in
-           \"$workspace\") relative= ;;
-           \"$workspace\"/*) relative=\"${current#\"$workspace\"}\" ;;
-           *) echo 'warm-up directory is outside the Cargo workspace' >&2; exit 2 ;;
-         esac
+         expected=\"$workspace${relative:+/$relative}\"
+         expected=$(cd \"$expected\" && pwd -P)
+         if [ \"$current\" != \"$expected\" ]; then
+           echo 'warm-up directory does not match the gateway workspace and subdirectory' >&2
+           exit 2
+         fi
+         if [ -n \"${CARGO_TARGET_DIR:-}\" ]; then
+           case \"$CARGO_TARGET_DIR\" in
+             /*) ;;
+             *) CARGO_TARGET_DIR=\"$current/$CARGO_TARGET_DIR\"; export CARGO_TARGET_DIR ;;
+           esac
+         elif [ \"$set_target_dir\" = yes ]; then
+           CARGO_TARGET_DIR=\"$workspace/target\"; export CARGO_TARGET_DIR
+         fi
          scratch=$(mktemp -d \"${TMPDIR:-/tmp}/prod-code-shadow-warmup.XXXXXX\")
          trap 'rm -rf \"$scratch\"' EXIT HUP INT TERM
          tar -C \"$workspace\" --exclude=./target --exclude=./.git -cf \"$scratch/source.tar\" .
          mkdir \"$scratch/source\"
          tar -xf \"$scratch/source.tar\" -C \"$scratch/source\"
          rm -f \"$scratch/source.tar\"
-         cd \"$scratch/source$relative\"
+         cd \"$scratch/source${relative:+/$relative}\"
          \"$@\"",
         "sh",
     ]
     .map(str::to_string)
     .to_vec();
+    out.push(server_workspace_root.to_string());
+    out.push(subdir.unwrap_or_default().to_string());
+    out.push(if has_target_override { "no" } else { "yes" }.to_string());
     out.extend(cargo_command);
-    out
+    Ok(out)
 }
 
-fn metadata_target_dir(server_workspace_root: &str) -> Result<PathBuf> {
-    let workspace = Path::new(server_workspace_root);
-    anyhow::ensure!(
-        workspace.is_absolute(),
-        "gateway did not report an absolute workspace root for metadata warm-up"
-    );
-    let workspaces_dir = workspace
-        .parent()
-        .context("gateway workspace root has no parent directory")?;
-    let storage_root = workspaces_dir.parent().unwrap_or(workspaces_dir);
-    let name = workspace
-        .file_name()
-        .context("gateway workspace root has no directory name")?;
-    Ok(storage_root.join(".prod-code-shadow-targets").join(name))
-}
-
-fn command_with_target_dir(command: &[String], target_dir: &Path) -> Vec<String> {
-    let target_dir = target_dir.to_string_lossy().into_owned();
-    let mut out = command.to_vec();
-    if let Some(index) = out.iter().position(|arg| arg == "--target-dir")
-        && index + 1 < out.len()
-    {
-        out[index + 1] = target_dir;
-        return out;
+fn copied_argument_path(workspace_root: &Path, cwd: &Path, path: &str) -> Result<String> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Ok(path.to_string_lossy().into_owned());
     }
-    if let Some(arg) = out.iter_mut().find(|arg| arg.starts_with("--target-dir=")) {
-        *arg = format!("--target-dir={target_dir}");
-        return out;
-    }
-    let check = out
-        .iter()
-        .position(|arg| arg == "check")
-        .unwrap_or(out.len().saturating_sub(1));
-    out.splice(
-        check + 1..check + 1,
-        ["--target-dir".to_string(), target_dir],
-    );
-    out
+    let relative = path.strip_prefix(workspace_root).with_context(|| {
+        format!(
+            "cannot safely isolate metadata warm-up with manifest path {} outside the workspace",
+            path.display()
+        )
+    })?;
+    relative_path(cwd, &workspace_root.join(relative))
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
-fn environment_with_target_dir(
-    env: &[(String, String)],
-    target_dir: &Path,
-) -> Vec<(String, String)> {
-    let target_dir = target_dir.to_string_lossy().into_owned();
-    let mut out = env.to_vec();
-    if let Some((_, value)) = out.iter_mut().find(|(name, _)| name == "CARGO_TARGET_DIR") {
-        *value = target_dir;
+fn absolute_from_workspace(cwd: &Path, path: &str) -> String {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_string_lossy().into_owned()
     } else {
-        out.push(("CARGO_TARGET_DIR".to_string(), target_dir));
+        cwd.join(path).to_string_lossy().into_owned()
     }
-    out
+}
+
+fn relative_path(from: &Path, to: &Path) -> Result<PathBuf> {
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    anyhow::ensure!(
+        from.first() == to.first(),
+        "cannot map an absolute Cargo path into the isolated workspace"
+    );
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut relative = PathBuf::new();
+    for component in &from[common..] {
+        if matches!(component, std::path::Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &to[common..] {
+        relative.push(component.as_os_str());
+    }
+    Ok(relative)
 }
 
 fn needs_dependency_metadata_warmup(command: &[String], output: &str) -> bool {
@@ -218,119 +257,4 @@ fn needs_dependency_metadata_warmup(command: &[String], output: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_missing_rmeta_files_from_cargo_check_trigger_a_warmup() {
-        let cargo_check = vec!["/usr/bin/cargo".to_string(), "check".to_string()];
-        let cargo_toolchain_check = vec![
-            "cargo".to_string(),
-            "+stable".to_string(),
-            "check".to_string(),
-        ];
-        let cargo_test = vec!["cargo".to_string(), "test".to_string()];
-        let missing =
-            "error: extern location for serde does not exist: target/debug/deps/libserde-abc.rmeta";
-        assert!(needs_dependency_metadata_warmup(&cargo_check, missing));
-        assert!(needs_dependency_metadata_warmup(
-            &cargo_toolchain_check,
-            missing
-        ));
-        assert!(!needs_dependency_metadata_warmup(&cargo_test, missing));
-        assert!(!needs_dependency_metadata_warmup(
-            &cargo_check,
-            "error: could not write target/debug/deps/libserde.rmeta: No space left on device"
-        ));
-    }
-
-    #[test]
-    fn metadata_target_cache_is_outside_the_workspace_tree() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("storage/workspaces/project");
-        let target = metadata_target_dir(workspace.to_str().unwrap()).unwrap();
-
-        assert_eq!(
-            target,
-            temp.path()
-                .join("storage/.prod-code-shadow-targets/project")
-        );
-        assert!(!target.starts_with(&workspace));
-    }
-
-    /// #1443: the warm-up runs on a disposable source copy and keeps Cargo output in a separate
-    /// reusable target cache.
-    #[test]
-    fn the_warmup_isolates_build_script_changes_on_success_and_failure() {
-        let check = ["cargo", "+stable", "check", "--workspace"].map(str::to_string);
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("persistent-workspace");
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"warmup_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
-        std::fs::write(
-            root.join("build.rs"),
-            "fn main() {\n    let dir = std::path::PathBuf::from(std::env::var_os(\"CARGO_MANIFEST_DIR\").unwrap());\n    std::fs::write(dir.join(\"build-script-side-effect.txt\"), \"written\").unwrap();\n    if std::env::var_os(\"FAIL_BUILD\").is_some() { panic!(\"controlled build failure\"); }\n}\n",
-        )
-        .unwrap();
-
-        let target_dir = temp.path().join("reusable-target");
-        let command = command_with_target_dir(&["cargo".into(), "check".into()], &target_dir);
-        assert!(command.contains(&target_dir.to_string_lossy().into_owned()));
-        let warmup = warmup_command(&root, None, &command);
-
-        let success = std::process::Command::new(&warmup[0])
-            .args(&warmup[1..])
-            .current_dir(&root)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .output()
-            .unwrap();
-        assert!(
-            success.status.success(),
-            "{}",
-            String::from_utf8_lossy(&success.stderr)
-        );
-        assert!(!root.join("Cargo.lock").exists());
-        assert!(!root.join("build-script-side-effect.txt").exists());
-        assert!(target_dir.join("debug").exists());
-
-        let failing_root = temp.path().join("failing-workspace");
-        std::fs::create_dir_all(failing_root.join("src")).unwrap();
-        std::fs::write(
-            failing_root.join("Cargo.toml"),
-            "[package]\nname = \"warmup_failure\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n",
-        )
-        .unwrap();
-        std::fs::write(failing_root.join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
-        std::fs::copy(root.join("build.rs"), failing_root.join("build.rs")).unwrap();
-        let failing = warmup_command(&failing_root, None, &command);
-        let failure = std::process::Command::new(&failing[0])
-            .args(&failing[1..])
-            .current_dir(&failing_root)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .env("FAIL_BUILD", "1")
-            .output()
-            .unwrap();
-        assert!(!failure.status.success());
-        assert!(!failing_root.join("Cargo.lock").exists());
-        assert!(!failing_root.join("build-script-side-effect.txt").exists());
-
-        // A lock at the root still makes the warm-up invocation immutable.
-        std::fs::write(root.join("Cargo.lock"), "").unwrap();
-        assert!(
-            warmup_command(&root, Some("src"), &check)
-                .iter()
-                .any(|arg| arg == "--locked")
-        );
-        let frozen = ["cargo", "check", "--frozen"].map(str::to_string);
-        assert!(
-            warmup_command(&root, None, &frozen)
-                .iter()
-                .any(|arg| arg == "--frozen")
-        );
-    }
-}
+mod tests;
