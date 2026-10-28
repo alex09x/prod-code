@@ -66,6 +66,37 @@ pub(crate) fn parse(text: &str, edition: Edition) -> SourceFile {
     SourceFile::parse(text, edition).tree()
 }
 
+pub(crate) fn impl_header_for_owner(
+    text: &str,
+    (impl_start, impl_open): (usize, usize),
+    owner: &str,
+    qualified_owner: &str,
+    edition: Edition,
+) -> Option<String> {
+    let source = parse(text, edition);
+    let implementation = source
+        .syntax()
+        .descendants()
+        .filter_map(ast::Impl::cast)
+        .find(|implementation| {
+            implementation
+                .impl_token()
+                .is_some_and(|token| usize::from(token.text_range().start()) == impl_start)
+        })?;
+    let self_type = implementation.self_ty()?;
+    let path_type = ast::PathType::cast(self_type.syntax().clone())?;
+    let path = path_type.path()?;
+    let owner_name = path.segments().last()?.name_ref()?;
+    if owner_name.text() != owner {
+        return None;
+    }
+    let path_start = range(path.syntax()).start.checked_sub(impl_start)?;
+    let owner_end = range(owner_name.syntax()).end.checked_sub(impl_start)?;
+    let mut header = text.get(impl_start..=impl_open)?.to_string();
+    header.replace_range(path_start..owner_end, qualified_owner);
+    Some(header)
+}
+
 pub(crate) fn range(node: &SyntaxNode) -> Range<usize> {
     let r = node.text_range();
     usize::from(r.start())..usize::from(r.end())
