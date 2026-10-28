@@ -89,46 +89,8 @@ async fn run_cli() -> Result<()> {
         .as_deref()
         .map(|root| {
             let tokens = command_path_tokens(cli.command.as_ref());
-            let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-            let file_hint = tokens.iter().find_map(|p| {
-                let candidate = if p.is_absolute() {
-                    p.clone()
-                } else {
-                    root.join(p)
-                };
-                if candidate.is_file() {
-                    let canonical = std::fs::canonicalize(&candidate).ok()?;
-                    if canonical.starts_with(&canonical_root) {
-                        return Some(canonical);
-                    }
-                }
-                None
-            });
-            let hint = file_hint
-                .or_else(|| {
-                    tokens.iter().find_map(|p| {
-                        let candidate = if p.is_absolute() {
-                            p.clone()
-                        } else {
-                            root.join(p)
-                        };
-                        if candidate.is_dir() && candidate != *root {
-                            let canonical = std::fs::canonicalize(&candidate).ok()?;
-                            if canonical.starts_with(&canonical_root) && canonical != canonical_root
-                            {
-                                return Some(canonical);
-                            }
-                        }
-                        None
-                    })
-                })
-                .or_else(|| {
-                    env::current_dir()
-                        .ok()
-                        .and_then(|cwd| std::fs::canonicalize(&cwd).ok())
-                        .filter(|cwd| cwd.starts_with(&canonical_root))
-                })
-                .unwrap_or_else(|| canonical_root.clone());
+            let cwd = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
+            let hint = placement_hint(root, &cwd, &tokens);
             prod_code_mcp::sync::engine_project(root, &hint)
         })
         .unwrap_or((None, None));

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Command Run From a Subdirectory Is Placed by the Project It Will Run** (`crates/prod-code-client`, #1478, part 1):
+  At startup, the client picks the node for a command by the project the command's paths name. It resolved a relative path against the checkout root, while the command itself resolves it against the current directory. Run from `tools/`, `prod-code check --path nested` was placed by `<root>/nested` but checked `tools/nested`, so a nested project of another language could land on a node without its engine. A relative path is now resolved against the current directory first, and against the root only when nothing is there.
 - **Paths and URIs Under a Windows Workspace Root Map to the Node's Copy and Back** (`crates/prod-code-protocol`, #1523):
   The session's path translator accepted only roots that start with `/`. With a client on Windows, whose workspace root is `C:\repo`, the root counted as unusable, and every path and URI passed through unmapped. Paths under the root were then sent to the node as `C:\repo\src\main.rs`, which names nothing there. A drive-letter root is now a root:
   - paths under it, with either separator and the drive letter in any case, map to the node's copy, and back with `\`;
