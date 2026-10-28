@@ -39,18 +39,19 @@ pub fn execution_tools() -> Vec<McpTool> {
                     "tail_bytes": {
                         "type": "integer",
                         "description": "How much of the output tail to return (default 16384)"
-                    }
+                    },
+                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" }
                 }
             }),
         },
         McpTool {
             name: "code_coverage".to_string(),
-            description: "Run cargo llvm-cov on the remote build node using a Rust toolchain that has the matching llvm-tools-preview component. Defaults to the prod-code-mcp package, --no-report --lib, and toolchain 1.97.1. No command runs on the local machine."
+            description: "Run cargo llvm-cov on the remote build node using a Rust toolchain that has the matching llvm-tools-preview component. Defaults to Cargo's package selection, --no-report --lib, and toolchain 1.97.1. Set package to select one crate or workspace: true to cover the workspace. No command runs on the local machine."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "package": { "type": "string", "description": "Cargo package to cover (default: prod-code-mcp); omit when workspace is true" },
+                    "package": { "type": "string", "description": "Cargo package to cover; omit to use Cargo's default package selection, or when workspace is true" },
                     "workspace": { "type": "boolean", "description": "Cover the whole Cargo workspace instead of one package (default false)" },
                     "args": { "type": "array", "items": { "type": "string" }, "description": "Additional cargo llvm-cov arguments (default: --no-report --lib)" },
                     "toolchain": { "type": "string", "description": "Rust toolchain with llvm-tools-preview installed (default: 1.97.1)" },

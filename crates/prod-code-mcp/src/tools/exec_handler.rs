@@ -120,6 +120,15 @@ pub(crate) async fn handle_exec(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    run_exec_command(remote, workspace_root, args, true).await
+}
+
+async fn run_exec_command(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+    pull_back: bool,
+) -> Result<McpToolCallResult> {
     let argv = parse_exec_argv(args)?;
     let timeout_secs = args
         .get("timeout_secs")
@@ -143,7 +152,7 @@ pub(crate) async fn handle_exec(
         argv.clone(),
         env,
         timeout_secs,
-        true,
+        pull_back,
         |_, data| tail.push(data),
     )
     .await?;
@@ -223,8 +232,7 @@ pub(crate) async fn handle_coverage(
     let mut argv = vec!["cargo".to_string(), "llvm-cov".to_string()];
     if workspace {
         argv.push("--workspace".to_string());
-    } else {
-        let package = package.unwrap_or("prod-code-mcp");
+    } else if let Some(package) = package {
         anyhow::ensure!(!package.trim().is_empty(), "package must not be empty");
         argv.extend(["-p".to_string(), package.to_string()]);
     }
@@ -256,5 +264,5 @@ pub(crate) async fn handle_coverage(
         "tail_bytes": args.get("tail_bytes").and_then(serde_json::Value::as_u64).unwrap_or(16 * 1024),
         "env": { "RUSTUP_TOOLCHAIN": toolchain },
     });
-    handle_exec(remote, workspace_root, &exec_args).await
+    run_exec_command(remote, workspace_root, &exec_args, false).await
 }

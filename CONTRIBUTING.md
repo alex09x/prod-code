@@ -43,9 +43,9 @@ Rust coverage on the Linux build node requires `llvm-tools-preview` for the sele
 toolchain. The default 1.98.1 toolchain currently cannot install that component because its
 bundled LLVM library conflicts with the component package; the system LLVM tools are a different
 version and cannot read its profiles. Use the MCP `code_coverage` tool to run `cargo llvm-cov`
-on the remote build node. It defaults to `prod-code-mcp --no-report --lib` and Rust 1.97.1;
-the selected build node must have `llvm-tools-preview` installed for that toolchain. Set
-`package` for another crate, `workspace: true` for the workspace, or `toolchain` to another
+on the remote build node. It defaults to Cargo's package selection, `--no-report --lib`, and Rust
+1.97.1; the selected build node must have `llvm-tools-preview` installed for that toolchain. Set
+`package` to select one crate, `workspace: true` for the workspace, or `toolchain` to another
 installed compatible toolchain. Recheck the installed toolchain and component if node placement
 or build-node toolchains change.
 

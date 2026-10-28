@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- **Remote Rust Coverage Tool** (`crates/prod-code-mcp`, #1559): The new `code_coverage` MCP tool runs `cargo llvm-cov` on the remote build node with a selected toolchain. It defaults to the `prod-code-mcp` package, `--no-report --lib`, and Rust 1.97.1; callers can select another package, the whole workspace, or another installed toolchain with `llvm-tools-preview`.
+- **Remote Rust Coverage Tool** (`crates/prod-code-mcp`, #1559): The new `code_coverage` MCP tool runs `cargo llvm-cov` on the remote build node with a selected toolchain and does not write remote changes back to the local workspace. It defaults to Cargo's package selection, `--no-report --lib`, and Rust 1.97.1; callers can select a package, the whole workspace, or another installed toolchain with `llvm-tools-preview`.
 
 ### Fixed
 - **A Redirected Validation Handshake Never Returns to a Node That Already Refused It** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-client`, #1643):
