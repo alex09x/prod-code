@@ -19,6 +19,7 @@ pub mod plan;
 pub mod references;
 pub mod render;
 pub mod rewrite;
+mod token_proof;
 pub mod types;
 pub mod util;
 

@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+pub use super::token_proof::call_tokens;
 use crate::signature::call_sites::{blank_comments, call_open, opaque_at, split_arguments};
 use crate::signature::parse::offset_of;
 use crate::signature::plan::{
@@ -55,31 +56,6 @@ pub fn rewritten_call(text: &str, from: usize, name: &str) -> Option<(usize, usi
         i += 1;
     }
     None
-}
-
-/// Comments and significant source bytes of a call. Literal contents remain byte-for-byte:
-/// whitespace inside a string is code, while whitespace between tokens is trivia.
-pub fn call_tokens(text: &str) -> Option<(Vec<&str>, Vec<u8>)> {
-    let mut comments = Vec::new();
-    let mut code = Vec::new();
-    let mut i = 0;
-    while i < text.len() {
-        if let Some((end, comment)) = opaque_at(text, i, 0).ok()? {
-            if comment {
-                comments.push(&text[i..end]);
-            } else {
-                code.extend_from_slice(&text.as_bytes()[i..end]);
-            }
-            i = end;
-        } else {
-            let byte = text.as_bytes()[i];
-            if !byte.is_ascii_whitespace() {
-                code.push(byte);
-            }
-            i += 1;
-        }
-    }
-    Some((comments, code))
 }
 
 /// rust-analyzer's structural replacement can put an argument's block comment immediately

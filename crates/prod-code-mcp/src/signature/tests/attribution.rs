@@ -241,7 +241,12 @@ mod relocated_comment_tests {
         let (comments, code) =
             call_tokens(r##"(r#"/* text */ a b"#, "x y", 1 /* real */)"##).unwrap();
         assert_eq!(comments, vec!["/* real */"]);
-        assert_eq!(code, br##"(r#"/* text */ a b"#,"x y",1)"##);
+        assert_eq!(
+            code,
+            call_tokens(r##"(r#"/* text */ a b"#, "x y", 1)"##)
+                .unwrap()
+                .1
+        );
     }
 }
 

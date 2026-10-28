@@ -91,18 +91,43 @@ pub fn with_async(text: &str, fn_at: usize, want: bool) -> String {
     out
 }
 
-/// Whether the code at `at` is in the body of an `async fn`.
+/// Whether `at` is inside an async execution boundary, respecting nested synchronous items.
 pub fn in_async_fn(text: &str, at: usize) -> bool {
-    let Some((open, _)) = crate::introduce_variable::enclosing_body(text, at) else {
+    use ra_ap_syntax::{AstNode, Edition, SourceFile, TextSize, ast};
+    let Ok(offset) = TextSize::try_from(at) else {
         return false;
     };
-    let Some(fn_at) = text[..open].rfind("fn ") else {
+    let parsed = SourceFile::parse(text, Edition::Edition2024);
+    if !parsed.errors().is_empty() {
+        return false;
+    }
+    let root = parsed.syntax_node();
+    let Some(token) = root.token_at_offset(offset).left_biased() else {
         return false;
     };
-    let start = text[..fn_at]
-        .rfind(['\n', ';', '}', '{'])
-        .map_or(0, |i| i + 1);
-    text[start..fn_at].split_whitespace().any(|w| w == "async")
+    for node in token.parent_ancestors() {
+        if ast::TokenTree::can_cast(node.kind()) {
+            return false;
+        }
+        if let Some(closure) = ast::ClosureExpr::cast(node.clone()) {
+            return closure.async_token().is_some();
+        }
+        if let Some(function) = ast::Fn::cast(node.clone()) {
+            return function.async_token().is_some();
+        }
+        if let Some(block) = ast::BlockExpr::cast(node.clone()) {
+            if block.const_token().is_some() {
+                return false;
+            }
+            if block.async_token().is_some() {
+                return block.gen_token().is_none();
+            }
+        }
+        if ast::Item::can_cast(node.kind()) {
+            return false;
+        }
+    }
+    false
 }
 
 /// A parameter the body still uses cannot just disappear. The analyzer knows where a local
