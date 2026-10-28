@@ -177,6 +177,67 @@ async fn a_command_runs_in_its_subdir_with_its_env_and_exit_status() {
 }
 
 #[tokio::test]
+async fn transport_security_production_wiring_scrubs_exec_children() {
+    crate::test_cache_support::isolated!();
+    let inherited_canaries = [
+        ("PROD_CODE_AUTH_TOKEN", "CANARY_INHERITED_AUTH_EXEC"),
+        (
+            "PROD_CODE_AUTH_TOKEN_FILE",
+            "CANARY_INHERITED_AUTH_FILE_EXEC",
+        ),
+        ("PROD_CODE_TLS_MODE", "CANARY_INHERITED_TLS_MODE_EXEC"),
+        ("PROD_CODE_TLS_CERT", "CANARY_INHERITED_TLS_CERT_EXEC"),
+        ("PROD_CODE_TLS_KEY", "CANARY_INHERITED_TLS_KEY_EXEC"),
+        ("PROD_CODE_TLS_CA", "CANARY_INHERITED_TLS_CA_EXEC"),
+        ("PROD_CODE_TLS_PIN", "CANARY_INHERITED_TLS_PIN_EXEC"),
+        (
+            "PROD_CODE_TLS_SERVER_NAME",
+            "CANARY_INHERITED_TLS_NAME_EXEC",
+        ),
+    ];
+    let request_canaries = [
+        ("PROD_CODE_AUTH_TOKEN", "CANARY_REQUEST_AUTH_EXEC"),
+        ("PROD_CODE_TLS_KEY", "CANARY_REQUEST_TLS_KEY_EXEC"),
+    ];
+    unsafe {
+        for (name, value) in inherited_canaries {
+            std::env::set_var(name, value);
+        }
+    }
+    for canaries in [&inherited_canaries[..], &request_canaries[..]] {
+        let control = std::process::Command::new("env")
+            .env_clear()
+            .envs(canaries.iter().copied())
+            .output()
+            .unwrap();
+        let control_stdout = String::from_utf8_lossy(&control.stdout);
+        assert!(
+            canaries
+                .iter()
+                .all(|(_, value)| control_stdout.contains(value))
+        );
+    }
+
+    let mut req = sh("env");
+    req.env = request_canaries
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    let run = run(req, &[], true).await;
+    assert_eq!(run.exit().exit_code, Some(0));
+    let stdout = run.output(false);
+    for (name, value) in inherited_canaries.iter().chain(request_canaries.iter()) {
+        assert!(!stdout.contains(&format!("{name}=")), "leaked {name}");
+        assert!(!stdout.contains(value), "leaked canary for {name}");
+    }
+    unsafe {
+        for (name, _) in inherited_canaries {
+            std::env::remove_var(name);
+        }
+    }
+}
+
+#[tokio::test]
 async fn files_a_command_changed_are_sent_back_before_the_exit() {
     let mut req = sh("printf new > made.txt; printf changed > old.txt; rm gone.txt");
     req.pull_changes = true;

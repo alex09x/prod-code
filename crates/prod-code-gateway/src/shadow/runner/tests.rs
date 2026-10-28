@@ -102,6 +102,98 @@ async fn shadow_subdirectories_environment_and_tail_limits_have_exact_results() 
 }
 
 #[tokio::test]
+async fn transport_security_production_wiring_scrubs_shadow_children() {
+    crate::test_cache_support::isolated!();
+    let (_temp, state, _) = storage();
+    let inherited_canaries = [
+        ("PROD_CODE_AUTH_TOKEN", "CANARY_INHERITED_AUTH_SHADOW"),
+        (
+            "PROD_CODE_AUTH_TOKEN_FILE",
+            "CANARY_INHERITED_AUTH_FILE_SHADOW",
+        ),
+        ("PROD_CODE_TLS_MODE", "CANARY_INHERITED_TLS_MODE_SHADOW"),
+        ("PROD_CODE_TLS_CERT", "CANARY_INHERITED_TLS_CERT_SHADOW"),
+        ("PROD_CODE_TLS_KEY", "CANARY_INHERITED_TLS_KEY_SHADOW"),
+        ("PROD_CODE_TLS_CA", "CANARY_INHERITED_TLS_CA_SHADOW"),
+        ("PROD_CODE_TLS_PIN", "CANARY_INHERITED_TLS_PIN_SHADOW"),
+        (
+            "PROD_CODE_TLS_SERVER_NAME",
+            "CANARY_INHERITED_TLS_NAME_SHADOW",
+        ),
+    ];
+    let request_canaries = [
+        ("PROD_CODE_AUTH_TOKEN", "CANARY_REQUEST_AUTH_SHADOW"),
+        (
+            "PROD_CODE_AUTH_TOKEN_FILE",
+            "CANARY_REQUEST_AUTH_FILE_SHADOW",
+        ),
+        ("PROD_CODE_TLS_MODE", "CANARY_REQUEST_TLS_MODE_SHADOW"),
+        ("PROD_CODE_TLS_CERT", "CANARY_REQUEST_TLS_CERT_SHADOW"),
+        ("PROD_CODE_TLS_KEY", "CANARY_REQUEST_TLS_KEY_SHADOW"),
+        ("PROD_CODE_TLS_CA", "CANARY_REQUEST_TLS_CA_SHADOW"),
+        ("PROD_CODE_TLS_PIN", "CANARY_REQUEST_TLS_PIN_SHADOW"),
+        (
+            "PROD_CODE_TLS_SERVER_NAME",
+            "CANARY_REQUEST_TLS_NAME_SHADOW",
+        ),
+    ];
+    unsafe {
+        for (name, value) in inherited_canaries {
+            std::env::set_var(name, value);
+        }
+    }
+    for canaries in [&inherited_canaries[..], &request_canaries[..]] {
+        let control = std::process::Command::new("env")
+            .env_clear()
+            .envs(canaries.iter().copied())
+            .output()
+            .unwrap();
+        let control_stdout = String::from_utf8_lossy(&control.stdout);
+        assert!(
+            canaries
+                .iter()
+                .all(|(_, value)| control_stdout.contains(value))
+        );
+    }
+
+    let mut req = request();
+    req.command = vec!["env".into()];
+    req.env = request_canaries
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    req.tail_bytes = 16 * 1024;
+    let (mut client, mut server) = connection();
+    let run = run_shadow(&state, &mut server, req);
+    let receive = async {
+        match client.next().await.unwrap().unwrap() {
+            WireMessage::ShadowRunResponse(response) => response,
+            other => panic!("expected shadow response, got {other:?}"),
+        }
+    };
+    let (result, response) = tokio::join!(run, receive);
+    result.unwrap();
+    assert_eq!(response.error, None);
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(response.results[0].exit_code, Some(0));
+    let stdout = String::from_utf8_lossy(
+        response.results[0]
+            .output_tail
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    for (name, value) in inherited_canaries.iter().chain(request_canaries.iter()) {
+        assert!(!stdout.contains(&format!("{name}=")), "leaked {name}");
+        assert!(!stdout.contains(value), "leaked canary for {name}");
+    }
+    unsafe {
+        for (name, _) in inherited_canaries {
+            std::env::remove_var(name);
+        }
+    }
+}
+
+#[tokio::test]
 async fn shadow_answers_pings_and_cancels_running_and_queued_jobs_when_the_client_leaves() {
     for leave in ["disconnect", "eof", "invalid-frame"] {
         let (temp, state, workspace) = storage();
