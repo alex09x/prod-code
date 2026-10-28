@@ -15,7 +15,7 @@ use super::super::import::{
 };
 use super::super::shadow::is_locally_shadowed;
 use crate::parameter_object::Language;
-use crate::wrap_return::utils::is_ident;
+use crate::wrap_return::utils::{is_ident, is_import_export_call_context};
 
 pub(super) enum Receiver {
     Bare,
@@ -30,6 +30,8 @@ pub(super) fn call_symbol_site(
     search_symbol: &str,
     selected_name: &str,
     lang: Language,
+    caller_path: &Path,
+    decl_file: &Path,
 ) -> Option<(usize, String)> {
     if search_symbol == selected_name {
         return Some((at, selected_name.to_string()));
@@ -37,6 +39,8 @@ pub(super) fn call_symbol_site(
     if !matches!(lang, Language::TypeScript | Language::JavaScript) {
         return Some((at, search_symbol.to_string()));
     }
+    let namespace_binding =
+        is_proven_namespace_import(content, search_symbol, caller_path, decl_file, lang);
     let after = &content[at + search_symbol.len()..];
     let trimmed = after.trim_start();
     if trimmed.starts_with("?.") || trimmed.starts_with('.') {
@@ -56,9 +60,59 @@ pub(super) fn call_symbol_site(
         }
         return None;
     }
-    trimmed
-        .starts_with('(')
-        .then(|| (at, search_symbol.to_string()))
+    if trimmed.starts_with('(') || !namespace_binding {
+        Some((at, search_symbol.to_string()))
+    } else {
+        None
+    }
+}
+
+pub(super) fn is_proven_import_binding_at(
+    content: &str,
+    at: usize,
+    search_symbol: &str,
+    selected_name: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+    lang: Language,
+) -> bool {
+    let Some(masked) = mask_proven_import_binding(
+        content,
+        content,
+        caller_path,
+        decl_file,
+        selected_name,
+        search_symbol,
+        lang,
+    ) else {
+        return false;
+    };
+    masked
+        .as_bytes()
+        .get(at)
+        .zip(content.as_bytes().get(at))
+        .is_some_and(|(masked, original)| masked != original)
+}
+
+pub(super) fn is_import_context_or_binding_at(
+    content: &str,
+    at: usize,
+    search_symbol: &str,
+    selected_name: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+    lang: Language,
+) -> bool {
+    is_import_export_call_context(content, at, lang)
+        || is_proven_import_binding_at(
+            content,
+            at,
+            search_symbol,
+            selected_name,
+            caller_path,
+            decl_file,
+            lang,
+        )
 }
 
 /// A same-file bare binding and a member property require different identity evidence.

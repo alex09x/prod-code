@@ -10,6 +10,24 @@
 
 use crate::parameter_object::Language;
 
+pub(super) fn local_declaration_start(content: &str, at: usize, lang: Language) -> usize {
+    let line_start = content[..at].rfind('\n').map_or(0, |index| index + 1);
+    if !matches!(lang, Language::TypeScript | Language::JavaScript) {
+        return line_start;
+    }
+
+    let code = crate::caller_migration::mask::lexical_code_mask(content, lang);
+    content[..at]
+        .char_indices()
+        .rev()
+        .find_map(|(index, character)| {
+            (matches!(character, ';' | '\n' | '{' | '}')
+                && code.get(index).copied().unwrap_or(false))
+            .then_some(index + character.len_utf8())
+        })
+        .unwrap_or(0)
+}
+
 pub(super) fn find_matching_open_paren(text: &str, close_paren: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (idx, c) in text[..=close_paren].char_indices().rev() {
@@ -222,7 +240,7 @@ pub(super) fn js_function_declared_in_block(text: &str, name: &str, lang: Langua
                 && after.is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
             {
                 let statement_start = text[..at]
-                    .rfind([';', '\n'])
+                    .rfind([';', '\n', '}'])
                     .map_or(0, |delimiter| delimiter + 1);
                 let statement = text[statement_start..].trim_start();
                 if js_function_declaration_has_name(statement, name) {

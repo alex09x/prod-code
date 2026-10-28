@@ -69,11 +69,20 @@ fn ts_js_module_call_symbols(
                 let inside = &content[paren_open + 1..close];
                 let specifier = extract_specifier(inside);
                 if specifier_matches_decl(specifier, caller_path, decl_file) {
-                    let decl_before = content[..abs_call_pos]
-                        .rsplit(|c| c == ';' || c == '\n')
-                        .next()
-                        .unwrap_or("")
-                        .trim();
+                    let declaration_start = if keyword == "import" {
+                        let Some(start) =
+                            dynamic_import_declaration_start(content, abs_call_pos, mask)
+                        else {
+                            search_idx = close + 1;
+                            continue;
+                        };
+                        start
+                    } else {
+                        content[..abs_call_pos]
+                            .rfind([';', '\n'])
+                            .map_or(0, |boundary| boundary + 1)
+                    };
+                    let decl_before = content[declaration_start..abs_call_pos].trim();
                     let after_close = content[close + 1..].trim_start();
                     if let Some(prop_rest) = after_close.strip_prefix('.') {
                         let prop_rest = prop_rest.trim_start();
@@ -163,9 +172,19 @@ pub(crate) fn ts_js_module_binding_span(
             if let Some(close) = crate::parameter_object::matching_bracket(content, paren_open) {
                 let specifier = extract_specifier(&content[paren_open + 1..close]);
                 if specifier_matches_decl(specifier, caller_path, decl_file) {
-                    let statement_start = content[..abs_call_pos]
-                        .rfind([';', '\n'])
-                        .map_or(0, |boundary| boundary + 1);
+                    let statement_start = if keyword == "import" {
+                        let Some(start) =
+                            dynamic_import_declaration_start(content, abs_call_pos, mask)
+                        else {
+                            search_idx = close + 1;
+                            continue;
+                        };
+                        start
+                    } else {
+                        content[..abs_call_pos]
+                            .rfind([';', '\n'])
+                            .map_or(0, |boundary| boundary + 1)
+                    };
                     let statement = &content[statement_start..abs_call_pos];
                     let declaration = statement.trim();
                     if let Some((lhs, _)) = declaration.rsplit_once('=') {
@@ -214,6 +233,37 @@ pub(crate) fn ts_js_module_binding_span(
         search_idx = abs_call_pos + keyword.len();
     }
     None
+}
+
+fn dynamic_import_declaration_start(content: &str, end: usize, mask: &[bool]) -> Option<usize> {
+    let mut nearest = None;
+    for keyword in ["const", "let", "var"] {
+        let mut search_end = end;
+        while let Some(at) = content[..search_end].rfind(keyword) {
+            search_end = at;
+            let before_ok = at == 0
+                || content[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(is_ident_boundary);
+            let after = &content[at + keyword.len()..end];
+            let after_ok = after.chars().next().is_none_or(is_ident_boundary);
+            if !mask.get(at).copied().unwrap_or(false) || !before_ok || !after_ok {
+                continue;
+            }
+            let Some((_, rhs)) = after.rsplit_once('=') else {
+                continue;
+            };
+            let Some(after_await) = rhs.trim_start().strip_prefix("await") else {
+                continue;
+            };
+            if after_await.trim().is_empty() {
+                nearest = Some(nearest.map_or(at, |current: usize| current.max(at)));
+                break;
+            }
+        }
+    }
+    nearest
 }
 
 fn binding_identifier_span(text: &str, text_start: usize, name: &str) -> Option<(usize, usize)> {

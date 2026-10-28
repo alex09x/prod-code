@@ -28,11 +28,21 @@ async fn apply_fallback(caller_files: &[(&str, &str)]) -> (Workspace, Result<Str
 }
 
 fn locations(path: &Path, source: &str, needle: &str) -> Value {
-    let at = source.find(needle).expect(needle);
-    let line = source[..at].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
-    let line_start = source[..at].rfind('\n').map_or(0, |index| index + 1);
-    let column = source[line_start..at].encode_utf16().count() as u32 + 1;
-    answers::locations(path, &[(line, column)])
+    positions(path, source, &[needle])
+}
+
+fn positions(path: &Path, source: &str, needles: &[&str]) -> Value {
+    let positions = needles
+        .iter()
+        .map(|needle| {
+            let at = source.find(needle).expect(needle);
+            let line = source[..at].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+            let line_start = source[..at].rfind('\n').map_or(0, |index| index + 1);
+            let column = source[line_start..at].encode_utf16().count() as u32 + 1;
+            (line, column)
+        })
+        .collect::<Vec<_>>();
+    answers::locations(path, &positions)
 }
 
 async fn semantic_gateway(references: Value) -> ScriptedGateway {
@@ -134,13 +144,77 @@ async fn later_hoisted_local_function_is_not_awaited_as_an_import() {
 }
 
 #[tokio::test]
-async fn closed_initializer_arrow_does_not_shadow_an_outer_import() {
-    let caller = "import { retry } from './selected.js';\nconst setup = () => {\n  const retry = () => 0;\n  return retry();\n};\nasync function run() { return retry(); }\n";
+async fn nested_initializer_bodies_keep_import_shadow_scopes_inside_functions() {
+    let callers = [
+        "async function run() { const setup = () => { const retry = () => 0; return retry(); }; return retry(); }\n",
+        "async function run() { const setup = function() { const retry = () => 0; return retry(); }; return retry(); }\n",
+    ];
+    for caller_body in callers {
+        let caller = format!("import {{ retry }} from './selected.js';\n{caller_body}");
+        let (ws, result) = apply_fallback(&[("caller.js", &caller)]).await;
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+        let rewritten = ws.read("caller.js");
+        assert!(rewritten.contains("return await retry();"), "{rewritten}");
+        assert!(
+            rewritten.contains("const retry = () => 0; return retry();"),
+            "{rewritten}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dynamic_import_destructuring_binding_is_not_a_value_use() {
+    let caller = "async function run() { const { retry } = await import('./selected.js'); return retry(); }\n";
     let (ws, result) = apply_fallback(&[("caller.js", caller)]).await;
     assert!(result.is_ok(), "{}", result.unwrap_err());
     let rewritten = ws.read("caller.js");
-    assert!(rewritten.contains("  return retry();\n};"), "{rewritten}");
     assert!(rewritten.contains("return await retry();"), "{rewritten}");
+}
+
+#[tokio::test]
+async fn dynamic_import_destructuring_binding_is_skipped_with_semantic_references() {
+    let caller = "async function run() {\n  const {\n    other = 1,\n    retry,\n  } = await import('./selected.js');\n  return retry();\n}\n";
+    let ws = workspace(SELECTED, "js");
+    let caller_path = ws.path("caller.js");
+    fs::write(&caller_path, caller).unwrap();
+    let remote = semantic_gateway(positions(&caller_path, caller, &["retry,", "retry();"])).await;
+    let result = tool(remote.addr(), &ws, "js", true, false).await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+    assert!(
+        ws.read("caller.js").contains("return await retry();"),
+        "{}",
+        ws.read("caller.js")
+    );
+}
+
+#[tokio::test]
+async fn a_named_import_used_as_a_value_blocks_return_wrapping() {
+    let caller = "import { retry as again } from './selected.js';\nconst fnRef = again;\nasync function run() { return again(); }\n";
+    let (ws, result) = apply_fallback(&[("caller.js", caller)]).await;
+    let error = result.expect_err("the value use cannot be silently omitted");
+    assert!(error.contains("used as a value"), "{error}");
+    assert_eq!(ws.read("caller.js"), caller);
+}
+
+#[tokio::test]
+async fn semantic_references_keep_named_import_value_uses_unmatched() {
+    let caller = "import { retry as again } from './selected.js';\nconst fnRef = again;\nasync function run() { return again(); }\n";
+    let ws = workspace(SELECTED, "js");
+    let caller_path = ws.path("caller.js");
+    fs::write(&caller_path, caller).unwrap();
+    let remote = semantic_gateway(positions(&caller_path, caller, &["again;", "again();"])).await;
+    let result = tool(remote.addr(), &ws, "js", true, false).await;
+    let error = result.expect_err("semantic evidence of the value use blocks the write");
+    assert!(error.contains("used as a value"), "{error}");
+    assert_eq!(ws.read("caller.js"), caller);
+}
+
+#[tokio::test]
+async fn hoisted_function_after_a_same_line_block_is_not_awaited_as_an_import() {
+    let caller = "import { retry } from './selected.js';\nasync function run() { return retry(); if (true) {} function retry() { return 0; } }\n";
+    let (ws, result) = apply_fallback(&[("caller.js", caller)]).await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+    assert_eq!(ws.read("caller.js"), caller);
 }
 
 #[tokio::test]

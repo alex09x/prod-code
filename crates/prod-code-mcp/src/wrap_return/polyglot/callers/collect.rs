@@ -14,9 +14,7 @@ use super::super::restructure::restructure_declaring_file;
 use super::{identity, promise, syntax};
 use crate::parameter_object::Language;
 use crate::wrap_return::types::{PolyglotFuncDecl, Wrapper};
-use crate::wrap_return::utils::{
-    display, is_ident, is_import_export_call_context, one_based_lsp_position,
-};
+use crate::wrap_return::utils::{display, is_ident, one_based_lsp_position};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -88,7 +86,6 @@ pub(crate) fn collect_and_rewrite_callers(
         }
 
         let mut file_edits: Vec<(usize, usize, String)> = Vec::new();
-
         for search_symbol in &symbols_to_search {
             for (matched_at, _) in other_content.match_indices(search_symbol.as_str()) {
                 if matched_at > 0 {
@@ -107,6 +104,8 @@ pub(crate) fn collect_and_rewrite_callers(
                     search_symbol,
                     name,
                     lang,
+                    path,
+                    file,
                 ) else {
                     continue;
                 };
@@ -142,7 +141,15 @@ pub(crate) fn collect_and_rewrite_callers(
                     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
                 let (line_num, col_num) = one_based_lsp_position(&other_content, at);
                 let reference_key = (source_path, line_num, col_num);
-                if is_import_export_call_context(&other_content, at, lang) {
+                if identity::is_import_context_or_binding_at(
+                    &other_content,
+                    at,
+                    search_symbol,
+                    name,
+                    path,
+                    file,
+                    lang,
+                ) {
                     semantic_references.remove(&reference_key);
                     continue;
                 }
@@ -269,20 +276,13 @@ pub(crate) fn collect_and_rewrite_callers(
                         if can_propagate {
                             *propagated += 1;
                         } else {
-                            let line_text = other_content
-                                [other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            let desc = if caller_ret.is_empty() {
-                                "none"
-                            } else {
-                                &caller_ret
-                            };
-                            blocked
-                                .push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                            block_return_incompatible(
+                                blocked,
+                                &other_content,
+                                at,
+                                &site,
+                                &caller_ret,
+                            );
                         }
                     }
                     Wrapper::Result => {
@@ -301,20 +301,13 @@ pub(crate) fn collect_and_rewrite_callers(
                         if can_propagate {
                             *propagated += 1;
                         } else {
-                            let line_text = other_content
-                                [other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            let desc = if caller_ret.is_empty() {
-                                "none"
-                            } else {
-                                &caller_ret
-                            };
-                            blocked
-                                .push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                            block_return_incompatible(
+                                blocked,
+                                &other_content,
+                                at,
+                                &site,
+                                &caller_ret,
+                            );
                         }
                     }
                     Wrapper::Pointer => {
@@ -325,20 +318,13 @@ pub(crate) fn collect_and_rewrite_callers(
                         if can_propagate {
                             *propagated += 1;
                         } else {
-                            let line_text = other_content
-                                [other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            let desc = if caller_ret.is_empty() {
-                                "none"
-                            } else {
-                                &caller_ret
-                            };
-                            blocked
-                                .push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                            block_return_incompatible(
+                                blocked,
+                                &other_content,
+                                at,
+                                &site,
+                                &caller_ret,
+                            );
                         }
                     }
                     Wrapper::Custom(custom_name) => {
@@ -353,20 +339,13 @@ pub(crate) fn collect_and_rewrite_callers(
                         if can_propagate {
                             *propagated += 1;
                         } else {
-                            let line_text = other_content
-                                [other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            let desc = if caller_ret.is_empty() {
-                                "none"
-                            } else {
-                                &caller_ret
-                            };
-                            blocked
-                                .push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                            block_return_incompatible(
+                                blocked,
+                                &other_content,
+                                at,
+                                &site,
+                                &caller_ret,
+                            );
                         }
                     }
                 }
@@ -397,4 +376,25 @@ pub(crate) fn collect_and_rewrite_callers(
         }
     }
     Ok(())
+}
+
+fn block_return_incompatible(
+    blocked: &mut Vec<String>,
+    other_content: &str,
+    at: usize,
+    site: &str,
+    caller_ret: &str,
+) {
+    let line_text = other_content[other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let desc = if caller_ret.is_empty() {
+        "none"
+    } else {
+        caller_ret
+    };
+    blocked.push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
 }
