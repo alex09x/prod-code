@@ -10,20 +10,20 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::diagnostics::ident::{identifier_columns, mentions_identifier, rust_code_identifiers};
+use crate::diagnostics::ident::{identifier_columns, rust_code_identifiers};
 use crate::diagnostics::types::{DiagnosticsReport, DocDiagnostic};
 
-/// Code of the warning prod-code synthesises for a line that still uses a removed symbol.
+/// Code of the warning prod-code synthesises for a possible stale reference.
 pub const STALE_REFERENCE: &str = "prod-code::stale-reference";
 
-/// Explains, and where the analyzer stayed silent reports, uses of a symbol that the proposed
-/// edits removed or renamed. `missing` pairs a symbol name with the file it disappeared from;
-/// `sources` maps a report's file to the text its diagnostics were computed against.
+/// Reports unresolved code tokens that may refer to symbols removed or renamed by the edit.
+/// `missing` pairs a symbol name with the file it disappeared from; `sources` maps a report's
+/// file to the text its diagnostics were computed against. Name matches do not prove identity.
 ///
 /// An existing error or warning on such a line gets a note. A line with no diagnostic gets a
 /// synthesised warning: rust-analyzer does not report a plain call to a function that no
 /// longer exists (that is rustc's E0425), so without this the report would say "0 errors"
-/// for a caller the edit just broke. The file the symbol vanished from is skipped: mentions
+/// for a potentially broken caller. The file the symbol vanished from is skipped: mentions
 /// of the old name there are its own doc comments.
 pub fn annotate_missing_symbols(
     reports: &mut [DiagnosticsReport],
@@ -48,7 +48,7 @@ pub fn annotate_missing_symbols(
         let lines: Vec<&str> = text.lines().collect();
         let note_for = |name: &str, from: &str| {
             format!(
-                "this line uses `{name}`, which the proposed edit to {from} removed or renamed; update the caller or keep the symbol"
+                "this line mentions `{name}`, which may refer to a symbol removed or renamed by the proposed edit to {from}; check the reference"
             )
         };
         let mut flagged: BTreeSet<u32> = BTreeSet::new();
@@ -100,7 +100,7 @@ pub fn annotate_missing_symbols(
                     severity: "warning".to_string(),
                     code: Some(STALE_REFERENCE.to_string()),
                     message: format!(
-                        "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
+                        "`{name}` may refer to a symbol removed or renamed by the proposed edits; check the reference and run code_check"
                     ),
                     line: line_no,
                     col,
@@ -111,6 +111,10 @@ pub fn annotate_missing_symbols(
                 report.warnings += 1;
             }
         } else {
+            use crate::tools::references::across::{mask_executable_code, masked_code_string};
+            let path = std::path::Path::new(&report.file);
+            let code = masked_code_string(text, &mask_executable_code(text, path));
+            let code_lines: Vec<&str> = code.lines().collect();
             for item in report.items.iter_mut() {
                 if item.severity != "error" && item.severity != "warning" {
                     continue;
@@ -118,10 +122,14 @@ pub fn annotate_missing_symbols(
                 let Some(line) = lines.get(item.line.saturating_sub(1) as usize) else {
                     continue;
                 };
-                if let Some((name, from)) = relevant
-                    .iter()
-                    .find(|(name, _)| mentions_identifier(line, name))
-                {
+                let Some(code_line) = code_lines.get(item.line.saturating_sub(1) as usize) else {
+                    continue;
+                };
+                if let Some((name, from)) = relevant.iter().find(|(name, _)| {
+                    executable_columns(line, code_line, name)
+                        .into_iter()
+                        .any(|col| !resolved.contains(&(report.file.clone(), item.line, col)))
+                }) {
                     item.note = Some(note_for(name, from));
                     flagged.insert(item.line);
                 }
@@ -131,9 +139,12 @@ pub fn annotate_missing_symbols(
                 if flagged.contains(&line_no) {
                     continue;
                 }
+                let Some(code_line) = code_lines.get(idx) else {
+                    continue;
+                };
                 for (name, from) in &relevant {
                     let mut matched = false;
-                    for col in identifier_columns(line, name) {
+                    for col in executable_columns(line, code_line, name) {
                         if resolved.contains(&(report.file.clone(), line_no, col)) {
                             continue;
                         }
@@ -141,7 +152,7 @@ pub fn annotate_missing_symbols(
                             severity: "warning".to_string(),
                             code: Some(STALE_REFERENCE.to_string()),
                             message: format!(
-                                "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
+                                "`{name}` may refer to a symbol removed or renamed by the proposed edits; check the reference and run code_check"
                             ),
                             line: line_no,
                             col,
@@ -162,6 +173,17 @@ pub fn annotate_missing_symbols(
         }
         report.items.sort_by_key(|d| (d.line, d.col));
     }
+}
+
+fn executable_columns(line: &str, code_line: &str, name: &str) -> Vec<u32> {
+    let identifiers = identifier_columns(line, name);
+    line.match_indices(name)
+        .filter_map(|(byte, _)| {
+            let col = line[..byte].encode_utf16().count() as u32 + 1;
+            (identifiers.contains(&col) && code_line.get(byte..byte + name.len()) == Some(name))
+                .then_some(col)
+        })
+        .collect()
 }
 
 /// Notes on each stale-reference warning that the definition check behind it did not finish:
