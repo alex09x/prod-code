@@ -66,46 +66,31 @@ pub(crate) fn parse(text: &str, edition: Edition) -> SourceFile {
     SourceFile::parse(text, edition).tree()
 }
 
-pub(crate) fn imports_name(text: &str, name: &str, edition: Edition) -> bool {
-    parse(text, edition)
+pub(crate) fn impl_header_for_owner(
+    text: &str,
+    (impl_start, impl_open): (usize, usize),
+    owner: &str,
+    qualified_owner: &str,
+    edition: Edition,
+) -> Option<String> {
+    let source = parse(text, edition);
+    let implementation = source
         .syntax()
-        .children()
-        .filter_map(ast::Use::cast)
-        .any(|item| {
-            item.syntax()
-                .descendants()
-                .filter_map(ast::NameRef::cast)
-                .any(|name_ref| name_ref.text() == name)
-        })
-}
-
-pub(crate) fn has_use_line(text: &str, use_line: &str, edition: Edition) -> bool {
-    let expected = use_line.split_whitespace().collect::<String>();
-    parse(text, edition)
-        .syntax()
-        .children()
-        .filter_map(ast::Use::cast)
-        .any(|item| {
-            item.syntax()
-                .text()
-                .to_string()
-                .split_whitespace()
-                .collect::<String>()
-                == expected
-        })
-}
-
-pub(crate) fn insert_use_line(text: &str, use_line: &str) -> String {
-    let at = super::preamble::preamble_end(text);
-    let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let addition = if at == 0 {
-        format!("{use_line}{ending}")
-    } else {
-        format!("{ending}{use_line}")
-    };
-    let mut output = text.to_string();
-    output.insert_str(at, &addition);
-    output
+        .descendants()
+        .filter_map(ast::Impl::cast)
+        .find(|implementation| range(implementation.syntax()).start == impl_start)?;
+    let self_type = implementation.self_ty()?;
+    let path_type = ast::PathType::cast(self_type.syntax().clone())?;
+    let path = path_type.path()?;
+    let owner_name = path.segments().last()?.name_ref()?;
+    if owner_name.text() != owner {
+        return None;
+    }
+    let path_start = range(path.syntax()).start.checked_sub(impl_start)?;
+    let owner_end = range(owner_name.syntax()).end.checked_sub(impl_start)?;
+    let mut header = text.get(impl_start..=impl_open)?.to_string();
+    header.replace_range(path_start..owner_end, qualified_owner);
+    Some(header)
 }
 
 pub(crate) fn range(node: &SyntaxNode) -> Range<usize> {

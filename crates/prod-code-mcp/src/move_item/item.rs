@@ -97,7 +97,7 @@ pub(crate) fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
     crate::signature::offset_of(text, line, col)
 }
 
-fn owner_token_pos(
+pub(super) fn owner_token_pos(
     text: &str,
     impl_at: usize,
     impl_open: usize,
@@ -119,6 +119,10 @@ fn owner_token_pos(
 
 fn impl_constraints_key(header: &str, owner: &str) -> String {
     let compact: String = header.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = compact
+        .strip_prefix("impl")
+        .map(str::trim_start)
+        .unwrap_or(&compact);
     let is_id = |c: char| c.is_alphanumeric() || c == '_';
     if let Some((idx, _)) = compact.match_indices(owner).find(|(i, _)| {
         !compact[..*i].chars().next_back().is_some_and(is_id)
@@ -133,11 +137,11 @@ fn impl_constraints_key(header: &str, owner: &str) -> String {
             .map_or(0, |p| p + 1);
         format!("{}{}", &prefix[..path_start], &compact[idx..])
     } else {
-        compact
+        compact.to_string()
     }
 }
 
-async fn resolve_type_def(
+pub(super) async fn resolve_type_def(
     remote: SocketAddr,
     root: &Path,
     file: &Path,

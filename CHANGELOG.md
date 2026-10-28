@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Inherent Rust Methods Can Move Into a Sibling Module Without an Existing Impl** (`crates/prod-code-mcp`, #1702): `code_move` no longer refuses an inherent method or associated function just because the destination file has no `impl` block for its type. It resolves the type's defining module and creates a qualified impl in the sibling or new module; conflicting local type names and existing impls whose identity cannot be verified still refuse without writing.
 - **A Redirected Validation Handshake Never Returns to a Node That Already Refused It** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-client`, #1643):
   When a validation handshake is refused for capacity, `validation_redirect_target` redirects the client to a peer. The handshake carried only `redirect_count`, not the gateways that already redirected this attempt. If the second node also refused and the first node's gossiped headroom was the largest among remaining peers, the second hop sent the client back to the first node. `HandshakeRequest` now carries `refused_by: Vec<String>` (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so older clients and gateways still interoperate). Clients following a `WireMessage::Redirect` append the redirecting gateway's address before reconnecting, and `validation_redirect_target` leaves out any peer listed in `refused_by`.
 - **A Command Run From a Subdirectory Is Placed by the Project It Will Run** (`crates/prod-code-client`, #1478, part 1):
