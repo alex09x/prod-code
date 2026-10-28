@@ -85,6 +85,10 @@ pub fn navigation_tools() -> Vec<McpTool> {
                         "type": "boolean",
                         "description": "Return the definition's code, numbered (at most 300 lines); default true. Pass false to return only the location"
                     },
+                    "budget_ms": {
+                        "type": "integer",
+                        "description": "Shared time budget for symbol resolution and the definition lookup (default 120000 ms; values are capped at 120000 ms). Expiry returns a busy response."
+                    },
                     "path": {
                         "type": "string",
                         "description": "File path (relative to workspace or absolute)"
