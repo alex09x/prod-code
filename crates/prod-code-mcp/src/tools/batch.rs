@@ -53,7 +53,7 @@ pub(crate) async fn execute_batch_symbols(
     base_args: serde_json::Value,
     symbols: &[String],
 ) -> Result<McpToolCallResult> {
-    run_symbol_batch(base_args, symbols, |args| {
+    run_symbol_batch(tool_name, base_args, symbols, |args| {
         Box::pin(super::execution::execute_tool(
             remote,
             workspace_root,
@@ -65,6 +65,7 @@ pub(crate) async fn execute_batch_symbols(
 }
 
 async fn run_symbol_batch<F, Fut>(
+    tool_name: &str,
     base_args: serde_json::Value,
     symbols: &[String],
     mut execute: F,
@@ -74,6 +75,15 @@ where
     Fut: std::future::Future<Output = Result<McpToolCallResult>>,
 {
     let total = symbols.len();
+    let user_set_budget = base_args
+        .get("budget_ms")
+        .and_then(|v| v.as_u64())
+        .is_some()
+        || base_args
+            .get("budget_secs")
+            .or_else(|| base_args.get("timeout_secs"))
+            .and_then(|v| v.as_u64())
+            .is_some();
     let shared_budget = if let Some(ms) = base_args.get("budget_ms").and_then(|v| v.as_u64()) {
         std::time::Duration::from_millis(ms.max(1))
     } else if let Some(secs) = base_args
@@ -94,6 +104,14 @@ where
         // Reserve a share for every remaining symbol. Unused time from a fast lookup is
         // available to later ones, but one slow lookup cannot spend their shares (#1168).
         let share = remaining / u32::try_from(total - idx).unwrap_or(u32::MAX);
+        // An unqualified references name can fan out to many declarations; keep one such
+        // lookup from consuming a large default batch share. Explicit budgets stay in control.
+        let share =
+            if tool_name == "code_references" && !user_set_budget && is_unqualified_symbol(sym) {
+                share.min(std::time::Duration::from_secs(2))
+            } else {
+                share
+            };
         let mut sym_args = base_args.clone();
         if let Some(obj) = sym_args.as_object_mut() {
             obj.remove("symbols");
@@ -141,6 +159,10 @@ where
     }
 }
 
+fn is_unqualified_symbol(symbol: &str) -> bool {
+    !symbol.contains("::") && !symbol.contains('.') && !symbol.contains('/')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +173,7 @@ mod tests {
         let symbols = vec!["Slow".into(), "Fast".into(), "Last".into()];
         let mut attempted = Vec::new();
         let result = run_symbol_batch(
+            "code_definition",
             serde_json::json!({ "symbols": symbols, "budget_ms": 120 }),
             &symbols,
             |args| {
@@ -185,9 +208,12 @@ mod tests {
     #[tokio::test]
     async fn symbol_timeout_regression_reports_every_failure() {
         let symbols = vec!["Slow".into(), "AlsoSlow".into(), "Last".into()];
-        let result = run_symbol_batch(serde_json::json!({ "budget_ms": 30 }), &symbols, |_| {
-            std::future::pending::<Result<McpToolCallResult>>()
-        })
+        let result = run_symbol_batch(
+            "code_definition",
+            serde_json::json!({ "budget_ms": 30 }),
+            &symbols,
+            |_| std::future::pending::<Result<McpToolCallResult>>(),
+        )
         .await
         .unwrap();
         assert!(result.is_error);
@@ -198,6 +224,62 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn unqualified_reference_batch_symbols_get_a_short_default_share() {
+        let symbols = vec![
+            "common_helper".to_string(),
+            "crate::Model::field".to_string(),
+            "Widget::run".to_string(),
+        ];
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_in_call = std::sync::Arc::clone(&observed);
+        let result = run_symbol_batch(
+            "code_references",
+            serde_json::json!({ "symbols": symbols.clone() }),
+            &symbols,
+            move |args| {
+                let symbol = args["symbol"].as_str().unwrap().to_string();
+                let budget = args["budget_ms"].as_u64().unwrap();
+                observed_in_call
+                    .lock()
+                    .unwrap()
+                    .push((symbol.clone(), budget));
+                async move { Ok(McpToolCallResult::text(symbol)) }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.is_error);
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed[0], ("common_helper".to_string(), 2000));
+        assert!(observed[1].1 > 2000, "qualified lookups keep spare budget");
+        assert!(observed[2].1 > 2000, "qualified lookups keep spare budget");
+
+        let explicit_budgets = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let explicit_in_call = std::sync::Arc::clone(&explicit_budgets);
+        let result = run_symbol_batch(
+            "code_references",
+            serde_json::json!({ "symbols": symbols.clone(), "budget_secs": 9 }),
+            &symbols,
+            move |args| {
+                let symbol = args["symbol"].as_str().unwrap().to_string();
+                explicit_in_call
+                    .lock()
+                    .unwrap()
+                    .push((symbol.clone(), args["budget_ms"].as_u64().unwrap()));
+                async move { Ok(McpToolCallResult::text(symbol)) }
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!result.is_error);
+        assert!(
+            explicit_budgets.lock().unwrap()[0].1 > 2000,
+            "an explicit user budget overrides the default short share"
+        );
     }
 
     #[test]
