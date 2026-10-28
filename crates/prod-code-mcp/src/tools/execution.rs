@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -27,16 +27,39 @@ use crate::protocol::McpToolCallResult;
 
 mod context;
 mod positions;
-pub(crate) use self::context::{
-    checked_position_argument, is_multi_candidate_navigation_tool, routed_path,
-    validate_verify_mode,
-};
+use self::context::resolve_workspace_root;
+pub(crate) use self::context::routed_path;
 use self::context::{
     definition_budget, definition_busy_message, definition_subrequest_timeout_message,
     is_timeout_error,
 };
 use positions::validate_position_arguments;
 
+fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "code_definition"
+            | "code_references"
+            | "code_hover"
+            | "code_type_at"
+            | "code_callers"
+            | "code_callees"
+            | "code_implementations"
+            | "code_supertypes"
+    )
+}
+pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -> Result<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .with_context(|| {
+            format!(
+                "'{name}' must be a one-based coordinate in 1..={}",
+                u32::MAX
+            )
+        })
+}
 /// Returns `true` when `tool_name` with `args` is guaranteed not to mutate workspace files on
 /// disk and can safely execute concurrently with other read-only tool calls.
 pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bool {
@@ -78,6 +101,19 @@ pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bo
     }
 }
 
+/// A `verify` mode is `compile` or absent. A typo such as `compiler` used to read as "no
+/// compiler gate" and let an apply write unchecked (#1453); it is refused before planning.
+/// `code_generate_fixture` takes a boolean `verify`, which is left to its handler.
+fn validate_verify_mode(args: &serde_json::Value) -> Result<()> {
+    match args.get("verify") {
+        Some(serde_json::Value::String(mode)) if mode != "compile" => anyhow::bail!(
+            "`verify: {mode:?}` is not a verification mode: the only one is \"compile\"; omit \
+             `verify` for the analyzer check alone. Nothing was planned or written"
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// Execute an MCP tool call against the remote gateway. Keep dispatch state on the heap so
 /// callers can compose many tool calls without growing their own future by every dispatch.
 pub fn execute_tool<'a>(
@@ -86,9 +122,10 @@ pub fn execute_tool<'a>(
     tool_name: &'a str,
     args: serde_json::Value,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
+    let configured_workspace_root = workspace_root.to_path_buf();
     let budget = definition_budget(tool_name, &args);
     Box::pin(async move {
-        let run = execute_tool_inner(remote, workspace_root, tool_name, args);
+        let run = execute_tool_inner(remote, &configured_workspace_root, tool_name, args);
         match budget {
             Some(budget) => match tokio::time::timeout_at(budget.deadline, run).await {
                 Ok(Ok(result)) => Ok(result),
@@ -105,11 +142,15 @@ pub fn execute_tool<'a>(
 
 fn execute_tool_inner<'a>(
     remote: SocketAddr,
-    workspace_root: &'a Path,
+    configured_workspace_root: &'a Path,
     tool_name: &'a str,
     args: serde_json::Value,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     Box::pin(async move {
+        let mut args = args;
+        let workspace_root =
+            resolve_workspace_root(&configured_workspace_root, tool_name, &mut args)?;
+        let workspace_root = workspace_root.as_path();
         // Invalid explicit positions are refused before symbol lookup, routing or any write.
         validate_position_arguments(tool_name, &args)?;
         validate_verify_mode(&args)?;
