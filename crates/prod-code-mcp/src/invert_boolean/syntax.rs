@@ -172,6 +172,15 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
         if c == b'{' {
             let head = inner[..i].trim_end();
             let line = &head[head.rfind('\n').map_or(0, |n| n + 1)..];
+            let multiline_callable_header = line.trim() == ")"
+                && ["function ", "fn ", "func "]
+                    .iter()
+                    .filter_map(|keyword| head.rfind(keyword))
+                    .max()
+                    .is_some_and(|start| {
+                        let header = &head[start..];
+                        !header.contains('}') && nested_method_header(header)
+                    });
             // A closure, an `async` block or a nested `fn` has returns of its own.
             let opaque = head.ends_with("async")
                 || head.ends_with("async move")
@@ -182,7 +191,8 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
                 || line.contains("func ")
                 || line.contains("function ")
                 || line.contains("=>")
-                || nested_method_header(line);
+                || nested_method_header(line)
+                || multiline_callable_header;
             stack.push(opaque);
             i += 1;
             continue;
