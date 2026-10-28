@@ -15,6 +15,7 @@
 //! with a call, and discovering and replacing identical or structurally parameterized duplicates
 //! across the file and workspace.
 
+mod arguments;
 pub mod codegen;
 pub mod duplicates;
 pub mod execute;

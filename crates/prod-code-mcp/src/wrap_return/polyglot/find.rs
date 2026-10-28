@@ -66,7 +66,11 @@ pub fn find_polyglot_decl(
         None
     });
 
-    for (name_idx, _) in text.match_indices(&clean_name) {
+    let mut name_matches = text.match_indices(&clean_name).collect::<Vec<_>>();
+    if target_line_start.is_some() {
+        name_matches.reverse();
+    }
+    for (name_idx, _) in name_matches {
         if name_idx > 0 && text[..name_idx].chars().next_back().is_some_and(is_ident) {
             continue;
         }
