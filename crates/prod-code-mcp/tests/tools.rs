@@ -6206,10 +6206,11 @@ async fn inherent_method_moves_between_modules_of_same_type() {
 pub mod operations;
 pub mod sibling;
 pub mod conflict;
+pub mod conflicting_import;
 pub mod other;
 pub mod unverified;
 pub fn call_existing() -> u32 { model::Widget::moved_existing(5) }
-pub fn call_new() -> u32 { model::Widget::moved_new(7) }
+pub fn call_new() -> u32 { model::Widget::moved_new(7).count }
 pub fn call_created() -> u32 { model::Widget::moved_created(9) }
 pub fn call_back() -> u32 { model::LocalWidget::moved_back() }
 #[cfg(test)]
@@ -6235,7 +6236,7 @@ mod tests {
     let operations = write(
         &ws,
         "src/operations.rs",
-        "use crate::model::{LocalWidget, Widget};\npub fn existing_count(widget: &Widget) -> u32 { widget.count }\npub fn local_count(_: &LocalWidget) -> usize { 0 }\n\nimpl Widget {\n    pub fn moved_existing(value: u32) -> u32 { value + 1 }\n    pub fn moved_new(value: u32) -> u32 { value + 1 }\n    pub fn moved_created(value: u32) -> u32 { value + 3 }\n}\n\nimpl LocalWidget {\n    pub fn moved_back() -> u32 { 11 }\n}\n",
+        "use crate::model::{LocalWidget, Widget};\npub fn existing_count(widget: &Widget) -> u32 { widget.count }\npub fn local_count(_: &LocalWidget) -> usize { 0 }\n\n/// Methods implemented outside the type's defining module.\n#[allow(dead_code)]\nimpl Widget {\n    pub fn moved_existing(value: u32) -> u32 { value + 1 }\n    pub fn moved_new(value: u32) -> Widget { Widget { count: value + 1 } }\n    pub fn moved_created(value: u32) -> u32 { value + 3 }\n    pub fn moved_conflicted() -> Widget { Widget { count: 17 } }\n}\n\nimpl LocalWidget {\n    pub fn moved_back() -> u32 { 11 }\n}\n",
     );
     write(
         &ws,
@@ -6247,6 +6248,9 @@ mod tests {
     let other = write(&ws, "src/other.rs", "pub struct Widget;\n");
     let unverified_source = "use crate::other::Widget;\nimpl Widget { pub fn unrelated() {} }\n";
     write(&ws, "src/unverified.rs", unverified_source);
+    let conflicting_import_source =
+        "use crate::other::Widget;\npub fn keep(value: Widget) -> Widget { value }\n";
+    write(&ws, "src/conflicting_import.rs", conflicting_import_source);
     commit(&ws);
 
     let artifact_dir = tempfile::tempdir().unwrap();
@@ -6297,18 +6301,24 @@ mod tests {
                         .lines()
                         .enumerate()
                         .filter_map(|(index, line)| {
-                            ["moved_existing", "moved_new", "moved_created", "moved_back"]
-                                .iter()
-                                .find(|name| line.contains(&format!("fn {name}")))
-                                .map(|name| {
-                                    answers::document_symbol(
-                                        name,
-                                        6,
-                                        index as u32 + 1,
-                                        index as u32 + 1,
-                                        12,
-                                    )
-                                })
+                            [
+                                "moved_existing",
+                                "moved_new",
+                                "moved_created",
+                                "moved_back",
+                                "moved_conflicted",
+                            ]
+                            .iter()
+                            .find(|name| line.contains(&format!("fn {name}")))
+                            .map(|name| {
+                                answers::document_symbol(
+                                    name,
+                                    6,
+                                    index as u32 + 1,
+                                    index as u32 + 1,
+                                    12,
+                                )
+                            })
                         })
                         .collect();
                     serde_json::Value::Array(symbols)
@@ -6340,6 +6350,25 @@ mod tests {
     };
 
     let source_before_refusals = ws.read("src/operations.rs");
+    let imported_conflict = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_conflicted"), "character": 12, "to": "src/conflicting_import.rs", "apply": true }),
+    )
+    .await;
+    let imported_conflict_error = imported_conflict
+        .map(|result| text_of(&result))
+        .unwrap_or_else(|error| format!("{error:#}"));
+    assert!(
+        imported_conflict_error.contains("target already binds `Widget`"),
+        "{imported_conflict_error}"
+    );
+    assert_eq!(ws.read("src/operations.rs"), source_before_refusals);
+    assert_eq!(
+        ws.read("src/conflicting_import.rs"),
+        conflicting_import_source
+    );
     let conflict = execute_tool(
         remote,
         &ws.root(),
@@ -6417,7 +6446,11 @@ mod tests {
     assert!(!now.contains("fn moved_new"), "{now}; {text}");
     let now_sibling = ws.read("src/sibling.rs");
     assert!(
-        now_sibling.contains("pub fn moved_new(value: u32) -> u32"),
+        now_sibling.contains("pub fn moved_new(value: u32) -> Widget"),
+        "{now_sibling}"
+    );
+    assert!(
+        now_sibling.contains("use crate::model::Widget;"),
         "{now_sibling}"
     );
     run_fixture("after-verified-target");

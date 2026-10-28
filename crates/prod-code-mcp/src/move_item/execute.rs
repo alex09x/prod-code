@@ -88,6 +88,7 @@ pub async fn move_item(
         .into_iter()
         .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close);
     let mut target_impl_idx = None;
+    let mut target_owner_binding = None;
     if let Some((ref owner, impl_at, impl_open, _)) = enclosing_impl {
         let is_inherent = !source_text[impl_at..impl_open].contains(" for ");
         if is_inherent && from_module.krate == to_module.krate {
@@ -109,6 +110,7 @@ pub async fn move_item(
             .await?;
             target_text = plan.text;
             target_impl_idx = Some(plan.index);
+            target_owner_binding = Some(plan.owner_binding);
         }
         if target_impl_idx.is_none() {
             anyhow::bail!(
@@ -136,7 +138,7 @@ pub async fn move_item(
     let start = rust_syntax::item_start(&source_text, decl_start, edition);
     let mut created = None;
     let mut extracted_inline_mod = false;
-    let (source_new, target_new, item, carried) =
+    let (source_new, mut target_new, item, mut carried) =
         if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
             move_inherent_method(
                 &source_text,
@@ -193,6 +195,14 @@ pub async fn move_item(
             };
             (source_new, target_new, item, carried)
         };
+    if let Some(binding) = target_owner_binding {
+        let (text, note) =
+            super::target_impl::ensure_owner_binding(&target_new, &item, &binding, edition)?;
+        target_new = text;
+        if let Some(note) = note {
+            carried.push(note);
+        }
+    }
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
     let refs = if extracted_inline_mod {

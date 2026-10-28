@@ -78,7 +78,11 @@ pub(crate) fn impl_header_for_owner(
         .syntax()
         .descendants()
         .filter_map(ast::Impl::cast)
-        .find(|implementation| range(implementation.syntax()).start == impl_start)?;
+        .find(|implementation| {
+            implementation
+                .impl_token()
+                .is_some_and(|token| usize::from(token.text_range().start()) == impl_start)
+        })?;
     let self_type = implementation.self_ty()?;
     let path_type = ast::PathType::cast(self_type.syntax().clone())?;
     let path = path_type.path()?;
