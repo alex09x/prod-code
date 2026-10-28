@@ -182,3 +182,41 @@ async fn public_go_extract_field_uses_type_identity_for_all_constructor_sites() 
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[tokio::test]
+async fn public_go_extract_field_refuses_unresolved_constructor_identity_even_with_force() {
+    let store = "package api\n\ntype Store struct{}\n\
+func (s Store) Price() int { return 7 }\n\
+func NewStore() Store { return Store{} }\n";
+    let ws = Workspace::new(&[("go.mod", GO_MOD), ("store.go", store)]);
+    let file = ws.path("store.go");
+    let remote = ScriptedGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        "textDocument/definition" => Value::Null,
+        _ => Value::Null,
+    })
+    .await;
+
+    let error = prod_code_mcp::tools::execute_tool(
+        remote.addr(),
+        &ws.root(),
+        "code_extract_field",
+        serde_json::json!({
+            "path": "store.go",
+            "expression": "7",
+            "name": "Magic",
+            "type": "int",
+            "init": "7",
+            "apply": true,
+            "force": true
+        }),
+    )
+    .await
+    .expect_err("force must not write an unresolved constructor identity");
+
+    assert!(
+        format!("{error:#}").contains("nothing was written"),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), store);
+}
