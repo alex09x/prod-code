@@ -85,7 +85,7 @@ pub async fn run_grep(
     }
 
     let mut attempted_local = false;
-    if search_path.is_file() {
+    if opts.path.is_some() && (search_path.is_file() || search_path.is_dir()) {
         attempted_local = true;
         let root_owned = root.to_path_buf();
         let path_owned = search_path.clone();
