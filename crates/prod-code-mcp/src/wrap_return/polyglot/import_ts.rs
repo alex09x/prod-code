@@ -20,7 +20,11 @@ use import_ts_reexport::{barrel_exports_symbol_from_decl, resolve_reexport_file}
 
 #[path = "import_ts_cjs.rs"]
 mod import_ts_cjs;
-use import_ts_cjs::{is_ts_js_require_namespace, ts_js_require_symbols};
+pub(crate) use import_ts_cjs::ts_js_module_binding_span;
+use import_ts_cjs::{
+    is_ts_js_dynamic_import_namespace, is_ts_js_require_namespace, ts_js_dynamic_import_symbols,
+    ts_js_require_symbols,
+};
 
 fn strip_ext(p: &Path) -> PathBuf {
     if let Some(stem) = p.file_stem() {
@@ -293,6 +297,7 @@ pub(crate) fn is_ts_js_namespace_import(
         }
     }
     is_ts_js_require_namespace(content, receiver, caller_path, decl_file, &mask)
+        || is_ts_js_dynamic_import_namespace(content, receiver, caller_path, decl_file, &mask)
 }
 
 fn barrel_imported_symbols(
@@ -362,6 +367,13 @@ pub(crate) fn ts_js_imported_symbols(
         }
     }
     symbols.extend(ts_js_require_symbols(
+        content,
+        caller_path,
+        decl_file,
+        fn_name,
+        &mask,
+    ));
+    symbols.extend(ts_js_dynamic_import_symbols(
         content,
         caller_path,
         decl_file,

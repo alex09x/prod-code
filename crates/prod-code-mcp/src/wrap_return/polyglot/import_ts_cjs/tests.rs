@@ -76,4 +76,18 @@ fn coverage_commonjs_binding_and_namespace_matrix() {
         Vec::<String>::new()
     );
     assert!(!is_ts_js_require_namespace(text, "api", caller, decl, &[]));
+
+    let dynamic =
+        "async function run() {\n  const api = await import('./value');\n  return api.work();\n}\n";
+    let mask = crate::caller_migration::mask::lexical_code_mask(
+        dynamic,
+        crate::parameter_object::Language::JavaScript,
+    );
+    assert_eq!(
+        ts_js_dynamic_import_symbols(dynamic, caller, decl, "work", &mask),
+        vec!["work"]
+    );
+    assert!(is_ts_js_dynamic_import_namespace(
+        dynamic, "api", caller, decl, &mask
+    ));
 }

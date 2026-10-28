@@ -35,10 +35,10 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use crate::parameter_object::Language;
+use crate::wrap_return::polyglot::callers::collect::collect_and_rewrite_callers;
 use crate::wrap_return::rust::wrap_rust_ext;
 use crate::wrap_return::types::{WrappedReturn, Wrapper};
 use crate::wrap_return::utils::{display, one_based_lsp_position};
-use callers::collect_and_rewrite_callers;
 
 /// Unified wrap_return refactoring across Rust, TypeScript, JavaScript, Python, C++, Swift, and Go.
 #[allow(clippy::too_many_arguments)]

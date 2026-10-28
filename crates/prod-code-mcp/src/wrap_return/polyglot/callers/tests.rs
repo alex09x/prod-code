@@ -7,7 +7,12 @@
  * Project: https://github.com/alex09x/prod-code
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
-use super::*;
+use std::collections::{BTreeMap, HashSet};
+
+use crate::parameter_object::Language;
+use crate::wrap_return::polyglot::callers::collect::collect_and_rewrite_callers;
+use crate::wrap_return::polyglot::find::find_polyglot_decl;
+use crate::wrap_return::types::Wrapper;
 
 #[test]
 fn coverage_caller_propagation_matrix() {
@@ -229,5 +234,41 @@ fn coverage_promise_callers_and_unmatched() {
             "client.ts:9:19 `selected` used as a value",
             "value.ts:2:8 (a call inside `selected` itself)"
         ]
+    );
+}
+
+#[test]
+fn dynamic_import_does_not_hide_following_member_call_tokens() {
+    let source = "async function run() {\n  const math = await import('./selected.js');\n  return math.retry();\n}\n";
+    let view = super::syntax::SyntaxView::new(source, Language::JavaScript);
+    let call = source.find("retry()").expect("member call in code");
+    assert!(view.is_code(call), "dynamic import masked following code");
+    assert!(
+        !view.is_uncertain(call),
+        "dynamic import made following code uncertain"
+    );
+}
+
+#[test]
+fn dynamic_import_namespace_receiver_matches_absolute_workspace_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let caller_path = directory.path().join("caller.js");
+    let selected_path = directory.path().join("selected.js");
+    let content = "async function run() {\n  const math = await import('./selected.js');\n  return math.retry();\n}\n";
+    let code =
+        super::syntax::SyntaxView::new(content, crate::parameter_object::Language::JavaScript);
+    let at = content.find("retry()").unwrap();
+    let receiver = super::identity::receiver(
+        content,
+        &code.code,
+        at,
+        crate::parameter_object::Language::JavaScript,
+        (&caller_path, &selected_path),
+        false,
+        false,
+    );
+    assert!(
+        matches!(receiver, super::identity::Receiver::Selected(_)),
+        "dynamic import namespace did not resolve to the selected module"
     );
 }

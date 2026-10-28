@@ -9,6 +9,7 @@
  */
 
 use super::types::Wrapper;
+use crate::extract_field::helpers::is_in_literal_or_comment;
 use crate::parameter_object::Language;
 use std::path::Path;
 
@@ -43,14 +44,21 @@ pub(crate) fn is_import_export_call_context(text: &str, at: usize, lang: Languag
         .find('\n')
         .map_or(text.len(), |offset| at + offset);
     let line = text[line_start..line_end].trim_start();
-    if line.starts_with("import ")
+    let import_or_export_line = line.starts_with("import ")
         || line.starts_with("import{")
         || line.starts_with("export {")
         || line.starts_with("export{")
         || line.starts_with("export *")
         || line.starts_with("from ")
-        || has_require_call(line)
-    {
+        || has_require_call(line);
+    let cjs_export_line =
+        (line.starts_with("module.exports") || line.starts_with("exports.")) && line.contains('=');
+    let statement_ended = text[line_start..at]
+        .char_indices()
+        .any(|(offset, character)| {
+            character == ';' && !is_in_literal_or_comment(text, line_start + offset, lang)
+        });
+    if (import_or_export_line || cjs_export_line) && !statement_ended {
         return true;
     }
     let before = &text[..at];

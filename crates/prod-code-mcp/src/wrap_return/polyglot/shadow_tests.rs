@@ -46,6 +46,13 @@ fn test_is_locally_shadowed_by_local_var() {
 #[test]
 fn test_destructured_const_binding_shadows() {
     let content = "async function run() {\n    const { retry } = local;\n    retry();\n}\n";
+    let binding_at = content.find("retry } =").unwrap();
+    assert!(is_locally_shadowed(
+        content,
+        binding_at,
+        "retry",
+        Language::TypeScript
+    ));
     let call_at = content.rfind("retry();").unwrap();
     assert!(is_locally_shadowed(
         content,

@@ -10,6 +10,7 @@
 
 use std::path::Path;
 
+use crate::caller_migration::mask::lexical_code_mask;
 use crate::parameter_object::Language;
 
 #[cfg(test)]
@@ -62,6 +63,48 @@ pub(crate) fn imported_caller_symbols(
         }
         _ => Vec::new(),
     }
+}
+
+pub(crate) fn mask_proven_import_binding(
+    content: &str,
+    code: &str,
+    caller_path: &Path,
+    decl_file: &Path,
+    fn_name: &str,
+    local_name: &str,
+    lang: Language,
+) -> Option<String> {
+    if !matches!(lang, Language::TypeScript | Language::JavaScript) || code.len() != content.len() {
+        return None;
+    }
+    let mask = lexical_code_mask(content, lang);
+    let span = import_ts::ts_js_module_binding_span(
+        content,
+        caller_path,
+        decl_file,
+        fn_name,
+        local_name,
+        &mask,
+        "require",
+    )
+    .or_else(|| {
+        import_ts::ts_js_module_binding_span(
+            content,
+            caller_path,
+            decl_file,
+            fn_name,
+            local_name,
+            &mask,
+            "import",
+        )
+    })?;
+    let mut bytes = code.as_bytes().to_vec();
+    for byte in &mut bytes[span.0..span.1] {
+        if *byte != b'\n' && *byte != b'\r' {
+            *byte = b' ';
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 #[path = "import_cpp.rs"]

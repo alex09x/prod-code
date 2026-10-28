@@ -10,6 +10,25 @@
 
 use crate::parameter_object::Language;
 
+pub(super) fn local_declaration_start(content: &str, at: usize, lang: Language) -> usize {
+    let line_start = content[..at].rfind('\n').map_or(0, |index| index + 1);
+    if !matches!(lang, Language::TypeScript | Language::JavaScript) {
+        return line_start;
+    }
+
+    let code = crate::caller_migration::mask::lexical_code_mask(content, lang);
+    content[..at]
+        .char_indices()
+        .rev()
+        .find_map(|(index, character)| {
+            ((matches!(character, ';' | '\n' | '}')
+                || (character == '{' && super::is_lexical_block(content, index)))
+                && code.get(index).copied().unwrap_or(false))
+            .then_some(index + character.len_utf8())
+        })
+        .unwrap_or(0)
+}
+
 pub(super) fn find_matching_open_paren(text: &str, close_paren: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (idx, c) in text[..=close_paren].char_indices().rev() {
@@ -176,6 +195,68 @@ pub(super) fn is_js_function_declaration_name(
         ]
         .iter()
         .any(|prefix_word| prefix.ends_with(prefix_word))
+}
+
+pub(super) fn is_expression_arrow_parameter_binding(
+    content: &str,
+    at: usize,
+    name: &str,
+    lang: Language,
+) -> bool {
+    if !matches!(lang, Language::TypeScript | Language::JavaScript) {
+        return false;
+    }
+    if content[at + name.len()..].trim_start().starts_with("=>") {
+        return true;
+    }
+    let Some(open) = content[..at].rfind('(') else {
+        return false;
+    };
+    let Some(close) = crate::parameter_object::matching_bracket(content, open) else {
+        return false;
+    };
+    open < at
+        && at < close
+        && content[close + 1..].trim_start().starts_with("=>")
+        && params_declare_name(&content[open + 1..close], name, lang)
+}
+
+pub(super) fn js_function_declared_in_block(text: &str, name: &str, lang: Language) -> bool {
+    if !matches!(lang, Language::TypeScript | Language::JavaScript) {
+        return false;
+    }
+    let code = crate::caller_migration::mask::lexical_code_mask(text, lang);
+    let mut brace_depth = 0usize;
+    let mut at = 0;
+    while at < text.len() {
+        let character = text[at..].chars().next().unwrap();
+        if !code.get(at).copied().unwrap_or(false) {
+            at += character.len_utf8();
+            continue;
+        }
+        if brace_depth == 0 && text[at..].starts_with("function") {
+            let before = text[..at].chars().next_back();
+            let after = text[at + "function".len()..].chars().next();
+            if before.is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
+                && after.is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
+            {
+                let statement_start = text[..at]
+                    .rfind([';', '\n', '}'])
+                    .map_or(0, |delimiter| delimiter + 1);
+                let statement = text[statement_start..].trim_start();
+                if js_function_declaration_has_name(statement, name) {
+                    return true;
+                }
+            }
+        }
+        match character {
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            _ => {}
+        }
+        at += character.len_utf8();
+    }
+    false
 }
 
 pub(super) fn is_shadowed_by_expression_arrow(
