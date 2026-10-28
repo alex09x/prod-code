@@ -73,7 +73,159 @@ pub(crate) fn source_line(text: &str, at: usize) -> String {
         .to_string()
 }
 
+fn javascript_regex_end(text: &str, start: usize) -> Option<usize> {
+    let mut at = start + 1;
+    let mut in_character_class = false;
+    let mut escaped = false;
+    while at < text.len() {
+        let character = text[at..].chars().next()?;
+        if matches!(character, '\n' | '\r') {
+            return None;
+        }
+        let next = at + character.len_utf8();
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '[' {
+            in_character_class = true;
+        } else if character == ']' {
+            in_character_class = false;
+        } else if character == '/' && !in_character_class {
+            let mut end = next;
+            while text[end..]
+                .chars()
+                .next()
+                .is_some_and(|flag| flag.is_ascii_alphabetic())
+            {
+                end += text[end..].chars().next()?.len_utf8();
+            }
+            return Some(end);
+        }
+        at = next;
+    }
+    None
+}
+
+fn javascript_regex_contains(text: &str, target: usize) -> bool {
+    let mut at = 0usize;
+    let mut expression_can_start = true;
+    while at < text.len() {
+        let character = text[at..].chars().next().unwrap();
+        if character.is_whitespace() {
+            at += character.len_utf8();
+            continue;
+        }
+        if character == '/' {
+            let next = text[at + 1..].chars().next();
+            if next == Some('/') {
+                at += 2;
+                while at < text.len() {
+                    let current = text[at..].chars().next().unwrap();
+                    if matches!(current, '\n' | '\r') {
+                        break;
+                    }
+                    at += current.len_utf8();
+                }
+                continue;
+            }
+            if next == Some('*') {
+                at += 2;
+                while at < text.len() && !text[at..].starts_with("*/") {
+                    at += text[at..].chars().next().unwrap().len_utf8();
+                }
+                at = (at + 2).min(text.len());
+                continue;
+            }
+            if expression_can_start && let Some(end) = javascript_regex_end(text, at) {
+                if (at..end).contains(&target) {
+                    return true;
+                }
+                at = end;
+                expression_can_start = false;
+                continue;
+            }
+            at += character.len_utf8();
+            expression_can_start = true;
+            continue;
+        }
+        if matches!(character, '\'' | '"' | '`') {
+            let delimiter = character;
+            at += character.len_utf8();
+            let mut escaped = false;
+            while at < text.len() {
+                let current = text[at..].chars().next().unwrap();
+                at += current.len_utf8();
+                if escaped {
+                    escaped = false;
+                } else if current == '\\' {
+                    escaped = true;
+                } else if current == delimiter {
+                    break;
+                }
+            }
+            expression_can_start = false;
+            continue;
+        }
+        if is_ident(character) {
+            let start = at;
+            at += character.len_utf8();
+            while at < text.len() {
+                let next = text[at..].chars().next().unwrap();
+                if !is_ident(next) {
+                    break;
+                }
+                at += next.len_utf8();
+            }
+            expression_can_start = matches!(
+                &text[start..at],
+                "return"
+                    | "throw"
+                    | "case"
+                    | "delete"
+                    | "void"
+                    | "typeof"
+                    | "new"
+                    | "in"
+                    | "instanceof"
+                    | "yield"
+                    | "await"
+                    | "else"
+                    | "do"
+                    | "of"
+                    | "if"
+                    | "while"
+                    | "for"
+                    | "switch"
+                    | "catch"
+                    | "with"
+            );
+            continue;
+        }
+        if character.is_ascii_digit() {
+            at += character.len_utf8();
+            while at < text.len() {
+                let next = text[at..].chars().next().unwrap();
+                if !(next.is_ascii_alphanumeric() || matches!(next, '.' | '_')) {
+                    break;
+                }
+                at += next.len_utf8();
+            }
+            expression_can_start = false;
+            continue;
+        }
+        expression_can_start = !matches!(character, ')' | ']' | '}' | '.');
+        at += character.len_utf8();
+    }
+    false
+}
+
 pub(crate) fn is_in_literal_or_comment(text: &str, at: usize, lang: Language) -> bool {
+    if matches!(lang, Language::JavaScript | Language::TypeScript)
+        && javascript_regex_contains(text, at)
+    {
+        return true;
+    }
     let mut chars = text[..at].chars().peekable();
     let mut quote = None;
     let mut escaped = false;

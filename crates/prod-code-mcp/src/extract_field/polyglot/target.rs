@@ -171,12 +171,14 @@ pub fn discover_target(
                 };
                 if b_open < from && to <= b_close {
                     let before_body = text[c_open + 1..b_open].trim_end();
-                    let last_paren = before_body.rfind(')').context("method has no `)`")?;
-                    let first_paren = before_body[..last_paren]
+                    let method_header_start = before_body.rfind('}').map_or(0, |at| at + 1);
+                    let method_header = &before_body[method_header_start..];
+                    let last_paren = method_header.rfind(')').context("method has no `)`")?;
+                    let first_paren = method_header[..last_paren]
                         .rfind('(')
                         .context("method has no `(`")?;
-                    let p_slice = &before_body[first_paren + 1..last_paren];
-                    let head = before_body[..first_paren].trim_end();
+                    let p_slice = &method_header[first_paren + 1..last_paren];
+                    let head = method_header[..first_paren].trim_end();
                     let m_name = head.split_whitespace().last().unwrap_or("").trim();
                     is_static_method = head.split_whitespace().any(|word| word == "static");
                     found_method = Some((
