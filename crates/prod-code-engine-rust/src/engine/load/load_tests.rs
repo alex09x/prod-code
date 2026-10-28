@@ -9,7 +9,9 @@
  */
 
 use super::{ProcMacroCapacityError, RustEngine};
+use crate::proc_macro_farm::ProcMacroWorkerFarm;
 use crate::tests::configure_test_workspace;
+use std::sync::Arc;
 
 #[test]
 fn detects_rust_workspaces_by_their_manifest() {
@@ -79,6 +81,39 @@ fn proc_macros_stay_off_when_build_scripts_are_off() {
     let (dir, lib) = small_crate("[rust]\nbuild_scripts = false\n");
     let engine = RustEngine::load(dir.path()).expect("loads without build scripts");
     assert_eq!(symbol_names(&engine, &lib), ["rename_me"]);
+}
+
+#[test]
+fn default_sandboxed_load_keeps_navigation_available_when_the_farm_is_full() {
+    let (dir, lib) = small_crate("");
+    let farm = Arc::new(ProcMacroWorkerFarm::new(1));
+    let _occupied = farm
+        .allocate_workers(&dir.path().join("occupied-workspace"), 1)
+        .1;
+
+    let engine = RustEngine::load_with_proc_macro_farm(dir.path(), Arc::clone(&farm))
+        .expect("sandboxed load falls back to no proc macros at capacity");
+
+    assert_eq!(symbol_names(&engine, &lib), ["rename_me"]);
+    assert_eq!(farm.active_workers(), 1);
+}
+
+#[test]
+fn explicitly_requested_sysroot_mode_still_reports_farm_capacity() {
+    let (dir, _) = small_crate("[rust]\nproc_macro_srv = \"sysroot\"\n");
+    let farm = Arc::new(ProcMacroWorkerFarm::new(1));
+    let _occupied = farm
+        .allocate_workers(&dir.path().join("occupied-workspace"), 1)
+        .1;
+
+    let err = RustEngine::load_with_proc_macro_farm(dir.path(), Arc::clone(&farm))
+        .err()
+        .expect("explicit sysroot mode requires a farm worker");
+
+    assert!(
+        err.downcast_ref::<ProcMacroCapacityError>().is_some(),
+        "{err}"
+    );
 }
 
 #[test]
