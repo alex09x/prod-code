@@ -265,3 +265,43 @@ fn test_command_falls_back_to_workspace_when_exceeding_threshold() {
     let cmd = test_command("rust", &crate::verify::ProjectTools::default(), &tests).unwrap();
     assert_eq!(cmd, vec!["cargo", "test", "--workspace"]);
 }
+
+#[test]
+fn string_literals_with_source_text_are_not_callable_declarations() {
+    let text = "#[test]\nfn check() {\n    let main = \"export function invoice() {}\";\n    let other = \"export function quote() {}\";\n}\n";
+    let symbols = serde_json::json!([
+        {
+            "name": "check",
+            "kind": 12,
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 4, "character": 1 } },
+            "selectionRange": { "start": { "line": 1, "character": 3 }, "end": { "line": 1, "character": 8 } }
+        },
+        {
+            "name": "main",
+            "kind": 13,
+            "detail": "String",
+            "containerName": "check",
+            "range": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 49 } },
+            "selectionRange": { "start": { "line": 2, "character": 8 }, "end": { "line": 2, "character": 12 } }
+        },
+        {
+            "name": "other",
+            "kind": 13,
+            "detail": "String",
+            "containerName": "check",
+            "range": { "start": { "line": 3, "character": 4 }, "end": { "line": 3, "character": 47 } },
+            "selectionRange": { "start": { "line": 3, "character": 8 }, "end": { "line": 3, "character": 13 } }
+        }
+    ]);
+    let mut functions = Vec::new();
+
+    collect_functions(symbols.as_array().unwrap(), Some(text), &mut functions).unwrap();
+
+    assert_eq!(
+        functions
+            .iter()
+            .map(|(name, ..)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["check"]
+    );
+}

@@ -84,6 +84,17 @@ pub(crate) fn symbol_range(sym: &serde_json::Value) -> Option<(u32, u32, u32, u3
     (start <= end).then_some((start, end, sl, sc))
 }
 
+fn code_only(text: &str) -> Option<String> {
+    let lex = super::rust_attr::rust_code(text).ok()?;
+    let mut bytes = text.as_bytes().to_vec();
+    for (index, is_code) in lex.code.iter().enumerate() {
+        if !is_code && !matches!(bytes[index], b'\n' | b'\r' | b'\t') {
+            bytes[index] = b' ';
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 pub(crate) fn is_callable_symbol(kind: u64, sym: &serde_json::Value, text: Option<&str>) -> bool {
     if matches!(kind, 6 | 9 | 12) {
         return true;
@@ -138,7 +149,8 @@ pub(crate) fn collect_functions(
     text: Option<&str>,
     out: &mut Vec<(String, u32, u32, u32, u32)>,
 ) -> std::result::Result<(), String> {
-    collect_functions_inner(symbols, text, false, out)
+    let code = text.and_then(code_only);
+    collect_functions_inner(symbols, code.as_deref(), false, out)
 }
 
 fn collect_functions_inner(

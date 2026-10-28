@@ -12,8 +12,8 @@
 /// The signature refactoring lexer already has the repository's handling for nested comments,
 /// raw strings, characters, and lifetimes; build the two masks from that rather than teaching
 /// test selection a second comment grammar.
-struct RustLex {
-    code: Vec<bool>,
+pub(super) struct RustLex {
+    pub(super) code: Vec<bool>,
     trivia: Vec<bool>,
 }
 
@@ -73,7 +73,7 @@ fn rust_literal_end(text: &str, i: usize) -> Option<usize> {
     }
 }
 
-fn rust_code(text: &str) -> std::result::Result<RustLex, String> {
+pub(super) fn rust_code(text: &str) -> std::result::Result<RustLex, String> {
     let without_comments = crate::signature::blank_comments(text).ok_or_else(|| {
         "the Rust source has an unterminated string, character, or comment".to_string()
     })?;
