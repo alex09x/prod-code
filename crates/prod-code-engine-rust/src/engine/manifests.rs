@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::RustEngine;
+use super::load::{extensionless_target_roots, load_target_roots};
 use crate::config::ProdCodeConfig;
 use crate::vfs::normalize_vfs_path;
 
@@ -163,6 +164,7 @@ impl RustEngine {
         {
             ws.set_build_scripts(scripts);
         }
+        let target_roots = extensionless_target_roots(&ws);
         {
             self.prepare_mutation();
             let db = self.host.raw_database_mut();
@@ -170,6 +172,7 @@ impl RustEngine {
                 .vfs
                 .write()
                 .map_err(|e| anyhow::anyhow!("VFS lock: {e}"))?;
+            load_target_roots(&mut self.worktrees, db, &mut vfs, &target_roots);
             self.worktrees.set_base(db, &mut vfs, ws);
         }
         self.changes += 1;
@@ -205,6 +208,7 @@ impl RustEngine {
                 })?
             }
         };
+        let target_roots = extensionless_target_roots(&workspace);
         self.changes += 1;
         self.record_worktree_manifests(copy_root, Some(&workspace));
         {
@@ -214,6 +218,7 @@ impl RustEngine {
                 .vfs
                 .write()
                 .map_err(|e| anyhow::anyhow!("VFS lock: {e}"))?;
+            load_target_roots(&mut self.worktrees, db, &mut vfs, &target_roots);
             if config.rust.build_scripts {
                 self.worktrees
                     .inherit_build_scripts(&vfs, &mut workspace, &overlay);
