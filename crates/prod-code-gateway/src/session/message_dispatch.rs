@@ -30,7 +30,7 @@ pub async fn on_client_message(
     meta: &Arc<SessionMeta>,
     pending: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingRequest>>>,
 ) -> Flow {
-    if view.accounted.unloaded.load(Ordering::SeqCst) {
+    if view.accounted.has_stale_manifests() {
         let _ = out_tx
             .send(WireMessage::Disconnect {
                 reason: prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON.to_string(),
