@@ -95,6 +95,7 @@ pub(crate) async fn handle_check(
     .await?;
     let text = report.render(40);
     let filtered_rust_test_matched_nothing = kind == crate::verify::VerifyKind::Test
+        && report.ok()
         && report.language == "rust"
         && filter
             .as_deref()

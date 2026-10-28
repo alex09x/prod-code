@@ -162,6 +162,61 @@ async fn code_test_and_exec_sync_the_explicit_caller_worktree() {
             .unwrap()
             .contains(&alternate.display().to_string())
     );
+
+    let automatic_test_script = Script {
+        exec_stdout: b"running 1 test\ntest branch_only_test ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored\n".to_vec(),
+        exec_exit: Some(0),
+        ..Script::default()
+    };
+    let automatic_test_roots = automatic_test_script.workspace_roots.clone();
+    let automatic_test_remote = mock_gateway(automatic_test_script).await;
+    let automatic_path = alternate.join("src/lib.rs").to_string_lossy().to_string();
+    let automatic_test = execute_tool(
+        automatic_test_remote,
+        &ws.root(),
+        "code_test",
+        serde_json::json!({ "path": automatic_path, "filter": "branch_only_test" }),
+    )
+    .await
+    .expect("the worktree path selects its own checkout");
+    assert!(!automatic_test.is_error, "{}", text_of(&automatic_test));
+    assert!(
+        text_of(&automatic_test).contains("cargo test -p caller_worktree branch_only_test"),
+        "{}",
+        text_of(&automatic_test)
+    );
+    assert!(
+        automatic_test_roots
+            .lock()
+            .unwrap()
+            .contains(&alternate.display().to_string())
+    );
+
+    let automatic_exec_script = Script {
+        exec_stdout: b"automatically selected worktree\n".to_vec(),
+        exec_exit: Some(0),
+        ..Script::default()
+    };
+    let automatic_exec_roots = automatic_exec_script.workspace_roots.clone();
+    let automatic_exec_remote = mock_gateway(automatic_exec_script).await;
+    let automatic_exec = execute_tool(
+        automatic_exec_remote,
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({
+            "cwd": alternate.to_string_lossy(),
+            "argv": ["pwd"]
+        }),
+    )
+    .await
+    .expect("the worktree cwd selects its own checkout");
+    assert!(!automatic_exec.is_error, "{}", text_of(&automatic_exec));
+    assert!(
+        automatic_exec_roots
+            .lock()
+            .unwrap()
+            .contains(&alternate.display().to_string())
+    );
     git(
         &ws.root(),
         &["worktree", "remove", "--force", alternate.to_str().unwrap()],
@@ -169,7 +224,7 @@ async fn code_test_and_exec_sync_the_explicit_caller_worktree() {
 }
 
 #[tokio::test]
-async fn workspace_selector_rejects_a_different_repository() {
+async fn workspace_selector_rejects_unrelated_and_invalid_nested_roots() {
     let ws = rust_workspace("pub fn base() {}\n");
     commit(&ws);
     let other = rust_workspace("pub fn other() {}\n");
@@ -186,4 +241,87 @@ async fn workspace_selector_rejects_a_different_repository() {
         format!("{error:#}").contains("same Git repository"),
         "{error:#}"
     );
+
+    let fake_nested = ws.root().join("review-worktrees/pr50");
+    std::fs::create_dir_all(&fake_nested).unwrap();
+    std::fs::write(fake_nested.join(".git"), "gitdir: /tmp/mock-gitdir\n").unwrap();
+    let nested_error = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_exec",
+        serde_json::json!({
+            "argv": ["pwd"],
+            "cwd": "review-worktrees/pr50"
+        }),
+    )
+    .await
+    .expect_err("an invalid nested worktree must be refused");
+    assert!(
+        format!("{nested_error:#}").contains("nested Git worktree"),
+        "{nested_error:#}"
+    );
+}
+
+#[tokio::test]
+async fn code_test_refuses_an_existing_path_outside_the_selected_workspace() {
+    let ws = rust_workspace("pub fn base() {}\n");
+    commit(&ws);
+    let other = rust_workspace("pub fn other() {}\n");
+    commit(&other);
+    for args in [
+        serde_json::json!({ "path": other.path("src/lib.rs").to_string_lossy() }),
+        serde_json::json!({
+            "workspace": ws.root().to_string_lossy(),
+            "path": other.path("src/lib.rs").to_string_lossy()
+        }),
+    ] {
+        let error = execute_tool(nowhere(), &ws.root(), "code_test", args)
+            .await
+            .expect_err("an existing out-of-scope path must not widen to --workspace");
+        assert!(format!("{error:#}").contains("outside"), "{error:#}");
+    }
+
+    let linked = alternate_worktree(&ws);
+    let error = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_test",
+        serde_json::json!({
+            "workspace": ws.root().to_string_lossy(),
+            "path": linked.join("src/lib.rs").to_string_lossy()
+        }),
+    )
+    .await
+    .expect_err("an explicit primary workspace cannot silently widen to a linked worktree");
+    assert!(
+        format!("{error:#}").contains("outside the selected workspace"),
+        "{error:#}"
+    );
+    git(
+        &ws.root(),
+        &["worktree", "remove", "--force", linked.to_str().unwrap()],
+    );
+}
+
+#[tokio::test]
+async fn a_filtered_compile_failure_is_not_reported_as_no_tests_matched() {
+    let ws = rust_workspace("pub fn base() {}\n");
+    let remote = mock_gateway(Script {
+        exec_stderr: b"error: could not compile the test target\n".to_vec(),
+        exec_exit: Some(101),
+        ..Script::default()
+    })
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_test",
+        serde_json::json!({ "filter": "branch_only_test" }),
+    )
+    .await
+    .expect("the compile failure is reported");
+    let text = text_of(&result);
+    assert!(result.is_error, "{text}");
+    assert!(!text.contains("No Rust tests matched"), "{text}");
+    assert!(text.contains("could not compile"), "{text}");
 }

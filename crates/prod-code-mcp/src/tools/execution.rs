@@ -121,7 +121,9 @@ pub fn execute_tool<'a>(
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     let configured_workspace_root = workspace_root.to_path_buf();
     Box::pin(async move {
-        let workspace_root = resolve_workspace_root(&configured_workspace_root, tool_name, &args)?;
+        let mut args = args;
+        let workspace_root =
+            resolve_workspace_root(&configured_workspace_root, tool_name, &mut args)?;
         let workspace_root = workspace_root.as_path();
         // Invalid explicit positions are refused before symbol lookup, routing or any write.
         validate_position_arguments(tool_name, &args)?;
