@@ -93,19 +93,33 @@ async fn apply(
     let file = ws.path("src/main.rs");
     let (line, col) = position(source, call);
     let answer_file = file.clone();
-    let gateway = ScriptedGateway::start(move |method, _| match method {
-        "prodCode/structuralReplace" => answers::whole_file(&answer_file, source, &rewritten),
-        "textDocument/references" => answers::locations(&answer_file, &[(line + 1, col + 1)]),
-        "textDocument/diagnostic" => answers::no_diagnostics(),
-        _ => serde_json::Value::Null,
-    })
-    .await;
+    let remote = match std::env::var("PROD_CODE_ISSUE1504_GATEWAY") {
+        Ok(address) => address.parse().expect("the live gateway address is valid"),
+        Err(_) => ScriptedGateway::start(move |method, _| match method {
+            "prodCode/structuralReplace" => answers::whole_file(&answer_file, source, &rewritten),
+            "textDocument/references" => answers::locations(&answer_file, &[(line + 1, col + 1)]),
+            "textDocument/hover" => {
+                let description = if source.contains("macro_rules! stringify") {
+                    "```rust\nfixture::stringify\n```\n```rust\nmacro_rules! stringify\n```"
+                } else {
+                    "```rust\ncore::macros::builtin\n```\n```rust\nmacro_rules! stringify\n```"
+                };
+                serde_json::json!({
+                    "contents": { "kind": "markdown", "value": description }
+                })
+            }
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        })
+        .await
+        .addr(),
+    };
     let (decl_line, decl_col) = position(source, function);
     let mut args = serde_json::json!({"path":"src/main.rs", "line":decl_line + 1, "character":decl_col + 1, "params":params, "apply":true, "force":force});
     if let Some(want) = asyncness {
         args["async"] = serde_json::json!(want);
     }
-    execute_tool(gateway.addr(), &ws.root(), "code_change_signature", args).await
+    execute_tool(remote, &ws.root(), "code_change_signature", args).await
 }
 
 #[tokio::test]
@@ -204,6 +218,21 @@ async fn public_async_change_keeps_async_closure_runtime() {
 
 #[tokio::test]
 async fn stringify_reorder_runtime_control_and_public_safety_refusal() {
+    let shadowed_builtin = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='demo'\nversion='0.1.0'\nedition='2024'\n",
+        ),
+        (
+            "src/main.rs",
+            r#"macro_rules! stringify { ($($tokens:tt)*) => {{ println!("shadowed"); "value" }}; }
+fn main() { println!("{}", stringify!(tokens)); }
+"#,
+        ),
+    ]);
+    shadowed_builtin.commit();
+    assert_eq!(native_output(&shadowed_builtin), "shadowed\nvalue\n");
+
     const SOURCE: &str = "fn join(a: &str, b: &str) -> String { format!(\"{a}|{b}\") }\nfn main() { println!(\"{}\", join(stringify!(& &), stringify!(&&))); }\n";
     let ws = Workspace::new(&[
         (
@@ -227,13 +256,43 @@ async fn stringify_reorder_runtime_control_and_public_safety_refusal() {
         "join(stringify",
         serde_json::json!(["b", "a"]),
         None,
-        true,
+        false,
+    )
+    .await;
+    let applied = result.expect("the built-in stringify arguments have no runtime effects");
+    assert!(!applied.is_error, "{:?}", applied.content);
+    let applied_source = ws.read("src/main.rs");
+    assert!(applied_source.contains("fn join(b: &str, a: &str)"));
+    assert!(applied_source.contains("join(stringify!(&&), stringify!(& &))"));
+    assert_eq!(native_output(&ws), before);
+
+    const SHADOWED: &str = "macro_rules! stringify { ($($tokens:tt)*) => {{ print!(\"side\"); \"value\" }}; }\nfn join(a: &str, b: &str) -> String { format!(\"{a}|{b}\") }\nfn main() { println!(\"{}\", join(stringify!(& &), stringify!(&&))); }\n";
+    let shadowed = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='demo'\nversion='0.1.0'\nedition='2024'\n",
+        ),
+        ("src/main.rs", SHADOWED),
+    ]);
+    shadowed.commit();
+    let shadowed_before = native_output(&shadowed);
+    let shadowed_rewrite = SHADOWED.replace(
+        "join(stringify!(& &), stringify!(&&))",
+        "join(stringify!(&&), stringify!(& &))",
+    );
+    let result = apply(
+        &shadowed,
+        SHADOWED,
+        shadowed_rewrite,
+        "join(a",
+        "join(stringify",
+        serde_json::json!(["b", "a"]),
+        None,
+        false,
     )
     .await;
     let error = result.unwrap_err().to_string();
     assert!(error.contains("evaluated in the opposite order"), "{error}");
-    assert_eq!(ws.read("src/main.rs"), SOURCE);
-    let changed = rewritten.replace("fn join(a: &str, b: &str)", "fn join(b: &str, a: &str)");
-    ws.write("src/main.rs", &changed);
-    assert_eq!(native_output(&ws), before);
+    assert_eq!(shadowed.read("src/main.rs"), SHADOWED);
+    assert_eq!(native_output(&shadowed), shadowed_before);
 }

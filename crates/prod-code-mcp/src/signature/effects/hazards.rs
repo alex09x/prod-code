@@ -301,10 +301,14 @@ pub fn effect_hazards(
             ));
             continue;
         }
+        let receiver_offset = call.args.len() - own.len();
         let kinds: Vec<ArgKind> = own
             .iter()
             .enumerate()
             .map(|(i, a)| {
+                if call.builtin_stringify_args.contains(&(i + receiver_offset)) {
+                    return ArgKind::Literal;
+                }
                 let param_ty =
                     split_at_top_level(&declared[i].raw, ':').map_or("", |(_, ty)| ty.trim());
                 let code = crate::signature::call_sites::blank_comments(a);
