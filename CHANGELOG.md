@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.42 — 2026-10-28
+
 ### Added
 - **Remote Rust Coverage Tool** (`crates/prod-code-mcp`, #1559): The new `code_coverage` MCP tool runs `cargo llvm-cov` on the remote build node with a selected toolchain and does not write remote changes back to the local workspace. It defaults to Cargo's package selection, `--no-report --lib`, and Rust 1.97.1; callers can select a package, the whole workspace, or another installed toolchain with `llvm-tools-preview`.
 
