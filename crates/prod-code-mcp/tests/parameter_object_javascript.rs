@@ -139,12 +139,14 @@ export function Label({ title }) {
 
 /// `build` with `width` and `height` bundled: the declaration, the body with a shorthand
 /// property, and every caller — in the same file, through `call`, under an import alias, and
-/// inside a JSX expression.
+/// inside a JSX expression. The default remains in the callee, and an omitted field stays out of
+/// the object.
 const HOME_BUNDLED: &str = "function describe(shape) {
   return `${shape.name} ${shape.area}`;
 }
 
-export function build(name, size) {
+export function build(name, { width, height = 2 }) {
+  const size = { width: width, height: height };
   const area = size.width * size.height;
   return describe({ name, area, width: size.width });
 }
@@ -160,7 +162,7 @@ export class Canvas {
 }
 
 export function twice(name) {
-  return build(name, { width: 1, height: 2 }) + build.call(null, name, { width: 3, height: 4 });
+  return build(name, { width: 1 }) + build.call(null, name, { width: 3, height: 4 });
 }
 ";
 
@@ -248,7 +250,7 @@ async fn fixture() -> Fixture {
 
 /// A JavaScript function takes a plain object: no interface, no annotation, no class and no
 /// import anywhere; the body reads its fields, a shorthand property keeps its key, a caller
-/// that left out the defaulted parameter passes the default, `call` keeps its receiver, the
+/// that left out the defaulted parameter leaves the field out for the callee, `call` keeps its receiver, the
 /// aliased call and the one in JSX are rewritten, and the alias used as a value is reported.
 #[tokio::test]
 async fn a_javascript_function_takes_a_plain_object_and_every_caller_passes_a_literal() {
@@ -269,7 +271,7 @@ async fn a_javascript_function_takes_a_plain_object_and_every_caller_passes_a_li
 
     assert_eq!(done.symbol, "build");
     assert_eq!(done.was, "name, width, height = 2");
-    assert_eq!(done.now, "name, size");
+    assert_eq!(done.now, "name, { width, height = 2 }");
     assert_eq!(done.call_sites, 4);
     assert_eq!(done.body_uses, 3);
     assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
@@ -288,7 +290,7 @@ async fn a_javascript_function_takes_a_plain_object_and_every_caller_passes_a_li
     );
     assert_eq!(
         rewritten(&done, "view.jsx"),
-        VIEW.replace("build(title, 7)", "build(title, { width: 7, height: 2 })")
+        VIEW.replace("build(title, 7)", "build(title, { width: 7 })")
     );
     for (path, text) in &done.rewritten {
         for typed in ["interface", "Size", ": number", "@typedef", "import type"] {
@@ -432,7 +434,7 @@ async fn a_javascript_change_is_written_only_when_the_server_accepts_all_of_it()
     );
     assert!(
         f.ws.read("src/view.jsx")
-            .contains("{build(title, { width: 7, height: 2 })}")
+            .contains("{build(title, { width: 7 })}")
     );
 }
 
@@ -457,7 +459,10 @@ async fn the_tool_bundles_javascript_with_a_lower_camel_binding() {
     .await
     .expect("the tool runs");
     let text = text_of(&result);
-    assert!(text.contains("- now: (name, size)"), "{text}");
+    assert!(
+        text.contains("- now: (name, { width, height = 2 })"),
+        "{text}"
+    );
     assert!(
         text.contains("4 call site(s) rewritten, 3 use(s)"),
         "{text}"
@@ -510,9 +515,10 @@ export function callers(xs, s, n, ch) {
 ";
 
 /// Each case that cannot be shown to mean the same afterwards is refused with its reason, and
-/// nothing is written: a rest parameter, a name a destructuring pattern binds, a default that is
-/// not a constant, `arguments`, a binding the function already uses, a parameter another one's
-/// default reads, a spread argument, `apply`, and a variable passed where a default applied.
+/// nothing is written: a rest parameter, a name a destructuring pattern binds, non-contiguous
+/// defaulted parameters, `arguments`, a binding the function already uses, a parameter another
+/// one's default reads, a spread argument, and `apply`. Callee-evaluated defaults and run-time
+/// `undefined` values remain supported.
 #[tokio::test]
 async fn what_javascript_cannot_prove_the_same_is_refused_with_its_reason() {
     let ws = Workspace::new(&[FILES[0], FILES[1], ("src/refusals.js", REFUSALS)]);
@@ -545,7 +551,7 @@ async fn what_javascript_cannot_prove_the_same_is_refused_with_its_reason() {
     }))
     .await;
     let root = ws.root();
-    let cases: [(u32, &[&str], &str, &str); 9] = [
+    let cases: [(u32, &[&str], &str, &str); 8] = [
         (
             1,
             &["first", "more"],
@@ -560,9 +566,9 @@ async fn what_javascript_cannot_prove_the_same_is_refused_with_its_reason() {
         ),
         (
             9,
-            &["at", "zone"],
+            &["label", "zone"],
             "opts",
-            "`at` defaults to `Date.now()`, which is evaluated in `stamp` on every call",
+            "`stamp` has a non-bundled parameter between JavaScript/TypeScript defaults",
         ),
         (13, &["a", "b"], "opts", "`sum` reads `arguments`"),
         (
@@ -588,12 +594,6 @@ async fn what_javascript_cannot_prove_the_same_is_refused_with_its_reason() {
             &["a", "b"],
             "opts",
             "`join` is called through `apply` at src/refusals.js:39:24",
-        ),
-        (
-            34,
-            &["width", "fill"],
-            "opts",
-            "`pad` at src/refusals.js:39:46 passes `ch` as `fill`, which defaults to `\" \"`",
         ),
     ];
     for (line, params, binding, reason) in cases {
@@ -651,6 +651,21 @@ fn run_script(program: &str, name: &str, text: &str) -> Option<String> {
         String::from_utf8_lossy(&out.stderr)
     );
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn run_typescript_caller(root: &Path) -> String {
+    let run = std::process::Command::new("node")
+        .arg("--experimental-strip-types")
+        .arg(root.join("src/caller.ts"))
+        .current_dir(root)
+        .output()
+        .expect("Node.js is installed on the build node");
+    assert!(
+        run.status.success(),
+        "Node.js type stripping failed:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    String::from_utf8_lossy(&run.stdout).into_owned()
 }
 
 const ORDER: &str = "const seen = [];
@@ -852,6 +867,16 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     .expect("a `__proto__` parameter is bundled");
     let tagged = rewritten(&tagged, "run.js");
     assert!(
+        tagged.contains("function tag({ __proto__, toString, fill = 0 }) {"),
+        "{tagged}"
+    );
+    assert!(
+        tagged.contains(
+            "const opts = { [\"__proto__\"]: __proto__, toString: toString, fill: fill };"
+        ),
+        "{tagged}"
+    );
+    assert!(
         tagged.contains("const own = { [\"__proto__\"]: opts.__proto__ };"),
         "{tagged}"
     );
@@ -861,9 +886,9 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     );
     assert!(
         tagged.contains(
-            "tag({ [\"__proto__\"]: \"p\", toString: void 0, fill: 0 }), \
+            "tag({ [\"__proto__\"]: \"p\", toString: void 0 }), \
              tag({ [\"__proto__\"]: \"q\", toString: void 0, fill: 5 }), \
-             tag({ [\"__proto__\"]: \"r\", toString: 1, fill: 0 })"
+             tag({ [\"__proto__\"]: \"r\", toString: 1, fill: void 0 })"
         ),
         "{tagged}"
     );
@@ -884,6 +909,142 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
             "{text}"
         );
     }
+}
+
+const TYPESCRIPT_DEFAULTS: &str = "export const seen: string[] = [];
+const fallback = \"callee default\";
+
+function defaultValue(): string {
+  seen.push(\"default\");
+  return fallback;
+}
+
+export function labelText(label: string | undefined = defaultValue(), suffix: string = \"!\"): string {
+  return `${label}|${suffix}`;
+}
+";
+
+const TYPESCRIPT_CALLER: &str = "import { labelText, seen } from \"./defaults.ts\";
+
+function maybe(): string | undefined {
+  seen.push(\"maybe\");
+  return undefined;
+}
+
+function empty(): string | undefined {
+  seen.push(\"empty\");
+  return \"\";
+}
+
+console.log(labelText(undefined));
+console.log(labelText(maybe()));
+console.log(labelText(empty()));
+console.log(seen.join(\",\"));
+";
+
+#[tokio::test]
+async fn typescript_defaults_stay_in_the_callee_for_explicit_and_runtime_undefined() {
+    let ws = Workspace::new(&[
+        ("package.json", "{\"type\":\"module\"}\n"),
+        (
+            "tsconfig.json",
+            "{\"compilerOptions\":{\"target\":\"ES2020\",\"module\":\"ESNext\",\"strict\":true},\"include\":[\"src\"]}\n",
+        ),
+        ("src/defaults.ts", TYPESCRIPT_DEFAULTS),
+        ("src/caller.ts", TYPESCRIPT_CALLER),
+    ]);
+    let callee = ws.path("src/defaults.ts");
+    let caller = ws.path("src/caller.ts");
+    let before = run_typescript_caller(&ws.root());
+    assert_eq!(
+        before,
+        "callee default|!\ncallee default|!\n|!\ndefault,maybe,default,empty\n"
+    );
+
+    let function = spot(TYPESCRIPT_DEFAULTS, "labelText(", 0);
+    let label_parameter = spot(TYPESCRIPT_DEFAULTS, "label: string", 0);
+    let suffix_parameter = spot(TYPESCRIPT_DEFAULTS, "suffix: string", 0);
+    let label_use = spot(TYPESCRIPT_DEFAULTS, "`${label}", 3);
+    let suffix_use = spot(TYPESCRIPT_DEFAULTS, "${suffix}", 2);
+    let import = spot(TYPESCRIPT_CALLER, "labelText, seen", 0);
+    let explicit_undefined = spot(TYPESCRIPT_CALLER, "labelText(undefined)", 0);
+    let runtime_optional = spot(TYPESCRIPT_CALLER, "labelText(maybe())", 0);
+    let runtime_empty = spot(TYPESCRIPT_CALLER, "labelText(empty())", 0);
+    let callee_file = callee.clone();
+    let caller_file = caller.clone();
+    let remote = table_gateway(move |at| {
+        if at == function {
+            Some(spread(&[
+                (&caller_file, import.0, import.1),
+                (&caller_file, explicit_undefined.0, explicit_undefined.1),
+                (&caller_file, runtime_optional.0, runtime_optional.1),
+                (&caller_file, runtime_empty.0, runtime_empty.1),
+            ]))
+        } else if at == label_parameter {
+            Some(answers::locations(
+                &callee_file,
+                &[(label_use.0, label_use.1)],
+            ))
+        } else if at == suffix_parameter {
+            Some(answers::locations(
+                &callee_file,
+                &[(suffix_use.0, suffix_use.1)],
+            ))
+        } else {
+            None
+        }
+    })
+    .await;
+    let result = prod_code_mcp::tools::execute_tool(
+        remote,
+        &ws.root(),
+        "code_introduce_parameter_object",
+        serde_json::json!({
+            "path": "src/defaults.ts",
+            "line": function.0,
+            "character": function.1,
+            "params": ["label", "suffix"],
+            "name": "LabelOptions",
+            "apply": true
+        }),
+    )
+    .await
+    .expect("the TypeScript parameter bundle runs");
+    let text = text_of(&result);
+    assert!(!result.is_error, "{text}");
+    let rewritten_callee = ws.read("src/defaults.ts");
+    assert!(
+        rewritten_callee.contains("label?: string | undefined;")
+            && rewritten_callee.contains("suffix?: string | undefined;"),
+        "defaulted fields remain optional in the generated interface: {rewritten_callee}"
+    );
+    assert!(
+        rewritten_callee.contains("{ label = defaultValue(), suffix = \"!\" }: LabelOptions"),
+        "{rewritten_callee}"
+    );
+    assert!(
+        rewritten_callee
+            .contains("const labelOptions: LabelOptions = { label: label, suffix: suffix };"),
+        "{rewritten_callee}"
+    );
+    assert!(
+        rewritten_callee.contains("return `${labelOptions.label}|${labelOptions.suffix}`;"),
+        "{rewritten_callee}"
+    );
+    let rewritten_caller = ws.read("src/caller.ts");
+    assert!(
+        rewritten_caller.contains("labelText({ label: undefined })"),
+        "{rewritten_caller}"
+    );
+    assert!(
+        rewritten_caller.contains("labelText({ label: maybe() })"),
+        "{rewritten_caller}"
+    );
+    assert!(
+        rewritten_caller.contains("labelText({ label: empty() })"),
+        "{rewritten_caller}"
+    );
+    assert_eq!(run_typescript_caller(&ws.root()), before);
 }
 
 const GETTERS: &str = "\"use strict\";
@@ -1146,7 +1307,7 @@ async fn a_real_typescript_server_bundles_the_javascript_fixture() {
     );
     assert_eq!(
         read("src/view.jsx"),
-        VIEW.replace("build(title, 7)", "build(title, { width: 7, height: 2 })")
+        VIEW.replace("build(title, 7)", "build(title, { width: 7 })")
     );
 }
 

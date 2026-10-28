@@ -64,7 +64,7 @@ fn a_javascript_list_has_no_types_a_pattern_has_no_name_and_rest_is_variadic() {
 }
 
 #[test]
-fn a_javascript_call_binds_by_position_and_the_object_carries_constant_defaults() {
+fn a_javascript_call_binds_by_position_and_leaves_defaults_for_the_callee() {
     let (_, params) = parse_params("name, width, height = 2", Language::JavaScript);
     let call = |args: &[&str]| {
         let args = strings(args);
@@ -83,30 +83,31 @@ fn a_javascript_call_binds_by_position_and_the_object_carries_constant_defaults(
         call(&["\"a\"", "3", "4"]).as_deref(),
         Some("\"a\", { width: 3, height: 4 }")
     );
-    // Left out or `undefined`, the parameter had its default; the object says so.
+    // A missing field lets the destructured parameter apply its default.
     assert_eq!(
         call(&["\"a\"", "3"]).as_deref(),
-        Some("\"a\", { width: 3, height: 2 }")
+        Some("\"a\", { width: 3 }")
     );
     assert_eq!(
         call(&["\"a\"", "3", "void 0"]).as_deref(),
-        Some("\"a\", { width: 3, height: 2 }")
+        Some("\"a\", { width: 3, height: void 0 }")
     );
     // `undefined` is a name a scope may give another value; it is passed on as written.
     assert_eq!(
         call(&["\"a\"", "3", "undefined"]).as_deref(),
         Some("\"a\", { width: 3, height: undefined }")
     );
-    // A call that stopped before the bundle still passes the object the body reads, with
-    // what it left out as own fields.
+    assert_eq!(
+        call(&["\"a\"", "3", "heightMaybe()"]).as_deref(),
+        Some("\"a\", { width: 3, height: heightMaybe() }")
+    );
+    // A call that stopped before the bundle passes an object; omitted defaulted fields stay
+    // omitted so the callee applies their defaults.
     assert_eq!(
         call(&["\"a\""]).as_deref(),
-        Some("\"a\", { width: void 0, height: 2 }")
+        Some("\"a\", { width: void 0 }")
     );
-    assert_eq!(
-        call(&[]).as_deref(),
-        Some("void 0, { width: void 0, height: 2 }")
-    );
+    assert_eq!(call(&[]).as_deref(), Some("void 0, { width: void 0 }"));
     // An argument past the last parameter is evaluated as before, and still goes nowhere.
     assert_eq!(
         call(&["\"a\"", "3", "4", "log()"]).as_deref(),
@@ -133,7 +134,7 @@ fn a_javascript_call_binds_by_position_and_the_object_carries_constant_defaults(
 }
 
 #[test]
-fn only_a_constant_javascript_default_moves_to_the_callers() {
+fn js_constant_recognizes_only_expressions_with_a_static_value() {
     for constant in [
         "2", "-1.5", ".5", "1.", "1.5e-3", "1.e5", "0xff", "1_000", "10n", "\"a, b\"", "'it\\'s'",
         "`plain`", "true", "null", "void 0", "[]", "{}",
@@ -166,7 +167,7 @@ fn only_a_constant_javascript_default_moves_to_the_callers() {
 }
 
 #[test]
-fn a_typescript_call_may_leave_off_a_defaulted_parameter_and_the_literal_carries_it() {
+fn a_typescript_call_keeps_defaulted_fields_for_the_callee() {
     let ts = Language::TypeScript;
     let (_, params) = parse_params("text: string, width: number, fill: string = \" \"", ts);
     let call = |args: &[&str]| {
@@ -184,15 +185,19 @@ fn a_typescript_call_may_leave_off_a_defaulted_parameter_and_the_literal_carries
     };
     assert_eq!(
         call(&["\"a\"", "3"]).as_deref(),
-        Some("\"a\", { width: 3, fill: \" \" }")
+        Some("\"a\", { width: 3 }")
     );
     assert_eq!(
         call(&["\"a\"", "3", "void 0"]).as_deref(),
-        Some("\"a\", { width: 3, fill: \" \" }")
+        Some("\"a\", { width: 3, fill: void 0 }")
     );
     assert_eq!(
         call(&["\"a\"", "3", "\"*\""]).as_deref(),
         Some("\"a\", { width: 3, fill: \"*\" }")
+    );
+    assert_eq!(
+        call(&["\"a\"", "3", "fillMaybe()"]).as_deref(),
+        Some("\"a\", { width: 3, fill: fillMaybe() }")
     );
     assert_eq!(call(&["\"a\""]), None, "`width` has no default");
     assert_eq!(call(&["\"a\"", "3", "\"*\"", "4"]), None, "one too many");
