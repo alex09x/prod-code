@@ -12,6 +12,7 @@
 //! pre-flight sync is answered, then the script plays what a node sends after the command.
 
 mod assertions;
+mod writeback_lock;
 
 use super::runner::{run_polyglot_remote, run_remote};
 use super::types::PolyglotRemoteOutcome;
