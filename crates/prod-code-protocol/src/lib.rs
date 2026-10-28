@@ -59,6 +59,9 @@ pub use transport::{connect_unix, connect_unix_with};
 
 pub const DEFAULT_PORT: u16 = 9400;
 
+/// A workspace was unloaded after its project model changed; reconnect before the next request.
+pub const WORKSPACE_MODEL_CHANGED_REASON: &str = "workspace project model changed; reconnect";
+
 /// The short git commit hash prod-code was built from, or "unknown".
 pub fn git_commit() -> &'static str {
     option_env!("PROD_CODE_GIT_COMMIT").unwrap_or("unknown")

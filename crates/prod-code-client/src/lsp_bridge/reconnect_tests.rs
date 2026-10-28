@@ -14,6 +14,30 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+#[test]
+fn a_workspace_model_change_reconnects_even_when_reconnect_is_disabled() {
+    let reason = format!(
+        "closed the session: {}",
+        prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON
+    );
+    assert!(should_reconnect_after_close(false, false, &reason));
+    assert!(!should_reconnect_after_close(
+        false,
+        false,
+        "closed the session: eof"
+    ));
+    assert!(should_reconnect_after_close(
+        true,
+        false,
+        "closed the session: eof"
+    ));
+    assert!(should_reconnect_after_close(
+        false,
+        true,
+        "closed the session: eof"
+    ));
+}
+
 async fn replay_case(
     init: Option<&str>,
     frames: Vec<std::result::Result<Option<String>, String>>,
