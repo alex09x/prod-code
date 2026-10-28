@@ -127,8 +127,6 @@ pub(crate) fn narrow_rust_test_file(
     }
     matches.sort();
     matches.dedup();
-    matches.sort();
-    matches.dedup();
     let target = match matches.as_slice() {
         [target] => Some(target.clone()),
         [] => automatic_target,

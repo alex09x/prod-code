@@ -53,7 +53,7 @@ pub fn execution_tools() -> Vec<McpTool> {
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "fix": { "type": "boolean", "description": "Rust: apply the compiler's machine-applicable fixes, then check again (default false)" },
-                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project, a crate name (`prod-code-gateway`), or a nested project. A Rust integration-test file selects that target; another Rust file or directory selects its Cargo package. Unsupported or ambiguous integration-test files are refused rather than widened to the workspace." }
+                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
         },
@@ -67,7 +67,7 @@ pub fn execution_tools() -> Vec<McpTool> {
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "fix": { "type": "boolean", "description": "Apply the fixes, then lint again (default false): Rust takes clippy's machine-applicable suggestions; Python, TypeScript and C++ run the linter's own fix mode (`ruff check --fix`, `eslint --fix` / `biome lint --write`, `clang-tidy -fix`) on the node and bring the rewritten files back; Go runs `golangci-lint run --fix` when the project has a golangci config, and has no fix mode otherwise" },
-                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project. A Rust integration-test file selects its target; another Rust file selects its Cargo package. Unsupported or ambiguous integration-test files are refused rather than widened to the workspace." }
+                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
         },
@@ -95,7 +95,7 @@ pub fn execution_tools() -> Vec<McpTool> {
                     "filter": { "type": "string", "description": "Test name filter (cargo test TESTNAME / go test -run)" },
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
-                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
+                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project. A Rust integration-test file selects its target; another Rust file selects its Cargo package. Unsupported or ambiguous integration-test files are refused rather than widened to the workspace." }
                 }
             }),
         },
