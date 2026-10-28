@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use std::net::SocketAddr;
 use tokio_util::codec::Framed;
 
-fn configure_environment(token: Option<&str>) {
+pub(super) fn configure_environment(token: Option<&str>) {
     for var in prod_code_protocol::tls::TLS_ENV_VARS {
         unsafe {
             std::env::remove_var(var);
@@ -78,7 +78,11 @@ async fn tcp(addr: SocketAddr) -> Framed<tokio::net::TcpStream, ProdCodeCodec> {
 
 /// Starts the gateway, runs `exercise` against the address it announces, then stops it with
 /// `signal` and returns what `run` returned.
-async fn serve_then_stop<F, Fut>(cli: ServerCli, signal: libc::c_int, exercise: F) -> Result<()>
+pub(super) async fn serve_then_stop<F, Fut>(
+    cli: ServerCli,
+    signal: libc::c_int,
+    exercise: F,
+) -> Result<()>
 where
     F: FnOnce(SocketAddr) -> Fut,
     Fut: std::future::Future<Output = ()>,

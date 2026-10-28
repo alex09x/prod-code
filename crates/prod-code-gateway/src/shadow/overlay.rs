@@ -9,7 +9,7 @@
  */
 
 use anyhow::Result;
-use prod_code_protocol::ShadowHypothesisResult;
+use prod_code_protocol::{ShadowHypothesisResult, transport::AUTH_TOKEN_VARS};
 
 use super::process::run_child;
 use super::root::{remove_shadow_dir, setpriv_path};
@@ -197,8 +197,24 @@ pub(crate) fn command_after_drop(
             argv[0]
         ));
     }
+    // `run_child` scrubs the `unshare` environment, but this env command runs after the sandbox
+    // has dropped privileges and would otherwise re-introduce request-supplied cluster secrets.
+    let safe_env: Vec<_> = env
+        .iter()
+        .filter(|(name, _)| {
+            !AUTH_TOKEN_VARS.contains(&name.as_str())
+                && !prod_code_protocol::tls::TLS_ENV_VARS.contains(&name.as_str())
+        })
+        .collect();
+    if safe_env.is_empty() {
+        return Ok(argv.to_vec());
+    }
     let mut out = vec!["env".to_string(), "--".to_string()];
-    out.extend(env.iter().map(|(name, value)| format!("{name}={value}")));
+    out.extend(
+        safe_env
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value}")),
+    );
     out.extend(argv.iter().cloned());
     Ok(out)
 }

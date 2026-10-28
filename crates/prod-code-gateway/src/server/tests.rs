@@ -11,6 +11,7 @@
 use super::*;
 
 mod serve;
+mod transport_security;
 
 #[tokio::test]
 async fn startup_optional_metrics_tasks_preserve_an_existing_socket_path() {
