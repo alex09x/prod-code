@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Explicit Remote Exec Does Not Require a Language Server** (`crates/prod-code-client`, #1744): A pinned `prod-code exec --remote` now selects the requested live gateway without requiring it to advertise the workspace's language server, while language-sensitive commands keep their existing routing.
 - **Global Python Symbol Lookup Prioritizes Source Files** (`crates/prod-code-mcp`, #1743): When `workspace/symbol` omits an unqualified Python declaration, code lookup now scans executable source files before Markdown and configuration files, so large documentation trees cannot consume the bounded fallback's candidate limit first.
 
 ## v0.3.42 — 2026-10-28

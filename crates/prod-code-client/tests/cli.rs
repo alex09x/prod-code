@@ -30,6 +30,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+#[path = "cli/exec_routing.rs"]
+mod exec_routing;
 #[path = "cli/grep_routing.rs"]
 mod grep_routing;
 #[path = "cli/outline_paths.rs"]
@@ -50,6 +52,7 @@ pub struct MockGateway {
     pub place_request_active: Arc<std::sync::Mutex<Vec<Option<bool>>>>,
     pub supports_place_preview: Arc<AtomicBool>,
     pub reported_platform: Arc<std::sync::Mutex<Option<String>>>,
+    pub detected_engines: Arc<std::sync::Mutex<Option<Vec<String>>>>,
     pub placement_target: Arc<std::sync::Mutex<Option<String>>>,
     pub notified_sessions: Arc<AtomicUsize>,
     pub reported_workspaces: Arc<std::sync::Mutex<Vec<LoadedWorkspaceInfo>>>,
@@ -66,6 +69,7 @@ struct MockState {
     place_request_active: Arc<std::sync::Mutex<Vec<Option<bool>>>>,
     supports_place_preview: Arc<AtomicBool>,
     reported_platform: Arc<std::sync::Mutex<Option<String>>>,
+    detected_engines: Arc<std::sync::Mutex<Option<Vec<String>>>>,
     placement_target: Arc<std::sync::Mutex<Option<String>>>,
     notified_sessions: Arc<AtomicUsize>,
     reported_workspaces: Arc<std::sync::Mutex<Vec<LoadedWorkspaceInfo>>>,
@@ -94,6 +98,7 @@ impl MockGateway {
         let place_request_active = Arc::new(std::sync::Mutex::new(Vec::new()));
         let supports_place_preview = Arc::new(AtomicBool::new(true));
         let reported_platform = Arc::new(std::sync::Mutex::new(None));
+        let detected_engines = Arc::new(std::sync::Mutex::new(None));
         let placement_target = Arc::new(std::sync::Mutex::new(None));
         let notified_sessions = Arc::new(AtomicUsize::new(0));
         let reported_workspaces = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -109,6 +114,7 @@ impl MockGateway {
             place_request_active: Arc::clone(&place_request_active),
             supports_place_preview: Arc::clone(&supports_place_preview),
             reported_platform: Arc::clone(&reported_platform),
+            detected_engines: Arc::clone(&detected_engines),
             placement_target: Arc::clone(&placement_target),
             notified_sessions: Arc::clone(&notified_sessions),
             reported_workspaces: Arc::clone(&reported_workspaces),
@@ -137,6 +143,7 @@ impl MockGateway {
             place_request_active,
             supports_place_preview,
             reported_platform,
+            detected_engines,
             placement_target,
             notified_sessions,
             reported_workspaces,
@@ -196,6 +203,12 @@ async fn handle_client(
             }
             WireMessage::ClusterRequest => {
                 let workspaces = state.reported_workspaces.lock().unwrap().clone();
+                let detected_engines = state
+                    .detected_engines
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| vec!["rust (rust-analyzer)".to_string()]);
                 framed
                     .send(WireMessage::ClusterResponse(ClusterResponse {
                         this_node: local_addr.to_string(),
@@ -206,7 +219,7 @@ async fn handle_client(
                                 uptime_seconds: 3600,
                                 active_sessions: 1,
                                 loaded_workspaces: 1,
-                                detected_engines: vec!["rust (rust-analyzer)".to_string()],
+                                detected_engines,
                                 memory_rss_bytes: Some(1024 * 1024 * 128),
                                 total_queries: 10,
                                 active_queries: 0,
@@ -272,6 +285,18 @@ async fn handle_client(
             }
             WireMessage::StatusRequest => {
                 let platform = state.reported_platform.lock().unwrap().clone();
+                let detected_engines = state
+                    .detected_engines
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| {
+                        vec![
+                            "rust".to_string(),
+                            "go".to_string(),
+                            "typescript".to_string(),
+                        ]
+                    });
                 framed
                     .send(WireMessage::StatusResponse(StatusResponse {
                         server_pid: std::process::id(),
@@ -279,11 +304,7 @@ async fn handle_client(
                         active_sessions: 2,
                         loaded_workspaces: 1,
                         // A single node is refused for an engine it does not list (#1067).
-                        detected_engines: vec![
-                            "rust".to_string(),
-                            "go".to_string(),
-                            "typescript".to_string(),
-                        ],
+                        detected_engines,
                         memory_rss_bytes: Some(1024 * 1024 * 64),
                         total_queries: 42,
                         active_queries: 0,
