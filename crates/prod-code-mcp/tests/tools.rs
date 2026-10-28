@@ -33,6 +33,8 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+#[path = "tools/definition_body.rs"]
+mod definition_body;
 #[path = "tools/workspace_selection.rs"]
 mod workspace_selection;
 
