@@ -69,12 +69,21 @@ fn one_gateway_owns_a_shadow_root_and_sweeps_only_its_hypothesis_directories() {
         std::fs::write(hypothesis.join("upper/deep/f.txt"), "x").unwrap();
     }
     std::fs::create_dir_all(canonical.join("unrelated")).unwrap();
+    let legacy = canonical.join("legacy-hypothesis");
+    std::fs::create_dir_all(legacy.join("upper")).unwrap();
+    std::fs::create_dir_all(legacy.join("work")).unwrap();
+    std::fs::write(legacy.join("run.sh"), "old overlay script").unwrap();
+    std::fs::write(legacy.join("delete.txt"), "").unwrap();
     std::fs::write(
         canonical.join(format!("{HYPOTHESIS_DIR_PREFIX}file")),
         "not a dir",
     )
     .unwrap();
     assert_eq!(owner.sweep(), 2);
+    assert_eq!(
+        owner.legacy_unowned_candidates(),
+        ["legacy-hypothesis".to_string()]
+    );
     let mut left: Vec<String> = std::fs::read_dir(&canonical)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -85,6 +94,7 @@ fn one_gateway_owns_a_shadow_root_and_sweeps_only_its_hypothesis_directories() {
         [
             format!("{HYPOTHESIS_DIR_PREFIX}file"),
             OWNERSHIP_LOCK_FILE.to_string(),
+            "legacy-hypothesis".to_string(),
             "unrelated".to_string()
         ]
     );
