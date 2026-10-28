@@ -150,6 +150,34 @@ pub(crate) const MAX_UNINDEXED_DECLARATIONS: usize = 3;
 pub(crate) const UNINDEXED_DECLARATION_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(10);
 
+fn is_declaration_scan_document(path: &Path) -> bool {
+    matches!(
+        crate::sync::engine_for_file(path),
+        Some("markdown" | "toml" | "json" | "jsonc" | "yaml")
+    )
+}
+
+fn prioritized_source_files(
+    root: &Path,
+    include_rust: bool,
+    limit: usize,
+) -> Vec<std::path::PathBuf> {
+    let eligible = |path: &std::path::PathBuf| {
+        crate::sync::engine_for_file(path).is_some_and(|engine| include_rust || engine != "rust")
+    };
+    let mut source_candidates = source_files(root)
+        .filter(|path| eligible(path) && !is_declaration_scan_document(path))
+        .take(limit)
+        .collect::<Vec<_>>();
+    let remaining = limit.saturating_sub(source_candidates.len());
+    source_candidates.extend(
+        source_files(root)
+            .filter(|path| eligible(path) && is_declaration_scan_document(path))
+            .take(remaining),
+    );
+    source_candidates
+}
+
 pub(super) fn collect_candidate_files(
     root: &Path,
     hint: Option<&Path>,
@@ -165,15 +193,10 @@ pub(super) fn collect_candidate_files(
         if p.is_file() {
             candidate_files.push(p);
         } else if p.is_dir() {
-            candidate_files.extend(source_files(&p).take(32));
+            candidate_files.extend(prioritized_source_files(&p, true, 32));
         }
     }
-    for path in source_files(root)
-        .filter(|path| {
-            crate::sync::engine_for_file(path).is_some_and(|e| include_rust || e != "rust")
-        })
-        .take(MAX_SCANNED_FILES)
-    {
+    for path in prioritized_source_files(root, include_rust, MAX_SCANNED_FILES) {
         if !candidate_files.contains(&path) {
             candidate_files.push(path);
         }

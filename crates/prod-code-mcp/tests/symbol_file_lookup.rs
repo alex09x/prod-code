@@ -119,3 +119,52 @@ async fn symbol_in_remote_registry_file_uses_its_outline_before_workspace_index(
         assert!(output.contains(&format!(":{line}:14")), "{output}");
     }
 }
+
+#[tokio::test]
+async fn python_symbol_after_many_markdown_files_is_found_by_global_lookup() {
+    let temp = tempfile::tempdir().expect("temporary workspace");
+    let docs = temp.path().join("a-docs");
+    std::fs::create_dir_all(&docs).expect("documentation directory");
+    for index in 0..5_000 {
+        std::fs::write(docs.join(format!("{index:04}.md")), "plain text\n")
+            .expect("write irrelevant documentation file");
+    }
+
+    let script = temp.path().join("z-scripts/cluster_rollout.py");
+    std::fs::create_dir_all(script.parent().unwrap()).expect("script directory");
+    let source = "def collect_cluster_nodes():\n    return []\n";
+    std::fs::write(&script, source).expect("write Python declaration");
+
+    let source = source.to_owned();
+    let script_for_gateway = script.clone();
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "prod-code/handshake" => json!({ "index_gated": true }),
+        "workspace/symbol" => json!([]),
+        "prod-code/readFile" => json!(source),
+        "textDocument/hover" => answers::hover("def collect_cluster_nodes()"),
+        "textDocument/definition" => answers::locations(&script_for_gateway, &[(1, 4)]),
+        _ => Value::Null,
+    })
+    .await;
+
+    let hit = tokio::time::timeout(
+        Duration::from_secs(15),
+        resolve_symbol(gateway.addr(), temp.path(), "collect_cluster_nodes", None),
+    )
+    .await
+    .expect("global symbol lookup must stay within its budget")
+    .expect("the Python declaration is in the workspace");
+    assert_eq!(hit.path, script);
+    assert_eq!((hit.line, hit.col), (1, 5));
+
+    let definition = execute_tool(
+        gateway.addr(),
+        temp.path(),
+        "code_definition",
+        json!({ "symbol": "collect_cluster_nodes" }),
+    )
+    .await
+    .expect("code_definition resolves an unindexed Python declaration");
+    let output = serde_json::to_string(&definition).unwrap();
+    assert!(output.contains("def collect_cluster_nodes()"), "{output}");
+}
