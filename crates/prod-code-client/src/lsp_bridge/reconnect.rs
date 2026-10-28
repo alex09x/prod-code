@@ -23,6 +23,16 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tokio_util::codec::Framed;
 
+pub(super) fn should_reconnect_after_close(
+    reconnect_enabled: bool,
+    is_redirect: bool,
+    reason: &str,
+) -> bool {
+    reconnect_enabled
+        || is_redirect
+        || reason.ends_with(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON)
+}
+
 #[cfg(test)]
 #[path = "reconnect_tests.rs"]
 mod tests;

@@ -39,6 +39,10 @@ pub(crate) async fn release(workspaces: Vec<Arc<SharedWorkspace>>) {
     }
     for ws in &workspaces {
         ws.unloaded.store(true, Ordering::SeqCst);
+        let _ = ws.rebalance_tx.send((
+            String::new(),
+            Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON.to_string()),
+        ));
         if ws.active_sessions.load(Ordering::SeqCst) == 0 {
             ws.detach_overlay().await;
         }
