@@ -5444,6 +5444,38 @@ async fn code_grep_single_file_searches_locally_before_remote_exec() {
 }
 
 #[tokio::test]
+async fn code_grep_rejects_paths_outside_the_workspace() {
+    let ws = workspace();
+    commit(&ws);
+    let outside_dir = tempfile::tempdir_in(ws.root().parent().expect("workspace parent"))
+        .expect("outside directory is created beside the workspace");
+    let outside_file = outside_dir.path().join("secret.txt");
+    std::fs::write(&outside_file, "outside-canary-token\n").expect("outside file is written");
+    let outside_dir_name = outside_dir
+        .path()
+        .file_name()
+        .expect("temporary directory has a name")
+        .to_string_lossy();
+    let traversal = format!("../{outside_dir_name}/secret.txt");
+    let remote = mock_gateway(Script::default()).await;
+
+    for path in [traversal, outside_file.to_string_lossy().into_owned()] {
+        let error = execute_tool(
+            remote,
+            &ws.root(),
+            "code_grep",
+            serde_json::json!({ "pattern": "outside-canary-token", "path": path }),
+        )
+        .await
+        .expect_err("outside paths are refused before searching");
+        assert!(
+            error.to_string().contains("outside the workspace"),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn code_exec_rejects_nonexistent_or_outside_cwd() {
     let ws = rust_workspace("pub fn a() {}\n");
     let remote = mock_gateway(Script::default()).await;
