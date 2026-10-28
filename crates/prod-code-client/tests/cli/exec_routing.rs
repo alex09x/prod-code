@@ -31,3 +31,39 @@ async fn explicit_exec_runs_on_a_node_without_the_workspace_language() {
     );
     assert!(stdout_of(&output).contains("test result: ok"));
 }
+
+#[tokio::test]
+async fn explicit_pull_runs_on_a_node_without_the_workspace_language() {
+    let ws = make_workspace();
+    let gateway = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gateway.detected_engines.lock().unwrap() = Some(vec!["swift".to_string()]);
+    *gateway.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
+
+    let relative = "target/aarch64-apple-darwin/release/prod-code";
+    let output = run_cli(&ws, gateway.addr, &["pull", relative]).await;
+
+    assert!(
+        output.status.success(),
+        "explicit remote pull should not require Rust LSP:\n{}",
+        stderr_of(&output)
+    );
+    assert!(ws.read(relative).contains("mocked_remote_source"));
+}
+
+#[tokio::test]
+async fn explicit_sync_pull_runs_on_a_node_without_the_workspace_language() {
+    let ws = make_workspace();
+    let gateway = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gateway.detected_engines.lock().unwrap() = Some(vec!["swift".to_string()]);
+    *gateway.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
+
+    let relative = "target/aarch64-apple-darwin/release/prod-code";
+    let output = run_cli(&ws, gateway.addr, &["sync", "--pull", relative]).await;
+
+    assert!(
+        output.status.success(),
+        "explicit sync --pull should not require Rust LSP:\n{}",
+        stderr_of(&output)
+    );
+    assert!(ws.read(relative).contains("mocked_remote_source"));
+}
