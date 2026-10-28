@@ -98,6 +98,18 @@ pub fn module_of(file: &Path) -> Result<(PathBuf, ModulePath)> {
         )
     })?;
 
+    if !file.starts_with(crate_dir.join("src")) {
+        let graph = super::ownership::Graph::load(&crate_dir, &file)?;
+        let owners = graph.owners(&file, None)?;
+        anyhow::ensure!(
+            owners.len() == 1,
+            "caller {} belongs to multiple Cargo targets; cannot safely spell a trait import",
+            file.display()
+        );
+        let owner = owners.into_iter().next().expect("one Cargo target owner");
+        return Ok((crate_dir, owner.module));
+    }
+
     let rel = file.strip_prefix(crate_dir.join("src")).map_err(|_| {
         anyhow::anyhow!(
             "{} is not under {}/src; only the ordinary crate layout is understood",
@@ -116,6 +128,35 @@ pub fn module_of(file: &Path) -> Result<(PathBuf, ModulePath)> {
         None => anyhow::bail!("{} is not a Rust source file", file.display()),
     }
     Ok((crate_dir, ModulePath { krate, segments }))
+}
+
+#[derive(Clone)]
+pub(crate) struct CargoTargetModule {
+    pub module: ModulePath,
+    pub identity: String,
+}
+
+/// The module and identity of the unique Cargo target that owns `file`.
+pub(crate) fn cargo_target_module(file: &Path) -> Result<CargoTargetModule> {
+    let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let root = file
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join("Cargo.toml").is_file())
+        .with_context(|| format!("no Cargo.toml above {}", file.display()))?
+        .to_path_buf();
+    let graph = super::ownership::Graph::load(&root, &file)?;
+    let mut owners = graph.owners(&file, None)?;
+    anyhow::ensure!(
+        owners.len() == 1,
+        "caller {} belongs to multiple Cargo targets; its module identity is ambiguous",
+        file.display()
+    );
+    let owner = owners.pop().expect("one Cargo target owner");
+    Ok(CargoTargetModule {
+        module: owner.module,
+        identity: owner.identity,
+    })
 }
 
 /// The crate's Rust-spelled name: `[lib] name` when it has one, else `[package] name`.

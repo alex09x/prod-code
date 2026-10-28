@@ -8,14 +8,18 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use crate::move_item::{CargoTargetModule, cargo_target_module};
 use anyhow::{Context, Result};
 
 use super::items::impl_block;
-use super::rewrite::rewrite;
+use super::rewrite::{
+    add_import_at_inline_scope, inline_scope_at, inline_scope_id_at, inline_scope_open_by_id,
+    relative_import_path, rewrite,
+};
 use super::types::{Extracted, valid_ident};
 
 /// Extracts `trait {name}` from the methods `methods` of the inherent `impl` block at
@@ -66,12 +70,16 @@ pub async fn extract_trait_ext(
         crate::signature::offset_of(&text, line, col).context("the position is not in the file")?;
     let imp = impl_block(&text, at)?;
     let (new_text, kept) = rewrite(&text, &imp, methods, name)?;
+    let (trait_inline_modules, _) = inline_scope_at(&text, imp.start);
 
-    // Every file outside this one that calls a moved method needs the trait in scope.
-    let (_, module) = crate::move_item::module_of(file)?;
+    // Every reference to a moved method needs the trait in its caller's actual module scope.
+    let source_target = crate::move_item::cargo_target_module(file)?;
     let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
     files.insert(file.to_path_buf(), new_text.clone());
     let mut imports = Vec::new();
+    let mut caller_targets = BTreeMap::new();
+    let mut pending_imports: BTreeMap<PathBuf, BTreeSet<(usize, String)>> = BTreeMap::new();
+    let rewritten_delta = new_text.len() as isize - text.len() as isize;
     for item in imp
         .items
         .iter()
@@ -83,24 +91,66 @@ pub async fn extract_trait_ext(
                 .find(&format!("fn {fn_name}"))
                 .map_or(0, |i| i + 3);
         let (l, c) = crate::signature::position_at(&text, name_at)?;
-        for (path, _, _) in crate::signature::references(remote, root, file, l, c).await? {
+        for (path, ref_line, ref_col) in
+            crate::signature::references(remote, root, file, l, c).await?
+        {
             if path == file {
+                let caller_at = crate::signature::offset_of(&text, ref_line, ref_col)
+                    .context("a same-file reference is outside its source text")?;
+                if (imp.start..imp.close).contains(&caller_at) {
+                    continue;
+                }
+                let (caller_modules, _) = inline_scope_at(&text, caller_at);
+                let Some(relative) =
+                    relative_import_path(&caller_modules, &trait_inline_modules, name)
+                else {
+                    continue;
+                };
+                let rewritten_at = if caller_at >= imp.close {
+                    usize::try_from(caller_at as isize + rewritten_delta)
+                        .context("rewritten same-file reference position is invalid")?
+                } else {
+                    caller_at
+                };
+                let scope_id = inline_scope_id_at(&new_text, rewritten_at);
+                pending_imports
+                    .entry(file.to_path_buf())
+                    .or_default()
+                    .insert((scope_id, format!("use {relative};")));
                 continue;
             }
-            let caller_crate = crate::move_item::module_of(&path)
-                .map(|(_, m)| m.krate)
-                .unwrap_or_else(|_| module.krate.clone());
-            let use_line = format!("use {}::{name};", module.spelled_from(&caller_crate));
+            let caller_target =
+                cached_cargo_target(&path, &mut caller_targets).with_context(|| {
+                    format!(
+                        "cannot identify Cargo target for caller {}; no trait import was planned",
+                        path.display()
+                    )
+                })?;
+            let mut target_module = if caller_target.identity == source_target.identity {
+                source_target
+                    .module
+                    .spelled_from(&source_target.module.krate)
+            } else {
+                source_target.module.absolute()
+            };
+            if !trait_inline_modules.is_empty() {
+                target_module.push_str("::");
+                target_module.push_str(&trait_inline_modules.join("::"));
+            }
+            let use_line = format!("use {target_module}::{name};");
             let current = match files.get(&path) {
                 Some(t) => t.clone(),
                 None => std::fs::read_to_string(&path)
                     .with_context(|| format!("cannot read {}", path.display()))?,
             };
-            let updated = crate::move_item::add_import(&current, &use_line);
-            if updated != current {
-                imports.push((path.clone(), use_line));
-                files.insert(path, updated);
-            }
+            let caller_at = crate::signature::offset_of(&current, ref_line, ref_col)
+                .context("a caller reference is outside its source text")?;
+            let scope_id = inline_scope_id_at(&current, caller_at);
+            pending_imports
+                .entry(path.clone())
+                .or_default()
+                .insert((scope_id, use_line));
+            files.insert(path, current);
         }
     }
 
@@ -117,19 +167,57 @@ pub async fn extract_trait_ext(
         )?;
         for (p, t) in modified_files {
             if p != file {
-                let caller_crate = crate::move_item::module_of(&p)
-                    .map(|(_, m)| m.krate)
-                    .unwrap_or_else(|_| module.krate.clone());
-                let use_line = format!("use {}::{name};", module.spelled_from(&caller_crate));
-                let updated = crate::move_item::add_import(&t, &use_line);
-                if updated != t && !imports.iter().any(|(imp_p, _)| imp_p == &p) {
-                    imports.push((p.clone(), use_line));
+                let caller_target = cached_cargo_target(&p, &mut caller_targets).with_context(|| {
+                    format!(
+                        "cannot identify Cargo target for migrated caller {}; no trait import was planned",
+                        p.display()
+                    )
+                })?;
+                let mut target_module = if caller_target.identity == source_target.identity {
+                    source_target
+                        .module
+                        .spelled_from(&source_target.module.krate)
+                } else {
+                    source_target.module.absolute()
+                };
+                if !trait_inline_modules.is_empty() {
+                    target_module.push_str("::");
+                    target_module.push_str(&trait_inline_modules.join("::"));
                 }
-                files.insert(p, updated);
+                let use_line = format!("use {target_module}::{name};");
+                let has_root_import = pending_imports.get(&p).is_some_and(|planned| {
+                    planned
+                        .iter()
+                        .any(|(scope_id, line)| *scope_id == 0 && line == &use_line)
+                });
+                if !has_root_import {
+                    pending_imports
+                        .entry(p.clone())
+                        .or_default()
+                        .insert((0, use_line));
+                }
+                files.insert(p, t);
             } else {
                 files.insert(p, t);
             }
         }
+    }
+
+    for (path, caller_imports) in pending_imports {
+        let Some(current) = files.get(&path).cloned() else {
+            continue;
+        };
+        let mut updated = current;
+        for (scope_id, use_line) in caller_imports.into_iter().rev() {
+            let scope_open = inline_scope_open_by_id(&updated, scope_id)
+                .context("cannot relocate a planned inline-module import after caller edits")?;
+            let with_import = add_import_at_inline_scope(&updated, scope_open, &use_line);
+            if with_import != updated {
+                imports.push((path.clone(), use_line));
+                updated = with_import;
+            }
+        }
+        files.insert(path, updated);
     }
 
     let edits: Vec<(PathBuf, String)> = files.iter().map(|(p, t)| (p.clone(), t.clone())).collect();
@@ -178,4 +266,16 @@ pub async fn extract_trait_ext(
         diagnostics,
         applied,
     })
+}
+
+fn cached_cargo_target(
+    path: &Path,
+    cache: &mut BTreeMap<PathBuf, CargoTargetModule>,
+) -> Result<CargoTargetModule> {
+    if let Some(target) = cache.get(path) {
+        return Ok(target.clone());
+    }
+    let target = cargo_target_module(path)?;
+    cache.insert(path.to_path_buf(), target.clone());
+    Ok(target)
 }

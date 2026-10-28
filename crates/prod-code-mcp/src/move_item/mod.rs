@@ -38,6 +38,6 @@ pub(crate) use budget::document_symbols;
 pub use execute::move_item;
 pub use imports::{add_import, carry_imports, drop_import, requalify};
 pub use item::{append_item, cut, span_at, with_doc_comment};
-pub(crate) use module::declare_module_in;
+pub(crate) use module::{CargoTargetModule, cargo_target_module, declare_module_in};
 pub use module::{declare_module, module_of, parent_module_file};
 pub use types::{ModulePath, Move};
