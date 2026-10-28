@@ -201,8 +201,24 @@ pub(crate) async fn handle_definition(
                         out.push_str(&text);
                     }
                     Err(e) => out.push_str(&format!(
-                        "\n   (the definition's code could not be read: {e:#})"
+                        "\n   ({})",
+                        body_read_error(workspace_root, &file_uri, &e)
                     )),
+                }
+            } else {
+                let path = crate::remote_fs::uri_to_path(&file_uri);
+                if crate::remote_fs::is_external(workspace_root, &path) {
+                    match crate::remote_fs::read_remote_file(remote, &path, 0).await {
+                        Ok((bytes, _)) => {
+                            let text = String::from_utf8_lossy(&bytes);
+                            out.push('\n');
+                            out.push_str(&crate::remote_fs::snippet(&text, line, 8));
+                        }
+                        Err(e) => out.push_str(&format!(
+                            "\n   ({})",
+                            body_read_error(workspace_root, &file_uri, &e)
+                        )),
+                    }
                 }
             }
         } else {
