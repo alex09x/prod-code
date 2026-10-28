@@ -31,7 +31,9 @@ async fn definition_completes_while_exec_is_running() {
     ws.commit();
     let path = ws.path("src/lib.rs");
     let query_gateway = ScriptedGateway::start(move |method, _| match method {
-        "textDocument/definition" => answers::locations(&path, &[(1, 8)]),
+        "textDocument/definition" | "textDocument/references" => {
+            answers::locations(&path, &[(1, 8)])
+        }
         _ => serde_json::Value::Null,
     })
     .await;
@@ -163,6 +165,21 @@ async fn definition_completes_while_exec_is_running() {
     assert!(!definition.is_error);
     let McpContentItem::Text { text } = &definition.content[0];
     assert!(text.contains("Definition:"), "{text}");
+    let references = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        execute_tool(
+            query_gateway.addr(),
+            &root,
+            "code_references",
+            serde_json::json!({"path":"src/lib.rs","line":1,"character":8}),
+        ),
+    )
+    .await
+    .expect("references waited for the running exec")
+    .expect("references should succeed");
+    assert!(!references.is_error);
+    let McpContentItem::Text { text } = &references.content[0];
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
     assert!(
         writer_waited,
         "another writer must wait until exec finishes"
