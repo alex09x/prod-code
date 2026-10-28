@@ -36,6 +36,20 @@ fn request(redirects: bool, redirect_count: u32) -> HandshakeRequest {
     }
 }
 
+#[test]
+fn workspace_model_unload_disconnects_even_clients_that_support_redirects() {
+    assert_eq!(
+        rebalance_frame(
+            true,
+            String::new(),
+            Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON.to_string())
+        ),
+        WireMessage::Disconnect {
+            reason: prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON.to_string(),
+        }
+    );
+}
+
 /// A peer with plenty of memory and disk, so that nothing but the case under test excludes it.
 fn roomy_peer(addr: &str, engines: &[&str], warm: &[&str]) -> NodeGossip {
     let gib = 1u64 << 30;

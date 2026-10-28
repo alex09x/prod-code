@@ -264,6 +264,11 @@ pub(crate) fn rebalance_frame(
     target_addr: String,
     reason: Option<String>,
 ) -> WireMessage {
+    if reason.as_deref() == Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON) {
+        return WireMessage::Disconnect {
+            reason: prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON.to_string(),
+        };
+    }
     if redirects {
         return WireMessage::Redirect {
             target_addr,

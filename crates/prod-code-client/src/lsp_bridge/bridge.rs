@@ -9,7 +9,7 @@
  */
 
 use super::encoding::POSITION_ENCODING_UTF16;
-use super::reconnect::replay_lsp_workspace_state;
+use super::reconnect::{replay_lsp_workspace_state, should_reconnect_after_close};
 use super::reconnect_handler::{ReconnectContext, handle_reconnect};
 use super::session::open_editor_session;
 use super::state::{LspStateTracker, fail_pending_requests};
@@ -146,7 +146,7 @@ pub async fn run_lsp_bridge(
                     }
                     Ok((why, redirect_target)) => {
                         let is_redirect = redirect_target.is_some();
-                        if reconnect || is_redirect {
+                        if should_reconnect_after_close(reconnect, is_redirect, &why) {
                             let reconnect_remote = redirect_target.unwrap_or(remote);
                             handle_reconnect(
                                 &mut ctx,
