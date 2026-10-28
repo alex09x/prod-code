@@ -189,8 +189,9 @@ impl ShadowRootOwner {
         Ok(Self { root, _lock: lock })
     }
 
-    /// Removes abandoned hypothesis directories from this exclusively owned namespace. Other
-    /// entries, including the stable ownership lock, are never touched.
+    /// Removes abandoned namespaced hypotheses. Unprefixed legacy-layout directories are listed
+    /// for manual inventory only because old versions did not record ownership; other entries,
+    /// including the stable ownership lock, are never touched.
     pub fn sweep(&self) -> usize {
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             return 0;
@@ -208,8 +209,52 @@ impl ShadowRootOwner {
             remove_shadow_dir(&entry.path());
             removed += 1;
         }
+        let legacy = self.legacy_unowned_candidates();
+        if !legacy.is_empty() {
+            tracing::warn!(
+                root = %self.root.display(),
+                candidates = ?legacy,
+                "unprefixed legacy shadow directories were inventoried and left untouched"
+            );
+        }
         removed
     }
+
+    /// Lists unprefixed directories that match the old overlay layout but lack current ownership.
+    /// They are for manual inventory only: old versions wrote no marker proving the directory
+    /// belonged to this gateway, so startup must never delete them automatically.
+    pub(super) fn legacy_unowned_candidates(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        let mut candidates = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(HYPOTHESIS_DIR_PREFIX)
+                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            {
+                continue;
+            }
+            let path = entry.path();
+            if plain_directory(&path.join("upper"))
+                && plain_directory(&path.join("work"))
+                && plain_file(&path.join("run.sh"))
+                && plain_file(&path.join("delete.txt"))
+            {
+                candidates.push(name.to_string_lossy().into_owned());
+            }
+        }
+        candidates.sort();
+        candidates
+    }
+}
+
+fn plain_directory(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
+}
+
+fn plain_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
 }
 
 static RAM_SHADOW_OWNERS: OnceLock<

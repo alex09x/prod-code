@@ -61,6 +61,7 @@ pub struct RustAnalysisOptions {
 pub enum ProcMacroServerKind {
     /// Isolated, sandboxed worker pool with memory limits, core dump suppression,
     /// lowered scheduling priority, and secret-scrubbed environment (default).
+    /// If the node-wide farm is full, default sandboxed loads proceed without expansion.
     #[default]
     Sandboxed,
     /// Direct sysroot proc-macro server without sandboxing wrapper.
