@@ -105,8 +105,19 @@ pub struct OldCall {
 #[derive(Debug, Default)]
 pub struct CallSite {
     pub at: String,
+    pub file: std::path::PathBuf,
     pub args: Vec<String>,
     pub typed_locals: std::collections::BTreeMap<String, String>,
+    pub stringify_calls: Vec<StringifyCall>,
+    pub builtin_stringify_args: std::collections::BTreeSet<usize>,
+}
+
+/// A standalone `stringify!` argument whose macro target can be checked by rust-analyzer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringifyCall {
+    pub argument: usize,
+    pub line: u32,
+    pub column: u32,
 }
 
 /// What evaluating an argument can do, as far as its text and the analyzer show.

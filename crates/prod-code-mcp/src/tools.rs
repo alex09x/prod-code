@@ -66,6 +66,7 @@ pub(crate) async fn dispatch_tool(
         }
         "code_rename" => Box::pin(handle_rename(remote, root, &args)).await,
         "code_exec" => Box::pin(handle_exec(remote, root, &args)).await,
+        "code_coverage" => Box::pin(handle_coverage(remote, root, &args)).await,
         "code_pull" => Box::pin(pull_handler::handle_pull(remote, root, &args)).await,
         "code_definition" => Box::pin(handle_definition(remote, root, &args)).await,
 
