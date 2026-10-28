@@ -19,6 +19,9 @@ pub(crate) fn is_locally_shadowed(content: &str, at: usize, name: &str, lang: La
     if is_js_function_declaration_name(content, at, name, lang) {
         return true;
     }
+    if is_expression_arrow_parameter_binding(content, at, name, lang) {
+        return true;
+    }
     if is_shadowed_by_expression_arrow(content, at, name, lang) {
         return true;
     }
@@ -44,12 +47,15 @@ pub(crate) fn is_locally_shadowed(content: &str, at: usize, name: &str, lang: La
     let line_start = content[..at].rfind('\n').map_or(0, |p| p + 1);
     let line_before = content[line_start..at].trim();
     if let Some(rest) = line_before
-        .strip_prefix("const ")
-        .or_else(|| line_before.strip_prefix("let "))
-        .or_else(|| line_before.strip_prefix("var "))
-        .or_else(|| line_before.strip_prefix("mut "))
+        .strip_prefix("const")
+        .or_else(|| line_before.strip_prefix("let"))
+        .or_else(|| line_before.strip_prefix("var"))
+        .or_else(|| line_before.strip_prefix("mut"))
     {
-        if !rest.contains('=') && (rest.trim().is_empty() || rest.starts_with('{')) {
+        if (rest.is_empty() || rest.starts_with(char::is_whitespace))
+            && !rest.contains('=')
+            && (rest.trim().is_empty() || rest.trim_start().starts_with(['{', '[']))
+        {
             return true;
         }
     } else if content[at + name.len()..].trim_start().starts_with(":=") {
@@ -65,6 +71,9 @@ pub(crate) fn is_locally_shadowed(content: &str, at: usize, name: &str, lang: La
             continue;
         };
         if open_brace < at && at < close_brace {
+            if js_function_declared_in_block(&content[open_brace + 1..close_brace], name, lang) {
+                return true;
+            }
             // 1. Check local variable declarations between open_brace and at
             let body_prefix = &content[open_brace + 1..at];
             if body_has_local_decl(body_prefix, name, lang) {
@@ -95,8 +104,9 @@ pub(crate) fn is_locally_shadowed(content: &str, at: usize, name: &str, lang: La
 #[path = "shadow_scope.rs"]
 mod shadow_scope;
 use shadow_scope::{
-    declaration_declares_name, find_matching_open_paren, is_js_function_declaration_name,
-    is_shadowed_by_expression_arrow, js_function_declaration_has_name, params_declare_name,
+    declaration_declares_name, find_matching_open_paren, is_expression_arrow_parameter_binding,
+    is_js_function_declaration_name, is_shadowed_by_expression_arrow,
+    js_function_declaration_has_name, js_function_declared_in_block, params_declare_name,
 };
 
 fn is_lexical_block(text: &str, open_pos: usize) -> bool {

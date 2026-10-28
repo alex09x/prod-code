@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use super::ts_js_imported_symbols;
+use super::{is_ts_js_namespace_import, ts_js_imported_symbols};
 
 #[test]
 fn test_default_import_preserves_local_binding() {
@@ -157,6 +157,24 @@ fn test_commonjs_destructuring_alias() {
         "retry",
     );
     assert_eq!(syms, vec!["again".to_string()]);
+}
+
+#[test]
+fn dynamic_import_namespace_searches_the_selected_member_name() {
+    let content = "async function run() {\n  const math = await import('./selected');\n  return math.retry();\n}\n";
+    let directory = tempfile::tempdir().unwrap();
+    let caller = directory.path().join("caller.ts");
+    let selected = directory.path().join("selected.ts");
+    assert!(super::direct_specifier_matches_decl(
+        "./selected",
+        &caller,
+        &selected
+    ));
+    let syms = ts_js_imported_symbols(content, &caller, &selected, "retry");
+    assert_eq!(syms, vec!["retry".to_string()]);
+    assert!(is_ts_js_namespace_import(
+        content, "math", &caller, &selected
+    ));
 }
 
 #[test]

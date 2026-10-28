@@ -14,6 +14,8 @@
 mod contextual_of;
 #[path = "wrap_return_promise_callsite_regression/identity.rs"]
 mod identity;
+#[path = "wrap_return_promise_callsite_regression/issue_1346.rs"]
+mod issue_1346;
 #[path = "wrap_return_promise_callsite_regression/outer_await_context.rs"]
 mod outer_await_context;
 #[path = "wrap_return_promise_callsite_regression/parameter_scope.rs"]

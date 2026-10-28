@@ -8,7 +8,13 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::*;
+use std::collections::{BTreeMap, HashSet};
+
+use crate::parameter_object::Language;
+use crate::wrap_return::polyglot::callers::collect::collect_and_rewrite_callers;
+use crate::wrap_return::polyglot::find::find_polyglot_decl;
+use crate::wrap_return::types::Wrapper;
+use crate::wrap_return::utils::one_based_lsp_position;
 
 #[test]
 fn coverage_w2_semantic_callers_only_rewrite_resolved_references() {
