@@ -12,7 +12,9 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::path::Path;
 
-use super::duplicates::{collect_copies, process_and_validate_duplicates};
+use super::duplicates::{
+    collect_copies_with_ownership, process_and_validate_duplicates_with_ownership,
+};
 use super::rewrite::{indent_at, literal_type, rename_placeholder, rewrite_of, with_arguments};
 use super::tokens::{is_ident, mentions, tokens};
 use super::types::{Extracted, PLACEHOLDER};
@@ -106,7 +108,7 @@ pub async fn extract_function(
     let selection_at = start + (text[start..end].len() - text[start..end].trim_start().len());
     let sel_tokens = tokens(&selection);
 
-    let copies = collect_copies(
+    let (copies, ownership) = collect_copies_with_ownership(
         root,
         file,
         &text,
@@ -116,7 +118,7 @@ pub async fn extract_function(
         duplicates,
         parameterize,
         other_files,
-    );
+    )?;
 
     let mut varying: Vec<usize> = copies
         .iter()
@@ -214,7 +216,7 @@ pub async fn extract_function(
         base_edits.push((start, start + c.len(), own));
     }
 
-    let (found, result, diagnostics, final_call) = process_and_validate_duplicates(
+    let (found, result, diagnostics, final_call) = process_and_validate_duplicates_with_ownership(
         remote,
         root,
         file,
@@ -236,6 +238,7 @@ pub async fn extract_function(
         &base_edits,
         other_files,
         function,
+        ownership.as_ref(),
     )
     .await?;
 

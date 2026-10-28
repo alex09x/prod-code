@@ -8,10 +8,12 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::extract_function::tokens::{Token, tokens};
 use crate::extract_function::types::Occurrence;
+use crate::move_item::ownership::{Graph, Owner};
 
 /// The places in `text` whose tokens are those of `selection`, outside `exclude`. With
 /// `literals`, a place may differ from it in literals of the same kind (a number for a
@@ -103,33 +105,80 @@ pub fn collect_copies(
     duplicates: bool,
     parameterize: bool,
     other_files: bool,
-) -> Vec<(PathBuf, String, Occurrence)> {
+) -> Result<Vec<(PathBuf, String, Occurrence)>> {
+    collect_copies_with_ownership(
+        root,
+        file,
+        text,
+        selection,
+        start,
+        end,
+        duplicates,
+        parameterize,
+        other_files,
+    )
+    .map(|(copies, _)| copies)
+}
+
+pub(crate) struct CopyOwnership {
+    pub graph: Graph,
+    pub selected: Owner,
+}
+
+pub(crate) fn collect_copies_with_ownership(
+    root: &Path,
+    file: &Path,
+    text: &str,
+    selection: &str,
+    start: usize,
+    end: usize,
+    duplicates: bool,
+    parameterize: bool,
+    other_files: bool,
+) -> Result<(Vec<(PathBuf, String, Occurrence)>, Option<CopyOwnership>)> {
     let mut copies = Vec::new();
     if !duplicates {
-        return copies;
+        return Ok((copies, None));
     }
 
     for c in copies_of(selection, text, Some((start, end)), parameterize) {
         copies.push((file.to_path_buf(), text.to_string(), c));
     }
-    if other_files {
-        let mut others = crate_sources(file);
-        for s in crate::signature_polyglot::collect_workspace_sources(
-            root,
-            crate::parameter_object::Language::Rust,
-        ) {
-            if s != file && !others.contains(&s) {
-                others.push(s);
-            }
-        }
-        for other in others {
-            let Ok(other_text) = std::fs::read_to_string(&other) else {
+    if !other_files {
+        return Ok((copies, None));
+    }
+
+    let graph = Graph::load(root, file)
+        .context("could not establish Cargo target membership for duplicate discovery")?;
+    let selected_owners = graph.owners(file, Some(start))?;
+    anyhow::ensure!(
+        selected_owners.len() == 1,
+        "selected declaration belongs to multiple Cargo targets or module scopes; refusing cross-file duplicate discovery"
+    );
+    let selected = selected_owners[0].clone();
+    let candidates: std::collections::BTreeSet<_> = graph
+        .nodes
+        .iter()
+        .filter(|owner| owner.identity == selected.identity && owner.file != file)
+        .map(|owner| owner.file.clone())
+        .collect();
+
+    for path in candidates {
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for occurrence in copies_of(selection, &source, None, parameterize) {
+            let Ok(owners) = graph.owners(&path, Some(occurrence.from)) else {
                 continue;
             };
-            for c in copies_of(selection, &other_text, None, parameterize) {
-                copies.push((other.clone(), other_text.clone(), c));
+            if owners.len() != 1
+                || owners[0].identity != selected.identity
+                || !owners[0].condition.implies(&selected.condition)
+            {
+                continue;
             }
+            copies.push((path.clone(), source.clone(), occurrence));
         }
     }
-    copies
+    Ok((copies, Some(CopyOwnership { graph, selected })))
 }

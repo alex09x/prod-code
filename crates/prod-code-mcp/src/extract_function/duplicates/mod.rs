@@ -11,5 +11,7 @@
 pub mod search;
 pub mod validate;
 
+pub(crate) use search::collect_copies_with_ownership;
 pub use search::{collect_copies, copies_of, crate_sources};
 pub use validate::process_and_validate_duplicates;
+pub(crate) use validate::process_and_validate_duplicates_with_ownership;
