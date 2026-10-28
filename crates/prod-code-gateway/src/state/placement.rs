@@ -17,7 +17,7 @@ impl ServerState {
     pub async fn place(&self, req: &PlaceRequest) -> PlaceResponse {
         let view = self.cluster_view().await;
         let own_addr = self.advertise.read().await.clone();
-        let resp = place_in(req, view);
+        let mut resp = place_in(req, view);
         if req.rebalance_active
             && let Some(ref target) = resp.node
             && target != &own_addr
@@ -30,6 +30,7 @@ impl ServerState {
                     Some(resp.reason.clone()),
                 )
                 .await;
+            resp.notified_sessions = notified;
             if notified > 0 {
                 tracing::info!(
                     workspace = %req.workspace_name,
@@ -153,6 +154,7 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
                         score(q),
                         q.status.load_per_cpu().unwrap_or(0.0)
                     ),
+                    notified_sessions: 0,
                 };
             }
             // A Mac holding work that does not need macOS gives it up once it may move.
@@ -164,6 +166,7 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
                          without macOS",
                         h.addr, q.addr
                     ),
+                    notified_sessions: 0,
                 };
             }
             if score(h) >= 0.80 && score(q) < score(h) * 0.50 && (score(h) - score(q)) >= 0.40 {
@@ -176,12 +179,14 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
                         q.addr,
                         score(q)
                     ),
+                    notified_sessions: 0,
                 };
             }
         }
         return PlaceResponse {
             node: Some(h.addr.clone()),
             reason: format!("already loaded on {}", h.addr),
+            notified_sessions: 0,
         };
     }
     match quietest {
@@ -209,6 +214,7 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
             PlaceResponse {
                 node: Some(q.addr.clone()),
                 reason,
+                notified_sessions: 0,
             }
         }
         None => PlaceResponse {
@@ -222,6 +228,7 @@ pub(crate) fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceRespon
                     format!("no live node serves {}", engine.unwrap_or("this workspace"))
                 }
             },
+            notified_sessions: 0,
         },
     }
 }

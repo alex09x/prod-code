@@ -63,6 +63,7 @@ impl Node {
                         Some(WireMessage::PlaceResponse(PlaceResponse {
                             node: recommend_self.then(|| addr.to_string()),
                             reason: "simulated placement".into(),
+                            notified_sessions: 0,
                         }))
                     }
                     _ => None,

@@ -54,6 +54,7 @@ impl Node {
                                 WireMessage::PlaceResponse(PlaceResponse {
                                     node: Some(selected.lock().unwrap().to_string()),
                                     reason: "test placement".into(),
+                                    notified_sessions: 0,
                                 })
                             }
                             WireMessage::StatusRequest => {

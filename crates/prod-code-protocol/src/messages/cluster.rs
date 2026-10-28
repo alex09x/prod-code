@@ -127,6 +127,9 @@ pub struct PlaceResponse {
     /// The node to use, or None when no node in the cluster can serve the engine.
     pub node: Option<String>,
     pub reason: String,
+    /// Active local session listeners present when a redirect was broadcast for the selected node.
+    #[serde(default)]
+    pub notified_sessions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -222,4 +225,17 @@ pub fn client_host() -> String {
             .unwrap_or_else(|| "unknown".to_string())
     })
     .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlaceResponse;
+
+    #[test]
+    fn place_response_defaults_notification_count_for_older_gateways() {
+        let response: PlaceResponse =
+            serde_json::from_str(r#"{"node":"gateway:9400","reason":"already loaded"}"#).unwrap();
+
+        assert_eq!(response.notified_sessions, 0);
+    }
 }

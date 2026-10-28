@@ -269,6 +269,21 @@ async fn active_placement_preview_returns_target_without_redirecting_sessions() 
         redirects.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
+
+    let response = state
+        .place(&PlaceRequest {
+            workspace_name: "repo".to_string(),
+            engine: Some("rust".to_string()),
+            os: Some("macos".to_string()),
+            rebalance_active: true,
+        })
+        .await;
+    assert_eq!(response.node.as_deref(), Some("quiet:9400"));
+    assert_eq!(response.notified_sessions, 1);
+    assert_eq!(
+        redirects.try_recv().expect("active session redirect").0,
+        "quiet:9400"
+    );
 }
 
 /// Idle engines go after `--idle-evict-secs`, or after five minutes while memory is short,
