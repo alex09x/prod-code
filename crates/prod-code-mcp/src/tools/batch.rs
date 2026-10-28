@@ -95,23 +95,37 @@ where
     } else {
         crate::call_tree::DEFAULT_CALL_TREE_BUDGET
     };
+    let path_scoped = has_path_hint(&base_args);
     let deadline = std::time::Instant::now() + shared_budget;
     let mut out = String::new();
     let mut any_ok = false;
 
     for (idx, sym) in symbols.iter().enumerate() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            if idx > 0 {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "[Batch budget expired before symbol {}/{total} (`{sym}`); retry it alone or provide a path and position to narrow the lookup.]\n",
+                idx + 1
+            ));
+            break;
+        }
         // Reserve a share for every remaining symbol. Unused time from a fast lookup is
         // available to later ones, but one slow lookup cannot spend their shares (#1168).
         let share = remaining / u32::try_from(total - idx).unwrap_or(u32::MAX);
         // An unqualified references name can fan out to many declarations; keep one such
         // lookup from consuming a large default batch share. Explicit budgets stay in control.
-        let share =
-            if tool_name == "code_references" && !user_set_budget && is_unqualified_symbol(sym) {
-                share.min(std::time::Duration::from_secs(2))
-            } else {
-                share
-            };
+        let short_reference_share = tool_name == "code_references"
+            && !user_set_budget
+            && !path_scoped
+            && is_unqualified_symbol(sym);
+        let share = if short_reference_share {
+            share.min(std::time::Duration::from_secs(2))
+        } else {
+            share
+        };
         let mut sym_args = base_args.clone();
         if let Some(obj) = sym_args.as_object_mut() {
             obj.remove("symbols");
@@ -126,7 +140,13 @@ where
         }
         out.push_str(&format!("=== [{}/{total}] {sym} ===\n", idx + 1));
 
-        match tokio::time::timeout(share, execute(sym_args)).await {
+        let future = execute(sym_args);
+        let result = if short_reference_share {
+            Ok(future.await)
+        } else {
+            tokio::time::timeout(share, future).await
+        };
+        match result {
             Ok(Ok(res)) => {
                 if !res.is_error {
                     any_ok = true;
@@ -162,6 +182,19 @@ where
 fn is_unqualified_symbol(symbol: &str) -> bool {
     !symbol.contains("::") && !symbol.contains('.') && !symbol.contains('/')
 }
+
+fn has_path_hint(args: &serde_json::Value) -> bool {
+    ["path", "file_path", "file", "package", "crate"]
+        .iter()
+        .any(|key| {
+            args.get(key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|path| !path.trim().is_empty())
+        })
+}
+
+#[cfg(test)]
+mod budget_tests;
 
 #[cfg(test)]
 mod tests {
@@ -253,10 +286,12 @@ mod tests {
         .unwrap();
 
         assert!(!result.is_error);
-        let observed = observed.lock().unwrap();
-        assert_eq!(observed[0], ("common_helper".to_string(), 2000));
-        assert!(observed[1].1 > 2000, "qualified lookups keep spare budget");
-        assert!(observed[2].1 > 2000, "qualified lookups keep spare budget");
+        {
+            let observed = observed.lock().unwrap();
+            assert_eq!(observed[0], ("common_helper".to_string(), 2000));
+            assert!(observed[1].1 > 2000, "qualified lookups keep spare budget");
+            assert!(observed[2].1 > 2000, "qualified lookups keep spare budget");
+        }
 
         let explicit_budgets = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let explicit_in_call = std::sync::Arc::clone(&explicit_budgets);

@@ -22,12 +22,14 @@ use crate::protocol::McpToolCallResult;
 
 pub(crate) mod across;
 pub(crate) mod lexical;
+mod locations;
 pub(crate) mod multi_target;
 pub(crate) mod render;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use across::*;
+pub(crate) use locations::add_locations;
 pub(crate) use multi_target::*;
 use render::render_reference_locations;
 
@@ -36,6 +38,7 @@ pub(crate) async fn handle_references(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    let reference_deadline = multi_target_deadline(args, tokio::time::Instant::now());
     let path_str = args
         .get("path")
         .and_then(|v| v.as_str())
@@ -154,6 +157,7 @@ pub(crate) async fn handle_references(
             &mut seen_files,
             &mut all_locs,
             &mut unindexed_callers,
+            reference_deadline,
         )
         .await
     {

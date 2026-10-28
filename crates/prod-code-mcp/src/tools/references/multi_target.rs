@@ -17,16 +17,33 @@ use super::across::{
     ImportMatch, definition_is, engine_can_reference, imports_declaration, is_occurrence_shadowed,
     mask_executable_code, masked_code_string, writes_call,
 };
+use super::locations::{add_locations, record_file_uses};
 use super::{
     definition_in_file, definition_in_other_workspace_file, swift_shares_or_imports_target,
 };
 use crate::tools::execute_lsp_query;
-use crate::tools::symbols::{
-    MAX_SCANNED_FILES, is_in_nested_git_worktree, names_word, source_files,
-};
+use crate::tools::symbols::{MAX_SCANNED_FILES, names_word, source_files};
 
 /// The most time multi-target references discovery can take before returning accumulated references.
 pub(crate) const MULTI_TARGET_REF_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
+
+pub(crate) fn multi_target_deadline(
+    args: &serde_json::Value,
+    started_at: tokio::time::Instant,
+) -> tokio::time::Instant {
+    let requested = if let Some(ms) = args.get("budget_ms").and_then(|value| value.as_u64()) {
+        std::time::Duration::from_millis(ms.max(1))
+    } else if let Some(secs) = args
+        .get("budget_secs")
+        .or_else(|| args.get("timeout_secs"))
+        .and_then(|value| value.as_u64())
+    {
+        std::time::Duration::from_secs(secs.clamp(1, 90))
+    } else {
+        MULTI_TARGET_REF_BUDGET
+    };
+    started_at + requested.min(MULTI_TARGET_REF_BUDGET)
+}
 
 /// The most places in the checkout asked for their definition when looking for a use.
 pub(crate) const MAX_USES_ASKED: usize = 12;
@@ -34,49 +51,6 @@ pub(crate) const MAX_USES_ASKED: usize = 12;
 /// The most places in one file asked: a file no target compiles answers none of them, and a name
 /// that resolves elsewhere in a file means the same elsewhere through the rest of it.
 pub(crate) const MAX_USES_ASKED_PER_FILE: usize = 2;
-
-pub(crate) fn add_locations(
-    workspace_root: &Path,
-    locations: &serde_json::Value,
-    seen_locs: &mut HashSet<(String, u64, u64)>,
-    seen_files: &mut HashSet<PathBuf>,
-    all_locs: &mut Vec<serde_json::Value>,
-) {
-    if let Some(arr) = locations.as_array() {
-        for loc in arr {
-            let uri = loc
-                .get("uri")
-                .or_else(|| loc.get("targetUri"))
-                .and_then(|u| u.as_str())
-                .unwrap_or("");
-            let parsed_path = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
-            if let Some(ref path) = parsed_path
-                && is_in_nested_git_worktree(workspace_root, path)
-            {
-                continue;
-            }
-            let start_line = loc
-                .pointer("/range/start/line")
-                .or_else(|| loc.pointer("/targetRange/start/line"))
-                .and_then(|l| l.as_u64())
-                .unwrap_or(0)
-                + 1;
-            let start_col = loc
-                .pointer("/range/start/character")
-                .or_else(|| loc.pointer("/targetRange/start/character"))
-                .and_then(|c| c.as_u64())
-                .unwrap_or(0)
-                + 1;
-            if seen_locs.insert((uri.to_string(), start_line, start_col)) {
-                all_locs.push(loc.clone());
-                if let Some(path) = parsed_path {
-                    let norm = std::fs::canonicalize(&path).unwrap_or(path);
-                    seen_files.insert(norm);
-                }
-            }
-        }
-    }
-}
 
 /// Collects references across multiple feature-gated targets, shared modules, or separate checkouts (#783).
 /// Scans candidate source files across the workspace that contain `name`. When a candidate use resolves
@@ -97,6 +71,7 @@ pub(crate) async fn collect_multi_target_references(
     seen_files: &mut HashSet<PathBuf>,
     all_locs: &mut Vec<serde_json::Value>,
     unindexed_callers: &mut Vec<PathBuf>,
+    deadline: tokio::time::Instant,
 ) -> Option<String> {
     let language = crate::sync::engine_for_file(declaration)?;
     let declared = declaration.to_string_lossy().into_owned();
@@ -105,7 +80,6 @@ pub(crate) async fn collect_multi_target_references(
     let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
     let mut asked = 0usize;
     let mut checkout_use_note = None;
-    let deadline = tokio::time::Instant::now() + MULTI_TARGET_REF_BUDGET;
     let is_unexported_go =
         language == "go" && name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
     let decl_parent = declaration.parent();
@@ -114,7 +88,7 @@ pub(crate) async fn collect_multi_target_references(
         .take(MAX_SCANNED_FILES);
     for path in candidates {
         if tokio::time::Instant::now() >= deadline {
-            break;
+            return multi_target_budget_note(checkout_use_note);
         }
         if is_unexported_go && path.parent() != decl_parent {
             continue;
@@ -222,7 +196,7 @@ pub(crate) async fn collect_multi_target_references(
 
         for &(index, col, byte_off) in file_uses.iter().take(MAX_USES_ASKED_PER_FILE) {
             if tokio::time::Instant::now() >= deadline {
-                return checkout_use_note;
+                return multi_target_budget_note(checkout_use_note);
             }
             asked += 1;
             if asked > MAX_USES_ASKED {
@@ -232,8 +206,13 @@ pub(crate) async fn collect_multi_target_references(
                 "textDocument": { "uri": &uri_str },
                 "position": { "line": index, "character": col }
             });
-            let found_def = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let query_timeout = remaining.min(std::time::Duration::from_secs(2));
+            if query_timeout.is_zero() {
+                return multi_target_budget_note(checkout_use_note);
+            }
+            let found_def = match tokio::time::timeout(
+                query_timeout,
                 execute_lsp_query(
                     remote,
                     workspace_root,
@@ -243,8 +222,14 @@ pub(crate) async fn collect_multi_target_references(
                 ),
             )
             .await
-            .ok()
-            .and_then(|r| r.ok());
+            {
+                Ok(Ok(found)) => Some(found),
+                Ok(Err(_)) => None,
+                Err(_) if query_timeout >= remaining => {
+                    return multi_target_budget_note(checkout_use_note);
+                }
+                Err(_) => None,
+            };
 
             let def_matches = found_def.as_ref().is_some_and(|found| {
                 definition_is(found, &declared, decl_line.saturating_sub(1))
@@ -260,8 +245,13 @@ pub(crate) async fn collect_multi_target_references(
                     "position": { "line": index, "character": col },
                     "context": { "includeDeclaration": include_decl }
                 });
-                if let Ok(Ok(target_refs)) = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let query_timeout = remaining.min(std::time::Duration::from_secs(2));
+                if query_timeout.is_zero() {
+                    return multi_target_budget_note(checkout_use_note);
+                }
+                match tokio::time::timeout(
+                    query_timeout,
                     execute_lsp_query(
                         remote,
                         workspace_root,
@@ -272,13 +262,17 @@ pub(crate) async fn collect_multi_target_references(
                 )
                 .await
                 {
-                    add_locations(
+                    Ok(Ok(target_refs)) => add_locations(
                         workspace_root,
                         &target_refs,
                         seen_locs,
                         seen_files,
                         all_locs,
-                    );
+                    ),
+                    Err(_) if query_timeout >= remaining => {
+                        return multi_target_budget_note(checkout_use_note);
+                    }
+                    _ => {}
                 }
 
                 let uses_to_record: &[(usize, usize)] = if is_swift && !non_shadowed.is_empty() {
@@ -377,25 +371,10 @@ pub(crate) async fn collect_multi_target_references(
     checkout_use_note
 }
 
-fn record_file_uses(
-    uri_str: &str,
-    uses: &[(usize, usize)],
-    // The name's length in UTF-16 code units, as the columns of `uses` are counted.
-    units: usize,
-    seen_locs: &mut HashSet<(String, u64, u64)>,
-    all_locs: &mut Vec<serde_json::Value>,
-) {
-    for &(u_idx, u_col) in uses {
-        let use_line = (u_idx + 1) as u64;
-        let use_col = (u_col + 1) as u64;
-        if seen_locs.insert((uri_str.to_string(), use_line, use_col)) {
-            all_locs.push(serde_json::json!({
-                "uri": uri_str,
-                "range": {
-                    "start": { "line": u_idx, "character": u_col },
-                    "end": { "line": u_idx, "character": u_col + units }
-                }
-            }));
-        }
-    }
+fn multi_target_budget_note(previous: Option<String>) -> Option<String> {
+    let note = "(partial references: multi-target scan reached its time budget; pass `path` or a narrower symbol to inspect remaining candidates)";
+    Some(match previous {
+        Some(previous) => format!("{previous}{note}\n"),
+        None => note.to_string(),
+    })
 }
