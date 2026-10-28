@@ -41,6 +41,7 @@ fn sites(text: &str, name: &str) -> Vec<CallSite> {
                 at: line_col_at(text, at).unwrap().0.to_string(),
                 args,
                 typed_locals: std::collections::BTreeMap::new(),
+                ..CallSite::default()
             })
         })
         .collect()
