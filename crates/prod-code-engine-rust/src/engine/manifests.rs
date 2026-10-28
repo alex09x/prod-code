@@ -173,7 +173,7 @@ impl RustEngine {
                 .write()
                 .map_err(|e| anyhow::anyhow!("VFS lock: {e}"))?;
             ws.extra_includes
-                .extend(path_attribute_includes(&vfs, abs_root.as_path()));
+                .extend(path_attribute_includes(&vfs, ws.workspace_root()));
             ws.extra_includes.sort();
             ws.extra_includes.dedup();
             load_target_roots(&mut self.worktrees, db, &mut vfs, &target_roots);
@@ -222,6 +222,24 @@ impl RustEngine {
                 .vfs
                 .write()
                 .map_err(|e| anyhow::anyhow!("VFS lock: {e}"))?;
+            let base_root = self.worktrees.base().workspace_root().to_path_buf();
+            let worktree_root = workspace.workspace_root().to_path_buf();
+            for include in &self.worktrees.base().extra_includes {
+                let Ok(relative) =
+                    Path::new(include.as_str()).strip_prefix(Path::new(base_root.as_path()))
+                else {
+                    continue;
+                };
+                workspace.extra_includes.push(
+                    AbsPathBuf::assert_utf8(Path::new(worktree_root.as_str()).join(relative))
+                        .normalize(),
+                );
+            }
+            workspace
+                .extra_includes
+                .extend(path_attribute_includes(&vfs, worktree_root.as_path()));
+            workspace.extra_includes.sort();
+            workspace.extra_includes.dedup();
             load_target_roots(&mut self.worktrees, db, &mut vfs, &target_roots);
             if config.rust.build_scripts {
                 self.worktrees

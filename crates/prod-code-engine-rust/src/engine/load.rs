@@ -62,10 +62,30 @@ pub(crate) fn load_target_roots(
     }
 }
 
-/// Add existing files named by top-level `#[path]` attributes to the workspace VFS.
+fn path_attribute_values(meta: ast::Meta) -> Vec<String> {
+    match meta {
+        ast::Meta::CfgAttrMeta(cfg_attr) => {
+            cfg_attr.metas().flat_map(path_attribute_values).collect()
+        }
+        meta if meta.simple_name().as_deref() == Some("path") => meta
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .find_map(ast::String::cast)
+            .and_then(|literal| literal.value().ok().map(|value| value.into_owned()))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Add existing files named by local `#[path]` attributes to the workspace VFS.
 /// Cargo's ordinary directory scan omits shared files outside a package root even when the
 /// configured feature set makes the path module part of a local crate.
 pub(crate) fn path_attribute_includes(vfs: &Vfs, workspace_root: &AbsPath) -> Vec<AbsPathBuf> {
+    let Ok(canonical_workspace_root) = std::fs::canonicalize(workspace_root.as_str()) else {
+        return Vec::new();
+    };
     let mut includes = Vec::new();
     for (_, vfs_path) in vfs.iter() {
         let Some(path) = vfs_path.as_path() else {
@@ -77,7 +97,7 @@ pub(crate) fn path_attribute_includes(vfs: &Vfs, workspace_root: &AbsPath) -> Ve
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
-        if !text.contains("#[path") {
+        if !text.contains("path") {
             continue;
         }
 
@@ -86,35 +106,30 @@ pub(crate) fn path_attribute_includes(vfs: &Vfs, workspace_root: &AbsPath) -> Ve
             if module.item_list().is_some() {
                 continue;
             }
-            let Some(attribute) = module
-                .attrs()
-                .find(|attribute| attribute.simple_name().as_deref() == Some("path"))
-            else {
-                continue;
-            };
-            let Some(relative) = attribute
-                .syntax()
-                .descendants_with_tokens()
-                .filter_map(|element| element.into_token())
-                .find_map(ast::String::cast)
-                .and_then(|literal| literal.value().ok().map(|value| value.into_owned()))
-            else {
-                continue;
-            };
             let Some(parent) = path.parent() else {
                 continue;
             };
-            let target = Path::new(parent.as_str()).join(relative);
-            let Ok(target) = std::fs::canonicalize(target) else {
-                continue;
-            };
-            if !target.starts_with(Path::new(workspace_root.as_str())) || !is_rust_source(&target) {
-                continue;
+            for attribute in module.attrs() {
+                let Some(meta) = attribute.meta() else {
+                    continue;
+                };
+                for relative in path_attribute_values(meta) {
+                    let target = AbsPathBuf::assert_utf8(Path::new(parent.as_str()).join(relative))
+                        .normalize();
+                    let Ok(canonical_target) = std::fs::canonicalize(target.as_path()) else {
+                        continue;
+                    };
+                    if !canonical_target.starts_with(&canonical_workspace_root)
+                        || !is_rust_source(Path::new(target.as_str()))
+                    {
+                        continue;
+                    }
+                    let Some(parent) = target.parent() else {
+                        continue;
+                    };
+                    includes.push(parent.to_path_buf());
+                }
             }
-            let Some(parent) = target.parent() else {
-                continue;
-            };
-            includes.push(AbsPathBuf::assert_utf8(parent.to_path_buf()));
         }
     }
     includes.sort();
@@ -291,7 +306,7 @@ impl RustEngine {
         let mut db = db;
         let mut vfs = vfs;
         let target_roots = extensionless_target_roots(worktrees.base());
-        let path_includes = path_attribute_includes(&vfs, abs_root.as_path());
+        let path_includes = path_attribute_includes(&vfs, worktrees.base().workspace_root());
         let has_path_includes = !path_includes.is_empty();
         let mut base = worktrees.base().clone();
         base.extra_includes.extend(path_includes);
