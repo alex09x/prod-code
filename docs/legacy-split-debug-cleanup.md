@@ -49,13 +49,46 @@ The command prints each file as it removes it. Repeat the inventory loop above; 
 
 ## Reproduce the old-profile case
 
-`docs/fixtures/legacy-dwo` is a small Cargo project using the old profile. On a Linux build node, create an isolated cache and build it:
+The following commands materialize a small Cargo project using the old profile under a temporary directory, so the repository does not contain a discoverable nested Cargo project. On a Linux build node, create the fixture and an isolated cache, then build it:
 
 ```sh
-CARGO_TARGET_DIR=/tmp/prod-code-legacy-dwo-fixture \
-    cargo build --manifest-path docs/fixtures/legacy-dwo/Cargo.toml
+fixture_dir="$(mktemp -d)"
+target_dir="$fixture_dir/target"
+mkdir -p "$fixture_dir/src"
+
+cat > "$fixture_dir/Cargo.toml" <<'TOML'
+[package]
+name = "legacy-dwo-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+incremental = true
+TOML
+
+cat > "$fixture_dir/src/main.rs" <<'RS'
+#[inline(never)]
+fn work(seed: u64) -> u64 {
+    let mut value = seed;
+    for step in 1..64 {
+        value = value.wrapping_mul(step).wrapping_add(step * 3);
+    }
+    value
+}
+
+fn main() {
+    assert_ne!(work(17), 0);
+}
+RS
+
+CARGO_TARGET_DIR="$target_dir" cargo build --manifest-path "$fixture_dir/Cargo.toml"
+printf 'Fixture: %s\nTarget directory: %s\n' "$fixture_dir" "$target_dir"
 ```
 
-Set `target_dir=/tmp/prod-code-legacy-dwo-fixture` and run the inventory/deletion/verification steps above. The fixture exercises both locations without touching the repository's normal `target/` cache. Remove the temporary target directory after verification.
+Set `target_dir` to the temporary `target_dir` printed or retained above and run the inventory/deletion/verification steps. The fixture exercises both locations without touching the repository's normal `target/` cache. Remove the temporary directory after verification.
 
 Validation performed on a Linux build node: the fixture produced 16 `.dwo` files (8 under `debug/deps`, 8 under `debug/incremental`); the scoped deletion removed all 16, and a repeat inventory returned no files. A separate earlier read-only check of the current checkout found no `.dwo` files, so this fixture validates the procedure without claiming that stale artifacts remained in production caches.
