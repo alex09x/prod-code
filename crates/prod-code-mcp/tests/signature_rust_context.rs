@@ -21,8 +21,17 @@ fn position(text: &str, needle: &str) -> (u32, u32) {
 }
 
 fn native_output(ws: &Workspace) -> String {
+    native_output_edition(ws, "2024")
+}
+
+fn native_output_edition(ws: &Workspace, edition: &str) -> String {
     let compile = std::process::Command::new("rustc")
-        .args(["--edition=2024", "src/main.rs", "-o", "fixture"])
+        .args([
+            &format!("--edition={edition}"),
+            "src/main.rs",
+            "-o",
+            "fixture",
+        ])
         .current_dir(ws.root())
         .output()
         .unwrap();
@@ -40,6 +49,35 @@ fn native_output(ws: &Workspace) -> String {
         String::from_utf8_lossy(&run.stderr)
     );
     String::from_utf8(run.stdout).unwrap()
+}
+
+#[tokio::test]
+async fn public_async_change_accepts_2021_gen_identifier() {
+    const SOURCE: &str = "use std::future::Future;\nfn load(x: u32) -> u32 { x }\nfn block_on<F: Future>(f: F) -> F::Output { let mut f = std::pin::pin!(f); let mut cx = std::task::Context::from_waker(std::task::Waker::noop()); match f.as_mut().poll(&mut cx) { std::task::Poll::Ready(v) => v, _ => panic!() } }\nfn main() { let gen = 7; let answer = block_on(async { load(gen) }); println!(\"{}\", answer); }\n";
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='demo'\nversion='0.1.0'\nedition='2021'\n",
+        ),
+        ("src/main.rs", SOURCE),
+    ]);
+    ws.commit();
+    let before = native_output_edition(&ws, "2021");
+    assert_eq!(before, "7\n");
+    let result = apply(
+        &ws,
+        SOURCE,
+        SOURCE.to_string(),
+        "load(x",
+        "load(gen)",
+        serde_json::json!(["x"]),
+        Some(true),
+        false,
+    )
+    .await;
+    assert!(result.as_ref().is_ok_and(|r| !r.is_error), "{result:?}");
+    assert!(ws.read("src/main.rs").contains("load(gen).await"));
+    assert_eq!(native_output_edition(&ws, "2021"), before);
 }
 
 async fn apply(

@@ -62,3 +62,21 @@ fn attribution_distinguishes_reordered_macro_tokens_from_a_noop() {
     let (unmatched, _) = attribute("main.rs", old, old, "join", &[pos], &needs);
     assert_eq!(unmatched.len(), 1);
 }
+
+#[test]
+fn pre_2024_gen_identifier_is_not_a_parse_failure() {
+    let text = "async fn outer() { let gen = 7; load(gen); }";
+    assert!(in_async_fn(text, text.find("load(gen)").unwrap()));
+    assert!(call_tokens("(gen, other)").is_some());
+}
+
+#[test]
+fn synchronous_generator_does_not_inherit_async_function_context() {
+    let text = "async fn outer() { let _ = gen { load(7); }; }";
+    assert!(!in_async_fn(text, text.find("load(7)").unwrap()));
+    let macro_input = "async fn outer() { emit!(load(7)); }";
+    assert!(!in_async_fn(
+        macro_input,
+        macro_input.find("load(7)").unwrap()
+    ));
+}

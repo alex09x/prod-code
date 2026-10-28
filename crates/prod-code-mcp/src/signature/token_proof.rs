@@ -28,6 +28,11 @@ pub fn call_tokens(text: &str) -> Option<(Vec<&str>, Vec<u8>)> {
     let prefix = "fn __prod_code_proof() { let _ = ";
     let wrapped = format!("{prefix}{text}; }}");
     let parsed = SourceFile::parse(&wrapped, Edition::Edition2024);
+    let parsed = if parsed.errors().is_empty() {
+        parsed
+    } else {
+        SourceFile::parse(&wrapped, Edition::Edition2021)
+    };
     if !parsed.errors().is_empty() {
         return None;
     }

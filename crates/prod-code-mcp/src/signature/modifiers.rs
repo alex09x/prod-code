@@ -98,6 +98,11 @@ pub fn in_async_fn(text: &str, at: usize) -> bool {
         return false;
     };
     let parsed = SourceFile::parse(text, Edition::Edition2024);
+    let parsed = if parsed.errors().is_empty() {
+        parsed
+    } else {
+        SourceFile::parse(text, Edition::Edition2021)
+    };
     if !parsed.errors().is_empty() {
         return false;
     }
@@ -116,11 +121,11 @@ pub fn in_async_fn(text: &str, at: usize) -> bool {
             return function.async_token().is_some();
         }
         if let Some(block) = ast::BlockExpr::cast(node.clone()) {
-            if block.const_token().is_some() {
+            if block.const_token().is_some() || block.gen_token().is_some() {
                 return false;
             }
             if block.async_token().is_some() {
-                return block.gen_token().is_none();
+                return true;
             }
         }
         if ast::Item::can_cast(node.kind()) {
