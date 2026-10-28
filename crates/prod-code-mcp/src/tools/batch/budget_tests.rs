@@ -57,3 +57,32 @@ async fn unqualified_reference_batch_preserves_partial_results_past_its_share() 
     assert!(text.contains("Partial result"), "{text}");
     assert!(!text.contains("Timed out on symbol"), "{text}");
 }
+
+#[tokio::test]
+async fn definition_timeout_millis_sets_the_shared_batch_budget() {
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed_in_call = std::sync::Arc::clone(&observed);
+    let symbols = vec!["One".to_string()];
+    let result = run_symbol_batch(
+        "code_definition",
+        serde_json::json!({ "symbols": symbols.clone(), "timeout_millis": 200 }),
+        &symbols,
+        move |args| {
+            observed_in_call
+                .lock()
+                .unwrap()
+                .push(args["budget_ms"].as_u64().unwrap());
+            async { Ok(McpToolCallResult::text("ok")) }
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(!result.is_error);
+    let budgets = observed.lock().unwrap();
+    assert_eq!(budgets.len(), 1);
+    assert!(
+        (150..=200).contains(&budgets[0]),
+        "timeout_millis was not used as the shared batch budget: {budgets:?}"
+    );
+}
