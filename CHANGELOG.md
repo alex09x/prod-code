@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **Paths and URIs Under a Windows Workspace Root Map to the Node's Copy and Back** (`crates/prod-code-protocol`, #1523):
+  The session's path translator accepted only roots that start with `/`. With a client on Windows, whose workspace root is `C:\repo`, the root counted as unusable, and every path and URI passed through unmapped. Paths under the root were then sent to the node as `C:\repo\src\main.rs`, which names nothing there. A drive-letter root is now a root:
+  - paths under it, with either separator and the drive letter in any case, map to the node's copy, and back with `\`;
+  - `file:` URIs map too, written `file:///C:/repo/…` or with the colon encoded, `file:///c%3A/repo/…`, as VS Code writes them. Their query, fragment and trailing `/` are kept.
+  A sibling root sharing the prefix (`C:\repo2`), another drive, and files outside the root are left as they are. UNC roots (`\\server\share`) are not handled yet.
 - **Swift Parameter Bundling No Longer Moves a Literal of a Module's Own `Int` Past a Call** (`crates/prod-code-mcp`, #1512):
   `code_introduce_parameter_object` moves bundled arguments together, and lets one move past an unbundled argument only when neither can do anything. A Swift literal counted as inert when its parameter's type was named like a standard one (`Int`, `String`, `Bool`, …). But a module may declare its own `Int` conforming to `ExpressibleByIntegerLiteral`, whose `init(integerLiteral:)` runs code. Bundling `a` and `c` of `f(mark("a"), mark("b"), 3)`, where `c` was such an `Int`, evaluated the literal before `mark("b")`. A bare standard name now counts as the standard type only when no Swift file of the checkout declares a type of that name (`struct`, `class`, `enum`, `actor`, `typealias`). `Swift.Int` is standard either way. In a checkout too large to read, more than 5000 Swift files, no bare name is assumed standard.
 - **A Rust Editor Session Gets Only the Response Forms Its Editor Advertised** (`crates/prod-code-engine-rust`, `crates/prod-code-gateway`, #1516):

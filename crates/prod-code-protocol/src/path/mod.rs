@@ -16,6 +16,7 @@
 
 mod translator;
 mod uri;
+mod windows;
 
 #[cfg(test)]
 mod tests;
