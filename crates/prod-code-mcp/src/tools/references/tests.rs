@@ -242,3 +242,62 @@ fn name_at_reads_utf16_columns_and_names_that_start_with_punctuation() {
     );
     assert_eq!(name_at("f( a);", 3), None);
 }
+
+#[test]
+fn multi_target_deadline_honors_short_budget_and_caps_long_budget() {
+    let started = tokio::time::Instant::now();
+    assert_eq!(
+        super::multi_target::multi_target_deadline(
+            &serde_json::json!({ "budget_ms": 250 }),
+            started
+        ),
+        started + std::time::Duration::from_millis(250)
+    );
+    assert_eq!(
+        super::multi_target::multi_target_deadline(
+            &serde_json::json!({ "budget_ms": 30_000 }),
+            started
+        ),
+        started + super::multi_target::MULTI_TARGET_REF_BUDGET
+    );
+}
+
+#[tokio::test]
+async fn expired_multi_target_deadline_returns_partial_guidance_without_querying() {
+    use std::collections::HashSet;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"references_fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let declaration = root.join("src/lib.rs");
+    std::fs::write(&declaration, "pub fn common_helper() {}\n").unwrap();
+    let mut seen_locs = HashSet::new();
+    let mut seen_files = HashSet::new();
+    let mut all_locs = Vec::new();
+    let mut unindexed_callers = Vec::new();
+
+    let note = super::multi_target::collect_multi_target_references(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        root,
+        &declaration,
+        1,
+        8,
+        "common_helper",
+        false,
+        true,
+        &mut seen_locs,
+        &mut seen_files,
+        &mut all_locs,
+        &mut unindexed_callers,
+        tokio::time::Instant::now(),
+    )
+    .await
+    .expect("the expired scan explains that its result is partial");
+    assert!(note.contains("partial references"), "{note}");
+    assert!(all_locs.is_empty());
+}
