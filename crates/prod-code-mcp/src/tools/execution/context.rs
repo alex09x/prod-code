@@ -305,14 +305,6 @@ pub(crate) fn definition_subrequest_timeout_message(budget: DefinitionBudget) ->
     )
 }
 
-pub(crate) fn is_timeout_error(error: &anyhow::Error) -> bool {
-    let message = format!("{error:#}").to_ascii_lowercase();
-    if message.contains("failed to connect to remote gateway") {
-        return false;
-    }
-    message.contains("timeout") || message.contains("timed out") || message.contains("deadline")
-}
-
 #[cfg(test)]
 mod definition_timeout_tests {
     use super::*;
@@ -347,14 +339,5 @@ mod definition_timeout_tests {
             }))
             .is_none()
         );
-    }
-
-    #[test]
-    fn definition_timeout_does_not_swallow_gateway_connection_failures() {
-        let error =
-            anyhow::anyhow!("Failed to connect to remote gateway 127.0.0.1:9400: timed out");
-        assert!(!is_timeout_error(&error));
-        let lsp_error = anyhow::anyhow!("timeout waiting for definition response");
-        assert!(is_timeout_error(&lsp_error));
     }
 }

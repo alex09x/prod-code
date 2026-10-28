@@ -19,11 +19,13 @@ use super::super::schemas::SYMBOL_ADDRESSABLE;
 use super::super::symbols::{
     DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT, resolve_symbol, resolve_symbol_candidates,
 };
+use super::budgets::{references_busy_message, references_subrequest_timeout_message};
+use super::context::DefinitionBudget;
 use super::validate_position_arguments;
 use crate::protocol::{McpContentItem, McpToolCallResult};
 
 pub(super) enum SymbolResolution {
-    Dispatch(Value),
+    Dispatch(Value, Option<DefinitionBudget>),
     Respond(McpToolCallResult),
 }
 
@@ -46,6 +48,7 @@ pub(super) async fn resolve_symbol_args(
     workspace_root: &Path,
     tool_name: &str,
     args: Value,
+    reference_budget: Option<DefinitionBudget>,
 ) -> Result<SymbolResolution> {
     // An explicit path and line select the exact declaration for code_wrap_return. Resolving its
     // duplicate name through the workspace index would discard that selection and reject ties.
@@ -56,14 +59,14 @@ pub(super) async fn resolve_symbol_args(
             .is_some_and(|path| !path.trim().is_empty())
         && args.get("line").and_then(Value::as_u64).is_some();
     if !SYMBOL_ADDRESSABLE.contains(&tool_name) || explicit_wrap_return_position {
-        return Ok(SymbolResolution::Dispatch(args));
+        return Ok(SymbolResolution::Dispatch(args, None));
     }
     let Some(symbol) = args.get("symbol").and_then(Value::as_str) else {
-        return Ok(SymbolResolution::Dispatch(args));
+        return Ok(SymbolResolution::Dispatch(args, None));
     };
     let symbol_trimmed = symbol.trim().to_string();
     if symbol_trimmed.is_empty() {
-        return Ok(SymbolResolution::Dispatch(args));
+        return Ok(SymbolResolution::Dispatch(args, None));
     }
 
     let hint = args
@@ -71,30 +74,49 @@ pub(super) async fn resolve_symbol_args(
         .and_then(Value::as_str)
         .filter(|path| !path.trim().is_empty())
         .map(|path| resolve_file_path(workspace_root, path));
-    let candidates = if is_multi_candidate_navigation_tool(tool_name) {
-        let max_candidates = args
-            .get("max_candidates")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize)
-            .unwrap_or(DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT);
-        Box::pin(resolve_symbol_candidates(
-            remote,
-            workspace_root,
-            &symbol_trimmed,
-            hint.as_deref(),
-            max_candidates,
-        ))
-        .await?
-    } else {
-        vec![
-            Box::pin(resolve_symbol(
+    let lookup = async {
+        if is_multi_candidate_navigation_tool(tool_name) {
+            let max_candidates = args
+                .get("max_candidates")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+                .unwrap_or(DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT);
+            Box::pin(resolve_symbol_candidates(
                 remote,
                 workspace_root,
                 &symbol_trimmed,
                 hint.as_deref(),
+                max_candidates,
             ))
-            .await?,
-        ]
+            .await
+        } else {
+            Ok(vec![
+                Box::pin(resolve_symbol(
+                    remote,
+                    workspace_root,
+                    &symbol_trimmed,
+                    hint.as_deref(),
+                ))
+                .await?,
+            ])
+        }
+    };
+    let candidates = match (reference_budget, tool_name == "code_references") {
+        (Some(budget), true) => match tokio::time::timeout_at(budget.deadline, lookup).await {
+            Ok(Ok(candidates)) => candidates,
+            Ok(Err(error)) if super::budgets::is_timeout_error(&error) => {
+                return Ok(SymbolResolution::Respond(McpToolCallResult::error(
+                    references_subrequest_timeout_message(budget),
+                )));
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Ok(SymbolResolution::Respond(McpToolCallResult::error(
+                    references_busy_message(budget),
+                )));
+            }
+        },
+        _ => lookup.await?,
     };
 
     if candidates.len() > 1 {
@@ -109,8 +131,15 @@ pub(super) async fn resolve_symbol_args(
             )));
         }
         return Ok(SymbolResolution::Respond(
-            resolve_multiple_candidates(remote, workspace_root, tool_name, args, candidates)
-                .await?,
+            resolve_multiple_candidates(
+                remote,
+                workspace_root,
+                tool_name,
+                args,
+                candidates,
+                reference_budget.filter(|_| tool_name == "code_references"),
+            )
+            .await?,
         ));
     }
 
@@ -124,7 +153,10 @@ pub(super) async fn resolve_symbol_args(
         obj.insert("line".into(), serde_json::json!(hit.line));
         obj.insert("character".into(), serde_json::json!(hit.col));
     }
-    Ok(SymbolResolution::Dispatch(owned))
+    Ok(SymbolResolution::Dispatch(
+        owned,
+        reference_budget.filter(|_| tool_name == "code_references"),
+    ))
 }
 
 async fn resolve_multiple_candidates(
@@ -133,20 +165,27 @@ async fn resolve_multiple_candidates(
     tool_name: &str,
     args: Value,
     candidates: Vec<crate::tools::symbols::SymbolHit>,
+    reference_budget: Option<DefinitionBudget>,
 ) -> Result<McpToolCallResult> {
     let total = candidates.len();
-    let shared_budget = if let Some(ms) = args.get("budget_ms").and_then(Value::as_u64) {
-        std::time::Duration::from_millis(ms.max(1))
-    } else if let Some(secs) = args
-        .get("budget_secs")
-        .or_else(|| args.get("timeout_secs"))
-        .and_then(Value::as_u64)
-    {
-        std::time::Duration::from_secs(secs.clamp(1, 90))
-    } else {
-        crate::call_tree::DEFAULT_CALL_TREE_BUDGET
-    };
-    let deadline = std::time::Instant::now() + shared_budget;
+    let shared_budget = reference_budget
+        .map(|budget| budget.duration)
+        .unwrap_or_else(|| {
+            if let Some(ms) = args.get("budget_ms").and_then(Value::as_u64) {
+                std::time::Duration::from_millis(ms.max(1))
+            } else if let Some(secs) = args
+                .get("budget_secs")
+                .or_else(|| args.get("timeout_secs"))
+                .and_then(Value::as_u64)
+            {
+                std::time::Duration::from_secs(secs.clamp(1, 90))
+            } else {
+                crate::call_tree::DEFAULT_CALL_TREE_BUDGET
+            }
+        });
+    let deadline = reference_budget
+        .map(|budget| budget.deadline.into_std())
+        .unwrap_or_else(|| std::time::Instant::now() + shared_budget);
     let mut out = format!(
         "`{}` matched {total} candidates:\n",
         args.get("symbol")
