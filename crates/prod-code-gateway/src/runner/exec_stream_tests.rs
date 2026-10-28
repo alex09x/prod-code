@@ -36,18 +36,10 @@ fn process_liveness_distinguishes_a_zombie_from_a_running_child() {
     assert!(process_alive(pid));
     child.kill().unwrap();
     // WNOWAIT observes the exited child without reaping it, leaving a real zombie.
-    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let observed = unsafe {
-        libc::waitid(
-            libc::P_PID,
-            pid as libc::id_t,
-            &mut info,
-            libc::WEXITED | libc::WNOWAIT,
-        )
-    };
-    assert_eq!(observed, 0, "waitid: {}", std::io::Error::last_os_error());
+    let observed = wait_for_exit(pid);
     let still_alive = process_alive(pid);
     child.wait().unwrap();
+    assert!(observed, "failed to observe child exit without reaping");
     assert!(!still_alive, "a zombie must not count as a live process");
     assert!(!process_alive(pid));
 }
@@ -68,15 +60,16 @@ async fn exec_fixture(
         .await
         .unwrap();
     let (server, _) = listener.accept().await.unwrap();
-    let child = std::process::Command::new("sh")
-        .args(["-c", command])
-        .process_group(0)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
     let running = RunningEntry::start(workspace.path(), &[command.to_string()]);
+    let command = command.to_string();
     let task = tokio::spawn(async move {
+        let child = std::process::Command::new("sh")
+            .args(["-c", &command])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
         let mut framed = Framed::new(AnyStream::from(server), ProdCodeCodec::new());
         stream_exec(
             child,
@@ -88,6 +81,35 @@ async fn exec_fixture(
         .await
     });
     (workspace, Framed::new(client, ProdCodeCodec::new()), task)
+}
+
+#[tokio::test]
+async fn cancelled_unpolled_fixture_does_not_start_a_child() {
+    let marks = tempfile::tempdir().unwrap();
+    let pid_file = marks.path().join("pid");
+    let command = format!("echo $$ > {}; sleep 30", pid_file.display());
+    let (_workspace, _client, task) = exec_fixture(&command, 60, false).await;
+    // Keep this current-thread runtime from polling the task while allowing an
+    // incorrectly pre-spawned OS child time to write its PID.
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while !pid_file.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let early_pid = std::fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok());
+    task.abort();
+    let _ = task.await;
+    if let Some(pid) = early_pid {
+        kill_exec_group(pid);
+        // The unpolled task dropped its Child without a waiter; reap the killed
+        // leader even when this regression fires.
+        let _ = exec_shim::reap_with_usage(pid as i32);
+    }
+    assert!(
+        early_pid.is_none(),
+        "a child was spawned before its task was polled"
+    );
 }
 
 #[tokio::test]
