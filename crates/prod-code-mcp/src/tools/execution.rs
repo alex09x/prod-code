@@ -28,7 +28,7 @@ use self::context::resolve_workspace_root;
 pub(crate) use self::context::routed_path;
 use self::context::{
     definition_budget, definition_busy_message, definition_subrequest_timeout_message,
-    is_timeout_error, references_budget, references_busy_message,
+    is_timeout_error,
 };
 use positions::validate_position_arguments;
 use symbol_resolution::{
@@ -111,7 +111,6 @@ pub fn execute_tool<'a>(
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     let configured_workspace_root = workspace_root.to_path_buf();
     let budget = definition_budget(tool_name, &args);
-    let reference_budget = references_budget(tool_name, &args);
     Box::pin(async move {
         let run = execute_tool_inner(remote, &configured_workspace_root, tool_name, args);
         match budget {
@@ -123,17 +122,7 @@ pub fn execute_tool<'a>(
                 Ok(Err(error)) => Err(error),
                 Err(_) => Ok(McpToolCallResult::error(definition_busy_message(budget))),
             },
-            None => match reference_budget {
-                Some(budget) => match tokio::time::timeout_at(budget.deadline, run).await {
-                    Ok(Ok(result)) => Ok(result),
-                    Ok(Err(error)) if is_timeout_error(&error) => {
-                        Ok(McpToolCallResult::error(references_busy_message(budget)))
-                    }
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Ok(McpToolCallResult::error(references_busy_message(budget))),
-                },
-                None => run.await,
-            },
+            None => run.await,
         }
     })
 }

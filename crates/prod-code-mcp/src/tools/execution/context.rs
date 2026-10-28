@@ -256,8 +256,6 @@ pub(crate) fn routed_path<'a>(tool_name: &str, path: Option<&'a str>) -> Option<
 
 const DEFAULT_DEFINITION_BUDGET_MS: u64 = 120_000;
 const MAX_DEFINITION_BUDGET_MS: u64 = 120_000;
-const DEFAULT_REFERENCES_BUDGET_MS: u64 = 45_000;
-const MAX_REFERENCES_BUDGET_MS: u64 = 50_000;
 
 #[derive(Clone, Copy)]
 pub(crate) struct DefinitionBudget {
@@ -293,34 +291,6 @@ pub(crate) fn definition_budget(
     })
 }
 
-pub(crate) fn references_budget(
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> Option<DefinitionBudget> {
-    if tool_name != "code_references" || super::super::batch::extract_batch_symbols(args).len() > 1
-    {
-        // The batch runner owns its shared budget and preserves partial symbol results.
-        return None;
-    }
-    let milliseconds = args
-        .get("budget_ms")
-        .and_then(|value| value.as_u64())
-        .or_else(|| args.get("timeout_millis").and_then(|value| value.as_u64()))
-        .or_else(|| {
-            args.get("budget_secs")
-                .or_else(|| args.get("timeout_secs"))
-                .and_then(|value| value.as_u64())
-                .map(|seconds| seconds.saturating_mul(1000))
-        })
-        .unwrap_or(DEFAULT_REFERENCES_BUDGET_MS)
-        .clamp(1, MAX_REFERENCES_BUDGET_MS);
-    let duration = Duration::from_millis(milliseconds);
-    Some(DefinitionBudget {
-        deadline: tokio::time::Instant::now() + duration,
-        duration,
-    })
-}
-
 pub(crate) fn definition_busy_message(budget: DefinitionBudget) -> String {
     format!(
         "code_definition did not finish within {} ms; the analyzer may be busy indexing or compiling. Retry, or pass a specific path and position.",
@@ -331,13 +301,6 @@ pub(crate) fn definition_busy_message(budget: DefinitionBudget) -> String {
 pub(crate) fn definition_subrequest_timeout_message(budget: DefinitionBudget) -> String {
     format!(
         "A code_definition LSP request timed out before the shared {} ms budget completed; the analyzer may be busy indexing or compiling. Retry or pass a specific path and position.",
-        budget.duration.as_millis()
-    )
-}
-
-pub(crate) fn references_busy_message(budget: DefinitionBudget) -> String {
-    format!(
-        "code_references did not finish within {} ms; the analyzer may be busy indexing or compiling. Retry, or pass a narrower path or symbol.",
         budget.duration.as_millis()
     )
 }

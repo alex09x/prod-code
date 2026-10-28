@@ -113,11 +113,7 @@ async fn serve_slow_symbol_query(
                 let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
                 let result = match method {
                     "initialize" => serde_json::json!({
-                        "capabilities": {
-                            "workspaceSymbolProvider": true,
-                            "definitionProvider": true,
-                            "referencesProvider": true
-                        }
+                        "capabilities": { "workspaceSymbolProvider": true, "definitionProvider": true }
                     }),
                     "workspace/symbol" => {
                         started.store(true, Ordering::SeqCst);
@@ -125,11 +121,6 @@ async fn serve_slow_symbol_query(
                         serde_json::json!([answers::symbol("target", 12, &file, 1, 8)])
                     }
                     "textDocument/definition" => answers::locations(&file, &[(1, 8)]),
-                    "textDocument/references" => {
-                        started.store(true, Ordering::SeqCst);
-                        tokio::time::sleep(Duration::from_millis(1_500)).await;
-                        serde_json::json!([])
-                    }
                     _ => serde_json::Value::Null,
                 };
                 framed
@@ -209,56 +200,5 @@ async fn code_definition_returns_a_busy_response_inside_its_shared_budget() {
     assert!(
         elapsed < Duration::from_millis(1_250),
         "the shared deadline did not return before the 1.5s stalled query: {elapsed:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn code_references_returns_a_busy_response_inside_its_shared_budget() {
-    let references = prod_code_mcp::tools::list_tools()
-        .into_iter()
-        .find(|tool| tool.name == "code_references")
-        .expect("code_references is advertised");
-    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", LIB)]);
-    let file = ws.path("src/lib.rs");
-    let query_started = Arc::new(AtomicBool::new(false));
-    let started = Arc::clone(&query_started);
-    let remote = slow_symbol_gateway(&file, started).await;
-
-    let started_at = Instant::now();
-    let result = execute_tool(
-        remote,
-        &ws.root(),
-        "code_references",
-        serde_json::json!({
-            "path": "src/lib.rs",
-            "line": 1,
-            "character": 8,
-            "budget_ms": 500
-        }),
-    )
-    .await;
-    let elapsed = started_at.elapsed();
-    let (is_error, text) = match result {
-        Ok(result) => (result.is_error, text_of(&result)),
-        Err(error) => (true, format!("{error:#}")),
-    };
-
-    assert!(
-        query_started.load(Ordering::SeqCst),
-        "references lookup did not start"
-    );
-    assert!(
-        is_error && text.contains("code_references did not finish within 500 ms"),
-        "is_error={is_error}; {text}"
-    );
-    assert!(
-        elapsed < Duration::from_millis(1_250),
-        "the reference deadline did not return before the 1.5s stalled query: {elapsed:?}"
-    );
-    assert!(
-        references.input_schema["properties"]
-            .get("budget_ms")
-            .is_some(),
-        "code_references must advertise its shared budget"
     );
 }
