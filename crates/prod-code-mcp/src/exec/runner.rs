@@ -141,6 +141,9 @@ async fn run_remote_rooted_inner(
         )
         .await?;
 
+    // Once writeback begins, keep readers out until the final result so multiple
+    // change frames cannot expose a partially applied set of files.
+    let mut writeback_guard = None;
     loop {
         match monitor.next(&mut framed, &mut on_output).await? {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
@@ -150,15 +153,13 @@ async fn run_remote_rooted_inner(
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
                 if pull_changes {
-                    let _guard = if lock_writeback {
-                        Some(
+                    if lock_writeback && writeback_guard.is_none() {
+                        writeback_guard = Some(
                             crate::tools::execution::workspace_mutation_lock(root)
                                 .write_owned()
                                 .await,
-                        )
-                    } else {
-                        None
-                    };
+                        );
+                    }
                     writeback.apply(root, &remote.to_string(), changes.files)?;
                 }
             }
