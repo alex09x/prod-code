@@ -9,9 +9,35 @@
  */
 
 use super::lang::Language;
+use super::lang::collect_workspace_sources;
 use super::scope::has_complete_expression_boundaries;
 use super::tokenize::tokenize_polyglot;
 use super::types::{PolyOccurrence, PolyTokenKind};
+use std::path::{Path, PathBuf};
+
+pub struct CrossFileCopies {
+    pub file: PathBuf,
+    pub text: String,
+    pub copies: Vec<PolyOccurrence>,
+}
+
+pub fn find_other_file_copies(
+    root: &Path,
+    original_file: &Path,
+    selection: &str,
+    parameterize: bool,
+    lang: Language,
+) -> Vec<CrossFileCopies> {
+    collect_workspace_sources(root, lang)
+        .into_iter()
+        .filter(|file| file != original_file)
+        .filter_map(|file| {
+            let text = std::fs::read_to_string(&file).ok()?;
+            let copies = find_duplicates_in_text(selection, &text, None, parameterize, lang);
+            (!copies.is_empty()).then_some(CrossFileCopies { file, text, copies })
+        })
+        .collect()
+}
 
 pub fn find_duplicates_in_text(
     selection: &str,

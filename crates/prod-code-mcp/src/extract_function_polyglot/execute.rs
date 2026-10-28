@@ -16,8 +16,8 @@ use anyhow::{Context, Result};
 use crate::extract_function::{Duplicate, Extracted};
 
 use super::codegen::{generate_call_replacement, generate_function_code};
-use super::duplicates::find_duplicates_in_text;
-use super::lang::{Language, collect_workspace_sources, display, is_ident, mentions};
+use super::duplicates::{find_duplicates_in_text, find_other_file_copies};
+use super::lang::{Language, display, is_ident, mentions};
 use super::outputs::analyze_outputs;
 use super::scope::{extract_input_variables, find_enclosing_scope, is_balanced};
 use super::tokenize::tokenize_polyglot;
@@ -75,6 +75,11 @@ pub async fn extract_function_polyglot(
         in_file_copies =
             find_duplicates_in_text(&selection, &text, Some((start, end)), parameterize, lang);
     }
+    let other_file_copies = if other_files {
+        find_other_file_copies(root, file, &selection, parameterize, lang)
+    } else {
+        Vec::new()
+    };
 
     let sel_tokens = tokenize_polyglot(&selection, lang);
     let mut param_descriptions = Vec::new();
@@ -84,6 +89,12 @@ pub async fn extract_function_polyglot(
         let mut differing_token_indices: Vec<usize> = in_file_copies
             .iter()
             .flat_map(|c| c.differs.iter().map(|(idx, _)| *idx))
+            .chain(
+                other_file_copies
+                    .iter()
+                    .flat_map(|file| file.copies.iter())
+                    .flat_map(|copy| copy.differs.iter().map(|(idx, _)| *idx)),
+            )
             .collect();
         differing_token_indices.sort_unstable();
         differing_token_indices.dedup();
@@ -272,86 +283,76 @@ pub async fn extract_function_polyglot(
     let mut rewritten = vec![(file.to_string_lossy().to_string(), new_text)];
 
     if other_files {
-        let sources = collect_workspace_sources(root, lang);
-        for other in sources {
-            if other == *file {
-                continue;
-            }
-            let Ok(other_text) = std::fs::read_to_string(&other) else {
-                continue;
-            };
-            let copies = find_duplicates_in_text(&selection, &other_text, None, parameterize, lang);
-            if !copies.is_empty() {
-                let uncovered_literal = copies.iter().find_map(|copy| {
-                    copy.differs.iter().find_map(|(token_idx, _)| {
-                        (!param_indices
-                            .iter()
-                            .any(|(known_idx, _, _)| known_idx == token_idx))
-                        .then_some(*token_idx)
-                    })
-                });
-                anyhow::ensure!(
-                    uncovered_literal.is_none(),
-                    "{} has a differing literal at token {}, but no parameter was created for it; nothing was rewritten",
-                    display(root, &other),
-                    uncovered_literal.unwrap_or_default()
-                );
-                let mut other_edits: Vec<(usize, usize, String)> = Vec::new();
-                for copy in &copies {
-                    let (dup_line, _) = crate::signature::position_at(&other_text, copy.start)?;
-                    let copy_args: Vec<String> = inputs
+        for other in other_file_copies {
+            let uncovered_literal = other.copies.iter().find_map(|copy| {
+                copy.differs.iter().find_map(|(token_idx, _)| {
+                    (!param_indices
                         .iter()
-                        .map(|p| {
-                            if let Some((tok_idx, _, _)) =
-                                param_indices.iter().find(|(_, name, _)| name == &p.name)
+                        .any(|(known_idx, _, _)| known_idx == token_idx))
+                    .then_some(*token_idx)
+                })
+            });
+            anyhow::ensure!(
+                uncovered_literal.is_none(),
+                "{} has a differing literal at token {}, but no parameter was created for it; nothing was rewritten",
+                display(root, &other.file),
+                uncovered_literal.unwrap_or_default()
+            );
+            let mut other_edits: Vec<(usize, usize, String)> = Vec::new();
+            for copy in &other.copies {
+                let (dup_line, _) = crate::signature::position_at(&other.text, copy.start)?;
+                let copy_args: Vec<String> = inputs
+                    .iter()
+                    .map(|p| {
+                        if let Some((tok_idx, _, _)) =
+                            param_indices.iter().find(|(_, name, _)| name == &p.name)
+                        {
+                            if let Some((_, copy_lit)) =
+                                copy.differs.iter().find(|(idx, _)| idx == tok_idx)
                             {
-                                if let Some((_, copy_lit)) =
-                                    copy.differs.iter().find(|(idx, _)| idx == tok_idx)
-                                {
-                                    copy_lit.clone()
-                                } else {
-                                    p.name.clone()
-                                }
+                                copy_lit.clone()
                             } else {
                                 p.name.clone()
                             }
-                        })
-                        .collect();
-                    let dup_call = generate_call_replacement(
-                        name,
-                        &copy_args,
-                        &param_names,
-                        &output,
-                        lang,
-                        false,
-                        "",
-                    );
-                    other_edits.push((copy.start, copy.end, dup_call));
-                    duplicate_records.push(Duplicate {
-                        file: display(root, &other),
-                        line: dup_line,
-                        replaced: true,
-                        reason: None,
-                        passes: copy.differs.iter().map(|(_, v)| v.clone()).collect(),
-                    });
-                }
-                let mut new_other = apply_edits(&other_text, &other_edits);
-                let import_stmt = match lang {
-                    Language::TypeScript | Language::JavaScript => {
-                        let rel = crate::move_polyglot::relative_import_specifier(&other, file);
-                        format!("import {{ {name} }} from \"{rel}\";\n")
-                    }
-                    Language::Python => {
-                        let mod_name = file.file_stem().unwrap_or_default().to_string_lossy();
-                        format!("from .{mod_name} import {name}\n")
-                    }
-                    _ => String::new(),
-                };
-                if !import_stmt.is_empty() {
-                    new_other.insert_str(0, &import_stmt);
-                }
-                rewritten.push((other.to_string_lossy().to_string(), new_other));
+                        } else {
+                            p.name.clone()
+                        }
+                    })
+                    .collect();
+                let dup_call = generate_call_replacement(
+                    name,
+                    &copy_args,
+                    &param_names,
+                    &output,
+                    lang,
+                    false,
+                    "",
+                );
+                other_edits.push((copy.start, copy.end, dup_call));
+                duplicate_records.push(Duplicate {
+                    file: display(root, &other.file),
+                    line: dup_line,
+                    replaced: true,
+                    reason: None,
+                    passes: copy.differs.iter().map(|(_, v)| v.clone()).collect(),
+                });
             }
+            let mut new_other = apply_edits(&other.text, &other_edits);
+            let import_stmt = match lang {
+                Language::TypeScript | Language::JavaScript => {
+                    let rel = crate::move_polyglot::relative_import_specifier(&other.file, file);
+                    format!("import {{ {name} }} from \"{rel}\";\n")
+                }
+                Language::Python => {
+                    let mod_name = file.file_stem().unwrap_or_default().to_string_lossy();
+                    format!("from .{mod_name} import {name}\n")
+                }
+                _ => String::new(),
+            };
+            if !import_stmt.is_empty() {
+                new_other.insert_str(0, &import_stmt);
+            }
+            rewritten.push((other.file.to_string_lossy().to_string(), new_other));
         }
     }
 

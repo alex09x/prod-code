@@ -107,12 +107,13 @@ pub fn generate_function_code(
     enclosing_ret: Option<&str>,
 ) -> String {
     let body = match output {
-        OutputKind::Expression(expr) => {
+        OutputKind::Expression(_) => {
             let semi = match lang {
                 Language::Python | Language::Swift | Language::Go | Language::Kotlin => "",
                 _ => ";",
             };
-            format!("return {expr}{semi}")
+            let expression = selection_body.trim().trim_end_matches(';').trim_end();
+            format!("return {expression}{semi}")
         }
         OutputKind::EndsWithReturn => selection_body.trim().to_string(),
         OutputKind::SingleVar { name: v, .. } => {
