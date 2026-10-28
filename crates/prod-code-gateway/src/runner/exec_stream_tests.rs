@@ -10,6 +10,48 @@
 
 use super::*;
 
+fn process_alive(pid: i32) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && let Some((_, fields)) = stat.rsplit_once(") ")
+        && matches!(fields.split_whitespace().next(), Some("Z" | "X"))
+    {
+        return false;
+    }
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn process_liveness_distinguishes_a_zombie_from_a_running_child() {
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    assert!(process_alive(pid));
+    child.kill().unwrap();
+    // WNOWAIT observes the exited child without reaping it, leaving a real zombie.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let observed = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOWAIT,
+        )
+    };
+    assert_eq!(observed, 0, "waitid: {}", std::io::Error::last_os_error());
+    let still_alive = process_alive(pid);
+    child.wait().unwrap();
+    assert!(!still_alive, "a zombie must not count as a live process");
+    assert!(!process_alive(pid));
+}
+
 async fn exec_fixture(
     command: &str,
     seconds: u64,
@@ -104,8 +146,7 @@ async fn exec_disconnected_silent_child_is_killed_and_unlisted() {
     }
 }
 
-/// Dropping the stream's future without a Disconnect, as a cancelled request does, still kills
-/// and reaps the process group (#1536).
+/// Dropping the stream's future without a Disconnect still kills the process group (#1536).
 #[tokio::test]
 async fn exec_cancelled_stream_kills_its_process_group() {
     let marks = tempfile::tempdir().unwrap();
@@ -128,15 +169,8 @@ async fn exec_cancelled_stream_kills_its_process_group() {
     };
     task.abort();
     let _ = task.await;
-    let alive = |pid: i32| {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    };
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while alive(pid) {
+    while process_alive(pid) {
         assert!(
             std::time::Instant::now() < deadline,
             "process {pid} outlived its cancelled stream"
