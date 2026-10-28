@@ -87,10 +87,7 @@ pub async fn run_verify_with(
         plan_command_with(&tools, language, kind, filter)?
     };
     if let Some(hint) = project_hint {
-        if language == "rust"
-            && kind == VerifyKind::Test
-            && (hint.is_file() || (!hint.exists() && hint.extension().is_some_and(|e| e == "rs")))
-        {
+        if language == "rust" && kind == VerifyKind::Test && (hint.is_file() || !hint.exists()) {
             crate::verify::plan::rust_test_file::narrow_rust_test_file(
                 &mut command,
                 &project_dir,

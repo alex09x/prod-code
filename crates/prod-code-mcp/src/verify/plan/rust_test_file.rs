@@ -95,6 +95,7 @@ pub(crate) fn narrow_rust_test_file(
             }
         }
     }
+    let mut automatic_target = None;
     if matches.is_empty() && auto {
         if let Ok(relative) = file.strip_prefix(package_dir) {
             let parts: Vec<_> = relative.components().collect();
@@ -120,15 +121,34 @@ pub(crate) fn narrow_rust_test_file(
                 if flat.is_file() && nested.is_file() {
                     bail!("Cargo test target {name} has multiple candidate files; no test was run");
                 }
-                matches.push(name.to_string());
+                automatic_target = Some(name.to_string());
             }
         }
     }
     matches.sort();
     matches.dedup();
-    if matches.len() != 1 {
+    matches.sort();
+    matches.dedup();
+    let target = match matches.as_slice() {
+        [target] => Some(target.clone()),
+        [] => automatic_target,
+        _ => bail!(
+            "multiple Cargo test targets select {}; no test was run",
+            file.display()
+        ),
+    };
+    let in_tests_dir = file
+        .strip_prefix(&package_dir)
+        .ok()
+        .is_some_and(|relative| {
+            relative
+                .components()
+                .next()
+                .is_some_and(|part| part.as_os_str() == "tests")
+        });
+    if target.is_none() && in_tests_dir {
         bail!(
-            "cannot uniquely select a Cargo integration-test target for {}; no test was run",
+            "{} is not an enabled Cargo integration-test target; no test was run",
             file.display()
         );
     }
@@ -136,14 +156,10 @@ pub(crate) fn narrow_rust_test_file(
         .iter()
         .position(|arg| arg == "--workspace")
         .context("cannot safely narrow this Cargo test command")?;
-    command.splice(
-        workspace..=workspace,
-        [
-            "-p".to_string(),
-            name.to_string(),
-            "--test".to_string(),
-            matches.remove(0),
-        ],
-    );
+    let mut narrowed = vec!["-p".to_string(), name.to_string()];
+    if let Some(target) = target {
+        narrowed.extend(["--test".to_string(), target]);
+    }
+    command.splice(workspace..=workspace, narrowed);
     Ok(())
 }

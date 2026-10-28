@@ -62,9 +62,7 @@ pub async fn run_verify(
         args.path
             .as_deref()
             .map(|path| cwd.join(path))
-            .filter(|path| {
-                path.is_file() && path.extension().is_some_and(|extension| extension == "rs")
-            })
+            .filter(|path| path.is_file())
             .unwrap_or(scope)
     } else {
         scope

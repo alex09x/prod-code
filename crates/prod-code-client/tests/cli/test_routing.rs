@@ -35,12 +35,15 @@ async fn cli_refuses_a_symlinked_test_target() {
     let ws = make_workspace();
     ws.write("tests/real.rs", "#[test] fn selected() {}\n");
     std::os::unix::fs::symlink("real.rs", ws.path("tests/alias.rs")).unwrap();
+    std::os::unix::fs::symlink("real.rs", ws.path("tests/alias")).unwrap();
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
-    let output = run_cli(&ws, gw.addr, &["test", "--path", "tests/alias.rs"]).await;
-    assert!(!output.status.success());
-    assert!(
-        stderr_of(&output).contains("symlink"),
-        "{}",
-        stderr_of(&output)
-    );
+    for alias in ["tests/alias.rs", "tests/alias"] {
+        let output = run_cli(&ws, gw.addr, &["test", "--path", alias]).await;
+        assert!(!output.status.success());
+        assert!(
+            stderr_of(&output).contains("symlink"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
 }

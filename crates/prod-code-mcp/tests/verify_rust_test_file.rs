@@ -111,6 +111,24 @@ async fn integration_file_selects_only_its_cargo_target() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("intended ... ok"));
+    let library = root.path().join("src/lib.rs");
+    std::fs::write(&library, "#[test] fn unit() {}\n").unwrap();
+    let (address, server) = gateway().await;
+    let report = run_verify_with(
+        address,
+        root.path(),
+        Some(&library),
+        VerifyKind::Test,
+        None,
+        30,
+        &[],
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let command = server.await.unwrap();
+    assert_eq!(report.command, command);
+    assert_eq!(command, ["cargo", "test", "-p", "demo"]);
 }
 
 #[tokio::test]
@@ -309,8 +327,9 @@ async fn unsupported_and_ambiguous_files_are_refused_before_connection() {
     std::fs::create_dir_all(root.path().join("src")).unwrap();
     let source = root.path().join("src/lib.rs");
     std::fs::write(&source, "#[test] fn unit() {}\n").unwrap();
-    let error = run_verify_with(
-        unreachable,
+    let (address, server) = gateway().await;
+    let report = run_verify_with(
+        address,
         root.path(),
         Some(&source),
         VerifyKind::Test,
@@ -320,9 +339,10 @@ async fn unsupported_and_ambiguous_files_are_refused_before_connection() {
         |_| {},
     )
     .await
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("no test was run"), "{error}");
+    .unwrap();
+    let command = server.await.unwrap();
+    assert_eq!(report.command, command);
+    assert_eq!(command, ["cargo", "test", "-p", "demo"]);
 }
 
 #[cfg(unix)]

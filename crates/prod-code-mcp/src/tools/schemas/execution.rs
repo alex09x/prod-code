@@ -53,7 +53,7 @@ pub fn execution_tools() -> Vec<McpTool> {
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "fix": { "type": "boolean", "description": "Rust: apply the compiler's machine-applicable fixes, then check again (default false)" },
-                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
+                    "path": { "type": "string", "description": "Narrow the run: a Rust integration-test file runs only its Cargo target; another Rust file or directory runs that Cargo package, a Go path narrows the package tree, and a Python file/directory narrows pytest. Unsupported or ambiguous Rust integration-test files are refused rather than widened to the workspace." }
                 }
             }),
         },
