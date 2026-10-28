@@ -40,6 +40,17 @@ impl Drop for Node {
     }
 }
 impl Node {
+    async fn rejecting() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        Self { addr, task }
+    }
+
     async fn new(status: StatusResponse, peers: Option<Vec<PeerInfo>>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -175,9 +186,11 @@ async fn runtime_paths_2_rebalance_direct_probe_and_unreachable_current() {
             )
         )
     );
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let dead = closed.local_addr().unwrap();
-    drop(closed);
+    // Reserve the port while rejecting protocol requests on every platform.
+    let reserved = Node::rejecting().await;
+    let dead = reserved.addr;
+    assert!(super::super::discover::node_status(dead).await.is_err());
+    assert!(tokio::net::TcpListener::bind(dead).await.is_err());
     for (nodes, expected) in [
         (vec![dead, mac.addr, linux.addr], Some(linux.addr)),
         (vec![dead, mac.addr], Some(mac.addr)),
