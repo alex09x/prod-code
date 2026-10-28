@@ -9,12 +9,14 @@
  */
 
 use anyhow::{Context, Result};
+use ra_ap_syntax::{AstNode, Edition, SourceFile, ast};
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::Path;
 
 use crate::signature::parse::offset_of;
-use crate::signature::types::{CallSite, Reference};
-use crate::signature::util::{display, read_caller};
+use crate::signature::types::{CallSite, Reference, StringifyCall};
+use crate::signature::util::{display, line_col_at, read_caller};
 
 /// The references that are calls, with their arguments. A reference that does not call the
 /// function (a use as a value, an import) has none and is left to the reconciliation, which
@@ -37,14 +39,26 @@ pub fn call_sites(root: &Path, refs: &[Reference]) -> Result<Vec<CallSite>> {
                      changed since it was read. Nothing was written"
                 )
             })?;
-        if let Some(args) = call_arguments(text, offset).with_context(|| {
+        if let Some(ranges) = call_argument_ranges(text, offset).with_context(|| {
             format!("the arguments of the call at {at} could not be read; nothing was written")
         })? {
             let typed_locals = typed_locals_before(text, offset);
+            let args = ranges
+                .iter()
+                .map(|range| text[range.clone()].to_string())
+                .collect();
+            let stringify_calls = ranges
+                .iter()
+                .enumerate()
+                .filter_map(|(argument, range)| stringify_call_site(text, range, argument))
+                .collect();
             out.push(CallSite {
                 at,
+                file: path.clone(),
                 args,
                 typed_locals,
+                stringify_calls,
+                builtin_stringify_args: Default::default(),
             });
         }
     }
@@ -57,10 +71,19 @@ pub use crate::signature::util::{normalize_type_spelling, typed_locals_before};
 /// `Type::f::<T>(…)`), split at their top-level commas. `Ok(None)` when the name is not called
 /// there; an error when the argument list does not close.
 pub fn call_arguments(text: &str, at: usize) -> Result<Option<Vec<String>>> {
+    Ok(call_argument_ranges(text, at)?.map(|ranges| {
+        ranges
+            .into_iter()
+            .map(|range| text[range].to_string())
+            .collect()
+    }))
+}
+
+fn call_argument_ranges(text: &str, at: usize) -> Result<Option<Vec<Range<usize>>>> {
     let Some(open) = call_open(text, at)? else {
         return Ok(None);
     };
-    split_arguments(text, open)
+    split_argument_ranges(text, open)
         .map(Some)
         .context("the argument list does not close")
 }
@@ -197,6 +220,15 @@ pub fn blank_comments(expr: &str) -> Option<String> {
 /// string and character literals, comments (nested ones too) and turbofish generics
 /// (`Vec::<(u8, u8)>::new()`).
 pub fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
+    split_argument_ranges(text, open).map(|ranges| {
+        ranges
+            .into_iter()
+            .map(|range| text[range].to_string())
+            .collect()
+    })
+}
+
+fn split_argument_ranges(text: &str, open: usize) -> Option<Vec<Range<usize>>> {
     let s = text.as_bytes();
     let mut args = Vec::new();
     let (mut depth, mut angle) = (0i32, 0i32);
@@ -213,9 +245,9 @@ pub fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' if depth > 0 => depth -= 1,
             b')' => {
-                let last = text[start..i].trim();
-                if !last.is_empty() {
-                    args.push(last.to_string());
+                if let Some(last) = trimmed_range(text, start, i).filter(|range| !range.is_empty())
+                {
+                    args.push(last);
                 }
                 return Some(args);
             }
@@ -223,12 +255,68 @@ pub fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
             b'<' if angle > 0 || text[..i].trim_end().ends_with("::") => angle += 1,
             b'>' if angle > 0 && prev != b'-' => angle -= 1,
             b',' if depth == 0 && angle == 0 => {
-                args.push(text[start..i].trim().to_string());
+                args.push(trimmed_range(text, start, i)?);
                 start = i + 1;
             }
             _ => {}
         }
         i += 1;
+    }
+    None
+}
+
+fn trimmed_range(text: &str, start: usize, end: usize) -> Option<Range<usize>> {
+    let part = text.get(start..end)?;
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+        return Some(start..start);
+    }
+    let relative = part.find(trimmed)?;
+    Some(start + relative..start + relative + trimmed.len())
+}
+
+fn stringify_call_site(
+    text: &str,
+    argument_range: &Range<usize>,
+    argument: usize,
+) -> Option<StringifyCall> {
+    let argument_text = text.get(argument_range.clone())?;
+    if !argument_text.contains("stringify") {
+        return None;
+    }
+    let prefix = "fn __prod_code_macro_probe() { let _ = ";
+    let wrapped = format!("{prefix}{argument_text}; }}");
+    let parsed = SourceFile::parse(&wrapped, Edition::Edition2024);
+    let parsed = if parsed.errors().is_empty() {
+        parsed
+    } else {
+        SourceFile::parse(&wrapped, Edition::Edition2021)
+    };
+    if !parsed.errors().is_empty() {
+        return None;
+    }
+    for call in parsed
+        .syntax_node()
+        .descendants()
+        .filter_map(ast::MacroCall::cast)
+    {
+        let call_range = call.syntax().text_range();
+        if usize::from(call_range.start()) != prefix.len()
+            || usize::from(call_range.end()) != prefix.len() + argument_text.len()
+        {
+            continue;
+        }
+        let name = call.path()?.segments().last()?.name_ref()?;
+        if name.text() != "stringify" {
+            return None;
+        }
+        let relative = usize::from(name.syntax().text_range().start()).checked_sub(prefix.len())?;
+        let (line, column) = line_col_at(text, argument_range.start + relative)?;
+        return Some(StringifyCall {
+            argument,
+            line,
+            column,
+        });
     }
     None
 }
