@@ -84,6 +84,8 @@ struct Script {
     exec_stdout: Vec<u8>,
     exec_stderr: Vec<u8>,
     exec_exit: Option<i32>,
+    exec_delay: std::time::Duration,
+    exec_started: Arc<tokio::sync::Notify>,
     /// Files the command rewrote, sent back as the gateway does for a formatter.
     exec_changes: Vec<prod_code_protocol::FileDelta>,
     /// Sends `exec_changes` only for a command with this argument, the way a linter rewrites
@@ -110,6 +112,8 @@ impl Default for Script {
             exec_stdout: Vec::new(),
             exec_stderr: Vec::new(),
             exec_exit: Some(0),
+            exec_delay: std::time::Duration::ZERO,
+            exec_started: Arc::new(tokio::sync::Notify::new()),
             exec_changes: Vec::new(),
             exec_changes_only_for: None,
             sync_probe_requests: Arc::default(),
@@ -252,11 +256,15 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                     .await?;
             }
             WireMessage::ExecRequest(req) => {
+                script.exec_started.notify_one();
                 script
                     .exec_env
                     .lock()
                     .unwrap()
                     .extend(req.env.iter().cloned());
+                if !script.exec_delay.is_zero() {
+                    tokio::time::sleep(script.exec_delay).await;
+                }
                 // In small pieces, as a long run's output arrives: a line can be split anywhere.
                 for piece in script.exec_stdout.chunks(7) {
                     framed
@@ -5365,6 +5373,74 @@ async fn code_exec_reports_the_exit_status_and_output_tail() {
     .expect("exec runs");
     assert!(signal_res.is_error);
     assert!(text_of(&signal_res).contains("killed by signal"));
+}
+
+#[tokio::test]
+async fn code_grep_single_file_searches_locally_before_remote_exec() {
+    let rg = std::process::Command::new("rg").arg("--version").output();
+    assert!(
+        rg.is_ok_and(|output| output.status.success()),
+        "ripgrep is available on the build node"
+    );
+    let ws = workspace();
+    write(&ws, "src/lib.rs", "pub fn present() {}\n");
+    commit(&ws);
+    let exec_started = Arc::new(tokio::sync::Notify::new());
+    let remote = mock_gateway(Script {
+        exec_delay: std::time::Duration::from_secs(2),
+        exec_started: Arc::clone(&exec_started),
+        ..Script::default()
+    })
+    .await;
+
+    let started = std::time::Instant::now();
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_grep",
+        serde_json::json!({
+            "pattern": "absent-canary-token",
+            "path": "src/lib.rs",
+            "fixed_strings": true
+        }),
+    )
+    .await
+    .expect("single-file grep succeeds");
+    let elapsed = started.elapsed();
+
+    assert!(!result.is_error, "{}", text_of(&result));
+    assert!(text_of(&result).contains("No matches found"));
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "single-file grep took {elapsed:?}"
+    );
+    let matches = execute_tool(
+        remote,
+        &ws.root(),
+        "code_grep",
+        serde_json::json!({
+            "pattern": "present",
+            "path": "src/lib.rs",
+            "fixed_strings": true
+        }),
+    )
+    .await
+    .expect("single-file grep returns matches");
+    assert!(!matches.is_error, "{}", text_of(&matches));
+    assert!(
+        text_of(&matches).contains("src/lib.rs:1:"),
+        "{}",
+        text_of(&matches)
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            exec_started.notified()
+        )
+        .await
+        .is_err(),
+        "a local single-file search should not start a remote exec"
+    );
 }
 
 #[tokio::test]

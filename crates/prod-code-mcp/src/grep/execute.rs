@@ -74,6 +74,20 @@ pub async fn run_grep(
         );
     }
 
+    if search_path.is_file() && search_path.starts_with(root) {
+        let root_owned = root.to_path_buf();
+        let path_owned = search_path.clone();
+        let opts_owned = opts.clone();
+        if let Some(report) = tokio::task::spawn_blocking(move || {
+            try_local_rg(&root_owned, &path_owned, &opts_owned, max_results, context)
+        })
+        .await
+        .context("grep worker task panicked")??
+        {
+            return Ok(report);
+        }
+    }
+
     if let Some(addr) = remote
         && search_path.starts_with(root)
         && let Ok(Some(report)) =
