@@ -261,7 +261,7 @@ pub(crate) fn move_inherent_method(
         }
     }
     let item = item_lines.join("\n");
-    let (mut target_with_imports, carried) =
+    let (target_with_imports, carried) =
         super::imports::carry_imports(source_text, &item, target_text);
     let target_block = target_impl_idx.and_then(|idx| {
         crate::extract_field::impl_blocks(&target_with_imports)
@@ -284,9 +284,6 @@ pub(crate) fn move_inherent_method(
         out
     } else {
         let header = source_text[impl_at..=impl_open].trim();
-        if !target_with_imports.contains("use super::*;") {
-            target_with_imports = super::imports::add_import(&target_with_imports, "use super::*;");
-        }
         let block = format!("{header}\n{}\n}}", item.trim_end());
         if target_with_imports.trim().is_empty() {
             format!("{block}\n")

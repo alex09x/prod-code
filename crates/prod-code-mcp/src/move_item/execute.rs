@@ -61,7 +61,8 @@ pub async fn move_item(
     let from_module = from_owners[0].module.clone();
     let mut to_module = to_owners[0].module.clone();
     let mut new_module_parent = plan.new_module_parent.clone();
-    let target_text = plan.target_text.as_str();
+    let mut target_text = plan.target_text.clone();
+    let edition = rust_syntax::edition(&from_owners[0].root);
     anyhow::ensure!(
         from_module != to_module,
         "{} and {} are the same module",
@@ -87,26 +88,77 @@ pub async fn move_item(
         .into_iter()
         .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close);
     let mut verified_target_impl = None;
+    let mut create_target_impl = false;
     if let Some((ref owner, impl_at, impl_open, _)) = enclosing_impl {
         let is_inherent = !source_text[impl_at..impl_open].contains(" for ");
-        if is_inherent && from_module.krate == to_module.krate && new_module_parent.is_none() {
-            verified_target_impl = budget
-                .run("resolving the target impl", async {
-                    Ok(super::item::verified_target_impl_index(
-                        remote,
-                        root,
-                        file,
-                        &source_text,
-                        (impl_at, impl_open),
-                        target,
-                        target_text,
-                        owner,
-                    )
-                    .await)
-                })
-                .await?;
+        if is_inherent && from_module.krate == to_module.krate {
+            if new_module_parent.is_none() {
+                verified_target_impl = budget
+                    .run("resolving the target impl", async {
+                        Ok(super::item::verified_target_impl_index(
+                            remote,
+                            root,
+                            file,
+                            &source_text,
+                            (impl_at, impl_open),
+                            target,
+                            &target_text,
+                            owner,
+                        )
+                        .await)
+                    })
+                    .await?;
+            }
+            if verified_target_impl.is_none() {
+                let has_unverified_impl = crate::extract_field::impl_blocks(&target_text)
+                    .into_iter()
+                    .any(|(target_owner, at, open, _)| {
+                        target_owner == *owner && !target_text[at..open].contains(" for ")
+                    });
+                anyhow::ensure!(
+                    !has_unverified_impl,
+                    "target contains an inherent impl for `{owner}` whose type identity cannot be verified; nothing was written"
+                );
+
+                if target.exists() {
+                    let target_symbols = budget
+                        .run(
+                            "checking target type names",
+                            document_symbols(remote, root, target),
+                        )
+                        .await?;
+                    let shadows_owner = target_symbols.as_array().is_some_and(|symbols| {
+                        symbols.iter().any(|symbol| {
+                            symbol.get("name").and_then(serde_json::Value::as_str)
+                                == Some(owner.as_str())
+                                && symbol
+                                    .get("kind")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .is_some_and(|kind| {
+                                        matches!(kind, 2 | 3 | 5 | 10 | 11 | 23 | 26)
+                                    })
+                        })
+                    });
+                    anyhow::ensure!(
+                        !shadows_owner,
+                        "target declares a type named `{owner}`; its identity cannot be verified, so nothing was written"
+                    );
+                }
+
+                let owner_module = graph.caller_spelling(&to_owners, &from_owners)?;
+                let owner_import = format!("use {owner_module}::{owner};");
+                anyhow::ensure!(
+                    !rust_syntax::imports_name(&target_text, owner, edition)
+                        || rust_syntax::has_use_line(&target_text, &owner_import, edition),
+                    "target imports an unverified `{owner}`; its type identity cannot be verified, so nothing was written"
+                );
+                if !rust_syntax::has_use_line(&target_text, &owner_import, edition) {
+                    target_text = rust_syntax::insert_use_line(&target_text, &owner_import);
+                }
+                create_target_impl = true;
+            }
         }
-        if verified_target_impl.is_none() {
+        if verified_target_impl.is_none() && !create_target_impl {
             anyhow::bail!(
                 "`{name}` belongs to `impl {owner}`; move it to another type with \
                  `code_move_method` (`prod-code move-method <file> <line> <col>` with `--to-param \
@@ -128,7 +180,6 @@ pub async fn move_item(
              (`prod-code move-module <its file> --to <new file>`)"
         );
     }
-    let edition = rust_syntax::edition(&from_owners[0].root);
     rust_syntax::ensure_whole_lines(&source_text, decl_start, &name, edition)?;
     let start = rust_syntax::item_start(&source_text, decl_start, edition);
     let mut created = None;
@@ -137,7 +188,7 @@ pub async fn move_item(
         if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
             move_inherent_method(
                 &source_text,
-                target_text,
+                &target_text,
                 verified_target_impl,
                 (impl_at, impl_open, impl_close),
                 start,
@@ -162,7 +213,7 @@ pub async fn move_item(
                 move_to_child(
                     &source_text,
                     &item,
-                    target_text,
+                    &target_text,
                     from_owners[0].test_crate,
                     edition,
                 )?
@@ -171,11 +222,11 @@ pub async fn move_item(
                     .declaration
                     .as_ref()
                     .is_some_and(|(parent, _)| parent == file)
-            }) && has_use_super_glob(target_text)
+            }) && has_use_super_glob(&target_text)
             {
-                (target_text.to_string(), item, Vec::new())
+                (target_text.clone(), item, Vec::new())
             } else {
-                let (text, carried) = carry_imports(&source_text, &item, target_text);
+                let (text, carried) = carry_imports(&source_text, &item, &target_text);
                 (text, item, carried)
             };
             let target_new = if target_with_imports.trim().is_empty() {

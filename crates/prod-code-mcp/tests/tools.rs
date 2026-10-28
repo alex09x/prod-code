@@ -6199,16 +6199,22 @@ async fn inherent_method_moves_between_modules_of_same_type() {
     );
     let lib_text = r#"pub mod model;
 pub mod sibling;
-pub fn call() -> u32 { model::Widget::moved(5) }
+pub mod conflict;
+pub mod other;
+pub mod unverified;
+pub fn call_existing() -> u32 { model::Widget::moved_existing(5) }
+pub fn call_new() -> u32 { model::Widget::moved_new(7) }
+pub fn call_created() -> u32 { model::Widget::moved_created(9) }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn methods_remain_available() {
         let value = model::Widget { count: 5 };
-        assert_eq!(call(), 6);
+        assert_eq!(call_existing(), 6);
+        assert_eq!(call_new(), 8);
+        assert_eq!(call_created(), 12);
         assert_eq!(value.existing(), 5);
-        assert_eq!(value.sibling(), 7);
     }
 }
 "#;
@@ -6216,45 +6222,93 @@ mod tests {
     let model = write(
         &ws,
         "src/model.rs",
-        "pub struct Widget { pub count: u32 }\n\nimpl Widget {\n    pub fn existing(&self) -> u32 { self.count }\n    pub fn moved(value: u32) -> u32 { value + 1 }\n}\n",
+        "pub struct Widget { pub count: u32 }\n\nimpl Widget {\n    pub fn existing(&self) -> u32 { self.count }\n    pub fn moved_existing(value: u32) -> u32 { value + 1 }\n    pub fn moved_new(value: u32) -> u32 { value + 1 }\n    pub fn moved_created(value: u32) -> u32 { value + 3 }\n}\n",
     );
     write(
         &ws,
         "src/sibling.rs",
-        "use crate::model::Widget;\n\nimpl Widget {\n    pub fn sibling(&self) -> u32 { self.count + 2 }\n}\n",
+        "/*\nuse crate::model::Widget;\n*/\npub fn unrelated() -> u32 { 9 }\n",
     );
+    let conflict_source = "pub struct Widget;\n";
+    write(&ws, "src/conflict.rs", conflict_source);
+    let other = write(&ws, "src/other.rs", "pub struct Widget;\n");
+    let unverified_source = "use crate::other::Widget;\nimpl Widget { pub fn unrelated() {} }\n";
+    write(&ws, "src/unverified.rs", unverified_source);
     commit(&ws);
 
     let artifact_dir = tempfile::tempdir().unwrap();
-    let baseline = std::process::Command::new("rustc")
-        .args(["--edition=2021", "--test"])
-        .arg(ws.path("src/lib.rs"))
-        .arg("-o")
-        .arg(artifact_dir.path().join("before"))
-        .output()
-        .unwrap();
-    assert!(
-        baseline.status.success(),
-        "baseline fixture must compile: {}",
-        String::from_utf8_lossy(&baseline.stderr)
-    );
-    let baseline_run = std::process::Command::new(artifact_dir.path().join("before"))
-        .output()
-        .unwrap();
-    assert!(
-        baseline_run.status.success(),
-        "baseline fixture must run: {}",
-        String::from_utf8_lossy(&baseline_run.stderr)
-    );
+    let run_fixture = |name: &str| {
+        let binary = artifact_dir.path().join(name);
+        let compile = std::process::Command::new("rustc")
+            .args(["--edition=2021", "--test"])
+            .arg(ws.path("src/lib.rs"))
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "fixture {name} must compile: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new(binary).output().unwrap();
+        assert!(
+            run.status.success(),
+            "fixture {name} must run: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    };
+    run_fixture("before");
 
     let source_for_lsp = model.clone();
+    let other_for_lsp = other.clone();
     let caller_for_lsp = lib.clone();
+    let source_path_for_symbols = model.clone();
     let lsp_answer = Arc::new(
-        move |method: &str, _params: &serde_json::Value| match method {
+        move |method: &str, params: &serde_json::Value| match method {
             "textDocument/documentSymbol" => {
-                serde_json::json!([answers::document_symbol("moved", 6, 5, 5, 12)])
+                let uri = params
+                    .pointer("/textDocument/uri")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                if uri.ends_with("model.rs") {
+                    let source = std::fs::read_to_string(&source_path_for_symbols).unwrap();
+                    let symbols = source
+                        .lines()
+                        .enumerate()
+                        .filter_map(|(index, line)| {
+                            ["moved_existing", "moved_new", "moved_created"]
+                                .iter()
+                                .find(|name| line.contains(&format!("fn {name}")))
+                                .map(|name| {
+                                    answers::document_symbol(
+                                        name,
+                                        6,
+                                        index as u32 + 1,
+                                        index as u32 + 1,
+                                        12,
+                                    )
+                                })
+                        })
+                        .collect();
+                    serde_json::Value::Array(symbols)
+                } else if uri.ends_with("conflict.rs") {
+                    serde_json::json!([answers::document_symbol("Widget", 23, 1, 1, 12)])
+                } else {
+                    serde_json::json!([answers::document_symbol("unrelated", 12, 1, 1, 12)])
+                }
             }
-            "textDocument/definition" => answers::locations(&source_for_lsp, &[(1, 12)]),
+            "textDocument/definition" => {
+                let uri = params
+                    .pointer("/textDocument/uri")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                if uri.ends_with("unverified.rs") {
+                    answers::locations(&other_for_lsp, &[(1, 12)])
+                } else {
+                    answers::locations(&source_for_lsp, &[(1, 12)])
+                }
+            }
             "textDocument/references" => answers::locations(&caller_for_lsp, &[]),
             "textDocument/diagnostic" => answers::no_diagnostics(),
             _ => serde_json::Value::Null,
@@ -6264,6 +6318,40 @@ mod tests {
         Ok(address) => address.parse().expect("the live gateway address is valid"),
         Err(_) => scripted_gateway(lsp_answer).await,
     };
+
+    let source_before_refusals = ws.read("src/model.rs");
+    let conflict = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/model.rs", "line": 5, "character": 12, "to": "src/conflict.rs", "apply": true, "force": true }),
+    )
+    .await;
+    let conflict_error = conflict
+        .map(|result| text_of(&result))
+        .unwrap_or_else(|error| format!("{error:#}"));
+    assert!(
+        conflict_error.contains("target declares a type named `Widget`"),
+        "{conflict_error}"
+    );
+    let unverified = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/model.rs", "line": 5, "character": 12, "to": "src/unverified.rs", "apply": true, "force": true }),
+    )
+    .await;
+    let unverified_error = unverified
+        .map(|result| text_of(&result))
+        .unwrap_or_else(|error| format!("{error:#}"));
+    assert!(
+        unverified_error.contains("target contains an inherent impl for `Widget`"),
+        "{unverified_error}"
+    );
+    assert_eq!(ws.read("src/model.rs"), source_before_refusals);
+    assert_eq!(ws.read("src/conflict.rs"), conflict_source);
+    assert_eq!(ws.read("src/unverified.rs"), unverified_source);
+
     let result = execute_tool(
         remote,
         &ws.root(),
@@ -6273,35 +6361,68 @@ mod tests {
     .await
     .expect("public code_move runs");
     let text = text_of(&result);
-    assert!(text.contains("moved"), "{text}");
     let now = ws.read("src/model.rs");
-    assert!(!now.contains("fn moved"), "{now}");
+    assert!(!now.contains("fn moved_existing"), "{now}; {text}");
     let now_sibling = ws.read("src/sibling.rs");
+    assert!(now_sibling.contains("impl Widget"), "{now_sibling}; {text}");
     assert!(
-        now_sibling.contains("pub fn moved(value: u32) -> u32"),
+        now_sibling.contains("pub fn moved_existing(value: u32) -> u32"),
+        "{now_sibling}"
+    );
+    assert!(
+        now_sibling.contains("use crate::model::Widget;"),
         "{now_sibling}"
     );
     assert_eq!(ws.read("src/lib.rs"), lib_text);
+    run_fixture("after-existing-target");
 
-    let binary = artifact_dir.path().join("after");
-    let compile = std::process::Command::new("rustc")
-        .args(["--edition=2021", "--test"])
-        .arg(ws.path("src/lib.rs"))
-        .arg("-o")
-        .arg(&binary)
-        .output()
-        .unwrap();
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/model.rs", "line": 5, "character": 12, "to": "src/sibling.rs", "apply": true }),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "public code_move reuses a verified target impl: {error:#}; source was:\n{}",
+            ws.read("src/model.rs")
+        )
+    });
+    let text = text_of(&result);
+    let now = ws.read("src/model.rs");
+    assert!(!now.contains("fn moved_new"), "{now}; {text}");
+    let now_sibling = ws.read("src/sibling.rs");
     assert!(
-        compile.status.success(),
-        "moved fixture must compile: {}",
-        String::from_utf8_lossy(&compile.stderr)
+        now_sibling.contains("pub fn moved_new(value: u32) -> u32"),
+        "{now_sibling}"
     );
-    let run = std::process::Command::new(binary).output().unwrap();
+    run_fixture("after-verified-target");
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/model.rs", "line": 5, "character": 12, "to": "src/new_sibling.rs", "apply": true }),
+    )
+    .await
+    .expect("public code_move creates a sibling module");
+    let text = text_of(&result);
+    let now = ws.read("src/model.rs");
+    assert!(!now.contains("fn moved_created"), "{now}; {text}");
+    let new_sibling = ws.read("src/new_sibling.rs");
+    assert!(new_sibling.contains("impl Widget"), "{new_sibling}; {text}");
     assert!(
-        run.status.success(),
-        "moved fixture must run: {}",
-        String::from_utf8_lossy(&run.stderr)
+        new_sibling.contains("pub fn moved_created(value: u32) -> u32"),
+        "{new_sibling}"
     );
+    assert!(
+        new_sibling.contains("use crate::model::Widget;"),
+        "{new_sibling}"
+    );
+    assert!(ws.read("src/lib.rs").contains("pub mod new_sibling;"));
+
+    run_fixture("after-new-target");
 }
 
 /// `code_move_method` needs to know where to: a parameter for a method, a type for an
